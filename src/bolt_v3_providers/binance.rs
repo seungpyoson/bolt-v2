@@ -163,7 +163,7 @@ pub enum BinanceEnvironment {
     Demo,
 }
 
-pub(crate) fn realized_volatility_new_risk_source_available(
+pub(crate) fn new_risk_market_data_available(
     client_key: &str,
     client: &ClientBlock,
 ) -> Result<bool, String> {

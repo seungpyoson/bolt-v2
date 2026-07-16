@@ -52,6 +52,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             market_selection_rule: String => String;
             retry_interval_seconds: u64 => Integer;
             blocked_after_seconds: u64 => Integer;
+            signal_new_risk_available: bool => Boolean;
             use_uuid_client_order_ids: bool => Boolean;
             use_hyphens_in_client_order_ids: bool => Boolean;
             external_order_claims: Vec<String> => Array;

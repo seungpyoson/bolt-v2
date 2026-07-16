@@ -1041,12 +1041,12 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
         .find(|binding| binding.key == key)
 }
 
-pub fn realized_volatility_new_risk_source_available(
+pub fn new_risk_market_data_available(
     client_key: &str,
     client: &ClientBlock,
 ) -> Result<bool, String> {
     if client.venue.as_str() == binance::KEY {
-        return binance::realized_volatility_new_risk_source_available(client_key, client);
+        return binance::new_risk_market_data_available(client_key, client);
     }
     Ok(true)
 }

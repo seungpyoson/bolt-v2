@@ -625,6 +625,22 @@ fn signal_quote_tick_does_not_warm_active_reference_state() {
 }
 
 #[test]
+fn unavailable_signal_capability_rejects_matching_quote_before_pricing_state() {
+    let mut strategy = test_strategy();
+    strategy.config.signal_new_risk_available = false;
+
+    strategy
+        .on_quote(&quote_tick("SIGNAL.SOURCE", 3_102.0, 3_104.0, 1_200))
+        .expect("capability-unavailable signal quote should be ignored");
+
+    assert_eq!(
+        strategy.pricing.selected_pricing_spot(),
+        None,
+        "a matching quote from an unavailable provider capability must not become a new-risk signal"
+    );
+}
+
+#[test]
 fn non_reference_quote_tick_does_not_update_pricing() {
     let mut strategy = test_strategy();
 

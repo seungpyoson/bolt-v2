@@ -447,6 +447,14 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
+literal = '''"signal_new_risk_available"'''
+context = '''"signal_new_risk_available",'''
+classification = "generated_source_capability_field"
+reason = "This internal strategy-runtime field carries the official-SHA-bound provider capability decision generated from the immutable source registry; it is not operator-configurable."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
+kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''"signal_instrument_id",'''
 classification = "strategy_runtime_schema_field"
@@ -20904,14 +20912,6 @@ literal = '''"binary_oracle_edge_taker signal subscription derived zero requests
 context = '''"binary_oracle_edge_taker signal subscription derived zero requests from configured signal_instrument_id: strategy_id={}",'''
 classification = "startup_subscription_derivation_diagnostic_template"
 reason = "Fail-loud startup diagnostic for a configured signal route that cannot derive a valid NT subscription; the route value remains TOML-owned and this template does not configure runtime behavior."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/subscriptions.rs"
-kind = "string"
-literal = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}"'''
-context = '''"binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}",'''
-classification = "startup_subscription_derivation_diagnostic_template"
-reason = "Fail-loud startup diagnostic for a configured realized-volatility surface whose runtime context derives no subscribable feeds; surface selection remains TOML-owned and this template does not configure runtime behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/archetype.rs"

@@ -101,7 +101,10 @@ pub(super) fn trade_transport_client_keys(
             );
         }
         for signal in strategy.config.signal_data.values() {
-            client_keys.insert(signal.data_client_id.to_string());
+            let client_key = signal.data_client_id.to_string();
+            if new_risk_market_data_client_available(loaded, client_key.as_str())? {
+                client_keys.insert(client_key);
+            }
         }
         if let Some(resolution) = strategy.config.resolution_data.as_ref() {
             client_keys.insert(resolution.data_client_id.to_string());
@@ -110,7 +113,7 @@ pub(super) fn trade_transport_client_keys(
     insert_capital_admission_execution_client_keys(&mut client_keys, loaded)?;
     insert_outcome_group_source_client_keys(&mut client_keys, loaded)?;
     insert_gate_provider_client_keys(&mut client_keys, loaded)?;
-    insert_realized_volatility_surface_client_keys(&mut client_keys, loaded, rv_scope);
+    insert_realized_volatility_surface_client_keys(&mut client_keys, loaded, rv_scope)?;
     insert_iv_source_client_keys(&mut client_keys, loaded);
     Ok(client_keys)
 }
@@ -326,22 +329,38 @@ fn insert_realized_volatility_surface_client_keys(
     client_keys: &mut BTreeSet<String>,
     loaded: &LoadedBoltV3Config,
     rv_scope: RealizedVolatilityTransportScope,
-) {
+) -> Result<(), BoltV3LiveNodeError> {
     if !matches!(rv_scope, RealizedVolatilityTransportScope::Subscribed)
         || loaded.strategies.is_empty()
     {
-        return;
+        return Ok(());
     }
     let Some(surfaces) = loaded.root.realized_volatility_surfaces.as_ref() else {
-        return;
+        return Ok(());
     };
     for surface in surfaces.values() {
-        client_keys.extend(
-            surface
-                .sources
-                .iter()
-                .filter(|source| source.enabled)
-                .map(|source| source.data_client_id.to_string()),
-        );
+        for source in surface.sources.iter().filter(|source| source.enabled) {
+            let client_key = source.data_client_id.to_string();
+            if new_risk_market_data_client_available(loaded, client_key.as_str())? {
+                client_keys.insert(client_key);
+            }
+        }
     }
+    Ok(())
+}
+
+fn new_risk_market_data_client_available(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<bool, BoltV3LiveNodeError> {
+    let Some(client) = loaded.root.clients.get(client_key) else {
+        return Ok(true);
+    };
+    providers::new_risk_market_data_available(client_key, client).map_err(|reason| {
+        BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!(
+                "client `{client_key}` new-risk market-data capability could not be resolved: {reason}"
+            ),
+        }
+    })
 }

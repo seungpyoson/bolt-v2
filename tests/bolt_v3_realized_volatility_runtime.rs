@@ -176,6 +176,12 @@ fn unavailable_binance_sbe_capability_keeps_runtime_reachable_but_cannot_ready_q
             .blocked_reasons
             .contains(&RealizedVolBlockReason::QuorumNotReady)
     );
+    assert!(
+        snapshot
+            .blocked_reasons
+            .contains(&RealizedVolBlockReason::ProviderCapabilityUnavailable),
+        "the top-level snapshot must preserve the causal provider blocker for durable entry and exit evidence"
+    );
     let diagnostic = snapshot
         .source_diagnostics
         .iter()

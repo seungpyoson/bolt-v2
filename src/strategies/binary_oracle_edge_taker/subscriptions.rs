@@ -30,7 +30,8 @@ use super::{BinaryOracleEdgeTaker, COUNTER_INCREMENT_U64, signed_trade_flow_conf
 impl BinaryOracleEdgeTaker {
     pub(super) fn retry_missing_live_input_subscriptions_at(&mut self, now_ms: u64) {
         self.refresh_realized_volatility_snapshot_at(now_ms);
-        let signal_missing = self.pricing.spot_price().is_none();
+        let signal_missing =
+            self.config.signal_new_risk_available && self.pricing.spot_price().is_none();
         let reference_missing = self.reference_current_price_live_input_missing_at(now_ms);
         let realized_volatility_missing = self
             .pricing
@@ -127,26 +128,12 @@ impl BinaryOracleEdgeTaker {
             ));
         }
 
-        if self.signal_subscription_declares_source() && self.signal_instrument_id().is_none() {
+        if self.config.signal_new_risk_available
+            && self.signal_subscription_declares_source()
+            && self.signal_instrument_id().is_none()
+        {
             return Err(anyhow::anyhow!(
                 "binary_oracle_edge_taker signal subscription derived zero requests from configured signal_instrument_id: strategy_id={}",
-                self.config.strategy_id,
-            ));
-        }
-
-        let surface_id = self.config.realized_volatility_surface_id.as_str();
-        let quote_requests = self
-            .context
-            .realized_volatility_quote_subscription_requests_for_surface(surface_id);
-        let trade_requests = self
-            .context
-            .realized_volatility_trade_subscription_requests_for_surface(surface_id);
-        let index_requests = self
-            .context
-            .realized_volatility_index_subscription_requests_for_surface(surface_id);
-        if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {
-            return Err(anyhow::anyhow!(
-                "binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}",
                 self.config.strategy_id,
             ));
         }
@@ -201,6 +188,9 @@ impl BinaryOracleEdgeTaker {
     }
 
     pub(super) fn subscribe_signal_quotes(&mut self) {
+        if !self.config.signal_new_risk_available {
+            return;
+        }
         if let Some(instrument_id) = self.signal_instrument_id() {
             let client_id = self.signal_client_id();
             self.subscribe_quotes(instrument_id, client_id, None);
@@ -245,6 +235,9 @@ impl BinaryOracleEdgeTaker {
     }
 
     pub(super) fn unsubscribe_signal_quotes(&mut self) {
+        if !self.config.signal_new_risk_available {
+            return;
+        }
         if let Some(instrument_id) = self.signal_instrument_id() {
             let client_id = self.signal_client_id();
             self.unsubscribe_quotes(instrument_id, client_id, None);

@@ -506,12 +506,16 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::empty();
     validate_realized_volatility_runtime_source_clients(loaded)?;
-    validate_realized_volatility_node_transport_membership(node, loaded)?;
-    let realized_volatility_runtime = Arc::new(Mutex::new(
-        RealizedVolSurfaceRuntime::from_loaded_config(loaded).map_err(|error| {
-            BoltV3StrategyRegistrationError::RealizedVolatilityRuntime { message: error }
-        })?,
-    ));
+    let realized_volatility_runtime = RealizedVolSurfaceRuntime::from_loaded_config(loaded)
+        .map_err(
+            |error| BoltV3StrategyRegistrationError::RealizedVolatilityRuntime { message: error },
+        )?;
+    validate_realized_volatility_node_transport_membership(
+        node,
+        loaded,
+        &realized_volatility_runtime,
+    )?;
+    let realized_volatility_runtime = Arc::new(Mutex::new(realized_volatility_runtime));
 
     for strategy in &loaded.strategies {
         let binding = bindings
@@ -568,6 +572,7 @@ fn validate_realized_volatility_runtime_source_clients(
 fn validate_realized_volatility_node_transport_membership(
     node: &LiveNode,
     loaded: &LoadedBoltV3Config,
+    runtime: &RealizedVolSurfaceRuntime,
 ) -> Result<(), BoltV3StrategyRegistrationError> {
     let Some(realized_volatility_surfaces) = loaded.root.realized_volatility_surfaces.as_ref()
     else {
@@ -581,11 +586,16 @@ fn validate_realized_volatility_node_transport_membership(
         .registered_clients()
         .into_iter()
         .collect::<BTreeSet<ClientId>>();
+    let subscribed = runtime
+        .subscription_requests()
+        .into_iter()
+        .map(|request| request.data_client_id)
+        .collect::<BTreeSet<ClientId>>();
     let mut missing = BTreeSet::new();
     for (surface_id, surface) in realized_volatility_surfaces {
         for source in surface.sources.iter().filter(|source| source.enabled) {
             let client_id = ClientId::from(source.data_client_id.as_str());
-            if !registered.contains(&client_id) {
+            if subscribed.contains(&client_id) && !registered.contains(&client_id) {
                 missing.insert(format!(
                     "realized_volatility_surfaces.{surface_id}.sources.{}.data_client_id `{}`",
                     source.source_id, source.data_client_id

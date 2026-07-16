@@ -1388,10 +1388,13 @@ quorum capability unavailable. `RealizedVolatilityObservation` and
 `StrategySignalObservation` must not treat that source as ready: the RV runtime
 omits its subscription and route, rejects direct observations, reports
 `ProviderCapabilityUnavailable`, and lets ordinary quorum rules decide whether
-other configured providers are sufficient. It does not restamp, infer, or
-substitute timestamps. Startup, recovery, exits, reconciliation, and settlement
-remain reachable because the capability gate is confined to new-risk RV source
-availability.
+other configured providers are sufficient. The same provider-owned decision
+suppresses the affected strategy signal subscription and observation path, and
+removes a client used only by unavailable new-risk inputs from the live
+transport. It does not restamp, infer, or substitute timestamps. Startup,
+recovery, exits, reconciliation, and settlement remain reachable because the
+capability gate is confined to new-risk market-data inputs; a zero-subscription
+RV surface stays auditable and blocks entry without aborting strategy startup.
 
 The `binance_sbe_quote_timestamps` harness executes the public parsers and
 proves the absent receive-clock contract across every trade in a multi-trade

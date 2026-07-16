@@ -120,6 +120,7 @@ pub(super) fn valid_raw_config() -> Value {
         market_selection_rule = "active_or_next"
         retry_interval_seconds = 5
         blocked_after_seconds = 60
+        signal_new_risk_available = true
         signal_venue = "signal_data_client"
         signal_instrument_id = "SIGNAL.SOURCE"
         use_uuid_client_order_ids = true
@@ -1266,6 +1267,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             market_selection_rule: "active_or_next".to_string(),
             retry_interval_seconds: 5,
             blocked_after_seconds: 60,
+            signal_new_risk_available: true,
             signal_venue: Some("signal_data_client".to_string()),
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),

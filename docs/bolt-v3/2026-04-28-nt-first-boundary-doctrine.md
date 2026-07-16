@@ -127,7 +127,8 @@ compatibility slice:
   `v1.230.0` release commit
   `8160730c7c550480b0a439fb11086a4c4de15f0b`. The 2026-07-16 correction
   slice's declared compatibility scope is official dependency identity,
-  SHA-bound Binance capability absence, fail-closed new-risk RV gating, the
+  SHA-bound Binance capability absence, fail-closed new-risk signal and RV
+  gating, the
   Polymarket fixture anchor, and required exact-head tests. It does not re-audit
   all NT-owned behaviors cited by this doctrine.
 - The NT pin-change audit and compatibility probe are recorded under

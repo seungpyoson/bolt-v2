@@ -260,6 +260,42 @@ fn strategy_on_start_dispatches_real_data_subscribe_commands() {
 }
 
 #[test]
+fn unavailable_signal_capability_starts_without_signal_subscription() {
+    let replay = strategy_input_quote_replay();
+    let mut strategy =
+        test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
+    strategy.config.reference_current_price = Some(replay_reference_price_config(&replay));
+    strategy.config.signal_new_risk_available = false;
+    register_test_strategy(&mut strategy);
+
+    DataActor::on_start(&mut strategy)
+        .expect("unavailable new-risk signal capability must not block strategy startup");
+
+    let commands = recorded_data_commands();
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Quotes(command))
+                if command.instrument_id
+                    == strategy
+                        .signal_instrument_id()
+                        .expect("configured signal identity should remain auditable")
+                    && command.client_id == strategy.signal_client_id()
+        )),
+        "an unavailable signal capability must not create a signal subscription; commands={commands:#?}",
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Quotes(command))
+                if command.instrument_id
+                    == nautilus_model::identifiers::InstrumentId::from(TEST_RV_INSTRUMENT_ID)
+        )),
+        "signal gating must not disable independent RV subscriptions; commands={commands:#?}",
+    );
+}
+
+#[test]
 fn surfaced_realized_volatility_quote_source_forwards_snapshot_to_pricing() {
     let mut strategy =
         test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
@@ -2242,6 +2278,68 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
     // entry-skip evidence carries no source ts. (The raw as_of_ms is still
     // recorded on the StrategyInput evidence above via the audit path.)
     assert_eq!(skip.realized_vol_source_ts_ms, None);
+}
+
+#[test]
+fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submit_permit() {
+    let mut loaded =
+        crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+            .expect("production config should load");
+    let surfaces = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_mut()
+        .expect("production config should declare RV surfaces");
+    let surface = surfaces
+        .get_mut("btc_usdt_midpoint_rv")
+        .expect("production config should declare the BTC/USDT RV surface");
+    surface
+        .sources
+        .retain(|source| source.data_client_id.as_str() == "binance_spot_data");
+    let runtime = Arc::new(Mutex::new(
+        crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
+            &loaded,
+        )
+        .expect("missing provider capability must not prevent runtime construction"),
+    ));
+
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission.clone(),
+    );
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_realized_volatility_runtime(runtime);
+    strategy.config.realized_volatility_surface_id = "btc_usdt_midpoint_rv".to_string();
+    strategy.config.signal_new_risk_available = false;
+    strategy.pricing.set_selected_pricing_spot(None);
+
+    strategy
+        .ensure_startup_subscription_derivations()
+        .expect("missing new-risk capability must not block startup recovery and exit paths");
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    assert_eq!(
+        strategy
+            .try_submit_entry_order(1_200)
+            .expect("capability-unavailable entry should fail closed without submit"),
+        None
+    );
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "a strategy dependent on unavailable Binance SBE inputs must not obtain a submit permit"
+    );
+    let snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot_for_surface("btc_usdt_midpoint_rv")
+        .expect("the unavailable source should still publish an auditable snapshot");
+    assert!(snapshot.blocked_reasons.contains(
+        &crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ProviderCapabilityUnavailable
+    ));
 }
 
 #[test]

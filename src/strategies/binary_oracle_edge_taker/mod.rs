@@ -7447,9 +7447,10 @@ impl DataActor for BinaryOracleEdgeTaker {
         for snapshot in self.context.observe_realized_volatility_quote(quote) {
             self.pricing.observe_realized_vol_snapshot(snapshot);
         }
-        if self
-            .signal_instrument_id()
-            .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
+        if self.config.signal_new_risk_available
+            && self
+                .signal_instrument_id()
+                .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
         {
             let receive_ms = LocalReceiveMs::new(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64);
             if let Some(signal_quote) = self.signal_quote_from_tick(quote, receive_ms) {

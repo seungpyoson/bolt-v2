@@ -58,7 +58,7 @@ use crate::{
     },
     bolt_v3_providers::{
         ProviderMarketExitOrderConstraints, binding_for_provider_key,
-        resolution_oracle_client_http_timeout_secs,
+        new_risk_market_data_available, resolution_oracle_client_http_timeout_secs,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -571,6 +571,35 @@ mod tests {
             "production root capital pool must derive pUSD for POLYMARKET / POLYMARKET-001"
         );
     }
+
+    #[test]
+    fn production_binance_sbe_signal_is_ineligible_for_new_risk_at_official_pin() {
+        let loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("production root.toml should load");
+        let strategy = loaded
+            .strategies
+            .iter()
+            .find(|strategy| strategy.config.strategy_archetype.as_str() == KEY)
+            .expect("production config should include the binary oracle edge taker");
+
+        let raw = raw_taker_config(strategy, &loaded)
+            .expect("unavailable signal capability must not prevent strategy construction");
+        let table = raw.as_table().expect("raw taker config should be a table");
+
+        assert_eq!(
+            table
+                .get("signal_new_risk_available")
+                .and_then(Value::as_bool),
+            Some(false),
+            "the official pin must mark Binance Spot SBE signal data as unavailable for new risk"
+        );
+        assert_eq!(
+            table.get("signal_venue").and_then(Value::as_str),
+            Some("binance_spot_data"),
+            "the configured source identity must remain available for diagnostics"
+        );
+    }
 }
 
 pub fn raw_taker_config(
@@ -647,15 +676,25 @@ pub fn raw_taker_config(
         })?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
-    venue_for_client(&loaded.root, signal_data.data_client_id.as_str()).ok_or_else(|| {
-        BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+    let signal_client = loaded
+        .root
+        .clients
+        .get(signal_data.data_client_id.as_str())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
                 "signal_data data_client_id `{}` is not present in loaded clients",
                 signal_data.data_client_id
             ),
-        }
-    })?;
+        })?;
+    let signal_new_risk_available =
+        new_risk_market_data_available(signal_data.data_client_id.as_str(), signal_client)
+            .map_err(
+                |message| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+                    strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                    message,
+                },
+            )?;
     let resolution_data = configured_resolution_data(strategy);
     if let Some(resolution_data) = resolution_data {
         venue_for_client(&loaded.root, resolution_data.data_client_id.as_str()).ok_or_else(
@@ -807,6 +846,11 @@ pub fn raw_taker_config(
         target.blocked_after_seconds,
     )?;
     insert_string(&mut table, "price_to_beat_source", price_to_beat_source);
+    insert_bool(
+        &mut table,
+        "signal_new_risk_available",
+        signal_new_risk_available,
+    );
     insert_reference_current_price_config(
         &mut table,
         strategy_instance_id,

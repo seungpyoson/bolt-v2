@@ -13,7 +13,7 @@ use nautilus_model::{
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, realized_volatility_engine_config},
     bolt_v3_numeric::{MIDPOINT_DIVISOR_F64, NANOS_PER_MILLI_U64, is_positive_finite},
-    bolt_v3_providers::realized_volatility_new_risk_source_available,
+    bolt_v3_providers::new_risk_market_data_available,
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolEngine, RealizedVolEngineConfig, RealizedVolObservation,
         RealizedVolSampleKind, RealizedVolSnapshot, RealizedVolSourceClass,
@@ -479,7 +479,7 @@ fn unavailable_realized_volatility_new_risk_client_ids(
         .clients
         .iter()
         .map(|(client_id, client)| {
-            realized_volatility_new_risk_source_available(client_id, client)
+            new_risk_market_data_available(client_id, client)
                 .map(|available| (!available).then(|| client_id.clone()))
         })
         .collect::<Result<Vec<_>, _>>()
@@ -490,14 +490,27 @@ fn mark_unavailable_source_diagnostics(
     snapshot: &mut RealizedVolSnapshot,
     unavailable_sources: &BTreeSet<(String, String)>,
 ) {
+    let mut capability_unavailable = false;
     for diagnostic in &mut snapshot.source_diagnostics {
         if unavailable_sources
             .contains(&(snapshot.surface_id.clone(), diagnostic.source_id.clone()))
         {
+            capability_unavailable = true;
             diagnostic.counts_toward_quorum = false;
             diagnostic.status = RealizedVolSourceStatus::DiagnosticOnly;
             diagnostic.block_reason = Some(RealizedVolBlockReason::ProviderCapabilityUnavailable);
         }
+    }
+    if capability_unavailable
+        && snapshot
+            .blocked_reasons
+            .contains(&RealizedVolBlockReason::QuorumNotReady)
+    {
+        snapshot
+            .blocked_reasons
+            .push(RealizedVolBlockReason::ProviderCapabilityUnavailable);
+        snapshot.blocked_reasons.sort_unstable();
+        snapshot.blocked_reasons.dedup();
     }
 }
 

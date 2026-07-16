@@ -1,4 +1,5 @@
 use super::*;
+use crate::bolt_v3_providers;
 
 /// Prunes the loaded config to the client set needed by the trade transport.
 ///

@@ -281,6 +281,20 @@ impl StrategyBuildContext {
             .index_subscription_requests_for_surface(surface_id)
     }
 
+    pub fn realized_volatility_surface_subscriptions_blocked_only_by_provider_capability(
+        &self,
+        surface_id: &str,
+    ) -> bool {
+        let Some(capability) = self.realized_volatility.as_ref() else {
+            return false;
+        };
+        capability
+            .runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .surface_subscriptions_blocked_only_by_provider_capability(surface_id)
+    }
+
     pub fn observe_realized_volatility_quote(&self, quote: &QuoteTick) -> Vec<RealizedVolSnapshot> {
         let Some(capability) = self.realized_volatility.as_ref() else {
             return Vec::new();

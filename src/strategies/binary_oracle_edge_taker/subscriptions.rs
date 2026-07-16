@@ -138,6 +138,31 @@ impl BinaryOracleEdgeTaker {
             ));
         }
 
+        let surface_id = self.config.realized_volatility_surface_id.as_str();
+        let quote_requests = self
+            .context
+            .realized_volatility_quote_subscription_requests_for_surface(surface_id);
+        let trade_requests = self
+            .context
+            .realized_volatility_trade_subscription_requests_for_surface(surface_id);
+        let index_requests = self
+            .context
+            .realized_volatility_index_subscription_requests_for_surface(surface_id);
+        if quote_requests.is_empty()
+            && trade_requests.is_empty()
+            && index_requests.is_empty()
+            && !self
+                .context
+                .realized_volatility_surface_subscriptions_blocked_only_by_provider_capability(
+                    surface_id,
+                )
+        {
+            return Err(anyhow::anyhow!(
+                "binary_oracle_edge_taker realized_volatility surface `{surface_id}` derived zero subscription requests: strategy_id={}",
+                self.config.strategy_id,
+            ));
+        }
+
         Ok(())
     }
 

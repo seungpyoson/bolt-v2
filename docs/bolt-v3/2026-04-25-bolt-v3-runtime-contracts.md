@@ -1393,8 +1393,10 @@ suppresses the affected strategy signal subscription and observation path, and
 removes a client used only by unavailable new-risk inputs from the live
 transport. It does not restamp, infer, or substitute timestamps. Startup,
 recovery, exits, reconciliation, and settlement remain reachable because the
-capability gate is confined to new-risk market-data inputs; a zero-subscription
-RV surface stays auditable and blocks entry without aborting strategy startup.
+capability gate is confined to new-risk market-data inputs; an RV surface whose
+subscriptions are absent solely because of that registered provider capability
+stays auditable and blocks entry without aborting strategy startup. Other empty
+subscription derivations still fail startup loudly.
 
 The `binance_sbe_quote_timestamps` harness executes the public parsers and
 proves the absent receive-clock contract across every trade in a multi-trade

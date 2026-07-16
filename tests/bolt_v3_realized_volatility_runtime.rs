@@ -152,6 +152,10 @@ fn unavailable_binance_sbe_capability_keeps_runtime_reachable_but_cannot_ready_q
     let mut runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
         .expect("missing provider capabilities must not prevent runtime construction");
     assert!(
+        runtime.surface_subscriptions_blocked_only_by_provider_capability("btc_usdt_midpoint_rv"),
+        "the production surface should identify capability-only subscription suppression"
+    );
+    assert!(
         runtime
             .subscription_requests_for_surface("btc_usdt_midpoint_rv")
             .is_empty(),

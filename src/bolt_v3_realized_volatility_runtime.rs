@@ -250,6 +250,29 @@ impl RealizedVolSurfaceRuntime {
         }
     }
 
+    pub fn surface_subscriptions_blocked_only_by_provider_capability(
+        &self,
+        surface_id: &str,
+    ) -> bool {
+        let Some(state) = self.surfaces.get(surface_id) else {
+            return false;
+        };
+        let mut found_enabled_subscribable_source = false;
+        for source in state.engine.config().sources.iter().filter(|source| {
+            source.enabled && subscription_kind(source.source_class, source.sample_kind).is_some()
+        }) {
+            found_enabled_subscribable_source = true;
+            if !self.new_risk_capability_unavailable_sources.iter().any(
+                |(blocked_surface_id, blocked_source_id)| {
+                    blocked_surface_id == surface_id && blocked_source_id == &source.source_id
+                },
+            ) {
+                return false;
+            }
+        }
+        found_enabled_subscribable_source
+    }
+
     pub fn quote_subscription_requests_for_surface(
         &self,
         surface_id: &str,

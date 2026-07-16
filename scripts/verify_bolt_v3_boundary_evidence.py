@@ -685,13 +685,14 @@ def scan_wire_boundary(root: Path, findings: list[str], source_paths: list[Path]
 
 def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     chainlink = read(root, "src/bolt_v3_providers/chainlink_reference.rs")
-    masked_chainlink = _mask_rust_non_code(chainlink)
     committed_capture_test = "committed_real_capture_frame_decodes_through_production_handler"
-    committed_capture_registrations = re.findall(
-        rf"(?m)^[ \t]*#\s*\[\s*test\s*\]\s*\n[ \t]*fn\s+{re.escape(committed_capture_test)}\s*\(",
-        masked_chainlink,
+    committed_capture_body = rust_registered_test_function_body(
+        chainlink,
+        committed_capture_test,
+        attribute_pattern=re.compile(r"test"),
+        is_async=False,
     )
-    if len(committed_capture_registrations) != 1:
+    if committed_capture_body is None:
         findings.append(
             "src/bolt_v3_providers/chainlink_reference.rs: expected exactly one "
             f"registered #[test] fn {committed_capture_test}"
@@ -709,13 +710,14 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     if "WireMessage::Text(bytes) | WireMessage::Binary(bytes)" not in production:
         findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must accept Text and Binary frames")
     health = read(root, "src/bolt_v3_reference_price_health.rs")
-    masked_health = _mask_rust_non_code(health)
     loopback_test = "chainlink_binary_loopback_observes_reference_update_through_health_msgbus"
-    loopback_registrations = re.findall(
-        rf"(?m)^[ \t]*#\s*\[\s*tokio\s*::\s*test(?:\s*\([^]\n]*\))?\s*\]\s*\n[ \t]*async\s+fn\s+{re.escape(loopback_test)}\s*\(",
-        masked_health,
+    loopback_body = rust_registered_test_function_body(
+        health,
+        loopback_test,
+        attribute_pattern=re.compile(r"tokio::test(?:\([^)]*\))?"),
+        is_async=True,
     )
-    if len(loopback_registrations) != 1:
+    if loopback_body is None:
         findings.append(
             "src/bolt_v3_reference_price_health.rs: expected exactly one registered "
             f"#[tokio::test] async fn {loopback_test}"
@@ -724,15 +726,9 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
         "ReferenceCurrentPriceHealthObservedUpdate {",
         "ReferencePriceUpdate::try_new",
     )
-    loopback_match = re.search(
-        rf"async fn {re.escape(loopback_test)}\(\).*?\n    \}}",
-        health,
-        re.DOTALL,
-    )
-    if loopback_match:
-        body = loopback_match.group(0)
+    if loopback_body is not None:
         for shortcut in forbidden_shortcuts:
-            if shortcut in body:
+            if shortcut in loopback_body:
                 findings.append(f"src/bolt_v3_reference_price_health.rs: loopback harness uses shortcut {shortcut}")
 
 
@@ -1197,6 +1193,106 @@ def rust_crate_inner_attributes(text: str) -> list[str]:
         if rust_open_delimiters_at(masked, match.start()) == ():
             attributes.append(re.sub(r"\s+", "", match.group(1)))
     return attributes
+
+
+def rust_outer_attribute_cluster(masked: str, end: int) -> list[str] | None:
+    cluster = re.search(
+        r"(?P<attributes>(?:#\s*\[[^\[\]]+\]\s*)+)$",
+        masked[:end],
+    )
+    if cluster is None:
+        return None
+    return [
+        re.sub(r"\s+", "", attribute)
+        for attribute in re.findall(
+            r"#\s*\[\s*([^\[\]]+?)\s*\]",
+            cluster.group("attributes"),
+        )
+    ]
+
+
+def rust_registered_test_function_body(
+    text: str,
+    function_name: str,
+    *,
+    attribute_pattern: re.Pattern[str],
+    is_async: bool,
+) -> str | None:
+    masked = _mask_rust_non_code(text)
+    if rust_crate_inner_attributes(text):
+        return None
+
+    module_header = re.compile(r"(?m)^[ \t]*mod\s+tests\s*\{")
+    module_matches = [
+        match
+        for match in module_header.finditer(masked)
+        if rust_open_delimiters_at(masked, match.start()) == ()
+    ]
+    if len(module_matches) != 1:
+        return None
+    module_match = module_matches[0]
+    if rust_outer_attribute_cluster(masked, module_match.start()) != ["cfg(test)"]:
+        return None
+
+    module_opening = masked.find("{", module_match.start(), module_match.end())
+    module_end = None
+    depth = 0
+    for index in range(module_opening, len(masked)):
+        char = masked[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                module_end = index
+                break
+    if module_end is None:
+        return None
+
+    module_body = masked[module_opening + 1 : module_end]
+    if any(
+        rust_open_delimiters_at(module_body, match.start()) == ()
+        for match in re.finditer(r"#\s*!\s*\[", module_body)
+    ):
+        return None
+
+    async_prefix = r"async\s+" if is_async else ""
+    function_header = re.compile(
+        rf"(?m)^[ \t]*{async_prefix}fn\s+{re.escape(function_name)}\s*\(\s*\)\s*\{{"
+    )
+    all_function_matches = list(function_header.finditer(module_body))
+    direct_function_matches = [
+        match
+        for match in all_function_matches
+        if rust_open_delimiters_at(module_body, match.start()) == ()
+    ]
+    if len(all_function_matches) != 1 or len(direct_function_matches) != 1:
+        return None
+    function_match = direct_function_matches[0]
+    attributes = rust_outer_attribute_cluster(module_body, function_match.start())
+    if (
+        attributes is None
+        or len(attributes) != 1
+        or attribute_pattern.fullmatch(attributes[0]) is None
+    ):
+        return None
+
+    function_opening = module_body.find(
+        "{", function_match.start(), function_match.end()
+    )
+    depth = 0
+    for index in range(function_opening, len(module_body)):
+        char = module_body[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                body = module_body[function_opening + 1 : index]
+                if re.search(r"#\s*!\s*\[", body) is not None:
+                    return None
+                return body
+    return None
 
 
 def rust_ordinary_test_function_body(

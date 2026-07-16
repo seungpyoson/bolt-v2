@@ -2491,6 +2491,135 @@ def test_comment_only_chainlink_binary_loopback_test_fails() -> None:
     )
 
 
+def test_load_bearing_chainlink_tests_reject_execution_altering_attributes() -> None:
+    test_specs = (
+        (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "    #[test]\n    fn committed_real_capture_frame_decodes_through_production_handler() {}",
+            "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+        ),
+        (
+            "src/bolt_v3_reference_price_health.rs",
+            "    #[tokio::test(flavor = \"current_thread\")]\n    async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {",
+            "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+        ),
+    )
+    for attribute in (
+        "#[ignore]",
+        "#[should_panic]",
+        "#[cfg(any())]",
+        "#[cfg_attr(all(), ignore)]",
+    ):
+        for relative_path, header, finding in test_specs:
+            def mutate(
+                root: Path,
+                relative_path: str = relative_path,
+                header: str = header,
+                attribute: str = attribute,
+            ) -> None:
+                path = root / relative_path
+                text = path.read_text(encoding="utf-8")
+                path.write_text(
+                    text.replace(header, f"    {attribute}\n{header}"),
+                    encoding="utf-8",
+                )
+
+            assert_finding(scan_temp(mutate), finding)
+
+
+def test_load_bearing_chainlink_tests_reject_disabled_test_modules() -> None:
+    cases = (
+        (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+        ),
+        (
+            "src/bolt_v3_reference_price_health.rs",
+            "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+        ),
+    )
+    for relative_path, finding in cases:
+        def mutate(
+            root: Path,
+            relative_path: str = relative_path,
+        ) -> None:
+            path = root / relative_path
+            text = path.read_text(encoding="utf-8")
+            path.write_text(
+                text.replace(
+                    "#[cfg(test)]\nmod tests {",
+                    "#[cfg(any())]\n#[cfg(test)]\nmod tests {",
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), finding)
+
+
+def test_load_bearing_chainlink_tests_reject_macro_token_definitions() -> None:
+    cases = (
+        (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "    #[test]\n    fn committed_real_capture_frame_decodes_through_production_handler() {}",
+            """    macro_rules! planted_decode_test {
+        () => {
+            #[test]
+            fn committed_real_capture_frame_decodes_through_production_handler() {}
+        };
+    }""",
+            "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+        ),
+        (
+            "src/bolt_v3_reference_price_health.rs",
+            """    #[tokio::test(flavor = "current_thread")]
+    async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {
+        prepare_reference_current_price_health_run_with_resolved();
+        run_prepared_reference_current_price_health().await;
+    }""",
+            """    macro_rules! planted_loopback_test {
+        () => {
+            #[tokio::test(flavor = "current_thread")]
+            async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {}
+        };
+    }""",
+            "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+        ),
+    )
+    for relative_path, original, replacement, finding in cases:
+        def mutate(
+            root: Path,
+            relative_path: str = relative_path,
+            original: str = original,
+            replacement: str = replacement,
+        ) -> None:
+            path = root / relative_path
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace(original, replacement), encoding="utf-8")
+
+        assert_finding(scan_temp(mutate), finding)
+
+
+def test_loopback_shortcut_scan_binds_to_registered_test_body() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_reference_price_health.rs"
+        text = path.read_text(encoding="utf-8")
+        decoy = """/*
+async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {
+    }
+*/
+"""
+        path.write_text(
+            decoy
+            + text.replace(
+                "        prepare_reference_current_price_health_run_with_resolved();",
+                "        ReferencePriceUpdate::try_new();",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "loopback harness uses shortcut ReferencePriceUpdate::try_new")
+
+
 def test_string_literal_non_reference_metadata_provider_without_registry_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/mod.rs"

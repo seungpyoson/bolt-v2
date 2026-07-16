@@ -1,7 +1,8 @@
 # Evidence Ledger — #522 monolith decomposition
 
-A10 PR #595 was reviewed against merge base `7a602361` and head `656ce0a7`;
-A9 is present at `97a4ebde`. One row per slice. A slice is
+A10 is merged and its exact split inventory remains pinned by
+`tests/bolt_v3_binary_oracle_edge_taker_a10_structure.rs`; A9 is present at
+`97a4ebde`. One row per slice. A slice is
 **Resolved** only when: move PR landed behind the gate · the moved symbol set and
 module boundary match the declared slice · diff is a pure relocation — move + imports,
 with a `pub use` re-export only where an external caller requires it and **none** for
@@ -36,7 +37,7 @@ homes).
 | A7 | source-proof / replay | `…/source_proof.rs` | ✓ wrong-control RED failed as expected (`left: 3306.0`, `right: 3300.0`); restored GREEN targeted test passed (`1 passed; 554 filtered out`); Claude NB-1 venue-filter wrong-control now fails when the venue predicate is deleted (`left: 9001.0`, `right: 3306.0`); follow-up module tests passed (`2 passed; 554 filtered out`) | ✓ pure move: `source_proof.rs` added; `mod.rs` moved-symbol definitions removed; focused root `pub use` preserves existing external source API; source-integrity golden re-derived after the NB-1 fixture hardening and exact-head review-comment fix; runtime-literal allowlist repointed with dynamic file walk | ✓ PR #586 exact-head checks green before merge | Claude/Gemini/Kimi/GLM/Grok approved exact head; DeepSeek review slot waived by operator merge instruction on 2026-06-06 | **RESOLVED — MERGED to main 2026-06-06 via squash commit `110abcd2`** (PR #586, reviewed head `1a6e7604`) |
 | A8 | config parse/validate | `…/config.rs` | ✓ config parse/validate moved with source-root parity checks | ✓ `config.rs` exists; strategy imports builder/config surface from submodule | ✓ merged behind PR #560 at merge commit `52c83924` | historical review packet not re-audited in A6 branch | **RESOLVED — MERGED to main** |
 | A9 | admission-request construction (kill dup :7546) — owns base | `bolt_v3_submit_admission.rs` | ✓ RED unresolved shared-builder imports; restored GREEN targeted integration test passed; review follow-up added a market-style fee-before-ceiling error-order regression (`2 passed; 56 filtered out`) | ✓ shared `BoltV3SubmitAdmissionRequestInput` + `build_submit_admission_request_from_order`; strategy wrapper delegates valuation/request construction; test helper delegates to shared builder; source-integrity goldens re-derived | ✓ merged to main as PR #591 at `97a4ebde` | external review gate completed or waived before operator merge | **RESOLVED — MERGED to main 2026-06-06 via PR #591** (#507/#510 rebase onto it after merge) |
-| A10 | split 238 tests; mod.rs = struct + DataActor + glue | `…/tests/` | ✓ RED structure test failed before split; RED canonicalizer test failed before inner-cfg exclusion; restored GREEN structure test (`1 passed`), canonicalizer regression (`1 passed`), and strategy subset (`240 passed; 389 filtered out`) | ✓ pure test move: `mod.rs` keeps only `#[cfg(test)] mod tests;`; split files mirror ownership buckets and start with `#![cfg(test)]`; `shared_fixture.rs` holds test-only helpers; source canonicalizer excludes inner-cfg test-only split files from production text; review follow-up makes the structure guard reject extra split files or undeclared modules | local gates green: `cargo fmt --check`; `cargo test bolt_v3_source_integrity --lib` (`11 passed; 617 filtered out`); runtime-literal self-test and verifier passed; exact-head GitHub CI/Backtester CI/actionlint were green at reviewed head `656ce0a7` before review follow-up | external GLM/Grok clear; Kimi/GPT found stale comment/evidence and an exact-inventory guard gap; follow-up applied in PR #595 branch | **PR OPEN — review follow-up applied; final exact-head CI required before merge** |
+| A10 | split 238 tests; mod.rs = struct + DataActor + glue | `…/tests/` | ✓ RED structure test failed before split; RED canonicalizer test failed before inner-cfg exclusion; restored GREEN structure/canonicalizer/strategy checks | ✓ merged split keeps only `#[cfg(test)] mod tests;`; exact module/file inventory and test-only inner cfg markers are pinned by `tests/bolt_v3_binary_oracle_edge_taker_a10_structure.rs` | merged behind the repository gates; current substrate conformance is additionally pinned by `tests/bolt_v3_strategy_substrate_structure.rs` | review follow-up closed stale-comment and exact-inventory findings before merge | **RESOLVED — MERGED; current structural gates are authoritative** |
 
 ## Track B — operator_artifacts
 
@@ -48,7 +49,7 @@ homes).
 
 | Item | Scope | Tracked-by | State |
 |---|---|---|---|
-| W2-1 | canary-proof claim decoupling from shared admission | #502 | planned |
-| W2-2 | `polymarket_*`→`market_*` evidence rename | finding #12 | planned |
-| W2-3 | provider credential/HTTP dedup + CLOB-v2 relocation + fee-provider coupling | #447 / #446 | planned |
-| W2-4 | live-node probe-orchestration extraction | — | planned |
+| W2-1 | canary-proof claim decoupling from shared admission | #502 | tracked independently; not part of the strategy-substrate boundary |
+| W2-2 | `polymarket_*`→`market_*` evidence rename | finding #12 | tracked independently; provider-leak/naming fences remain authoritative |
+| W2-3 | provider credential/HTTP dedup + CLOB-v2 relocation + fee-provider coupling | #447 / #446 | substrate portion resolved: fee-provider and client context assembly are centralized in `bolt_v3_strategy_registration`; provider-specific follow-ups remain independently tracked |
+| W2-4 | live-node probe-orchestration extraction | — | substrate portion resolved: registration aggregates in `strategy_bindings`, while live-node remains strategy-key agnostic and shared reconciliation/health mechanics live in `bolt_v3_runtime_reconcile` and `bolt_v3_reference_price_health` |

@@ -15,7 +15,7 @@ pub(super) fn validate_complete_set_activation_is_shadow_only(
     strategy: &BoltV3StrategyConfig,
 ) -> Vec<String> {
     if strategy.strategy_archetype.as_str()
-        != crate::bolt_v3_outcome_group_sources::COMPLETE_SET_ARBITRAGE_KEY
+        != crate::bolt_v3_complete_set_contract::COMPLETE_SET_ARBITRAGE_KEY
         || root.runtime.order_execution_mode == BoltV3OrderExecutionMode::Shadow
     {
         return Vec::new();

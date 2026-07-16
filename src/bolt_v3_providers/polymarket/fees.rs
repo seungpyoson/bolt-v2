@@ -11,7 +11,7 @@ use nautilus_polymarket::execution::parse::{compute_commission, instrument_taker
 use nautilus_polymarket::{common::consts::POLYMARKET, http::clob::PolymarketClobHttpClient};
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 
-use crate::strategies::registry::FeeProvider;
+use crate::bolt_v3_providers::FeeProvider;
 
 const ENTRY_FEE_BPS_SCALE: i64 = 10_000;
 

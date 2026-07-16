@@ -3,7 +3,6 @@ use crate::support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_adapters::map_bolt_v3_adapters,
-    bolt_v3_archetypes::{binary_oracle_edge_taker, complete_set_arbitrage},
     bolt_v3_client_registration::register_bolt_v3_clients,
     bolt_v3_config::{
         BoltV3RootConfig, ClientBlock, DataInstrumentBlock, RealizedVolatilityAggregationBlock,
@@ -15,16 +14,22 @@ use bolt_v2::{
     },
     bolt_v3_iv::config::IvRootConfig,
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
+    bolt_v3_providers::FeeProvider,
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
+    bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
         BoltV3SubmitLifecyclePolicy,
     },
     strategies::{
-        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
-        complete_set_arbitrage::CompleteSetArbitrageBuilder,
+        binary_oracle_edge_taker::{
+            BinaryOracleEdgeTakerBuilder, archetype as binary_oracle_edge_taker_archetype,
+        },
+        complete_set_arbitrage::{
+            CompleteSetArbitrageBuilder, archetype as complete_set_arbitrage,
+        },
         production_strategy_registry,
-        registry::{FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError},
+        registry::{StrategyBuilder, ValidationError},
     },
 };
 use futures_util::future::{BoxFuture, FutureExt};
@@ -548,7 +553,7 @@ fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
         .expect("fixture strategy should include signal data");
     let expected_signal_venue = expected_signal_data.data_client_id.to_string();
     let expected_signal_instrument = expected_signal_data.instrument_id.to_string();
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded)
         .expect("surface id should map into runtime config");
     let table = raw.as_table().expect("runtime config should be a table");
 
@@ -583,7 +588,7 @@ fn rv_clock_domain_amendment_runtime_mapping_copies_required_surface_age() {
     insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
     loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
 
-    let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(&loaded.strategies[0], &loaded)
         .expect("known RV surface should map into runtime config");
     assert_eq!(
         raw.as_table()
@@ -601,8 +606,9 @@ fn rv_clock_domain_amendment_runtime_mapping_rejects_absent_surface_block() {
     loaded.root.realized_volatility_surfaces = None;
     loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
 
-    let error = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
-        .expect_err("configured RV identity cannot resolve without the surfaces block");
+    let error =
+        binary_oracle_edge_taker_archetype::raw_taker_config(&loaded.strategies[0], &loaded)
+            .expect_err("configured RV identity cannot resolve without the surfaces block");
     let rendered = error.to_string();
     assert!(
         rendered.contains("realized_volatility_surfaces")
@@ -620,8 +626,9 @@ fn rv_clock_domain_amendment_runtime_mapping_rejects_unknown_surface() {
     loaded.strategies[0].config.realized_volatility_surface_id =
         Some("<unknown_surface_id>".to_string());
 
-    let error = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
-        .expect_err("configured RV identity must resolve to one loaded surface");
+    let error =
+        binary_oracle_edge_taker_archetype::raw_taker_config(&loaded.strategies[0], &loaded)
+            .expect_err("configured RV identity must resolve to one loaded surface");
     let rendered = error.to_string();
     assert!(
         rendered.contains("realized_volatility_surfaces")
@@ -638,7 +645,7 @@ fn runtime_mapping_omits_strategy_local_submit_orders_switch() {
     insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
     loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
 
-    let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(&loaded.strategies[0], &loaded)
         .expect("runtime config should map without stale strategy-local execution policy");
 
     assert!(
@@ -656,7 +663,7 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
     insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
     loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
 
-    let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(&loaded.strategies[0], &loaded)
         .expect("surface id should map into runtime config");
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
@@ -685,6 +692,13 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
     {
         assert_eq!(context.strategy_kind, "stub_runtime_strategy");
+        assert_eq!(
+            context.capabilities,
+            bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                realized_volatility: true,
+                settlement: true,
+            }
+        );
         let permit = context
             .submit_admission
             .admit(&submit_request(Decimal::new(1, 0)))
@@ -728,6 +742,10 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
             key: "binary_oracle_edge_taker",
             strategy_kind: stub_strategy_kind,
+            capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                realized_volatility: true,
+                settlement: true,
+            },
             register: register_stub,
         },
     ];
@@ -1122,7 +1140,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
 
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded)
         .expect("binary oracle strategy should map into existing taker raw config");
 
     let mut errors: Vec<ValidationError> = Vec::new();
@@ -1284,9 +1302,11 @@ fn binary_oracle_runtime_mapping_rejects_missing_signal_data_role() {
         .expect("fixture should include initial binary oracle strategy");
     loaded.strategies[strategy_index].config.signal_data.clear();
 
-    let error =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect_err("binary oracle strategy should reject missing signal_data role");
+    let error = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect_err("binary oracle strategy should reject missing signal_data role");
     let rendered = error.to_string();
     assert!(
         rendered.contains("signal_data") && rendered.contains("requires exactly one"),
@@ -1338,7 +1358,7 @@ fn binary_oracle_runtime_mapping_uses_target_resolution_mapping_without_chainlin
         .iter()
         .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded)
         .expect("binary oracle strategy should not require Chainlink in the archetype bridge");
 
     assert_eq!(
@@ -1385,7 +1405,7 @@ fn binary_oracle_runtime_mapping_rejects_decision_reference_resolution_identity_
         .iter()
         .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
-    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+    let error = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded).expect_err(
         "a decision_reference resolution_identity that parses as an NT InstrumentId must be rejected",
     );
     let rendered = error.to_string();
@@ -1424,9 +1444,11 @@ fn binary_oracle_runtime_mapping_rejects_post_only_gtc_entry_order_runtime_shape
     entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
     entry_order.insert("is_quote_quantity".to_string(), toml::Value::Boolean(false));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("post-only GTC entry order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("post-only GTC entry order should map into runtime config");
     let entry = raw
         .as_table()
         .and_then(|table| table.get("entry_order"))
@@ -1492,9 +1514,11 @@ fn binary_oracle_runtime_mapping_rejects_stop_market_entry_order_runtime_shape()
     );
     entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(false));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("StopMarket entry order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("StopMarket entry order should map into runtime config");
     let entry = raw
         .as_table()
         .and_then(|table| table.get("entry_order"))
@@ -1546,9 +1570,11 @@ fn binary_oracle_runtime_mapping_rejects_market_if_touched_entry_order_runtime_s
     entry_order.insert("trigger_price".to_string(), toml::Value::Float(0.52));
     entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(false));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("MarketIfTouched entry order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("MarketIfTouched entry order should map into runtime config");
     let entry = raw
         .as_table()
         .and_then(|table| table.get("entry_order"))
@@ -1600,9 +1626,11 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
     );
     exit_order.insert("is_post_only".to_string(), toml::Value::Boolean(false));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("MarketIfTouched exit order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("MarketIfTouched exit order should map into runtime config");
     let exit = raw
         .as_table()
         .and_then(|table| table.get("exit_order"))
@@ -1686,9 +1714,11 @@ fn binary_oracle_runtime_mapping_rejects_trailing_stop_market_entry_order_runtim
     );
     entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(false));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("TrailingStopMarket entry order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("TrailingStopMarket entry order should map into runtime config");
     let entry = raw
         .as_table()
         .and_then(|table| table.get("entry_order"))
@@ -1759,9 +1789,11 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
     );
     exit_order.insert("is_post_only".to_string(), toml::Value::Boolean(false));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("TrailingStopMarket exit order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("TrailingStopMarket exit order should map into runtime config");
     let exit = raw
         .as_table()
         .and_then(|table| table.get("exit_order"))
@@ -1841,9 +1873,11 @@ fn binary_oracle_runtime_mapping_rejects_stop_limit_entry_order_runtime_shape() 
     entry_order.insert("trigger_price".to_string(), toml::Value::Float(0.52));
     entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("StopLimit entry order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("StopLimit entry order should map into runtime config");
     let entry = raw
         .as_table()
         .and_then(|table| table.get("entry_order"))
@@ -1895,9 +1929,11 @@ fn binary_oracle_runtime_mapping_rejects_limit_if_touched_entry_order_runtime_sh
     entry_order.insert("trigger_price".to_string(), toml::Value::Float(0.39));
     entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("LimitIfTouched entry order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("LimitIfTouched entry order should map into runtime config");
     let entry = raw
         .as_table()
         .and_then(|table| table.get("entry_order"))
@@ -1948,9 +1984,11 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_exit_order() {
     );
     exit_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("post-only GTC exit order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("post-only GTC exit order should map into runtime config");
     let exit = raw
         .as_table()
         .and_then(|table| table.get("exit_order"))
@@ -2008,9 +2046,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
     exit_order.insert("trigger_price".to_string(), toml::Value::Float(0.48));
     exit_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("StopLimit exit order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("StopLimit exit order should map into runtime config");
     let exit = raw
         .as_table()
         .and_then(|table| table.get("exit_order"))
@@ -2081,9 +2121,11 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
     exit_order.insert("trigger_price".to_string(), toml::Value::Float(0.46));
     exit_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
 
-    let raw =
-        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
-            .expect("LimitIfTouched exit order should map into runtime config");
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(
+        &loaded.strategies[strategy_index],
+        &loaded,
+    )
+    .expect("LimitIfTouched exit order should map into runtime config");
     let exit = raw
         .as_table()
         .and_then(|table| table.get("exit_order"))
@@ -2224,7 +2266,7 @@ api_key_ssm_parameter = "/bolt/polyresearch/api-key"
     });
 
     let strategy = &loaded.strategies[strategy_index];
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect(
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded).expect(
         "binary oracle strategy with reference_current_price should map into runtime config",
     );
     let mut errors: Vec<ValidationError> = Vec::new();
@@ -2294,7 +2336,7 @@ fn binary_oracle_runtime_mapping_allows_signal_data_with_decision_reference() {
     );
 
     let strategy = &loaded.strategies[strategy_index];
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded)
         .expect("signal_data and decision_reference should be independent roles");
     let table = raw
         .as_table()
@@ -2351,7 +2393,7 @@ fn binary_oracle_runtime_mapping_emits_resolution_data_when_present() {
     });
 
     let strategy = &loaded.strategies[strategy_index];
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded)
         .expect("binary oracle strategy with resolution_data should map into runtime config");
 
     let mut errors: Vec<ValidationError> = Vec::new();
@@ -2398,7 +2440,7 @@ fn binary_oracle_runtime_mapping_omits_resolution_data_when_absent() {
         "fixture strategy should not declare resolution_data"
     );
 
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+    let raw = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded)
         .expect("binary oracle strategy without resolution_data should map into runtime config");
 
     let mut errors: Vec<ValidationError> = Vec::new();
@@ -2442,7 +2484,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
     });
 
     let strategy = &loaded.strategies[strategy_index];
-    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+    let error = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded)
         .expect_err("resolution_data with an unknown data client must fail closed");
     let rendered = error.to_string();
     assert!(
@@ -2488,7 +2530,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_with_non_chainlink_clie
     });
 
     let strategy = &loaded.strategies[strategy_index];
-    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+    let error = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded).expect_err(
         "resolution_data bound to a non-Chainlink client venue must fail closed at load time",
     );
     let rendered = error.to_string();
@@ -2521,7 +2563,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_asset_mismat
     });
 
     let strategy = &loaded.strategies[strategy_index];
-    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+    let error = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded).expect_err(
         "resolution_data instrument whose asset prefix does not match underlying_asset must fail closed at load time",
     );
     let rendered = error.to_string();
@@ -2565,7 +2607,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed
     });
 
     let strategy = &loaded.strategies[strategy_index];
-    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+    let error = binary_oracle_edge_taker_archetype::raw_taker_config(strategy, &loaded).expect_err(
         "resolution_data instrument with no matching feed_binding in the client must fail closed at load time",
     );
     let rendered = error.to_string();
@@ -2579,7 +2621,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed
 
 #[test]
 fn binary_oracle_runtime_mapping_uses_market_family_target_projection() {
-    let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+    let source = include_str!("../src/strategies/binary_oracle_edge_taker/archetype.rs");
 
     assert!(
         !source.contains("updown::deserialize_target_block"),
@@ -2609,11 +2651,11 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
 }
 
 #[test]
-fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() {
-    let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+fn strategy_registration_resolves_fee_provider_through_shared_provider_boundary() {
+    let source = include_str!("../src/bolt_v3_strategy_registration.rs");
     assert!(
         source.contains("resolve_fee_provider"),
-        "binary_oracle_edge_taker registration should call the generic fee-provider resolver"
+        "shared strategy assembly should call the generic fee-provider resolver"
     );
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -2634,7 +2676,7 @@ fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() 
 #[test]
 fn fee_provider_resolution_does_not_warm_during_registration() {
     let resolver_source = include_str!("../src/bolt_v3_providers/mod.rs");
-    let archetype_source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+    let archetype_source = include_str!("../src/strategies/binary_oracle_edge_taker/archetype.rs");
 
     assert!(
         !resolver_source.contains(".warm("),

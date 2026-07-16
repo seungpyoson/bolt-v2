@@ -27,7 +27,7 @@ const PRODUCTION_LEGACY_RV_ARTIFACTS: &[&str] = &[
     "src/bolt_v3_taker_pricing.rs",
     "src/strategies/binary_oracle_edge_taker/mod.rs",
     "src/strategies/binary_oracle_edge_taker/config.rs",
-    "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+    "src/strategies/binary_oracle_edge_taker/archetype.rs",
 ];
 
 const FORBIDDEN_RV_CONCRETE_LITERALS: &[&str] = &[

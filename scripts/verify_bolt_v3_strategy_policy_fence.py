@@ -315,9 +315,9 @@ ALLOWED_EXECUTION_POLICY_TYPE_REFERENCE_PATHS = frozenset(
         "src/bolt_v3_live_node.rs",
         "src/bolt_v3_live_node/risk_admission_loss.rs",
         "src/bolt_v3_order_execution.rs",
+        "src/bolt_v3_strategy_context.rs",
         "src/bolt_v3_strategy_registration.rs",
         "src/bolt_v3_validate/strategy_envelope.rs",
-        "src/strategies/registry.rs",
     }
 )
 

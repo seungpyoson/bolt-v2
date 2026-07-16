@@ -18,7 +18,10 @@ use nautilus_model::{
 use serde::Serialize;
 
 use crate::{
-    bolt_v3_config::{LoadedBoltV3Config, ReferencePriceSourceBlock, nautilus_startup_bound_secs},
+    bolt_v3_config::{
+        LoadedBoltV3Config, ReferencePriceBlock, ReferencePriceDriftPolicy,
+        ReferencePriceSourceBlock, nautilus_startup_bound_secs,
+    },
     bolt_v3_live_node::{
         BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node_for_data_clients,
         build_bolt_v3_strategy_free_live_node_with_resolved_for_data_clients,
@@ -28,10 +31,12 @@ use crate::{
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
-        REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceUpdate,
-        reference_price_source_is_runtime_available,
+        REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSelection, ReferencePriceSelector,
+        ReferencePriceSourceHealth, ReferencePriceSourceStatus, ReferencePriceUpdate,
+        ReferenceQuote, reference_price_source_is_runtime_available,
     },
     bolt_v3_secrets::ResolvedBoltV3Secrets,
+    bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
 };
 
 const SOURCE_UPDATE_OBSERVATION_STATUS_OBSERVED: &str = "observed";
@@ -622,11 +627,408 @@ fn reference_current_price_health_stop_timeout(loaded: &LoadedBoltV3Config) -> R
     Ok(Duration::from_secs(stop_secs))
 }
 
+/// Runtime window used to evaluate a reference-price observation. All values
+/// are observations supplied by the strategy/runtime adapter; this module owns
+/// no clock or actor handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferencePriceLiveWindow {
+    pub interval_start_ms: u64,
+    pub interval_end_ms: u64,
+    pub evaluation_now_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReferencePriceUpdateRejection {
+    MalformedFrame { detail: String },
+    UnknownSource,
+    SourceUnavailable,
+    ProviderMismatch { expected: String, actual: String },
+    ProviderInstrumentMismatch { expected: String, actual: String },
+    OutsideLiveWindow,
+    DuplicateOrOutOfOrder,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferencePriceUpdateObservation {
+    pub rejection: Option<ReferencePriceUpdateRejection>,
+    pub selection_evaluated: bool,
+    pub selection: Option<ReferencePriceSelection>,
+    pub selected_quote: Option<ReferenceQuote>,
+}
+
+impl ReferencePriceUpdateObservation {
+    fn ignored(rejection: ReferencePriceUpdateRejection) -> Self {
+        Self {
+            rejection: Some(rejection),
+            selection_evaluated: false,
+            selection: None,
+            selected_quote: None,
+        }
+    }
+}
+
+pub fn reference_price_source_provider_identifier<'a>(
+    reference_price: &'a ReferencePriceBlock,
+    source_id: &str,
+) -> Option<&'a str> {
+    let source = reference_price.sources.get(source_id)?;
+    source.instrument_id.as_deref().or(source.symbol.as_deref())
+}
+
+pub fn reference_quote_outside_live_window(
+    quote: &ReferenceQuote,
+    interval_start_ms: VenueEventMs,
+    interval_end_ms: VenueEventMs,
+    evaluation_clock_ms: NtStrategyClockMs,
+    max_source_age_ms: u64,
+) -> bool {
+    let observed_ts_ms = VenueEventMs::new(quote.observed_ts_ms());
+    observed_ts_ms < interval_start_ms
+        || observed_ts_ms > interval_end_ms
+        || evaluation_clock_ms.saturating_duration_since_venue_event(observed_ts_ms)
+            > max_source_age_ms
+}
+
+pub fn mark_reference_price_source_status(
+    health: &mut BTreeMap<String, ReferencePriceSourceHealth>,
+    source_id: &str,
+    status: ReferencePriceSourceStatus,
+    observed_ts_ms: Option<u64>,
+    received_ts_ms: Option<u64>,
+) {
+    if let Some(health) = health.get_mut(source_id) {
+        health.update(status, observed_ts_ms, received_ts_ms);
+    }
+}
+
+pub fn refresh_reference_price_source_statuses(
+    reference_price: &ReferencePriceBlock,
+    selector: Option<&ReferencePriceSelector>,
+    health: &mut BTreeMap<String, ReferencePriceSourceHealth>,
+    quotes: &BTreeMap<String, ReferenceQuote>,
+    window: ReferencePriceLiveWindow,
+) {
+    let drift_exceeded = reference_price.drift_policy == ReferencePriceDriftPolicy::Block
+        && selector
+            .and_then(ReferencePriceSelector::last_cross_source_drift_bps)
+            .is_some_and(|drift_bps| drift_bps > f64::from(reference_price.max_source_drift_bps));
+    let updates = reference_price
+        .source_order
+        .iter()
+        .filter_map(|source_id| {
+            let source = reference_price.sources.get(source_id)?;
+            if !reference_price_source_is_runtime_available(reference_price, source) {
+                return None;
+            }
+            let state = match quotes.get(source_id) {
+                Some(quote)
+                    if reference_quote_outside_live_window(
+                        quote,
+                        VenueEventMs::new(window.interval_start_ms),
+                        VenueEventMs::new(window.interval_end_ms),
+                        NtStrategyClockMs::new(window.evaluation_now_ms),
+                        reference_price.max_source_age_ms,
+                    ) =>
+                {
+                    health
+                        .get(source_id)
+                        .filter(|current| {
+                            current.status() == ReferencePriceSourceStatus::Stale
+                                && current
+                                    .observed_ts_ms()
+                                    .is_some_and(|ts| ts > quote.observed_ts_ms())
+                        })
+                        .map(|current| {
+                            (
+                                current.status(),
+                                current.observed_ts_ms(),
+                                current.received_ts_ms(),
+                            )
+                        })
+                        .unwrap_or((
+                            ReferencePriceSourceStatus::Stale,
+                            Some(quote.observed_ts_ms()),
+                            Some(quote.received_ts_ms()),
+                        ))
+                }
+                Some(quote) if drift_exceeded => (
+                    ReferencePriceSourceStatus::DriftExceeded,
+                    Some(quote.observed_ts_ms()),
+                    Some(quote.received_ts_ms()),
+                ),
+                Some(quote)
+                    if health.get(source_id).is_some_and(|current| {
+                        current.status() == ReferencePriceSourceStatus::Stale
+                            && current
+                                .observed_ts_ms()
+                                .is_some_and(|ts| ts > quote.observed_ts_ms())
+                    }) =>
+                {
+                    let current = health
+                        .get(source_id)
+                        .expect("reference price source health checked above");
+                    (
+                        current.status(),
+                        current.observed_ts_ms(),
+                        current.received_ts_ms(),
+                    )
+                }
+                Some(quote) => (
+                    ReferencePriceSourceStatus::Available,
+                    Some(quote.observed_ts_ms()),
+                    Some(quote.received_ts_ms()),
+                ),
+                None => health
+                    .get(source_id)
+                    .map(|current| match current.status() {
+                        ReferencePriceSourceStatus::AuthRejected
+                        | ReferencePriceSourceStatus::SubscriptionRejected
+                        | ReferencePriceSourceStatus::Stale
+                        | ReferencePriceSourceStatus::MalformedFrame
+                        | ReferencePriceSourceStatus::Disconnected
+                        | ReferencePriceSourceStatus::DriftExceeded => (
+                            current.status(),
+                            current.observed_ts_ms(),
+                            current.received_ts_ms(),
+                        ),
+                        _ => (ReferencePriceSourceStatus::Silent, None, None),
+                    })
+                    .unwrap_or((ReferencePriceSourceStatus::Silent, None, None)),
+            };
+            Some((source_id.clone(), state))
+        })
+        .collect::<Vec<_>>();
+    for (source_id, (status, observed_ts_ms, received_ts_ms)) in updates {
+        mark_reference_price_source_status(
+            health,
+            &source_id,
+            status,
+            observed_ts_ms,
+            received_ts_ms,
+        );
+    }
+}
+
+pub fn select_current_reference_price(
+    reference_price: &ReferencePriceBlock,
+    selector: &mut Option<ReferencePriceSelector>,
+    health: &mut BTreeMap<String, ReferencePriceSourceHealth>,
+    quotes: &BTreeMap<String, ReferenceQuote>,
+    window: ReferencePriceLiveWindow,
+) -> ReferencePriceUpdateObservation {
+    let selection = selector.as_mut().and_then(|selector| {
+        selector.select(
+            window.interval_start_ms,
+            window.interval_end_ms,
+            window.evaluation_now_ms,
+            &quotes.values().cloned().collect::<Vec<_>>(),
+        )
+    });
+    refresh_reference_price_source_statuses(
+        reference_price,
+        selector.as_ref(),
+        health,
+        quotes,
+        window,
+    );
+    let selected_quote = selection
+        .as_ref()
+        .and_then(|selection| quotes.get(selection.source_id()))
+        .cloned();
+    ReferencePriceUpdateObservation {
+        rejection: None,
+        selection_evaluated: true,
+        selection,
+        selected_quote,
+    }
+}
+
+/// Applies one update to neutral source-health/quote primitives and projects
+/// the resulting selection. Strategy state, pricing state, logs, and evidence
+/// remain the caller's responsibility.
+pub fn observe_reference_price_update(
+    reference_price: &ReferencePriceBlock,
+    update: &ReferencePriceUpdate,
+    window: Option<ReferencePriceLiveWindow>,
+    selector: &mut Option<ReferencePriceSelector>,
+    health: &mut BTreeMap<String, ReferencePriceSourceHealth>,
+    quotes: &mut BTreeMap<String, ReferenceQuote>,
+) -> ReferencePriceUpdateObservation {
+    let quote = match update.to_reference_quote() {
+        Ok(quote) => quote,
+        Err(detail) => {
+            mark_reference_price_source_status(
+                health,
+                update.source_id(),
+                ReferencePriceSourceStatus::MalformedFrame,
+                Some(update.observed_ts_ms()),
+                Some(update.received_ts_ms()),
+            );
+            return ReferencePriceUpdateObservation::ignored(
+                ReferencePriceUpdateRejection::MalformedFrame { detail },
+            );
+        }
+    };
+    let Some(existing_health) = health.get(quote.source_id()) else {
+        return ReferencePriceUpdateObservation::ignored(
+            ReferencePriceUpdateRejection::UnknownSource,
+        );
+    };
+    if matches!(
+        existing_health.status(),
+        ReferencePriceSourceStatus::Disabled | ReferencePriceSourceStatus::UnsupportedSymbol
+    ) {
+        return ReferencePriceUpdateObservation::ignored(
+            ReferencePriceUpdateRejection::SourceUnavailable,
+        );
+    }
+    if existing_health.provider() != quote.provider() {
+        let expected = existing_health.provider().as_str().to_string();
+        mark_reference_price_source_status(
+            health,
+            quote.source_id(),
+            ReferencePriceSourceStatus::MalformedFrame,
+            Some(quote.observed_ts_ms()),
+            Some(quote.received_ts_ms()),
+        );
+        return ReferencePriceUpdateObservation::ignored(
+            ReferencePriceUpdateRejection::ProviderMismatch {
+                expected,
+                actual: quote.provider().as_str().to_string(),
+            },
+        );
+    }
+    if let Some(expected) =
+        reference_price_source_provider_identifier(reference_price, quote.source_id())
+        && quote.provider_instrument() != expected
+    {
+        let expected = expected.to_string();
+        mark_reference_price_source_status(
+            health,
+            quote.source_id(),
+            ReferencePriceSourceStatus::MalformedFrame,
+            Some(quote.observed_ts_ms()),
+            Some(quote.received_ts_ms()),
+        );
+        return ReferencePriceUpdateObservation::ignored(
+            ReferencePriceUpdateRejection::ProviderInstrumentMismatch {
+                expected,
+                actual: quote.provider_instrument().to_string(),
+            },
+        );
+    }
+    if let Some(window) = window
+        && reference_quote_outside_live_window(
+            &quote,
+            VenueEventMs::new(window.interval_start_ms),
+            VenueEventMs::new(window.interval_end_ms),
+            NtStrategyClockMs::new(window.evaluation_now_ms),
+            reference_price.max_source_age_ms,
+        )
+    {
+        let newer_than_quote = quotes
+            .get(quote.source_id())
+            .is_none_or(|current| current.observed_ts_ms() < quote.observed_ts_ms());
+        let newer_than_health = health
+            .get(quote.source_id())
+            .and_then(ReferencePriceSourceHealth::observed_ts_ms)
+            .is_none_or(|ts| ts < quote.observed_ts_ms());
+        if newer_than_quote && newer_than_health {
+            mark_reference_price_source_status(
+                health,
+                quote.source_id(),
+                ReferencePriceSourceStatus::Stale,
+                Some(quote.observed_ts_ms()),
+                Some(quote.received_ts_ms()),
+            );
+        }
+        let mut observation =
+            select_current_reference_price(reference_price, selector, health, quotes, window);
+        observation.rejection = Some(ReferencePriceUpdateRejection::OutsideLiveWindow);
+        return observation;
+    }
+    if quotes
+        .get(quote.source_id())
+        .is_some_and(|current| current.observed_ts_ms() >= quote.observed_ts_ms())
+    {
+        return ReferencePriceUpdateObservation::ignored(
+            ReferencePriceUpdateRejection::DuplicateOrOutOfOrder,
+        );
+    }
+    match health.get_mut(quote.source_id()) {
+        Some(current) => current.update(
+            ReferencePriceSourceStatus::Available,
+            Some(quote.observed_ts_ms()),
+            Some(quote.received_ts_ms()),
+        ),
+        None => {
+            health.insert(
+                quote.source_id().to_string(),
+                ReferencePriceSourceHealth::available(&quote),
+            );
+        }
+    }
+    quotes.insert(quote.source_id().to_string(), quote);
+    match window {
+        Some(window) => {
+            select_current_reference_price(reference_price, selector, health, quotes, window)
+        }
+        None => ReferencePriceUpdateObservation {
+            rejection: None,
+            selection_evaluated: false,
+            selection: None,
+            selected_quote: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::bolt_v3_config::ReferencePriceProvider;
+
+    #[test]
+    fn runtime_source_health_flap_and_recovery_preserve_latest_observation() {
+        let mut health = BTreeMap::from([(
+            "primary".to_string(),
+            ReferencePriceSourceHealth::new(
+                "primary",
+                ReferencePriceProvider::new("fixture_provider")
+                    .expect("fixture provider should be valid"),
+                ReferencePriceSourceStatus::Available,
+                Some(1_000),
+                Some(1_001),
+            ),
+        )]);
+
+        mark_reference_price_source_status(
+            &mut health,
+            "primary",
+            ReferencePriceSourceStatus::Disconnected,
+            Some(1_000),
+            Some(1_100),
+        );
+        assert_eq!(
+            health
+                .get("primary")
+                .map(ReferencePriceSourceHealth::status),
+            Some(ReferencePriceSourceStatus::Disconnected)
+        );
+
+        mark_reference_price_source_status(
+            &mut health,
+            "primary",
+            ReferencePriceSourceStatus::Available,
+            Some(1_200),
+            Some(1_201),
+        );
+        let recovered = health.get("primary").expect("source should remain tracked");
+        assert_eq!(recovered.status(), ReferencePriceSourceStatus::Available);
+        assert_eq!(recovered.observed_ts_ms(), Some(1_200));
+        assert_eq!(recovered.received_ts_ms(), Some(1_201));
+    }
     use futures_util::{SinkExt, StreamExt};
     use nautilus_model::identifiers::Venue;
     use rust_decimal::{Decimal, prelude::ToPrimitive};

@@ -4,6 +4,8 @@ use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 
+use crate::bolt_v3_outcome_group_proofs::{NegRiskGroupingProof, StructuredOutcomeGroupingProof};
+
 const DISALLOWED_OPERATOR_FORMAT_CHARS: &str = "\u{00ad}\u{034f}\u{061c}\u{115f}\u{1160}\u{17b4}\u{17b5}\u{180e}\u{200b}\u{200c}\u{200d}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2060}\u{2061}\u{2062}\u{2063}\u{2064}\u{2066}\u{2067}\u{2068}\u{2069}\u{206a}\u{206b}\u{206c}\u{206d}\u{206e}\u{206f}\u{feff}";
 
 pub type OutcomeGroupId = String;
@@ -85,17 +87,8 @@ pub struct PayoutMatrix {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupingProof {
-    PolymarketNegRisk {
-        neg_risk_market_id: String,
-        discovery_scope: PolymarketDiscoveryScopeEvidence,
-        market_slugs: Vec<String>,
-        proof_fingerprint: String,
-    },
-    HyperliquidOutcome {
-        question: u32,
-        outcome_indices: Vec<u32>,
-        proof_fingerprint: String,
-    },
+    PolymarketNegRisk(NegRiskGroupingProof),
+    HyperliquidOutcome(StructuredOutcomeGroupingProof),
     OperatorAttested {
         settlement_contract_id: String,
         attestation_id: String,
@@ -104,27 +97,47 @@ pub enum GroupingProof {
     },
 }
 
+enum ConcreteGroupingProofRef<'a> {
+    NegRisk(&'a NegRiskGroupingProof),
+    StructuredOutcome(&'a StructuredOutcomeGroupingProof),
+}
+
 impl GroupingProof {
-    fn native_identity(&self) -> String {
+    fn concrete_payload(&self) -> Option<ConcreteGroupingProofRef<'_>> {
         match self {
-            Self::PolymarketNegRisk {
-                neg_risk_market_id, ..
-            } => format!("polymarket:{neg_risk_market_id}"),
-            Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),
-            Self::OperatorAttested {
-                settlement_contract_id,
-                ..
-            } => format!("operator:{settlement_contract_id}"),
+            Self::PolymarketNegRisk(proof) => Some(ConcreteGroupingProofRef::NegRisk(proof)),
+            Self::HyperliquidOutcome(proof) => {
+                Some(ConcreteGroupingProofRef::StructuredOutcome(proof))
+            }
+            Self::OperatorAttested { .. } => None,
+        }
+    }
+
+    fn native_identity(&self) -> String {
+        match self.concrete_payload() {
+            Some(ConcreteGroupingProofRef::NegRisk(proof)) => proof.native_identity(),
+            Some(ConcreteGroupingProofRef::StructuredOutcome(proof)) => proof.native_identity(),
+            None => {
+                let Self::OperatorAttested {
+                    settlement_contract_id,
+                    ..
+                } = self
+                else {
+                    unreachable!()
+                };
+                format!("operator:{settlement_contract_id}")
+            }
         }
     }
 
     fn validate_sha_fields(&self) -> Result<(), OutcomeGroupValidationError> {
-        match self {
-            Self::PolymarketNegRisk {
-                proof_fingerprint,
-                discovery_scope,
-                ..
-            } => {
+        match self.concrete_payload() {
+            Some(ConcreteGroupingProofRef::NegRisk(proof)) => {
+                let NegRiskGroupingProof {
+                    proof_fingerprint,
+                    discovery_scope,
+                    ..
+                } = proof;
                 validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;
                 if let Some(fingerprint) = discovery_scope.gamma_query_fingerprint.as_deref() {
                     validate_sha256_field(
@@ -136,10 +149,15 @@ impl GroupingProof {
                     "grouping_proof.discovery_scope.cache_key_fingerprint",
                     &discovery_scope.cache_key_fingerprint,
                 )?;
+                return Ok(());
             }
-            Self::HyperliquidOutcome {
-                proof_fingerprint, ..
-            } => validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?,
+            Some(ConcreteGroupingProofRef::StructuredOutcome(proof)) => {
+                validate_structured_outcome_sha_fields(proof)?;
+                return Ok(());
+            }
+            None => {}
+        }
+        match self {
             Self::OperatorAttested {
                 attestation_sha256,
                 proof_fingerprint,
@@ -148,18 +166,20 @@ impl GroupingProof {
                 validate_sha256_field("grouping_proof.attestation_sha256", attestation_sha256)?;
                 validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;
             }
+            _ => unreachable!(),
         }
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PolymarketDiscoveryScopeEvidence {
-    pub source_id: String,
-    pub event_slugs: Vec<String>,
-    pub market_slugs: Vec<String>,
-    pub gamma_query_fingerprint: Option<String>,
-    pub cache_key_fingerprint: String,
+fn validate_structured_outcome_sha_fields(
+    proof: &StructuredOutcomeGroupingProof,
+) -> Result<(), OutcomeGroupValidationError> {
+    let StructuredOutcomeGroupingProof {
+        proof_fingerprint, ..
+    } = proof;
+    validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -846,13 +866,14 @@ fn validate_operator_strings(group: &OutcomeGroup) -> Result<(), OutcomeGroupVal
 fn validate_grouping_proof_text(
     grouping_proof: &GroupingProof,
 ) -> Result<(), OutcomeGroupValidationError> {
-    match grouping_proof {
-        GroupingProof::PolymarketNegRisk {
-            neg_risk_market_id,
-            discovery_scope,
-            market_slugs,
-            ..
-        } => {
+    if let Some(payload) = grouping_proof.concrete_payload() {
+        if let ConcreteGroupingProofRef::NegRisk(proof) = payload {
+            let NegRiskGroupingProof {
+                neg_risk_market_id,
+                discovery_scope,
+                market_slugs,
+                ..
+            } = proof;
             validate_operator_text(neg_risk_market_id)?;
             validate_operator_text(&discovery_scope.source_id)?;
             for slug in &discovery_scope.event_slugs {
@@ -865,6 +886,9 @@ fn validate_grouping_proof_text(
                 validate_operator_text(slug)?;
             }
         }
+        return Ok(());
+    }
+    match grouping_proof {
         GroupingProof::OperatorAttested {
             settlement_contract_id,
             attestation_id,
@@ -873,7 +897,7 @@ fn validate_grouping_proof_text(
             validate_operator_text(settlement_contract_id)?;
             validate_operator_text(attestation_id)?;
         }
-        _ => {}
+        _ => unreachable!(),
     }
     Ok(())
 }
@@ -1298,59 +1322,66 @@ fn append_grouping_identity_fields(
     fields: &mut Vec<CanonicalField>,
     grouping_proof: &GroupingProof,
 ) {
-    match grouping_proof {
-        GroupingProof::PolymarketNegRisk {
-            neg_risk_market_id,
-            discovery_scope,
-            market_slugs,
-            ..
-        } => {
-            fields.push(CanonicalField::new(
-                ["grouping", "kind"],
-                "polymarket_neg_risk",
-            ));
-            fields.push(CanonicalField::new(
-                ["grouping", "neg_risk_market_id"],
-                neg_risk_market_id,
-            ));
-            fields.push(CanonicalField::new(
-                ["grouping", "source_id"],
-                &discovery_scope.source_id,
-            ));
-            fields.push(CanonicalField::new(
-                ["grouping", "cache_key_fingerprint"],
-                &discovery_scope.cache_key_fingerprint,
-            ));
-            append_string_list_fields(
-                fields,
-                vec!["grouping".to_string(), "market_slugs".to_string()],
-                market_slugs,
-            );
-        }
-        GroupingProof::HyperliquidOutcome {
-            question,
-            outcome_indices,
-            ..
-        } => {
-            fields.push(CanonicalField::new(
-                ["grouping", "kind"],
-                "hyperliquid_outcome",
-            ));
-            fields.push(CanonicalField::new(
-                ["grouping", "question"],
-                question.to_string(),
-            ));
-            for (index, outcome_index) in outcome_indices.iter().enumerate() {
-                fields.push(CanonicalField::owned(
-                    vec![
-                        "grouping".to_string(),
-                        "outcome_indices".to_string(),
-                        index.to_string(),
-                    ],
-                    outcome_index.to_string(),
+    if let Some(payload) = grouping_proof.concrete_payload() {
+        match payload {
+            ConcreteGroupingProofRef::NegRisk(proof) => {
+                let NegRiskGroupingProof {
+                    neg_risk_market_id,
+                    discovery_scope,
+                    market_slugs,
+                    ..
+                } = proof;
+                fields.push(CanonicalField::new(
+                    ["grouping", "kind"],
+                    "polymarket_neg_risk",
                 ));
+                fields.push(CanonicalField::new(
+                    ["grouping", "neg_risk_market_id"],
+                    neg_risk_market_id,
+                ));
+                fields.push(CanonicalField::new(
+                    ["grouping", "source_id"],
+                    &discovery_scope.source_id,
+                ));
+                fields.push(CanonicalField::new(
+                    ["grouping", "cache_key_fingerprint"],
+                    &discovery_scope.cache_key_fingerprint,
+                ));
+                append_string_list_fields(
+                    fields,
+                    vec!["grouping".to_string(), "market_slugs".to_string()],
+                    market_slugs,
+                );
+            }
+            ConcreteGroupingProofRef::StructuredOutcome(proof) => {
+                let StructuredOutcomeGroupingProof {
+                    question,
+                    outcome_indices,
+                    ..
+                } = proof;
+                fields.push(CanonicalField::new(
+                    ["grouping", "kind"],
+                    "hyperliquid_outcome",
+                ));
+                fields.push(CanonicalField::new(
+                    ["grouping", "question"],
+                    question.to_string(),
+                ));
+                for (index, outcome_index) in outcome_indices.iter().enumerate() {
+                    fields.push(CanonicalField::owned(
+                        vec![
+                            "grouping".to_string(),
+                            "outcome_indices".to_string(),
+                            index.to_string(),
+                        ],
+                        outcome_index.to_string(),
+                    ));
+                }
             }
         }
+        return;
+    }
+    match grouping_proof {
         GroupingProof::OperatorAttested {
             settlement_contract_id,
             attestation_id,
@@ -1369,6 +1400,7 @@ fn append_grouping_identity_fields(
                 attestation_id,
             ));
         }
+        _ => unreachable!(),
     }
 }
 

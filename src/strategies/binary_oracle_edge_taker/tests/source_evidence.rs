@@ -2318,6 +2318,7 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
     strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
     strategy.config.signal_new_risk_available = false;
     strategy.pricing.set_selected_pricing_spot(None);
+    strategy.refresh_realized_volatility_snapshot_at(1_200);
 
     strategy
         .ensure_startup_subscription_derivations()

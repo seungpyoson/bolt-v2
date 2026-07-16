@@ -7858,17 +7858,34 @@ mod tests {
         )
         .expect("expiring guard")
     }
+    #[derive(Debug, Clone)]
+    struct RunSpecFixture {
+        spec: RunSpec,
+        _source_bindings_dir: Arc<tempfile::TempDir>,
+    }
+
+    impl std::ops::Deref for RunSpecFixture {
+        type Target = RunSpec;
+
+        fn deref(&self) -> &Self::Target {
+            &self.spec
+        }
+    }
+
+    impl std::ops::DerefMut for RunSpecFixture {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.spec
+        }
+    }
+
     /// The committed run-spec, with the accepted-object hash rebound to a locally
     /// reproducible synthetic object (the real staged object is not committed).
-    fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
+    fn run_spec_value_for(gz_bytes: &[u8]) -> RunSpec {
         let mut spec: RunSpec =
             toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
         assert!(
             spec.source_proof.is_accepted(),
             "committed run-spec must carry an accepted source proof"
-        );
-        spec.source_bindings_path = PathBuf::from(
-            "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
         );
         let object_hash = sha256_hex(gz_bytes);
         spec.accepted_object.sha256 = object_hash.clone();
@@ -7886,10 +7903,24 @@ mod tests {
         spec
     }
 
+    fn run_spec_for(gz_bytes: &[u8]) -> RunSpecFixture {
+        let source_bindings_dir =
+            Arc::new(tempfile::tempdir().expect("source-bindings fixture dir"));
+        let source_bindings_path = source_bindings_dir.path().join("source-bindings.toml");
+        fs::write(&source_bindings_path, COMMITTED_SOURCE_BINDINGS)
+            .expect("materialize committed source-bindings fixture");
+        let mut spec = run_spec_value_for(gz_bytes);
+        spec.source_bindings_path = source_bindings_path;
+        RunSpecFixture {
+            spec,
+            _source_bindings_dir: source_bindings_dir,
+        }
+    }
+
     fn durable_run_spec_rejected_by_local_entries(gz_bytes: &[u8]) -> RunSpec {
         let durable: RunSpec =
             toml::from_str(COMMITTED_RUN_SPEC).expect("committed durable run-spec parses");
-        let mut spec = run_spec_for(gz_bytes);
+        let mut spec = run_spec_value_for(gz_bytes);
         spec.artifact_store = durable.artifact_store;
         spec.source_bindings_path = PathBuf::from("must-not-read/source-bindings.toml");
         spec
@@ -8126,7 +8157,7 @@ mod tests {
         );
     }
 
-    fn pending_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
+    fn pending_run_spec_for(gz_bytes: &[u8]) -> RunSpecFixture {
         let mut spec = run_spec_for(gz_bytes);
         spec.source_proof.status = crate::source_proof::SourceProofStatus::Pending;
         spec.source_proof.acceptance_mode = None;
@@ -9183,12 +9214,18 @@ mod tests {
 
     #[test]
     fn run_from_run_spec_rejects_tampered_object() {
-        // The committed run-spec pins the real (uncommitted) object hash; feeding
-        // it the synthetic bytes must trip the SHA-256 re-verification.
+        // Keep the archive-hermetic registry fixture but pin a distinct valid
+        // hash so the synthetic bytes must trip SHA-256 re-verification.
         let gz = gzip(SAMPLE_CSV);
-        let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("parse");
-        spec.artifact_store = None;
-        spec.accepted_object.bytes = gz.len() as u64;
+        let mut spec = run_spec_for(&gz);
+        let replacement_nibble = if spec.accepted_object.sha256.starts_with('0') {
+            "1"
+        } else {
+            "0"
+        };
+        spec.accepted_object
+            .sha256
+            .replace_range(..1, replacement_nibble);
         let dir = tempfile::TempDir::new().unwrap();
         let err = run_from_run_spec(&spec, &gz, dir.path())
             .err()

@@ -11,7 +11,7 @@
 //! real staged object is not committed), exactly as the operator unit fixtures
 //! do.
 
-use std::{fs, io::Write, path::PathBuf};
+use std::{fs, io::Write};
 
 use backtesting_vertical_slice::{
     canonical_trades::{RawPayloadConfig, RawPayloadContainer},
@@ -30,6 +30,9 @@ use flate2::{Compression, write::GzEncoder};
 const COMMITTED_RUN_SPEC: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
 );
+const COMMITTED_SOURCE_BINDINGS: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+);
 
 const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
     1,1772323201665,617.2,0.3,buy,0\n\
@@ -44,15 +47,16 @@ fn gzip(text: &str) -> Vec<u8> {
 
 /// The committed run-spec, with the accepted-object hash rebound to a locally
 /// reproducible synthetic object (the real staged object is not committed).
-fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
+fn run_spec_for(gz_bytes: &[u8], fixture_dir: &std::path::Path) -> RunSpec {
     let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
     assert!(
         spec.source_proof.is_accepted(),
         "committed run-spec must carry an accepted source proof"
     );
-    spec.source_bindings_path = PathBuf::from(
-        "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
-    );
+    let source_bindings_path = fixture_dir.join("source-bindings.toml");
+    fs::write(&source_bindings_path, COMMITTED_SOURCE_BINDINGS)
+        .expect("materialize committed source-bindings fixture");
+    spec.source_bindings_path = source_bindings_path;
     let object_hash = sha256_hex(gz_bytes);
     spec.accepted_object.sha256 = object_hash.clone();
     spec.accepted_object.bytes = gz_bytes.len() as u64;
@@ -85,7 +89,8 @@ fn read_artifact_bytes(dir: &std::path::Path, name: &str) -> Vec<u8> {
 #[test]
 fn trade_run_spec_artifacts_are_byte_stable_and_never_write_tables_index() {
     let gz = gzip(SAMPLE_CSV);
-    let spec = run_spec_for(&gz);
+    let source_bindings_dir = tempfile::TempDir::new().expect("source-bindings fixture dir");
+    let spec = run_spec_for(&gz, source_bindings_dir.path());
 
     // Fresh run in directory A.
     let dir_a = tempfile::TempDir::new().expect("temp dir A");

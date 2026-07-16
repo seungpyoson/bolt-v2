@@ -65,6 +65,9 @@ use sha2::{Digest, Sha256};
 const COMMITTED_RUN_SPEC: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
 );
+const COMMITTED_SOURCE_BINDINGS: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+);
 const CAPABILITY_PROOF_SPEC: &str = r#"
 proof_run_id = "synthetic-capability-proof"
 nt_revision = "6e059dcbb59ac1e582132fc431a581936c216c3c"
@@ -231,6 +234,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn assert_error_chain_contains(error: &anyhow::Error, expected: &str) {
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains(expected)),
+        "expected error chain to contain {expected:?}, got {error:#}"
+    );
+}
+
 fn catalog_physical_manifest(entries: &[(&str, &[u8])]) -> CatalogProjectionManifestDocument {
     let mut objects = entries
         .iter()
@@ -247,13 +259,41 @@ fn catalog_physical_manifest(entries: &[(&str, &[u8])]) -> CatalogProjectionMani
     }
 }
 
-fn committed_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
+#[derive(Debug, Clone)]
+struct CommittedRunSpecFixture {
+    spec: RunSpec,
+    _source_bindings_dir: Arc<tempfile::TempDir>,
+}
+
+impl std::ops::Deref for CommittedRunSpecFixture {
+    type Target = RunSpec;
+
+    fn deref(&self) -> &Self::Target {
+        &self.spec
+    }
+}
+
+impl std::ops::DerefMut for CommittedRunSpecFixture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.spec
+    }
+}
+
+fn committed_run_spec_for(gz_bytes: &[u8]) -> CommittedRunSpecFixture {
     let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+    let source_bindings_dir = Arc::new(tempfile::tempdir().expect("source-bindings fixture dir"));
+    let source_bindings_path = source_bindings_dir.path().join("source-bindings.toml");
+    fs::write(&source_bindings_path, COMMITTED_SOURCE_BINDINGS)
+        .expect("materialize committed source-bindings fixture");
+    spec.source_bindings_path = source_bindings_path;
     let object_hash = sha256_hex(gz_bytes);
     spec.accepted_object.sha256 = object_hash.clone();
     spec.accepted_object.bytes = gz_bytes.len() as u64;
     spec.source_proof.raw_sample_hash = object_hash;
-    spec
+    CommittedRunSpecFixture {
+        spec,
+        _source_bindings_dir: source_bindings_dir,
+    }
 }
 
 fn artifact_config() -> ArtifactStoreConfig {
@@ -1588,10 +1628,7 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         )
         .await
         .expect_err("changed proof artifact bytes must be rejected at the same URI");
-    assert!(
-        err.to_string().contains("different payload"),
-        "expected different-payload create-only error, got {err:#}"
-    );
+    assert_error_chain_contains(&err, "different payload");
 
     let root = artifact_config().resolve().expect("valid artifact root");
     let mut proof = synthetic_capability_proof(
@@ -1702,7 +1739,7 @@ async fn capability_proof_serialization_budget_rejects_before_terminal_put() {
         .await
         .expect_err("proof serialization must honor the work-budget cap");
 
-    assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
+    assert_error_chain_contains(&error, "max_decoded_bytes");
     assert!(store.put_attempts().is_empty());
 }
 
@@ -4804,12 +4841,25 @@ async fn artifact_index_commit_appends_audit_epoch() {
     assert_eq!(audit["writer_id"], "backtesting-engine-writer");
 
     let mut conflicting_audit = outcome.audit_epoch.clone();
-    conflicting_audit.writer_id = "different-writer".to_string();
+    conflicting_audit.writer_id.replace_range(..1, "x");
+    let original_audit_bytes =
+        serde_json::to_vec(&outcome.audit_epoch).expect("serialize original audit epoch");
+    let conflicting_audit_bytes =
+        serde_json::to_vec(&conflicting_audit).expect("serialize conflicting audit epoch");
+    assert_eq!(
+        conflicting_audit_bytes.len(),
+        original_audit_bytes.len(),
+        "content-conflict fixture must preserve payload length"
+    );
+    assert_ne!(
+        conflicting_audit_bytes, original_audit_bytes,
+        "content-conflict fixture must change payload bytes"
+    );
     let err = writer
         .append_audit_epoch(&root, &conflicting_audit)
         .await
         .expect_err("audit epoch create-only write rejects different payload");
-    assert!(err.to_string().contains("different payload"), "{err}");
+    assert_error_chain_contains(&err, "different payload");
 }
 
 #[tokio::test]

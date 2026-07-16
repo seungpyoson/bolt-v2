@@ -900,19 +900,25 @@ fn assert_declared_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
 }
 
 fn assert_composed_operator_preflight(spec: &RunSpec, output_dir: &Path) {
+    let mut executable_spec = spec.clone();
+    executable_spec.source_bindings_path = resolve_repo_relative(&spec.source_bindings_path);
+    assert!(
+        executable_spec.source_bindings_path.is_file(),
+        "composed preflight resolves the declared source-binding registry to one regular file"
+    );
     let registry = VerifiedSourceBindingRegistry::from_run_spec_guarded(
-        spec,
+        &executable_spec,
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .expect("active RunSpec resolves its sole source-binding registry");
     validate_run_spec_manifest_for_object_hash_with_verified_registry(
-        spec,
+        &executable_spec,
         output_dir,
-        &spec.accepted_object.sha256,
+        &executable_spec.accepted_object.sha256,
         &registry,
     )
     .expect("active RunSpec passes ordinary manifest/source-binding preflight");
-    validate_durable_run_spec_preflight(spec)
+    validate_durable_run_spec_preflight(&executable_spec)
         .expect("active RunSpec passes durable-only operator preflight");
 }
 

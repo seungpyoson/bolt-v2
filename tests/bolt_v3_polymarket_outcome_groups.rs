@@ -6,6 +6,7 @@ use bolt_v2::{
         PolymarketGammaLegMetadata, PolymarketGammaMarketMetadata, PolymarketOutcomeGroupInput,
         normalize_polymarket_outcome_group,
     },
+    bolt_v3_outcome_group_proofs::NegRiskGroupingProof,
     bolt_v3_outcome_group_sources::{
         GammaQueryBlock, OutcomeGroupNonStandardPayoutLegBlock,
         OutcomeGroupNonStandardTerminalPayoutBlock, OutcomeGroupOrderConstraintsBlock,
@@ -78,12 +79,12 @@ fn polymarket_normalizer_builds_three_way_neg_risk_group_from_attested_roles() {
         6
     );
 
-    let GroupingProof::PolymarketNegRisk {
+    let GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
         neg_risk_market_id,
         discovery_scope,
         market_slugs,
         ..
-    } = group
+    }) = group
         .grouping_proof
         .as_ref()
         .expect("grouping proof should exist")
@@ -129,9 +130,9 @@ fn polymarket_normalizer_allows_market_slug_and_gamma_query_sources_without_even
     for source in [market_slug_source(), gamma_query_source()] {
         let group = normalize_polymarket_outcome_group(valid_input(&source))
             .expect("event membership is not required grouping proof");
-        let GroupingProof::PolymarketNegRisk {
+        let GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
             discovery_scope, ..
-        } = group.grouping_proof.as_ref().expect("grouping proof")
+        }) = group.grouping_proof.as_ref().expect("grouping proof")
         else {
             panic!("expected Polymarket neg-risk grouping proof");
         };

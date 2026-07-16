@@ -90,7 +90,9 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         self.assertIn("chain_id: 137", rendered)
         self.assertIn('wallet_type: "SAFE"', rendered)
         self.assertIn("function_selector: [1, 183, 3, 124]", rendered)
-        self.assertIn("dummy_index_sets: [U256::from_limbs([1, 0, 0, 0]), U256::from_limbs([2, 0, 0, 0])]", rendered)
+        self.assertIn("dummy_index_sets: [", rendered)
+        self.assertIn("U256::from_limbs([1, 0, 0, 0])", rendered)
+        self.assertIn("U256::from_limbs([2, 0, 0, 0])", rendered)
         self.assertNotIn("pub const", rendered)
 
     def test_activation_true_is_rejected(self) -> None:

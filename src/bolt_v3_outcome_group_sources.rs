@@ -9,13 +9,13 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolt_v3_archetypes::complete_set_arbitrage::CompleteSetSubmitMode,
     bolt_v3_basket_store::BASKET_STORE_SCHEMA_VERSION,
+    bolt_v3_complete_set_contract::{
+        COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock, CompleteSetSubmitMode,
+    },
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, GateProviderFreshnessBlock, LoadedStrategy},
     bolt_v3_operator_artifacts::is_lowercase_sha256,
 };
-
-pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -243,25 +243,6 @@ pub fn outcome_group_observation_is_fresh(
     }
 
     now_unix_ms - observed_unix_ms <= max_age_ms
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct CompleteSetArbitrageParametersBlock {
-    pub runtime: CompleteSetArbitrageRuntimeBlock,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct CompleteSetArbitrageRuntimeBlock {
-    pub min_edge_bps: i64,
-    pub max_basket_notional: String,
-    pub max_open_baskets: u32,
-    pub submit_mode: String,
-    pub vwap_depth_limit_bps: u64,
-    pub slippage_buffer_bps: u64,
-    pub max_repair_attempts: u32,
-    pub max_unwind_attempts: u32,
 }
 
 pub fn validate_root_sources(root: &BoltV3RootConfig) -> Vec<String> {

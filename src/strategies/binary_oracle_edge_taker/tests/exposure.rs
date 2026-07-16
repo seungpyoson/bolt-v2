@@ -1246,7 +1246,7 @@ fn runtime_reconcile_queries_pending_entry_order_from_nt_cache() {
         .expect("test cache should accept open entry order");
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms);
 
     assert!(
         strategy.runtime_reconcile_query_events.iter().any(|event| {
@@ -1279,7 +1279,7 @@ fn runtime_reconcile_waits_until_pending_entry_order_is_stale() {
         .expect("test cache should accept open entry order");
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms.saturating_sub(1));
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms.saturating_sub(1));
 
     assert!(
         strategy.runtime_reconcile_query_events.is_empty(),
@@ -1317,7 +1317,7 @@ fn runtime_reconcile_canceled_pending_entry_flattens_with_reconcile_source() {
         .expect("test cache should accept closed entry order");
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms);
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(
@@ -1368,7 +1368,7 @@ fn runtime_reconcile_cached_position_materializes_managed_with_reconcile_source(
         .expect("test cache should accept filled position");
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms);
 
     assert!(matches!(
         strategy.exposure,
@@ -1479,7 +1479,7 @@ fn runtime_reconcile_filled_exit_terminal_frees_slot_with_reconcile_source() {
         .expect("test cache should index closed reconcile position");
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms);
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(
@@ -1554,7 +1554,7 @@ fn runtime_reconcile_filled_exit_terminal_waits_without_closed_position_cache() 
         .expect("test cache should accept filled exit order");
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms);
 
     assert!(matches!(
         strategy.exposure,
@@ -1584,8 +1584,8 @@ fn runtime_reconcile_query_failure_writes_evidence_and_retries_without_state_cha
     set_pending_entry(&mut strategy, pending);
 
     let reconcile_due_time_ms = reconcile_due_time_ms(&strategy, 1_000);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms);
-    strategy.reconcile_runtime_venue_state(reconcile_due_time_ms.saturating_add(1));
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms);
+    strategy.apply_runtime_venue_reconcile(reconcile_due_time_ms.saturating_add(1));
 
     assert!(matches!(
         strategy.exposure,

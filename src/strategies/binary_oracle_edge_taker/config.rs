@@ -14,11 +14,13 @@ use nautilus_model::{
 use serde::Deserialize;
 use toml::Value;
 
+use crate::bolt_v3_strategy_context::StrategyBuildContext;
+
 use crate::{
     bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
     bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
-    strategies::registry::{StrategyBuildContext, ValidationError},
+    strategies::registry::ValidationError,
 };
 
 use super::BinaryOracleEdgeTaker;

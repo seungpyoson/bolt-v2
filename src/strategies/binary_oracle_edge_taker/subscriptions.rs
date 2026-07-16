@@ -89,7 +89,7 @@ impl BinaryOracleEdgeTaker {
         else {
             return false;
         };
-        self.ensure_reference_price_runtime_state();
+        self.initialize_reference_price_runtime_state();
         let Some(reference_price_selector) = self.reference_price_selector.as_ref() else {
             return false;
         };

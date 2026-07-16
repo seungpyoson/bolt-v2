@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_capital_admission::ProductAdmissionSnapshot,
-    bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+    bolt_v3_capital_admission_state::capital_admission_source_is_accepted_venue_truth,
     bolt_v3_decision_evidence::{
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentClampNotEvaluatedReason,
         BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
@@ -471,7 +471,7 @@ fn venue_truth_exit_position(
         return VenueTruthExitPosition::NoVenueTruth;
     };
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    if product.source != POLYMARKET_VENUE_TRUTH_REST_SOURCE {
+    if !capital_admission_source_is_accepted_venue_truth(&product.source) {
         return VenueTruthExitPosition::NoVenueTruth;
     }
     if request.instrument_id == product.yes_instrument_id {
@@ -616,9 +616,10 @@ where
             execution_client_id: context.execution_client_id,
             intent: &intent,
             order: &order,
-            instrument: context.instrument,
-            quote_quantity_last_price: None,
-            quote_quantity_reference_price: None,
+            valuation: crate::bolt_v3_submit_admission::OrderValuationContext {
+                instrument: context.instrument,
+                ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
+            },
             lifecycle_policy: context.submit_lifecycle_policy,
             risk_reducing_exit_position: None,
         },
@@ -967,9 +968,7 @@ where
                 execution_client_id: self.context.execution_client_id,
                 intent: &intent,
                 order: &order,
-                instrument: None,
-                quote_quantity_last_price: None,
-                quote_quantity_reference_price: None,
+                valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
                 lifecycle_policy: self.context.submit_lifecycle_policy,
                 risk_reducing_exit_position: None,
             },

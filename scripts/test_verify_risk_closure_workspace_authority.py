@@ -28,7 +28,8 @@ slot_bytes = 16777216
 """,
             encoding="utf-8",
         )
-        (self.root / "src" / "bolt_v3_risk_closure_workspace_generated.rs").write_text(
+        (self.root / "src" / "bolt_v3_risk_closure_workspace").mkdir()
+        (self.root / "src" / "bolt_v3_risk_closure_workspace" / "generated.rs").write_text(
             "const RISK_CLOSURE_WORKSPACE_CONFIG: RiskClosureWorkspaceConfig = fixture();\n",
             encoding="utf-8",
         )
@@ -51,7 +52,7 @@ slot_bytes = 16777216
         self.assertTrue(any("configuration type must remain private" in error for error in errors))
 
     def test_rejects_public_generated_workspace_configuration(self) -> None:
-        (self.root / "src" / "bolt_v3_risk_closure_workspace_generated.rs").write_text(
+        (self.root / "src" / "bolt_v3_risk_closure_workspace" / "generated.rs").write_text(
             "pub const RISK_CLOSURE_WORKSPACE_CONFIG: RiskClosureWorkspaceConfig = fixture();\n",
             encoding="utf-8",
         )

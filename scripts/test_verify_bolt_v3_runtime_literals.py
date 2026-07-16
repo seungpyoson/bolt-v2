@@ -74,7 +74,7 @@ def test_scan_universe() -> None:
         "src/main.rs",
         "src/bin/stream_to_lake.rs",
         "src/bolt_v3_adapters.rs",
-        "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+        "src/strategies/binary_oracle_edge_taker/archetype.rs",
         "src/bolt_v3_archetypes/mod.rs",
         "src/bolt_v3_client_registration.rs",
         "src/bolt_v3_config.rs",

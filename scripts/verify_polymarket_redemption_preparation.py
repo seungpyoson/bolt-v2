@@ -11,7 +11,7 @@ import tomllib
 
 
 OWNER = pathlib.Path("src/bolt_v3_polymarket_redemption.rs")
-GENERATED = pathlib.Path("src/bolt_v3_polymarket_redemption_generated.rs")
+GENERATED = pathlib.Path("src/bolt_v3_polymarket_redemption/generated.rs")
 RUNTIME = pathlib.Path("config/polymarket-redemption.toml")
 EVIDENCE = pathlib.Path("config/polymarket-redemption-source-evidence.toml")
 COMPILE_FAIL = pathlib.Path("tests/polymarket_redemption_preparation_compile_fail.rs")
@@ -223,6 +223,8 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
     if re.search(r"derive\([^)]*Serialize", production):
         errors.append("prepared requests and resolved credentials must not derive serialization")
 
+    if re.search(r"pub\(super\)\s+const\s+POLYMARKET_REDEMPTION", generated_text) is None:
+        errors.append("generated runtime and protocol projections must use module-private visibility")
     if "pub const POLYMARKET_REDEMPTION" in generated_text:
         errors.append("generated runtime and protocol projections must remain private")
     if "POLYMARKET_REDEMPTION_PREPARATION_CONFIG" not in generated_text:

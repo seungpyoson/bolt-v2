@@ -17,7 +17,7 @@ struct RiskClosureWorkspaceConfig {
 }
 
 #[cfg(test)]
-include!("bolt_v3_risk_closure_workspace_generated.rs");
+mod generated;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ClosureIdentity(String);
@@ -710,21 +710,18 @@ mod tests {
 
     #[test]
     fn generated_configuration_allocates_and_touches_exact_capacity() {
-        let authority =
-            RiskClosureWorkspaceAuthority::with_config(RISK_CLOSURE_WORKSPACE_CONFIG).unwrap();
-        assert_eq!(
-            authority.reserved_bytes().unwrap(),
-            RISK_CLOSURE_WORKSPACE_CONFIG.arena_bytes
-        );
-        let mut reservations = (usize::default()..RISK_CLOSURE_WORKSPACE_CONFIG.capacity)
+        let config = generated::config();
+        let authority = RiskClosureWorkspaceAuthority::with_config(config).unwrap();
+        assert_eq!(authority.reserved_bytes().unwrap(), config.arena_bytes);
+        let mut reservations = (usize::default()..config.capacity)
             .map(|_| authority.checkout_new_risk().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(reservations.len(), RISK_CLOSURE_WORKSPACE_CONFIG.capacity);
+        assert_eq!(reservations.len(), config.capacity);
         let mut observed_arena_bytes = usize::default();
         for reservation in &mut reservations {
             let observed_slot_bytes = reservation
                 .with_workspace_mut(|workspace| {
-                    assert_eq!(workspace.len(), RISK_CLOSURE_WORKSPACE_CONFIG.slot_bytes);
+                    assert_eq!(workspace.len(), config.slot_bytes);
                     workspace.fill(u8::MAX);
                     workspace.len()
                 })
@@ -733,10 +730,7 @@ mod tests {
                 .checked_add(observed_slot_bytes)
                 .unwrap();
         }
-        assert_eq!(
-            observed_arena_bytes,
-            RISK_CLOSURE_WORKSPACE_CONFIG.arena_bytes
-        );
+        assert_eq!(observed_arena_bytes, config.arena_bytes);
         assert_eq!(
             authority.checkout_new_risk().err(),
             Some(RiskClosureWorkspaceError::CapacityExhausted)

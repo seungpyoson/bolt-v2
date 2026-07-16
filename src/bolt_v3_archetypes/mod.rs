@@ -27,9 +27,6 @@
 //! own per-archetype binding module and one entry in those lists; this
 //! dispatch fn does not change.
 
-pub mod binary_oracle_edge_taker;
-pub mod complete_set_arbitrage;
-
 use std::collections::BTreeSet;
 
 use rust_decimal::Decimal;

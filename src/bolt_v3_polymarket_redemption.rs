@@ -43,7 +43,8 @@ struct RedemptionProtocolFacts {
     metadata: &'static str,
 }
 
-include!("bolt_v3_polymarket_redemption_generated.rs");
+mod generated;
+use generated::{POLYMARKET_REDEMPTION_PREPARATION_CONFIG, POLYMARKET_REDEMPTION_PROTOCOL};
 
 pub fn polymarket_redemption_preparation_config() -> &'static RedemptionPreparationConfig {
     &POLYMARKET_REDEMPTION_PREPARATION_CONFIG

@@ -1,19 +1,19 @@
-//! Runtime bridge from maker resolution evidence to shared settlement accounting.
+//! Runtime bridge from binary resolution evidence to shared settlement accounting.
 //!
 //! Callers supply the already-resolved market-family key, the reference close,
-//! the strike, and the maker inventory lots. This module derives the terminal
+//! the strike, and the binary inventory lots. This module derives the terminal
 //! payout through the market-family binding, then settles through the shared
 //! binary settlement primitive used by live and backtest callers.
 
 use crate::{
-    bolt_v3_maker_settlement::{
+    bolt_v3_binary_settlement::{
         BinarySettlementLot, BinarySettlementPayout, BinarySettlementResult, settle_binary_lots,
     },
-    bolt_v3_market_families::maker_settlement_payout_from_reference_prices_for_family,
+    bolt_v3_market_families::settlement_payout_from_reference_prices_for_family,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MakerRuntimeSettlementInput<'a> {
+pub struct BinaryRuntimeSettlementInput<'a> {
     pub family_key: &'a str,
     pub reference_close_price: f64,
     pub strike_price: f64,
@@ -21,47 +21,47 @@ pub struct MakerRuntimeSettlementInput<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MakerRuntimeSettlementBlockReason {
+pub enum BinaryRuntimeSettlementBlockReason {
     ReferencePayoutUnavailable,
     LotSettlementFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MakerRuntimeSettlementDecision {
+pub struct BinaryRuntimeSettlementDecision {
     pub payout: Option<BinarySettlementPayout>,
     pub result: Option<BinarySettlementResult>,
-    pub blocked_by: Option<MakerRuntimeSettlementBlockReason>,
+    pub blocked_by: Option<BinaryRuntimeSettlementBlockReason>,
 }
 
 #[must_use]
-pub fn settle_maker_runtime_reference_prices(
-    input: MakerRuntimeSettlementInput<'_>,
-) -> MakerRuntimeSettlementDecision {
-    let Some(payout) = maker_settlement_payout_from_reference_prices_for_family(
+pub fn settle_binary_runtime_reference_prices(
+    input: BinaryRuntimeSettlementInput<'_>,
+) -> BinaryRuntimeSettlementDecision {
+    let Some(payout) = settlement_payout_from_reference_prices_for_family(
         input.family_key,
         input.reference_close_price,
         input.strike_price,
     ) else {
-        return blocked(MakerRuntimeSettlementBlockReason::ReferencePayoutUnavailable);
+        return blocked(BinaryRuntimeSettlementBlockReason::ReferencePayoutUnavailable);
     };
 
     let Some(result) = settle_binary_lots(payout, input.lots) else {
-        return MakerRuntimeSettlementDecision {
+        return BinaryRuntimeSettlementDecision {
             payout: Some(payout),
             result: None,
-            blocked_by: Some(MakerRuntimeSettlementBlockReason::LotSettlementFailed),
+            blocked_by: Some(BinaryRuntimeSettlementBlockReason::LotSettlementFailed),
         };
     };
 
-    MakerRuntimeSettlementDecision {
+    BinaryRuntimeSettlementDecision {
         payout: Some(payout),
         result: Some(result),
         blocked_by: None,
     }
 }
 
-fn blocked(reason: MakerRuntimeSettlementBlockReason) -> MakerRuntimeSettlementDecision {
-    MakerRuntimeSettlementDecision {
+fn blocked(reason: BinaryRuntimeSettlementBlockReason) -> BinaryRuntimeSettlementDecision {
+    BinaryRuntimeSettlementDecision {
         payout: None,
         result: None,
         blocked_by: Some(reason),
@@ -96,7 +96,7 @@ mod tests {
             },
         ];
 
-        let decision = settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
+        let decision = settle_binary_runtime_reference_prices(BinaryRuntimeSettlementInput {
             family_key: updown::KEY,
             reference_close_price: 101.0,
             strike_price: 100.0,
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn tie_at_strike_resolves_to_yes_payout() {
-        let decision = settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
+        let decision = settle_binary_runtime_reference_prices(BinaryRuntimeSettlementInput {
             family_key: updown::KEY,
             reference_close_price: 100.0,
             strike_price: 100.0,
@@ -131,26 +131,26 @@ mod tests {
     #[test]
     fn unsupported_family_or_invalid_reference_prices_fail_closed_before_settlement() {
         for input in [
-            MakerRuntimeSettlementInput {
+            BinaryRuntimeSettlementInput {
                 family_key: static_binary_event::KEY,
                 reference_close_price: 101.0,
                 strike_price: 100.0,
                 lots: &[],
             },
-            MakerRuntimeSettlementInput {
+            BinaryRuntimeSettlementInput {
                 family_key: updown::KEY,
                 reference_close_price: f64::NAN,
                 strike_price: 100.0,
                 lots: &[],
             },
         ] {
-            let decision = settle_maker_runtime_reference_prices(input);
+            let decision = settle_binary_runtime_reference_prices(input);
 
             assert_eq!(decision.payout, None);
             assert_eq!(decision.result, None);
             assert_eq!(
                 decision.blocked_by,
-                Some(MakerRuntimeSettlementBlockReason::ReferencePayoutUnavailable)
+                Some(BinaryRuntimeSettlementBlockReason::ReferencePayoutUnavailable)
             );
         }
     }
@@ -164,7 +164,7 @@ mod tests {
             entry_price: 0.42,
         }];
 
-        let decision = settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
+        let decision = settle_binary_runtime_reference_prices(BinaryRuntimeSettlementInput {
             family_key: updown::KEY,
             reference_close_price: 101.0,
             strike_price: 100.0,
@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(decision.result, None);
         assert_eq!(
             decision.blocked_by,
-            Some(MakerRuntimeSettlementBlockReason::LotSettlementFailed)
+            Some(BinaryRuntimeSettlementBlockReason::LotSettlementFailed)
         );
     }
 }

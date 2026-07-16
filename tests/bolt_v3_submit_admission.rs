@@ -18,6 +18,8 @@ use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
 };
+use bolt_v2::bolt_v3_providers::FeeProvider;
+use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3KillSwitchForcedReductionClaim,
     BoltV3KillSwitchForcedReductionPolicy, BoltV3LiveSubmitApprovalLimits,
@@ -25,17 +27,17 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
     BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
     BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    build_submit_admission_request_from_order, conservative_quote_quantity_admission_notional,
-    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
-    rounded_order_admission_notional,
+    OrderValuationContext, build_submit_admission_request_from_order,
+    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
+    market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
-use bolt_v2::strategies::registry::FeeProvider;
-use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::enums::{OrderSide, PositionSide, TimeInForce};
-use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId};
+use nautilus_model::data::QuoteTick;
+use nautilus_model::enums::{AssetClass, OrderSide, PositionSide, TimeInForce};
+use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId};
+use nautilus_model::instruments::{BinaryOption, InstrumentAny};
 use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
-use nautilus_model::types::{Price, Quantity};
+use nautilus_model::types::{Currency, Price, Quantity};
 use rust_decimal::Decimal;
 use std::{
     collections::BTreeMap,
@@ -43,6 +45,38 @@ use std::{
     thread,
     time::Duration,
 };
+use ustr::Ustr;
+
+fn binary_option_with_max_price(instrument_id: InstrumentId) -> InstrumentAny {
+    InstrumentAny::BinaryOption(BinaryOption::new(
+        instrument_id,
+        Symbol::from("instrument-yes"),
+        AssetClass::Alternative,
+        Currency::USD(),
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(2_u64),
+        2,
+        2,
+        Price::from("0.01"),
+        Quantity::from("0.01"),
+        Some(Ustr::from("YES")),
+        None,
+        None,
+        Some(Quantity::from("0.01")),
+        None,
+        None,
+        Some(Price::from("1.00")),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(1_u64),
+    ))
+}
 
 #[test]
 fn market_style_admission_ceiling_notional_values_at_instrument_price_ceiling() {
@@ -122,9 +156,7 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
             execution_client_id: "hyperliquid_perps",
             intent: &intent,
             order: &order,
-            instrument: None,
-            quote_quantity_last_price: None,
-            quote_quantity_reference_price: None,
+            valuation: OrderValuationContext::empty(),
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
@@ -188,9 +220,7 @@ fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() 
             execution_client_id: "hyperliquid_perps",
             intent: &intent,
             order: &order,
-            instrument: None,
-            quote_quantity_last_price: None,
-            quote_quantity_reference_price: None,
+            valuation: OrderValuationContext::empty(),
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
@@ -206,6 +236,146 @@ fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() 
     assert!(
         !message.contains("structural price ceiling"),
         "market ceiling validation must not run before fee lookup: {message}"
+    );
+}
+
+#[test]
+fn order_valuation_context_selects_quote_quantity_prices_by_order_shape() {
+    let instrument_id = InstrumentId::from("INSTRUMENT.SOURCE");
+    let quantity = Quantity::new(2.0, 2);
+    let quote = QuoteTick::new_checked(
+        instrument_id,
+        Price::new(0.39, 2),
+        Price::new(0.41, 2),
+        Quantity::new(10.0, 2),
+        Quantity::new(10.0, 2),
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(1_u64),
+    )
+    .expect("quote should be valid");
+    let market = OrderAny::Market(
+        MarketOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-3"),
+            OrderSide::Buy,
+            quantity,
+            TimeInForce::Gtc,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("quote-quantity market order should be valid"),
+    );
+    let limit_price = Price::new(0.50, 2);
+    let limit = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-4"),
+            OrderSide::Buy,
+            quantity,
+            limit_price,
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("quote-quantity limit order should be valid"),
+    );
+    let context = OrderValuationContext {
+        last_quote: Some(quote),
+        last_trade: None,
+        instrument: None,
+    };
+
+    assert_eq!(context.prices_for_order(&market), (None, None));
+    assert_eq!(
+        context.prices_for_order(&limit),
+        (Some(limit_price), Some(Price::new(0.41, 2)))
+    );
+}
+
+#[test]
+fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
+    let instrument_id = InstrumentId::from("INSTRUMENT.HYPERLIQUID");
+    let instrument = binary_option_with_max_price(instrument_id);
+    let order = OrderAny::Market(
+        MarketOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-5"),
+            OrderSide::Buy,
+            Quantity::new(2.0, 2),
+            TimeInForce::Gtc,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("market order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        "0.50".to_string(),
+        &order,
+    );
+
+    let request = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "hyperliquid_perps",
+            intent: &intent,
+            order: &order,
+            valuation: OrderValuationContext {
+                instrument: Some(&instrument),
+                ..OrderValuationContext::empty()
+            },
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(Decimal::ZERO),
+    )
+    .expect("non-Polymarket market order should use the shared ceiling valuation");
+
+    assert_eq!(request.execution_client_id, "hyperliquid_perps");
+    assert_eq!(
+        request.notional,
+        Decimal::from_str_exact("2.0000").expect("expected decimal should parse")
     );
 }
 

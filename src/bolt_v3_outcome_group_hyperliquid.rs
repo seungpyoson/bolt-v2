@@ -11,6 +11,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::{
+    bolt_v3_outcome_group_proofs::StructuredOutcomeGroupingProof,
     bolt_v3_outcome_group_sources::{
         OutcomeGroupNonStandardTerminalPayoutBlock, OutcomeGroupRefundConvention,
         OutcomeGroupSettlementSourceKind, OutcomeGroupSourceConfig,
@@ -141,11 +142,11 @@ pub fn normalize_hyperliquid_hip4_outcome_group(
         outcome_indices: outcome_indices.clone(),
         proof_fingerprint: role_binding_proof_fingerprint(input.source, question, &outcome_indices),
     };
-    let grouping_proof = GroupingProof::HyperliquidOutcome {
+    let grouping_proof = GroupingProof::HyperliquidOutcome(StructuredOutcomeGroupingProof {
         question,
         outcome_indices,
         proof_fingerprint: grouping_proof_fingerprint(input.source, question, &legs),
-    };
+    });
 
     let mut group = OutcomeGroup {
         group_id: format!("hyperliquid:{question}"),

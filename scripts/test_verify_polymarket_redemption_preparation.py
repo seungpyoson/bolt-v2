@@ -48,8 +48,8 @@ mod tests {
 """
 
 GENERATED = """\
-const POLYMARKET_REDEMPTION_PREPARATION_CONFIG: RedemptionPreparationConfig = RedemptionPreparationConfig;
-const POLYMARKET_REDEMPTION_PROTOCOL: RedemptionProtocolFacts = RedemptionProtocolFacts;
+pub(super) const POLYMARKET_REDEMPTION_PREPARATION_CONFIG: RedemptionPreparationConfig = RedemptionPreparationConfig;
+pub(super) const POLYMARKET_REDEMPTION_PROTOCOL: RedemptionProtocolFacts = RedemptionProtocolFacts;
 """
 
 RUNTIME = """\
@@ -112,10 +112,10 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
     def fixture(self) -> tuple[tempfile.TemporaryDirectory[str], pathlib.Path]:
         temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(temporary.name)
-        for directory in ("src", "config", "tests"):
+        for directory in ("src", "src/bolt_v3_polymarket_redemption", "config", "tests"):
             (root / directory).mkdir()
         (root / "src/bolt_v3_polymarket_redemption.rs").write_text(OWNER, encoding="utf-8")
-        (root / "src/bolt_v3_polymarket_redemption_generated.rs").write_text(
+        (root / "src/bolt_v3_polymarket_redemption/generated.rs").write_text(
             GENERATED, encoding="utf-8"
         )
         (root / "src/lib.rs").write_text(

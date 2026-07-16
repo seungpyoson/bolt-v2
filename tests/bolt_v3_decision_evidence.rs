@@ -6,6 +6,8 @@ use std::{
 };
 
 use anyhow::Result;
+use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
+
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
@@ -43,14 +45,13 @@ use bolt_v2::{
         read_submit_reservation_recovery_evidence, read_terminal_settlement_evidence,
     },
     bolt_v3_fair_value_pricing::classify_rv_gate,
+    bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
         RealizedVolSampleKind, RealizedVolSnapshot, RealizedVolSourceClass,
         RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
     },
     bolt_v3_timestamp_domain::LocalReceiveMs,
-    strategies::registry::FeeProvider,
-    strategies::registry::StrategyBuildContext,
 };
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::enums::{OrderSide, OrderType, TimeInForce};

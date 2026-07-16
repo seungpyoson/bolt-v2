@@ -16,7 +16,7 @@ kind = "staged_s3"
 [execution_pack]
 path = "execution-pack/source-universe-execution-pack.json"
 bytes = 6284
-sha256 = "edbe41648fb702ef5b9bdf443044b780f9f42537ac82877aa85d2460ed59bc05"
+sha256 = "96a82a6f5e36d8e9fff4ca86af10da45a0e5e5dcc875ed372b9ccf1edbfaa9fe"
 
 [bootstrap_limits]
 max_launch_artifact_bytes = 65536

@@ -358,7 +358,7 @@ pub fn write_source_universe_execution_pack(
         &verified_registry,
     )
     .context("source-universe execution-pack profile fails ordinary operator preflight")?;
-    validate_durable_run_spec_preflight(&template_run_spec)
+    validate_durable_run_spec_preflight(&template_run_spec, &verified_registry)
         .context("source-universe execution-pack profile fails durable operator preflight")?;
 
     let proofs = source_proofs_by_id(base_dir, &object_gates)?;
@@ -438,7 +438,7 @@ pub fn write_source_universe_execution_pack(
                 record.work_item_id
             )
         })?;
-        validate_durable_run_spec_preflight(&run_spec).with_context(|| {
+        validate_durable_run_spec_preflight(&run_spec, &verified_registry).with_context(|| {
             format!(
                 "materialized source-universe run spec fails durable operator preflight for {}",
                 record.work_item_id

@@ -3188,7 +3188,7 @@ fn execute_source_universe_operator_worker_from_archive(
         &manifest.record.selected_object_sha256,
         &registry,
     )?;
-    validate_durable_run_spec_preflight(&validated.run_spec)
+    validate_durable_run_spec_preflight(&validated.run_spec, &registry)
         .context("validate durable source-universe worker RunSpec before source bytes")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3196,6 +3196,7 @@ fn execute_source_universe_operator_worker_from_archive(
         .context("build source-universe durable worker runtime")?;
     let dispatcher = runtime.block_on(DurableRunDispatcher::prepare_guarded(
         &validated.run_spec,
+        &registry,
         &work_budget,
     ))?;
     output_lease.revalidate()?;
@@ -4399,7 +4400,11 @@ fn prepare_batch(
         })();
         match preflight {
             Ok(verified) => {
-                validate_durable_run_spec_preflight(&verified.run_spec).with_context(|| {
+                validate_durable_run_spec_preflight(
+                    &verified.run_spec,
+                    &verified.source_bindings,
+                )
+                .with_context(|| {
                     format!(
                         "durable preflight for selected pack record {} ({})",
                         record.sequence, record.operator_run_id
@@ -4415,7 +4420,7 @@ fn prepare_batch(
     }
 
     // No selected source-universe record can create output until every
-    // selected RunSpec has proved the sole durable store/SSM/dispatch/family
+    // selected RunSpec has proved the sole durable store/SSM/dispatch/capability
     // contract. Ordinary per-record control failures may still be represented
     // in a report when continue_on_error is configured.
     fs::create_dir_all(output_dir)
@@ -4789,7 +4794,7 @@ fn verify_pack_control_artifacts(
             record.operator_run_id
         )
     })?;
-    validate_durable_run_spec_preflight(&validated.run_spec).with_context(|| {
+    validate_durable_run_spec_preflight(&validated.run_spec, &verified_registry).with_context(|| {
         format!(
             "validate deterministic durable operator config for pack record {} ({}) before source fetch",
             record.sequence, record.operator_run_id

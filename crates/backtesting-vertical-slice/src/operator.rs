@@ -3631,6 +3631,33 @@ impl VerifiedSourceBindingRegistry {
     pub(crate) fn sha256(&self) -> &str {
         &self.sha256
     }
+
+    /// Require one and only one config-owned durable execution capability for
+    /// the registered adapter tuple. The capability is intentionally
+    /// venue-free: source-binding identity and venue remain source-proof
+    /// concerns and cannot widen or narrow executable support.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless exactly one configured capability matches all
+    /// three tuple fields.
+    pub fn require_durable_operator_capability(
+        &self,
+        identity: &str,
+        version: &str,
+        table_family: &str,
+    ) -> Result<()> {
+        let match_count = self.registry.durable_operator_capability_match_count(
+            identity,
+            version,
+            table_family,
+        );
+        ensure!(
+            match_count == 1,
+            "durable operator capability requires exactly one configured tuple for adapter {identity:?} version {version:?} table_family {table_family:?}; found {match_count}"
+        );
+        Ok(())
+    }
 }
 
 fn accepted_dataset_for_run_spec_hash_with_registry(
@@ -4733,7 +4760,11 @@ struct DurableRunSpecPreflight {
     credential_region: String,
 }
 
-fn durable_run_spec_preflight(spec: &RunSpec) -> Result<DurableRunSpecPreflight> {
+fn durable_run_spec_preflight(
+    spec: &RunSpec,
+    registry: &VerifiedSourceBindingRegistry,
+) -> Result<DurableRunSpecPreflight> {
+    registry.reassert_for(spec)?;
     let resolved_nt_version =
         crate::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
             .context("resolve the workspace NautilusTrader revision for durable publication")?;
@@ -4743,18 +4774,12 @@ fn durable_run_spec_preflight(spec: &RunSpec) -> Result<DurableRunSpecPreflight>
         spec.manifest.resolved_nt_version,
         resolved_nt_version
     );
-    ensure!(
-        spec.source_proof.table_family == TRADE_TABLE_FAMILY,
-        "durable operator currently supports only the proven {TRADE_TABLE_FAMILY:?} table family; got {:?}",
-        spec.source_proof.table_family
-    );
-    let adapter =
-        require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
-    ensure!(
-        adapter.kind == SourceAdapterKind::CsvNativeTrades,
-        "durable operator currently supports only the proven CSV-native trade adapter; got {:?}",
-        adapter.kind
-    );
+    validate_converter_table_family(&spec.converter, &spec.source_proof.table_family)?;
+    registry.require_durable_operator_capability(
+        &spec.converter.identity,
+        &spec.converter.version,
+        &spec.source_proof.table_family,
+    )?;
     let artifact_store = spec.required_artifact_store()?;
     spec.validate_artifact_store_publish_config(artifact_store)?;
     let artifact_root = artifact_store.resolve()?;
@@ -4793,9 +4818,13 @@ fn durable_run_spec_preflight(spec: &RunSpec) -> Result<DurableRunSpecPreflight>
 /// Callers must run the ordinary manifest/source-binding preflight first; that
 /// consume boundary validates the configured SSM parameter-path syntax. This
 /// durable boundary then validates store agreement, dispatch identity, region,
-/// required SSM ownership, and the currently proven operator family.
-pub fn validate_durable_run_spec_preflight(spec: &RunSpec) -> Result<()> {
-    durable_run_spec_preflight(spec).map(|_| ())
+/// required SSM ownership, registered adapter/table-family agreement, and the
+/// exact config-owned durable capability.
+pub fn validate_durable_run_spec_preflight(
+    spec: &RunSpec,
+    registry: &VerifiedSourceBindingRegistry,
+) -> Result<()> {
+    durable_run_spec_preflight(spec, registry).map(|_| ())
 }
 
 fn durable_run_validation_context<'a>(
@@ -4835,12 +4864,13 @@ impl DurableRunDispatcher {
     /// bucket-versioning capability after deterministic RunSpec preflight.
     pub(crate) async fn prepare_guarded(
         spec: &RunSpec,
+        registry: &VerifiedSourceBindingRegistry,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<Self> {
         let preflight = guarded_operation_outcome(
             work_budget,
             OperatorWorkBudgetStage::ObjectVerification,
-            || durable_run_spec_preflight(spec),
+            || durable_run_spec_preflight(spec, registry),
         )??;
         let resolver = guarded_async_operation_outcome(
             work_budget,
@@ -8054,6 +8084,163 @@ mod tests {
             !output.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
             "registry identity rejection must precede artifact writes"
         );
+    }
+
+    fn verified_capability_registry_from_toml(
+        spec: &mut RunSpec,
+        registry_toml: &str,
+    ) -> Result<VerifiedSourceBindingRegistry> {
+        let resolved_path = PathBuf::from("source-bindings-capability-test.toml");
+        spec.source_bindings_path = resolved_path.clone();
+        VerifiedSourceBindingRegistry::from_exact_bytes(
+            spec,
+            resolved_path,
+            Arc::from(registry_toml.as_bytes()),
+        )
+    }
+
+    #[test]
+    fn one_durable_capability_admits_two_distinct_venue_bindings() {
+        let bybit: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("Bybit committed run-spec parses");
+        let binance: RunSpec =
+            toml::from_str(COMMITTED_BINANCE_RUN_SPEC).expect("Binance committed run-spec parses");
+        assert_ne!(
+            bybit.source_proof.source_binding,
+            binance.source_proof.source_binding
+        );
+        assert_ne!(bybit.source_proof.venue, binance.source_proof.venue);
+        assert_eq!(bybit.converter.identity, binance.converter.identity);
+        assert_eq!(bybit.converter.version, binance.converter.version);
+        assert_eq!(
+            bybit.source_proof.table_family,
+            binance.source_proof.table_family
+        );
+
+        let registry = VerifiedSourceBindingRegistry::from_run_spec(&bybit)
+            .expect("freeze the shared committed source-binding registry");
+        for spec in [&bybit, &binance] {
+            assert!(
+                registry
+                    .registry()
+                    .source_binding_metadata(
+                        &spec.source_proof.source_binding,
+                        &spec.source_proof.venue,
+                    )
+                    .is_some(),
+                "shared registry must contain source binding {:?} at venue {:?}",
+                spec.source_proof.source_binding,
+                spec.source_proof.venue
+            );
+            validate_durable_run_spec_preflight(spec, &registry).unwrap_or_else(|error| {
+                panic!(
+                    "venue-free capability must admit source binding {:?} at venue {:?}: {error:#}",
+                    spec.source_proof.source_binding, spec.source_proof.venue
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn durable_capability_rejects_absent_tuple() {
+        let mut spec: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+        let registry = verified_capability_registry_from_toml(&mut spec, "")
+            .expect("empty source-binding registry parses");
+
+        let error = registry
+            .require_durable_operator_capability(
+                &spec.converter.identity,
+                &spec.converter.version,
+                &spec.source_proof.table_family,
+            )
+            .expect_err("an absent durable capability must reject");
+
+        assert!(error.to_string().contains("found 0"), "{error:#}");
+    }
+
+    #[test]
+    fn durable_capability_rejects_mismatched_tuple() {
+        let mut spec: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+        let registry = verified_capability_registry_from_toml(
+            &mut spec,
+            r#"
+[durable_operator]
+
+[[durable_operator.capability]]
+identity = "csv-native-trades-to-canonical-trades.v1"
+version = "mismatched-version"
+table_family = "trades"
+"#,
+        )
+        .expect("mismatched capability registry parses");
+
+        let error = registry
+            .require_durable_operator_capability(
+                &spec.converter.identity,
+                &spec.converter.version,
+                &spec.source_proof.table_family,
+            )
+            .expect_err("a mismatched durable capability must reject");
+
+        assert!(error.to_string().contains("found 0"), "{error:#}");
+    }
+
+    #[test]
+    fn durable_capability_rejects_duplicate_tuple() {
+        let mut spec: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+        let registry = verified_capability_registry_from_toml(
+            &mut spec,
+            r#"
+[durable_operator]
+
+[[durable_operator.capability]]
+identity = "csv-native-trades-to-canonical-trades.v1"
+version = "1"
+table_family = "trades"
+
+[[durable_operator.capability]]
+identity = "csv-native-trades-to-canonical-trades.v1"
+version = "1"
+table_family = "trades"
+"#,
+        )
+        .expect("duplicate capability registry parses");
+
+        let error = registry
+            .require_durable_operator_capability(
+                &spec.converter.identity,
+                &spec.converter.version,
+                &spec.source_proof.table_family,
+            )
+            .expect_err("duplicate durable capabilities must reject");
+
+        assert!(error.to_string().contains("found 2"), "{error:#}");
+    }
+
+    #[test]
+    fn durable_capability_rejects_unknown_row_field() {
+        let mut spec: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+        let error = verified_capability_registry_from_toml(
+            &mut spec,
+            r#"
+[durable_operator]
+
+[[durable_operator.capability]]
+identity = "csv-native-trades-to-canonical-trades.v1"
+version = "1"
+table_family = "trades"
+venue = "must-not-be-part-of-durable-capability"
+"#,
+        )
+        .expect_err("unknown durable capability fields must fail closed");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("unknown field"), "{message}");
+        assert!(message.contains("venue"), "{message}");
     }
 
     #[test]

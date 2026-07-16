@@ -43,7 +43,7 @@
     {
       "role": "source_bindings",
       "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
-      "sha256": "e007d32e254097d5d0aee81a7fa71fb307347e1df90030f53612fa937fb44256"
+      "sha256": "a39018c732c12d9dced380e2b4842fe92e2ac8b3ca7a92736b4efaf05f794d06"
     },
     {
       "role": "source_proof",
@@ -69,8 +69,8 @@
       "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:0GTRY:2026-03-01:054fa3d832a2e262855e93f46f636e66b1bac17b29caf4cd6e4a597b494422e4:accepted-tranche",
       "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=0GTRY/dt=2026-03-01/object=054fa3d832a2e262855e93f46f636e66b1bac17b29caf4cd6e4a597b494422e4",
       "source_bindings_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
-      "source_bindings_bytes": 15887,
-      "source_bindings_sha256": "e007d32e254097d5d0aee81a7fa71fb307347e1df90030f53612fa937fb44256",
+      "source_bindings_bytes": 16032,
+      "source_bindings_sha256": "a39018c732c12d9dced380e2b4842fe92e2ac8b3ca7a92736b4efaf05f794d06",
       "run_spec_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/runs/00000-source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00000/run-spec.toml",
       "run_spec_bytes": 11422,
       "run_spec_sha256": "4f672cc1ea8a632f75d94a884be0de607e2b36699e5c16ee12dad8ea3e68dfd1",

@@ -29,8 +29,8 @@ use backtesting_vertical_slice::{
     hashing::sha256_hex,
     operator::{
         MultiTableRunArtifacts, OperatorRunArtifacts, RESULT_CONTRACT_FILE, RunSpec,
-        RunSpecInstrumentIdentities, RunSpecInstrumentSpecs, run_operator_from_run_spec,
-        validate_durable_run_spec_preflight,
+        RunSpecInstrumentIdentities, RunSpecInstrumentSpecs, VerifiedSourceBindingRegistry,
+        run_operator_from_run_spec, validate_durable_run_spec_preflight,
     },
     run_manifest::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, ManifestArtifactStore,
@@ -719,8 +719,10 @@ fn source_universe_durable_preflight_rejects_stale_nt_revision_without_output() 
     let (mut spec, _) = two_interval_run_spec(temp.path(), "source-universe-durable-stale-nt");
     let output = temp.path().join("must-not-exist");
     spec.manifest.resolved_nt_version = "stale-nt-revision".to_string();
+    let registry = VerifiedSourceBindingRegistry::from_run_spec(&spec)
+        .expect("freeze the bars source-binding registry");
 
-    let error = validate_durable_run_spec_preflight(&spec)
+    let error = validate_durable_run_spec_preflight(&spec, &registry)
         .expect_err("stale NT revision must fail before durable source bytes or output");
 
     assert!(
@@ -737,11 +739,18 @@ fn source_universe_durable_preflight_rejects_non_trade_family_without_output() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let (spec, _) = two_interval_run_spec(temp.path(), "source-universe-durable-bars");
     let output = temp.path().join("must-not-exist");
+    let registry = VerifiedSourceBindingRegistry::from_run_spec(&spec)
+        .expect("freeze the bars source-binding registry");
 
-    let error = validate_durable_run_spec_preflight(&spec)
+    let error = validate_durable_run_spec_preflight(&spec, &registry)
         .expect_err("bars must fail before durable source bytes or output");
 
-    assert!(error.to_string().contains("supports only"), "{error:#}");
-    assert!(error.to_string().contains("trades"), "{error:#}");
+    assert!(
+        error
+            .to_string()
+            .contains("durable operator capability requires exactly one configured tuple"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("found 0"), "{error:#}");
     assert!(!output.exists());
 }

@@ -2907,7 +2907,7 @@ fn source_binding_registry_with_distinct_key(
             "key".to_string(),
             toml::Value::String(distinct_key.to_string()),
         );
-    let mut retained_registry = toml::Table::new();
+    let mut retained_registry = committed_registry.clone();
     retained_registry.insert(
         "source_binding".to_string(),
         toml::Value::Array(vec![distinct_binding]),

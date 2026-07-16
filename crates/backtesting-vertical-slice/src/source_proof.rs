@@ -37,8 +37,25 @@ const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
 
 #[derive(Debug, Deserialize)]
 pub struct SourceBindingRegistry {
+    #[serde(default)]
+    durable_operator: DurableOperatorConfig,
     #[serde(rename = "source_binding", default)]
     source_bindings: Vec<SourceBindingConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DurableOperatorConfig {
+    #[serde(default)]
+    capability: Vec<DurableOperatorCapability>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DurableOperatorCapability {
+    identity: String,
+    version: String,
+    table_family: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +111,23 @@ impl SourceBindingRegistry {
             .cloned()
             .map(SourceBindingConfig::into_metadata)
             .collect()
+    }
+
+    pub(crate) fn durable_operator_capability_match_count(
+        &self,
+        identity: &str,
+        version: &str,
+        table_family: &str,
+    ) -> usize {
+        self.durable_operator
+            .capability
+            .iter()
+            .filter(|capability| {
+                capability.identity == identity
+                    && capability.version == version
+                    && capability.table_family == table_family
+            })
+            .count()
     }
 }
 

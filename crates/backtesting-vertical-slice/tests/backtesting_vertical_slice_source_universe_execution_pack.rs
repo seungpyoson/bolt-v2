@@ -918,7 +918,7 @@ fn assert_composed_operator_preflight(spec: &RunSpec, output_dir: &Path) {
         &registry,
     )
     .expect("active RunSpec passes ordinary manifest/source-binding preflight");
-    validate_durable_run_spec_preflight(&executable_spec)
+    validate_durable_run_spec_preflight(&executable_spec, &registry)
         .expect("active RunSpec passes durable-only operator preflight");
 }
 

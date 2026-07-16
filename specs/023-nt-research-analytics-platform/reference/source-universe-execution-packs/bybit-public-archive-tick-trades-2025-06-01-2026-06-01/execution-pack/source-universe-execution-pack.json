@@ -43,7 +43,7 @@
     {
       "role": "source_bindings",
       "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
-      "sha256": "e007d32e254097d5d0aee81a7fa71fb307347e1df90030f53612fa937fb44256"
+      "sha256": "a39018c732c12d9dced380e2b4842fe92e2ac8b3ca7a92736b4efaf05f794d06"
     },
     {
       "role": "source_proof",
@@ -69,8 +69,8 @@
       "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:AAVEUSD:2025-06-01:0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516:accepted-tranche",
       "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=AAVEUSD/dt=2025-06-01/object=0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516",
       "source_bindings_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
-      "source_bindings_bytes": 15887,
-      "source_bindings_sha256": "e007d32e254097d5d0aee81a7fa71fb307347e1df90030f53612fa937fb44256",
+      "source_bindings_bytes": 16032,
+      "source_bindings_sha256": "a39018c732c12d9dced380e2b4842fe92e2ac8b3ca7a92736b4efaf05f794d06",
       "run_spec_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/runs/00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/run-spec.toml",
       "run_spec_bytes": 11777,
       "run_spec_sha256": "e4dd79d1e293a6407992e4a2f5a53c29210af3ed8d77e019178ac5153aa1532f",

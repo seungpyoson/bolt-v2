@@ -228,9 +228,10 @@ concurrency:
     coverage-${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && !(github.event.pull_request.draft == false
-             && github.event.action == 'edited'
-             && !(github.event.changes.base.ref.from && true || false))
+        && !((github.event.action == 'edited'
+              && !(github.event.changes.base.ref.from && true || false))
+             || (github.event.pull_request.draft == true
+                 && github.event.action == 'converted_to_draft'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && ((github.event.pull_request.draft == true
@@ -3218,24 +3219,25 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
             raise AssertionError(f"{workflow_name} must reject run_id-keyed Mergify proof groups, got: {old_group_errors}")
 
         if workflow_name.endswith(("/ci.yml", "/backtester-ci.yml", "/coverage-enforcer.yml")):
-            ready_metadata_exclusion = (
-                "        && !(github.event.pull_request.draft == false\n"
-                "             && github.event.action == 'edited'\n"
-                "             && !(github.event.changes.base.ref.from && true || false))\n"
+            mergify_iteration_exclusion = (
+                "        && !((github.event.action == 'edited'\n"
+                "              && !(github.event.changes.base.ref.from && true || false))\n"
+                "             || (github.event.pull_request.draft == true\n"
+                "                 && github.event.action == 'converted_to_draft'))\n"
             )
-            if ready_metadata_exclusion not in workflow:
+            if mergify_iteration_exclusion not in workflow:
                 raise AssertionError(
-                    f"{workflow_name} must isolate ready metadata iteration from pending Mergify proof runs"
+                    f"{workflow_name} must isolate Mergify iteration events from pending proof runs"
                 )
             shared_group = replace_once_after(
                 workflow,
                 "concurrency:",
-                ready_metadata_exclusion,
+                mergify_iteration_exclusion,
                 "",
             )
             shared_group_errors = workflow_errors(workflow_name, shared_group)
             if not any(
-                "Mergify proof PR concurrency must exclude ready metadata-only edits" in error
+                "Mergify proof PR concurrency must exclude iteration events" in error
                 for error in shared_group_errors
             ):
                 raise AssertionError(
@@ -6126,9 +6128,10 @@ def without_pr_concurrency(workflow: str) -> str:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && !(github.event.pull_request.draft == false
-             && github.event.action == 'edited'
-             && !(github.event.changes.base.ref.from && true || false))
+        && !((github.event.action == 'edited'
+              && !(github.event.changes.base.ref.from && true || false))
+             || (github.event.pull_request.draft == true
+                 && github.event.action == 'converted_to_draft'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && ((github.event.pull_request.draft == true
@@ -10869,9 +10872,10 @@ def main() -> int:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && !(github.event.pull_request.draft == false
-             && github.event.action == 'edited'
-             && !(github.event.changes.base.ref.from && true || false))
+        && !((github.event.action == 'edited'
+              && !(github.event.changes.base.ref.from && true || false))
+             || (github.event.pull_request.draft == true
+                 && github.event.action == 'converted_to_draft'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && ((github.event.pull_request.draft == true

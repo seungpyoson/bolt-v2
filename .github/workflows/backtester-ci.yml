@@ -64,9 +64,10 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && !(github.event.pull_request.draft == false
-             && github.event.action == 'edited'
-             && !(github.event.changes.base.ref.from && true || false))
+        && !((github.event.action == 'edited'
+              && !(github.event.changes.base.ref.from && true || false))
+             || (github.event.pull_request.draft == true
+                 && github.event.action == 'converted_to_draft'))
         && format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && ((github.event.pull_request.draft == true

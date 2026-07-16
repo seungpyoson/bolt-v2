@@ -658,7 +658,7 @@ fn static_outcome_instrument(
         question_id: info.get_str(METADATA_QUESTION_ID_FIELD)?.to_string(),
         negative_risk: info.get_bool("neg_risk")?,
         normalized_outcome: outcome_label.trim().to_ascii_lowercase(),
-        clob_token_id: binary.raw_symbol().as_str().to_string(),
+        clob_token_id: binary.raw_symbol.as_str().to_string(),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),

@@ -1507,7 +1507,7 @@ fn updown_outcome_instrument(
             .as_str()
             .trim()
             .to_ascii_lowercase(),
-        clob_token_id: binary.raw_symbol().as_str().to_string(),
+        clob_token_id: binary.raw_symbol.as_str().to_string(),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),

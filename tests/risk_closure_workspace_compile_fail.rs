@@ -42,9 +42,9 @@ fn reservation_cannot_be_cloned() {
     assert_compile_fails(
         "reservation_cannot_be_cloned",
         r#"
-let authority = RiskClosureWorkspaceAuthority::new().unwrap();
-let reservation = authority.checkout_new_risk().unwrap();
-let _duplicate = reservation.clone();
+fn duplicate(reservation: RiskClosureWorkspaceReservation) {
+    let _duplicate = reservation.clone();
+}
 "#,
         "no method named `clone`",
     );
@@ -55,10 +55,10 @@ fn committed_reservation_cannot_be_reused() {
     assert_compile_fails(
         "committed_reservation_cannot_be_reused",
         r#"
-let authority = RiskClosureWorkspaceAuthority::new().unwrap();
-let reservation = authority.checkout_new_risk().unwrap();
-reservation.commit(ClosureIdentity::new("closure").unwrap()).unwrap();
-let _length = reservation.workspace_len();
+fn commit(reservation: RiskClosureWorkspaceReservation, identity: ClosureIdentity) {
+    reservation.commit(identity).unwrap();
+    let _length = reservation.workspace_len();
+}
 "#,
         "borrow of moved value: `reservation`",
     );

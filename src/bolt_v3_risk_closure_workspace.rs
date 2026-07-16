@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RiskClosureWorkspaceConfig {
     arena_bytes: usize,
@@ -15,24 +16,7 @@ struct RiskClosureWorkspaceConfig {
     production_activation_enabled: bool,
 }
 
-impl RiskClosureWorkspaceConfig {
-    const fn arena_bytes(self) -> usize {
-        self.arena_bytes
-    }
-
-    const fn slot_bytes(self) -> usize {
-        self.slot_bytes
-    }
-
-    const fn capacity(self) -> usize {
-        self.capacity
-    }
-
-    const fn production_activation_enabled(self) -> bool {
-        self.production_activation_enabled
-    }
-}
-
+#[cfg(test)]
 include!("bolt_v3_risk_closure_workspace_generated.rs");
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,7 +49,6 @@ pub enum RiskClosureWorkspaceError {
     DuplicateClosureIdentity,
     UnknownClosureIdentity,
     ClosureAlreadyCheckedOut,
-    StorageInUse,
     LeaseIdentityMismatch,
     InvalidLease,
     LeaseIdExhausted,
@@ -78,10 +61,7 @@ pub struct RiskClosureWorkspaceAuthority {
 }
 
 impl RiskClosureWorkspaceAuthority {
-    pub fn new() -> Result<Self, RiskClosureWorkspaceError> {
-        Self::with_config(RISK_CLOSURE_WORKSPACE_CONFIG)
-    }
-
+    #[cfg(test)]
     fn with_config(config: RiskClosureWorkspaceConfig) -> Result<Self, RiskClosureWorkspaceError> {
         Ok(Self {
             inner: Arc::new(Mutex::new(WorkspaceState::allocate(config)?)),
@@ -128,23 +108,27 @@ impl RiskClosureWorkspaceAuthority {
             .logical_slots
             .get(closure_identity)
             .ok_or(RiskClosureWorkspaceError::UnknownClosureIdentity)?;
-        match &state.slots[slot_index] {
+        let closure_generation = match &state.slots[slot_index] {
             SlotState::RetainedIdle {
                 closure_identity: retained,
-            } if retained == closure_identity => {}
+                closure_generation,
+            } if retained == closure_identity => *closure_generation,
             SlotState::RecoveryCheckedOut { .. } => {
                 return Err(RiskClosureWorkspaceError::ClosureAlreadyCheckedOut);
             }
             _ => return Err(RiskClosureWorkspaceError::InvalidLease),
-        }
+        };
         let lease_id = state.take_lease_id()?;
         state.slots[slot_index] = SlotState::RecoveryCheckedOut {
             closure_identity: closure_identity.clone(),
+            closure_generation,
             lease_id,
         };
         Ok(RiskClosureWorkspaceLease {
             inner: Arc::clone(&self.inner),
+            authority_identity: state.authority_identity.clone(),
             closure_identity: closure_identity.clone(),
+            closure_generation,
             slot_index,
             lease_id,
             active: true,
@@ -159,48 +143,26 @@ impl RiskClosureWorkspaceAuthority {
             .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
         Ok(state.storage.reserved_bytes())
     }
+}
 
-    pub fn replace_storage_from_generated_config(&self) -> Result<(), RiskClosureWorkspaceError> {
-        self.replace_storage(RISK_CLOSURE_WORKSPACE_CONFIG)
+#[derive(Debug, Clone)]
+struct AuthorityIdentity(Arc<()>);
+
+impl AuthorityIdentity {
+    #[cfg(test)]
+    fn new() -> Self {
+        Self(Arc::new(()))
     }
 
-    fn replace_storage(
-        &self,
-        config: RiskClosureWorkspaceConfig,
-    ) -> Result<(), RiskClosureWorkspaceError> {
-        {
-            let state = self
-                .inner
-                .lock()
-                .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
-            if state
-                .slots
-                .iter()
-                .any(|slot| !matches!(slot, SlotState::Free))
-            {
-                return Err(RiskClosureWorkspaceError::StorageInUse);
-            }
-        }
-        let replacement = WorkspaceState::allocate(config)?;
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
-        if state
-            .slots
-            .iter()
-            .any(|slot| !matches!(slot, SlotState::Free))
-        {
-            return Err(RiskClosureWorkspaceError::StorageInUse);
-        }
-        *state = replacement;
-        Ok(())
+    fn matches(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
 #[derive(Debug)]
 struct WorkspaceState {
-    config: RiskClosureWorkspaceConfig,
+    authority_identity: AuthorityIdentity,
+    slot_bytes: usize,
     storage: Arc<WorkspaceStorage>,
     slots: Vec<SlotState>,
     logical_slots: BTreeMap<ClosureIdentity, usize>,
@@ -208,6 +170,7 @@ struct WorkspaceState {
 }
 
 impl WorkspaceState {
+    #[cfg(test)]
     fn allocate(config: RiskClosureWorkspaceConfig) -> Result<Self, RiskClosureWorkspaceError> {
         if config.arena_bytes == usize::default()
             || config.slot_bytes == usize::default()
@@ -225,7 +188,8 @@ impl WorkspaceState {
             .map_err(|_| RiskClosureWorkspaceError::AllocationFailed)?;
         slots.resize_with(config.capacity, || SlotState::Free);
         Ok(Self {
-            config,
+            authority_identity: AuthorityIdentity::new(),
+            slot_bytes: config.slot_bytes,
             storage,
             slots,
             logical_slots: BTreeMap::new(),
@@ -249,6 +213,7 @@ struct WorkspaceStorage {
 }
 
 impl WorkspaceStorage {
+    #[cfg(test)]
     fn allocate(config: RiskClosureWorkspaceConfig) -> Result<Self, RiskClosureWorkspaceError> {
         let mut slots = Vec::new();
         slots
@@ -311,9 +276,11 @@ enum SlotState {
     },
     RetainedIdle {
         closure_identity: ClosureIdentity,
+        closure_generation: u64,
     },
     RecoveryCheckedOut {
         closure_identity: ClosureIdentity,
+        closure_generation: u64,
         lease_id: u64,
     },
 }
@@ -323,24 +290,24 @@ enum SlotState {
 /// The reservation is intentionally neither `Clone` nor `Copy`.
 ///
 /// ```compile_fail
-/// use bolt_v2::bolt_v3_risk_closure_workspace::RiskClosureWorkspaceAuthority;
+/// use bolt_v2::bolt_v3_risk_closure_workspace::RiskClosureWorkspaceReservation;
 ///
-/// let authority = RiskClosureWorkspaceAuthority::new().unwrap();
-/// let reservation = authority.checkout_new_risk().unwrap();
-/// let _duplicate = reservation.clone();
+/// fn cannot_clone(reservation: RiskClosureWorkspaceReservation) {
+///     let _duplicate = reservation.clone();
+/// }
 /// ```
 ///
 /// Commit consumes the reservation, so it cannot be reused.
 ///
 /// ```compile_fail
 /// use bolt_v2::bolt_v3_risk_closure_workspace::{
-///     ClosureIdentity, RiskClosureWorkspaceAuthority,
+///     ClosureIdentity, RiskClosureWorkspaceReservation,
 /// };
 ///
-/// let authority = RiskClosureWorkspaceAuthority::new().unwrap();
-/// let reservation = authority.checkout_new_risk().unwrap();
-/// reservation.commit(ClosureIdentity::new("closure").unwrap()).unwrap();
-/// let _ = reservation.workspace_len();
+/// fn cannot_reuse(reservation: RiskClosureWorkspaceReservation, identity: ClosureIdentity) {
+///     reservation.commit(identity).unwrap();
+///     let _ = reservation.workspace_len();
+/// }
 /// ```
 pub struct RiskClosureWorkspaceReservation {
     inner: Arc<Mutex<WorkspaceState>>,
@@ -357,7 +324,7 @@ impl RiskClosureWorkspaceReservation {
             .lock()
             .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
         self.validate(&state)?;
-        Ok(state.config.slot_bytes)
+        Ok(state.slot_bytes)
     }
 
     pub fn with_workspace_mut<T>(
@@ -385,7 +352,10 @@ impl RiskClosureWorkspaceReservation {
         state
             .logical_slots
             .insert(closure_identity.clone(), self.slot_index);
-        state.slots[self.slot_index] = SlotState::RetainedIdle { closure_identity };
+        state.slots[self.slot_index] = SlotState::RetainedIdle {
+            closure_identity,
+            closure_generation: self.lease_id,
+        };
         self.active = false;
         Ok(())
     }
@@ -432,15 +402,11 @@ impl Drop for RiskClosureWorkspaceReservation {
 /// Exclusive access to a workspace retained for recovery.
 ///
 /// ```compile_fail
-/// use bolt_v2::bolt_v3_risk_closure_workspace::{
-///     ClosureIdentity, RiskClosureWorkspaceAuthority,
-/// };
+/// use bolt_v2::bolt_v3_risk_closure_workspace::RiskClosureWorkspaceLease;
 ///
-/// let authority = RiskClosureWorkspaceAuthority::new().unwrap();
-/// let identity = ClosureIdentity::new("closure").unwrap();
-/// authority.checkout_new_risk().unwrap().commit(identity.clone()).unwrap();
-/// let lease = authority.checkout_recovery(&identity).unwrap();
-/// let _duplicate = lease.clone();
+/// fn cannot_clone(lease: RiskClosureWorkspaceLease) {
+///     let _duplicate = lease.clone();
+/// }
 /// ```
 ///
 /// Terminal release consumes both the lease and its permit.
@@ -457,7 +423,9 @@ impl Drop for RiskClosureWorkspaceReservation {
 /// ```
 pub struct RiskClosureWorkspaceLease {
     inner: Arc<Mutex<WorkspaceState>>,
+    authority_identity: AuthorityIdentity,
     closure_identity: ClosureIdentity,
+    closure_generation: u64,
     slot_index: usize,
     lease_id: u64,
     active: bool,
@@ -471,7 +439,7 @@ impl RiskClosureWorkspaceLease {
             .lock()
             .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
         self.validate(&state)?;
-        Ok(state.config.slot_bytes)
+        Ok(state.slot_bytes)
     }
 
     pub fn with_workspace_mut<T>(
@@ -486,7 +454,10 @@ impl RiskClosureWorkspaceLease {
         mut self,
         permit: TerminalReleasePermit,
     ) -> Result<(), TerminalReleaseFailure> {
-        if permit.closure_identity != self.closure_identity {
+        if !permit.authority_identity.matches(&self.authority_identity)
+            || permit.closure_identity != self.closure_identity
+            || permit.closure_generation != self.closure_generation
+        {
             return Err(TerminalReleaseFailure::new(
                 RiskClosureWorkspaceError::LeaseIdentityMismatch,
                 self,
@@ -518,8 +489,13 @@ impl RiskClosureWorkspaceLease {
         match state.slots.get(self.slot_index) {
             Some(SlotState::RecoveryCheckedOut {
                 closure_identity,
+                closure_generation,
                 lease_id,
-            }) if closure_identity == &self.closure_identity && *lease_id == self.lease_id => {
+            }) if closure_identity == &self.closure_identity
+                && *closure_generation == self.closure_generation
+                && *lease_id == self.lease_id
+                && state.authority_identity.matches(&self.authority_identity) =>
+            {
                 Ok(())
             }
             _ => Err(RiskClosureWorkspaceError::InvalidLease),
@@ -546,11 +522,18 @@ impl Drop for RiskClosureWorkspaceLease {
         };
         if matches!(
             state.slots.get(self.slot_index),
-            Some(SlotState::RecoveryCheckedOut { closure_identity, lease_id })
-                if closure_identity == &self.closure_identity && *lease_id == self.lease_id
+            Some(SlotState::RecoveryCheckedOut {
+                closure_identity,
+                closure_generation,
+                lease_id,
+            }) if closure_identity == &self.closure_identity
+                && *closure_generation == self.closure_generation
+                && *lease_id == self.lease_id
+                && state.authority_identity.matches(&self.authority_identity)
         ) {
             state.slots[self.slot_index] = SlotState::RetainedIdle {
                 closure_identity: self.closure_identity.clone(),
+                closure_generation: self.closure_generation,
             };
         }
     }
@@ -567,7 +550,9 @@ impl Drop for RiskClosureWorkspaceLease {
 /// let _forged = TerminalReleasePermit {};
 /// ```
 pub struct TerminalReleasePermit {
+    authority_identity: AuthorityIdentity,
     closure_identity: ClosureIdentity,
+    closure_generation: u64,
 }
 
 /// A failed terminal release that preserves both one-use authorities for recovery.
@@ -610,7 +595,9 @@ impl std::fmt::Debug for TerminalReleaseFailure {
 
 #[cfg(test)]
 struct AuthoritativeDurableTerminalTransition {
+    authority_identity: AuthorityIdentity,
     closure_identity: ClosureIdentity,
+    closure_generation: u64,
 }
 
 #[cfg(test)]
@@ -619,7 +606,9 @@ impl TerminalReleasePermit {
         transition: AuthoritativeDurableTerminalTransition,
     ) -> Self {
         Self {
+            authority_identity: transition.authority_identity,
             closure_identity: transition.closure_identity,
+            closure_generation: transition.closure_generation,
         }
     }
 }
@@ -644,10 +633,12 @@ mod tests {
         ClosureIdentity::new(format!("closure-{index}")).unwrap()
     }
 
-    fn terminal_permit(identity: ClosureIdentity) -> TerminalReleasePermit {
+    fn terminal_permit(lease: &RiskClosureWorkspaceLease) -> TerminalReleasePermit {
         TerminalReleasePermit::after_authoritative_durable_terminal_transition(
             AuthoritativeDurableTerminalTransition {
-                closure_identity: identity,
+                authority_identity: lease.authority_identity.clone(),
+                closure_identity: lease.closure_identity.clone(),
+                closure_generation: lease.closure_generation,
             },
         )
     }
@@ -695,6 +686,24 @@ mod tests {
     }
 
     #[test]
+    fn generated_configuration_allocates_and_touches_exact_capacity() {
+        let authority =
+            RiskClosureWorkspaceAuthority::with_config(RISK_CLOSURE_WORKSPACE_CONFIG).unwrap();
+        assert_eq!(
+            authority.reserved_bytes().unwrap(),
+            RISK_CLOSURE_WORKSPACE_CONFIG.arena_bytes
+        );
+        let reservations = (usize::default()..RISK_CLOSURE_WORKSPACE_CONFIG.capacity)
+            .map(|_| authority.checkout_new_risk().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(reservations.len(), RISK_CLOSURE_WORKSPACE_CONFIG.capacity);
+        assert_eq!(
+            authority.checkout_new_risk().err(),
+            Some(RiskClosureWorkspaceError::CapacityExhausted)
+        );
+    }
+
+    #[test]
     fn ordinary_exhaustion_blocks_new_risk_while_retained_recovery_remains_available() {
         let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
         let identities = (usize::default()..TEST_CAPACITY)
@@ -726,11 +735,11 @@ mod tests {
         let mut reservation = authority.checkout_new_risk().unwrap();
         assert_eq!(
             authority.reserved_bytes().unwrap(),
-            test_config().arena_bytes()
+            test_config().arena_bytes
         );
         assert_eq!(
             reservation.workspace_len().unwrap(),
-            test_config().slot_bytes()
+            test_config().slot_bytes
         );
         reservation
             .with_workspace_mut(|workspace| workspace.fill(u8::MAX))
@@ -841,38 +850,11 @@ mod tests {
         assert!(panic.is_err());
         assert_eq!(
             reservation.workspace_len().unwrap(),
-            test_config().slot_bytes()
+            test_config().slot_bytes
         );
         reservation
             .with_workspace_mut(|workspace| workspace.fill(u8::MAX))
             .unwrap();
-    }
-
-    #[test]
-    fn checked_out_or_retained_workspace_prevents_storage_replacement() {
-        let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
-        let reservation = authority.checkout_new_risk().unwrap();
-        assert_eq!(
-            authority.replace_storage(test_config()),
-            Err(RiskClosureWorkspaceError::StorageInUse)
-        );
-        drop(reservation);
-        let closure_identity = identity(usize::default());
-        authority
-            .checkout_new_risk()
-            .unwrap()
-            .commit(closure_identity.clone())
-            .unwrap();
-        assert_eq!(
-            authority.replace_storage(test_config()),
-            Err(RiskClosureWorkspaceError::StorageInUse)
-        );
-        let recovery = authority.checkout_recovery(&closure_identity).unwrap();
-        assert_eq!(
-            authority.replace_storage(test_config()),
-            Err(RiskClosureWorkspaceError::StorageInUse)
-        );
-        drop(recovery);
     }
 
     #[test]
@@ -884,11 +866,9 @@ mod tests {
             .unwrap()
             .commit(closure_identity.clone())
             .unwrap();
-        authority
-            .checkout_recovery(&closure_identity)
-            .unwrap()
-            .release_terminal(terminal_permit(closure_identity.clone()))
-            .unwrap();
+        let lease = authority.checkout_recovery(&closure_identity).unwrap();
+        let permit = terminal_permit(&lease);
+        lease.release_terminal(permit).unwrap();
         assert_eq!(
             authority.checkout_recovery(&closure_identity).err(),
             Some(RiskClosureWorkspaceError::UnknownClosureIdentity)
@@ -913,10 +893,9 @@ mod tests {
             .unwrap();
         let first_lease = authority.checkout_recovery(&first).unwrap();
         let second_lease = authority.checkout_recovery(&second).unwrap();
+        let second_permit = terminal_permit(&second_lease);
 
-        let failure = first_lease
-            .release_terminal(terminal_permit(second.clone()))
-            .unwrap_err();
+        let failure = first_lease.release_terminal(second_permit).unwrap_err();
 
         assert_eq!(
             failure.error(),
@@ -930,6 +909,74 @@ mod tests {
             authority.checkout_recovery(&second).err(),
             Some(RiskClosureWorkspaceError::UnknownClosureIdentity)
         );
+    }
+
+    #[test]
+    fn terminal_permit_cannot_cross_authority_instances() {
+        let first_authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
+        let second_authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
+        let closure_identity = identity(usize::default());
+        first_authority
+            .checkout_new_risk()
+            .unwrap()
+            .commit(closure_identity.clone())
+            .unwrap();
+        second_authority
+            .checkout_new_risk()
+            .unwrap()
+            .commit(closure_identity.clone())
+            .unwrap();
+        let first_lease = first_authority
+            .checkout_recovery(&closure_identity)
+            .unwrap();
+        let second_lease = second_authority
+            .checkout_recovery(&closure_identity)
+            .unwrap();
+        let first_permit = terminal_permit(&first_lease);
+
+        let failure = second_lease.release_terminal(first_permit).unwrap_err();
+
+        assert_eq!(
+            failure.error(),
+            RiskClosureWorkspaceError::LeaseIdentityMismatch
+        );
+        let (second_lease, first_permit) = failure.into_parts();
+        drop(second_lease);
+        first_lease.release_terminal(first_permit).unwrap();
+    }
+
+    #[test]
+    fn stale_terminal_permit_cannot_release_reused_closure_identity() {
+        let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
+        let closure_identity = identity(usize::default());
+        authority
+            .checkout_new_risk()
+            .unwrap()
+            .commit(closure_identity.clone())
+            .unwrap();
+        let old_lease = authority.checkout_recovery(&closure_identity).unwrap();
+        let release_permit = terminal_permit(&old_lease);
+        let stale_permit = terminal_permit(&old_lease);
+        old_lease.release_terminal(release_permit).unwrap();
+        authority
+            .checkout_new_risk()
+            .unwrap()
+            .commit(closure_identity.clone())
+            .unwrap();
+        let new_lease = authority.checkout_recovery(&closure_identity).unwrap();
+
+        let failure = new_lease.release_terminal(stale_permit).unwrap_err();
+
+        assert_eq!(
+            failure.error(),
+            RiskClosureWorkspaceError::LeaseIdentityMismatch
+        );
+        let (new_lease, stale_permit) = failure.into_parts();
+        drop(new_lease);
+        drop(stale_permit);
+        let current_lease = authority.checkout_recovery(&closure_identity).unwrap();
+        let current_permit = terminal_permit(&current_lease);
+        current_lease.release_terminal(current_permit).unwrap();
     }
 
     #[test]

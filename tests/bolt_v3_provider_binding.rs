@@ -399,6 +399,52 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
 }
 
 #[test]
+fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cached_proof() {
+    let source = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let settlement_resources = source
+        .split_once("struct StrategyRegistrationSettlementResources {")
+        .and_then(|(_, tail)| tail.split_once("\n}"))
+        .map(|(fields, _)| fields)
+        .expect("settlement registration resources should remain inspectable");
+    for cached_proof_field in [
+        "execution_venue:",
+        "settlement_account_id:",
+        "settlement_currency:",
+    ] {
+        assert!(
+            settlement_resources.contains(cached_proof_field),
+            "settlement resources must cache `{cached_proof_field}`"
+        );
+    }
+
+    let assembly = source
+        .split_once("pub fn assemble_strategy_build_context(")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("strategy assembly should remain inspectable");
+    assert!(
+        assembly.contains("settlement_resources_for_context(context)?"),
+        "strategy assembly must consume the cached settlement proof"
+    );
+    for forbidden_resolution in [
+        "resolve_settlement_capability(",
+        "execution_account_id(",
+        "settlement_currency_for_execution_account(",
+    ] {
+        assert!(
+            !assembly.contains(forbidden_resolution),
+            "strategy assembly must not repeat `{forbidden_resolution}`"
+        );
+    }
+
+    assert_eq!(
+        source.matches("resolve_settlement_capability(").count(),
+        2,
+        "settlement capability resolution must have one definition and one constructor call"
+    );
+}
+
+#[test]
 fn shared_strategy_assembly_fails_closed_when_execution_client_is_missing() {
     let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("bolt-v3 fixture should load");

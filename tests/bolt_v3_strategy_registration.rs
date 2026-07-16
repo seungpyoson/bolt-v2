@@ -801,6 +801,90 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
 }
 
 #[test]
+fn settlement_capable_binding_is_not_invoked_without_settlement_currency() {
+    fn register_must_not_run(
+        _node: &mut LiveNode,
+        _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
+    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
+    {
+        panic!("settlement identity must be validated before invoking the binding")
+    }
+
+    fn stub_strategy_kind() -> &'static str {
+        "stub_runtime_strategy"
+    }
+
+    const TEST_BINDINGS: &[bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding] = &[
+        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
+            key: "binary_oracle_edge_taker",
+            strategy_kind: stub_strategy_kind,
+            capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                realized_volatility: true,
+                settlement: true,
+            },
+            register: register_must_not_run,
+        },
+    ];
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut empty_loaded = loaded.clone();
+    empty_loaded.strategies.clear();
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve");
+    let decision_evidence: Arc<
+        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let execution_controls =
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
+            submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
+            order_execution_policy:
+                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            settlement_runtime_sink: None,
+            settlement_recovery: None,
+            settlement_health_transition_emitter: None,
+        };
+    let adapters =
+        map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
+    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration");
+    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
+        .expect("fixture data clients should register before strategy registration");
+    let mut node = builder
+        .build()
+        .expect("v3 LiveNode should build before strategy registration");
+    loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture capital pools should exist")
+        .clear();
+
+    let error =
+        bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            &loaded,
+            &resolved,
+            TEST_BINDINGS,
+            execution_controls,
+            decision_evidence,
+        )
+        .err()
+        .expect("missing settlement currency must fail before invoking the binding");
+
+    assert!(matches!(
+        &error,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding { .. }
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("settlement capability requires settlement currency for execution account")
+    );
+}
+
+#[test]
 fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

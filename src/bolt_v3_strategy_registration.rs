@@ -71,14 +71,52 @@ pub struct StrategyRegistrationContext<'a> {
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
-    settlement: Option<StrategyRegistrationSettlementResources>,
+    settlement: Option<StrategyRegistrationSettlementCapability>,
+}
+
+#[derive(Clone)]
+enum StrategyRegistrationSettlementCapability {
+    Resolved(StrategyRegistrationSettlementResources),
+    Invalid(StrategyRegistrationSettlementIdentityError),
 }
 
 #[derive(Clone)]
 struct StrategyRegistrationSettlementResources {
+    execution_venue: Venue,
+    settlement_account_id: String,
+    settlement_currency: Currency,
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     recovery: Option<BoltV3SettlementRecoveryConfig>,
     health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+}
+
+#[derive(Clone)]
+enum StrategyRegistrationSettlementIdentityError {
+    MissingExecutionVenue { execution_client_id: String },
+    MissingAccountId { execution_client_id: String },
+    MissingCurrency { settlement_account_id: String },
+}
+
+impl StrategyRegistrationSettlementIdentityError {
+    fn message(&self) -> String {
+        match self {
+            Self::MissingExecutionVenue {
+                execution_client_id,
+            } => format!(
+                "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+            ),
+            Self::MissingAccountId {
+                execution_client_id,
+            } => format!(
+                "settlement capability requires execution account id for execution_client_id `{execution_client_id}`"
+            ),
+            Self::MissingCurrency {
+                settlement_account_id,
+            } => format!(
+                "settlement capability requires settlement currency for execution account `{settlement_account_id}`"
+            ),
+        }
+    }
 }
 
 impl<'a> StrategyRegistrationContext<'a> {
@@ -104,14 +142,15 @@ impl<'a> StrategyRegistrationContext<'a> {
         let realized_volatility_runtime = capabilities
             .realized_volatility
             .then_some(realized_volatility_runtime);
-        let settlement =
-            capabilities
-                .settlement
-                .then_some(StrategyRegistrationSettlementResources {
-                    runtime_sink: settlement_runtime_sink,
-                    recovery: settlement_recovery,
-                    health_transition_emitter: settlement_health_transition_emitter,
-                });
+        let settlement = capabilities.settlement.then(|| {
+            resolve_settlement_capability(
+                loaded,
+                strategy,
+                settlement_runtime_sink,
+                settlement_recovery,
+                settlement_health_transition_emitter,
+            )
+        });
 
         Self {
             loaded,
@@ -129,49 +168,58 @@ impl<'a> StrategyRegistrationContext<'a> {
     }
 }
 
+fn resolve_settlement_capability(
+    loaded: &LoadedBoltV3Config,
+    strategy: &LoadedStrategy,
+    runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    recovery: Option<BoltV3SettlementRecoveryConfig>,
+    health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+) -> StrategyRegistrationSettlementCapability {
+    let execution_client_id = strategy.config.execution_client_id.as_str();
+    let Some(execution_venue) = venue_for_client(&loaded.root, execution_client_id) else {
+        return StrategyRegistrationSettlementCapability::Invalid(
+            StrategyRegistrationSettlementIdentityError::MissingExecutionVenue {
+                execution_client_id: execution_client_id.to_string(),
+            },
+        );
+    };
+    let Some(settlement_account_id) = execution_account_id(&loaded.root, execution_client_id)
+    else {
+        return StrategyRegistrationSettlementCapability::Invalid(
+            StrategyRegistrationSettlementIdentityError::MissingAccountId {
+                execution_client_id: execution_client_id.to_string(),
+            },
+        );
+    };
+    let Some(settlement_currency) = settlement_currency_for_execution_account(
+        &loaded.root,
+        execution_venue,
+        settlement_account_id,
+    ) else {
+        return StrategyRegistrationSettlementCapability::Invalid(
+            StrategyRegistrationSettlementIdentityError::MissingCurrency {
+                settlement_account_id: settlement_account_id.to_string(),
+            },
+        );
+    };
+    StrategyRegistrationSettlementCapability::Resolved(StrategyRegistrationSettlementResources {
+        execution_venue,
+        settlement_account_id: settlement_account_id.to_string(),
+        settlement_currency,
+        runtime_sink,
+        recovery,
+        health_transition_emitter,
+    })
+}
+
 pub fn assemble_strategy_build_context(
     context: &StrategyRegistrationContext<'_>,
 ) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
     let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    let execution_venue = venue_for_client(&context.loaded.root, execution_client_id)
-        .ok_or_else(|| {
-            binding_message(
-                context,
-                format!(
-                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-                ),
-            )
-        })?;
-    let settlement_identity = if let Some(settlement) = &context.settlement {
-        let settlement_account_id = execution_account_id(&context.loaded.root, execution_client_id)
-            .ok_or_else(|| {
-                binding_message(
-                    context,
-                    format!(
-                        "settlement capability requires execution account id for execution_client_id `{execution_client_id}`"
-                    ),
-                )
-            })?;
-        let settlement_currency = settlement_currency_for_execution_account(
-            &context.loaded.root,
-            execution_venue,
-            settlement_account_id,
-        )
-        .ok_or_else(|| {
-            binding_message(
-                context,
-                format!(
-                    "settlement capability requires settlement currency for execution account `{settlement_account_id}`"
-                ),
-            )
-        })?;
-        Some((
-            settlement,
-            settlement_account_id.to_string(),
-            settlement_currency,
-        ))
-    } else {
-        None
+    let settlement = settlement_resources_for_context(context)?;
+    let execution_venue = match settlement {
+        Some(settlement) => settlement.execution_venue,
+        None => execution_venue_for_context(context)?,
     };
     let fee_provider = resolve_fee_provider(context.loaded, execution_client_id, context.resolved)
         .map_err(|error| binding_message(context, error.to_string()))?;
@@ -186,17 +234,43 @@ pub fn assemble_strategy_build_context(
         build_context =
             build_context.with_realized_volatility_runtime(realized_volatility_runtime.clone());
     }
-    if let Some((settlement, settlement_account_id, settlement_currency)) = settlement_identity {
+    if let Some(settlement) = settlement {
         build_context = build_context
             .with_settlement_runtime_sink(settlement.runtime_sink.clone())
             .with_settlement_recovery(settlement.recovery.clone())
-            .with_settlement_account_id(Some(settlement_account_id))
-            .with_settlement_currency(Some(settlement_currency))
+            .with_settlement_account_id(Some(settlement.settlement_account_id.clone()))
+            .with_settlement_currency(Some(settlement.settlement_currency))
             .with_settlement_health_transition_emitter(
                 settlement.health_transition_emitter.clone(),
             );
     }
     Ok(build_context)
+}
+
+fn execution_venue_for_context(
+    context: &StrategyRegistrationContext<'_>,
+) -> Result<Venue, BoltV3StrategyRegistrationError> {
+    let execution_client_id = context.strategy.config.execution_client_id.as_str();
+    venue_for_client(&context.loaded.root, execution_client_id).ok_or_else(|| {
+        binding_message(
+            context,
+            format!(
+                "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+            ),
+        )
+    })
+}
+
+fn settlement_resources_for_context<'a>(
+    context: &'a StrategyRegistrationContext<'_>,
+) -> Result<Option<&'a StrategyRegistrationSettlementResources>, BoltV3StrategyRegistrationError> {
+    match &context.settlement {
+        None => Ok(None),
+        Some(StrategyRegistrationSettlementCapability::Resolved(resources)) => Ok(Some(resources)),
+        Some(StrategyRegistrationSettlementCapability::Invalid(error)) => {
+            Err(binding_message(context, error.message()))
+        }
+    }
 }
 
 /// Neutral client-table venue lookup for execution and data client ids alike, so
@@ -595,20 +669,21 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
             .ok_or_else(|| BoltV3StrategyRegistrationError::UnsupportedStrategy {
                 strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
             })?;
-        let registered_strategy_id = (binding.register)(
-            node,
-            StrategyRegistrationContext::new(
-                loaded,
-                strategy,
-                (binding.strategy_kind)(),
-                binding.capabilities,
-                resolved,
-                decision_evidence.clone(),
-                iv_query_handles.clone(),
-                realized_volatility_runtime.clone(),
-                execution_controls.clone(),
-            ),
-        )?;
+        let context = StrategyRegistrationContext::new(
+            loaded,
+            strategy,
+            (binding.strategy_kind)(),
+            binding.capabilities,
+            resolved,
+            decision_evidence.clone(),
+            iv_query_handles.clone(),
+            realized_volatility_runtime.clone(),
+            execution_controls.clone(),
+        );
+        if context.settlement.is_some() {
+            let _ = settlement_resources_for_context(&context)?;
+        }
+        let registered_strategy_id = (binding.register)(node, context)?;
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             strategy_archetype: strategy.config.strategy_archetype.clone(),

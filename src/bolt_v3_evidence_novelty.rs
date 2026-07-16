@@ -9,11 +9,9 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
 
-include!("bolt_v3_evidence_novelty_generated.rs");
+use crate::bolt_v3_target_identity::stable_identity_field_is_canonical;
 
-pub(crate) fn stable_identity_field_is_canonical(value: &str) -> bool {
-    !value.is_empty() && value.trim() == value
-}
+include!("bolt_v3_evidence_novelty_generated.rs");
 
 /// The complete non-temporal input surface from which a market episode may be built.
 ///

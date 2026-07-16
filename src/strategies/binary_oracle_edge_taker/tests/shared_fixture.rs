@@ -1257,7 +1257,10 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             order_id_tag: "001".to_string(),
             oms_type: "netting".to_string(),
             client_id: "POLYMARKET".to_string(),
-            configured_target_id: "configured_updown_target".to_string(),
+            configured_target_id: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                "configured_updown_target",
+            )
+            .expect("test target id"),
             target_kind: "rotating_market".to_string(),
             rotating_market_family: "updown".to_string(),
             underlying_asset: "CONFIGURED_ASSET".to_string(),

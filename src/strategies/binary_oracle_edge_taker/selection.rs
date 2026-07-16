@@ -218,7 +218,7 @@ pub(super) fn selection_snapshot_for_state(
     now_ms: u64,
     state: SelectionState,
 ) -> RuntimeSelectionSnapshot {
-    let ruleset_id = config.configured_target_id.clone();
+    let ruleset_id = config.configured_target_id.to_string();
     RuntimeSelectionSnapshot {
         ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision { ruleset_id, state },
@@ -234,6 +234,7 @@ pub(super) fn select_configured_market_from_instruments(
 ) -> Option<CandidateMarket> {
     let cadence_seconds = i64::try_from(config.cadence_seconds).ok()?;
     let target = MarketSelectionTarget {
+        configured_target_id: &config.configured_target_id,
         family_key: &config.rotating_market_family,
         underlying_asset: &config.underlying_asset,
         cadence_seconds,

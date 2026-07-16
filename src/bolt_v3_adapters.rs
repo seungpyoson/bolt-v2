@@ -674,7 +674,10 @@ mod tests {
         let mut plan = MarketIdentityPlan::empty();
         plan.push_target(UpdownTargetPlan {
             strategy_instance_id: "fake-strategy".to_string(),
-            configured_target_id: "fake-updown".to_string(),
+            configured_target_id: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                "fake-updown",
+            )
+            .expect("test target id"),
             execution_client_id: "polymarket_main".to_string(),
             underlying_asset: "ASSET".to_string(),
             cadence_secs: 300,
@@ -716,7 +719,10 @@ mod tests {
         let mut plan = MarketIdentityPlan::empty();
         plan.push_target(StaticBinaryEventTargetPlan {
             strategy_instance_id: "sample-static-event".to_string(),
-            configured_target_id: "sample-static-event-target".to_string(),
+            configured_target_id: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                "sample-static-event-target",
+            )
+            .expect("test target id"),
             execution_client_id: "polymarket_main".to_string(),
             event_key: "sample_event_2026".to_string(),
             market_slug: "will-sample-event-resolve-yes".to_string(),
@@ -772,7 +778,10 @@ mod tests {
         let mut plan = MarketIdentityPlan::empty();
         plan.push_target(UpdownTargetPlan {
             strategy_instance_id: "fake-strategy".to_string(),
-            configured_target_id: "fake-updown".to_string(),
+            configured_target_id: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                "fake-updown",
+            )
+            .expect("test target id"),
             execution_client_id: "polymarket_main".to_string(),
             underlying_asset: "ASSET".to_string(),
             cadence_secs: 300,

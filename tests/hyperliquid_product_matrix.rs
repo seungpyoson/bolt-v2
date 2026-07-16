@@ -174,7 +174,10 @@ fn target_plan_for_surface(surface: &str) -> MarketIdentityPlan {
     let mut plan = MarketIdentityPlan::empty();
     plan.push_target(HyperliquidInstrumentTargetPlan {
         strategy_instance_id: "hyperliquid-product-matrix-strategy".to_string(),
-        configured_target_id: format!("hyperliquid-product-matrix-{surface}"),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            format!("hyperliquid-product-matrix-{surface}"),
+        )
+        .expect("test target id"),
         execution_client_id: "hyperliquid_unproven_surface".to_string(),
         product_surface: target_product_surface(surface),
         instrument_id: InstrumentId::from(target_instrument_id(surface)),

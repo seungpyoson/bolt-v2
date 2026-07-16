@@ -1481,7 +1481,10 @@ const RUNTIME_YES_INSTRUMENT_REISSUED: &str = "MAKER-RT-YES-REISSUED.SIM";
 
 fn runtime_static_declaration() -> MakerMarketDeclaration {
     MakerMarketDeclaration {
-        market_key: RUNTIME_MARKET_KEY.to_string(),
+        market_key: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            RUNTIME_MARKET_KEY,
+        )
+        .expect("test market key"),
         family_key: RUNTIME_STATIC_FAMILY.to_string(),
         underlying_asset: "ETH".to_string(),
         cadence_seconds: 3_600,

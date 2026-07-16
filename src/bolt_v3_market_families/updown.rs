@@ -55,7 +55,6 @@ use crate::{
         LoadedBoltV3Config, LoadedStrategy, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND,
         RESOLUTION_GATE_ROLE,
     },
-    bolt_v3_evidence_novelty::stable_identity_field_is_canonical,
     bolt_v3_instrument_filters::{InstrumentFilterError, format_target_prefix},
     bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_market_families::{
@@ -72,6 +71,7 @@ use crate::{
     },
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
+    bolt_v3_target_identity::{ConfiguredTargetId, stable_identity_field_is_canonical},
 };
 
 pub const KEY: &str = "updown";
@@ -127,7 +127,7 @@ pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetBlock {
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub kind: TargetKind,
     pub rotating_market_family: RotatingMarketFamily,
     pub underlying_asset: String,
@@ -225,10 +225,6 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     };
 
     let mut errors = Vec::new();
-
-    if let Some(message) = super::configured_target_identity_error(context, target) {
-        errors.push(message);
-    }
 
     errors.extend(super::validate_underlying_asset(
         context,
@@ -530,7 +526,7 @@ fn cadence_contract_values() -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdownTargetPlan {
     pub strategy_instance_id: String,
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub execution_client_id: String,
     pub underlying_asset: String,
     pub cadence_secs: i64,
@@ -542,7 +538,7 @@ impl MarketIdentityTarget for UpdownTargetPlan {
         KEY
     }
 
-    fn configured_target_id(&self) -> &str {
+    fn configured_target_id(&self) -> &ConfiguredTargetId {
         &self.configured_target_id
     }
 
@@ -644,9 +640,6 @@ impl UpdownOutcomePair {
 
 #[derive(Debug)]
 pub enum BoltV3MarketIdentityError {
-    InvalidConfiguredTargetId {
-        strategy_instance_id: String,
-    },
     NonPositiveCadenceSeconds {
         strategy_instance_id: Option<String>,
         configured_target_id: Option<String>,
@@ -692,12 +685,6 @@ pub enum BoltV3MarketIdentityError {
 impl std::fmt::Display for BoltV3MarketIdentityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BoltV3MarketIdentityError::InvalidConfiguredTargetId {
-                strategy_instance_id,
-            } => write!(
-                f,
-                "strategy `{strategy_instance_id}`: target.configured_target_id must be a non-empty, unpadded string"
-            ),
             BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
                 strategy_instance_id,
                 configured_target_id,
@@ -800,36 +787,31 @@ fn plan_strategy_updown_target(
     let RotatingMarketFamily::Updown = target.rotating_market_family;
 
     let configured_target_id = target.configured_target_id.clone();
-    if !super::stable_identity_field_is_canonical(configured_target_id.as_str()) {
-        return Err(BoltV3MarketIdentityError::InvalidConfiguredTargetId {
-            strategy_instance_id,
-        });
-    }
     if target.cadence_secs <= 0 {
         return Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id: Some(strategy_instance_id),
-            configured_target_id: Some(configured_target_id),
+            configured_target_id: Some(configured_target_id.to_string()),
             cadence_secs: target.cadence_secs,
         });
     }
     if !validate_cadence_slug_token("", target.cadence_slug_token.as_str()).is_empty() {
         return Err(BoltV3MarketIdentityError::InvalidCadenceSlugToken {
             strategy_instance_id: Some(strategy_instance_id),
-            configured_target_id: Some(configured_target_id),
+            configured_target_id: Some(configured_target_id.to_string()),
             cadence_slug_token: target.cadence_slug_token.clone(),
         });
     }
     let Some(expected_cadence_slug_token) = expected_cadence_slug_token(target.cadence_secs) else {
         return Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
             strategy_instance_id: Some(strategy_instance_id),
-            configured_target_id: Some(configured_target_id),
+            configured_target_id: Some(configured_target_id.to_string()),
             cadence_secs: target.cadence_secs,
         });
     };
     if target.cadence_slug_token != expected_cadence_slug_token {
         return Err(BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
             strategy_instance_id: Some(strategy_instance_id),
-            configured_target_id: Some(configured_target_id),
+            configured_target_id: Some(configured_target_id.to_string()),
             cadence_secs: target.cadence_secs,
             cadence_slug_token: target.cadence_slug_token.clone(),
             expected_cadence_slug_token,
@@ -958,8 +940,7 @@ fn plan_strategy_error(error: BoltV3MarketIdentityError) -> InstrumentFilterErro
             strategy_instance_id,
             message,
         },
-        BoltV3MarketIdentityError::InvalidConfiguredTargetId { .. }
-        | BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
+        BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
         | BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. }
         | BoltV3MarketIdentityError::CadenceSlugTokenMismatch { .. } => {
             InstrumentFilterError::TargetValidationFailure {
@@ -978,7 +959,7 @@ pub fn target_runtime_fields(
         return Err(InstrumentFilterError::TargetValidationFailure {
             message: BoltV3MarketIdentityError::InvalidCadenceSlugToken {
                 strategy_instance_id: None,
-                configured_target_id: Some(target.configured_target_id.clone()),
+                configured_target_id: Some(target.configured_target_id.to_string()),
                 cadence_slug_token: target.cadence_slug_token.clone(),
             }
             .to_string(),
@@ -989,7 +970,7 @@ pub fn target_runtime_fields(
             return Err(InstrumentFilterError::TargetValidationFailure {
                 message: BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
                     strategy_instance_id: None,
-                    configured_target_id: Some(target.configured_target_id.clone()),
+                    configured_target_id: Some(target.configured_target_id.to_string()),
                     cadence_secs: target.cadence_secs,
                     cadence_slug_token: target.cadence_slug_token.clone(),
                     expected_cadence_slug_token,
@@ -1001,7 +982,7 @@ pub fn target_runtime_fields(
         return Err(InstrumentFilterError::TargetValidationFailure {
             message: BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
                 strategy_instance_id: None,
-                configured_target_id: Some(target.configured_target_id.clone()),
+                configured_target_id: Some(target.configured_target_id.to_string()),
                 cadence_secs: target.cadence_secs,
             }
             .to_string(),
@@ -1234,7 +1215,7 @@ pub fn selected_market_requirement(
     );
 
     selected_market_requirement_from_parts(SelectedMarketRequirementParts {
-        configured_target_id: target.configured_target_id.as_str(),
+        configured_target_id: &target.configured_target_id,
         venue: up_venue,
         family_key: KEY,
         market_id: selected.market_id.as_str(),
@@ -1400,8 +1381,7 @@ fn market_identity_error_to_instrument_filter_error(
             now_unix_seconds: now_unix_secs,
             cadence_seconds: cadence_secs,
         },
-        BoltV3MarketIdentityError::InvalidConfiguredTargetId { .. }
-        | BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
+        BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
         | BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. }
         | BoltV3MarketIdentityError::CadenceSlugTokenMismatch { .. }
         | BoltV3MarketIdentityError::TargetParseFailed { .. } => {
@@ -1757,24 +1737,29 @@ mod tests {
         )
         .expect("updown selected-market requirement should resolve from target mapping");
 
-        assert_eq!(requirement.configured_target_id, TEST_CONFIGURED_TARGET_ID);
-        assert_eq!(requirement.venue, "POLYMARKET");
-        assert_eq!(requirement.family_key, KEY);
-        assert_eq!(requirement.market_id, "market-1");
         assert_eq!(
-            requirement.instrument_ids,
+            requirement.configured_target_id(),
+            TEST_CONFIGURED_TARGET_ID
+        );
+        assert_eq!(requirement.venue(), "POLYMARKET");
+        assert_eq!(requirement.family_key(), KEY);
+        assert_eq!(requirement.market_id(), "market-1");
+        assert_eq!(
+            requirement.instrument_ids(),
             vec![TEST_DOWN_INSTRUMENT_ID, TEST_UP_INSTRUMENT_ID]
         );
-        assert_eq!(requirement.market_class, "binary_option");
-        assert_eq!(requirement.resolution_kind, "chainlink_data_streams");
+        assert_eq!(requirement.market_class(), "binary_option");
+        assert_eq!(requirement.resolution_kind(), "chainlink_data_streams");
         assert_eq!(
-            requirement.resolution_identity,
+            requirement.resolution_identity(),
             "configured-reference-price"
         );
-        assert_eq!(requirement.value_kind, "price");
-        assert_eq!(requirement.selected_at_ms, 700_000);
-        assert!(is_lowercase_sha256(&requirement.metadata_provenance_sha256));
-        assert!(is_lowercase_sha256(&requirement.selected_market_key));
+        assert_eq!(requirement.value_kind(), "price");
+        assert_eq!(requirement.selected_at_ms(), 700_000);
+        assert!(is_lowercase_sha256(
+            requirement.metadata_provenance_sha256()
+        ));
+        assert!(is_lowercase_sha256(requirement.selected_market_key()));
     }
 
     #[test]
@@ -1786,13 +1771,13 @@ mod tests {
         )
         .expect("public family registry should dispatch updown requirement extraction");
 
-        assert_eq!(requirement.family_key, KEY);
+        assert_eq!(requirement.family_key(), KEY);
         assert_eq!(
-            requirement.resolution_identity,
+            requirement.resolution_identity(),
             "configured-reference-price"
         );
         assert_eq!(
-            requirement.instrument_ids,
+            requirement.instrument_ids(),
             vec![TEST_DOWN_INSTRUMENT_ID, TEST_UP_INSTRUMENT_ID]
         );
     }
@@ -1996,7 +1981,10 @@ mod tests {
                 .expect("fixture info")
                 .remove("neg_risk");
         }
+        let configured_target_id =
+            ConfiguredTargetId::try_from(TEST_CONFIGURED_TARGET_ID).expect("test target id");
         let target = MarketSelectionTarget {
+            configured_target_id: &configured_target_id,
             family_key: KEY,
             underlying_asset: TEST_UNDERLYING_ASSET,
             cadence_seconds: 300,

@@ -151,7 +151,10 @@ fn hyperliquid_updown_target_plan() -> MarketIdentityPlan {
     let mut plan = MarketIdentityPlan::empty();
     plan.push_target(UpdownTargetPlan {
         strategy_instance_id: "hyperliquid-updown-strategy".to_string(),
-        configured_target_id: "hyperliquid-updown-target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "hyperliquid-updown-target",
+        )
+        .expect("test target id"),
         execution_client_id: "hyperliquid_perps".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_secs: 300,
@@ -164,7 +167,10 @@ fn hyperliquid_outcome_group_target_plan() -> MarketIdentityPlan {
     let mut plan = MarketIdentityPlan::empty();
     plan.push_target(OutcomeGroupTargetPlan {
         strategy_instance_id: "hyperliquid-complete-set-strategy".to_string(),
-        configured_target_id: "hyperliquid-outcome-group-target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "hyperliquid-outcome-group-target",
+        )
+        .expect("test target id"),
         execution_client_id: "hyperliquid_perps".to_string(),
         group_sources: vec!["hl_world_cup".to_string()],
     });
@@ -178,7 +184,10 @@ fn hyperliquid_static_instrument_target_plan(
     let mut plan = MarketIdentityPlan::empty();
     plan.push_target(HyperliquidInstrumentTargetPlan {
         strategy_instance_id: "hyperliquid-static-strategy".to_string(),
-        configured_target_id: "hyperliquid-static-target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "hyperliquid-static-target",
+        )
+        .expect("test target id"),
         execution_client_id: "hyperliquid_perps".to_string(),
         product_surface,
         instrument_id: InstrumentId::from(instrument_id),
@@ -197,7 +206,10 @@ fn hyperliquid_multi_static_instrument_target_plan() -> MarketIdentityPlan {
     );
     plan.push_target(HyperliquidInstrumentTargetPlan {
         strategy_instance_id: "hyperliquid-static-spot-strategy".to_string(),
-        configured_target_id: "hyperliquid-static-spot-target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "hyperliquid-static-spot-target",
+        )
+        .expect("test target id"),
         execution_client_id: "hyperliquid_perps".to_string(),
         product_surface: ProductSurface::Spot,
         instrument_id: InstrumentId::from("BTC/USDC.HYPERLIQUID"),

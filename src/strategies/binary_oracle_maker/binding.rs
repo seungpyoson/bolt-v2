@@ -38,6 +38,7 @@ use crate::bolt_v3_maker_order_plan::MakerLegBinding;
 use crate::bolt_v3_market_families::{
     self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
 };
+use crate::bolt_v3_target_identity::ConfiguredTargetId;
 
 /// One operator-declared market the maker should quote, normalized into the
 /// shape the shared discovery engine consumes. Mirrors the taker's
@@ -60,7 +61,7 @@ use crate::bolt_v3_market_families::{
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MakerMarketDeclaration {
-    pub market_key: String,
+    pub market_key: ConfiguredTargetId,
     pub family_key: String,
     pub underlying_asset: String,
     pub cadence_seconds: u64,
@@ -128,11 +129,12 @@ pub fn resolve_declared_market(
 ) -> Result<MakerResolvedMarketBinding, MakerMarketResolutionMiss> {
     let Ok(cadence_seconds) = i64::try_from(declaration.cadence_seconds) else {
         return Err(MakerMarketResolutionMiss::CadenceSecondsOutOfRange {
-            market_key: declaration.market_key.clone(),
+            market_key: declaration.market_key.to_string(),
             cadence_seconds: declaration.cadence_seconds,
         });
     };
     let target = MarketSelectionTarget {
+        configured_target_id: &declaration.market_key,
         family_key: &declaration.family_key,
         underlying_asset: &declaration.underlying_asset,
         cadence_seconds,
@@ -147,11 +149,11 @@ pub fn resolve_declared_market(
         now_milliseconds,
     ) else {
         return Err(MakerMarketResolutionMiss::NoCurrentMarket {
-            market_key: declaration.market_key.clone(),
+            market_key: declaration.market_key.to_string(),
         });
     };
     Ok(MakerResolvedMarketBinding {
-        market_key: declaration.market_key.clone(),
+        market_key: declaration.market_key.to_string(),
         family_key: declaration.family_key.clone(),
         market_id: market.market_id,
         yes: leg_binding(market.up_instrument_id),
@@ -251,7 +253,7 @@ mod tests {
 
     fn declaration(market_key: &str) -> MakerMarketDeclaration {
         MakerMarketDeclaration {
-            market_key: market_key.to_string(),
+            market_key: ConfiguredTargetId::try_from(market_key).expect("test market key"),
             family_key: UPDOWN_FAMILY.to_string(),
             underlying_asset: ASSET.to_string(),
             cadence_seconds: CADENCE_SECONDS,
@@ -271,6 +273,7 @@ mod tests {
         let cadence_seconds =
             i64::try_from(declaration.cadence_seconds).expect("test cadence fits i64");
         let target = MarketSelectionTarget {
+            configured_target_id: &declaration.market_key,
             family_key: &declaration.family_key,
             underlying_asset: &declaration.underlying_asset,
             cadence_seconds,
@@ -441,7 +444,7 @@ mod tests {
         // channel, and a miss on one never suppresses the other's binding.
         let resolvable = declaration("eth-resolvable");
         let unresolvable = MakerMarketDeclaration {
-            market_key: "eth-unresolvable".to_string(),
+            market_key: ConfiguredTargetId::try_from("eth-unresolvable").expect("test market key"),
             cadence_slug_token: "different".to_string(),
             ..declaration("eth-unresolvable")
         };
@@ -537,7 +540,7 @@ mod tests {
 
     fn static_declaration(market_key: &str, underlying_asset: &str) -> MakerMarketDeclaration {
         MakerMarketDeclaration {
-            market_key: market_key.to_string(),
+            market_key: ConfiguredTargetId::try_from(market_key).expect("test market key"),
             family_key: STATIC_FAMILY.to_string(),
             underlying_asset: underlying_asset.to_string(),
             cadence_seconds: CADENCE_SECONDS,

@@ -135,7 +135,10 @@ fn hyperliquid_standard_perps_target_plan() -> MarketIdentityPlan {
     let mut plan = MarketIdentityPlan::empty();
     plan.push_target(HyperliquidInstrumentTargetPlan {
         strategy_instance_id: "hyperliquid-latency-profile-strategy".to_string(),
-        configured_target_id: "hyperliquid-latency-profile-target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "hyperliquid-latency-profile-target",
+        )
+        .expect("test target id"),
         execution_client_id: "hyperliquid_perps".to_string(),
         product_surface: ProductSurface::StandardPerps,
         instrument_id: InstrumentId::from("BTC-PERP.HYPERLIQUID"),

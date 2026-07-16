@@ -19,12 +19,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
-    bolt_v3_evidence_novelty::stable_identity_field_is_canonical,
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
+    bolt_v3_target_identity::ConfiguredTargetId,
 };
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 
@@ -44,7 +44,7 @@ pub enum OutcomeSide {
 /// `target.rotating_market_family` validator.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TargetMetadata {
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -140,6 +140,7 @@ pub struct FairProbabilityInputs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MarketSelectionTarget<'a> {
+    pub configured_target_id: &'a ConfiguredTargetId,
     pub family_key: &'a str,
     pub underlying_asset: &'a str,
     pub cadence_seconds: i64,
@@ -185,25 +186,135 @@ pub struct SelectedMarketEvidenceIdentity {
     pub outcomes: [SelectedMarketEvidenceOutcome; 2],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SelectedMarketRequirement {
-    pub configured_target_id: String,
-    pub venue: String,
-    pub family_key: String,
-    pub market_id: String,
-    pub instrument_ids: Vec<String>,
-    pub market_class: String,
-    pub resolution_kind: String,
-    pub resolution_identity: String,
-    pub value_kind: String,
-    pub metadata_provenance_sha256: String,
-    pub selected_market_key: String,
-    pub selected_at_ms: u64,
+    configured_target_id: ConfiguredTargetId,
+    venue: String,
+    family_key: String,
+    market_id: String,
+    instrument_ids: Vec<String>,
+    market_class: String,
+    resolution_kind: String,
+    resolution_identity: String,
+    value_kind: String,
+    metadata_provenance_sha256: String,
+    selected_market_key: String,
+    selected_at_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct SelectedMarketRequirementWire {
+    configured_target_id: ConfiguredTargetId,
+    venue: String,
+    family_key: String,
+    market_id: String,
+    instrument_ids: Vec<String>,
+    market_class: String,
+    resolution_kind: String,
+    resolution_identity: String,
+    value_kind: String,
+    metadata_provenance_sha256: String,
+    selected_market_key: String,
+    selected_at_ms: u64,
+}
+
+impl SelectedMarketRequirement {
+    #[must_use]
+    pub fn configured_target_id(&self) -> &ConfiguredTargetId {
+        &self.configured_target_id
+    }
+
+    #[must_use]
+    pub fn venue(&self) -> &str {
+        self.venue.as_str()
+    }
+
+    #[must_use]
+    pub fn family_key(&self) -> &str {
+        self.family_key.as_str()
+    }
+
+    #[must_use]
+    pub fn market_id(&self) -> &str {
+        self.market_id.as_str()
+    }
+
+    #[must_use]
+    pub fn instrument_ids(&self) -> &[String] {
+        self.instrument_ids.as_slice()
+    }
+
+    #[must_use]
+    pub fn market_class(&self) -> &str {
+        self.market_class.as_str()
+    }
+
+    #[must_use]
+    pub fn resolution_kind(&self) -> &str {
+        self.resolution_kind.as_str()
+    }
+
+    #[must_use]
+    pub fn resolution_identity(&self) -> &str {
+        self.resolution_identity.as_str()
+    }
+
+    #[must_use]
+    pub fn value_kind(&self) -> &str {
+        self.value_kind.as_str()
+    }
+
+    #[must_use]
+    pub fn metadata_provenance_sha256(&self) -> &str {
+        self.metadata_provenance_sha256.as_str()
+    }
+
+    #[must_use]
+    pub fn selected_market_key(&self) -> &str {
+        self.selected_market_key.as_str()
+    }
+
+    #[must_use]
+    pub fn selected_at_ms(&self) -> u64 {
+        self.selected_at_ms
+    }
+}
+
+impl<'de> Deserialize<'de> for SelectedMarketRequirement {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SelectedMarketRequirementWire::deserialize(deserializer)?;
+        let requirement = Self {
+            configured_target_id: wire.configured_target_id,
+            venue: wire.venue,
+            family_key: wire.family_key,
+            market_id: wire.market_id,
+            instrument_ids: wire.instrument_ids,
+            market_class: wire.market_class,
+            resolution_kind: wire.resolution_kind,
+            resolution_identity: wire.resolution_identity,
+            value_kind: wire.value_kind,
+            metadata_provenance_sha256: wire.metadata_provenance_sha256,
+            selected_market_key: wire.selected_market_key,
+            selected_at_ms: wire.selected_at_ms,
+        };
+        validate_selected_market_requirement(&requirement).map_err(serde::de::Error::custom)?;
+        let expected =
+            selected_market_key_for_requirement(&requirement).map_err(serde::de::Error::custom)?;
+        if requirement.selected_market_key != expected {
+            return Err(serde::de::Error::custom(
+                "selected_market_key does not match identity fields",
+            ));
+        }
+        Ok(requirement)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedMarketRequirementParts<'a> {
-    pub configured_target_id: &'a str,
+    pub configured_target_id: &'a ConfiguredTargetId,
     pub venue: &'a str,
     pub family_key: &'a str,
     pub market_id: &'a str,
@@ -244,7 +355,7 @@ pub struct MarketSelectionCandidateWindow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetRuntimeFields {
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub target_kind: String,
     pub rotating_market_family: String,
     pub underlying_asset: String,
@@ -262,7 +373,7 @@ pub struct TargetRuntimeFields {
 
 pub trait MarketIdentityTarget: fmt::Debug + Send + Sync + Any {
     fn family_key(&self) -> &'static str;
-    fn configured_target_id(&self) -> &str;
+    fn configured_target_id(&self) -> &ConfiguredTargetId;
     fn execution_client_id(&self) -> &str;
     fn as_any(&self) -> &dyn Any;
 }
@@ -325,7 +436,7 @@ impl MarketIdentityPlan {
         self.targets()
             .map(|target| MarketIdentityExecutionClientTargetRef {
                 family_key: target.family_key(),
-                configured_target_id: target.configured_target_id(),
+                configured_target_id: target.configured_target_id().as_str(),
                 execution_client_id: target.execution_client_id(),
             })
     }
@@ -517,7 +628,7 @@ pub fn market_identity_plan_from_config_with_bindings(
     let mut plan = MarketIdentityPlan::empty();
     for strategy in &loaded.strategies {
         let context = format!("strategy `{}`", strategy.config.strategy_instance_id);
-        ensure_configured_target_identity(&context, &strategy.config.target)?;
+        configured_target_id_from_target(&context, &strategy.config.target)?;
         let dispatch: TargetFamilyDispatch =
             strategy.config.target.clone().try_into().map_err(|error| {
                 InstrumentFilterError::TargetParseFailed {
@@ -553,7 +664,7 @@ pub fn target_runtime_fields_from_target_with_bindings(
     target: &toml::Value,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Result<TargetRuntimeFields, InstrumentFilterError> {
-    ensure_configured_target_identity("", target)?;
+    configured_target_id_from_target("", target)?;
     let dispatch: TargetFamilyDispatch =
         target
             .clone()
@@ -893,7 +1004,7 @@ pub fn selected_market_requirement_from_target_with_bindings(
     selected_at_ms: u64,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
-    ensure_configured_target_identity("", target)?;
+    configured_target_id_from_target("", target)?;
     let dispatch: TargetFamilyDispatch =
         target
             .clone()
@@ -929,14 +1040,9 @@ where
 pub(crate) fn selected_market_requirement_from_parts(
     parts: SelectedMarketRequirementParts<'_>,
 ) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
-    if !stable_identity_field_is_canonical(parts.configured_target_id) {
-        return Err(selected_market_requirement_error(
-            "selected-market configured_target_id must be non-empty and unpadded",
-        ));
-    }
     ensure_selected_market_text(
         SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD,
-        parts.configured_target_id,
+        parts.configured_target_id.as_str(),
         false,
     )?;
     ensure_selected_market_text(SELECTED_MARKET_VENUE_FIELD, parts.venue, false)?;
@@ -982,7 +1088,7 @@ pub(crate) fn selected_market_requirement_from_parts(
 
     let metadata_provenance_sha256 = canonical_json_sha256(&parts.metadata_provenance_fields)?;
     let mut requirement = SelectedMarketRequirement {
-        configured_target_id: parts.configured_target_id.to_string(),
+        configured_target_id: parts.configured_target_id.clone(),
         venue: parts.venue.to_string(),
         family_key: parts.family_key.to_string(),
         market_id: parts.market_id.to_string(),
@@ -995,8 +1101,71 @@ pub(crate) fn selected_market_requirement_from_parts(
         selected_market_key: String::new(),
         selected_at_ms: parts.selected_at_ms,
     };
+    validate_selected_market_requirement(&requirement)?;
     requirement.selected_market_key = selected_market_key_for_requirement(&requirement)?;
     Ok(requirement)
+}
+
+fn validate_selected_market_requirement(
+    requirement: &SelectedMarketRequirement,
+) -> Result<(), InstrumentFilterError> {
+    ensure_selected_market_text(
+        SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD,
+        requirement.configured_target_id.as_str(),
+        false,
+    )?;
+    ensure_selected_market_text(SELECTED_MARKET_VENUE_FIELD, &requirement.venue, false)?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_FAMILY_KEY_FIELD,
+        &requirement.family_key,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_MARKET_ID_FIELD,
+        &requirement.market_id,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_MARKET_CLASS_FIELD,
+        &requirement.market_class,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_RESOLUTION_KIND_FIELD,
+        &requirement.resolution_kind,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD,
+        &requirement.resolution_identity,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_VALUE_KIND_FIELD,
+        &requirement.value_kind,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_METADATA_PROVENANCE_SHA256_FIELD,
+        &requirement.metadata_provenance_sha256,
+        false,
+    )?;
+    if requirement.instrument_ids.is_empty() {
+        return Err(selected_market_requirement_error(
+            "selected-market instrument_ids must not be empty",
+        ));
+    }
+    let mut previous = None;
+    for instrument_id in &requirement.instrument_ids {
+        if previous.is_some_and(|value| value >= instrument_id) {
+            return Err(selected_market_requirement_error(
+                "selected-market instrument_ids must be sorted and unique",
+            ));
+        }
+        ensure_selected_market_text(SELECTED_MARKET_INSTRUMENT_IDS_FIELD, instrument_id, false)?;
+        previous = Some(instrument_id);
+    }
+    Ok(())
 }
 
 pub(crate) fn selected_market_key_for_requirement(
@@ -1005,43 +1174,43 @@ pub(crate) fn selected_market_key_for_requirement(
     let input = BTreeMap::from([
         (
             SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD.to_string(),
-            serde_json::json!(requirement.configured_target_id),
+            serde_json::json!(requirement.configured_target_id.as_str()),
         ),
         (
             SELECTED_MARKET_FAMILY_KEY_FIELD.to_string(),
-            serde_json::json!(requirement.family_key),
+            serde_json::json!(requirement.family_key()),
         ),
         (
             SELECTED_MARKET_INSTRUMENT_IDS_FIELD.to_string(),
-            serde_json::json!(requirement.instrument_ids),
+            serde_json::json!(requirement.instrument_ids()),
         ),
         (
             SELECTED_MARKET_MARKET_CLASS_FIELD.to_string(),
-            serde_json::json!(requirement.market_class),
+            serde_json::json!(requirement.market_class()),
         ),
         (
             SELECTED_MARKET_MARKET_ID_FIELD.to_string(),
-            serde_json::json!(requirement.market_id),
+            serde_json::json!(requirement.market_id()),
         ),
         (
             SELECTED_MARKET_METADATA_PROVENANCE_SHA256_FIELD.to_string(),
-            serde_json::json!(requirement.metadata_provenance_sha256),
+            serde_json::json!(requirement.metadata_provenance_sha256()),
         ),
         (
             SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD.to_string(),
-            serde_json::json!(requirement.resolution_identity),
+            serde_json::json!(requirement.resolution_identity()),
         ),
         (
             SELECTED_MARKET_RESOLUTION_KIND_FIELD.to_string(),
-            serde_json::json!(requirement.resolution_kind),
+            serde_json::json!(requirement.resolution_kind()),
         ),
         (
             SELECTED_MARKET_VALUE_KIND_FIELD.to_string(),
-            serde_json::json!(requirement.value_kind),
+            serde_json::json!(requirement.value_kind()),
         ),
         (
             SELECTED_MARKET_VENUE_FIELD.to_string(),
-            serde_json::json!(requirement.venue),
+            serde_json::json!(requirement.venue()),
         ),
     ]);
     canonical_json_sha256(&input)
@@ -1106,32 +1275,25 @@ pub(crate) fn selected_market_requirement_error(
     }
 }
 
-pub(crate) fn configured_target_identity_error(
+fn configured_target_id_from_target(
     context: &str,
     target: &toml::Value,
-) -> Option<String> {
-    let configured_target_id = target
+) -> Result<ConfiguredTargetId, InstrumentFilterError> {
+    let value = target
         .as_table()
         .and_then(|table| table.get(stringify!(configured_target_id)))
         .and_then(toml::Value::as_str);
-    match configured_target_id {
-        Some(value) if stable_identity_field_is_canonical(value) => None,
-        _ if context.is_empty() => {
-            Some("target.configured_target_id must be a non-empty, unpadded string".to_string())
+    let message = || {
+        if context.is_empty() {
+            "target.configured_target_id must be a non-empty, unpadded string".to_string()
+        } else {
+            format!("{context}: target.configured_target_id must be a non-empty, unpadded string")
         }
-        _ => Some(format!(
-            "{context}: target.configured_target_id must be a non-empty, unpadded string"
-        )),
-    }
-}
-
-fn ensure_configured_target_identity(
-    context: &str,
-    target: &toml::Value,
-) -> Result<(), InstrumentFilterError> {
-    configured_target_identity_error(context, target).map_or(Ok(()), |message| {
-        Err(InstrumentFilterError::TargetValidationFailure { message })
-    })
+    };
+    let value = value
+        .ok_or_else(|| InstrumentFilterError::TargetValidationFailure { message: message() })?;
+    ConfiguredTargetId::try_from(value)
+        .map_err(|_| InstrumentFilterError::TargetValidationFailure { message: message() })
 }
 
 /// Target validation entry point used by core startup validation.
@@ -1152,9 +1314,10 @@ pub fn validate_strategy_target_with_bindings(
     bindings: &[MarketFamilyValidationBinding],
 ) -> (Option<TargetMetadata>, Vec<InstrumentFilterError>) {
     let metadata = target.clone().try_into::<TargetMetadata>().ok();
-    let mut errors = configured_target_identity_error(context, target)
-        .map(|message| vec![InstrumentFilterError::TargetValidationFailure { message }])
-        .unwrap_or_default();
+    if let Err(error) = configured_target_id_from_target(context, target) {
+        return (metadata, vec![error]);
+    }
+    let mut errors = Vec::new();
     let dispatch: TargetFamilyDispatch = match target.clone().try_into() {
         Ok(value) => value,
         Err(error) => {
@@ -1190,6 +1353,13 @@ mod tests {
         bolt_v3_quote_lifecycle::Leg,
         bolt_v3_quoting::{FamilyQuoteInputs, QuoteSide},
     };
+    use std::cell::Cell;
+    use std::sync::LazyLock;
+
+    static TEST_CONFIGURED_TARGET_ID: LazyLock<ConfiguredTargetId> =
+        LazyLock::new(|| ConfiguredTargetId::try_from("fixture-target").expect("test target id"));
+    static TEST_TARGET_A: LazyLock<ConfiguredTargetId> =
+        LazyLock::new(|| ConfiguredTargetId::try_from("target-a").expect("test target id"));
 
     #[test]
     fn production_registry_binds_static_binary_event_family() {
@@ -1201,7 +1371,12 @@ mod tests {
         );
     }
 
+    thread_local! {
+        static FAKE_VALIDATE_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
     fn fake_validate_target(_context: &str, _target: &toml::Value) -> Vec<String> {
+        FAKE_VALIDATE_CALLS.with(|calls| calls.set(calls.get() + 1));
         Vec::new()
     }
 
@@ -1308,7 +1483,7 @@ mod tests {
         selected_at_ms: u64,
     ) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
         selected_market_requirement_from_parts(SelectedMarketRequirementParts {
-            configured_target_id: "fixture-target",
+            configured_target_id: &TEST_CONFIGURED_TARGET_ID,
             venue: "FIXTURE",
             family_key: "fixture_family",
             market_id: selected.market_id.as_str(),
@@ -1336,7 +1511,7 @@ mod tests {
         selected_at_ms: u64,
     ) -> SelectedMarketRequirementParts<'static> {
         SelectedMarketRequirementParts {
-            configured_target_id: "target-a",
+            configured_target_id: &TEST_TARGET_A,
             venue: "FIXTURE",
             family_key: "fixture_family",
             market_id,
@@ -1559,6 +1734,19 @@ mod tests {
         }
         .into();
 
+        FAKE_VALIDATE_CALLS.with(|calls| calls.set(0));
+        let (_, validation_errors) = validate_strategy_target_with_bindings(
+            "strategy `fixture`",
+            &malformed_target,
+            FAKE_FAMILY_BINDINGS,
+        );
+        assert_eq!(FAKE_VALIDATE_CALLS.with(Cell::get), 0);
+        assert!(validation_errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("target.configured_target_id must be a non-empty, unpadded string")
+        }));
+
         let runtime_error = target_runtime_fields_from_target_with_bindings(
             &malformed_target,
             FAKE_FAMILY_BINDINGS,
@@ -1729,6 +1917,7 @@ mod tests {
     #[test]
     fn market_selection_uses_injected_family_binding_without_parent_family_branch() {
         let target = MarketSelectionTarget {
+            configured_target_id: &TEST_CONFIGURED_TARGET_ID,
             family_key: "fixture_family",
             underlying_asset: "FIXTURE",
             cadence_seconds: 60,
@@ -1764,6 +1953,7 @@ mod tests {
         // (a load-time gate, not the Option-returning selection path).
         for family_key in ["outcome_group", "hyperliquid_instrument"] {
             let target = MarketSelectionTarget {
+                configured_target_id: &TEST_CONFIGURED_TARGET_ID,
                 family_key,
                 underlying_asset: "ETH",
                 cadence_seconds: 3_600,
@@ -1782,6 +1972,7 @@ mod tests {
         }
 
         let unknown = MarketSelectionTarget {
+            configured_target_id: &TEST_CONFIGURED_TARGET_ID,
             family_key: "no_such_family",
             underlying_asset: "ETH",
             cadence_seconds: 3_600,
@@ -1811,6 +2002,7 @@ mod tests {
         // the cadence check is the sole failure.
         fn target(cadence_seconds: i64) -> MarketSelectionTarget<'static> {
             MarketSelectionTarget {
+                configured_target_id: &TEST_CONFIGURED_TARGET_ID,
                 family_key: "static_binary_event",
                 underlying_asset: "ETH",
                 cadence_seconds,
@@ -2007,11 +2199,11 @@ mod tests {
         )
         .expect("injected family binding should own requirement extraction");
 
-        assert_eq!(requirement.configured_target_id, "fixture-target");
-        assert_eq!(requirement.family_key, "fixture_family");
-        assert_eq!(requirement.selected_at_ms, 123);
+        assert_eq!(requirement.configured_target_id(), "fixture-target");
+        assert_eq!(requirement.family_key(), "fixture_family");
+        assert_eq!(requirement.selected_at_ms(), 123);
         assert_eq!(
-            requirement.instrument_ids,
+            requirement.instrument_ids(),
             vec!["fixture-down.FIXTURE", "fixture-up.FIXTURE"]
         );
     }
@@ -2037,15 +2229,18 @@ mod tests {
                 .contains("must be a non-empty, unpadded string")
         );
 
-        let mut parts = fixture_requirement_parts("fixture-market", 123);
-        parts.configured_target_id = "fixture-target ";
-        let parts_error = selected_market_requirement_from_parts(parts)
-            .expect_err("direct requirement construction must reject a padded target identity");
-        assert!(
-            parts_error
-                .to_string()
-                .contains("must be non-empty and unpadded")
-        );
+        let requirement = selected_market_requirement_from_parts(fixture_requirement_parts(
+            "fixture-market",
+            123,
+        ))
+        .expect("valid requirement");
+        let mut json = serde_json::to_value(&requirement).expect("serialize requirement");
+        json["configured_target_id"] = serde_json::json!(" fixture-target");
+        assert!(serde_json::from_value::<SelectedMarketRequirement>(json).is_err());
+
+        let mut json = serde_json::to_value(&requirement).expect("serialize requirement");
+        json["selected_market_key"] = serde_json::json!("forged");
+        assert!(serde_json::from_value::<SelectedMarketRequirement>(json).is_err());
     }
 
     #[test]
@@ -2060,14 +2255,14 @@ mod tests {
             456,
         ))
         .expect("later fixture requirement should build");
-        assert_eq!(first.selected_market_key, later.selected_market_key);
+        assert_eq!(first.selected_market_key(), later.selected_market_key());
 
         let changed = selected_market_requirement_from_parts(fixture_requirement_parts(
             "fixture-market-2",
             123,
         ))
         .expect("changed fixture requirement should build");
-        assert_ne!(first.selected_market_key, changed.selected_market_key);
+        assert_ne!(first.selected_market_key(), changed.selected_market_key());
     }
 
     #[test]
@@ -2146,7 +2341,7 @@ mod tests {
             ),
             (
                 SELECTED_MARKET_METADATA_PROVENANCE_SHA256_FIELD.to_string(),
-                serde_json::json!(requirement.metadata_provenance_sha256),
+                serde_json::json!(requirement.metadata_provenance_sha256()),
             ),
             (
                 SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD.to_string(),
@@ -2166,7 +2361,7 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            requirement.selected_market_key,
+            requirement.selected_market_key(),
             canonical_json_sha256(&expected_input).expect("canonical BTreeMap should hash")
         );
     }

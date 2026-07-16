@@ -95,7 +95,7 @@ struct ParametersBlock {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct MarketBindingParametersBlock {
-    market_key: String,
+    market_key: crate::bolt_v3_target_identity::ConfiguredTargetId,
     family_key: String,
     underlying_asset: String,
     cadence_seconds: u64,
@@ -568,7 +568,7 @@ fn validate_market_declarations(
 ) {
     let mut seen_keys = std::collections::BTreeSet::new();
     for market in markets {
-        if market.market_key.trim().is_empty() {
+        if market.market_key.as_str().trim().is_empty() {
             errors.push(format!(
                 "{context}: parameters.markets entry market_key must be a non-empty string (the portfolio planner requires a non-empty market_key to key slots and rotation)"
             ));
@@ -608,6 +608,7 @@ fn validate_market_target(
         return;
     };
     let target = crate::bolt_v3_market_families::MarketSelectionTarget {
+        configured_target_id: &market.market_key,
         family_key: market.family_key.as_str(),
         underlying_asset: market.underlying_asset.as_str(),
         cadence_seconds,
@@ -864,7 +865,7 @@ fn insert_markets(
         let mut row = Map::new();
         row.insert(
             "market_key".to_string(),
-            Value::String(market.market_key.clone()),
+            Value::String(market.market_key.to_string()),
         );
         row.insert(
             "family_key".to_string(),
@@ -1056,7 +1057,8 @@ mod tests {
 
     fn market_declaration(market_key: &str) -> MarketBindingParametersBlock {
         MarketBindingParametersBlock {
-            market_key: market_key.to_string(),
+            market_key: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(market_key)
+                .expect("test market key"),
             family_key: "updown".to_string(),
             underlying_asset: "ETH".to_string(),
             cadence_seconds: 3_600,
@@ -1073,7 +1075,8 @@ mod tests {
 
     fn static_market_declaration(market_key: &str) -> MarketBindingParametersBlock {
         MarketBindingParametersBlock {
-            market_key: market_key.to_string(),
+            market_key: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(market_key)
+                .expect("test market key"),
             family_key: "static_binary_event".to_string(),
             underlying_asset: "ETH".to_string(),
             cadence_seconds: 3_600,
@@ -2072,18 +2075,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_parameter_bounds_rejects_empty_market_key() {
-        let markets = vec![MarketBindingParametersBlock {
-            market_key: "   ".to_string(),
-            ..market_declaration("placeholder")
-        }];
-        let errors = market_declaration_errors(markets);
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("market_key must be a non-empty string")),
-            "{errors:?}"
-        );
+    fn market_declaration_deserialization_rejects_empty_market_key() {
+        let mut value = toml::Value::try_from(market_declaration("placeholder"))
+            .expect("serialize test declaration");
+        value["market_key"] = toml::Value::String("   ".to_string());
+
+        assert!(value.try_into::<MarketBindingParametersBlock>().is_err());
     }
 
     fn loaded_strategy_from(config: BoltV3StrategyConfig) -> LoadedStrategy {
@@ -2106,7 +2103,10 @@ mod tests {
         assert_eq!(
             declarations,
             vec![MakerMarketDeclaration {
-                market_key: "eth-hourly".to_string(),
+                market_key: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                    "eth-hourly",
+                )
+                .expect("test market key"),
                 family_key: "updown".to_string(),
                 underlying_asset: "ETH".to_string(),
                 cadence_seconds: 3_600,

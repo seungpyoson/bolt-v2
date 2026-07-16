@@ -20,6 +20,7 @@ use crate::{
         SelectedMarketRequirement, TargetRuntimeFields,
     },
     bolt_v3_numeric::Probability,
+    bolt_v3_target_identity::ConfiguredTargetId,
 };
 
 pub const KEY: &str = "outcome_group";
@@ -29,7 +30,7 @@ const BINARY_MARKET_UNSUPPORTED: &str = "outcome_group targets use static group 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetBlock {
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub kind: TargetKind,
     pub rotating_market_family: RotatingMarketFamily,
     pub group_sources: Vec<String>,
@@ -50,7 +51,7 @@ pub enum RotatingMarketFamily {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutcomeGroupTargetPlan {
     pub strategy_instance_id: String,
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub execution_client_id: String,
     pub group_sources: Vec<String>,
 }
@@ -60,7 +61,7 @@ impl MarketIdentityTarget for OutcomeGroupTargetPlan {
         KEY
     }
 
-    fn configured_target_id(&self) -> &str {
+    fn configured_target_id(&self) -> &ConfiguredTargetId {
         &self.configured_target_id
     }
 
@@ -92,11 +93,6 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     };
 
     let mut errors = Vec::new();
-    if !super::stable_identity_field_is_canonical(block.configured_target_id.as_str()) {
-        errors.push(format!(
-            "{context}: target.configured_target_id must be non-empty without surrounding whitespace"
-        ));
-    }
     if block.group_sources.is_empty() {
         errors.push(format!("{context}: target.group_sources must not be empty"));
     }

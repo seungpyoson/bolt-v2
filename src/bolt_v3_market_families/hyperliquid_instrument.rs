@@ -20,6 +20,7 @@ use crate::{
         selected_market_metadata_provenance_fields, selected_market_requirement_from_parts,
     },
     bolt_v3_numeric::Probability,
+    bolt_v3_target_identity::ConfiguredTargetId,
 };
 
 pub const KEY: &str = "hyperliquid_instrument";
@@ -29,7 +30,7 @@ const BINARY_MARKET_UNSUPPORTED: &str = "hyperliquid_instrument targets are stat
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetBlock {
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub kind: TargetKind,
     pub rotating_market_family: RotatingMarketFamily,
     pub product_surface: ProductSurface,
@@ -65,7 +66,7 @@ pub enum ProductSurface {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HyperliquidInstrumentTargetPlan {
     pub strategy_instance_id: String,
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub execution_client_id: String,
     pub product_surface: ProductSurface,
     pub instrument_id: InstrumentId,
@@ -80,7 +81,7 @@ impl MarketIdentityTarget for HyperliquidInstrumentTargetPlan {
         KEY
     }
 
-    fn configured_target_id(&self) -> &str {
+    fn configured_target_id(&self) -> &ConfiguredTargetId {
         &self.configured_target_id
     }
 
@@ -117,11 +118,6 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     };
 
     let mut errors = Vec::new();
-    if !super::stable_identity_field_is_canonical(block.configured_target_id.as_str()) {
-        errors.push(format!(
-            "{context}: target.configured_target_id must be non-empty without surrounding whitespace"
-        ));
-    }
     let instrument_id = block.instrument_id.to_string();
     if instrument_id.is_empty() {
         errors.push(format!("{context}: target.instrument_id must not be empty"));
@@ -168,14 +164,6 @@ pub fn plan_strategy_target(
             message,
         }
     })?;
-    if !super::stable_identity_field_is_canonical(target.configured_target_id.as_str()) {
-        return Err(InstrumentFilterError::TargetValidationFailure {
-            message: format!(
-                "strategy `{strategy_instance_id}`: target.configured_target_id must be non-empty without surrounding whitespace"
-            ),
-        });
-    }
-
     let TargetKind::StaticInstrument = target.kind;
     let RotatingMarketFamily::HyperliquidInstrument = target.rotating_market_family;
 
@@ -198,7 +186,7 @@ pub fn selected_static_instrument_requirement(
 ) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
     let instrument_id = target.instrument_id.to_string();
     selected_market_requirement_from_parts(SelectedMarketRequirementParts {
-        configured_target_id: target.configured_target_id.as_str(),
+        configured_target_id: &target.configured_target_id,
         venue: target.instrument_id.venue.as_str(),
         family_key: KEY,
         market_id: instrument_id.as_str(),

@@ -224,7 +224,10 @@ fn updown_market_slug_uses_configured_token_without_asset_assumptions() {
 fn candidates_for_target_yields_current_and_next_configured_slugs() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "configured_updown_main".to_string(),
-        configured_target_id: "configured_updown_target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "configured_updown_target",
+        )
+        .expect("test target id"),
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
@@ -246,7 +249,10 @@ fn candidates_for_target_yields_current_and_next_configured_slugs() {
 fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "configured_updown_main".to_string(),
-        configured_target_id: "configured_updown_target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "configured_updown_target",
+        )
+        .expect("test target id"),
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
@@ -573,7 +579,10 @@ fn updown_period_pair_rejects_overflow_at_i64_max_with_supported_cadence() {
 fn candidates_for_target_propagates_period_pair_overflow() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "configured_updown_main".to_string(),
-        configured_target_id: "configured_updown_target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "configured_updown_target",
+        )
+        .expect("test target id"),
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,

@@ -1339,7 +1339,10 @@ mod tests {
         let mut plan = MarketIdentityPlan::empty();
         plan.push_target(StaticBinaryEventTargetPlan {
             strategy_instance_id: "sample-static-alpha".to_string(),
-            configured_target_id: "sample-static-alpha-target".to_string(),
+            configured_target_id: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                "sample-static-alpha-target",
+            )
+            .expect("test target id"),
             execution_client_id: "polymarket_main".to_string(),
             event_key: "sample_event_2026".to_string(),
             market_slug: "will-sample-alpha-resolve-yes".to_string(),
@@ -1349,7 +1352,10 @@ mod tests {
         });
         plan.push_target(StaticBinaryEventTargetPlan {
             strategy_instance_id: "sample-static-beta".to_string(),
-            configured_target_id: "sample-static-beta-target".to_string(),
+            configured_target_id: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                "sample-static-beta-target",
+            )
+            .expect("test target id"),
             execution_client_id: "polymarket_secondary".to_string(),
             event_key: "sample_event_2026".to_string(),
             market_slug: "will-sample-beta-resolve-yes".to_string(),
@@ -1387,7 +1393,10 @@ mod tests {
         let mut plan = MarketIdentityPlan::empty();
         plan.push_target(StaticBinaryEventTargetPlan {
             strategy_instance_id: "sample-static-alpha".to_string(),
-            configured_target_id: "sample-static-alpha-target".to_string(),
+            configured_target_id: crate::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+                "sample-static-alpha-target",
+            )
+            .expect("test target id"),
             execution_client_id: "polymarket_main".to_string(),
             event_key: "sample_event_2026".to_string(),
             market_slug: "will-sample-alpha-resolve-yes".to_string(),

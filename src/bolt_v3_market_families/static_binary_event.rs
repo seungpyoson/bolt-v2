@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_config::LoadedStrategy,
-    bolt_v3_evidence_novelty::stable_identity_field_is_canonical,
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
+    bolt_v3_target_identity::{ConfiguredTargetId, stable_identity_field_is_canonical},
 };
 
 use super::{
@@ -51,7 +51,7 @@ const STATIC_VALUE_KIND: &str = "binary_outcome";
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetBlock {
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub kind: TargetKind,
     pub rotating_market_family: RotatingMarketFamily,
     pub event_key: String,
@@ -93,7 +93,7 @@ pub enum FairProbabilitySource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticBinaryEventTargetPlan {
     pub strategy_instance_id: String,
-    pub configured_target_id: String,
+    pub configured_target_id: ConfiguredTargetId,
     pub execution_client_id: String,
     pub event_key: String,
     pub market_slug: String,
@@ -107,7 +107,7 @@ impl MarketIdentityTarget for StaticBinaryEventTargetPlan {
         KEY
     }
 
-    fn configured_target_id(&self) -> &str {
+    fn configured_target_id(&self) -> &ConfiguredTargetId {
         &self.configured_target_id
     }
 
@@ -435,7 +435,7 @@ pub fn selected_market_requirement(
     );
 
     selected_market_requirement_from_parts(SelectedMarketRequirementParts {
-        configured_target_id: target.configured_target_id.as_str(),
+        configured_target_id: &target.configured_target_id,
         venue: yes_venue,
         family_key: KEY,
         market_id: selected.market_id.as_str(),
@@ -467,11 +467,6 @@ pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
 
 fn validate_static_target_block(context: &str, block: &TargetBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    if !super::stable_identity_field_is_canonical(block.configured_target_id.as_str()) {
-        errors.push(format!(
-            "{context}: target.configured_target_id must be a non-empty, unpadded string"
-        ));
-    }
     validate_event_key(context, block.event_key.as_str(), &mut errors);
     validate_market_slug(context, block.market_slug.as_str(), &mut errors);
     if let Some(condition_id) = &block.condition_id {
@@ -751,6 +746,8 @@ fn static_outcome_instrument(
 mod tests {
     use super::*;
 
+    use std::sync::LazyLock;
+
     use nautilus_core::Params;
     use nautilus_model::{
         enums::AssetClass,
@@ -770,6 +767,8 @@ mod tests {
     const TEST_YES_OUTCOME: &str = "Yes";
     const TEST_NO_OUTCOME: &str = "No";
     const NANOS_PER_MILLI_U64: u64 = 1_000_000;
+    static TEST_CONFIGURED_TARGET_ID: LazyLock<ConfiguredTargetId> =
+        LazyLock::new(|| ConfiguredTargetId::try_from(TEST_MARKET_ID).expect("test target id"));
 
     #[test]
     fn target_runtime_fields_project_configured_static_selection_metadata() {
@@ -1356,6 +1355,7 @@ mod tests {
 
     fn static_selection_target() -> MarketSelectionTarget<'static> {
         MarketSelectionTarget {
+            configured_target_id: &TEST_CONFIGURED_TARGET_ID,
             family_key: KEY,
             underlying_asset: TEST_EVENT_KEY,
             cadence_seconds: 1,

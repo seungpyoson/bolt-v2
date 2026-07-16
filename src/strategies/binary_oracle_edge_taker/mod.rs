@@ -2278,7 +2278,7 @@ impl BinaryOracleEdgeTaker {
             })?;
         EvidenceEpisodeId::try_from(EvidenceEpisodeParts {
             strategy_id: self.config.strategy_id.clone(),
-            target_id: self.config.configured_target_id.clone(),
+            target_id: self.config.configured_target_id.to_string(),
             venue_id: self.context.execution_venue().to_string(),
             gamma_market_id: identity.gamma_market_id.clone(),
             condition_id: identity.condition_id.clone(),
@@ -6484,8 +6484,8 @@ impl BinaryOracleEdgeTaker {
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
-            configured_target_id: self.config.configured_target_id.clone(),
-            market_selection_ruleset_id: self.config.configured_target_id.clone(),
+            configured_target_id: self.config.configured_target_id.to_string(),
+            market_selection_ruleset_id: self.config.configured_target_id.to_string(),
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             polymarket_condition_id: self
@@ -6772,8 +6772,8 @@ impl BinaryOracleEdgeTaker {
             self.pricing.last_reference_current_price().is_some();
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
-            configured_target_id: self.config.configured_target_id.clone(),
-            market_selection_ruleset_id: self.config.configured_target_id.clone(),
+            configured_target_id: self.config.configured_target_id.to_string(),
+            market_selection_ruleset_id: self.config.configured_target_id.to_string(),
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             polymarket_condition_id: self

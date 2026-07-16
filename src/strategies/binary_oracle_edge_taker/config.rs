@@ -18,6 +18,7 @@ use crate::{
     bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
     bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
+    bolt_v3_target_identity::ConfiguredTargetId,
     strategies::registry::{StrategyBuildContext, ValidationError},
 };
 
@@ -41,7 +42,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             order_id_tag: String => String;
             oms_type: String => String;
             client_id: String => String;
-            configured_target_id: String => String;
+            configured_target_id: ConfiguredTargetId => String;
             target_kind: String => String;
             rotating_market_family: String => String;
             underlying_asset: String => String;

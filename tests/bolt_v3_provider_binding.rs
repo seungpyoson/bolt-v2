@@ -2183,13 +2183,19 @@ fn provider_binding_composes_updown_outcome_group_and_static_filters_for_same_cl
         plan_market_identity(&loaded).expect("fixture updown plan should derive cleanly");
     plan.push_target(OutcomeGroupTargetPlan {
         strategy_instance_id: "complete-set-sample".to_string(),
-        configured_target_id: "complete-set-target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "complete-set-target",
+        )
+        .expect("test target id"),
         execution_client_id: "polymarket_main".to_string(),
         group_sources: vec!["poly_market_source".to_string()],
     });
     plan.push_target(StaticBinaryEventTargetPlan {
         strategy_instance_id: "static-sample".to_string(),
-        configured_target_id: "static-target".to_string(),
+        configured_target_id: bolt_v2::bolt_v3_target_identity::ConfiguredTargetId::try_from(
+            "static-target",
+        )
+        .expect("test target id"),
         execution_client_id: "polymarket_main".to_string(),
         event_key: "sample_event_2026".to_string(),
         market_slug: "will-sample-static-resolve-yes".to_string(),

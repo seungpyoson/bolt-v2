@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,6 @@ from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_bolt_v3_boundary_evidence.py"
-UNRESOLVABLE_SHA = "1" * 40
 
 
 def fixture_nt_revision() -> str:
@@ -641,18 +641,6 @@ def mutate_capture_record(root: Path, mutator) -> None:
     mutator(record)
     with zipfile.ZipFile(artifact_path, "w") as archive:
         archive.writestr("ci-provenance.json", json.dumps(record, sort_keys=True))
-
-
-def replace_capture_head_sha(root: Path, sha: str) -> None:
-    sidecar = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml"
-    sidecar.write_text(
-        re.sub(
-            r'capture_head_sha = "[0-9a-f]{40}"',
-            f'capture_head_sha = "{sha}"',
-            sidecar.read_text(encoding="utf-8"),
-        ),
-        encoding="utf-8",
-    )
 
 
 def scan_temp(mutator=None, today: dt.date = dt.date(2026, 6, 26)) -> list[str]:
@@ -2691,6 +2679,20 @@ def test_unbound_invented_fixture_fails() -> None:
     assert_finding(scan_temp(mutate), "fixture_sha256 does not match")
 
 
+def test_unregistered_fixture_feeder_fails_closed() -> None:
+    def mutate(root: Path) -> None:
+        sidecar = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml"
+        sidecar.write_text(
+            sidecar.read_text(encoding="utf-8").replace(
+                'feeder = "ReferenceCurrentPriceHealth"',
+                'feeder = "UnregisteredFeeder"',
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "feeder is not registered")
+
+
 def test_missing_capture_artifact_fails_closed() -> None:
     def mutate(root: Path) -> None:
         artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
@@ -2705,6 +2707,16 @@ def test_malformed_capture_artifact_fails_closed() -> None:
         artifact.write_bytes(b"not a ZIP archive")
 
     assert_finding(scan_temp(mutate), "provenance artifact archive is malformed")
+
+
+def test_symlinked_capture_artifact_fails_closed() -> None:
+    def mutate(root: Path) -> None:
+        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
+        target = artifact.with_name("capture-target.zip")
+        artifact.rename(target)
+        artifact.symlink_to(target.name)
+
+    assert_finding(scan_temp(mutate), "capture_artifact must not be a symlink")
 
 
 def test_capture_record_identity_mismatches_fail_closed() -> None:
@@ -2732,6 +2744,18 @@ def test_capture_record_identity_mismatches_fail_closed() -> None:
         assert_capture_record_mutation_fails(mutator, finding)
 
 
+def test_capture_workflow_digest_is_shape_only_metadata() -> None:
+    def mutate(root: Path) -> None:
+        mutate_capture_record(
+            root,
+            lambda record: record.update({"workflow_digest": "f" * 64}),
+        )
+
+    findings = scan_temp(mutate)
+    if findings:
+        raise AssertionError(f"expected well-formed workflow digest metadata to pass: {findings}")
+
+
 def test_capture_record_payload_mutations_fail_closed() -> None:
     cases = (
         (
@@ -2750,6 +2774,30 @@ def test_capture_record_payload_mutations_fail_closed() -> None:
             lambda record: record["capture"].update({"signature_verified": True}),
             "capture artifact must not claim signature verification",
         ),
+        (
+            lambda record: record["capture"].update({"record_kind": "wrong-kind"}),
+            "capture record_kind does not match",
+        ),
+        (
+            lambda record: record["capture"].update({"adapter_id": "WRONG_ADAPTER"}),
+            "capture adapter_id does not match sidecar",
+        ),
+        (
+            lambda record: record["capture"].update({"client_key": ""}),
+            "capture client_key must be non-empty",
+        ),
+        (
+            lambda record: record["capture"].update({"fixture_filename": "wrong.bin"}),
+            "capture fixture_filename does not match sidecar",
+        ),
+        (
+            lambda record: record["capture"].update({"observed_binary_frames": 0}),
+            "capture observed_binary_frames must be a positive integer",
+        ),
+        (
+            lambda record: record["capture"].update({"observed_text_frames": "zero"}),
+            "capture observed_text_frames must be a non-negative integer",
+        ),
     )
     for mutator, finding in cases:
         assert_capture_record_mutation_fails(mutator, finding)
@@ -2767,43 +2815,50 @@ def test_capture_artifact_validation_ignores_later_workflow_changes() -> None:
 
 
 def test_fixture_origin_validation_does_not_require_git_history() -> None:
-    def mutate(root: Path) -> None:
-        mutate_capture_record(
-            root,
-            lambda record: record.update(
-                {"head_sha": UNRESOLVABLE_SHA, "tested_sha": UNRESOLVABLE_SHA}
-            ),
-        )
-        replace_capture_head_sha(root, UNRESOLVABLE_SHA)
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        clean_files(root)
+        shutil.rmtree(root / ".git")
+        findings: list[str] = []
+        verifier.scan_fixture_origin(root, findings)
 
-    findings = scan_temp(mutate)
     if findings:
-        raise AssertionError(f"expected validation without Git history to pass: {findings}")
+        raise AssertionError(f"expected validation outside a Git repository to pass: {findings}")
 
 
 def test_fixture_origin_validation_does_not_resolve_remote_evidence_in_github_actions() -> None:
     verifier = load_verifier()
 
-    def unexpected_remote_resolution(**_kwargs):
-        raise AssertionError("fixture-origin validation must not resolve remote evidence")
+    def unexpected_network_call(*_args, **_kwargs):
+        raise AssertionError("fixture-origin validation must not access the network")
 
-    with (
-        mock.patch.dict(
-            os.environ,
-            {
-                "GITHUB_ACTIONS": "true",
-                "GITHUB_TOKEN": "test-token",
-                "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
-            },
-        ),
-        mock.patch.object(
-            verifier.ci_provenance,
-            "resolve_exact_sha_evidence",
-            side_effect=unexpected_remote_resolution,
-        ),
-    ):
-        findings: list[str] = []
-        verifier.scan_fixture_origin(REPO_ROOT, findings)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        clean_files(root)
+        with (
+            mock.patch.object(verifier, "REPO_ROOT", root),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+                },
+            ),
+            mock.patch.object(
+                verifier.ci_provenance,
+                "resolve_exact_sha_evidence",
+                side_effect=unexpected_network_call,
+            ),
+            mock.patch.object(
+                verifier.urllib.request,
+                "urlopen",
+                side_effect=unexpected_network_call,
+            ),
+        ):
+            findings: list[str] = []
+            verifier.scan_fixture_origin(root, findings)
 
     if findings:
         raise AssertionError(f"expected local fixture-origin validation to pass: {findings}")

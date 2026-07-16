@@ -755,6 +755,8 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
             findings.append(f"{rel}: schema_version must be 1")
         if data["adapter_id"] != "CHAINLINK_REFERENCE_PRICE":
             findings.append(f"{rel}: adapter_id must be CHAINLINK_REFERENCE_PRICE")
+        if data["feeder"] not in REQUIRED_WS_FEEDERS:
+            findings.append(f"{rel}: feeder is not registered")
         if data["class"] != "WebSocketFrame" or data["frame_kind"] != "binary":
             findings.append(f"{rel}: Chainlink fixture sidecar must declare WebSocketFrame/binary")
         if data["signature_verified"] is not False:
@@ -769,6 +771,9 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
             continue
         if fixture_digest != data["fixture_sha256"]:
             findings.append(f"{rel}: fixture_sha256 does not match fixture bytes")
+        if artifact.is_symlink():
+            findings.append(f"{rel}: capture_artifact must not be a symlink")
+            continue
         if not artifact.exists():
             findings.append(f"{rel}: capture_artifact is missing")
             continue
@@ -778,14 +783,17 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
                 config,
                 deploy_source_branch=str(data["capture_head_branch"]),
             )
+            # The committed receipt is the authority for capture workflow metadata.
+            # Validate digest shape without binding to current or historical Git bytes.
+            capture_workflow_digest_metadata = ci_provenance.require_record_digest(
+                record, "workflow_digest"
+            )
             ci_provenance.validate_exact_sha_record(
                 record,
                 sidecar_config,
                 requested_sha=str(data["capture_head_sha"]),
                 config_path=config_path,
-                expected_workflow_digest=ci_provenance.require_record_digest(
-                    record, "workflow_digest"
-                ),
+                expected_workflow_digest=capture_workflow_digest_metadata,
             )
         except ci_provenance.ProvenanceError as exc:
             findings.append(f"{rel}: invalid capture artifact provenance: {exc}")
@@ -816,6 +824,25 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
             findings.append(f"{rel}: capture artifact frame_kind does not match sidecar")
         if capture.get("signature_verified") is not False:
             findings.append(f"{rel}: capture artifact must not claim signature verification")
+        if capture.get("record_kind") != "chainlink-reference-fixture-capture":
+            findings.append(f"{rel}: capture record_kind does not match")
+        if capture.get("adapter_id") != data["adapter_id"]:
+            findings.append(f"{rel}: capture adapter_id does not match sidecar")
+        client_key = capture.get("client_key")
+        if not isinstance(client_key, str) or not client_key.strip():
+            findings.append(f"{rel}: capture client_key must be non-empty")
+        if capture.get("fixture_filename") != data["fixture"]:
+            findings.append(f"{rel}: capture fixture_filename does not match sidecar")
+        observed_binary_frames = capture.get("observed_binary_frames")
+        if type(observed_binary_frames) is not int or observed_binary_frames <= 0:
+            findings.append(
+                f"{rel}: capture observed_binary_frames must be a positive integer"
+            )
+        observed_text_frames = capture.get("observed_text_frames")
+        if type(observed_text_frames) is not int or observed_text_frames < 0:
+            findings.append(
+                f"{rel}: capture observed_text_frames must be a non-negative integer"
+            )
 
 
 def scan_static_wiring(root: Path, findings: list[str]) -> None:

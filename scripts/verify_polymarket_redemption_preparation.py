@@ -29,10 +29,22 @@ RUNTIME_AUTHORITY_KEYS = frozenset(
 EXPECTED_EVIDENCE = {
     "adapter_repository": "https://github.com/Polymarket/ctf-exchange-v2",
     "adapter_revision": "ccc0596074f4dfd62c944fbca4de252893b82b4b",
+    "deployment_source_path": "README.md",
+    "deployment_source_sha256": "41def0727a8adbaccefb3c25bce4e50166915f98ea3e9588323304c2851fac7c",
+    "standard_source_path": "src/adapters/CtfCollateralAdapter.sol",
+    "standard_source_sha256": "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
+    "negative_risk_source_path": "src/adapters/NegRiskCtfCollateralAdapter.sol",
+    "negative_risk_source_sha256": "2461eb793fa5571a6902a52c5276f02a8621814fdc026cf3a7814879b1b3db76",
     "function_signature": "redeemPositions(address,bytes32,bytes32,uint256[])",
     "function_selector": "0x01b7037c",
     "request_repository": "https://github.com/Polymarket/builder-relayer-client",
     "request_revision": "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290",
+    "builder_source_path": "src/builder/safe.ts",
+    "builder_source_sha256": "1142cb7fe786128361586d6fc9313a3e120e1633bdfc064169bfa78951d66cc5",
+    "types_source_path": "src/types.ts",
+    "types_source_sha256": "059c02b19a23d57e7b354df8c01d706cf508c27460067c1d57dad96cf5455ad3",
+    "signature_pack_source_path": "src/utils/index.ts",
+    "signature_pack_source_sha256": "0a1b6036fb7e3f7d1629002a491a448974a69c7556741f449c441cb3e3af2941",
 }
 
 
@@ -122,10 +134,22 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         observed = {
             "adapter_repository": adapter.get("repository"),
             "adapter_revision": adapter.get("revision"),
+            "deployment_source_path": adapter.get("deployment_source_path"),
+            "deployment_source_sha256": adapter.get("deployment_source_sha256"),
+            "standard_source_path": adapter.get("standard_source_path"),
+            "standard_source_sha256": adapter.get("standard_source_sha256"),
+            "negative_risk_source_path": adapter.get("negative_risk_source_path"),
+            "negative_risk_source_sha256": adapter.get("negative_risk_source_sha256"),
             "function_signature": adapter.get("function_signature"),
             "function_selector": adapter.get("function_selector"),
             "request_repository": safe_request.get("repository"),
             "request_revision": safe_request.get("revision"),
+            "builder_source_path": safe_request.get("builder_source_path"),
+            "builder_source_sha256": safe_request.get("builder_source_sha256"),
+            "types_source_path": safe_request.get("types_source_path"),
+            "types_source_sha256": safe_request.get("types_source_sha256"),
+            "signature_pack_source_path": safe_request.get("signature_pack_source_path"),
+            "signature_pack_source_sha256": safe_request.get("signature_pack_source_sha256"),
         }
         if observed != EXPECTED_EVIDENCE:
             errors.append(
@@ -155,7 +179,23 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         errors.append("PreparedRequest<'request> must be declared")
     else:
         body = prepared_match.group("body")
-        if "&'request [u8]" not in body or re.search(r"\b(?:Vec|String)\b", body):
+        fields = re.findall(
+            r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*([^,\n}]+)(?:,|$)",
+            body,
+            re.MULTILINE,
+        )
+        field_types = {field_type.strip() for field_type in fields}
+        allowed_field_types = {
+            "&'request [u8]",
+            "PreparedRequestIdentity",
+            "U256",
+            "Address",
+        }
+        if (
+            not fields
+            or "&'request [u8]" not in field_types
+            or not field_types.issubset(allowed_field_types)
+        ):
             errors.append("PreparedRequest bytes must remain a borrowed slice without owned storage")
 
     forbidden_authority = (
@@ -205,8 +245,15 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
     )
     if any(token.lower() in production.lower() for token in forbidden_secret_backends):
         errors.append("production owner contains an alternate secret backend")
-    if "SsmResolverSession" not in production or "SsmSecretResolver" not in production:
-        errors.append("production owner must reuse SsmResolverSession and SsmSecretResolver")
+    if "SsmResolverSession" not in production or re.search(
+        r"session\s*\.\s*resolve\s*\(", production
+    ) is None:
+        errors.append("production owner must resolve credentials through the supplied SsmResolverSession")
+    if re.search(
+        r"pub(?:\([^)]*\))?\s+fn\s+resolve_redemption_credentials_(?:from|with)\b",
+        production,
+    ):
+        errors.append("production owner must not expose an injectable secret resolver")
 
     forbidden_observability = (
         "println!",
@@ -250,7 +297,7 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
 
     for path in sorted((root / "src").rglob("*.rs")):
         relative = path.relative_to(root)
-        if relative in {OWNER, GENERATED, pathlib.Path("src/lib.rs")}:
+        if relative in {OWNER, GENERATED}:
             continue
         try:
             text = _read(path)

@@ -125,6 +125,17 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.ConfigError, "uint256"):
             self.load(RUNTIME_TOML.replace('dummy_index_sets = ["1", "2"]', f'dummy_index_sets = ["{overflow}", "2"]'))
 
+    def test_safe_gas_addresses_must_remain_zero(self) -> None:
+        for field in ("gas_token", "refund_receiver"):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(generator.ConfigError, f"safe_request.{field} must remain the zero address"):
+                    self.load(
+                        evidence_text=EVIDENCE_TOML.replace(
+                            f'{field} = "0x0000000000000000000000000000000000000000"',
+                            f'{field} = "0x0000000000000000000000000000000000000001"',
+                        )
+                    )
+
 
 if __name__ == "__main__":
     import lane_governor

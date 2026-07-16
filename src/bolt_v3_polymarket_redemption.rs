@@ -6,7 +6,6 @@ use alloy_signer_local::PrivateKeySigner;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
-    bolt_v3_providers::SsmSecretResolver,
     bolt_v3_risk_closure_workspace::{RiskClosureWorkspaceError, RiskClosureWorkspaceLease},
     secrets::SsmResolverSession,
 };
@@ -204,35 +203,35 @@ pub fn resolve_redemption_credentials(
     config: &RedemptionPreparationConfig,
 ) -> Result<ResolvedRedemptionCredentials, RedemptionPreparationError> {
     let mut resolver = |region: &str, path: &str| session.resolve(region, path);
-    resolve_redemption_credentials_with(config, &mut resolver)
+    resolve_redemption_credentials_from(config, &mut resolver)
 }
 
-pub fn resolve_redemption_credentials_with(
+fn resolve_redemption_credentials_from<E>(
     config: &RedemptionPreparationConfig,
-    resolver: &mut dyn SsmSecretResolver,
+    mut resolver: impl FnMut(&str, &str) -> Result<String, E>,
 ) -> Result<ResolvedRedemptionCredentials, RedemptionPreparationError> {
     validate_config(config)?;
     Ok(ResolvedRedemptionCredentials {
-        signer_private_key: resolve_secret(
-            resolver,
+        signer_private_key: resolve_secret_from(
+            &mut resolver,
             config.aws_region,
             config.signer_private_key_ssm_path,
             "signer_private_key",
         )?,
-        builder_api_key: resolve_secret(
-            resolver,
+        builder_api_key: resolve_secret_from(
+            &mut resolver,
             config.aws_region,
             config.builder_api_key_ssm_path,
             "builder_api_key",
         )?,
-        builder_api_secret: resolve_secret(
-            resolver,
+        builder_api_secret: resolve_secret_from(
+            &mut resolver,
             config.aws_region,
             config.builder_api_secret_ssm_path,
             "builder_api_secret",
         )?,
-        builder_passphrase: resolve_secret(
-            resolver,
+        builder_passphrase: resolve_secret_from(
+            &mut resolver,
             config.aws_region,
             config.builder_passphrase_ssm_path,
             "builder_passphrase",
@@ -240,15 +239,14 @@ pub fn resolve_redemption_credentials_with(
     })
 }
 
-fn resolve_secret(
-    resolver: &mut dyn SsmSecretResolver,
+fn resolve_secret_from<E>(
+    resolver: &mut impl FnMut(&str, &str) -> Result<String, E>,
     region: &str,
     path: &str,
     field: &'static str,
 ) -> Result<Zeroizing<String>, RedemptionPreparationError> {
     let value = Zeroizing::new(
-        resolver
-            .resolve_secret(region, path)
+        resolver(region, path)
             .map_err(|_| RedemptionPreparationError::SecretResolutionFailed { field })?,
     );
     validate_secret(field, value.as_str())?;
@@ -775,9 +773,7 @@ mod tests {
     use zeroize::{ZeroizeOnDrop, Zeroizing};
 
     use super::*;
-    use crate::bolt_v3_risk_closure_workspace::{
-        RiskClosureWorkspaceLease, test_recovery_lease as recovery_lease,
-    };
+    use crate::bolt_v3_risk_closure_workspace::test_recovery_lease as recovery_lease;
 
     const FIXTURE_PRIVATE_KEY: &str =
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -793,12 +789,26 @@ mod tests {
     );
     const GOLDEN_STANDARD_REQUEST: &str = concat!(
         r#"{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0x2222222222222222222222222222222222222222","proxyWallet":"0x1111111111111111111111111111111111111111","data":"#,
-        GOLDEN_CALLDATA,
+        "0x01b7037c",
+        "0000000000000000000000004444444444444444444444444444444444444444",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "0000000000000000000000000000000000000000000000000000000000000002",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000002",
         r#"","nonce":"7","signature":"0x00dacdf8520e79b2c158b14eaeb737524a398e5e612caf96b987986fa6c0a4eb16421a0796fcffc30ccbbde64b5614daeee5cd71f78da1ded226657f7f3a9a6320","signatureParams":{"gasPrice":"0","operation":"0","safeTxnGas":"0","baseGas":"0","gasToken":"0x0000000000000000000000000000000000000000","refundReceiver":"0x0000000000000000000000000000000000000000"},"type":"SAFE","metadata":""}"#,
     );
     const GOLDEN_NEGATIVE_RISK_REQUEST: &str = concat!(
         r#"{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0x3333333333333333333333333333333333333333","proxyWallet":"0x1111111111111111111111111111111111111111","data":"#,
-        GOLDEN_CALLDATA,
+        "0x01b7037c",
+        "0000000000000000000000004444444444444444444444444444444444444444",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "0000000000000000000000000000000000000000000000000000000000000002",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000002",
         r#"","nonce":"7","signature":"0xeabd59c401862e04f478bbbad4f3922d1f92efeac68aa2210b0219987fd139c177cb6cd00d5af13bc96ba1ebf355be0b73ef6b93476d987c0683eed1227db0ef1f","signatureParams":{"gasPrice":"0","operation":"0","safeTxnGas":"0","baseGas":"0","gasToken":"0x0000000000000000000000000000000000000000","refundReceiver":"0x0000000000000000000000000000000000000000"},"type":"SAFE","metadata":""}"#,
     );
     const GOLDEN_FENCE_REQUEST: &str = r#"{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0x1111111111111111111111111111111111111111","proxyWallet":"0x1111111111111111111111111111111111111111","data":"0x","nonce":"7","signature":"0x504f131bb0edd6fec228387a34093cb4853878e9af2f19a96b3efc856fd2bf2929011d7d2b13aa193e7d5d2d5c64e81bf6bec2329c3c6de996b8cca574a9873e1f","signatureParams":{"gasPrice":"0","operation":"0","safeTxnGas":"0","baseGas":"0","gasToken":"0x0000000000000000000000000000000000000000","refundReceiver":"0x0000000000000000000000000000000000000000"},"type":"SAFE","metadata":""}"#;
@@ -957,16 +967,43 @@ mod tests {
     #[test]
     fn numeric_zero_one_scaled_dust_and_maximum_vectors_prepare() {
         let vectors = [
-            (U256::ZERO, U256::ZERO),
-            (U256::from(1_u8), U256::from(1_u8)),
-            (U256::from(1_000_000_u64), U256::from(1_000_000_u64)),
-            (U256::from(999_999_u64), U256::from(999_999_u64)),
-            (U256::MAX, U256::MAX),
+            (
+                U256::ZERO,
+                U256::ZERO,
+                "0",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                U256::from(1_u8),
+                U256::from(1_u8),
+                "1",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ),
+            (
+                U256::from(1_000_000_u64),
+                U256::from(1_000_000_u64),
+                "1000000",
+                "00000000000000000000000000000000000000000000000000000000000f4240",
+            ),
+            (
+                U256::from(999_999_u64),
+                U256::from(999_999_u64),
+                "999999",
+                "00000000000000000000000000000000000000000000000000000000000f423f",
+            ),
+            (
+                U256::MAX,
+                U256::MAX,
+                "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
         ];
         let config = test_config();
         let credentials = test_credentials();
 
-        for (index, (condition_value, nonce)) in vectors.into_iter().enumerate() {
+        for (index, (condition_value, nonce, expected_nonce, expected_condition_id)) in
+            vectors.into_iter().enumerate()
+        {
             let mut lease = recovery_lease(
                 GOLDEN_STANDARD_REQUEST.len() + 128,
                 &format!("numeric-vector-{index}"),
@@ -983,7 +1020,16 @@ mod tests {
                 input,
                 AttemptKind::Original,
                 |prepared| {
-                    assert!(prepared.as_bytes().starts_with(b"{\"from\":"));
+                    let request =
+                        str::from_utf8(prepared.as_bytes()).expect("request is UTF-8 JSON");
+                    assert!(request.contains(&format!(r#""nonce":"{expected_nonce}""#)));
+                    let calldata =
+                        str::from_utf8(prepared.calldata_hex()).expect("calldata is lowercase hex");
+                    let condition_start = b"0x01b7037c".len() + (64 * 2);
+                    assert_eq!(
+                        &calldata[condition_start..condition_start + 64],
+                        expected_condition_id,
+                    );
                     assert_eq!(prepared.safe_nonce(), nonce);
                 },
             )
@@ -1170,7 +1216,7 @@ mod tests {
             }
         };
 
-        let credentials = resolve_redemption_credentials_with(&config, &mut resolver)
+        let credentials = resolve_redemption_credentials_from(&config, &mut resolver)
             .expect("grouped credentials must resolve through SSM");
         let debug = format!("{credentials:?}");
         assert_zeroize_on_drop::<ResolvedRedemptionCredentials>();
@@ -1196,7 +1242,7 @@ mod tests {
         let mut resolver =
             |_: &str, _: &str| -> Result<String, &'static str> { Ok(sentinel.to_string()) };
 
-        let error = resolve_redemption_credentials_with(&config, &mut resolver)
+        let error = resolve_redemption_credentials_from(&config, &mut resolver)
             .expect_err("whitespace-bearing secret must fail closed");
         let display = error.to_string();
         let debug = format!("{error:?}");

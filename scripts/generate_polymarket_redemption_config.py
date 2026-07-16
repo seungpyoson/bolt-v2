@@ -370,6 +370,15 @@ def _load_evidence(path: pathlib.Path) -> ProtocolEvidence:
     metadata = safe["metadata"]
     if metadata != "":
         raise ConfigError("safe_request.metadata must remain empty")
+    zero_address = "0x" + ("0" * 40)
+    gas_token = _address(safe["gas_token"], "safe_request.gas_token", allow_zero=True)
+    refund_receiver = _address(
+        safe["refund_receiver"], "safe_request.refund_receiver", allow_zero=True
+    )
+    if gas_token != zero_address:
+        raise ConfigError("safe_request.gas_token must remain the zero address")
+    if refund_receiver != zero_address:
+        raise ConfigError("safe_request.refund_receiver must remain the zero address")
 
     return ProtocolEvidence(
         function_selector=tuple(selector_bytes),
@@ -378,10 +387,8 @@ def _load_evidence(path: pathlib.Path) -> ProtocolEvidence:
         safe_tx_gas=zero_fields["safe_tx_gas"],
         base_gas=zero_fields["base_gas"],
         gas_price=zero_fields["gas_price"],
-        gas_token=_address(safe["gas_token"], "safe_request.gas_token", allow_zero=True),
-        refund_receiver=_address(
-            safe["refund_receiver"], "safe_request.refund_receiver", allow_zero=True
-        ),
+        gas_token=gas_token,
+        refund_receiver=refund_receiver,
         metadata=metadata,
     )
 

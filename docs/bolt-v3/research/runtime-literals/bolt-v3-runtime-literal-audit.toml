@@ -21445,7 +21445,7 @@ reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-la
 path = "src/bolt_v3_polymarket_redemption.rs"
 kind = "number"
 literal = '''78'''
-context = '''fn decimal_bytes<'buffer>(value: U256, buffer: &'buffer mut [u8; 78]) -> &'buffer [u8] {'''
+context = '''fn decimal_bytes(value: U256, buffer: &mut [u8; 78]) -> &[u8] {'''
 classification = "polymarket_redemption_protocol_or_structural_constant"
 reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
 

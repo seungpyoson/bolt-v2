@@ -265,6 +265,7 @@ const FORCED_EXIT_ORDER_FIELD: &str = stringify!(forced_exit_order);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
 const INVALID_INSTRUMENT_ID_CODE: &str = stringify!(invalid_instrument_id);
+const INVALID_CONFIGURED_TARGET_ID_CODE: &str = stringify!(invalid_configured_target_id);
 const UNSUPPORTED_EXECUTABLE_ENTRY_ORDER_SHAPE_CODE: &str =
     stringify!(unsupported_executable_entry_order_shape);
 const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
@@ -493,6 +494,17 @@ impl BinaryOracleEdgeTakerBuilder {
             field_prefix,
             errors,
         );
+        if let Some(value) = table
+            .get(stringify!(configured_target_id))
+            .and_then(Value::as_str)
+            && ConfiguredTargetId::try_from(value).is_err()
+        {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{}", stringify!(configured_target_id)),
+                code: INVALID_CONFIGURED_TARGET_ID_CODE,
+                message: "must be a non-empty, unpadded string".to_string(),
+            });
+        }
         for field_name in [
             stringify!(book_impact_cap_bps),
             stringify!(vwap_depth_limit_bps),

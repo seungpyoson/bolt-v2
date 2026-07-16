@@ -132,6 +132,15 @@ fn parse_config_rejects_every_malformed_configured_target_identity() {
             }
         }
 
+        let mut errors = Vec::new();
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error.field == "strategies[0].config.configured_target_id" }),
+            "malformed configured_target_id passed direct registry validation: {errors:#?}"
+        );
+
         BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .expect_err("malformed configured_target_id must fail during strategy construction");
     }

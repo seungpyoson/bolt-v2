@@ -1,3 +1,9 @@
+//! Secondary structural coverage for the Bolt-v3 strategy-substrate boundary.
+//!
+//! The Python dependency fence is the primary gate and is the only gate with
+//! robust handling for `as` aliases and multi-hop `super` paths. This Rust gate
+//! intentionally stays token-sequence based and does not attempt AST parity.
+
 use std::path::{Path, PathBuf};
 
 const ARCHETYPES: &[&str] = &[
@@ -291,9 +297,18 @@ fn workspace_crate_files() -> Vec<PathBuf> {
 
 fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
     let actual = texts(tokens);
-    for start in 0..actual.len().saturating_sub(4) {
-        if actual[start..start + 4] == ["strategies", "::", "registry", "::"] {
-            if actual.get(start + 4) == Some(&type_name) {
+    for start in 0..actual.len().saturating_sub(2) {
+        if actual[start..start + 3] == ["strategies", "::", "registry"] {
+            if matches!(
+                actual.get(start + 3),
+                None | Some(&";") | Some(&",") | Some(&"}") | Some(&"as")
+            ) {
+                return true;
+            }
+            if actual.get(start + 3) != Some(&"::") {
+                continue;
+            }
+            if matches!(actual.get(start + 4), Some(name) if *name == type_name || *name == "*") {
                 return true;
             }
             if use_tree_contains_at_depth(&actual, start + 4, type_name) {
@@ -307,13 +322,21 @@ fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
                 match actual[cursor] {
                     "{" => depth += 1,
                     "}" => depth -= 1,
-                    "registry"
-                        if depth == 1
-                            && actual.get(cursor + 1) == Some(&"::")
-                            && is_use_tree_segment_start(&actual, cursor) =>
-                    {
-                        if actual.get(cursor + 2) == Some(&type_name)
-                            || use_tree_contains_at_depth(&actual, cursor + 2, type_name)
+                    "registry" if depth == 1 && is_use_tree_segment_start(&actual, cursor) => {
+                        if matches!(
+                            actual.get(cursor + 1),
+                            None | Some(&";") | Some(&",") | Some(&"}") | Some(&"as")
+                        ) {
+                            return true;
+                        }
+                        if actual.get(cursor + 1) != Some(&"::") {
+                            cursor += 1;
+                            continue;
+                        }
+                        if matches!(
+                            actual.get(cursor + 2),
+                            Some(name) if *name == type_name || *name == "*"
+                        ) || use_tree_contains_at_depth(&actual, cursor + 2, type_name)
                         {
                             return true;
                         }
@@ -338,7 +361,7 @@ fn use_tree_contains_at_depth(actual: &[&str], open_brace: usize, type_name: &st
             "{" => depth += 1,
             "}" => depth -= 1,
             name if depth == 1
-                && name == type_name
+                && (name == type_name || name == "*")
                 && is_use_tree_segment_start(actual, cursor) =>
             {
                 return true;
@@ -361,18 +384,19 @@ fn relative(path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
-    let mut public = Vec::new();
+fn public_declarations(tokens: &[Token]) -> Vec<Vec<&str>> {
+    let mut declarations = Vec::new();
     for (start, token) in tokens.iter().enumerate() {
         if token.text != "pub" {
             continue;
         }
+        let mut declaration = Vec::new();
         let mut cursor = start;
         let mut parentheses = 0usize;
         let mut brackets = 0usize;
         let mut angles = 0usize;
         while let Some(current) = tokens.get(cursor) {
-            public.push(current.text.as_str());
+            declaration.push(current.text.as_str());
             match current.text.as_str() {
                 "(" => parentheses += 1,
                 ")" => parentheses = parentheses.saturating_sub(1),
@@ -385,8 +409,170 @@ fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
             }
             cursor += 1;
         }
+        declarations.push(declaration);
     }
-    public
+    declarations
+}
+
+fn normalized_public_declarations(tokens: &[Token]) -> Vec<String> {
+    public_declarations(tokens)
+        .into_iter()
+        .map(|declaration| declaration.join(" "))
+        .collect()
+}
+
+fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
+    public_declarations(tokens).into_iter().flatten().collect()
+}
+
+fn outer_attribute_end(tokens: &[Token], start: usize) -> Option<usize> {
+    if texts(tokens.get(start..start + 2)?) != ["#", "["] {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut cursor = start + 2;
+    while cursor < tokens.len() {
+        match tokens[cursor].text.as_str() {
+            "[" => depth += 1,
+            "]" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(cursor + 1);
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn has_preceding_outer_attribute(tokens: &[Token], item_start: usize) -> bool {
+    (0..item_start).any(|start| outer_attribute_end(tokens, start) == Some(item_start))
+}
+
+fn outer_attribute_contains(tokens: &[Token], name: &str) -> bool {
+    (0..tokens.len()).any(|start| {
+        outer_attribute_end(tokens, start).is_some_and(|end| {
+            tokens[start + 2..end - 1]
+                .iter()
+                .any(|token| token.text == name)
+        })
+    })
+}
+
+fn strategy_bindings_surface_errors(tokens: &[Token]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let expected = vec![
+        "pub fn production_runtime_bindings ( ) - > & [ StrategyRuntimeBinding ] {".to_string(),
+        "pub fn production_validation_bindings ( ) - > & [ ArchetypeValidationBinding ] {"
+            .to_string(),
+    ];
+    if normalized_public_declarations(tokens) != expected {
+        errors.push("public declarations/signatures differ".to_string());
+    }
+
+    let imports = [
+        [
+            "use",
+            "crate",
+            "::",
+            "bolt_v3_archetypes",
+            "::",
+            "ArchetypeValidationBinding",
+            ";",
+        ],
+        [
+            "use",
+            "crate",
+            "::",
+            "bolt_v3_strategy_registration",
+            "::",
+            "StrategyRuntimeBinding",
+            ";",
+        ],
+    ];
+    for exact in imports {
+        let exact_start = (0..tokens.len()).find(|start| {
+            tokens
+                .get(*start..*start + exact.len())
+                .is_some_and(|window| texts(window) == exact)
+        });
+        if count_sequence(tokens, &exact[..5]) != 1
+            || count_sequence(tokens, &exact) != 1
+            || exact_start.is_some_and(|start| has_preceding_outer_attribute(tokens, start))
+        {
+            errors.push(format!(
+                "neutral signature import differs: {}",
+                exact.join("")
+            ));
+        }
+    }
+    if outer_attribute_contains(tokens, "macro_export") {
+        errors.push("strategy_bindings must not export macros".to_string());
+    }
+    errors
+}
+
+fn cfg_test_module_end(tokens: &[Token], start: usize) -> Option<usize> {
+    let expected = ["#", "[", "cfg", "(", "test", ")", "]"];
+    if texts(tokens.get(start..start + expected.len())?) != expected {
+        return None;
+    }
+    let mut cursor = start + expected.len();
+    while let Some(end) = outer_attribute_end(tokens, cursor) {
+        cursor = end;
+    }
+    if tokens.get(cursor).map(|token| token.text.as_str()) == Some("pub") {
+        cursor += 1;
+        if tokens.get(cursor).map(|token| token.text.as_str()) == Some("(") {
+            cursor += 1;
+            while cursor < tokens.len()
+                && tokens.get(cursor).map(|token| token.text.as_str()) != Some(")")
+            {
+                cursor += 1;
+            }
+            tokens.get(cursor)?;
+            cursor += 1;
+        }
+    }
+    if tokens.get(cursor).map(|token| token.text.as_str()) != Some("mod") {
+        return None;
+    }
+    let open = cursor + 2;
+    if tokens.get(open).map(|token| token.text.as_str()) != Some("{") {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut cursor = open + 1;
+    while cursor < tokens.len() {
+        match tokens[cursor].text.as_str() {
+            "{" => depth += 1,
+            "}" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(cursor + 1);
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn production_tokens_without_cfg_test_modules(tokens: &[Token]) -> Vec<Token> {
+    let mut production = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < tokens.len() {
+        if let Some(end) = cfg_test_module_end(tokens, cursor) {
+            cursor = end;
+        } else {
+            production.push(tokens[cursor].clone());
+            cursor += 1;
+        }
+    }
+    production
 }
 
 #[test]
@@ -411,22 +597,136 @@ fn tokenizer_ignores_comments_strings_raw_strings_chars_and_lifetimes() {
 }
 
 #[test]
-fn retired_registry_matcher_covers_direct_and_grouped_paths_only() {
+fn retired_registry_matcher_covers_direct_grouped_wildcard_and_reexport_paths() {
     for source in [
+        "use bolt_v2::strategies::registry;",
+        "pub use bolt_v2::strategies::registry;",
+        "use bolt_v2::strategies::{registry};",
+        "pub use bolt_v2::strategies::{registry};",
+        "use bolt_v2::strategies::registry as retired_registry;",
+        "pub use bolt_v2::strategies::{registry as retired_registry};",
         "use bolt_v2::strategies::registry::FeeProvider;",
         "use bolt_v2::strategies::registry::{FeeProvider, StrategyBuilder};",
         "use bolt_v2::strategies::{registry::FeeProvider, production_strategy_registry};",
         "use bolt_v2::strategies::{registry::{FeeProvider, StrategyBuildContext}};",
+        "use bolt_v2::strategies::registry::*;",
+        "use bolt_v2::strategies::registry::{*};",
+        "use bolt_v2::strategies::{registry::*};",
+        "pub use bolt_v2::strategies::registry::FeeProvider;",
+        "pub use bolt_v2::strategies::registry::FeeProvider as SharedFeeProvider;",
+        "pub use bolt_v2::strategies::registry::*;",
     ] {
         assert!(references_retired_registry_type(
             &tokenize(source),
             "FeeProvider"
         ));
     }
-    let unrelated = tokenize(
-        "use other::registry::{FeeProvider}; use bolt_v2::strategies::production_strategy_registry; use bolt_v2::strategies::registry::{nested::FeeProvider}; use bolt_v2::strategies::{nested::{registry::FeeProvider}};",
+    for source in [
+        "use other::registry::{FeeProvider};",
+        "use bolt_v2::strategies::production_strategy_registry;",
+        "use bolt_v2::strategies::registry::{nested::FeeProvider};",
+        "use bolt_v2::strategies::{nested::{registry::FeeProvider}};",
+        "use other::registry::*;",
+        "pub use bolt_v2::strategies::registry::nested::*;",
+        "pub use bolt_v2::strategies::{nested::registry::*};",
+        "use bolt_v2::strategies::registry::nested;",
+        "pub use bolt_v2::strategies::{nested::registry};",
+    ] {
+        assert!(!references_retired_registry_type(
+            &tokenize(source),
+            "FeeProvider"
+        ));
+    }
+}
+
+#[test]
+fn strategy_bindings_surface_validator_rejects_adversarial_exports() {
+    let valid = r#"
+        use crate::bolt_v3_archetypes::ArchetypeValidationBinding;
+        use crate::bolt_v3_strategy_registration::StrategyRuntimeBinding;
+        pub fn production_runtime_bindings() -> &'static [StrategyRuntimeBinding] { loop {} }
+        pub fn production_validation_bindings() -> &'static [ArchetypeValidationBinding] { loop {} }
+    "#;
+    assert!(strategy_bindings_surface_errors(&tokenize(valid)).is_empty());
+
+    let adversarial = [
+        valid.replace("production_runtime_bindings", "renamed_runtime_bindings"),
+        format!("{valid}\npub const EXTRA: usize = 0;"),
+        format!("type RuntimeAlias = StrategyRuntimeBinding;\n{valid}").replace(
+            "&'static [StrategyRuntimeBinding]",
+            "&'static [RuntimeAlias]",
+        ),
+        valid
+            .replace(
+                "use crate::bolt_v3_strategy_registration::StrategyRuntimeBinding;",
+                "use crate::bolt_v3_strategy_registration::StrategyRuntimeBinding as RuntimeAlias;",
+            )
+            .replace(
+                "&'static [StrategyRuntimeBinding]",
+                "&'static [RuntimeAlias]",
+            ),
+        format!("{valid}\npub use crate::strategies::edge::Strategy;"),
+        format!("{valid}\n#[macro_export]\nmacro_rules! exported {{ () => {{}}; }}"),
+        valid.replace(
+            "use crate::bolt_v3_strategy_registration::StrategyRuntimeBinding;",
+            r#"#[cfg(any())]
+use crate::bolt_v3_strategy_registration::StrategyRuntimeBinding;
+use crate::{bolt_v3_strategy_registration as registration};
+use registration::StrategyRuntimeBinding;"#,
+        ),
+        format!(
+            "{valid}\n#[cfg_attr(any(), macro_export)]\nmacro_rules! exported {{ () => {{}}; }}"
+        ),
+    ];
+    for source in adversarial {
+        assert!(!strategy_bindings_surface_errors(&tokenize(&source)).is_empty());
+    }
+}
+
+#[test]
+fn strategy_bindings_exports_only_the_exact_production_binding_signatures() {
+    let tokens = source_tokens("src/strategy_bindings.rs");
+    let errors = strategy_bindings_surface_errors(&tokens);
+    assert!(
+        errors.is_empty(),
+        "strategy_bindings public surface drifted: {errors:?}"
     );
-    assert!(!references_retired_registry_type(&unrelated, "FeeProvider"));
+}
+
+#[test]
+fn cfg_test_venue_call_cannot_satisfy_the_production_accessor_invariant() {
+    let test_only = tokenize(
+        "fn production() {} #[cfg(test)] mod tests { fn control() { venue_for_client(); } }",
+    );
+    assert_eq!(
+        count_sequence(
+            &production_tokens_without_cfg_test_modules(&test_only),
+            &["venue_for_client", "("]
+        ),
+        0
+    );
+
+    let production = tokenize(
+        "fn production() { venue_for_client(); } #[cfg(test)] mod tests { fn control() { venue_for_client(); } }",
+    );
+    assert_eq!(
+        count_sequence(
+            &production_tokens_without_cfg_test_modules(&production),
+            &["venue_for_client", "("]
+        ),
+        1
+    );
+
+    let decorated_test_only = tokenize(
+        "fn production() {} #[cfg(test)] #[allow(dead_code)] pub(crate) mod tests { fn control() { venue_for_client(); } }",
+    );
+    assert_eq!(
+        count_sequence(
+            &production_tokens_without_cfg_test_modules(&decorated_test_only),
+            &["venue_for_client", "("]
+        ),
+        0
+    );
 }
 
 #[test]
@@ -447,6 +747,13 @@ fn every_archetype_uses_the_shared_build_context_without_inlining_provider_looku
             count_sequence(&tokens, &["clients", ".", "get"]),
             0,
             "{relative} must not reach into the client map"
+        );
+        assert!(
+            count_sequence(
+                &production_tokens_without_cfg_test_modules(&tokens),
+                &["venue_for_client", "("]
+            ) > 0,
+            "{relative} must resolve client venues through venue_for_client"
         );
     }
 }
@@ -606,12 +913,14 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
         "OrderCache",
         "PositionCache",
     ];
-    for relative in [
-        "src/bolt_v3_settlement_booking.rs",
-        "src/bolt_v3_runtime_reconcile.rs",
-        "src/bolt_v3_reference_price_health.rs",
-    ] {
-        let tokens = source_tokens(relative);
+    let mut scanned = Vec::new();
+    for path in production_bolt_v3_files() {
+        let relative = relative(&path);
+        if relative == "src/bolt_v3_live_node.rs" || relative.starts_with("src/bolt_v3_live_node/")
+        {
+            continue;
+        }
+        let tokens = source_tokens(&relative);
         let public = public_declaration_tokens(&tokens);
         for name in forbidden {
             assert!(
@@ -619,7 +928,12 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
                 "{relative} public API exposes forbidden private/handle type `{name}`"
             );
         }
+        scanned.push(relative);
     }
+    assert!(
+        scanned.contains(&"src/bolt_v3_submit_admission.rs".to_string()),
+        "shared public-API scan must cover submit admission"
+    );
 }
 
 #[test]

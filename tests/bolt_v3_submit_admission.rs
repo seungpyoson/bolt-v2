@@ -32,9 +32,11 @@ use bolt_v2::bolt_v3_submit_admission::{
     market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::data::QuoteTick;
-use nautilus_model::enums::{AssetClass, OrderSide, PositionSide, TimeInForce};
-use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId};
+use nautilus_model::data::{QuoteTick, TradeTick};
+use nautilus_model::enums::{AggressorSide, AssetClass, OrderSide, PositionSide, TimeInForce};
+use nautilus_model::identifiers::{
+    ClientOrderId, InstrumentId, StrategyId, Symbol, TradeId, TraderId,
+};
 use nautilus_model::instruments::{BinaryOption, InstrumentAny};
 use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
 use nautilus_model::types::{Currency, Price, Quantity};
@@ -318,6 +320,97 @@ fn order_valuation_context_selects_quote_quantity_prices_by_order_shape() {
     assert_eq!(
         context.prices_for_order(&limit),
         (Some(limit_price), Some(Price::new(0.41, 2)))
+    );
+}
+
+#[test]
+fn order_valuation_context_does_not_use_trade_for_unsided_order_with_quote() {
+    let instrument_id = InstrumentId::from("INSTRUMENT.SOURCE");
+    let quote = QuoteTick::new_checked(
+        instrument_id,
+        Price::new(0.39, 2),
+        Price::new(0.41, 2),
+        Quantity::new(10.0, 2),
+        Quantity::new(10.0, 2),
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(1_u64),
+    )
+    .expect("quote should be valid");
+    let trade = TradeTick::new_checked(
+        instrument_id,
+        Price::new(0.40, 2),
+        Quantity::new(1.0, 2),
+        AggressorSide::Buyer,
+        TradeId::from("TRADE-001"),
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(1_u64),
+    )
+    .expect("trade should be valid");
+    let market_order = OrderAny::Market(
+        MarketOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-UNSIDED"),
+            OrderSide::NoOrderSide,
+            Quantity::new(2.0, 2),
+            TimeInForce::Gtc,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("unsided fixture market order should construct"),
+    );
+    let limit_price = Price::new(0.50, 2);
+    let limit_order = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-UNSIDED-LIMIT"),
+            OrderSide::NoOrderSide,
+            Quantity::new(2.0, 2),
+            limit_price,
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("unsided fixture limit order should construct"),
+    );
+    let context = OrderValuationContext {
+        last_quote: Some(quote),
+        last_trade: Some(trade),
+        instrument: None,
+    };
+
+    assert_eq!(context.prices_for_order(&market_order), (None, None));
+    assert_eq!(
+        context.prices_for_order(&limit_order),
+        (Some(limit_price), None)
     );
 }
 

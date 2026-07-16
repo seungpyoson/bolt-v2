@@ -67,7 +67,8 @@ use bolt_v2::{
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with,
     },
     bolt_v3_strategy_registration::{
-        BoltV3IvQueryHandleRegistry, StrategyRegistrationContext, StrategyRuntimeCapabilities,
+        BoltV3IvQueryHandleRegistry, BoltV3StrategyExecutionControls,
+        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeCapabilities,
         assemble_strategy_build_context,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
@@ -183,27 +184,31 @@ fn assembly_context<'a>(
     let decision_evidence: Arc<
         dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    StrategyRegistrationContext {
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+    let realized_volatility_runtime = Arc::new(Mutex::new(
+        bolt_v2::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
+            loaded,
+        )
+        .expect("test realized-volatility runtime should assemble"),
+    ));
+    StrategyRegistrationContext::new(
         loaded,
-        strategy: &loaded.strategies[0],
-        strategy_kind: "test_strategy",
+        &loaded.strategies[0],
+        "test_strategy",
         capabilities,
         resolved,
-        decision_evidence: decision_evidence.clone(),
-        submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence)),
-        iv_query_handles: Arc::new(BoltV3IvQueryHandleRegistry::empty()),
-        order_execution_policy:
-            bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        realized_volatility_runtime: Arc::new(Mutex::new(
-            bolt_v2::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
-                loaded,
-            )
-            .expect("test realized-volatility runtime should assemble"),
-        )),
-        settlement_runtime_sink: None,
-        settlement_recovery: None,
-        settlement_health_transition_emitter: None,
-    }
+        decision_evidence,
+        Arc::new(BoltV3IvQueryHandleRegistry::empty()),
+        realized_volatility_runtime,
+        BoltV3StrategyExecutionControls {
+            submit_admission,
+            order_execution_policy:
+                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            settlement_runtime_sink: None,
+            settlement_recovery: None,
+            settlement_health_transition_emitter: None,
+        },
+    )
 }
 
 #[test]
@@ -263,6 +268,134 @@ fn shared_strategy_assembly_supports_inline_hyperliquid_without_settlement_capab
     assert!(assembled.settlement_capability().is_none());
     assert_eq!(assembled.settlement_account_id(), None);
     assert_eq!(assembled.settlement_currency(), None);
+}
+
+#[test]
+fn shared_strategy_assembly_omits_resources_for_undeclared_capabilities() {
+    let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let resolved = fixture_resolved_secrets();
+    let context = assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: false,
+            settlement: false,
+        },
+    );
+
+    let assembled = assemble_strategy_build_context(&context)
+        .expect("undeclared optional capabilities should leave shared assembly untouched");
+
+    assert!(assembled.realized_volatility_capability().is_none());
+    assert!(assembled.settlement_capability().is_none());
+}
+
+#[test]
+fn shared_strategy_assembly_fails_closed_without_settlement_account_id() {
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let execution_client_id = loaded.strategies[0].config.execution_client_id.to_string();
+    loaded
+        .root
+        .clients
+        .get_mut(execution_client_id.as_str())
+        .expect("fixture execution client should exist")
+        .execution
+        .as_mut()
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture execution client should have a table")
+        .remove("account_id");
+    let resolved = fixture_resolved_secrets();
+    let context = assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: true,
+        },
+    );
+
+    let error = assemble_strategy_build_context(&context)
+        .err()
+        .expect("settlement assembly without an account id must fail closed");
+    let BoltV3StrategyRegistrationError::Binding { message, .. } = error else {
+        panic!("missing settlement account id must return a binding error");
+    };
+    assert_eq!(
+        message,
+        format!(
+            "settlement capability requires execution account id for execution_client_id `{execution_client_id}`"
+        )
+    );
+}
+
+#[test]
+fn shared_strategy_assembly_fails_closed_without_settlement_currency() {
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let execution_client_id = loaded.strategies[0].config.execution_client_id.to_string();
+    let settlement_account_id = loaded
+        .root
+        .clients
+        .get(execution_client_id.as_str())
+        .and_then(|client| client.execution.as_ref())
+        .and_then(toml::Value::as_table)
+        .and_then(|execution| execution.get("account_id"))
+        .and_then(toml::Value::as_str)
+        .expect("fixture settlement account id should exist")
+        .to_string();
+    loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture capital pools should exist")
+        .retain(|pool| pool.account_id.to_string() != settlement_account_id);
+    let resolved = fixture_resolved_secrets();
+    let context = assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: true,
+        },
+    );
+
+    let error = assemble_strategy_build_context(&context)
+        .err()
+        .expect("settlement assembly without a currency must fail closed");
+    let BoltV3StrategyRegistrationError::Binding { message, .. } = error else {
+        panic!("missing settlement currency must return a binding error");
+    };
+    assert_eq!(
+        message,
+        format!(
+            "settlement capability requires settlement currency for execution account `{settlement_account_id}`"
+        )
+    );
+}
+
+#[test]
+fn strategy_registration_context_does_not_expose_unconditional_capability_resources() {
+    let source = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let context_fields = source
+        .split_once("pub struct StrategyRegistrationContext<'a> {")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(fields, _)| fields)
+        .expect("strategy registration context declaration should remain inspectable");
+
+    for forbidden_public_field in [
+        "pub realized_volatility_runtime:",
+        "pub settlement_runtime_sink:",
+        "pub settlement_recovery:",
+        "pub settlement_health_transition_emitter:",
+    ] {
+        assert!(
+            !context_fields.contains(forbidden_public_field),
+            "registration bindings must not directly access `{forbidden_public_field}`"
+        );
+    }
 }
 
 #[test]

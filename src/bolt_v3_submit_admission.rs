@@ -3060,7 +3060,11 @@ impl OrderValuationContext<'_> {
         });
         let last_price = match order {
             OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
-                quote_side_price.or_else(|| self.last_trade.map(|trade| trade.price))
+                if self.last_quote.is_some() && quote_side_price.is_none() {
+                    None
+                } else {
+                    quote_side_price.or_else(|| self.last_trade.map(|trade| trade.price))
+                }
             }
             OrderAny::StopMarket(_) | OrderAny::MarketIfTouched(_) => order.trigger_price(),
             OrderAny::TrailingStopMarket(_) | OrderAny::TrailingStopLimit(_) => {

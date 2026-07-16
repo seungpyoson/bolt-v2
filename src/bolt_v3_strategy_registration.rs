@@ -70,10 +70,63 @@ pub struct StrategyRegistrationContext<'a> {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
-    pub realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
-    pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
-    pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+    realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
+    settlement: Option<StrategyRegistrationSettlementResources>,
+}
+
+#[derive(Clone)]
+struct StrategyRegistrationSettlementResources {
+    runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    recovery: Option<BoltV3SettlementRecoveryConfig>,
+    health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+}
+
+impl<'a> StrategyRegistrationContext<'a> {
+    #[expect(clippy::too_many_arguments)]
+    pub fn new(
+        loaded: &'a LoadedBoltV3Config,
+        strategy: &'a LoadedStrategy,
+        strategy_kind: &'static str,
+        capabilities: StrategyRuntimeCapabilities,
+        resolved: &'a ResolvedBoltV3Secrets,
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+        realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+        execution_controls: BoltV3StrategyExecutionControls,
+    ) -> Self {
+        let BoltV3StrategyExecutionControls {
+            submit_admission,
+            order_execution_policy,
+            settlement_runtime_sink,
+            settlement_recovery,
+            settlement_health_transition_emitter,
+        } = execution_controls;
+        let realized_volatility_runtime = capabilities
+            .realized_volatility
+            .then_some(realized_volatility_runtime);
+        let settlement =
+            capabilities
+                .settlement
+                .then_some(StrategyRegistrationSettlementResources {
+                    runtime_sink: settlement_runtime_sink,
+                    recovery: settlement_recovery,
+                    health_transition_emitter: settlement_health_transition_emitter,
+                });
+
+        Self {
+            loaded,
+            strategy,
+            strategy_kind,
+            capabilities,
+            resolved,
+            decision_evidence,
+            submit_admission,
+            iv_query_handles,
+            order_execution_policy,
+            realized_volatility_runtime,
+            settlement,
+        }
+    }
 }
 
 pub fn assemble_strategy_build_context(
@@ -89,6 +142,37 @@ pub fn assemble_strategy_build_context(
                 ),
             )
         })?;
+    let settlement_identity = if let Some(settlement) = &context.settlement {
+        let settlement_account_id = execution_account_id(&context.loaded.root, execution_client_id)
+            .ok_or_else(|| {
+                binding_message(
+                    context,
+                    format!(
+                        "settlement capability requires execution account id for execution_client_id `{execution_client_id}`"
+                    ),
+                )
+            })?;
+        let settlement_currency = settlement_currency_for_execution_account(
+            &context.loaded.root,
+            execution_venue,
+            settlement_account_id,
+        )
+        .ok_or_else(|| {
+            binding_message(
+                context,
+                format!(
+                    "settlement capability requires settlement currency for execution account `{settlement_account_id}`"
+                ),
+            )
+        })?;
+        Some((
+            settlement,
+            settlement_account_id.to_string(),
+            settlement_currency,
+        ))
+    } else {
+        None
+    };
     let fee_provider = resolve_fee_provider(context.loaded, execution_client_id, context.resolved)
         .map_err(|error| binding_message(context, error.to_string()))?;
     let mut build_context = StrategyBuildContext::new(
@@ -98,27 +182,18 @@ pub fn assemble_strategy_build_context(
         context.order_execution_policy,
         execution_venue,
     );
-    if context.capabilities.realized_volatility {
-        build_context = build_context
-            .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    if let Some(realized_volatility_runtime) = &context.realized_volatility_runtime {
+        build_context =
+            build_context.with_realized_volatility_runtime(realized_volatility_runtime.clone());
     }
-    if context.capabilities.settlement {
-        let settlement_account_id =
-            execution_account_id(&context.loaded.root, execution_client_id).map(str::to_string);
-        let settlement_currency = settlement_account_id.as_deref().and_then(|account_id| {
-            settlement_currency_for_execution_account(
-                &context.loaded.root,
-                execution_venue,
-                account_id,
-            )
-        });
+    if let Some((settlement, settlement_account_id, settlement_currency)) = settlement_identity {
         build_context = build_context
-            .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
-            .with_settlement_recovery(context.settlement_recovery.clone())
-            .with_settlement_account_id(settlement_account_id)
-            .with_settlement_currency(settlement_currency)
+            .with_settlement_runtime_sink(settlement.runtime_sink.clone())
+            .with_settlement_recovery(settlement.recovery.clone())
+            .with_settlement_account_id(Some(settlement_account_id))
+            .with_settlement_currency(Some(settlement_currency))
             .with_settlement_health_transition_emitter(
-                context.settlement_health_transition_emitter.clone(),
+                settlement.health_transition_emitter.clone(),
             );
     }
     Ok(build_context)
@@ -522,23 +597,17 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
             })?;
         let registered_strategy_id = (binding.register)(
             node,
-            StrategyRegistrationContext {
+            StrategyRegistrationContext::new(
                 loaded,
                 strategy,
-                strategy_kind: (binding.strategy_kind)(),
-                capabilities: binding.capabilities,
+                (binding.strategy_kind)(),
+                binding.capabilities,
                 resolved,
-                decision_evidence: decision_evidence.clone(),
-                submit_admission: execution_controls.submit_admission.clone(),
-                iv_query_handles: iv_query_handles.clone(),
-                order_execution_policy: execution_controls.order_execution_policy,
-                realized_volatility_runtime: realized_volatility_runtime.clone(),
-                settlement_runtime_sink: execution_controls.settlement_runtime_sink.clone(),
-                settlement_recovery: execution_controls.settlement_recovery.clone(),
-                settlement_health_transition_emitter: execution_controls
-                    .settlement_health_transition_emitter
-                    .clone(),
-            },
+                decision_evidence.clone(),
+                iv_query_handles.clone(),
+                realized_volatility_runtime.clone(),
+                execution_controls.clone(),
+            ),
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),

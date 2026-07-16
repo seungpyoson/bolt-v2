@@ -353,7 +353,10 @@ source = "{source}"
             &lock("unused"),
         )
         .expect_err("personal fork must not produce dependency proof");
-        assert!(matches!(error, NtDependencyProofError::UnexpectedGit { .. }));
+        assert!(matches!(
+            error,
+            NtDependencyProofError::UnexpectedGit { .. }
+        ));
     }
 
     #[test]

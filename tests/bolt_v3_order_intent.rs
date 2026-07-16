@@ -1,8 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use bolt_v2::bolt_v3_order_intent::{
-    NtOrderBuildInputs, NtOrderTemplate, NtOrderTemplateConfig, build_nt_order,
-    check_nt_order_template_config, validate_nt_order_template,
+    MarketQuoteBuyQuantityError, NtOrderBuildInputs, NtOrderTemplate, NtOrderTemplateConfig,
+    build_nt_order, check_nt_order_template_config, make_market_quote_buy_quantity,
+    normalize_base_order_quantity, validate_nt_order_template,
 };
 use nautilus_common::{
     clock::{Clock, TestClock},
@@ -10,12 +11,92 @@ use nautilus_common::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
+    enums::{AssetClass, OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
+    identifiers::{ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId, Venue},
+    instruments::{BinaryOption, InstrumentAny},
     orders::{Order, OrderAny},
-    types::{Price, Quantity},
+    types::{Currency, Price, Quantity},
 };
 use rust_decimal::Decimal;
+use ustr::Ustr;
+
+fn binary_option() -> InstrumentAny {
+    InstrumentAny::BinaryOption(BinaryOption::new(
+        InstrumentId::from("GENERIC.TEST"),
+        Symbol::from("generic"),
+        AssetClass::Alternative,
+        Currency::USD(),
+        UnixNanos::from(1_u64),
+        UnixNanos::from(2_u64),
+        2,
+        2,
+        Price::from("0.01"),
+        Quantity::from("0.01"),
+        Some(Ustr::from("YES")),
+        None,
+        None,
+        Some(Quantity::from("0.01")),
+        None,
+        None,
+        Some(Price::from("1.00")),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        UnixNanos::from(1_u64),
+        UnixNanos::from(1_u64),
+    ))
+}
+
+#[test]
+fn shared_venue_quantity_wrappers_apply_provider_and_instrument_rounding() {
+    let instrument = binary_option();
+
+    let normalized = normalize_base_order_quantity(
+        Venue::from("POLYMARKET"),
+        &instrument,
+        Quantity::new(2.641, 3),
+    )
+    .expect("positive Polymarket quantity should normalize");
+
+    assert_eq!(normalized, Quantity::new(2.64, 2));
+    assert_eq!(
+        normalize_base_order_quantity(
+            Venue::from("POLYMARKET"),
+            &instrument,
+            Quantity::new(0.001, 3),
+        ),
+        None,
+        "provider underflow must fail closed"
+    );
+}
+
+#[test]
+fn shared_market_quote_buy_quantity_fails_closed_for_unknown_venue_and_below_minimum() {
+    let instrument = binary_option();
+
+    assert_eq!(
+        make_market_quote_buy_quantity(
+            Venue::from("POLYMARKET"),
+            &instrument,
+            Decimal::new(1234, 3),
+        ),
+        Ok(Quantity::new(1.23, 2)),
+        "modeled minimum and instrument precision should be applied together"
+    );
+
+    assert_eq!(
+        make_market_quote_buy_quantity(Venue::from("HYPERLIQUID"), &instrument, Decimal::ONE),
+        Err(MarketQuoteBuyQuantityError::MinimumUnmodeled)
+    );
+    assert_eq!(
+        make_market_quote_buy_quantity(Venue::from("POLYMARKET"), &instrument, Decimal::new(99, 2),),
+        Err(MarketQuoteBuyQuantityError::BelowMinimum)
+    );
+}
 
 fn generic_order_factory() -> OrderFactory {
     let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));

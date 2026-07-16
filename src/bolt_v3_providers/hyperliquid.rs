@@ -56,8 +56,8 @@ use crate::{
         write_hyperliquid_product_submit_proof_artifact,
     },
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderLiveSubmitApproval,
-        ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
+        FeeProvider, ProviderAdapterMapContext, ProviderCredentialedBlock,
+        ProviderLiveSubmitApproval, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderLiveSubmitArmingPreflight, ProviderLiveSubmitOrderLimits,
         ProviderProductSubmitProofArtifactRequest, ProviderSecretRequirement,
         ProviderSecretResolveContext, ProviderSsmPathReference, ResolvedClientSecrets,
@@ -65,7 +65,6 @@ use crate::{
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     bolt_v3_wire_boundary::TransportBackend,
-    strategies::registry::FeeProvider,
 };
 
 use super::hyperliquid_artifacts::HyperliquidLiveSubmitApprovalConsumption;

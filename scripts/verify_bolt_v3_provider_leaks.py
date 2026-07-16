@@ -63,37 +63,22 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
         "concrete provider type name in core production code",
-        "PolymarketNegRisk {",
+        "PolymarketNegRisk(NegRiskGroupingProof),",
     ),
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
         "concrete provider type name in core production code",
-        "discovery_scope: PolymarketDiscoveryScopeEvidence,",
+        "HyperliquidOutcome(StructuredOutcomeGroupingProof),",
     ),
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
         "concrete provider type name in core production code",
-        "HyperliquidOutcome {",
+        "Self::PolymarketNegRisk(proof) => Some(ConcreteGroupingProofRef::NegRisk(proof)),",
     ),
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
         "concrete provider type name in core production code",
-        "Self::PolymarketNegRisk {",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_outcome_groups.rs",
-        "concrete provider type name in core production code",
-        'Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),',
-    ),
-    FindingAllowance(
-        "src/bolt_v3_outcome_groups.rs",
-        "concrete provider type name in core production code",
-        "Self::HyperliquidOutcome {",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_outcome_groups.rs",
-        "concrete provider type name in core production code",
-        "pub struct PolymarketDiscoveryScopeEvidence {",
+        "Self::HyperliquidOutcome(proof) => {",
     ),
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
@@ -104,16 +89,6 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
         "src/bolt_v3_outcome_groups.rs",
         "concrete provider type name in core production code",
         'OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",',
-    ),
-    FindingAllowance(
-        "src/bolt_v3_outcome_groups.rs",
-        "concrete provider type name in core production code",
-        "GroupingProof::PolymarketNegRisk {",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_outcome_groups.rs",
-        "concrete provider type name in core production code",
-        "GroupingProof::HyperliquidOutcome {",
     ),
     FindingAllowance(
         "src/bolt_v3_outcome_groups.rs",
@@ -132,6 +107,9 @@ PROVIDER_SPECIFIC_ROOT_MODULES: frozenset[str] = frozenset(
     {
         "src/bolt_v3_outcome_group_hyperliquid.rs",
         "src/bolt_v3_outcome_group_polymarket.rs",
+        # Cycle-free payload leaf for the closed core GroupingProof enum. It is
+        # concrete by design but imports neither core nor provider modules.
+        "src/bolt_v3_outcome_group_proofs.rs",
     }
 )
 

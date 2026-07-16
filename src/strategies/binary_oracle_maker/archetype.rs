@@ -4,7 +4,7 @@
 //! so it may freely name both the maker strategy layer
 //! (`crate::strategies::binary_oracle_maker::*`, `production_strategy_registry`)
 //! and the shared bolt-v3 registration/live-node types. It mirrors the taker
-//! archetype binding (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`)
+//! archetype binding (`crate::strategies::binary_oracle_edge_taker::archetype`)
 //! *structurally* — it owns:
 //!
 //! 1. `validate_strategy` — the maker's bolt-v3 startup-validation policy and
@@ -15,11 +15,10 @@
 //!    health-gate runtime knobs ([`validate_parameter_bounds`]) so a degenerate
 //!    or never-warming μ fails closed at load instead of at the first dead
 //!    trading session.
-//! 2. `register_runtime_strategy` — resolves the configured fee provider and
-//!    execution venue, builds the `StrategyBuildContext` + flat raw config table
-//!    the maker consumes (the NT envelope plus the μ runtime knobs threaded from
-//!    `[parameters.runtime]`), and registers the strategy through the shared
-//!    `production_strategy_registry()`.
+//! 2. `register_runtime_strategy` — translates the flat raw config table the
+//!    maker consumes (the NT envelope plus the μ runtime knobs threaded from
+//!    `[parameters.runtime]`), delegates shared build-context assembly, and
+//!    registers the strategy through `production_strategy_registry()`.
 //! 3. `RUNTIME_BINDING` — the `StrategyRuntimeBinding` the production aggregator
 //!    (`crate::strategy_bindings`) lists alongside the taker binding.
 
@@ -46,9 +45,9 @@ use crate::bolt_v3_maker_market_selection::{
 use crate::bolt_v3_operator_artifacts::{
     build_head_sha_matches_current, is_lowercase_sha256, json_artifact_sha256,
 };
-use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
+    StrategyRuntimeCapabilities, assemble_strategy_build_context,
 };
 use crate::strategies::binary_oracle_maker::binding::MakerMarketDeclaration;
 use crate::strategies::binary_oracle_maker::{BinaryOracleMakerBuilder, KEY};
@@ -63,6 +62,10 @@ const NT_BACKTEST_NODE_EXECUTION_MODEL: &str = "nt_backtest_node";
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
     strategy_kind: BinaryOracleMakerBuilder::kind,
+    capabilities: StrategyRuntimeCapabilities {
+        realized_volatility: true,
+        settlement: false,
+    },
     register: register_runtime_strategy,
 };
 
@@ -723,10 +726,9 @@ pub fn declared_markets(strategy: &LoadedStrategy) -> Result<Vec<MakerMarketDecl
 
 /// Register the maker on the live node.
 ///
-/// Mirrors the taker's `register_runtime_strategy` structurally: resolve the fee
-/// provider and execution venue from the loaded config, build a
-/// `StrategyBuildContext`, then hand the flat raw config table to the shared
-/// `production_strategy_registry()`. The raw table carries the NautilusTrader
+/// Mirrors the taker's `register_runtime_strategy` structurally: translate the
+/// flat raw config table, delegate shared build-context assembly, then hand both
+/// to `production_strategy_registry()`. The raw table carries the NautilusTrader
 /// envelope fields (`strategy_id`, `order_id_tag`, `oms_type`, `client_id`) plus
 /// the μ runtime knobs `raw_maker_config` threads from the operator
 /// `[parameters.runtime]` block.
@@ -736,35 +738,7 @@ pub fn register_runtime_strategy(
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
     let raw =
         raw_maker_config(context.strategy).map_err(|message| binding_message(&context, message))?;
-    let fee_provider = resolve_fee_provider(
-        context.loaded,
-        context.strategy.config.execution_client_id.as_str(),
-        context.resolved,
-    )
-    .map_err(|error| binding_message(&context, error.to_string()))?;
-    let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    let execution_venue = context
-        .loaded
-        .root
-        .clients
-        .get(execution_client_id)
-        .map(|client| client.venue)
-        .ok_or_else(|| {
-            binding_message(
-                &context,
-                format!(
-                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-                ),
-            )
-        })?;
-    let build_context = crate::strategies::registry::StrategyBuildContext::new(
-        fee_provider,
-        context.decision_evidence.clone(),
-        context.submit_admission.clone(),
-        context.order_execution_policy,
-        execution_venue,
-    )
-    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    let build_context = assemble_strategy_build_context(&context)?;
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry

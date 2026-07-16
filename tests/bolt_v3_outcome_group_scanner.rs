@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use bolt_v2::{
+    bolt_v3_outcome_group_proofs::{NegRiskGroupingProof, PolymarketDiscoveryScopeEvidence},
     bolt_v3_outcome_group_scanner::{
         OutcomeGroupCandidateLeg, OutcomeGroupDepthSnapshot, OutcomeGroupScanBlockReason,
         OutcomeGroupScanInput, scan_outcome_group_candidate,
@@ -8,12 +9,12 @@ use bolt_v2::{
     bolt_v3_outcome_groups::{
         AttestedLegRef, AttestedPayoutVector, CanonicalField, GroupingProof,
         NormalizedPriceScaleEvidence, OrderConstraintSource, OutcomeGroup, OutcomeGroupSourceKind,
-        OutcomeLeg, OutcomeLegOrderConstraints, OutcomeLegRole, PolymarketDiscoveryScopeEvidence,
-        PositiveSideBinding, PriceScaleAssertionSource, RoleBindingProof, SettlementRules,
-        SettlementSourceKind, TerminalPayoutDerivation, TerminalState, TerminalStateConvention,
-        TerminalStateKind, ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint,
-        derive_standard_payout_matrix, expected_metadata_fingerprint,
-        payout_vector_attestation_sha256, role_binding_attestation_sha256,
+        OutcomeLeg, OutcomeLegOrderConstraints, OutcomeLegRole, PositiveSideBinding,
+        PriceScaleAssertionSource, RoleBindingProof, SettlementRules, SettlementSourceKind,
+        TerminalPayoutDerivation, TerminalState, TerminalStateConvention, TerminalStateKind,
+        ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint, derive_standard_payout_matrix,
+        expected_metadata_fingerprint, payout_vector_attestation_sha256,
+        role_binding_attestation_sha256,
     },
 };
 use nautilus_model::{
@@ -656,7 +657,7 @@ fn fixture_group() -> OutcomeGroup {
         terminal_states,
         tradable_legs: legs,
         payout_matrix,
-        grouping_proof: Some(GroupingProof::PolymarketNegRisk {
+        grouping_proof: Some(GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
             neg_risk_market_id: "fixture-neg-risk".to_string(),
             discovery_scope: PolymarketDiscoveryScopeEvidence {
                 source_id: "fixture-source".to_string(),
@@ -673,7 +674,7 @@ fn fixture_group() -> OutcomeGroup {
                 ["grouping", "neg_risk_market_id"],
                 "fixture-neg-risk",
             )]),
-        }),
+        })),
         role_binding_proof: Some(RoleBindingProof::OperatorAttested {
             attestation_id: "fixture-source".to_string(),
             positive_side_bindings: bindings.clone(),

@@ -8,7 +8,7 @@ use crate::bolt_v3_config::{
     DataClientReadinessProbeQuoteTargetSource, DataInstrumentBlock,
     RealizedVolatilityAggregationBlock, RealizedVolatilityPolicyBlock,
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceBlock,
-    RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock,
+    RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock, StrategyArchetypeKey,
 };
 use crate::bolt_v3_iv::config::IvRootConfig;
 use crate::bolt_v3_iv::error::IvRejectReason;
@@ -262,18 +262,76 @@ fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface
     );
 }
 
-#[test]
-fn settlement_health_configuration_tracks_registered_settlement_capability() {
+fn loaded_config_with_strategy_archetypes(archetypes: &[&str]) -> LoadedBoltV3Config {
+    #[derive(serde::Deserialize)]
+    struct StrategyArchetypeFixture {
+        strategy_archetype: StrategyArchetypeKey,
+    }
+
     let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
     ))
     .expect("fixture config with registered strategies should load");
+    let template = loaded
+        .strategies
+        .first()
+        .expect("fixture should include a strategy")
+        .clone();
+    loaded.strategies = archetypes
+        .iter()
+        .map(|archetype| {
+            let mut strategy = template.clone();
+            let fixture: StrategyArchetypeFixture =
+                toml::from_str(&format!("strategy_archetype = \"{archetype}\""))
+                    .expect("test archetype key should deserialize");
+            strategy.config.strategy_archetype = fixture.strategy_archetype;
+            strategy
+        })
+        .collect();
+    loaded
+}
+
+#[test]
+fn settlement_health_is_nominal_for_edge_taker() {
+    let loaded = loaded_config_with_strategy_archetypes(&["binary_oracle_edge_taker"]);
     assert_eq!(
         settlement_health_from_loaded(&loaded).status,
         BoltV3OperatorHealthStatus::Nominal
     );
+}
 
-    loaded.strategies.clear();
+#[test]
+fn settlement_health_is_not_configured_for_maker_only() {
+    let loaded = loaded_config_with_strategy_archetypes(&["binary_oracle_maker"]);
+    let health = settlement_health_from_loaded(&loaded);
+    assert_eq!(health.status, BoltV3OperatorHealthStatus::NotConfigured);
+    assert!(!health.configured);
+}
+
+#[test]
+fn settlement_health_is_not_configured_for_complete_set_only() {
+    let loaded = loaded_config_with_strategy_archetypes(&["complete_set_arbitrage"]);
+    let health = settlement_health_from_loaded(&loaded);
+    assert_eq!(health.status, BoltV3OperatorHealthStatus::NotConfigured);
+    assert!(!health.configured);
+}
+
+#[test]
+fn settlement_health_is_nominal_for_mixed_capabilities() {
+    let loaded = loaded_config_with_strategy_archetypes(&[
+        "binary_oracle_maker",
+        "binary_oracle_edge_taker",
+        "complete_set_arbitrage",
+    ]);
+    assert_eq!(
+        settlement_health_from_loaded(&loaded).status,
+        BoltV3OperatorHealthStatus::Nominal
+    );
+}
+
+#[test]
+fn settlement_health_is_not_configured_without_strategies() {
+    let loaded = loaded_config_with_strategy_archetypes(&[]);
     let unconfigured = settlement_health_from_loaded(&loaded);
     assert_eq!(
         unconfigured.status,

@@ -12,26 +12,24 @@
 //! dispatch (`validate_strategy_archetype_with_bindings`,
 //! `register_bolt_v3_strategies_on_node_with_bindings`) still lives in the shared
 //! layer and takes these lists as parameters — there is no second registry.
-use crate::bolt_v3_archetypes::{
-    ArchetypeValidationBinding, binary_oracle_edge_taker, complete_set_arbitrage,
-};
+use crate::bolt_v3_archetypes::ArchetypeValidationBinding;
 use crate::bolt_v3_strategy_registration::StrategyRuntimeBinding;
-use crate::strategies::{binary_oracle_maker, complete_set_arbitrage as complete_set_strategy};
+use crate::strategies::{binary_oracle_edge_taker, binary_oracle_maker, complete_set_arbitrage};
 
 const RUNTIME_BINDINGS: &[StrategyRuntimeBinding] = &[
-    binary_oracle_edge_taker::RUNTIME_BINDING,
-    complete_set_strategy::RUNTIME_BINDING,
+    binary_oracle_edge_taker::archetype::RUNTIME_BINDING,
+    complete_set_arbitrage::archetype::RUNTIME_BINDING,
     binary_oracle_maker::archetype::RUNTIME_BINDING,
 ];
 
 const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[
     ArchetypeValidationBinding {
-        key: binary_oracle_edge_taker::KEY,
-        validate_strategy: binary_oracle_edge_taker::validate_strategy,
+        key: binary_oracle_edge_taker::archetype::KEY,
+        validate_strategy: binary_oracle_edge_taker::archetype::validate_strategy,
     },
     ArchetypeValidationBinding {
-        key: complete_set_arbitrage::KEY,
-        validate_strategy: complete_set_arbitrage::validate_strategy,
+        key: complete_set_arbitrage::archetype::KEY,
+        validate_strategy: complete_set_arbitrage::archetype::validate_strategy,
     },
     ArchetypeValidationBinding {
         key: binary_oracle_maker::KEY,
@@ -64,6 +62,32 @@ mod tests {
         assert!(keys.contains(&"binary_oracle_edge_taker"), "{keys:?}");
         assert!(keys.contains(&"complete_set_arbitrage"), "{keys:?}");
         assert!(keys.contains(&"binary_oracle_maker"), "{keys:?}");
+    }
+
+    #[test]
+    fn runtime_bindings_carry_expected_capability_matrix() {
+        let capabilities = production_runtime_bindings()
+            .iter()
+            .map(|binding| (binding.key, binding.capabilities))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            capabilities["binary_oracle_edge_taker"],
+            crate::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                realized_volatility: true,
+                settlement: true,
+            }
+        );
+        for key in ["binary_oracle_maker", "complete_set_arbitrage"] {
+            assert_eq!(
+                capabilities[key],
+                crate::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                    realized_volatility: true,
+                    settlement: false,
+                },
+                "{key} capability declaration drifted"
+            );
+        }
     }
 
     #[test]

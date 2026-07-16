@@ -28,6 +28,8 @@ use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 use rust_decimal::Decimal;
 use toml::Value;
 
+use crate::bolt_v3_strategy_context::StrategyBuildContext;
+
 use crate::{
     bolt_v3_decision_evidence::{
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
@@ -73,7 +75,7 @@ use crate::{
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
     strategies::binary_oracle_maker::runtime::MakerRuntime,
-    strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
+    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
 };
 
 pub mod archetype;
@@ -1049,8 +1051,8 @@ mod tests {
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
         bolt_v3_position_contract::BoltV3PositionMarketLifecycle,
+        bolt_v3_providers::FeeProvider,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
-        strategies::registry::FeeProvider,
     };
     use futures_util::{FutureExt, future::BoxFuture};
     use nautilus_core::{Params, UnixNanos};

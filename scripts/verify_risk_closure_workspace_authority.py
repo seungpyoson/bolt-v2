@@ -12,7 +12,7 @@ import tomllib
 
 
 SOURCE = pathlib.Path("config/risk-closure-workspaces.toml")
-GENERATED = pathlib.Path("src/bolt_v3_risk_closure_workspace_generated.rs")
+GENERATED = pathlib.Path("src/bolt_v3_risk_closure_workspace/generated.rs")
 OWNER = pathlib.Path("src/bolt_v3_risk_closure_workspace.rs")
 RUST_INTEGER = (
     r"(?:0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|[0-9][0-9_]*)"

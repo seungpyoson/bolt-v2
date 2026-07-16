@@ -6,6 +6,7 @@ use bolt_v2::{
         HyperliquidHip4OutcomeGroupError, HyperliquidHip4OutcomeGroupInput,
         normalize_hyperliquid_hip4_outcome_group,
     },
+    bolt_v3_outcome_group_proofs::StructuredOutcomeGroupingProof,
     bolt_v3_outcome_group_sources::{
         OutcomeGroupNonStandardPayoutLegBlock, OutcomeGroupNonStandardTerminalPayoutBlock,
         OutcomeGroupOrderConstraintsBlock, OutcomeGroupRefundConvention,
@@ -71,11 +72,11 @@ fn hyperliquid_normalizer_builds_question_group_from_nt_binary_option_info() {
         OutcomeLegRole::PaysUnlessTerminalState(ref state) if state == "away"
     ));
 
-    let GroupingProof::HyperliquidOutcome {
+    let GroupingProof::HyperliquidOutcome(StructuredOutcomeGroupingProof {
         question,
         outcome_indices,
         ..
-    } = group.grouping_proof.as_ref().expect("grouping proof")
+    }) = group.grouping_proof.as_ref().expect("grouping proof")
     else {
         panic!("expected Hyperliquid outcome grouping proof");
     };

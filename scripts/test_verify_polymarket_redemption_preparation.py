@@ -63,8 +63,8 @@ production_activation_enabled = false
 root_client = "polymarket_main"
 [redemption]
 chain_id = 137
-collateral_asset = "0x2222222222222222222222222222222222222222"
-output_asset = "0x3333333333333333333333333333333333333333"
+collateral_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 standard_adapter_target = "0xAdA100Db00Ca00073811820692005400218FcE1f"
 negative_risk_adapter_target = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -96,8 +96,8 @@ repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
 deployment_source_url = "https://docs.polymarket.com/resources/contracts"
 deployment_observed_date = "2026-07-16"
-deployment_fact_format_version = 1
-deployment_fact_sha256 = "3aa2b564b14a713aa3ee7465878c6d1fe20ee3353f313d4718dfefa24d81908a"
+deployment_fact_format_version = 2
+deployment_fact_sha256 = "7844264e5c6c456224820af716c000438d72736a5f45315ae88f4f92dc068667"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
 standard_source_sha256 = "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
@@ -160,12 +160,53 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.assertEqual(verifier.boundary_errors(root), [])
 
+    def test_deployment_fact_hash_binds_runtime_protocol_facts(self) -> None:
+        mutations = (
+            ("chain_id = 137", "chain_id = 138"),
+            (
+                'collateral_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"',
+                'collateral_asset = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+            ),
+            (
+                'output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"',
+                'output_asset = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"',
+            ),
+            (
+                'standard_adapter_target = "0xAdA100Db00Ca00073811820692005400218FcE1f"',
+                'standard_adapter_target = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+            ),
+            (
+                'negative_risk_adapter_target = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"',
+                'negative_risk_adapter_target = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"',
+            ),
+            (
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0x0000000000000000000000000000000000000000000000000000000000000001",
+            ),
+            ('dummy_index_sets = ["1", "2"]', 'dummy_index_sets = ["1", "3"]'),
+        )
+        for expected, replacement in mutations:
+            with self.subTest(expected=expected):
+                temporary, root = self.fixture()
+                self.addCleanup(temporary.cleanup)
+                runtime = root / "config/polymarket-redemption.toml"
+                runtime.write_text(
+                    runtime.read_text(encoding="utf-8").replace(expected, replacement),
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    any(
+                        "deployment fact hash must bind" in error
+                        for error in verifier.boundary_errors(root)
+                    )
+                )
+
     def test_source_evidence_paths_and_hashes_are_pinned(self) -> None:
         mutations = (
             ("https://docs.polymarket.com/resources/contracts", "https://docs.polymarket.com/resources/other"),
             ("2026-07-16", "2026-07-15"),
-            ("deployment_fact_format_version = 1", "deployment_fact_format_version = 2"),
-            ("3aa2b564b14a713aa3ee7465878c6d1fe20ee3353f313d4718dfefa24d81908a", "0" * 64),
+            ("deployment_fact_format_version = 2", "deployment_fact_format_version = 1"),
+            ("7844264e5c6c456224820af716c000438d72736a5f45315ae88f4f92dc068667", "0" * 64),
             ("src/adapters/CtfCollateralAdapter.sol", "src/adapters/Other.sol"),
             ("f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90", "1" * 64),
             ("src/adapters/NegRiskCtfCollateralAdapter.sol", "src/adapters/OtherNeg.sol"),

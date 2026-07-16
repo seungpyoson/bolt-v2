@@ -32,8 +32,8 @@ EXPECTED_EVIDENCE = {
     "adapter_revision": "ccc0596074f4dfd62c944fbca4de252893b82b4b",
     "deployment_source_url": "https://docs.polymarket.com/resources/contracts",
     "deployment_observed_date": "2026-07-16",
-    "deployment_fact_format_version": 1,
-    "deployment_fact_sha256": "3aa2b564b14a713aa3ee7465878c6d1fe20ee3353f313d4718dfefa24d81908a",
+    "deployment_fact_format_version": 2,
+    "deployment_fact_sha256": "7844264e5c6c456224820af716c000438d72736a5f45315ae88f4f92dc068667",
     "standard_source_path": "src/adapters/CtfCollateralAdapter.sol",
     "standard_source_sha256": "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
     "negative_risk_source_path": "src/adapters/NegRiskCtfCollateralAdapter.sol",
@@ -84,14 +84,29 @@ def _prepare_signature(text: str) -> str:
 def _deployment_fact_sha256(
     source_url: object,
     observed_date: object,
+    chain_id: object,
+    collateral_asset: object,
+    output_asset: object,
     standard_target: object,
     negative_risk_target: object,
+    parent_collection_id: object,
+    dummy_index_sets: object,
 ) -> str:
+    normalized_dummy_index_sets = (
+        ",".join(str(value) for value in dummy_index_sets)
+        if isinstance(dummy_index_sets, list)
+        else str(dummy_index_sets)
+    )
     payload = (
         f"source_url={source_url}\n"
         f"observed_date={observed_date}\n"
+        f"chain_id={chain_id}\n"
+        f"collateral_asset={str(collateral_asset).lower()}\n"
+        f"output_asset={str(output_asset).lower()}\n"
         f"CtfCollateralAdapter={str(standard_target).lower()}\n"
         f"NegRiskCtfCollateralAdapter={str(negative_risk_target).lower()}\n"
+        f"parent_collection_id={str(parent_collection_id).lower()}\n"
+        f"dummy_index_sets={normalized_dummy_index_sets}\n"
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -208,11 +223,16 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         ) != _deployment_fact_sha256(
             adapter.get("deployment_source_url"),
             adapter.get("deployment_observed_date"),
+            redemption.get("chain_id"),
+            redemption.get("collateral_asset"),
+            redemption.get("output_asset"),
             redemption.get("standard_adapter_target"),
             redemption.get("negative_risk_adapter_target"),
+            redemption.get("parent_collection_id"),
+            redemption.get("dummy_index_sets"),
         ):
             errors.append(
-                "deployment fact hash must bind the source observation to normalized runtime adapter targets"
+                "deployment fact hash must bind the source observation to normalized runtime protocol facts"
             )
 
     if "pub enum AttemptKind" not in production or not all(

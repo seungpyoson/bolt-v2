@@ -56,8 +56,8 @@ repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
 deployment_source_url = "https://docs.polymarket.com/resources/contracts"
 deployment_observed_date = "2026-07-16"
-deployment_fact_format_version = 1
-deployment_fact_sha256 = "820a77baf87037efc47eb26afdceed1acccb7844e628c9e93726a65d0cecb63b"
+deployment_fact_format_version = 2
+deployment_fact_sha256 = "284dac97c9c9755937402d6777b5a37f02af7f3dc4edbca25dfa54ee5f759c55"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
 standard_source_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
@@ -168,12 +168,48 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             self.load(evidence_text=EVIDENCE_TOML.replace("ccc0596074f4dfd62c944fbca4de252893b82b4b", "main"))
 
     def test_deployment_fact_hash_must_match_runtime_targets(self) -> None:
-        changed_runtime = RUNTIME_TOML.replace(
-            "0x2222222222222222222222222222222222222222",
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        mutations = (
+            (
+                "0x2222222222222222222222222222222222222222",
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            (
+                "0x3333333333333333333333333333333333333333",
+                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
         )
-        with self.assertRaisesRegex(generator.ConfigError, "deployment_fact_sha256"):
-            self.load(runtime_text=changed_runtime)
+        for expected, replacement in mutations:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(
+                    generator.ConfigError, "deployment_fact_sha256"
+                ):
+                    self.load(
+                        runtime_text=RUNTIME_TOML.replace(expected, replacement)
+                    )
+
+    def test_deployment_fact_hash_must_match_runtime_protocol_facts(self) -> None:
+        mutations = (
+            ("chain_id = 137", "chain_id = 138"),
+            (
+                "0x4444444444444444444444444444444444444444",
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            (
+                "0x5555555555555555555555555555555555555555",
+                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "0x0000000000000000000000000000000000000000000000000000000000000001",
+            ),
+            ('dummy_index_sets = ["1", "2"]', 'dummy_index_sets = ["1", "3"]'),
+        )
+        for expected, replacement in mutations:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(
+                    generator.ConfigError, "deployment_fact_sha256"
+                ):
+                    self.load(runtime_text=RUNTIME_TOML.replace(expected, replacement))
 
     def test_evidence_cannot_duplicate_runtime_values(self) -> None:
         duplicated = EVIDENCE_TOML + '\nruntime_safe_address = "0x1111111111111111111111111111111111111111"\n'
@@ -188,6 +224,15 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         overflow = str(1 << 256)
         with self.assertRaisesRegex(generator.ConfigError, "uint256"):
             self.load(RUNTIME_TOML.replace('dummy_index_sets = ["1", "2"]', f'dummy_index_sets = ["{overflow}", "2"]'))
+
+    def test_u256_values_have_one_decimal_toml_spelling(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "decimal string"):
+            self.load(
+                RUNTIME_TOML.replace(
+                    'dummy_index_sets = ["1", "2"]',
+                    'dummy_index_sets = ["0x1", "2"]',
+                )
+            )
 
     def test_safe_gas_addresses_must_remain_zero(self) -> None:
         for field in ("gas_token", "refund_receiver"):

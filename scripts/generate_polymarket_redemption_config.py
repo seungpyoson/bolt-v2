@@ -132,15 +132,13 @@ def _ssm_path(value: object, field: str) -> str:
 
 def _u256(value: object, field: str) -> int:
     text = _string(value, field)
-    try:
-        parsed = int(text, 16 if text.lower().startswith("0x") else 10)
-    except ValueError as error:
-        raise ConfigError(f"{field} must be a canonical uint256 string") from error
+    if not text.isascii() or not text.isdigit():
+        raise ConfigError(f"{field} must be a canonical uint256 decimal string")
+    parsed = int(text, 10)
     if parsed < 0 or parsed > MAX_U256:
         raise ConfigError(f"{field} must fit uint256")
-    canonical = hex(parsed).lower() if text.lower().startswith("0x") else str(parsed)
-    if text.lower() != canonical:
-        raise ConfigError(f"{field} must be a canonical uint256 string")
+    if text != str(parsed):
+        raise ConfigError(f"{field} must be a canonical uint256 decimal string")
     return parsed
 
 
@@ -314,8 +312,13 @@ def _deployment_fact_payload(
     return (
         f"source_url={source_url}\n"
         f"observed_date={observed_date}\n"
+        f"chain_id={runtime.chain_id}\n"
+        f"collateral_asset={runtime.collateral_asset}\n"
+        f"output_asset={runtime.output_asset}\n"
         f"CtfCollateralAdapter={runtime.standard_adapter_target}\n"
         f"NegRiskCtfCollateralAdapter={runtime.negative_risk_adapter_target}\n"
+        f"parent_collection_id={runtime.parent_collection_id}\n"
+        f"dummy_index_sets={','.join(str(value) for value in runtime.dummy_index_sets)}\n"
     ).encode("utf-8")
 
 
@@ -354,8 +357,8 @@ def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEviden
     _integer(
         adapter["deployment_fact_format_version"],
         "adapter_abi.deployment_fact_format_version",
-        minimum=1,
-        maximum=1,
+        minimum=2,
+        maximum=2,
     )
     observed_fact_sha256 = _sha256(
         adapter["deployment_fact_sha256"], "adapter_abi.deployment_fact_sha256"
@@ -365,8 +368,8 @@ def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEviden
     ).hexdigest()
     if observed_fact_sha256 != expected_fact_sha256:
         raise ConfigError(
-            "adapter_abi.deployment_fact_sha256 must hash the v1 canonical source URL, "
-            "observed date, and normalized runtime adapter targets"
+            "adapter_abi.deployment_fact_sha256 must hash the v2 canonical source URL, "
+            "observed date, and normalized runtime protocol facts"
         )
     _source_path(adapter["standard_source_path"], "adapter_abi.standard_source_path")
     _sha256(adapter["standard_source_sha256"], "adapter_abi.standard_source_sha256")

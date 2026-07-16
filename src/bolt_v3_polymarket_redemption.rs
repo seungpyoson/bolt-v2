@@ -1219,20 +1219,50 @@ mod tests {
         let credentials = resolve_redemption_credentials_from(&config, &mut resolver)
             .expect("grouped credentials must resolve through SSM");
         let debug = format!("{credentials:?}");
-        assert_zeroize_on_drop::<ResolvedRedemptionCredentials>();
-        assert_eq!(resolved_paths.len(), 4);
-        for sentinel in [
+        let sentinels = [
             sentinel_private_key,
             sentinel_api_key,
             sentinel_api_secret,
             sentinel_passphrase,
-        ] {
+        ];
+        assert_zeroize_on_drop::<ResolvedRedemptionCredentials>();
+        assert_eq!(resolved_paths.len(), 4);
+        for sentinel in sentinels {
             assert!(!debug.contains(sentinel));
         }
         assert_eq!(
             debug,
             "ResolvedRedemptionCredentials { signer_private_key: \"<redacted>\", builder_api_key: \"<redacted>\", builder_api_secret: \"<redacted>\", builder_passphrase: \"<redacted>\" }"
         );
+
+        let mut lease = recovery_lease(GOLDEN_STANDARD_REQUEST.len(), "secret-evidence");
+        prepare_redemption_request(
+            &mut lease,
+            &config,
+            &credentials,
+            original_input(RedemptionMarketKind::Standard),
+            AttemptKind::Original,
+            |prepared| {
+                let identity = format!("{:?}", prepared.identity());
+                for sentinel in sentinels {
+                    let sentinel_bytes = sentinel.as_bytes();
+                    assert!(
+                        !prepared
+                            .as_bytes()
+                            .windows(sentinel_bytes.len())
+                            .any(|window| window == sentinel_bytes)
+                    );
+                    assert!(
+                        !prepared
+                            .calldata_hex()
+                            .windows(sentinel_bytes.len())
+                            .any(|window| window == sentinel_bytes)
+                    );
+                    assert!(!identity.contains(sentinel));
+                }
+            },
+        )
+        .expect("sentinel credentials must prepare redacted evidence");
     }
 
     #[test]

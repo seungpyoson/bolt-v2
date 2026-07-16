@@ -1045,7 +1045,7 @@ pub fn realized_volatility_new_risk_source_available(
     client_key: &str,
     client: &ClientBlock,
 ) -> Result<bool, String> {
-    if client.venue == binance::KEY {
+    if client.venue.as_str() == binance::KEY {
         return binance::realized_volatility_new_risk_source_available(client_key, client);
     }
     Ok(true)

@@ -55,8 +55,8 @@ use crate::{
         realized_volatility_pricing_component_evidence_label,
     },
     bolt_v3_evidence_novelty::{
-        EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard, EvidenceOutcomeIdentity,
-        EvidenceStateOwner,
+        EvidenceCanonicalState, EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard,
+        EvidenceOutcomeIdentity, EvidenceStateOwner,
     },
     bolt_v3_executable_cost::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
@@ -169,12 +169,12 @@ use crate::bolt_v3_feed_health::{
 mod entry_decision;
 
 use self::entry_decision::{
-    BlockedStrategyInputSemanticState, EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields,
-    EntryEvaluationReceiveContext, EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs,
-    EntryRealizedVolatilityReceipt, EntrySkipSemanticState, EntrySubmissionDecision,
-    ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
-    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
-    entry_skip_reason_category_from_str, push_executable_edge_pricing_block,
+    EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields, EntryEvaluationReceiveContext,
+    EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs, EntryRealizedVolatilityReceipt,
+    EntrySubmissionDecision, ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields,
+    entry_block_reason_to_evidence, entry_pricing_block_reason_from_taker,
+    entry_pricing_block_reason_to_evidence, entry_skip_reason_category_from_str,
+    push_executable_edge_pricing_block,
 };
 
 mod exit_decision;
@@ -608,6 +608,111 @@ fn exit_rv_gate_result_from_shared(result: BoltV3RvGateResult) -> BoltV3ExitRvGa
     }
 }
 
+fn entry_skip_canonical_state(
+    reason: BoltV3EntrySkipReasonCategory,
+) -> Result<EvidenceCanonicalState> {
+    Ok(match reason {
+        BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => {
+            EvidenceCanonicalState::EntrySkipStrategyCoreNotRegistered
+        }
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked => {
+            EvidenceCanonicalState::EntrySkipEntryGateBlocked
+        }
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked => {
+            EvidenceCanonicalState::EntrySkipEntryPricingBlocked
+        }
+        BoltV3EntrySkipReasonCategory::NoSideSelected => {
+            EvidenceCanonicalState::EntrySkipNoSideSelected
+        }
+        BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => {
+            EvidenceCanonicalState::EntrySkipSizedNotionalNotPositive
+        }
+        BoltV3EntrySkipReasonCategory::InstrumentIdMissing => {
+            EvidenceCanonicalState::EntrySkipInstrumentIdMissing
+        }
+        BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => {
+            EvidenceCanonicalState::EntrySkipInstrumentMissingFromCache
+        }
+        BoltV3EntrySkipReasonCategory::EntryPriceMissing => {
+            EvidenceCanonicalState::EntrySkipEntryPriceMissing
+        }
+        BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => {
+            EvidenceCanonicalState::EntrySkipQuantityRoundingFailed
+        }
+        BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => {
+            EvidenceCanonicalState::EntrySkipLimitNotionalExceedsSizedNotional
+        }
+        BoltV3EntrySkipReasonCategory::EntryQuoteNotionalBelowVenueMinimum => {
+            EvidenceCanonicalState::EntrySkipEntryQuoteNotionalBelowVenueMinimum
+        }
+        BoltV3EntrySkipReasonCategory::EntryQuoteNotionalMinimumUnmodeled => {
+            EvidenceCanonicalState::EntrySkipEntryQuoteNotionalMinimumUnmodeled
+        }
+        BoltV3EntrySkipReasonCategory::QuantityNotPositive => {
+            EvidenceCanonicalState::EntrySkipQuantityNotPositive
+        }
+        BoltV3EntrySkipReasonCategory::PositionContractInvalid => {
+            EvidenceCanonicalState::EntrySkipPositionContractInvalid
+        }
+        BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => {
+            EvidenceCanonicalState::EntrySkipEntryPositionContractUnsupported
+        }
+        BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => {
+            EvidenceCanonicalState::EntrySkipHistoricalEntryFeeUnavailable
+        }
+        BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => {
+            EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation
+        }
+        BoltV3EntrySkipReasonCategory::Unclassified => {
+            anyhow::bail!("unregistered entry-skip semantic state")
+        }
+    })
+}
+
+const fn blocked_strategy_input_canonical_state(
+    gate_result: BoltV3RvGateResult,
+    watermark_present: bool,
+) -> EvidenceCanonicalState {
+    match (gate_result, watermark_present) {
+        (BoltV3RvGateResult::Accepted, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputAcceptedWatermarkAbsent
+        }
+        (BoltV3RvGateResult::Accepted, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputAcceptedWatermarkPresent
+        }
+        (BoltV3RvGateResult::MissingSnapshot, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingSnapshotWatermarkAbsent
+        }
+        (BoltV3RvGateResult::MissingSnapshot, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingSnapshotWatermarkPresent
+        }
+        (BoltV3RvGateResult::MissingEvaluationEventTime, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingEvaluationEventTimeWatermarkAbsent
+        }
+        (BoltV3RvGateResult::MissingEvaluationEventTime, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingEvaluationEventTimeWatermarkPresent
+        }
+        (BoltV3RvGateResult::RejectedFutureDated, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedFutureDatedWatermarkAbsent
+        }
+        (BoltV3RvGateResult::RejectedFutureDated, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedFutureDatedWatermarkPresent
+        }
+        (BoltV3RvGateResult::RejectedStale, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedStaleWatermarkAbsent
+        }
+        (BoltV3RvGateResult::RejectedStale, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedStaleWatermarkPresent
+        }
+        (BoltV3RvGateResult::RejectedNotReady, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkAbsent
+        }
+        (BoltV3RvGateResult::RejectedNotReady, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkPresent
+        }
+    }
+}
+
 fn reference_quote_outside_live_window(
     quote: &ReferenceQuote,
     interval_start_ms: VenueEventMs,
@@ -760,8 +865,8 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_flat_terminal_entry_override: Option<FlatTerminalEntryOverride>,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
-    blocked_strategy_input_novelty: EvidenceNoveltyGuard<BlockedStrategyInputSemanticState>,
-    entry_skip_novelty: EvidenceNoveltyGuard<EntrySkipSemanticState>,
+    blocked_strategy_input_novelty: EvidenceNoveltyGuard,
+    entry_skip_novelty: EvidenceNoveltyGuard,
     last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
     latest_signal_quote: Option<FastSpotObservation>,
@@ -4324,42 +4429,15 @@ impl BinaryOracleEdgeTaker {
                 return Ok(false);
             }
         };
-        let mut gate_blocked_by = decision
-            .evaluation
-            .gate
-            .blocked_by
-            .iter()
-            .map(entry_block_reason_to_evidence)
-            .collect::<Vec<_>>();
-        gate_blocked_by.sort();
-        gate_blocked_by.dedup();
-        let mut pricing_blocked_by = decision
-            .evaluation
-            .pricing_blocked_by
-            .iter()
-            .map(entry_pricing_block_reason_to_evidence)
-            .collect::<Vec<_>>();
-        pricing_blocked_by.sort();
-        pricing_blocked_by.dedup();
-        let state = EntrySkipSemanticState {
-            reason_category,
-            gate_blocked_by,
-            pricing_blocked_by,
-            fast_venue_available: self.pricing.selected_pricing_spot().is_some(),
-            reference_current_price_available: self
-                .pricing
-                .last_reference_current_price()
-                .is_some(),
-            fast_venue_incoherent: self.active.fast_venue_incoherent,
-            realized_volatility_gate_result: decision
-                .evaluation
-                .realized_volatility_receipt
-                .gate_result,
-            realized_volatility_watermark_present: decision
-                .evaluation
-                .realized_volatility_receipt
-                .receive_watermark_ms
-                .is_some(),
+        let state = match entry_skip_canonical_state(reason_category) {
+            Ok(state) => state,
+            Err(error) => {
+                log::error!(
+                    "binary_oracle_edge_taker rejected entry-skip semantic state: strategy_id={} error={error:#}",
+                    self.config.strategy_id
+                );
+                return Ok(false);
+            }
         };
         match self.entry_skip_novelty.claim_once(&episode, state) {
             Ok(true) => {}
@@ -6560,40 +6638,9 @@ impl BinaryOracleEdgeTaker {
     ) -> Result<()> {
         let episode = self.evidence_episode_id()?;
         let realized_volatility = &decision.evaluation.realized_volatility_receipt;
-        let mut gate_blocked_by = decision
-            .evaluation
-            .gate
-            .blocked_by
-            .iter()
-            .map(entry_block_reason_to_evidence)
-            .collect::<Vec<_>>();
-        gate_blocked_by.sort();
-        gate_blocked_by.dedup();
-        let mut pricing_blocked_by = decision
-            .evaluation
-            .pricing_blocked_by
-            .iter()
-            .map(entry_pricing_block_reason_to_evidence)
-            .collect::<Vec<_>>();
-        pricing_blocked_by.sort();
-        pricing_blocked_by.dedup();
-        let state = BlockedStrategyInputSemanticState::from_entry_state(
-            strategy_input_market_selection_outcome(self.active.market_selection_outcome)
-                .to_string(),
-            gate_blocked_by,
-            pricing_blocked_by,
-            decision
-                .evaluation
-                .selected_side
-                .map(outcome_side_evidence_label)
-                .map(str::to_string),
-            self.pricing.selected_pricing_spot().is_some(),
-            self.pricing.last_reference_current_price().is_some(),
-            self.evidence_reference_current_price_failed_over(),
-            self.pricing.fast_venue_incoherent,
+        let state = blocked_strategy_input_canonical_state(
             realized_volatility.gate_result,
             realized_volatility.receive_watermark_ms.is_some(),
-            &realized_volatility.evidence,
         );
         if !self
             .blocked_strategy_input_novelty

@@ -3100,6 +3100,9 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
     strategy.config.strategy_id = strategy_id.clone();
 
     let decision = minimal_entry_submission_decision();
+    let episode = strategy
+        .evidence_episode_id()
+        .expect("fixture must provide a stable evidence episode");
     let result = with_captured_error_log(
         "binary_oracle_edge_taker entry skip evidence write failed",
         &strategy_id,
@@ -3118,7 +3121,7 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
     );
     assert!(
-        strategy.entry_skip_novelty.seen_state_count() > 0,
+        strategy.entry_skip_novelty.seen_state_count(&episode) > 0,
         "the monotonic novelty state must remain set so the lost write is not retried"
     );
 }
@@ -4532,7 +4535,7 @@ fn rv_clock_domain_amendment_apply_state(
 }
 
 #[test]
-fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
+fn entry_skip_canonical_state_ignores_rv_diagnostic_churn() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = minimal_entry_submission_decision();
@@ -4556,15 +4559,15 @@ fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
     let mask = rv_clock_domain_amendment_entry_mask(&events);
     assert_eq!(
         mask.count_ones(),
-        12,
-        "all twelve entry-skip RV bits must emit once"
+        1,
+        "one entry-skip reason owns one canonical state regardless of RV diagnostics"
     );
     assert_eq!(
         events
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        12
+        1
     );
 }
 
@@ -4601,16 +4604,12 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
 }
 
 #[test]
-fn rv_clock_domain_amendment_semantic_churn_stays_monotonic_but_episode_change_resets() {
-    const EXPECTED_ENTRY_STATES: [(BoltV3RvGateResult, bool); 4] = [
+fn canonical_state_churn_stays_monotonic_across_episode_changes() {
+    const EXPECTED_ENTRY_STATES: [(BoltV3RvGateResult, bool); 2] = [
         (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
         (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
     ];
-    const EXPECTED_EPISODE_STATES: [(BoltV3RvGateResult, bool); 6] = [
-        (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
+    const EXPECTED_EPISODE_STATES: [(BoltV3RvGateResult, bool); 4] = [
         (BoltV3RvGateResult::Accepted, true),
         (BoltV3RvGateResult::RejectedStale, true),
         (BoltV3RvGateResult::Accepted, true),
@@ -4631,7 +4630,7 @@ fn rv_clock_domain_amendment_semantic_churn_stays_monotonic_but_episode_change_r
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
     let mut now_ms = 1_200_u64;
-    // Semantic A -> B -> A emits the four distinct category/RV states only once.
+    // Canonical category A -> B -> A emits A and B once; RV diagnostics are payload-only.
     for category in [
         BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
         BoltV3EntrySkipReasonCategory::NoSideSelected,
@@ -4674,7 +4673,7 @@ fn rv_clock_domain_amendment_semantic_churn_stays_monotonic_but_episode_change_r
             rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
             blocked_strategy
                 .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
-                .expect("each previously seen RV bit must emit after a blocked-key change");
+                .expect("each unseen episode/state pair must emit once");
             now_ms += 1;
         }
     }
@@ -4750,7 +4749,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     let blocked_events = blocked_evidence.events();
     assert_eq!(
         rv_clock_domain_amendment_entry_mask(&entry_events).count_ones(),
-        12
+        1
     );
     assert_eq!(
         rv_clock_domain_amendment_blocked_mask(&blocked_events).count_ones(),
@@ -4761,8 +4760,8 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        12,
-        "100,000 A-B-A oscillations must remain bounded to twelve entry records"
+        1,
+        "100,000 diagnostic oscillations must remain bounded to one entry record"
     );
     assert_eq!(
         blocked_events
@@ -4978,7 +4977,7 @@ impl RvClockDomainBlockedKeyField {
     }
 }
 
-fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
+fn rv_clock_domain_amendment_assert_blocked_diagnostic_field_is_payload_only(
     field: RvClockDomainBlockedKeyField,
 ) {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -5008,8 +5007,8 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 
     assert_eq!(
         evidence.strategy_input_attempts(),
-        2,
-        "{field:?} restored A must be suppressed before reaching the writer"
+        1,
+        "{field:?} diagnostic churn must be suppressed before reaching the writer"
     );
     let records = evidence
         .events()
@@ -5021,8 +5020,8 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         .collect::<Vec<_>>();
     assert_eq!(
         records.len(),
-        2,
-        "{field:?} A-to-B-to-A must emit A and B once"
+        1,
+        "{field:?} A-to-B-to-A is one canonical state"
     );
     assert!(records.iter().all(|record| {
         record.realized_volatility_gate_result == Some(BoltV3RvGateResult::RejectedNotReady)
@@ -5033,7 +5032,7 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 }
 
 #[test]
-fn rv_clock_domain_amendment_semantic_state_is_monotonic_across_oscillation() {
+fn canonical_state_is_monotonic_across_diagnostic_oscillation() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
@@ -5116,12 +5115,12 @@ fn rv_clock_domain_amendment_semantic_state_is_monotonic_across_oscillation() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        7,
-        "seven distinct semantic states emit once while restored A states remain suppressed"
+        2,
+        "only the two canonical entry-skip reason categories emit"
     );
 
     for field in RvClockDomainBlockedKeyField::SEMANTIC {
-        rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(field);
+        rv_clock_domain_amendment_assert_blocked_diagnostic_field_is_payload_only(field);
     }
 }
 

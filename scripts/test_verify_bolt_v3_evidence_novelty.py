@@ -31,6 +31,38 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
     def test_repository_registry_and_generated_bytes_match(self) -> None:
         self.assertEqual(VERIFIER.verification_findings(VERIFIER.REPO_ROOT), [])
 
+    def test_producer_must_map_entry_reason_to_canonical_state_before_claim(self) -> None:
+        paths = (
+            VERIFIER.REGISTRY_PATH,
+            VERIFIER.GENERATED_PATH,
+            VERIFIER.PRODUCER_PATH,
+            VERIFIER.ENTRY_DECISION_PATH,
+            VERIFIER.NOVELTY_PATH,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for relative_path in paths:
+                destination = root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    (VERIFIER.REPO_ROOT / relative_path).read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            producer_path = root / VERIFIER.PRODUCER_PATH
+            producer_path.write_text(
+                producer_path.read_text(encoding="utf-8").replace(
+                    "entry_skip_canonical_state(reason_category)",
+                    "Ok(EvidenceCanonicalState::EntrySkipEntryPricingBlocked)",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            findings = VERIFIER.verification_findings(root)
+        self.assertTrue(
+            any("entry-skip novelty/payload/append seam incomplete" in item for item in findings),
+            findings,
+        )
+
     def test_repository_registry_preserves_frozen_market_allocations(self) -> None:
         registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
         actual = tuple(

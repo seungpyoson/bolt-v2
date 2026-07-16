@@ -26,6 +26,9 @@ AUDIT_PATH = REPO_ROOT / "docs/bolt-v3/research/runtime-literals/bolt-v3-runtime
 SCAN_GLOBS = (
     "src/**/*.rs",
 )
+GENERATED_CONFIG_AUTHORITIES = {
+    "src/bolt_v3_evidence_novelty_generated.rs": "config/evidence-novelty.toml",
+}
 
 DIAGNOSTIC_WORDS = (
     "already",
@@ -546,6 +549,7 @@ def scan_paths() -> list[Path]:
         for pattern in SCAN_GLOBS
         for path in REPO_ROOT.glob(pattern)
         if path.is_file()
+        and path.relative_to(REPO_ROOT).as_posix() not in GENERATED_CONFIG_AUTHORITIES
     }
     return sorted(paths)
 

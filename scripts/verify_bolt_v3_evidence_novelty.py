@@ -17,6 +17,9 @@ REGISTRY_PATH = pathlib.Path("config/evidence-novelty.toml")
 GENERATED_PATH = pathlib.Path("src/bolt_v3_evidence_novelty_generated.rs")
 NOVELTY_PATH = pathlib.Path("src/bolt_v3_evidence_novelty.rs")
 PRODUCER_PATH = pathlib.Path("src/strategies/binary_oracle_edge_taker/mod.rs")
+ENTRY_DECISION_PATH = pathlib.Path(
+    "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+)
 
 FROZEN_MARKET_ALLOCATIONS = (
     ("discovery_identity", 0, 32),
@@ -269,6 +272,7 @@ def verification_findings(root: pathlib.Path) -> list[str]:
     else:
         body = entry_match.group(0)
         try:
+            mapping = body.index("entry_skip_canonical_state(reason_category)")
             claim = body.index("entry_skip_novelty.claim_once")
             fields = body.index("entry_evaluation_log_fields_at")
             payload = body.index("BoltV3EntrySkipEvidence::from_entry_skip")
@@ -276,9 +280,9 @@ def verification_findings(root: pathlib.Path) -> list[str]:
         except ValueError:
             findings.append(f"{PRODUCER_PATH}: entry-skip novelty/payload/append seam incomplete")
         else:
-            if not claim < fields < payload < append:
+            if not mapping < claim < fields < payload < append:
                 findings.append(
-                    f"{PRODUCER_PATH}: entry-skip duplicate claim must precede fields, payload, and append"
+                    f"{PRODUCER_PATH}: canonical entry-skip mapping and duplicate claim must precede fields, payload, and append"
                 )
     blocked_match = re.search(
         r"fn record_blocked_entry_strategy_input_snapshot_once\(.*?\n    \}\n\n    fn ",
@@ -290,16 +294,33 @@ def verification_findings(root: pathlib.Path) -> list[str]:
     else:
         body = blocked_match.group(0)
         try:
+            mapping = body.index("blocked_strategy_input_canonical_state")
             claim = body.index("blocked_strategy_input_novelty")
             payload = body.index("blocked_entry_strategy_input_evidence_snapshot_at")
             append = body.index(".record_strategy_input_snapshot(&snapshot)")
         except ValueError:
             findings.append(f"{PRODUCER_PATH}: blocked snapshot novelty/payload/append seam incomplete")
         else:
-            if not claim < payload < append:
+            if not mapping < claim < payload < append:
                 findings.append(
-                    f"{PRODUCER_PATH}: blocked snapshot duplicate claim must precede payload and append"
+                    f"{PRODUCER_PATH}: canonical blocked-snapshot mapping and duplicate claim must precede payload and append"
                 )
+
+    entry_decision_text = (root / ENTRY_DECISION_PATH).read_text(encoding="utf-8")
+    obsolete_state_types = (
+        "EntrySkipSemanticState",
+        "BlockedStrategyInputSemanticState",
+        "BlockedStrategyInputSourceStateKey",
+    )
+    present_state_types = sorted(
+        name
+        for name in obsolete_state_types
+        if name in producer_text or name in entry_decision_text
+    )
+    if present_state_types:
+        findings.append(
+            f"{ENTRY_DECISION_PATH}: volatile diagnostic novelty types remain {present_state_types}"
+        )
 
     novelty_text = (root / NOVELTY_PATH).read_text(encoding="utf-8")
     match = re.search(r"pub struct EvidenceEpisodeParts \{(?P<body>.*?)\n\}", novelty_text, re.S)

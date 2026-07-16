@@ -5,7 +5,7 @@
 //! market episode, however, a registered producer's semantic state can be emitted
 //! at most once. The set never evicts and never resets on time or input churn.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
 
@@ -101,27 +101,21 @@ impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
     }
 }
 
-/// Finite monotonic novelty for one registered producer and current market episode.
+/// Finite monotonic novelty for one registered producer across market episodes.
 ///
-/// A genuine episode change replaces the current set. Within an episode, states are
-/// only inserted: writer failure, oscillation, and volatile input churn never remove
-/// a state. Capacity exhaustion rejects the unseen state before invoking `emit`.
-pub struct EvidenceNoveltyGuard<State> {
-    registration: &'static EvidenceStateRegistration,
-    current_episode: Option<EvidenceEpisodeId>,
-    seen_states: BTreeSet<State>,
+/// Every episode retains a fixed-size bitmap for the lifetime of this guard. Writer
+/// failure, oscillation, volatile input churn, and later episodes never remove a
+/// claimed canonical state.
+pub struct EvidenceNoveltyGuard {
+    owner: EvidenceStateOwner,
+    seen_by_episode: BTreeMap<EvidenceEpisodeId, Vec<u64>>,
 }
 
-impl<State> EvidenceNoveltyGuard<State>
-where
-    State: Ord,
-{
+impl EvidenceNoveltyGuard {
     pub fn for_owner(owner: EvidenceStateOwner) -> Result<Self> {
-        let registration = evidence_state_registration(owner);
         Ok(Self {
-            registration,
-            current_episode: None,
-            seen_states: BTreeSet::new(),
+            owner,
+            seen_by_episode: BTreeMap::new(),
         })
     }
 
@@ -132,7 +126,7 @@ where
     pub fn emit_once(
         &mut self,
         episode: &EvidenceEpisodeId,
-        state: State,
+        state: EvidenceCanonicalState,
         emit: impl FnOnce() -> Result<()>,
     ) -> Result<bool> {
         if !self.claim_once(episode, state)? {
@@ -143,33 +137,47 @@ where
     }
 
     /// Claim a semantic state before its caller constructs a payload.
-    pub fn claim_once(&mut self, episode: &EvidenceEpisodeId, state: State) -> Result<bool> {
-        if self.current_episode.as_ref() != Some(episode) {
-            self.current_episode = Some(episode.clone());
-            self.seen_states.clear();
-        }
-        if self.seen_states.contains(&state) {
-            return Ok(false);
-        }
-        if self.seen_states.len() >= self.registration.state_capacity {
+    pub fn claim_once(
+        &mut self,
+        episode: &EvidenceEpisodeId,
+        state: EvidenceCanonicalState,
+    ) -> Result<bool> {
+        let registration = canonical_state_registration(state);
+        if registration.owner != self.owner {
             bail!(
-                "evidence novelty capacity exhausted for registered state {}.{}",
-                self.registration.producer_kind,
-                self.registration.semantic_state
+                "evidence novelty owner mismatch for registered state {}.{}",
+                registration.producer_kind,
+                registration.semantic_state
             );
         }
-        self.seen_states.insert(state);
+        if registration.id >= EVIDENCE_NOVELTY_FAMILY_CAPACITY {
+            bail!("evidence novelty state id exceeds the registered family capacity");
+        }
+        let word_bits = u64::BITS as usize;
+        let words = self
+            .seen_by_episode
+            .entry(episode.clone())
+            .or_insert_with(|| vec![0; EVIDENCE_NOVELTY_WORD_COUNT]);
+        let word = registration.id / word_bits;
+        let mask = 1_u64 << (registration.id % word_bits);
+        if words[word] & mask != 0 {
+            return Ok(false);
+        }
+        words[word] |= mask;
         Ok(true)
     }
 
     #[must_use]
-    pub fn seen_state_count(&self) -> usize {
-        self.seen_states.len()
+    pub fn seen_episode_count(&self) -> usize {
+        self.seen_by_episode.len()
     }
 
     #[must_use]
-    pub fn state_capacity(&self) -> usize {
-        self.registration.state_capacity
+    pub fn seen_state_count(&self, episode: &EvidenceEpisodeId) -> usize {
+        self.seen_by_episode
+            .get(episode)
+            .map(|words| words.iter().map(|word| word.count_ones() as usize).sum())
+            .unwrap_or_default()
     }
 }
 
@@ -188,7 +196,7 @@ pub fn registered_evidence_state(
         })
 }
 
-#[must_use]
-pub const fn total_owned_state_capacity() -> usize {
-    EVIDENCE_NOVELTY_OWNED_STATE_CAPACITY
+pub fn registered_evidence_state_by_id(id: usize) -> Result<&'static EvidenceStateRegistration> {
+    evidence_state_registration_by_id(id)
+        .ok_or_else(|| anyhow::anyhow!("unregistered evidence semantic state id {id}"))
 }

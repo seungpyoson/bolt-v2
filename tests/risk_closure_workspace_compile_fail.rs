@@ -1,5 +1,6 @@
 use std::{
     fs,
+    path::PathBuf,
     process::{Command, Output},
 };
 
@@ -7,12 +8,20 @@ fn compile_snippet(case_name: &str, body: &str) -> Output {
     let temporary = tempfile::tempdir().unwrap();
     let source_path = temporary.path().join(format!("{case_name}.rs"));
     let output_path = temporary.path().join(case_name);
-    let module_path = format!(
-        "{}/src/bolt_v3_application_resource_ledger.rs",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let module_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/bolt_v3_application_resource_ledger.rs");
+    let staged_module_path = temporary.path().join("application_resource_ledger.rs");
+    let module_directory = module_path.with_extension("");
+    let staged_module_directory = staged_module_path.with_extension("");
+    fs::copy(&module_path, &staged_module_path).unwrap();
+    fs::create_dir(&staged_module_directory).unwrap();
+    fs::copy(
+        module_directory.join("risk_closure_workspace.rs"),
+        staged_module_directory.join("risk_closure_workspace.rs"),
+    )
+    .unwrap();
     let source = format!(
-        "#[path = {module_path:?}]\nmod application_resource_ledger;\n\
+        "mod application_resource_ledger;\n\
          use application_resource_ledger::*;\nfn main() {{\n{body}\n}}\n"
     );
     fs::write(&source_path, source).unwrap();

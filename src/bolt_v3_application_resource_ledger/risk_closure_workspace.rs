@@ -221,6 +221,7 @@ impl WorkspaceState {
 #[derive(Debug)]
 struct WorkspaceStorage {
     slots: Box<[Mutex<Box<[u8]>>]>,
+    #[cfg(test)]
     reserved_bytes: usize,
 }
 
@@ -245,6 +246,7 @@ impl WorkspaceStorage {
         })
     }
 
+    #[cfg(test)]
     fn reserved_bytes(&self) -> usize {
         self.reserved_bytes
     }

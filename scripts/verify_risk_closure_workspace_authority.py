@@ -18,9 +18,7 @@ RUST_INTEGER = (
     r"(?:usize|isize|u(?:8|16|32|64|128)|i(?:8|16|32|64|128))?"
 )
 INTEGER_LITERAL = re.compile(rf"(?<![A-Za-z0-9_]){RUST_INTEGER}(?![A-Za-z0-9_])")
-SIZE_EXPRESSION = re.compile(
-    rf"(?<![A-Za-z0-9_])({RUST_INTEGER}(?:\s*(?:\*|<<)\s*{RUST_INTEGER})+)(?![A-Za-z0-9_])"
-)
+SIZE_EXPRESSION = re.compile(rf"(?:{RUST_INTEGER}|[\s()+\-*/%<>&|^~])+")
 SYMBOLIC_AUTHORITY = re.compile(r"\b(?:const|static)\s+([A-Z][A-Z0-9_]*)\b")
 INTEGER_SUFFIX = re.compile(r"(?:usize|isize|u(?:8|16|32|64|128)|i(?:8|16|32|64|128))$")
 
@@ -40,12 +38,11 @@ def _integer_value(literal: str) -> int:
 
 
 def _expression_value(expression: str) -> int | None:
-    normalized = INTEGER_SUFFIX.sub("", expression)
-    normalized = re.sub(
-        r"(?<=[0-9a-fA-F_])(?:usize|isize|u(?:8|16|32|64|128)|i(?:8|16|32|64|128))\b",
-        "",
-        normalized,
-    ).replace("_", "")
+    normalized = INTEGER_LITERAL.sub(
+        lambda match: str(_integer_value(match.group())), expression
+    ).strip()
+    if not normalized or not any(operator in normalized for operator in "+-*/%<>&|^~"):
+        return None
     try:
         parsed = ast.parse(normalized, mode="eval")
     except SyntaxError:
@@ -56,15 +53,55 @@ def _expression_value(expression: str) -> int | None:
             return evaluate(node.body)
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return node.value
-        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.LShift)):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub, ast.Invert)):
+            value = evaluate(node.operand)
+            if isinstance(node.op, ast.UAdd):
+                return value
+            return -value if isinstance(node.op, ast.USub) else ~value
+        if isinstance(
+            node,
+            ast.BinOp,
+        ) and isinstance(
+            node.op,
+            (
+                ast.Add,
+                ast.Sub,
+                ast.Mult,
+                ast.Div,
+                ast.Mod,
+                ast.LShift,
+                ast.RShift,
+                ast.BitOr,
+                ast.BitAnd,
+                ast.BitXor,
+            ),
+        ):
             left = evaluate(node.left)
             right = evaluate(node.right)
-            return left * right if isinstance(node.op, ast.Mult) else left << right
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left // right
+            if isinstance(node.op, ast.Mod):
+                return left % right
+            if isinstance(node.op, ast.LShift):
+                return left << right
+            if isinstance(node.op, ast.RShift):
+                return left >> right
+            if isinstance(node.op, ast.BitOr):
+                return left | right
+            if isinstance(node.op, ast.BitAnd):
+                return left & right
+            return left ^ right
         raise ValueError
 
     try:
         return evaluate(parsed)
-    except ValueError:
+    except (ArithmeticError, ValueError):
         return None
 
 
@@ -131,7 +168,7 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         ):
             errors.append(f"runtime workspace-size literal found outside generated Rust: {relative}")
         if any(
-            _expression_value(match.group(1)) == authoritative_slot_bytes
+            _expression_value(match.group()) == authoritative_slot_bytes
             for match in SIZE_EXPRESSION.finditer(text)
         ):
             errors.append(f"runtime workspace-size expression found outside generated Rust: {relative}")

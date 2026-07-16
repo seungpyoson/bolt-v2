@@ -89,6 +89,26 @@ slot_bytes = 16777216
 
         self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
 
+    def test_rejects_parenthesized_runtime_workspace_size_expression(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "const HIDDEN: usize = 16 * (1024 * 1024);\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
+
+    def test_rejects_nested_shift_arithmetic_expression(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "const HIDDEN: usize = 1 << (12 + 12);\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
+
     def test_scans_root_build_script(self) -> None:
         (self.root / "build.rs").write_text(
             "const CLOSURE_SLOT_BYTES: usize = 0x0100_0000;\n",

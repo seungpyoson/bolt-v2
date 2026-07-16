@@ -22,24 +22,26 @@ Every failure returns `TerminalReleaseFailure` containing the original active le
 
 ## Configuration fence
 
-The dedicated verifier reads `arena_bytes` and `slot_bytes` from the sole TOML authority. It rejects direct literals and supported constant expressions equal to either configured value outside generated Rust. Capacity remains derived from arena geometry rather than value-fenced because its small numeric value is not unique.
+The dedicated verifier reads `arena_bytes` and `slot_bytes` from the sole TOML authority. It rejects exact configured literals and semantic copied authorities outside generated Rust. Capacity remains derived from arena geometry rather than value-fenced because its small numeric value is not unique.
 
-The TOML census scans repository TOML files rather than only `config/`, excluding repository metadata, worktrees, build outputs, and test fixtures explicitly created outside the production tree. The private generated configuration type and constant remain accessible only inside the owner module.
+The TOML census scans repository TOML files rather than only `config/`, excluding repository metadata, worktrees, build outputs, and test fixtures explicitly created outside the production tree. It recursively records every `risk_closure_workspaces` key by file and TOML key path. The private generated configuration type and constant remain accessible only inside the owner module.
+
+Arithmetic-equivalence prediction is superseded by the structural owner boundary defined in `2026-07-16-risk-closure-verification-closure-design.md`. The fence does not claim to implement Rust constant evaluation.
 
 The generator's fail-closed cases move into the already governed `test_verify_risk_closure_workspace_authority.py` suite, and the orphan generator test file is removed. This keeps one automatic discovery route.
 
 ## Compiler-negative coverage
 
-The governed nextest member module continues to invoke `rustc` for negative snippets. This is a compiler test executed by the governed remote Rust lane, not local agent verification. It will additionally prove that a permit cannot be reused after terminal release and that reservation and lease values cannot be constructed through private fields where stable diagnostics permit.
+The governed nextest member module continues to invoke `rustc` for negative snippets. This is a compiler test executed by the governed remote Rust lane, not local agent verification. It proves that a permit cannot be reused after terminal release and that reservation and lease private state cannot be accessed.
 
-The harness will continue using the lane's `rustc` from `PATH`. Cargo does not guarantee a compile-time `RUSTC` value for `env!`, so the suggested replacement is not portable. Exact-head remote execution remains the toolchain proof.
+The harness uses the lane's `rustc` from `PATH`, consumes JSON diagnostics, and asserts stable error codes rather than complete diagnostic messages. A positive control proves the snippet environment compiles. Exact-head remote execution remains the toolchain proof.
 
 ## Evidence
 
 - Unit tests prove one slot callback cannot block another, panic isolation, atomic duplicate rejection, recoverable release failures, cross-authority permit rejection, stale-generation permit rejection, and successful matching release.
 - One governed Rust test allocates the actual generated ten-slot configuration and verifies the real reserved byte count and capacity boundary.
 - Compiler-negative tests prove clone, forgery, and post-consumption reuse failures.
-- Python tests prove repository-wide TOML census, both configured byte values, generated drift, schema closure, integral geometry, and disabled activation.
+- Python tests prove recursive repository-wide TOML census, exact configured literals, semantic copied authorities, generated drift, schema closure, integral geometry, and disabled activation.
 - Local evidence uses formatting, Python verifier tests, dependency policy, CI lint, and `source-fence-static`. Rust proof comes from exact-head remote CI.
 
 ## Deliberate boundary

@@ -109,6 +109,42 @@ slot_bytes = 16777216
                     any("exactly one TOML authority" in error for error in errors)
                 )
 
+    def test_rejects_nested_toml_authority_outside_config(self) -> None:
+        crate = self.root / "crates" / "consumer"
+        crate.mkdir(parents=True)
+        (crate / "runtime.toml").write_text(
+            "[probe.risk_closure_workspaces]\ncapacity = 10\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("probe.risk_closure_workspaces" in error for error in errors))
+
+    def test_rejects_nested_authority_in_canonical_toml(self) -> None:
+        source = self.root / "config" / "risk-closure-workspaces.toml"
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + "\n[probe.risk_closure_workspaces]\ncapacity = 10\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("probe.risk_closure_workspaces" in error for error in errors))
+
+    def test_rejects_authority_nested_in_array_table(self) -> None:
+        crate = self.root / "crates" / "consumer"
+        crate.mkdir(parents=True)
+        (crate / "runtime.toml").write_text(
+            "[[owners]]\n[owners.risk_closure_workspaces]\nslot_bytes = 16777216\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("owners[0].risk_closure_workspaces" in error for error in errors))
+
     def test_rejects_a_runtime_workspace_size_literal(self) -> None:
         (self.root / "src" / "consumer.rs").write_text(
             "const RISK_CLOSURE_WORKSPACE_BYTES: usize = 16_777_216;\n",
@@ -139,55 +175,25 @@ slot_bytes = 16777216
 
         self.assertTrue(any("runtime workspace-size literal" in error for error in errors))
 
-    def test_rejects_arena_size_expression(self) -> None:
-        (self.root / "src" / "consumer.rs").write_text(
-            "const PLANTED_ARENA_TOTAL: usize = 160 * 1024 * 1024;\n",
-            encoding="utf-8",
-        )
+    def test_does_not_predict_arithmetic_equivalence(self) -> None:
+        for source in (
+            "const HASH_CHUNK: usize = 160 * 1024 * 1024;\n",
+            "const BUFFER_CHUNK: usize = 16 * 1024 * 1024;\n",
+            "const SHIFT_MASK: usize = 1usize << 24;\n",
+            "const NESTED_ARITHMETIC: usize = 1 << (12 + 12);\n",
+            "const COMPLEMENT_MASK: u32 = (!0_u32 >> 8) + 1;\n",
+        ):
+            with self.subTest(source=source):
+                (self.root / "src" / "consumer.rs").write_text(
+                    source,
+                    encoding="utf-8",
+                )
 
-        errors = verifier.authority_errors(self.root)
+                errors = verifier.authority_errors(self.root)
 
-        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
-
-    def test_rejects_runtime_workspace_size_expression(self) -> None:
-        (self.root / "src" / "consumer.rs").write_text(
-            "let workspace = vec![0_u8; 16 * 1024 * 1024];\n",
-            encoding="utf-8",
-        )
-
-        errors = verifier.authority_errors(self.root)
-
-        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
-
-    def test_rejects_runtime_workspace_size_shift_expression(self) -> None:
-        (self.root / "src" / "consumer.rs").write_text(
-            "let workspace = vec![0_u8; 1usize << 24];\n",
-            encoding="utf-8",
-        )
-
-        errors = verifier.authority_errors(self.root)
-
-        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
-
-    def test_rejects_parenthesized_runtime_workspace_size_expression(self) -> None:
-        (self.root / "src" / "consumer.rs").write_text(
-            "const HIDDEN: usize = 16 * (1024 * 1024);\n",
-            encoding="utf-8",
-        )
-
-        errors = verifier.authority_errors(self.root)
-
-        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
-
-    def test_rejects_nested_shift_arithmetic_expression(self) -> None:
-        (self.root / "src" / "consumer.rs").write_text(
-            "const HIDDEN: usize = 1 << (12 + 12);\n",
-            encoding="utf-8",
-        )
-
-        errors = verifier.authority_errors(self.root)
-
-        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
+                self.assertFalse(
+                    any("runtime workspace-size expression" in error for error in errors)
+                )
 
     def test_scans_root_build_script(self) -> None:
         (self.root / "build.rs").write_text(

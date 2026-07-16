@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import pathlib
 import re
 import subprocess
@@ -19,7 +18,6 @@ RUST_INTEGER = (
     r"(?:usize|isize|u(?:8|16|32|64|128)|i(?:8|16|32|64|128))?"
 )
 INTEGER_LITERAL = re.compile(rf"(?<![A-Za-z0-9_]){RUST_INTEGER}(?![A-Za-z0-9_])")
-SIZE_EXPRESSION = re.compile(rf"(?:{RUST_INTEGER}|[\s()+\-*/%<>&|^~])+")
 SYMBOLIC_AUTHORITY = re.compile(r"\b(?:const|static)\s+([A-Z][A-Z0-9_]*)\b")
 INTEGER_SUFFIX = re.compile(r"(?:usize|isize|u(?:8|16|32|64|128)|i(?:8|16|32|64|128))$")
 IGNORED_TOML_PATH_PARTS = frozenset({".git", ".worktrees", "target"})
@@ -37,74 +35,6 @@ def _integer_value(literal: str) -> int:
         base = 10
     digits = normalized[2:] if base != 10 else normalized
     return int(digits, base)
-
-
-def _expression_value(expression: str) -> int | None:
-    normalized = INTEGER_LITERAL.sub(
-        lambda match: str(_integer_value(match.group())), expression
-    ).strip()
-    if not normalized or not any(operator in normalized for operator in "+-*/%<>&|^~"):
-        return None
-    try:
-        parsed = ast.parse(normalized, mode="eval")
-    except SyntaxError:
-        return None
-
-    def evaluate(node: ast.AST) -> int:
-        if isinstance(node, ast.Expression):
-            return evaluate(node.body)
-        if isinstance(node, ast.Constant) and isinstance(node.value, int):
-            return node.value
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub, ast.Invert)):
-            value = evaluate(node.operand)
-            if isinstance(node.op, ast.UAdd):
-                return value
-            return -value if isinstance(node.op, ast.USub) else ~value
-        if isinstance(
-            node,
-            ast.BinOp,
-        ) and isinstance(
-            node.op,
-            (
-                ast.Add,
-                ast.Sub,
-                ast.Mult,
-                ast.Div,
-                ast.Mod,
-                ast.LShift,
-                ast.RShift,
-                ast.BitOr,
-                ast.BitAnd,
-                ast.BitXor,
-            ),
-        ):
-            left = evaluate(node.left)
-            right = evaluate(node.right)
-            if isinstance(node.op, ast.Add):
-                return left + right
-            if isinstance(node.op, ast.Sub):
-                return left - right
-            if isinstance(node.op, ast.Mult):
-                return left * right
-            if isinstance(node.op, ast.Div):
-                return left // right
-            if isinstance(node.op, ast.Mod):
-                return left % right
-            if isinstance(node.op, ast.LShift):
-                return left << right
-            if isinstance(node.op, ast.RShift):
-                return left >> right
-            if isinstance(node.op, ast.BitOr):
-                return left | right
-            if isinstance(node.op, ast.BitAnd):
-                return left & right
-            return left ^ right
-        raise ValueError
-
-    try:
-        return evaluate(parsed)
-    except (ArithmeticError, ValueError):
-        return None
 
 
 def _production_rust_sources(root: pathlib.Path) -> list[pathlib.Path]:
@@ -135,9 +65,39 @@ def _positive_integer(value: object) -> int | None:
     return None
 
 
+def _toml_key_paths(
+    value: object,
+    target: str,
+    prefix: tuple[str | int, ...] = (),
+) -> list[tuple[str | int, ...]]:
+    paths: list[tuple[str | int, ...]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            path = (*prefix, key)
+            if key == target:
+                paths.append(path)
+            paths.extend(_toml_key_paths(child, target, path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_toml_key_paths(child, target, (*prefix, index)))
+    return paths
+
+
+def _render_toml_key_path(path: tuple[str | int, ...]) -> str:
+    rendered = ""
+    for component in path:
+        if isinstance(component, int):
+            rendered += f"[{component}]"
+        elif rendered:
+            rendered += f".{component}"
+        else:
+            rendered = component
+    return rendered
+
+
 def authority_errors(root: pathlib.Path) -> list[str]:
     errors: list[str] = []
-    authorities: list[pathlib.Path] = []
+    authorities: list[tuple[pathlib.Path, tuple[str | int, ...]]] = []
     authoritative_arena_bytes: int | None = None
     authoritative_slot_bytes: int | None = None
     for path in _repository_toml_sources(root):
@@ -146,30 +106,34 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
             errors.append(f"cannot inspect {path.relative_to(root)}: {error}")
             continue
-        if "risk_closure_workspaces" not in document:
-            continue
-        workspace = document["risk_closure_workspaces"]
         relative = path.relative_to(root)
-        authorities.append(relative)
-        if relative != SOURCE:
-            continue
-        if not isinstance(workspace, dict):
-            errors.append(f"{SOURCE} risk_closure_workspaces must be a table")
-            continue
-        authoritative_arena_bytes = _positive_integer(workspace.get("arena_bytes"))
-        authoritative_slot_bytes = _positive_integer(workspace.get("slot_bytes"))
-        if authoritative_arena_bytes is None:
-            errors.append(
-                f"{SOURCE} risk_closure_workspaces.arena_bytes must be a positive integer"
-            )
-        if authoritative_slot_bytes is None:
-            errors.append(
-                f"{SOURCE} risk_closure_workspaces.slot_bytes must be a positive integer"
-            )
-    if authorities != [SOURCE]:
+        for key_path in _toml_key_paths(document, "risk_closure_workspaces"):
+            authorities.append((relative, key_path))
+            if relative != SOURCE or key_path != ("risk_closure_workspaces",):
+                continue
+            workspace = document["risk_closure_workspaces"]
+            if not isinstance(workspace, dict):
+                errors.append(f"{SOURCE} risk_closure_workspaces must be a table")
+                continue
+            authoritative_arena_bytes = _positive_integer(workspace.get("arena_bytes"))
+            authoritative_slot_bytes = _positive_integer(workspace.get("slot_bytes"))
+            if authoritative_arena_bytes is None:
+                errors.append(
+                    f"{SOURCE} risk_closure_workspaces.arena_bytes must be a positive integer"
+                )
+            if authoritative_slot_bytes is None:
+                errors.append(
+                    f"{SOURCE} risk_closure_workspaces.slot_bytes must be a positive integer"
+                )
+    expected_authority = [(SOURCE, ("risk_closure_workspaces",))]
+    if authorities != expected_authority:
+        rendered_authorities = [
+            f"{path}::{_render_toml_key_path(key_path)}"
+            for path, key_path in authorities
+        ]
         errors.append(
             "risk_closure_workspaces geometry must have exactly one TOML authority at "
-            f"{SOURCE}; found {authorities}"
+            f"{SOURCE}::risk_closure_workspaces; found {rendered_authorities}"
         )
     if authoritative_arena_bytes is None or authoritative_slot_bytes is None:
         return errors
@@ -206,11 +170,6 @@ def authority_errors(root: pathlib.Path) -> list[str]:
             for match in INTEGER_LITERAL.finditer(text)
         ):
             errors.append(f"runtime workspace-size literal found outside generated Rust: {relative}")
-        if any(
-            _expression_value(match.group()) in authoritative_sizes
-            for match in SIZE_EXPRESSION.finditer(text)
-        ):
-            errors.append(f"runtime workspace-size expression found outside generated Rust: {relative}")
         symbolic_names = (match.group(1) for match in SYMBOLIC_AUTHORITY.finditer(text))
         if any(
             "CLOSURE" in name

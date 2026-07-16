@@ -59,7 +59,7 @@ fn diagnostic_codes(stderr: &str) -> Vec<String> {
 }
 ```
 
-Expected codes are `E0599` for missing clone, `E0382` for post-consumption use, `E0616` for direct private-field access, and `E0451` for permit struct construction.
+Expected codes are `E0599` for missing clone, `E0382` for post-consumption use, and `E0616` for direct private-field access. Rustc currently assigns no error code to the permit struct-construction diagnostic, so that case must match the structured JSON error level, private-field span label, and private-struct-construction message shape instead of inventing an `E0451` guarantee.
 
 - [ ] **Step 3: Probe privacy directly**
 

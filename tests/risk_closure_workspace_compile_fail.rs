@@ -31,21 +31,53 @@ fn compile_snippet(case_name: &str, body: &str) -> Output {
         .unwrap()
 }
 
-fn diagnostic_codes(stderr: &str) -> Vec<String> {
+enum ExpectedDiagnostic<'a> {
+    ErrorCode(&'a str),
+    PrivateStructConstruction,
+}
+
+fn diagnostics(stderr: &str) -> Vec<serde_json::Value> {
     stderr
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter_map(|diagnostic| {
-            diagnostic
-                .get("code")?
-                .get("code")?
-                .as_str()
-                .map(str::to_owned)
-        })
         .collect()
 }
 
-fn assert_compile_fails(case_name: &str, body: &str, expected_error_code: &str) {
+fn matches_expected_diagnostic(
+    diagnostic: &serde_json::Value,
+    expected: &ExpectedDiagnostic<'_>,
+) -> bool {
+    match expected {
+        ExpectedDiagnostic::ErrorCode(expected_code) => diagnostic
+            .get("code")
+            .and_then(|code| code.get("code"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|code| code == *expected_code),
+        ExpectedDiagnostic::PrivateStructConstruction => {
+            let message = diagnostic
+                .get("message")
+                .and_then(serde_json::Value::as_str);
+            let has_private_field_span = diagnostic
+                .get("spans")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|spans| {
+                    spans.iter().any(|span| {
+                        span.get("label").and_then(serde_json::Value::as_str)
+                            == Some("private field")
+                    })
+                });
+
+            diagnostic.get("level").and_then(serde_json::Value::as_str) == Some("error")
+                && message.is_some_and(|message| {
+                    message.starts_with("cannot construct ")
+                        && message.ends_with("with struct literal syntax due to private fields")
+                })
+                && has_private_field_span
+        }
+    }
+}
+
+fn assert_compile_fails(case_name: &str, body: &str, expected: ExpectedDiagnostic<'_>) {
     let output = compile_snippet(case_name, body);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -53,10 +85,12 @@ fn assert_compile_fails(case_name: &str, body: &str, expected_error_code: &str) 
         !output.status.success(),
         "{case_name} unexpectedly compiled"
     );
-    let codes = diagnostic_codes(&stderr);
+    let diagnostics = diagnostics(&stderr);
     assert!(
-        codes.iter().any(|code| code == expected_error_code),
-        "{case_name} failed with {codes:?}, expected {expected_error_code}:\n{stderr}"
+        diagnostics
+            .iter()
+            .any(|diagnostic| matches_expected_diagnostic(diagnostic, &expected)),
+        "{case_name} failed without the expected diagnostic:\n{stderr}"
     );
 }
 
@@ -90,7 +124,7 @@ fn duplicate(reservation: RiskClosureWorkspaceReservation) {
     let _duplicate = reservation.clone();
 }
 "#,
-        "E0599",
+        ExpectedDiagnostic::ErrorCode("E0599"),
     );
 }
 
@@ -104,7 +138,7 @@ fn commit(reservation: RiskClosureWorkspaceReservation, identity: ClosureIdentit
     let _length = reservation.workspace_len();
 }
 "#,
-        "E0382",
+        ExpectedDiagnostic::ErrorCode("E0382"),
     );
 }
 
@@ -117,7 +151,7 @@ fn forge(mut reservation: RiskClosureWorkspaceReservation) {
     reservation.active = false;
 }
 "#,
-        "E0616",
+        ExpectedDiagnostic::ErrorCode("E0616"),
     );
 }
 
@@ -130,7 +164,7 @@ fn duplicate(lease: RiskClosureWorkspaceLease) {
     let _duplicate = lease.clone();
 }
 "#,
-        "E0599",
+        ExpectedDiagnostic::ErrorCode("E0599"),
     );
 }
 
@@ -144,7 +178,7 @@ fn release(lease: RiskClosureWorkspaceLease, permit: TerminalReleasePermit) {
     let _length = lease.workspace_len();
 }
 "#,
-        "E0382",
+        ExpectedDiagnostic::ErrorCode("E0382"),
     );
 }
 
@@ -157,7 +191,7 @@ fn forge(mut lease: RiskClosureWorkspaceLease) {
     lease.active = false;
 }
 "#,
-        "E0616",
+        ExpectedDiagnostic::ErrorCode("E0616"),
     );
 }
 
@@ -170,7 +204,7 @@ fn duplicate(permit: TerminalReleasePermit) {
     let _duplicate = permit.clone();
 }
 "#,
-        "E0599",
+        ExpectedDiagnostic::ErrorCode("E0599"),
     );
 }
 
@@ -184,7 +218,7 @@ fn release(lease: RiskClosureWorkspaceLease, permit: TerminalReleasePermit) {
     let _reuse = permit;
 }
 "#,
-        "E0382",
+        ExpectedDiagnostic::ErrorCode("E0382"),
     );
 }
 
@@ -197,6 +231,6 @@ let _permit = TerminalReleasePermit {
     closure_identity: ClosureIdentity::new("closure").unwrap(),
 };
 "#,
-        "E0451",
+        ExpectedDiagnostic::PrivateStructConstruction,
     );
 }

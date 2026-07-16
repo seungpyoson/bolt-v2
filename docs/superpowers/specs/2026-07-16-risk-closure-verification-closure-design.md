@@ -30,9 +30,9 @@ The governed harness proves these production-configuration properties:
 | Lease private state is inaccessible | Directly assign `active` | rustc `E0616` |
 | Permit is not cloneable | Call `clone` | rustc `E0599` |
 | Terminal release consumes the permit | Use after `release_terminal` | rustc `E0382` |
-| Permit fields cannot construct a value | Struct literal | rustc `E0451` |
+| Permit fields cannot construct a value | Struct literal | Structured rustc private-struct-construction diagnostic (rustc assigns no error code) |
 
-The harness invokes rustc with JSON diagnostics and asserts error codes rather than complete human-readable messages. A positive-control snippet must compile, proving that the harness, module path, edition, and production `cfg` are valid independently of the negative probes.
+The harness invokes rustc with JSON diagnostics and asserts error codes whenever rustc provides them. For the code-less private struct-construction error, it asserts the structured error level, private-field span label, and narrowly scoped message shape rather than the complete rendered diagnostic. A positive-control snippet must compile, proving that the harness, module path, edition, and production `cfg` are valid independently of the negative probes.
 
 The lane-provided `rustc` remains the compiler. Exact-head governed nextest is the proof; local agents do not bypass the remote-first policy.
 

@@ -348,8 +348,12 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         manifest: &manifest,
         contract_manifest_hash: &contract_manifest_hash,
         converter: &converter_config(),
+        conversion_control_artifact_path: "synthetic-control.toml",
+        conversion_control_artifact_sha256:
+            "0000000000000000000000000000000000000000000000000000000000000000",
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
+        authoritative_output_root: &catalog_root,
         selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {
@@ -525,8 +529,12 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
         manifest: &admit_manifest,
         contract_manifest_hash: &admit_contract_manifest_hash,
         converter: &converter_config(),
+        conversion_control_artifact_path: "synthetic-control.toml",
+        conversion_control_artifact_sha256:
+            "0000000000000000000000000000000000000000000000000000000000000000",
         canonical_artifact_path: &admit_canonical,
         catalog_root: &admit_catalog,
+        authoritative_output_root: &admit_catalog,
         selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {
@@ -586,8 +594,11 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
         manifest: &reject_manifest,
         contract_manifest_hash: &reject_contract_manifest_hash,
         converter: &converter_config(),
+        conversion_control_artifact_path: "synthetic-control.toml",
+        conversion_control_artifact_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
         canonical_artifact_path: &reject_canonical,
         catalog_root: &reject_catalog,
+        authoritative_output_root: &reject_catalog,
         selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {

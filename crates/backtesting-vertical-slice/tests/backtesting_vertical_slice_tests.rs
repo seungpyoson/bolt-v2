@@ -60,8 +60,6 @@ mod backtesting_vertical_slice_hash_what_you_write;
 mod backtesting_vertical_slice_l2_snapshot_adapter;
 #[path = "backtesting_vertical_slice_mechanical_order_proof.rs"]
 mod backtesting_vertical_slice_mechanical_order_proof;
-#[path = "backtesting_vertical_slice_nt_catalog_proof.rs"]
-mod backtesting_vertical_slice_nt_catalog_proof;
 #[path = "backtesting_vertical_slice_nt_dependency_proof.rs"]
 mod backtesting_vertical_slice_nt_dependency_proof;
 #[path = "backtesting_vertical_slice_operator_binding_bars.rs"]
@@ -120,8 +118,6 @@ mod backtesting_vertical_slice_source_proof_shortlist;
 mod backtesting_vertical_slice_source_selection_readiness;
 #[path = "backtesting_vertical_slice_source_universe_artifact_refs.rs"]
 mod backtesting_vertical_slice_source_universe_artifact_refs;
-#[path = "backtesting_vertical_slice_source_universe_batch_execution.rs"]
-mod backtesting_vertical_slice_source_universe_batch_execution;
 #[path = "backtesting_vertical_slice_source_universe_conversion_queue.rs"]
 mod backtesting_vertical_slice_source_universe_conversion_queue;
 #[path = "backtesting_vertical_slice_source_universe_conversion_run_plan.rs"]

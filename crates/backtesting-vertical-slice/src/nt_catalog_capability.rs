@@ -22,7 +22,8 @@ use crate::{
         CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
     },
     operator_work_budget::{
-        OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, serialize_json_to_vec_guarded,
+        serialized_json_len_with_budget, sha256_hex_with_budget,
     },
     run_manifest::MarketStructureFixture,
 };
@@ -245,6 +246,8 @@ pub struct NtCatalogCapabilityPlan {
 pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_uri: String,
     pub proof_artifact_sha256: String,
+    pub proof_artifact_version_id: String,
+    pub proof_artifact_e_tag: Option<String>,
     pub proof_artifact_create_only_write: CreateOnlyWriteDisposition,
     pub proof: NtCatalogCapabilityProof,
     pub evidence: NtCatalogCapabilityEvidence,
@@ -255,6 +258,12 @@ pub struct NtCatalogCapabilityProofArtifact {
 pub struct NtCatalogCapabilityProofDocument {
     pub proof: NtCatalogCapabilityProof,
     pub evidence: NtCatalogCapabilityEvidence,
+}
+
+#[derive(Serialize)]
+struct NtCatalogCapabilityProofDocumentRef<'a> {
+    proof: &'a NtCatalogCapabilityProof,
+    evidence: &'a NtCatalogCapabilityEvidence,
 }
 
 pub struct NtCatalogS3ConformanceProbe {
@@ -322,17 +331,6 @@ impl NtCatalogS3ConformanceProbe {
         );
         Ok(())
     }
-}
-
-/// # Errors
-///
-/// Returns an error if NautilusTrader cannot create the S3 catalog, write
-/// synthetic instruments/trade ticks, or query them back from the same catalog
-/// URI using explicit S3 storage options.
-pub fn run_nt_catalog_s3_conformance_probe(
-    probe: NtCatalogS3ConformanceProbe,
-) -> Result<NtCatalogReadBackEvidence> {
-    run_nt_catalog_s3_conformance_probe_guarded(probe, &OperatorWorkBudgetGuard::unbounded())
 }
 
 /// Run the single NT catalog S3 conformance core under the caller's shared
@@ -420,10 +418,11 @@ fn guarded_nt_catalog_operation_outcome<T>(
     work_budget: &OperatorWorkBudgetGuard,
     operation: impl FnOnce() -> Result<T>,
 ) -> Result<std::result::Result<T, anyhow::Error>> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let outcome = operation();
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    Ok(outcome)
+    crate::operator_work_budget::guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+        operation,
+    )
 }
 
 fn run_guarded_nt_catalog_step<T>(
@@ -996,24 +995,6 @@ impl NtCatalogCapabilityRunSpec {
         )
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if runtime controls fail or the positive SSM-backed NT
-    /// S3 read-back probe cannot write, reopen, and query the synthetic catalog.
-    pub fn runtime_evidence(
-        &self,
-        artifact_store: &ArtifactStoreConfig,
-        credentials: &S3ArtifactStoreCredentials,
-        create_only_probe: CreateOnlyProbeTranscript,
-    ) -> Result<NtCatalogCapabilityEvidence> {
-        self.runtime_evidence_guarded(
-            artifact_store,
-            credentials,
-            create_only_probe,
-            &OperatorWorkBudgetGuard::unbounded(),
-        )
-    }
-
     /// Produce runtime capability evidence under the durable operator's shared
     /// cooperative work budget.
     ///
@@ -1166,50 +1147,85 @@ impl NtCatalogCapabilityRunSpec {
         evidence: &NtCatalogCapabilityEvidence,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<NtCatalogCapabilityProofArtifact> {
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        let artifact_root = artifact_store.resolve()?;
-        let plan = self.proof_plan(artifact_store)?;
-        let proof_artifact_uri = plan.proof_artifact_uri.clone();
-        let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
-        let proof = plan.completed_proof(controls);
-        let proof_document = NtCatalogCapabilityProofDocument {
-            proof: proof.clone(),
-            evidence: evidence.clone(),
-        };
-        proof_document.validate(&artifact_root)?;
-        let proof_bytes = crate::reference_artifact::canonical_json_bytes(&proof_document)?;
-        let proof_artifact_sha256 = sha256_bytes(&proof_bytes);
-        let proof_artifact_path = artifact_root.object_path_for_uri(&proof_artifact_uri)?;
+        let (
+            proof,
+            proof_artifact_uri,
+            artifact_root,
+            proof_bytes,
+            proof_artifact_sha256,
+            proof_evidence,
+        ) = guarded_nt_catalog_operation_outcome(work_budget, || -> Result<_> {
+            let artifact_root = artifact_store.resolve()?;
+            let mut plan = self.proof_plan(artifact_store)?;
+            let proof_artifact_uri = std::mem::take(&mut plan.proof_artifact_uri);
+            let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
+            let proof = plan.completed_proof(controls);
+            validate_capability_proof_document_parts(&proof, evidence, &artifact_root)?;
+            let proof_document = NtCatalogCapabilityProofDocumentRef {
+                proof: &proof,
+                evidence,
+            };
+            let serialized_bytes = serialized_json_len_with_budget(
+                &proof_document,
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )?;
+            ensure!(
+                serialized_bytes <= artifact_root.max_final_object_bytes(),
+                "NT catalog capability proof byte length {serialized_bytes} exceeds artifact_store.max_final_object_bytes {}",
+                artifact_root.max_final_object_bytes()
+            );
+            let proof_bytes = serialize_json_to_vec_guarded(
+                &proof_document,
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )?;
+            ensure!(
+                u64::try_from(proof_bytes.len())
+                    .context("capability proof length does not fit u64")?
+                    == serialized_bytes,
+                "capability proof serialized length changed between preflight and allocation"
+            );
+            let proof_artifact_sha256 = sha256_hex_with_budget(
+                &proof_bytes,
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )?;
+            let proof_evidence = clone_capability_evidence_guarded(
+                evidence,
+                u64::try_from(proof_bytes.capacity())
+                    .context("capability proof allocation does not fit u64")?,
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )?;
+            Ok((
+                proof,
+                proof_artifact_uri,
+                artifact_root,
+                proof_bytes,
+                proof_artifact_sha256,
+                proof_evidence,
+            ))
+        })??;
+        let prepared_proof = writer.prepare_terminal_create_uri(
+            &artifact_root,
+            &proof_artifact_uri,
+            proof_bytes,
+            format!("NT catalog capability proof {proof_artifact_uri}"),
+        )?;
         let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
-        let (_version, proof_artifact_create_only_write) =
-            commit_completed_proof(writer, &proof_artifact_path, proof_bytes, permit).await?;
+        let confirmed_proof = writer
+            .create_or_confirm_terminal(prepared_proof, permit)
+            .await?;
         Ok(NtCatalogCapabilityProofArtifact {
             proof_artifact_uri,
             proof_artifact_sha256,
-            proof_artifact_create_only_write,
+            proof_artifact_version_id: confirmed_proof.version_id,
+            proof_artifact_e_tag: confirmed_proof.e_tag,
+            proof_artifact_create_only_write: confirmed_proof.disposition,
             proof,
-            evidence: evidence.clone(),
+            evidence: proof_evidence,
         })
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if evidence-derived controls are incomplete, the run
-    /// spec is invalid, serialization fails, or create-only persistence fails.
-    pub async fn persist_completed_proof_from_evidence(
-        &self,
-        artifact_store: &ArtifactStoreConfig,
-        writer: &CreateOnlyArtifactWriter<'_>,
-        evidence: &NtCatalogCapabilityEvidence,
-    ) -> Result<NtCatalogCapabilityProofArtifact> {
-        let work_budget = OperatorWorkBudgetGuard::unbounded();
-        self.persist_completed_proof_from_evidence_guarded(
-            artifact_store,
-            writer,
-            evidence,
-            &work_budget,
-        )
-        .await
     }
 
     /// Persist a completed proof under the shared operator deadline. The
@@ -1218,8 +1234,8 @@ impl NtCatalogCapabilityRunSpec {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::persist_completed_proof_from_evidence`]
-    /// and fails when the operator work budget expires before commitment.
+    /// Returns an error if evidence-derived controls, serialization,
+    /// create-only persistence, or the explicit work budget fails.
     pub async fn persist_completed_proof_from_evidence_guarded(
         &self,
         artifact_store: &ArtifactStoreConfig,
@@ -1232,17 +1248,6 @@ impl NtCatalogCapabilityRunSpec {
     }
 }
 
-async fn commit_completed_proof(
-    writer: &CreateOnlyArtifactWriter<'_>,
-    proof_artifact_path: &object_store::path::Path,
-    proof_bytes: Vec<u8>,
-    _permit: OperatorWorkBudgetCommitPermit,
-) -> Result<(object_store::UpdateVersion, CreateOnlyWriteDisposition)> {
-    writer
-        .put_create_idempotent_with_disposition(proof_artifact_path, proof_bytes)
-        .await
-}
-
 impl NtCatalogCapabilityProofDocument {
     /// # Errors
     ///
@@ -1250,25 +1255,143 @@ impl NtCatalogCapabilityProofDocument {
     /// evidence does not prove every control, or probe URIs leave the artifact
     /// root.
     pub fn validate(&self, artifact_root: &ResolvedArtifactRoot) -> Result<()> {
-        self.proof.validate(artifact_root)?;
-        let controls = NtCatalogCapabilityControls::from_evidence(&self.evidence)?;
-        ensure!(
-            self.proof.controls == controls,
-            "capability proof document controls must match observed evidence"
-        );
-        ensure_read_back_catalog_uri_matches(
-            &self.evidence.read_back.catalog_uri,
-            &self.proof.synthetic_catalog_root_uri,
-        )?;
-        ensure_evidence_storage_options_match(
-            &self.proof.storage_options_keys,
-            &self.evidence.nt_catalog_storage_option_keys,
-        )?;
-        artifact_root.object_path_for_uri(&self.evidence.create_only_probe.probe_uri)?;
-        artifact_root.object_path_for_uri(&self.evidence.create_only_probe.copy_source_uri)?;
-        artifact_root.object_path_for_uri(&self.evidence.create_only_probe.copy_dest_uri)?;
-        Ok(())
+        validate_capability_proof_document_parts(&self.proof, &self.evidence, artifact_root)
     }
+}
+
+fn validate_capability_proof_document_parts(
+    proof: &NtCatalogCapabilityProof,
+    evidence: &NtCatalogCapabilityEvidence,
+    artifact_root: &ResolvedArtifactRoot,
+) -> Result<()> {
+    proof.validate(artifact_root)?;
+    let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
+    ensure!(
+        proof.controls == controls,
+        "capability proof document controls must match observed evidence"
+    );
+    ensure_read_back_catalog_uri_matches(
+        &evidence.read_back.catalog_uri,
+        &proof.synthetic_catalog_root_uri,
+    )?;
+    ensure_evidence_storage_options_match(
+        &proof.storage_options_keys,
+        &evidence.nt_catalog_storage_option_keys,
+    )?;
+    artifact_root.object_path_for_uri(&evidence.create_only_probe.probe_uri)?;
+    artifact_root.object_path_for_uri(&evidence.create_only_probe.copy_source_uri)?;
+    artifact_root.object_path_for_uri(&evidence.create_only_probe.copy_dest_uri)?;
+    Ok(())
+}
+
+fn clone_capability_string(value: &str, label: &str) -> Result<String> {
+    let mut cloned = String::new();
+    cloned
+        .try_reserve_exact(value.len())
+        .with_context(|| format!("reserve {label}"))?;
+    cloned.push_str(value);
+    Ok(cloned)
+}
+
+fn clone_capability_evidence_guarded(
+    evidence: &NtCatalogCapabilityEvidence,
+    retained_payload_bytes: u64,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<NtCatalogCapabilityEvidence> {
+    let string_bytes = evidence
+        .nt_catalog_storage_option_keys
+        .iter()
+        .map(String::len)
+        .chain([
+            evidence.read_back.catalog_uri.len(),
+            evidence.read_back.binary_option_instrument_id.len(),
+            evidence.read_back.perps_spot_instrument_id.len(),
+            evidence.create_only_probe.probe_uri.len(),
+            evidence.create_only_probe.copy_source_uri.len(),
+            evidence.create_only_probe.copy_dest_uri.len(),
+        ])
+        .try_fold(0_u64, |total, bytes| {
+            total.checked_add(u64::try_from(bytes).ok()?)
+        })
+        .context("capability evidence string allocation overflow")?;
+    let string_slots = evidence
+        .nt_catalog_storage_option_keys
+        .len()
+        .checked_mul(std::mem::size_of::<String>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .context("capability evidence vector allocation overflow")?;
+    let retained_peak = retained_payload_bytes
+        .checked_add(string_bytes)
+        .and_then(|bytes| bytes.checked_add(string_slots))
+        .context("capability proof retained allocation overflow")?;
+    work_budget.verify_decoded_bytes(retained_peak, stage)?;
+    work_budget.check_deadline(stage)?;
+
+    let mut storage_keys = Vec::new();
+    storage_keys
+        .try_reserve_exact(evidence.nt_catalog_storage_option_keys.len())
+        .context("reserve capability evidence storage-option keys")?;
+    for key in &evidence.nt_catalog_storage_option_keys {
+        storage_keys.push(clone_capability_string(
+            key,
+            "capability evidence storage-option key",
+        )?);
+    }
+    let cloned = NtCatalogCapabilityEvidence {
+        no_cloud_feature_gate_failed: evidence.no_cloud_feature_gate_failed,
+        ambient_credentials_scrubbed: evidence.ambient_credentials_scrubbed,
+        invalid_credentials_write_failed: evidence.invalid_credentials_write_failed,
+        ssm_credentials_write_reopen_query_succeeded: evidence
+            .ssm_credentials_write_reopen_query_succeeded,
+        nt_catalog_storage_option_keys: storage_keys,
+        read_back: NtCatalogReadBackEvidence {
+            catalog_uri: clone_capability_string(
+                &evidence.read_back.catalog_uri,
+                "capability evidence catalog URI",
+            )?,
+            query_files_succeeded: evidence.read_back.query_files_succeeded,
+            query_files_result_count: evidence.read_back.query_files_result_count,
+            write_instruments_succeeded: evidence.read_back.write_instruments_succeeded,
+            write_trade_ticks_succeeded: evidence.read_back.write_trade_ticks_succeeded,
+            query_trade_ticks_succeeded: evidence.read_back.query_trade_ticks_succeeded,
+            query_trade_ticks_result_count: evidence.read_back.query_trade_ticks_result_count,
+            query_instruments_succeeded: evidence.read_back.query_instruments_succeeded,
+            query_instruments_result_count: evidence.read_back.query_instruments_result_count,
+            binary_option_instrument_read_back: evidence
+                .read_back
+                .binary_option_instrument_read_back,
+            binary_option_instrument_id: clone_capability_string(
+                &evidence.read_back.binary_option_instrument_id,
+                "capability evidence binary-option instrument ID",
+            )?,
+            perps_spot_instrument_read_back: evidence.read_back.perps_spot_instrument_read_back,
+            perps_spot_instrument_id: clone_capability_string(
+                &evidence.read_back.perps_spot_instrument_id,
+                "capability evidence perps-spot instrument ID",
+            )?,
+        },
+        create_only_probe: CreateOnlyProbeTranscript {
+            probe_uri: clone_capability_string(
+                &evidence.create_only_probe.probe_uri,
+                "capability evidence create-only probe URI",
+            )?,
+            copy_source_uri: clone_capability_string(
+                &evidence.create_only_probe.copy_source_uri,
+                "capability evidence copy source URI",
+            )?,
+            copy_dest_uri: clone_capability_string(
+                &evidence.create_only_probe.copy_dest_uri,
+                "capability evidence copy destination URI",
+            )?,
+            first_create_succeeded: evidence.create_only_probe.first_create_succeeded,
+            duplicate_create_rejected: evidence.create_only_probe.duplicate_create_rejected,
+            first_copy_succeeded: evidence.create_only_probe.first_copy_succeeded,
+            duplicate_copy_rejected: evidence.create_only_probe.duplicate_copy_rejected,
+        },
+    };
+    work_budget.check_deadline(stage)?;
+    Ok(cloned)
 }
 
 impl NtCatalogCapabilityPlan {
@@ -1598,6 +1721,7 @@ mod tests {
     fn expiring_guard(expires_after_observation: usize) -> OperatorWorkBudgetGuard {
         OperatorWorkBudgetGuard::with_clock(
             OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
+                max_decoded_bytes: u64::MAX,
                 max_source_rows: 1,
                 max_projected_row_groups: 1,
                 max_wall_seconds: 1,

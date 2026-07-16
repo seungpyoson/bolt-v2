@@ -883,6 +883,7 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
         sha256_hex(RUN_SPEC_BYTES),
         &BackfillExecutionRunBinding::from_run_spec(&run_spec),
         BackfillExecutionWorkBudget {
+            max_decoded_bytes: u64::MAX,
             max_source_rows: expected_plan.max_source_rows,
             max_projected_row_groups: expected_plan.max_projected_row_groups,
             max_wall_seconds: expected_plan.max_wall_seconds,
@@ -3393,6 +3394,7 @@ fn assert_binance_gate_matches_generic_evaluators(gate_root: &Path, source_proof
         sha256_hex(&run_spec_bytes),
         &BackfillExecutionRunBinding::from_run_spec(&run_spec),
         BackfillExecutionWorkBudget {
+            max_decoded_bytes: u64::MAX,
             max_source_rows: expected_plan.max_source_rows,
             max_projected_row_groups: expected_plan.max_projected_row_groups,
             max_wall_seconds: expected_plan.max_wall_seconds,

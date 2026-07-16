@@ -15,6 +15,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
+    mem::size_of,
     str::FromStr,
 };
 
@@ -47,7 +48,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
-use super::source_proof::{AcceptedDataset, FixtureType, SourceProofFidelityClass};
+use super::{
+    operator_work_budget::{
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, serialize_json_to_vec_guarded,
+        sha256_json_guarded,
+    },
+    source_proof::{AcceptedDataset, FixtureType, SourceProofFidelityClass},
+};
 
 /// Registry key for the compiled Rust trade-driven example strategy.
 pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
@@ -109,8 +116,14 @@ pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
 ];
 /// Artifact-local manifest version written beside each backtest result.
 pub const BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION: &str = "backtest-run-manifest.v1";
+/// Portable physical NT-catalog inventory sealed after projection and before execution.
+pub const CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION: &str = "catalog-projection-manifest-v2";
+/// Producer-minted authority binding a submitted manifest to exact catalog bytes.
+pub const CATALOG_RUN_VIEW_AUTHORITY_SCHEMA_VERSION: &str = "catalog-run-view-authority.v1";
+/// Canonical run artifact containing the unchanged producer-minted catalog authority.
+pub const CATALOG_RUN_VIEW_AUTHORITY_FILE: &str = "catalog-run-view-authority.json";
 /// Submitted run-manifest TOML schema version.
-pub const BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION: &str = "backtesting-run-manifest.v1";
+pub const BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION: &str = "backtesting-run-manifest.v2";
 
 const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
     "cannot be combined with catalog_fs_rust_storage_options";
@@ -249,7 +262,6 @@ fn manifest_currentness_rule_slots() -> Vec<ManifestCurrentnessRuleSlot> {
     vec![
         deferred_currentness_rule_slot(ManifestCurrentnessDimension::NtVersion),
         deferred_currentness_rule_slot(ManifestCurrentnessDimension::StrategyConfigHash),
-        deferred_currentness_rule_slot(ManifestCurrentnessDimension::CatalogHash),
         deferred_currentness_rule_slot(ManifestCurrentnessDimension::ManifestSchema),
         deferred_currentness_rule_slot(ManifestCurrentnessDimension::ExecutionModel),
     ]
@@ -524,6 +536,706 @@ pub struct ManifestDomainMetricConfig {
     pub kind: String,
 }
 
+/// One immutable Parquet object in a portable physical catalog manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogProjectionManifestObject {
+    /// Slash-separated path relative to the catalog root.
+    pub relative_path: String,
+    pub byte_len: u64,
+    pub sha256: String,
+}
+
+/// Canonical, location-independent physical inventory for one NT catalog root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogProjectionManifestDocument {
+    pub schema_version: String,
+    pub objects: Vec<CatalogProjectionManifestObject>,
+}
+
+impl CatalogProjectionManifestDocument {
+    /// Deterministic JSON bytes shared by local sealing and publication.
+    pub fn canonical_bytes_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Vec<u8>> {
+        self.validate_guarded(work_budget, stage)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        serialize_json_to_vec_guarded(self, work_budget, stage)
+    }
+
+    /// SHA-256 of canonical JSON, streamed without materializing the JSON.
+    pub fn manifest_sha256_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<String> {
+        self.validate_guarded(work_budget, stage)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        sha256_json_guarded(self, work_budget, stage)
+    }
+
+    fn budget_totals(&self) -> Result<(u64, u64, u64), ManifestError> {
+        let object_count = u64::try_from(self.objects.len()).map_err(|_| {
+            ManifestError::InvalidCatalogProjectionManifest {
+                field: "catalog_run_view_authority.roots.physical_manifest.objects",
+                message: "object count does not fit u64".to_string(),
+            }
+        })?;
+        let schema_bytes = u64::try_from(self.schema_version.len()).map_err(|_| {
+            ManifestError::InvalidCatalogProjectionManifest {
+                field: "catalog_run_view_authority.roots.physical_manifest.schema_version",
+                message: "schema metadata bytes do not fit u64".to_string(),
+            }
+        })?;
+        let mut metadata_bytes = u64::try_from(size_of::<Self>())
+            .ok()
+            .and_then(|value| value.checked_add(schema_bytes))
+            .ok_or_else(|| ManifestError::InvalidCatalogProjectionManifest {
+                field: "catalog_run_view_authority.roots.physical_manifest",
+                message: "metadata byte count overflow".to_string(),
+            })?;
+        let mut physical_bytes = 0_u64;
+        for object in &self.objects {
+            let record_bytes = size_of::<CatalogProjectionManifestObject>()
+                .checked_add(object.relative_path.len())
+                .and_then(|value| value.checked_add(object.sha256.len()))
+                .ok_or_else(|| ManifestError::InvalidCatalogProjectionManifest {
+                    field: "catalog_run_view_authority.roots.physical_manifest.objects",
+                    message: "object metadata byte count overflow".to_string(),
+                })?;
+            metadata_bytes = metadata_bytes
+                .checked_add(u64::try_from(record_bytes).map_err(|_| {
+                    ManifestError::InvalidCatalogProjectionManifest {
+                        field: "catalog_run_view_authority.roots.physical_manifest.objects",
+                        message: "object metadata bytes do not fit u64".to_string(),
+                    }
+                })?)
+                .ok_or_else(|| ManifestError::InvalidCatalogProjectionManifest {
+                    field: "catalog_run_view_authority.roots.physical_manifest.objects",
+                    message: "cumulative object metadata byte count overflow".to_string(),
+                })?;
+            physical_bytes = physical_bytes.checked_add(object.byte_len).ok_or_else(|| {
+                ManifestError::InvalidCatalogProjectionManifest {
+                    field: "catalog_run_view_authority.roots.physical_manifest.objects.byte_len",
+                    message: "cumulative physical byte count overflow".to_string(),
+                }
+            })?;
+        }
+        Ok((object_count, metadata_bytes, physical_bytes))
+    }
+
+    pub fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<(), ManifestError> {
+        let budget_error =
+            |field, error: anyhow::Error| ManifestError::InvalidCatalogProjectionManifest {
+                field,
+                message: format!("work-budget rejection: {error:#}"),
+            };
+        work_budget
+            .check_deadline(stage)
+            .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+        let (object_count, metadata_bytes, physical_bytes) = self.budget_totals()?;
+        work_budget
+            .verify_actual_row_groups(object_count, stage)
+            .map_err(|error| {
+                budget_error(
+                    "catalog_run_view_authority.roots.physical_manifest.objects",
+                    error,
+                )
+            })?;
+        work_budget
+            .verify_decoded_bytes(metadata_bytes, stage)
+            .map_err(|error| {
+                budget_error(
+                    "catalog_run_view_authority.roots.physical_manifest.metadata_bytes",
+                    error,
+                )
+            })?;
+        work_budget
+            .verify_decoded_bytes(physical_bytes, stage)
+            .map_err(|error| {
+                budget_error(
+                    "catalog_run_view_authority.roots.physical_manifest.physical_bytes",
+                    error,
+                )
+            })?;
+        work_budget
+            .verify_decoded_bytes(
+                metadata_bytes.checked_add(physical_bytes).ok_or_else(|| {
+                    ManifestError::InvalidCatalogProjectionManifest {
+                        field: "catalog_run_view_authority.roots.physical_manifest",
+                        message: "physical plus metadata byte count overflow".to_string(),
+                    }
+                })?,
+                stage,
+            )
+            .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+        if self.schema_version != CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION {
+            return Err(ManifestError::InvalidCatalogProjectionManifest {
+                field: "catalog_run_view_authority.roots.physical_manifest.schema_version",
+                message: format!("unsupported value {:?}", self.schema_version),
+            });
+        }
+        if self.objects.is_empty() {
+            return Err(ManifestError::MissingField(
+                "catalog_run_view_authority.roots.physical_manifest.objects",
+            ));
+        }
+        let mut previous_path: Option<&str> = None;
+        for object in &self.objects {
+            work_budget
+                .check_deadline(stage)
+                .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+            validate_catalog_projection_relative_path(&object.relative_path)?;
+            if object.byte_len == 0 {
+                return Err(ManifestError::InvalidCatalogProjectionManifest {
+                    field: "catalog_run_view_authority.roots.physical_manifest.objects.byte_len",
+                    message: format!("{} must have a positive byte length", object.relative_path),
+                });
+            }
+            validate_strategy_source_hash(
+                "catalog_run_view_authority.roots.physical_manifest.objects.sha256",
+                &object.sha256,
+            )?;
+            if previous_path.is_some_and(|previous| previous >= object.relative_path.as_str()) {
+                return Err(ManifestError::InvalidCatalogProjectionManifest {
+                    field: "catalog_run_view_authority.roots.physical_manifest.objects.relative_path",
+                    message: "objects must be strictly sorted by unique relative_path".to_string(),
+                });
+            }
+            previous_path = Some(object.relative_path.as_str());
+        }
+        work_budget
+            .check_deadline(stage)
+            .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+        Ok(())
+    }
+}
+
+/// Immutable catalog authority for one unique root used by one or more data inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogRunViewRootAuthority {
+    /// Sorted manifest inputs which resolve to this same physical root.
+    pub catalog_inputs: Vec<CatalogRunViewInputAuthority>,
+    /// Logical hash over decoded NT rows for the root.
+    pub logical_catalog_hash: String,
+    /// SHA-256 of `physical_manifest` canonical bytes.
+    pub physical_manifest_sha256: String,
+    /// Exact physical object set and content hashes authorized for the root.
+    pub physical_manifest: CatalogProjectionManifestDocument,
+}
+
+/// Portable identity for one submitted catalog query, excluding hydrated path details.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogRunViewInputAuthority {
+    pub catalog_input_index: u64,
+    pub data_type: String,
+    pub nt_instrument_id: String,
+}
+
+/// Validated immutable identity obtained from the submitted RunSpec, never a
+/// path-rewritten runtime manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubmittedRunIdentity {
+    run_id: String,
+    manifest_hash: String,
+    runtime_semantics_hash: String,
+}
+
+impl SubmittedRunIdentity {
+    pub(crate) fn new(
+        submitted_manifest: &BacktestingRunManifest,
+        manifest_hash: &str,
+    ) -> Result<Self, ManifestError> {
+        if submitted_manifest.run_id.trim().is_empty() {
+            return Err(ManifestError::MissingField("submitted_run_identity.run_id"));
+        }
+        validate_strategy_source_hash("submitted_run_identity.manifest_hash", manifest_hash)?;
+        let actual_manifest_hash = submitted_manifest.manifest_hash();
+        if actual_manifest_hash != manifest_hash {
+            return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "submitted_run_identity.manifest_hash",
+                message: format!(
+                    "declared {manifest_hash} does not match submitted manifest {actual_manifest_hash}"
+                ),
+            });
+        }
+        Ok(Self {
+            run_id: submitted_manifest.run_id.clone(),
+            manifest_hash: manifest_hash.to_string(),
+            runtime_semantics_hash: runtime_manifest_semantics_hash(submitted_manifest),
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    #[must_use]
+    pub(crate) fn manifest_hash(&self) -> &str {
+        &self.manifest_hash
+    }
+
+    fn validate_runtime_manifest(
+        &self,
+        runtime_manifest: &BacktestingRunManifest,
+    ) -> Result<(), ManifestError> {
+        if runtime_manifest.run_id != self.run_id {
+            return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.run_id",
+                message: format!(
+                    "trusted submitted run {:?} does not match runtime manifest {:?}",
+                    self.run_id, runtime_manifest.run_id
+                ),
+            });
+        }
+        let runtime_semantics_hash = runtime_manifest_semantics_hash(runtime_manifest);
+        if runtime_semantics_hash != self.runtime_semantics_hash {
+            return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.submitted_manifest_hash",
+                message: "runtime manifest differs from submitted intent outside the allowed catalog location rewrite fields".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn runtime_manifest_semantics_hash(manifest: &BacktestingRunManifest) -> String {
+    let mut normalized = manifest.clone();
+    for input in &mut normalized.catalog_inputs {
+        input.catalog_path.clear();
+        input.catalog_fs_protocol.clear();
+        input.catalog_fs_storage_options.clear();
+        input.catalog_fs_rust_storage_options.clear();
+    }
+    normalized.manifest_hash()
+}
+
+/// Producer-minted, portable authority required by the sole BacktestNode path.
+///
+/// It is created only after catalog projection, binds to the exact submitted
+/// run manifest, and is serialized unchanged for local execution, publication,
+/// and later hydration. The submitted run manifest cannot authorize catalog
+/// bytes which do not exist yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogRunViewAuthority {
+    pub schema_version: String,
+    pub run_id: String,
+    pub submitted_manifest_hash: String,
+    pub roots: Vec<CatalogRunViewRootAuthority>,
+}
+
+impl CatalogRunViewAuthority {
+    /// Deterministic bytes persisted and reused unchanged by publication/hydration.
+    pub(crate) fn canonical_bytes_guarded(
+        &self,
+        runtime_manifest: &BacktestingRunManifest,
+        submitted_identity: &SubmittedRunIdentity,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Vec<u8>> {
+        self.validate_for_runtime_manifest(
+            runtime_manifest,
+            submitted_identity,
+            work_budget,
+            stage,
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
+        serialize_json_to_vec_guarded(self, work_budget, stage)
+    }
+
+    /// SHA-256 of canonical JSON, streamed without materializing the JSON.
+    pub(crate) fn authority_sha256_guarded(
+        &self,
+        runtime_manifest: &BacktestingRunManifest,
+        submitted_identity: &SubmittedRunIdentity,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<String> {
+        self.validate_for_runtime_manifest(
+            runtime_manifest,
+            submitted_identity,
+            work_budget,
+            stage,
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
+        sha256_json_guarded(self, work_budget, stage)
+    }
+
+    /// Validate canonical structure and bind every catalog input exactly once.
+    pub(crate) fn validate_for_runtime_manifest(
+        &self,
+        manifest: &BacktestingRunManifest,
+        submitted_identity: &SubmittedRunIdentity,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<(), ManifestError> {
+        let budget_error =
+            |field, error: anyhow::Error| ManifestError::InvalidCatalogRunViewAuthority {
+                field,
+                message: format!("work-budget rejection: {error:#}"),
+            };
+        work_budget
+            .check_deadline(stage)
+            .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+        if self.schema_version != CATALOG_RUN_VIEW_AUTHORITY_SCHEMA_VERSION {
+            return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.schema_version",
+                message: format!("unsupported value {:?}", self.schema_version),
+            });
+        }
+        validate_strategy_source_hash(
+            "catalog_run_view_authority.submitted_manifest_hash",
+            &self.submitted_manifest_hash,
+        )?;
+        if self.run_id != submitted_identity.run_id
+            || self.submitted_manifest_hash != submitted_identity.manifest_hash
+        {
+            return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.submitted_manifest_hash",
+                message: format!(
+                    "authority ({:?}, {}) does not match trusted submitted identity ({:?}, {})",
+                    self.run_id,
+                    self.submitted_manifest_hash,
+                    submitted_identity.run_id,
+                    submitted_identity.manifest_hash
+                ),
+            });
+        }
+        submitted_identity.validate_runtime_manifest(manifest)?;
+        if self.roots.is_empty() {
+            return Err(ManifestError::MissingField(
+                "catalog_run_view_authority.roots",
+            ));
+        }
+
+        let mut cumulative_objects = 0_u64;
+        let schema_bytes = u64::try_from(self.schema_version.len()).map_err(|_| {
+            ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.schema_version",
+                message: "schema metadata bytes do not fit u64".to_string(),
+            }
+        })?;
+        let run_id_bytes = u64::try_from(self.run_id.len()).map_err(|_| {
+            ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.run_id",
+                message: "run-id metadata bytes do not fit u64".to_string(),
+            }
+        })?;
+        let submitted_hash_bytes =
+            u64::try_from(self.submitted_manifest_hash.len()).map_err(|_| {
+                ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.submitted_manifest_hash",
+                    message: "submitted-hash metadata bytes do not fit u64".to_string(),
+                }
+            })?;
+        let mut cumulative_metadata = u64::try_from(size_of::<Self>())
+            .ok()
+            .and_then(|value| value.checked_add(schema_bytes))
+            .and_then(|value| value.checked_add(run_id_bytes))
+            .and_then(|value| value.checked_add(submitted_hash_bytes))
+            .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority",
+                message: "authority metadata byte count overflow".to_string(),
+            })?;
+        let mut cumulative_physical = 0_u64;
+
+        let mut previous_first_index = None;
+        for (root_index, root) in self.roots.iter().enumerate() {
+            work_budget
+                .check_deadline(stage)
+                .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+            if root.catalog_inputs.is_empty() {
+                return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.catalog_inputs",
+                    message: format!("roots[{root_index}] has no catalog input indexes"),
+                });
+            }
+            let first_index = root.catalog_inputs[0].catalog_input_index;
+            if previous_first_index.is_some_and(|previous| previous >= first_index) {
+                return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.catalog_inputs",
+                    message: "roots must be strictly sorted by first catalog input index"
+                        .to_string(),
+                });
+            }
+            previous_first_index = Some(first_index);
+
+            let mut previous_input_index = None;
+            let mut expected_path: Option<&str> = None;
+            for binding in &root.catalog_inputs {
+                work_budget
+                    .check_deadline(stage)
+                    .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+                let declared_index = binding.catalog_input_index;
+                if previous_input_index.is_some_and(|previous| previous >= declared_index) {
+                    return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.catalog_inputs",
+                        message: format!(
+                            "roots[{root_index}] indexes must be strictly sorted and unique"
+                        ),
+                    });
+                }
+                let binding_bytes = size_of::<CatalogRunViewInputAuthority>()
+                    .checked_add(binding.data_type.len())
+                    .and_then(|value| value.checked_add(binding.nt_instrument_id.len()))
+                    .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.catalog_inputs",
+                        message: "catalog input binding metadata byte count overflow".to_string(),
+                    })?;
+                cumulative_metadata = cumulative_metadata
+                    .checked_add(u64::try_from(binding_bytes).map_err(|_| {
+                        ManifestError::InvalidCatalogRunViewAuthority {
+                            field: "catalog_run_view_authority.roots.catalog_inputs",
+                            message: "catalog input binding bytes do not fit u64".to_string(),
+                        }
+                    })?)
+                    .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority",
+                        message: "cumulative authority metadata byte count overflow".to_string(),
+                    })?;
+                work_budget
+                    .verify_decoded_bytes(cumulative_metadata, stage)
+                    .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+                previous_input_index = Some(declared_index);
+                let index = usize::try_from(declared_index).map_err(|_| {
+                    ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.catalog_inputs",
+                        message: format!("catalog input index {declared_index} does not fit usize"),
+                    }
+                })?;
+                let input = manifest.catalog_inputs.get(index).ok_or_else(|| {
+                    ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.catalog_inputs",
+                        message: format!(
+                            "catalog input index {declared_index} is outside {} submitted inputs",
+                            manifest.catalog_inputs.len()
+                        ),
+                    }
+                })?;
+                if binding.data_type != input.data_type
+                    || binding.nt_instrument_id != input.nt_instrument_id
+                {
+                    return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.catalog_inputs",
+                        message: format!(
+                            "catalog input {declared_index} type/instrument ({:?}, {:?}) does not match runtime ({:?}, {:?})",
+                            binding.data_type,
+                            binding.nt_instrument_id,
+                            input.data_type,
+                            input.nt_instrument_id
+                        ),
+                    });
+                }
+                if let Some(path) = expected_path {
+                    if path != input.catalog_path {
+                        return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                            field: "catalog_run_view_authority.roots.catalog_inputs",
+                            message: format!(
+                                "roots[{root_index}] groups different catalog paths {path:?} and {:?}",
+                                input.catalog_path
+                            ),
+                        });
+                    }
+                } else {
+                    expected_path = Some(input.catalog_path.as_str());
+                }
+            }
+
+            validate_strategy_source_hash(
+                "catalog_run_view_authority.roots.logical_catalog_hash",
+                &root.logical_catalog_hash,
+            )?;
+            validate_strategy_source_hash(
+                "catalog_run_view_authority.roots.physical_manifest_sha256",
+                &root.physical_manifest_sha256,
+            )?;
+            let (root_objects, root_metadata, root_physical) =
+                root.physical_manifest.budget_totals()?;
+            cumulative_objects = cumulative_objects
+                .checked_add(root_objects)
+                .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.physical_manifest.objects",
+                    message: "cumulative physical object count overflow".to_string(),
+                })?;
+            let logical_hash_bytes =
+                u64::try_from(root.logical_catalog_hash.len()).map_err(|_| {
+                    ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.logical_catalog_hash",
+                        message: "logical-hash metadata bytes do not fit u64".to_string(),
+                    }
+                })?;
+            let physical_hash_bytes =
+                u64::try_from(root.physical_manifest_sha256.len()).map_err(|_| {
+                    ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.physical_manifest_sha256",
+                        message: "physical-hash metadata bytes do not fit u64".to_string(),
+                    }
+                })?;
+            cumulative_metadata = cumulative_metadata
+                .checked_add(root_metadata)
+                .and_then(|value| {
+                    value.checked_add(u64::try_from(size_of::<CatalogRunViewRootAuthority>()).ok()?)
+                })
+                .and_then(|value| value.checked_add(logical_hash_bytes))
+                .and_then(|value| value.checked_add(physical_hash_bytes))
+                .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots",
+                    message: "cumulative root metadata byte count overflow".to_string(),
+                })?;
+            cumulative_physical =
+                cumulative_physical
+                    .checked_add(root_physical)
+                    .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                        field: "catalog_run_view_authority.roots.physical_manifest.physical_bytes",
+                        message: "cumulative physical byte count overflow".to_string(),
+                    })?;
+            work_budget
+                .verify_actual_row_groups(cumulative_objects, stage)
+                .map_err(|error| {
+                    budget_error(
+                        "catalog_run_view_authority.roots.physical_manifest.objects",
+                        error,
+                    )
+                })?;
+            work_budget
+                .verify_decoded_bytes(cumulative_metadata, stage)
+                .map_err(|error| {
+                    budget_error("catalog_run_view_authority.metadata_bytes", error)
+                })?;
+            work_budget
+                .verify_decoded_bytes(cumulative_physical, stage)
+                .map_err(|error| {
+                    budget_error("catalog_run_view_authority.physical_bytes", error)
+                })?;
+            work_budget
+                .verify_decoded_bytes(
+                    cumulative_metadata
+                        .checked_add(cumulative_physical)
+                        .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                            field: "catalog_run_view_authority",
+                            message: "cumulative authority byte count overflow".to_string(),
+                        })?,
+                    stage,
+                )
+                .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+            root.physical_manifest
+                .validate_guarded(work_budget, stage)?;
+            let actual_physical_hash = root
+                .physical_manifest
+                .manifest_sha256_guarded(work_budget, stage)
+                .map_err(|error| {
+                    budget_error(
+                        "catalog_run_view_authority.roots.physical_manifest_sha256",
+                        error,
+                    )
+                })?;
+            if actual_physical_hash != root.physical_manifest_sha256 {
+                return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.physical_manifest_sha256",
+                    message: format!(
+                        "declared {} does not match physical manifest {}",
+                        root.physical_manifest_sha256, actual_physical_hash
+                    ),
+                });
+            }
+        }
+
+        for input_index in 0..manifest.catalog_inputs.len() {
+            work_budget
+                .check_deadline(stage)
+                .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+            let input_index = u64::try_from(input_index).map_err(|_| {
+                ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.catalog_inputs",
+                    message: "submitted catalog input count does not fit u64".to_string(),
+                }
+            })?;
+            let occurrences = self
+                .roots
+                .iter()
+                .filter(|root| {
+                    root.catalog_inputs
+                        .binary_search_by_key(&input_index, |binding| binding.catalog_input_index)
+                        .is_ok()
+                })
+                .count();
+            if occurrences != 1 {
+                return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.catalog_inputs",
+                    message: format!(
+                        "catalog input index {input_index} must appear exactly once, found {occurrences}"
+                    ),
+                });
+            }
+        }
+        for (left_index, left) in self.roots.iter().enumerate() {
+            let left_manifest_index = usize::try_from(left.catalog_inputs[0].catalog_input_index)
+                .map_err(|_| {
+                ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.catalog_inputs",
+                    message: "validated catalog input index no longer fits usize".to_string(),
+                }
+            })?;
+            let left_path = &manifest
+                .catalog_inputs
+                .get(left_manifest_index)
+                .ok_or_else(|| ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.catalog_inputs",
+                    message: "validated catalog input index left runtime bounds".to_string(),
+                })?
+                .catalog_path;
+            if self.roots.iter().skip(left_index + 1).any(|right| {
+                usize::try_from(right.catalog_inputs[0].catalog_input_index)
+                    .ok()
+                    .and_then(|index| manifest.catalog_inputs.get(index))
+                    .is_some_and(|input| input.catalog_path == *left_path)
+            }) {
+                return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.roots.catalog_inputs",
+                    message: format!("catalog path {left_path:?} appears in more than one root"),
+                });
+            }
+        }
+        work_budget
+            .check_deadline(stage)
+            .map_err(|error| budget_error("catalog_run_view_authority", error))?;
+        Ok(())
+    }
+
+    /// Terminal binding check against the immutable submitted run specification.
+    pub(crate) fn validate_submitted_manifest_identity(
+        &self,
+        submitted_identity: &SubmittedRunIdentity,
+    ) -> Result<(), ManifestError> {
+        if self.run_id != submitted_identity.run_id
+            || self.submitted_manifest_hash != submitted_identity.manifest_hash
+        {
+            return Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.submitted_manifest_hash",
+                message: format!(
+                    "authority ({:?}, {}) does not bind submitted manifest ({:?}, {})",
+                    self.run_id,
+                    self.submitted_manifest_hash,
+                    submitted_identity.run_id,
+                    submitted_identity.manifest_hash
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Catalog input mapped into [`BacktestDataConfig`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -706,6 +1418,9 @@ pub struct BacktestingRunManifest {
     /// Additional simulated venues needed by non-execution data feeds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_venues: Vec<ManifestVenueConfig>,
+    /// Positive TOML-owned NT streaming chunk size. A value is mandatory so
+    /// BacktestNode never falls back to whole-catalog one-shot loading.
+    pub nt_streaming_chunk_size: u64,
     pub catalog_inputs: Vec<ManifestCatalogInput>,
     /// Reconstructed reference-current-price custom data side input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -714,8 +1429,6 @@ pub struct BacktestingRunManifest {
     /// `InstrumentClose` so held positions redeem to their resolved value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instrument_settlements: Vec<ManifestInstrumentSettlementInput>,
-    /// SHA-256 of the NT catalog consumed by the run.
-    pub catalog_hash: String,
     /// Execution model selected for this run, for example `nt_backtest_node`.
     pub execution_model: String,
     /// Configured S3 artifact root (TOML/config-owned).
@@ -792,6 +1505,14 @@ pub enum ManifestError {
         value: String,
     },
     InvalidNtConfig {
+        field: &'static str,
+        message: String,
+    },
+    InvalidCatalogProjectionManifest {
+        field: &'static str,
+        message: String,
+    },
+    InvalidCatalogRunViewAuthority {
         field: &'static str,
         message: String,
     },
@@ -933,6 +1654,12 @@ impl std::fmt::Display for ManifestError {
             }
             Self::InvalidNtConfig { field, message } => {
                 write!(f, "invalid NautilusTrader {field} config: {message}")
+            }
+            Self::InvalidCatalogProjectionManifest { field, message } => {
+                write!(f, "invalid {field}: {message}")
+            }
+            Self::InvalidCatalogRunViewAuthority { field, message } => {
+                write!(f, "invalid {field}: {message}")
             }
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
@@ -1558,6 +2285,28 @@ fn validate_strategy_source_hash(field: &'static str, value: &str) -> Result<(),
     }
 }
 
+fn validate_catalog_projection_relative_path(value: &str) -> Result<(), ManifestError> {
+    let valid = !value.is_empty()
+        && !value.starts_with('/')
+        && !value.ends_with('/')
+        && !value.contains('\\')
+        && !value.bytes().any(|byte| byte.is_ascii_control())
+        && value.ends_with(".parquet")
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..");
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::InvalidCatalogProjectionManifest {
+            field: "catalog_run_view_authority.roots.physical_manifest.objects.relative_path",
+            message: format!(
+                "{value:?} must be a normalized slash-separated relative Parquet path without traversal"
+            ),
+        })
+    }
+}
+
 fn research_analytics_experiment_result_prefix(artifact_root: &str) -> String {
     format!(
         "{}/{}/",
@@ -1622,7 +2371,7 @@ impl BacktestingRunManifest {
     #[must_use]
     pub fn manifest_hash(&self) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(b"backtesting-run-manifest.v1");
+        hasher.update(b"backtesting-run-manifest.v2");
         hasher.update(
             serde_json::to_vec(self)
                 .expect("BacktestingRunManifest JSON serialization must be infallible"),
@@ -1690,12 +2439,6 @@ impl BacktestingRunManifest {
                 self.strategy_config_hash.clone(),
             ),
             resolved_surface(
-                "catalog.hash",
-                NtSurfaceClassification::CustomOwned,
-                "BacktestingRunManifest.catalog_hash",
-                self.catalog_hash.clone(),
-            ),
-            resolved_surface(
                 "execution.model",
                 NtSurfaceClassification::CustomOwned,
                 "BacktestingRunManifest.execution_model",
@@ -1712,8 +2455,8 @@ impl BacktestingRunManifest {
             ),
             resolved_surface(
                 "run.chunk_size",
-                NtSurfaceClassification::Defaulted,
-                "BacktestRunConfig.chunk_size",
+                NtSurfaceClassification::PassThrough,
+                "BacktestingRunManifest.nt_streaming_chunk_size",
                 option_value(run_config.chunk_size()),
             ),
             resolved_surface(
@@ -2051,7 +2794,6 @@ impl BacktestingRunManifest {
             ("venue_binding_key", self.venue_binding_key.as_str()),
             ("source_proof_id", self.source_proof_id.as_str()),
             ("strategy_config_hash", self.strategy_config_hash.as_str()),
-            ("catalog_hash", self.catalog_hash.as_str()),
             ("execution_model", self.execution_model.as_str()),
             ("artifact_root", self.artifact_root.as_str()),
             ("output_prefix", self.output_prefix.as_str()),
@@ -2080,9 +2822,28 @@ impl BacktestingRunManifest {
             });
         }
         validate_strategy_source_hash("strategy_config_hash", &self.strategy_config_hash)?;
-        validate_strategy_source_hash("catalog_hash", &self.catalog_hash)?;
+        if self.nt_streaming_chunk_size == 0
+            || usize::try_from(self.nt_streaming_chunk_size).is_err()
+        {
+            return Err(ManifestError::InvalidNtConfig {
+                field: "nt_streaming_chunk_size",
+                message: format!(
+                    "must be positive and fit usize, got {}",
+                    self.nt_streaming_chunk_size
+                ),
+            });
+        }
         if self.catalog_inputs.is_empty() {
             return Err(ManifestError::MissingField("catalog_inputs"));
+        }
+        if self.catalog_inputs.len() != 1 {
+            return Err(ManifestError::InvalidNtConfig {
+                field: "catalog_inputs",
+                message: format!(
+                    "pinned NautilusTrader streaming materializes all data for {} inputs; exactly one catalog input is required",
+                    self.catalog_inputs.len()
+                ),
+            });
         }
         for venue in &self.additional_venues {
             for (name, value) in [
@@ -2413,6 +3174,30 @@ impl BacktestingRunManifest {
     ///
     /// Returns an error if venue or data mapping fails.
     pub fn to_nt_run_config(&self) -> Result<BacktestRunConfig, ManifestError> {
+        if self.catalog_inputs.len() != 1 {
+            return Err(ManifestError::InvalidNtConfig {
+                field: "catalog_inputs",
+                message: format!(
+                    "pinned NautilusTrader streaming materializes all data for {} inputs; exactly one catalog input is required",
+                    self.catalog_inputs.len()
+                ),
+            });
+        }
+        let chunk_size = usize::try_from(self.nt_streaming_chunk_size).map_err(|_| {
+            ManifestError::InvalidNtConfig {
+                field: "nt_streaming_chunk_size",
+                message: format!(
+                    "must be positive and fit usize, got {}",
+                    self.nt_streaming_chunk_size
+                ),
+            }
+        })?;
+        if chunk_size == 0 {
+            return Err(ManifestError::InvalidNtConfig {
+                field: "nt_streaming_chunk_size",
+                message: "must be positive, got 0".to_string(),
+            });
+        }
         let mut venues = vec![self.to_nt_venue_config()?];
         for venue in &self.additional_venues {
             venues.push(manifest_venue_to_nt_config(venue)?);
@@ -2430,6 +3215,7 @@ impl BacktestingRunManifest {
             .id(self.run_id.clone())
             .venues(venues)
             .data(data)
+            .chunk_size(chunk_size)
             .maybe_start(start)
             .maybe_end(end)
             // Retain post-run engine state (orders, positions, account) so the
@@ -3620,6 +4406,7 @@ mod tests {
                 settlement_prices: None,
             },
             additional_venues: Vec::new(),
+            nt_streaming_chunk_size: 128,
             catalog_inputs: vec![ManifestCatalogInput {
                 catalog_path: "/tmp/catalog".to_string(),
                 catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
@@ -3639,7 +4426,6 @@ mod tests {
             }],
             reconstructed_reference_current_price: Vec::new(),
             instrument_settlements: Vec::new(),
-            catalog_hash: TEST_SHA256_ONE.to_string(),
             execution_model: "nt_backtest_node".to_string(),
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
             output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/testpair".to_string(),
@@ -3654,6 +4440,58 @@ mod tests {
         }
     }
 
+    fn valid_catalog_run_view_authority(
+        manifest: &BacktestingRunManifest,
+    ) -> CatalogRunViewAuthority {
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let physical_manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data/trade_tick/test.parquet".to_string(),
+                byte_len: 4,
+                sha256: TEST_SHA256_ZERO.to_string(),
+            }],
+        };
+        CatalogRunViewAuthority {
+            schema_version: CATALOG_RUN_VIEW_AUTHORITY_SCHEMA_VERSION.to_string(),
+            run_id: manifest.run_id.clone(),
+            submitted_manifest_hash: manifest.manifest_hash(),
+            roots: vec![CatalogRunViewRootAuthority {
+                catalog_inputs: vec![CatalogRunViewInputAuthority {
+                    catalog_input_index: 0,
+                    data_type: manifest.catalog_inputs[0].data_type.clone(),
+                    nt_instrument_id: manifest.catalog_inputs[0].nt_instrument_id.clone(),
+                }],
+                logical_catalog_hash: TEST_SHA256_ONE.to_string(),
+                physical_manifest_sha256: physical_manifest
+                    .manifest_sha256_guarded(&guard, OperatorWorkBudgetStage::Backtest)
+                    .expect("hash physical manifest"),
+                physical_manifest,
+            }],
+        }
+    }
+
+    fn valid_submitted_run_identity(manifest: &BacktestingRunManifest) -> SubmittedRunIdentity {
+        SubmittedRunIdentity::new(manifest, &manifest.manifest_hash())
+            .expect("valid submitted run identity")
+    }
+
+    fn bounded_authority_guard(
+        max_decoded_bytes: u64,
+        max_projected_row_groups: u64,
+    ) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::new(crate::operator_work_budget::OperatorWorkBudget::Backfill(
+            crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                max_decoded_bytes,
+                max_source_rows: u64::MAX,
+                max_projected_row_groups,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: true,
+            },
+        ))
+        .expect("valid bounded authority work budget")
+    }
+
     #[test]
     fn valid_manifest_passes_and_maps_to_nt_configs() {
         let manifest = valid_manifest();
@@ -3662,6 +4500,270 @@ mod tests {
         assert_eq!(run.id(), TEST_RUN_ID);
         assert_eq!(run.venues().len(), 1);
         assert_eq!(run.data().len(), 1);
+        assert_eq!(run.chunk_size(), Some(128));
+    }
+
+    #[test]
+    fn run_config_rejects_zero_streaming_chunk_size() {
+        let mut manifest = valid_manifest();
+        manifest.nt_streaming_chunk_size = 0;
+
+        assert!(matches!(
+            manifest.to_nt_run_config(),
+            Err(ManifestError::InvalidNtConfig {
+                field: "nt_streaming_chunk_size",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn run_config_rejects_multiple_catalog_inputs_at_pinned_nt() {
+        let mut manifest = valid_manifest();
+        manifest
+            .catalog_inputs
+            .push(manifest.catalog_inputs[0].clone());
+
+        assert!(matches!(
+            manifest.to_nt_run_config(),
+            Err(ManifestError::InvalidNtConfig {
+                field: "catalog_inputs",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn catalog_run_view_authority_rejects_embedded_inventory_drift() {
+        let manifest = valid_manifest();
+        let submitted_identity = valid_submitted_run_identity(&manifest);
+        let mut authority = valid_catalog_run_view_authority(&manifest);
+        authority.roots[0].physical_manifest.objects[0].sha256 = TEST_SHA256_ONE.to_string();
+
+        let error = authority
+            .validate_for_runtime_manifest(
+                &manifest,
+                &submitted_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+                OperatorWorkBudgetStage::Backtest,
+            )
+            .expect_err("embedded inventory drift must invalidate its manifest pin");
+
+        assert!(matches!(
+            error,
+            ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.roots.physical_manifest_sha256",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn catalog_run_view_authority_rejects_non_normal_relative_paths() {
+        let manifest = valid_manifest();
+        let submitted_identity = valid_submitted_run_identity(&manifest);
+        let mut authority = valid_catalog_run_view_authority(&manifest);
+        authority.roots[0].physical_manifest.objects[0].relative_path =
+            "../stray.parquet".to_string();
+
+        let error = authority
+            .validate_for_runtime_manifest(
+                &manifest,
+                &submitted_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+                OperatorWorkBudgetStage::Backtest,
+            )
+            .expect_err("catalog traversal path must fail closed");
+
+        assert!(matches!(
+            error,
+            ManifestError::InvalidCatalogProjectionManifest {
+                field: "catalog_run_view_authority.roots.physical_manifest.objects.relative_path",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn catalog_run_view_authority_binds_exact_submitted_manifest_and_input_coverage() {
+        let manifest = valid_manifest();
+        let submitted_identity = valid_submitted_run_identity(&manifest);
+        let authority = valid_catalog_run_view_authority(&manifest);
+        authority
+            .validate_for_runtime_manifest(
+                &manifest,
+                &submitted_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+                OperatorWorkBudgetStage::Backtest,
+            )
+            .expect("valid authority");
+
+        let mut changed_manifest = manifest.clone();
+        changed_manifest.catalog_inputs[0].catalog_path = "/tmp/hydrated-catalog".to_string();
+        changed_manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        changed_manifest.catalog_inputs[0].catalog_fs_storage_options =
+            BTreeMap::from([("region".to_string(), "local-test".to_string())]);
+        changed_manifest.catalog_inputs[0].catalog_fs_rust_storage_options =
+            BTreeMap::from([("endpoint".to_string(), "local-test".to_string())]);
+        authority
+            .validate_for_runtime_manifest(
+                &changed_manifest,
+                &submitted_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+                OperatorWorkBudgetStage::Backtest,
+            )
+            .expect("catalog location rewrite remains structurally bound");
+
+        let mut changed_runtime_semantics = manifest.clone();
+        changed_runtime_semantics.nt_streaming_chunk_size += 1;
+        let mut changed_strategy = manifest.clone();
+        changed_strategy
+            .strategy
+            .parameters
+            .insert("trade_size".to_string(), "0.02".to_string());
+        let mut changed_venue = manifest.clone();
+        changed_venue.venue.trade_execution = false;
+        let mut changed_time = manifest.clone();
+        changed_time.catalog_inputs[0].start_time = Some(1);
+        let mut changed_type = manifest.clone();
+        changed_type.catalog_inputs[0].data_type = "QuoteTick".to_string();
+        for changed in [
+            &changed_runtime_semantics,
+            &changed_strategy,
+            &changed_venue,
+            &changed_time,
+            &changed_type,
+        ] {
+            assert!(matches!(
+                authority.validate_for_runtime_manifest(
+                    changed,
+                    &submitted_identity,
+                    &OperatorWorkBudgetGuard::unbounded(),
+                    OperatorWorkBudgetStage::Backtest,
+                ),
+                Err(ManifestError::InvalidCatalogRunViewAuthority {
+                    field: "catalog_run_view_authority.submitted_manifest_hash",
+                    ..
+                })
+            ));
+        }
+        assert!(matches!(
+            authority.validate_submitted_manifest_identity(
+                &SubmittedRunIdentity::new(
+                    &changed_runtime_semantics,
+                    &changed_runtime_semantics.manifest_hash()
+                )
+                .expect("changed submitted identity")
+            ),
+            Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.submitted_manifest_hash",
+                ..
+            })
+        ));
+
+        let mut missing_input = authority.clone();
+        missing_input.roots[0].catalog_inputs.clear();
+        assert!(matches!(
+            missing_input.validate_for_runtime_manifest(
+                &manifest,
+                &submitted_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+                OperatorWorkBudgetStage::Backtest,
+            ),
+            Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.roots.catalog_inputs",
+                ..
+            })
+        ));
+
+        assert!(matches!(
+            SubmittedRunIdentity::new(&manifest, TEST_SHA256_ZERO),
+            Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "submitted_run_identity.manifest_hash",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn catalog_run_view_authority_serialization_and_inventory_are_budget_bounded() {
+        let manifest = valid_manifest();
+        let submitted_identity = valid_submitted_run_identity(&manifest);
+        let authority = valid_catalog_run_view_authority(&manifest);
+        let unbounded = OperatorWorkBudgetGuard::unbounded();
+
+        let bytes = authority
+            .canonical_bytes_guarded(
+                &manifest,
+                &submitted_identity,
+                &unbounded,
+                OperatorWorkBudgetStage::Finalize,
+            )
+            .expect("serialize valid authority");
+        let hash = authority
+            .authority_sha256_guarded(
+                &manifest,
+                &submitted_identity,
+                &unbounded,
+                OperatorWorkBudgetStage::Finalize,
+            )
+            .expect("hash valid authority");
+        assert_eq!(hash, crate::hashing::sha256_hex(&bytes));
+
+        let tiny_bytes = bounded_authority_guard(32, 8);
+        assert!(
+            authority
+                .canonical_bytes_guarded(
+                    &manifest,
+                    &submitted_identity,
+                    &tiny_bytes,
+                    OperatorWorkBudgetStage::Finalize,
+                )
+                .is_err(),
+            "authority serialization must respect max_decoded_bytes"
+        );
+
+        let mut two_objects = authority.clone();
+        let mut second = two_objects.roots[0].physical_manifest.objects[0].clone();
+        second.relative_path = "data/trade_tick/z-test.parquet".to_string();
+        two_objects.roots[0].physical_manifest.objects.push(second);
+        two_objects.roots[0].physical_manifest_sha256 = two_objects.roots[0]
+            .physical_manifest
+            .manifest_sha256_guarded(&unbounded, OperatorWorkBudgetStage::Finalize)
+            .expect("hash two-object physical inventory");
+        let one_object_cap = bounded_authority_guard(1_000_000, 1);
+        assert!(matches!(
+            two_objects.validate_for_runtime_manifest(
+                &manifest,
+                &submitted_identity,
+                &one_object_cap,
+                OperatorWorkBudgetStage::Finalize,
+            ),
+            Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.roots.physical_manifest.objects",
+                ..
+            })
+        ));
+
+        let mut large_physical = authority.clone();
+        large_physical.roots[0].physical_manifest.objects[0].byte_len = 10_000;
+        large_physical.roots[0].physical_manifest_sha256 = large_physical.roots[0]
+            .physical_manifest
+            .manifest_sha256_guarded(&unbounded, OperatorWorkBudgetStage::Finalize)
+            .expect("hash large physical inventory");
+        let small_physical_cap = bounded_authority_guard(1_024, 8);
+        assert!(matches!(
+            large_physical.validate_for_runtime_manifest(
+                &manifest,
+                &submitted_identity,
+                &small_physical_cap,
+                OperatorWorkBudgetStage::Finalize,
+            ),
+            Err(ManifestError::InvalidCatalogRunViewAuthority {
+                field: "catalog_run_view_authority.physical_bytes",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -4334,6 +5436,9 @@ mod tests {
                 kind: DOMAIN_METRIC_CLOSED_POSITION_RATIO.to_string(),
             });
         });
+        assert_hash_changes("nt_streaming_chunk_size", |manifest| {
+            manifest.nt_streaming_chunk_size += 1;
+        });
         assert_hash_changes("catalog_inputs.catalog_fs_protocol", |manifest| {
             manifest.catalog_inputs[0].catalog_path =
                 "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
@@ -4347,7 +5452,7 @@ mod tests {
             },
         );
         assert_hash_changes("manifest_schema_version", |manifest| {
-            manifest.manifest_schema_version = "backtesting-run-manifest.v2".to_string();
+            manifest.manifest_schema_version = "backtesting-run-manifest.v3".to_string();
         });
         assert_hash_changes("target_bolt_v2_branch", |manifest| {
             manifest.target_bolt_v2_branch = "release/backtesting".to_string();
@@ -4361,10 +5466,6 @@ mod tests {
         assert_hash_changes("strategy_config_hash", |manifest| {
             manifest.strategy_config_hash =
                 "2222222222222222222222222222222222222222222222222222222222222222".to_string();
-        });
-        assert_hash_changes("catalog_hash", |manifest| {
-            manifest.catalog_hash =
-                "3333333333333333333333333333333333333333333333333333333333333333".to_string();
         });
         assert_hash_changes("execution_model", |manifest| {
             manifest.execution_model = "alternate_nt_execution_model".to_string();
@@ -4386,10 +5487,6 @@ mod tests {
                 },
                 ManifestCurrentnessRuleSlot {
                     dimension: ManifestCurrentnessDimension::StrategyConfigHash,
-                    status: ManifestCurrentnessRuleStatus::Deferred,
-                },
-                ManifestCurrentnessRuleSlot {
-                    dimension: ManifestCurrentnessDimension::CatalogHash,
                     status: ManifestCurrentnessRuleStatus::Deferred,
                 },
                 ManifestCurrentnessRuleSlot {
@@ -4415,7 +5512,6 @@ mod tests {
             "target_bolt_v2_ref",
             "resolved_nt_version",
             "strategy_config_hash",
-            "catalog_hash",
             "execution_model",
         ] {
             assert!(
@@ -4433,7 +5529,6 @@ mod tests {
         assert_eq!(parsed.target_bolt_v2_ref, manifest.target_bolt_v2_ref);
         assert_eq!(parsed.resolved_nt_version, manifest.resolved_nt_version);
         assert_eq!(parsed.strategy_config_hash, manifest.strategy_config_hash);
-        assert_eq!(parsed.catalog_hash, manifest.catalog_hash);
         assert_eq!(parsed.execution_model, manifest.execution_model);
     }
 
@@ -4455,16 +5550,6 @@ mod tests {
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::InvalidStrategySourceHash {
                 field: "strategy_config_hash",
-                ..
-            }
-        ));
-
-        let mut manifest = valid_manifest();
-        manifest.catalog_hash = "not-sha256".to_string();
-        assert!(matches!(
-            manifest.validate(&accepted_dataset()).unwrap_err(),
-            ManifestError::InvalidStrategySourceHash {
-                field: "catalog_hash",
                 ..
             }
         ));
@@ -4500,11 +5585,6 @@ mod tests {
                 "strategy.config_hash",
                 "BacktestingRunManifest.strategy_config_hash",
                 manifest.strategy_config_hash.as_str(),
-            ),
-            (
-                "catalog.hash",
-                "BacktestingRunManifest.catalog_hash",
-                manifest.catalog_hash.as_str(),
             ),
             (
                 "execution.model",

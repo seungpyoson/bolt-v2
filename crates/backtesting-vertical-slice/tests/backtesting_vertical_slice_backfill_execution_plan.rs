@@ -176,6 +176,7 @@ fn execution_plan_blocks_missing_work_budgets_before_payload_fetch() {
         "synthetic-run-spec-hash",
         &binding,
         BackfillExecutionWorkBudget {
+            max_decoded_bytes: u64::MAX,
             max_source_rows: 0,
             max_projected_row_groups: 0,
             max_wall_seconds: 0,
@@ -299,6 +300,7 @@ fn matching_run_binding() -> BackfillExecutionRunBinding {
 
 fn work_budget() -> BackfillExecutionWorkBudget {
     BackfillExecutionWorkBudget {
+        max_decoded_bytes: u64::MAX,
         max_source_rows: 128,
         max_projected_row_groups: 1,
         max_wall_seconds: 30,

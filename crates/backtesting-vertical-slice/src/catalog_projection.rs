@@ -14,8 +14,12 @@
 //! the projection represents the accepted data exactly.
 
 use std::{
+    cmp::Ordering,
     collections::HashSet,
+    fmt::{self, Debug, Write},
     fs,
+    io::ErrorKind,
+    mem::{size_of, size_of_val},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -42,19 +46,225 @@ use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
 use super::{
+    atomic_artifact_write::{
+        DirectoryStageOutcome, capture_owned_directory_manifest_guarded,
+        create_owned_temp_directory_guarded, guarded_publication_child_path,
+        open_pinned_regular_file, stage_directory_rename_create_only_guarded,
+        unique_temp_path_guarded, validate_existing_directory_manifest_identical_guarded,
+        validate_staged_directory_manifest_guarded,
+    },
     canonical_market_data::{
         CanonicalBarRow, CanonicalBarsTable, CanonicalFundingRateRow, CanonicalFundingRatesTable,
         CanonicalIndexPriceRow, CanonicalIndexPricesTable, CanonicalMarkPriceRow,
         CanonicalMarkPricesTable, CanonicalOrderBookDeltaRow, CanonicalOrderBookDeltasTable,
         CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction, DeltaSide,
+        bar_row_materialized_bytes, delta_row_materialized_bytes,
+        funding_rate_row_materialized_bytes, mark_price_row_materialized_bytes,
+        point_price_row_materialized_bytes, quote_row_materialized_bytes,
     },
-    canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
-    operator_work_budget::projected_row_group_count,
+    canonical_trades::{
+        CanonicalTradesTable, TradeAggressorSide, canonical_trade_row_materialized_bytes,
+        verify_canonical_rows_materialization, verify_parquet_file_trailer_preflight,
+        verify_single_parquet_metadata_budget,
+    },
+    operator_work_budget::{
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, cooperative_stable_sort_by,
+        cooperative_stable_sort_by_key, guarded_operation_outcome, projected_row_group_count,
+    },
     source_proof::SourceProofFidelityClass,
 };
 
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
+
+// Logical catalog v1 orders display-form keys lexicographically. Measure the
+// actual keys once, reserve two bounded buffers, and reuse them for every sort
+// comparison instead of allocating O(n log n) temporary Strings.
+#[derive(Default)]
+struct DisplayLengthCounter {
+    bytes: usize,
+}
+
+impl Write for DisplayLengthCounter {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.bytes = self.bytes.checked_add(value.len()).ok_or(fmt::Error)?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct DisplayLengthMeasure {
+    max_bytes: usize,
+}
+
+impl DisplayLengthMeasure {
+    fn observe<T: fmt::Display>(&mut self, value: &T) -> Result<()> {
+        let mut counter = DisplayLengthCounter::default();
+        write!(&mut counter, "{value}").map_err(|_| {
+            anyhow::anyhow!("logical-v1 display key length overflow or formatting failure")
+        })?;
+        self.max_bytes = self.max_bytes.max(counter.bytes);
+        Ok(())
+    }
+}
+
+struct ReusableDisplayBuffer {
+    value: String,
+}
+
+impl ReusableDisplayBuffer {
+    fn with_capacity(capacity: usize) -> Result<Self> {
+        let mut value = String::new();
+        value
+            .try_reserve_exact(capacity)
+            .context("reserve logical-v1 display-sort scratch buffer")?;
+        Ok(Self { value })
+    }
+
+    fn clear(&mut self) {
+        self.value.clear();
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        self.value.as_bytes()
+    }
+
+    fn capacity(&self) -> usize {
+        self.value.capacity()
+    }
+}
+
+impl Write for ReusableDisplayBuffer {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let end = self
+            .value
+            .len()
+            .checked_add(value.len())
+            .ok_or(fmt::Error)?;
+        if end > self.value.capacity() {
+            return Err(fmt::Error);
+        }
+        self.value.push_str(value);
+        Ok(())
+    }
+}
+
+struct DisplaySortScratch {
+    left: ReusableDisplayBuffer,
+    right: ReusableDisplayBuffer,
+    formatting_failed: bool,
+}
+
+impl DisplaySortScratch {
+    fn new_guarded(
+        max_display_bytes: usize,
+        row_count: usize,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Self> {
+        let allocation_limit = work_budget
+            .decoded_byte_limit()
+            .map_or(usize::MAX, |limit| {
+                usize::try_from(limit).unwrap_or(usize::MAX)
+            });
+        ensure!(
+            max_display_bytes <= allocation_limit,
+            "logical-v1 display-sort scratch request {max_display_bytes} exceeds max_decoded_bytes {allocation_limit}"
+        );
+        let metadata_bytes = row_count
+            .checked_mul(size_of::<usize>())
+            .context("logical-v1 stable-sort metadata byte count overflow")?;
+        let scratch_control_bytes = size_of::<DisplaySortScratch>();
+        let prospective_bytes = max_display_bytes
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(scratch_control_bytes))
+            .and_then(|bytes| bytes.checked_add(metadata_bytes))
+            .context("logical-v1 display-sort prospective byte count overflow")?;
+        work_budget.verify_decoded_bytes(
+            u64::try_from(prospective_bytes)
+                .context("logical-v1 display-sort prospective bytes do not fit u64")?,
+            stage,
+        )?;
+        work_budget.check_deadline(stage)?;
+
+        let left = ReusableDisplayBuffer::with_capacity(max_display_bytes)?;
+        let right = ReusableDisplayBuffer::with_capacity(max_display_bytes)?;
+        ensure!(
+            left.capacity() <= allocation_limit && right.capacity() <= allocation_limit,
+            "logical-v1 actual display-sort scratch allocation exceeds max_decoded_bytes {allocation_limit}"
+        );
+        let actual_bytes = left
+            .capacity()
+            .checked_add(right.capacity())
+            .and_then(|bytes| bytes.checked_add(scratch_control_bytes))
+            .and_then(|bytes| bytes.checked_add(metadata_bytes))
+            .context("logical-v1 display-sort actual byte count overflow")?;
+        work_budget.verify_decoded_bytes(
+            u64::try_from(actual_bytes)
+                .context("logical-v1 display-sort actual bytes do not fit u64")?,
+            stage,
+        )?;
+        work_budget.check_deadline(stage)?;
+        Ok(Self {
+            left,
+            right,
+            formatting_failed: false,
+        })
+    }
+
+    fn compare<T: fmt::Display>(&mut self, left: &T, right: &T) -> Ordering {
+        if self.formatting_failed {
+            return Ordering::Equal;
+        }
+        self.left.clear();
+        self.right.clear();
+        if write!(&mut self.left, "{left}").is_err() || write!(&mut self.right, "{right}").is_err()
+        {
+            self.formatting_failed = true;
+            return Ordering::Equal;
+        }
+        self.left.as_bytes().cmp(self.right.as_bytes())
+    }
+
+    fn ensure_succeeded(&self, key_label: &str) -> Result<()> {
+        ensure!(
+            !self.formatting_failed,
+            "{key_label} display formatting exceeded its measured logical-v1 sort scratch"
+        );
+        Ok(())
+    }
+}
+
+fn cooperative_stable_sort_by_display_guarded<T>(
+    values: &mut Vec<T>,
+    mut measure_keys: impl FnMut(&T, &mut DisplayLengthMeasure) -> Result<()>,
+    mut compare: impl FnMut(&T, &T, &mut DisplaySortScratch) -> Ordering,
+    key_label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    work_budget.check_deadline(stage)?;
+    if values.len() < 2 {
+        return Ok(());
+    }
+    let mut lengths = DisplayLengthMeasure::default();
+    for value in values.iter() {
+        work_budget.check_deadline(stage)?;
+        measure_keys(value, &mut lengths)?;
+        work_budget.check_deadline(stage)?;
+    }
+    let max_display_bytes = lengths.max_bytes;
+    let mut scratch =
+        DisplaySortScratch::new_guarded(max_display_bytes, values.len(), work_budget, stage)?;
+    cooperative_stable_sort_by(
+        values,
+        |left, right| compare(left, right, &mut scratch),
+        work_budget,
+        stage,
+    )?;
+    scratch.ensure_succeeded(key_label)?;
+    work_budget.check_deadline(stage)
+}
 
 /// NautilusTrader data type written for the order-book-delta projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
@@ -101,6 +311,45 @@ pub(crate) fn projected_nt_market_data_row_groups(
     projected_row_group_count(table_rows, nt_catalog_max_row_group_size()?)
 }
 
+fn guarded_catalog_operation<T>(
+    work_budget: &OperatorWorkBudgetGuard,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    // NT catalog queries/writes are opaque synchronous units: these fences
+    // classify an over-deadline return correctly, but do not claim mid-call
+    // preemption. Code-owned projection/hash/equality loops below additionally
+    // observe the deadline at their natural row boundaries.
+    guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+        operation,
+    )?
+}
+
+fn collect_projected_rows_guarded<R, T>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    row_materialized_bytes: impl Fn(&R) -> Result<usize>,
+    mut project: impl FnMut(&R) -> Result<T>,
+) -> Result<Vec<T>> {
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+        row_materialized_bytes,
+    )?;
+    let mut projected = Vec::new();
+    projected
+        .try_reserve_exact(rows.len())
+        .context("reserve projected catalog rows")?;
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        projected.push(project(row)?);
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    }
+    Ok(projected)
+}
+
 /// Actual Parquet metadata totals for NT market-data files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NtMarketDataParquetMetadata {
@@ -108,93 +357,376 @@ pub(crate) struct NtMarketDataParquetMetadata {
     pub row_groups: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NtCatalogParquetFilePreflight {
+    pub(crate) relative_path: PathBuf,
+    pub(crate) file_bytes: u64,
+    pub(crate) footer_metadata_bytes: u64,
+    pub(crate) rows: u64,
+    pub(crate) row_groups: u64,
+    pub(crate) uncompressed_bytes: u64,
+    pub(crate) is_instrument_metadata: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NtCatalogPreflightSummary {
+    pub(crate) files: Vec<NtCatalogParquetFilePreflight>,
+    pub(crate) market_data: NtMarketDataParquetMetadata,
+    pub(crate) total_file_bytes: u64,
+    pub(crate) total_footer_metadata_bytes: u64,
+    pub(crate) total_rows: u64,
+    pub(crate) total_row_groups: u64,
+    pub(crate) total_uncompressed_bytes: u64,
+    pub(crate) total_inventory_bytes: u64,
+    pub(crate) total_accounted_bytes: u64,
+}
+
 /// Count actual NT market-data Parquet rows and row groups, excluding only the
 /// exact `data/instruments/**` subtree.
 pub(crate) fn actual_nt_market_data_metadata(
     catalog_root: &Path,
 ) -> Result<NtMarketDataParquetMetadata> {
-    let mut files = Vec::new();
-    collect_market_data_parquet_files(catalog_root, catalog_root, &mut files)?;
-    files.sort();
-    files.into_iter().try_fold(
-        NtMarketDataParquetMetadata {
+    actual_nt_market_data_metadata_guarded(catalog_root, &OperatorWorkBudgetGuard::unbounded())
+}
+
+pub(crate) fn actual_nt_market_data_metadata_guarded(
+    catalog_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<NtMarketDataParquetMetadata> {
+    Ok(preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?
+    .market_data)
+}
+
+pub(crate) fn preflight_nt_catalog_parquet_guarded(
+    catalog_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<NtCatalogPreflightSummary> {
+    let root_metadata_outcome =
+        guarded_operation_outcome(work_budget, stage, || fs::symlink_metadata(catalog_root))?;
+    let root_metadata = match root_metadata_outcome {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(NtCatalogPreflightSummary {
+                files: Vec::new(),
+                market_data: NtMarketDataParquetMetadata {
+                    rows: 0,
+                    row_groups: 0,
+                },
+                total_file_bytes: 0,
+                total_footer_metadata_bytes: 0,
+                total_rows: 0,
+                total_row_groups: 0,
+                total_uncompressed_bytes: 0,
+                total_inventory_bytes: 0,
+                total_accounted_bytes: 0,
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("lstat projected catalog root {}", catalog_root.display())
+            });
+        }
+    };
+    ensure!(
+        root_metadata.file_type().is_dir(),
+        "projected catalog root {} must be a directory, not a symlink or non-directory",
+        catalog_root.display()
+    );
+    let mut summary = NtCatalogPreflightSummary {
+        files: Vec::new(),
+        market_data: NtMarketDataParquetMetadata {
             rows: 0,
             row_groups: 0,
         },
-        |total, path| {
-            let file = fs::File::open(&path)
-                .with_context(|| format!("open projected Parquet metadata {}", path.display()))?;
-            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-                .with_context(|| format!("read projected Parquet metadata {}", path.display()))?;
-            let row_groups = u64::try_from(reader.metadata().num_row_groups())
-                .context("projected Parquet row-group count does not fit u64")?;
-            let rows =
-                reader
-                    .metadata()
-                    .row_groups()
-                    .iter()
-                    .try_fold(0_u64, |rows, row_group| {
-                        let row_group_rows =
-                            u64::try_from(row_group.num_rows()).with_context(|| {
-                                format!(
-                                    "negative projected Parquet row count in {}",
-                                    path.display()
-                                )
-                            })?;
-                        rows.checked_add(row_group_rows).with_context(|| {
-                            format!("projected Parquet row count overflow in {}", path.display())
-                        })
-                    })?;
-            Ok(NtMarketDataParquetMetadata {
-                rows: total.rows.checked_add(rows).with_context(|| {
-                    format!("actual projected row count overflow at {}", path.display())
-                })?,
-                row_groups: total.row_groups.checked_add(row_groups).with_context(|| {
-                    format!(
-                        "actual projected row-group count overflow at {}",
-                        path.display()
-                    )
-                })?,
-            })
-        },
-    )
+        total_file_bytes: 0,
+        total_footer_metadata_bytes: 0,
+        total_rows: 0,
+        total_row_groups: 0,
+        total_uncompressed_bytes: 0,
+        total_inventory_bytes: 0,
+        total_accounted_bytes: 0,
+    };
+    accumulate_catalog_parquet_preflight_guarded(
+        catalog_root,
+        catalog_root,
+        &mut summary,
+        work_budget,
+        stage,
+    )?;
+    verify_catalog_preflight_totals(&summary, work_budget, stage)?;
+    Ok(summary)
 }
 
-fn collect_market_data_parquet_files(
+fn accumulate_catalog_parquet_preflight_guarded(
     catalog_root: &Path,
     directory: &Path,
-    files: &mut Vec<PathBuf>,
+    summary: &mut NtCatalogPreflightSummary,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
 ) -> Result<()> {
-    if !directory.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(directory)
-        .with_context(|| format!("read projected catalog directory {}", directory.display()))?
-    {
-        let entry = entry.with_context(|| {
-            format!("read projected catalog entry under {}", directory.display())
-        })?;
+    let directory_metadata = guarded_operation_outcome(work_budget, stage, || {
+        fs::symlink_metadata(directory)
+            .with_context(|| format!("lstat projected catalog directory {}", directory.display()))
+    })??;
+    ensure!(
+        directory_metadata.file_type().is_dir(),
+        "projected catalog directory {} must remain a directory, not a symlink or non-directory",
+        directory.display()
+    );
+    let mut entries = guarded_operation_outcome(work_budget, stage, || {
+        fs::read_dir(directory)
+            .with_context(|| format!("read projected catalog directory {}", directory.display()))
+    })??;
+    loop {
+        let entry = guarded_operation_outcome(work_budget, stage, || {
+            entries.next().transpose().with_context(|| {
+                format!("read projected catalog entry under {}", directory.display())
+            })
+        })??;
+        let Some(entry) = entry else { break };
         let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("read projected catalog file type {}", path.display()))?;
+        let path_metadata = guarded_operation_outcome(work_budget, stage, || {
+            fs::symlink_metadata(&path)
+                .with_context(|| format!("lstat projected catalog entry {}", path.display()))
+        })??;
+        let file_type = path_metadata.file_type();
+        ensure!(
+            !file_type.is_symlink(),
+            "projected catalog entry {} must not be a symlink",
+            path.display()
+        );
         if file_type.is_dir() {
-            let relative = path.strip_prefix(catalog_root).with_context(|| {
-                format!("derive projected catalog relative path {}", path.display())
-            })?;
-            if relative == Path::new("data").join("instruments") {
-                continue;
-            }
-            collect_market_data_parquet_files(catalog_root, &path, files)?;
-        } else if file_type.is_file()
-            && path
-                .extension()
-                .is_some_and(|extension| extension == "parquet")
-        {
-            files.push(path);
+            accumulate_catalog_parquet_preflight_guarded(
+                catalog_root,
+                &path,
+                summary,
+                work_budget,
+                stage,
+            )?;
+            continue;
         }
+        ensure!(
+            file_type.is_file(),
+            "projected catalog entry {} must be a regular file or directory",
+            path.display()
+        );
+        if !path
+            .extension()
+            .is_some_and(|extension| extension == "parquet")
+        {
+            continue;
+        }
+        preflight_one_catalog_parquet_guarded(catalog_root, &path, summary, work_budget, stage)?;
     }
+    let directory_metadata_after = guarded_operation_outcome(work_budget, stage, || {
+        fs::symlink_metadata(directory).with_context(|| {
+            format!(
+                "re-lstat projected catalog directory {} after traversal",
+                directory.display()
+            )
+        })
+    })??;
+    ensure!(
+        directory_metadata_after.file_type().is_dir(),
+        "projected catalog directory {} changed type during traversal",
+        directory.display()
+    );
     Ok(())
+}
+
+fn preflight_one_catalog_parquet_guarded(
+    catalog_root: &Path,
+    path: &Path,
+    summary: &mut NtCatalogPreflightSummary,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let next_file_count = summary
+        .files
+        .len()
+        .checked_add(1)
+        .context("catalog Parquet file count overflow")?;
+    work_budget
+        .verify_actual_row_groups(
+            u64::try_from(next_file_count).context("catalog Parquet file count does not fit u64")?,
+            stage,
+        )
+        .with_context(|| {
+            format!(
+                "catalog Parquet file count actual {next_file_count} exceeds the configured row-group-derived file cap"
+            )
+        })?;
+    let relative_path = path
+        .strip_prefix(catalog_root)
+        .with_context(|| format!("derive projected catalog relative path {}", path.display()))?;
+    let inventory_bytes = size_of::<NtCatalogParquetFilePreflight>()
+        .checked_add(relative_path.as_os_str().len())
+        .context("catalog Parquet inventory record byte size overflow")?;
+    let inventory_bytes_u64 =
+        u64::try_from(inventory_bytes).context("catalog inventory bytes do not fit u64")?;
+    let allocation_limit = work_budget
+        .decoded_byte_limit()
+        .map_or(usize::MAX, |limit| {
+            usize::try_from(limit).unwrap_or(usize::MAX)
+        });
+    ensure!(
+        inventory_bytes <= allocation_limit,
+        "catalog Parquet inventory record {} requires {inventory_bytes} bytes, exceeding max_decoded_bytes {allocation_limit}",
+        relative_path.display()
+    );
+    let (mut file, identity) = guarded_operation_outcome(work_budget, stage, || {
+        open_pinned_regular_file(path)
+            .with_context(|| format!("pin projected Parquet file {}", path.display()))
+    })??;
+    let trailer = verify_parquet_file_trailer_preflight(&mut file, path, work_budget, stage)?;
+    ensure!(
+        trailer.file_bytes == identity.byte_len,
+        "projected Parquet file {} trailer preflight length {} disagrees with pinned length {}",
+        path.display(),
+        trailer.file_bytes,
+        identity.byte_len
+    );
+    let accounted_before_metadata = summary
+        .total_accounted_bytes
+        .checked_add(trailer.file_bytes)
+        .and_then(|total| total.checked_add(trailer.footer_metadata_bytes))
+        .and_then(|total| total.checked_add(inventory_bytes_u64))
+        .context("catalog Parquet pre-builder accounted byte total overflow")?;
+    work_budget.verify_decoded_bytes(accounted_before_metadata, stage)?;
+    let builder = guarded_operation_outcome(work_budget, stage, || {
+        ParquetRecordBatchReaderBuilder::try_new(file)
+            .with_context(|| format!("read projected Parquet metadata {}", path.display()))
+    })??;
+    let metadata = verify_single_parquet_metadata_budget(builder.metadata(), work_budget, stage)?;
+    ensure!(
+        metadata.row_groups > 0,
+        "projected Parquet file {} has zero row groups; every catalog file must consume at least one configured row-group/file-count unit",
+        path.display()
+    );
+    guarded_operation_outcome(work_budget, stage, || {
+        identity.revalidate_path(path).with_context(|| {
+            format!(
+                "revalidate projected Parquet path {} after metadata decode",
+                path.display()
+            )
+        })
+    })??;
+    accumulate_catalog_preflight_total(
+        &mut summary.total_file_bytes,
+        trailer.file_bytes,
+        "file bytes",
+        path,
+    )?;
+    accumulate_catalog_preflight_total(
+        &mut summary.total_footer_metadata_bytes,
+        trailer.footer_metadata_bytes,
+        "footer metadata bytes",
+        path,
+    )?;
+    accumulate_catalog_preflight_total(&mut summary.total_rows, metadata.rows, "rows", path)?;
+    accumulate_catalog_preflight_total(
+        &mut summary.total_row_groups,
+        metadata.row_groups,
+        "row groups",
+        path,
+    )?;
+    accumulate_catalog_preflight_total(
+        &mut summary.total_uncompressed_bytes,
+        metadata.uncompressed_bytes,
+        "uncompressed bytes",
+        path,
+    )?;
+    accumulate_catalog_preflight_total(
+        &mut summary.total_inventory_bytes,
+        inventory_bytes_u64,
+        "inventory bytes",
+        path,
+    )?;
+    summary.total_accounted_bytes = accounted_before_metadata
+        .checked_add(metadata.uncompressed_bytes)
+        .context("catalog Parquet post-metadata accounted byte total overflow")?;
+    work_budget.verify_decoded_bytes(summary.total_accounted_bytes, stage)?;
+    let is_instrument_metadata = relative_path.starts_with(Path::new("data").join("instruments"));
+    if !is_instrument_metadata {
+        accumulate_catalog_preflight_total(
+            &mut summary.market_data.rows,
+            metadata.rows,
+            "market-data rows",
+            path,
+        )?;
+        accumulate_catalog_preflight_total(
+            &mut summary.market_data.row_groups,
+            metadata.row_groups,
+            "market-data row groups",
+            path,
+        )?;
+    }
+    guarded_operation_outcome(work_budget, stage, || {
+        summary
+            .files
+            .try_reserve_exact(1)
+            .map_err(|error| anyhow::anyhow!("reserve catalog Parquet inventory record: {error}"))
+    })??;
+    let mut relative_path_buf = PathBuf::new();
+    relative_path_buf
+        .try_reserve(relative_path.as_os_str().len())
+        .context("reserve catalog Parquet relative path")?;
+    relative_path_buf.push(relative_path);
+    summary.files.push(NtCatalogParquetFilePreflight {
+        relative_path: relative_path_buf,
+        file_bytes: trailer.file_bytes,
+        footer_metadata_bytes: trailer.footer_metadata_bytes,
+        rows: metadata.rows,
+        row_groups: metadata.row_groups,
+        uncompressed_bytes: metadata.uncompressed_bytes,
+        is_instrument_metadata,
+    });
+    verify_catalog_preflight_totals(summary, work_budget, stage)
+}
+
+fn accumulate_catalog_preflight_total(
+    total: &mut u64,
+    value: u64,
+    label: &str,
+    path: &Path,
+) -> Result<()> {
+    *total = total.checked_add(value).with_context(|| {
+        format!(
+            "catalog Parquet {label} total overflow at {}",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn verify_catalog_preflight_totals(
+    summary: &NtCatalogPreflightSummary,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let recomputed_accounted_bytes = summary
+        .total_file_bytes
+        .checked_add(summary.total_footer_metadata_bytes)
+        .and_then(|total| total.checked_add(summary.total_uncompressed_bytes))
+        .and_then(|total| total.checked_add(summary.total_inventory_bytes))
+        .context("catalog Parquet recomputed accounted byte total overflow")?;
+    ensure!(
+        summary.total_accounted_bytes == recomputed_accounted_bytes,
+        "catalog Parquet accounted byte total {} disagrees with recomputed physical+footer+uncompressed+inventory total {recomputed_accounted_bytes}",
+        summary.total_accounted_bytes
+    );
+    work_budget.verify_source_rows(summary.total_rows, stage)?;
+    work_budget.verify_actual_row_groups(summary.total_row_groups, stage)?;
+    work_budget.verify_decoded_bytes(summary.total_footer_metadata_bytes, stage)?;
+    work_budget.verify_decoded_bytes(summary.total_uncompressed_bytes, stage)?;
+    work_budget.verify_decoded_bytes(summary.total_inventory_bytes, stage)?;
+    work_budget.verify_decoded_bytes(summary.total_accounted_bytes, stage)?;
+    work_budget.check_deadline(stage)
 }
 
 /// Accepted spot instrument metadata needed to build the NautilusTrader
@@ -940,14 +1472,32 @@ fn rescaled(value: &str, precision: u8) -> Result<String> {
 
 /// Maximum decimal scale across one canonical column, after normalization so
 /// trailing zeros do not count (mirrors `rescaled`'s normalize-before-check).
-fn max_normalized_scale<'a>(values: impl Iterator<Item = &'a str>, label: &str) -> Result<u32> {
+fn max_normalized_scale_guarded<'a>(
+    values: impl Iterator<Item = &'a str>,
+    label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<u32> {
     let mut max = 0u32;
+    let byte_limit = work_budget
+        .decoded_byte_limit()
+        .map_or(usize::MAX, |limit| {
+            usize::try_from(limit).unwrap_or(usize::MAX)
+        });
     for value in values {
-        let mut decimal =
-            Decimal::from_str(value).with_context(|| format!("{label} decimal {value:?}"))?;
-        decimal.normalize_assign();
-        max = max.max(decimal.scale());
+        ensure!(
+            value.len() <= byte_limit,
+            "{label} value requires {} bytes, exceeding max_decoded_bytes {byte_limit}",
+            value.len()
+        );
+        let scale = guarded_catalog_operation(work_budget, || {
+            let mut decimal =
+                Decimal::from_str(value).with_context(|| format!("{label} decimal {value:?}"))?;
+            decimal.normalize_assign();
+            Ok(decimal.scale())
+        })?;
+        max = max.max(scale);
     }
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     Ok(max)
 }
 
@@ -1100,17 +1650,21 @@ impl CanonicalPriceSizeView for CanonicalMarkPricesTable {
 /// Returns an error if a canonical value fails to parse, a widened increment
 /// cannot be represented by NautilusTrader, or the instrument kind does not
 /// support widening.
-fn widen_instrument_precision_for_data(
+fn widen_instrument_precision_for_data_guarded(
     mut instrument: InstrumentAny,
     table: &dyn CanonicalPriceSizeView,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<InstrumentAny> {
-    let data_price_scale = max_normalized_scale(table.price_values(), "price")?;
-    let data_size_scale = max_normalized_scale(table.size_values(), "size")?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    let data_price_scale =
+        max_normalized_scale_guarded(table.price_values(), "price", work_budget)?;
+    let data_size_scale = max_normalized_scale_guarded(table.size_values(), "size", work_budget)?;
     let price_scale = data_price_scale.max(u32::from(instrument.price_precision()));
     let size_scale = data_size_scale.max(u32::from(instrument.size_precision()));
     if price_scale == u32::from(instrument.price_precision())
         && size_scale == u32::from(instrument.size_precision())
     {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
         return Ok(instrument);
     }
     let price_increment = widened_price_increment(instrument.price_increment(), price_scale)?;
@@ -1145,6 +1699,7 @@ fn widen_instrument_precision_for_data(
             other.id()
         ),
     }
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     Ok(instrument)
 }
 
@@ -1159,13 +1714,22 @@ pub fn canonical_rows_to_trade_ticks<I: Instrument + ?Sized>(
     table: &CanonicalTradesTable,
     instrument: &I,
 ) -> Result<Vec<TradeTick>> {
+    canonical_rows_to_trade_ticks_guarded(table, instrument, &OperatorWorkBudgetGuard::unbounded())
+}
+
+fn canonical_rows_to_trade_ticks_guarded<I: Instrument + ?Sized>(
+    table: &CanonicalTradesTable,
+    instrument: &I,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<TradeTick>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
-    table
-        .rows
-        .iter()
-        .map(|row| {
+    collect_projected_rows_guarded(
+        &table.rows,
+        work_budget,
+        canonical_trade_row_materialized_bytes,
+        |row| {
             let price_str = rescaled(&row.price, price_precision)?;
             let price = Price::from_str(&price_str).map_err(|error| {
                 anyhow::anyhow!("invalid rescaled price {price_str:?}: {error}")
@@ -1192,8 +1756,8 @@ pub fn canonical_rows_to_trade_ticks<I: Instrument + ?Sized>(
                 ts_event,
                 ts_init,
             ))
-        })
-        .collect()
+        },
+    )
 }
 
 /// Project a canonical trades table into a NautilusTrader `ParquetDataCatalog`.
@@ -1212,11 +1776,34 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
-    table.validate()?;
-    let instrument = spec.build_instrument_any()?;
+    project_canonical_trades_to_catalog_guarded(
+        table,
+        spec,
+        catalog_root,
+        catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+/// Guarded counterpart of [`project_canonical_trades_to_catalog`].
+/// `authoritative_output_root` is the exact output boundary: the projector
+/// creates its private candidate as a same-filesystem sibling outside it.
+///
+/// # Errors
+///
+/// Returns an error on validation, conversion, budget expiry, or catalog I/O.
+pub fn project_canonical_trades_to_catalog_guarded<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalTradesTable,
+    spec: &S,
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjection> {
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
+    let instrument = guarded_catalog_operation(work_budget, || spec.build_instrument_any())?;
     // Venue instrument metadata can be coarser than the accepted archive's
     // actual prints; widen precision to the data before binding and writing.
-    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument = widen_instrument_precision_for_data_guarded(instrument, table, work_budget)?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -1227,26 +1814,36 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
         "instrument id {instrument_id} does not match canonical rows {}",
         row_instrument_id
     );
-    let ticks = canonical_rows_to_trade_ticks(table, &instrument)?;
+    let ticks = canonical_rows_to_trade_ticks_guarded(table, &instrument, work_budget)?;
     let trade_count = ticks.len();
 
-    ensure_clean_catalog_root(catalog_root)?;
-    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .write_instruments(vec![instrument])
-        .context("write instrument to catalog")?;
-    catalog
-        .write_to_parquet(&ticks, None, None, None)
-        .context("write trade ticks to catalog")?;
-
-    Ok(CatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
-        nt_instrument_id: instrument_id.to_string(),
-        data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
-        trade_count,
-        catalog_hash: logical_catalog_hash(catalog_root)?,
-        fidelity_class: table.fidelity_class,
-    })
+    with_clean_catalog_root_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+        |catalog, projected_root| {
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_instruments(vec![instrument])
+                    .context("write instrument to catalog")
+            })?;
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_to_parquet(&ticks, None, None, None)
+                    .context("write trade ticks to catalog")
+            })?;
+            let catalog_hash = logical_catalog_hash_guarded(projected_root, work_budget)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok(CatalogProjection {
+                catalog_root: catalog_root.to_path_buf(),
+                nt_instrument_id: instrument_id.to_string(),
+                data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+                trade_count,
+                catalog_hash,
+                fidelity_class: table.fidelity_class,
+            })
+        },
+    )
 }
 
 /// Prove the resolved NautilusTrader dependency can read the projected
@@ -1259,40 +1856,419 @@ pub fn read_back_trade_ticks(
     catalog_root: &Path,
     nt_instrument_id: &str,
 ) -> Result<Vec<TradeTick>> {
+    read_back_trade_ticks_guarded(
+        catalog_root,
+        nt_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn read_back_trade_ticks_guarded(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<TradeTick>> {
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     let instrument_ids = vec![nt_instrument_id.to_string()];
-    let files =
-        catalog_files_for_instruments::<TradeTick>(&catalog, catalog_root, &instrument_ids)?;
+    let files = catalog_files_for_instruments_guarded::<TradeTick>(
+        &catalog,
+        catalog_root,
+        &instrument_ids,
+        work_budget,
+    )?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
-        .query_typed_data::<TradeTick>(None, None, None, None, Some(files), false)
-        .context("query trade ticks from catalog")
+    guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_typed_data::<TradeTick>(None, None, None, None, Some(files), false)
+            .context("query trade ticks from catalog")
+    })
 }
 
-/// Fail closed on a dirty catalog root. NautilusTrader's `write_to_parquet`
-/// skips writing when a file for the same instrument/interval already exists,
-/// so projecting into a non-empty root could silently read back stale data
-/// under this run's source proof and a stale catalog hash. The caller owns
-/// the output lifecycle and must hand us a clean (absent or empty) root.
-///
-/// # Errors
-///
-/// Returns an error if the root exists and is non-empty, or cannot be read.
-fn ensure_clean_catalog_root(catalog_root: &Path) -> Result<()> {
-    if catalog_root.exists() {
-        let mut entries = fs::read_dir(catalog_root)
-            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+fn validate_catalog_publication_root_shape_guarded(
+    catalog_root: &Path,
+    require_data_root: bool,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    let metadata = guarded_catalog_operation(work_budget, || {
+        fs::symlink_metadata(catalog_root)
+            .with_context(|| format!("read catalog root metadata {}", catalog_root.display()))
+    })?;
+    ensure!(
+        metadata.file_type().is_dir(),
+        "catalog root {} is not a real directory",
+        catalog_root.display()
+    );
+    let mut entries = guarded_catalog_operation(work_budget, || {
+        fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))
+    })?;
+    let mut entry_count = 0usize;
+    loop {
+        let Some(entry) = guarded_catalog_operation(work_budget, || {
+            entries
+                .next()
+                .transpose()
+                .with_context(|| format!("read catalog root entry {}", catalog_root.display()))
+        })?
+        else {
+            break;
+        };
+        entry_count = entry_count
+            .checked_add(1)
+            .context("catalog publication root entry count overflow")?;
+        let entry_name = entry.file_name();
         ensure!(
-            entries.next().is_none(),
-            "catalog root {} is not empty; refusing to project into a dirty catalog",
-            catalog_root.display()
+            entry_count == 1 && entry_name.as_os_str() == std::ffi::OsStr::new("data"),
+            "catalog root {} contains an unexpected entry {:?}; only data/ is permitted",
+            catalog_root.display(),
+            entry_name
+        );
+        let entry_metadata = guarded_catalog_operation(work_budget, || {
+            fs::symlink_metadata(entry.path()).with_context(|| {
+                format!("read catalog data root metadata {}", entry.path().display())
+            })
+        })?;
+        ensure!(
+            entry_metadata.file_type().is_dir(),
+            "catalog data root {} is not a real directory",
+            entry.path().display()
         );
     }
-    fs::create_dir_all(catalog_root)
-        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    ensure!(
+        !require_data_root || entry_count == 1,
+        "catalog root {} is missing its committed data directory",
+        catalog_root.display()
+    );
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     Ok(())
+}
+
+fn with_clean_catalog_root_guarded<T>(
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    operation: impl FnOnce(&ParquetDataCatalog, &Path) -> Result<T>,
+) -> Result<T> {
+    let parent = catalog_root.parent().with_context(|| {
+        format!(
+            "catalog root {} has no parent directory",
+            catalog_root.display()
+        )
+    })?;
+    ensure!(
+        catalog_root == authoritative_output_root
+            || catalog_root.starts_with(authoritative_output_root),
+        "catalog root {} must be within authoritative output root {}",
+        catalog_root.display(),
+        authoritative_output_root.display()
+    );
+    guarded_catalog_operation(work_budget, || {
+        fs::create_dir_all(authoritative_output_root).with_context(|| {
+            format!(
+                "create authoritative output root {}",
+                authoritative_output_root.display()
+            )
+        })
+    })?;
+    guarded_catalog_operation(work_budget, || {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create catalog parent {}", parent.display()))
+    })?;
+    let (temp_root, retained_temp_path_bytes) = external_catalog_candidate_path_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+    )?;
+    let temp_capability = create_owned_temp_directory_guarded(
+        temp_root,
+        retained_temp_path_bytes,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )
+    .context("create identity-owned guarded catalog temp root")?;
+    let temp_root = temp_capability.path();
+    if let Err(error) = work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection) {
+        return Err(cleanup_owned_catalog_temp(temp_root, error));
+    }
+
+    let catalog = ParquetDataCatalog::new(temp_capability.path(), None, None, None, None);
+    let value = match operation(&catalog, temp_capability.path()) {
+        Ok(value) => value,
+        Err(error) => return Err(cleanup_owned_catalog_temp(temp_root, error)),
+    };
+
+    if let Err(error) = single_projected_data_root_guarded(temp_root, work_budget) {
+        return Err(cleanup_owned_catalog_temp(temp_root, error));
+    }
+    let manifest = match capture_owned_directory_manifest_guarded(
+        &temp_capability,
+        "data",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    ) {
+        Ok(manifest) => manifest,
+        Err(error) => return Err(cleanup_owned_catalog_temp(temp_root, error)),
+    };
+    let final_data_root = match guarded_publication_child_path(
+        catalog_root,
+        std::ffi::OsStr::new("data"),
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    ) {
+        Ok(path) => path,
+        Err(error) => return Err(cleanup_owned_catalog_temp(temp_root, error)),
+    };
+    match fs::create_dir(catalog_root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = guarded_catalog_operation(work_budget, || {
+                fs::symlink_metadata(catalog_root).with_context(|| {
+                    format!("inspect existing catalog root {}", catalog_root.display())
+                })
+            })?;
+            ensure!(
+                metadata.file_type().is_dir(),
+                "existing catalog root {} is not a real directory",
+                catalog_root.display()
+            );
+        }
+        Err(error) => {
+            return Err(cleanup_owned_catalog_temp(
+                temp_root,
+                anyhow::Error::new(error).context(format!(
+                    "create final catalog root {}",
+                    catalog_root.display()
+                )),
+            ));
+        }
+    }
+    if let Err(error) =
+        validate_catalog_publication_root_shape_guarded(catalog_root, false, work_budget)
+    {
+        return Err(cleanup_owned_catalog_temp(temp_root, error));
+    }
+
+    match stage_directory_rename_create_only_guarded(
+        &temp_capability,
+        &manifest,
+        &final_data_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    ) {
+        DirectoryStageOutcome::NotStaged(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists =>
+        {
+            validate_existing_directory_manifest_identical_guarded(
+                &manifest,
+                &final_data_root,
+                work_budget,
+                OperatorWorkBudgetStage::CatalogProjection,
+            )
+            .with_context(|| {
+                format!(
+                    "existing catalog data root {} differs from the deterministic retry",
+                    final_data_root.as_path().display()
+                )
+            })?;
+            validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)?;
+            Ok(finish_reconciled_catalog_publication(temp_root, value))
+        }
+        DirectoryStageOutcome::NotStaged(error) => Err(cleanup_owned_catalog_temp(
+            temp_root,
+            anyhow::Error::new(error).context(format!(
+                "create-only stage catalog data root to {}",
+                final_data_root.as_path().display()
+            )),
+        )),
+        DirectoryStageOutcome::Staged => {
+            validate_staged_directory_manifest_guarded(
+                &manifest,
+                &final_data_root,
+                work_budget,
+                OperatorWorkBudgetStage::CatalogProjection,
+            )
+            .with_context(|| {
+                format!(
+                    "catalog data root was staged at {} but exact validation failed; no reader authority was granted",
+                    final_data_root.as_path().display()
+                )
+            })?;
+            validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)?;
+            Ok(finish_committed_catalog_publication(temp_root, value))
+        }
+    }
+}
+
+fn external_catalog_candidate_path_guarded(
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<(PathBuf, u64)> {
+    let stage = OperatorWorkBudgetStage::CatalogProjection;
+    work_budget.check_deadline(stage)?;
+    let output_metadata = guarded_catalog_operation(work_budget, || {
+        fs::symlink_metadata(authoritative_output_root).with_context(|| {
+            format!(
+                "inspect authoritative output root {}",
+                authoritative_output_root.display()
+            )
+        })
+    })?;
+    ensure!(
+        output_metadata.file_type().is_dir(),
+        "authoritative output root {} is not a real directory",
+        authoritative_output_root.display()
+    );
+    let canonical_output_root = guarded_catalog_operation(work_budget, || {
+        authoritative_output_root.canonicalize().with_context(|| {
+            format!(
+                "canonicalize authoritative output root {}",
+                authoritative_output_root.display()
+            )
+        })
+    })?;
+    let catalog_parent = catalog_root
+        .parent()
+        .context("catalog root has no parent directory")?;
+    let canonical_catalog_parent = guarded_catalog_operation(work_budget, || {
+        catalog_parent
+            .canonicalize()
+            .with_context(|| format!("canonicalize catalog parent {}", catalog_parent.display()))
+    })?;
+    let canonical_catalog_root = match guarded_catalog_operation(work_budget, || {
+        fs::symlink_metadata(catalog_root)
+            .with_context(|| format!("inspect catalog root {}", catalog_root.display()))
+    }) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.file_type().is_dir(),
+                "catalog root {} is not a real directory",
+                catalog_root.display()
+            );
+            guarded_catalog_operation(work_budget, || {
+                catalog_root.canonicalize().with_context(|| {
+                    format!("canonicalize catalog root {}", catalog_root.display())
+                })
+            })?
+        }
+        Err(error)
+            if error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            canonical_catalog_parent.join(
+                catalog_root
+                    .file_name()
+                    .context("catalog root has no final path component")?,
+            )
+        }
+        Err(error) => return Err(error),
+    };
+    ensure!(
+        canonical_catalog_root == canonical_output_root
+            || canonical_catalog_root.starts_with(&canonical_output_root),
+        "catalog root {} resolves outside authoritative output root {}",
+        catalog_root.display(),
+        authoritative_output_root.display()
+    );
+    let (candidate_root, retained_path_bytes) =
+        unique_temp_path_guarded(&canonical_output_root, work_budget, stage)?;
+    ensure!(
+        candidate_root.parent() == canonical_output_root.parent()
+            && !candidate_root.starts_with(&canonical_output_root),
+        "catalog candidate workspace {} must be a sibling outside authoritative output root {}",
+        candidate_root.display(),
+        canonical_output_root.display()
+    );
+    work_budget.check_deadline(stage)?;
+    Ok((candidate_root, retained_path_bytes))
+}
+
+fn finish_committed_catalog_publication<T>(temp_root: &Path, value: T) -> T {
+    // Reader authority exists only after the separately staged root passes its
+    // exact-set/hash validation. Keep the now-empty external workspace as an
+    // inert ownership receipt: pathname deletion could race with a foreign
+    // entry, but this residue can never enter the authoritative output seal.
+    let _ = temp_root;
+    value
+}
+
+fn finish_reconciled_catalog_publication<T>(temp_root: &Path, value: T) -> T {
+    // A create conflict retains the full candidate catalog even after exact
+    // content equality is proven. Pathname cleanup is unsafe because an
+    // attacker can replace a descendant between validation and deletion. This
+    // private workspace is outside the authoritative output, so it cannot
+    // enter the terminal exact-set seal. Its disk cost belongs to the
+    // configured lifecycle janitor (or an ephemeral worker volume); the first
+    // successful publication still moves `data/` out and retains only its
+    // empty ownership root.
+    let _ = temp_root;
+    value
+}
+
+fn single_projected_data_root_guarded(
+    temp_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<PathBuf> {
+    let mut entries = guarded_catalog_operation(work_budget, || {
+        fs::read_dir(temp_root)
+            .with_context(|| format!("read projected temp root {}", temp_root.display()))
+    })?;
+    let first = guarded_catalog_operation(work_budget, || {
+        entries
+            .next()
+            .transpose()
+            .with_context(|| format!("read projected temp entry under {}", temp_root.display()))
+    })?
+    .context("NT projection produced no top-level data directory")?;
+    let second = guarded_catalog_operation(work_budget, || {
+        entries.next().transpose().with_context(|| {
+            format!(
+                "read second projected temp entry under {}",
+                temp_root.display()
+            )
+        })
+    })?;
+    ensure!(
+        second.is_none(),
+        "NT projection produced more than one top-level catalog entry"
+    );
+    ensure!(
+        first.file_name() == "data",
+        "NT projection produced unexpected top-level entry {:?}; expected data",
+        first.file_name()
+    );
+    let file_type = guarded_catalog_operation(work_budget, || {
+        first
+            .file_type()
+            .with_context(|| format!("read projected data root type {}", first.path().display()))
+    })?;
+    ensure!(
+        file_type.is_dir(),
+        "NT projected data root {} is not a directory",
+        first.path().display()
+    );
+    Ok(first.path())
+}
+
+fn cleanup_owned_catalog_temp(temp_root: &Path, error: anyhow::Error) -> anyhow::Error {
+    // Preserve failed external workspaces instead of recursively deleting by
+    // path. They cannot block a retry or enter the output seal, and the
+    // retained path is the exact forensic/lifecycle-cleanup target without a
+    // symlink/replacement-tree race.
+    error.context(format!(
+        "retained external catalog candidate workspace {} after failed projection",
+        temp_root.display()
+    ))
 }
 
 /// Convert canonical order-book-delta rows into NautilusTrader `OrderBookDelta`s
@@ -1312,16 +2288,29 @@ pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
     table: &CanonicalOrderBookDeltasTable,
     instrument: &I,
 ) -> Result<Vec<OrderBookDelta>> {
+    canonical_rows_to_order_book_deltas_guarded(
+        table,
+        instrument,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+fn canonical_rows_to_order_book_deltas_guarded<I: Instrument + ?Sized>(
+    table: &CanonicalOrderBookDeltasTable,
+    instrument: &I,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<OrderBookDelta>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
-    table
-        .rows
-        .iter()
-        .map(|row| {
+    collect_projected_rows_guarded(
+        &table.rows,
+        work_budget,
+        delta_row_materialized_bytes,
+        |row| {
             canonical_row_to_order_book_delta(instrument_id, row, price_precision, size_precision)
-        })
-        .collect()
+        },
+    )
 }
 
 fn canonical_row_to_order_book_delta(
@@ -1395,11 +2384,34 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
     spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
-    table.validate()?;
-    let instrument = spec.build_instrument_any()?;
+    project_canonical_order_book_deltas_to_catalog_guarded(
+        table,
+        spec,
+        catalog_root,
+        catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+/// Guarded counterpart of [`project_canonical_order_book_deltas_to_catalog`].
+///
+/// # Errors
+///
+/// Returns an error on validation, conversion, budget expiry, or catalog I/O.
+pub fn project_canonical_order_book_deltas_to_catalog_guarded<
+    S: CatalogInstrumentSpecSource + ?Sized,
+>(
+    table: &CanonicalOrderBookDeltasTable,
+    spec: &S,
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjection> {
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
+    let instrument = guarded_catalog_operation(work_budget, || spec.build_instrument_any())?;
     // Venue instrument metadata can be coarser than the accepted archive's
     // actual prints; widen precision to the data before binding and writing.
-    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument = widen_instrument_precision_for_data_guarded(instrument, table, work_budget)?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -1410,26 +2422,36 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
         "instrument id {instrument_id} does not match canonical rows {}",
         row_instrument_id
     );
-    let deltas = canonical_rows_to_order_book_deltas(table, &instrument)?;
+    let deltas = canonical_rows_to_order_book_deltas_guarded(table, &instrument, work_budget)?;
     let delta_count = deltas.len();
 
-    ensure_clean_catalog_root(catalog_root)?;
-    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .write_instruments(vec![instrument])
-        .context("write instrument to catalog")?;
-    catalog
-        .write_to_parquet(&deltas, None, None, None)
-        .context("write order book deltas to catalog")?;
-
-    Ok(CatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
-        nt_instrument_id: instrument_id.to_string(),
-        data_type: NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
-        trade_count: delta_count,
-        catalog_hash: logical_catalog_hash(catalog_root)?,
-        fidelity_class: table.fidelity_class,
-    })
+    with_clean_catalog_root_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+        |catalog, projected_root| {
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_instruments(vec![instrument])
+                    .context("write instrument to catalog")
+            })?;
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_to_parquet(&deltas, None, None, None)
+                    .context("write order book deltas to catalog")
+            })?;
+            let catalog_hash = logical_catalog_hash_guarded(projected_root, work_budget)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok(CatalogProjection {
+                catalog_root: catalog_root.to_path_buf(),
+                nt_instrument_id: instrument_id.to_string(),
+                data_type: NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+                trade_count: delta_count,
+                catalog_hash,
+                fidelity_class: table.fidelity_class,
+            })
+        },
+    )
 }
 
 /// Prove the resolved NautilusTrader dependency can read the projected
@@ -1442,16 +2464,39 @@ pub fn read_back_order_book_deltas(
     catalog_root: &Path,
     nt_instrument_id: &str,
 ) -> Result<Vec<OrderBookDelta>> {
+    read_back_order_book_deltas_guarded(
+        catalog_root,
+        nt_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn read_back_order_book_deltas_guarded(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<OrderBookDelta>> {
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     let instrument_ids = vec![nt_instrument_id.to_string()];
-    let files =
-        catalog_files_for_instruments::<OrderBookDelta>(&catalog, catalog_root, &instrument_ids)?;
+    let files = catalog_files_for_instruments_guarded::<OrderBookDelta>(
+        &catalog,
+        catalog_root,
+        &instrument_ids,
+        work_budget,
+    )?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
-        .query_typed_data::<OrderBookDelta>(None, None, None, None, Some(files), false)
-        .context("query order book deltas from catalog")
+    guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_typed_data::<OrderBookDelta>(None, None, None, None, Some(files), false)
+            .context("query order book deltas from catalog")
+    })
 }
 
 /// Convert canonical top-of-book quote rows into NautilusTrader `QuoteTick`s at
@@ -1472,14 +2517,23 @@ pub fn canonical_rows_to_quote_ticks<I: Instrument + ?Sized>(
     table: &CanonicalQuotesTable,
     instrument: &I,
 ) -> Result<Vec<QuoteTick>> {
+    canonical_rows_to_quote_ticks_guarded(table, instrument, &OperatorWorkBudgetGuard::unbounded())
+}
+
+fn canonical_rows_to_quote_ticks_guarded<I: Instrument + ?Sized>(
+    table: &CanonicalQuotesTable,
+    instrument: &I,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<QuoteTick>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
-    table
-        .rows
-        .iter()
-        .map(|row| canonical_row_to_quote_tick(instrument_id, row, price_precision, size_precision))
-        .collect()
+    collect_projected_rows_guarded(
+        &table.rows,
+        work_budget,
+        quote_row_materialized_bytes,
+        |row| canonical_row_to_quote_tick(instrument_id, row, price_precision, size_precision),
+    )
 }
 
 fn canonical_row_to_quote_tick(
@@ -1543,11 +2597,32 @@ pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
-    table.validate()?;
-    let instrument = spec.build_instrument_any()?;
+    project_canonical_quotes_to_catalog_guarded(
+        table,
+        spec,
+        catalog_root,
+        catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+/// Guarded counterpart of [`project_canonical_quotes_to_catalog`].
+///
+/// # Errors
+///
+/// Returns an error on validation, conversion, budget expiry, or catalog I/O.
+pub fn project_canonical_quotes_to_catalog_guarded<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalQuotesTable,
+    spec: &S,
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjection> {
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
+    let instrument = guarded_catalog_operation(work_budget, || spec.build_instrument_any())?;
     // Venue instrument metadata can be coarser than the accepted archive's
     // actual prints; widen precision to the data before binding and writing.
-    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument = widen_instrument_precision_for_data_guarded(instrument, table, work_budget)?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -1558,26 +2633,36 @@ pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
         "instrument id {instrument_id} does not match canonical rows {}",
         row_instrument_id
     );
-    let ticks = canonical_rows_to_quote_ticks(table, &instrument)?;
+    let ticks = canonical_rows_to_quote_ticks_guarded(table, &instrument, work_budget)?;
     let quote_count = ticks.len();
 
-    ensure_clean_catalog_root(catalog_root)?;
-    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .write_instruments(vec![instrument])
-        .context("write instrument to catalog")?;
-    catalog
-        .write_to_parquet(&ticks, None, None, None)
-        .context("write quote ticks to catalog")?;
-
-    Ok(CatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
-        nt_instrument_id: instrument_id.to_string(),
-        data_type: NT_DATA_TYPE_QUOTE_TICK.to_string(),
-        trade_count: quote_count,
-        catalog_hash: logical_catalog_hash(catalog_root)?,
-        fidelity_class: table.fidelity_class,
-    })
+    with_clean_catalog_root_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+        |catalog, projected_root| {
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_instruments(vec![instrument])
+                    .context("write instrument to catalog")
+            })?;
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_to_parquet(&ticks, None, None, None)
+                    .context("write quote ticks to catalog")
+            })?;
+            let catalog_hash = logical_catalog_hash_guarded(projected_root, work_budget)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok(CatalogProjection {
+                catalog_root: catalog_root.to_path_buf(),
+                nt_instrument_id: instrument_id.to_string(),
+                data_type: NT_DATA_TYPE_QUOTE_TICK.to_string(),
+                trade_count: quote_count,
+                catalog_hash,
+                fidelity_class: table.fidelity_class,
+            })
+        },
+    )
 }
 
 /// Prove the resolved NautilusTrader dependency can read the projected
@@ -1587,16 +2672,39 @@ pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
 ///
 /// Returns an error if the catalog query fails.
 pub fn read_back_quotes(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec<QuoteTick>> {
+    read_back_quotes_guarded(
+        catalog_root,
+        nt_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn read_back_quotes_guarded(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<QuoteTick>> {
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     let instrument_ids = vec![nt_instrument_id.to_string()];
-    let files =
-        catalog_files_for_instruments::<QuoteTick>(&catalog, catalog_root, &instrument_ids)?;
+    let files = catalog_files_for_instruments_guarded::<QuoteTick>(
+        &catalog,
+        catalog_root,
+        &instrument_ids,
+        work_budget,
+    )?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
-        .query_typed_data::<QuoteTick>(None, None, None, None, Some(files), false)
-        .context("query quote ticks from catalog")
+    guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_typed_data::<QuoteTick>(None, None, None, None, Some(files), false)
+            .context("query quote ticks from catalog")
+    })
 }
 
 /// Convert canonical index-price rows into NautilusTrader `IndexPriceUpdate`s at
@@ -1616,13 +2724,26 @@ pub fn canonical_rows_to_index_price_updates<I: Instrument + ?Sized>(
     table: &CanonicalIndexPricesTable,
     instrument: &I,
 ) -> Result<Vec<IndexPriceUpdate>> {
+    canonical_rows_to_index_price_updates_guarded(
+        table,
+        instrument,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+fn canonical_rows_to_index_price_updates_guarded<I: Instrument + ?Sized>(
+    table: &CanonicalIndexPricesTable,
+    instrument: &I,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<IndexPriceUpdate>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
-    table
-        .rows
-        .iter()
-        .map(|row| canonical_row_to_index_price_update(instrument_id, row, price_precision))
-        .collect()
+    collect_projected_rows_guarded(
+        &table.rows,
+        work_budget,
+        point_price_row_materialized_bytes,
+        |row| canonical_row_to_index_price_update(instrument_id, row, price_precision),
+    )
 }
 
 fn canonical_row_to_index_price_update(
@@ -1662,11 +2783,32 @@ pub fn project_canonical_index_to_catalog<S: CatalogInstrumentSpecSource + ?Size
     spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
-    table.validate()?;
-    let instrument = spec.build_instrument_any()?;
+    project_canonical_index_to_catalog_guarded(
+        table,
+        spec,
+        catalog_root,
+        catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+/// Guarded counterpart of [`project_canonical_index_to_catalog`].
+///
+/// # Errors
+///
+/// Returns an error on validation, conversion, budget expiry, or catalog I/O.
+pub fn project_canonical_index_to_catalog_guarded<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalIndexPricesTable,
+    spec: &S,
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjection> {
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
+    let instrument = guarded_catalog_operation(work_budget, || spec.build_instrument_any())?;
     // Venue instrument metadata can be coarser than the accepted archive's
     // actual prints; widen precision to the data before binding and writing.
-    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument = widen_instrument_precision_for_data_guarded(instrument, table, work_budget)?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -1677,26 +2819,36 @@ pub fn project_canonical_index_to_catalog<S: CatalogInstrumentSpecSource + ?Size
         "instrument id {instrument_id} does not match canonical rows {}",
         row_instrument_id
     );
-    let updates = canonical_rows_to_index_price_updates(table, &instrument)?;
+    let updates = canonical_rows_to_index_price_updates_guarded(table, &instrument, work_budget)?;
     let count = updates.len();
 
-    ensure_clean_catalog_root(catalog_root)?;
-    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .write_instruments(vec![instrument])
-        .context("write instrument to catalog")?;
-    catalog
-        .write_to_parquet(&updates, None, None, None)
-        .context("write index prices to catalog")?;
-
-    Ok(CatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
-        nt_instrument_id: instrument_id.to_string(),
-        data_type: NT_DATA_TYPE_INDEX_PRICE_UPDATE.to_string(),
-        trade_count: count,
-        catalog_hash: logical_catalog_hash(catalog_root)?,
-        fidelity_class: table.fidelity_class,
-    })
+    with_clean_catalog_root_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+        |catalog, projected_root| {
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_instruments(vec![instrument])
+                    .context("write instrument to catalog")
+            })?;
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_to_parquet(&updates, None, None, None)
+                    .context("write index prices to catalog")
+            })?;
+            let catalog_hash = logical_catalog_hash_guarded(projected_root, work_budget)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok(CatalogProjection {
+                catalog_root: catalog_root.to_path_buf(),
+                nt_instrument_id: instrument_id.to_string(),
+                data_type: NT_DATA_TYPE_INDEX_PRICE_UPDATE.to_string(),
+                trade_count: count,
+                catalog_hash,
+                fidelity_class: table.fidelity_class,
+            })
+        },
+    )
 }
 
 /// Prove the resolved NautilusTrader dependency can read the projected
@@ -1713,24 +2865,57 @@ pub fn read_back_index(
     catalog_root: &Path,
     nt_instrument_id: &str,
 ) -> Result<Vec<IndexPriceUpdate>> {
+    read_back_index_guarded(
+        catalog_root,
+        nt_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn read_back_index_guarded(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<IndexPriceUpdate>> {
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     let instrument_ids = vec![nt_instrument_id.to_string()];
-    let files =
-        catalog_files_for_instruments::<IndexPriceUpdate>(&catalog, catalog_root, &instrument_ids)?;
+    let files = catalog_files_for_instruments_guarded::<IndexPriceUpdate>(
+        &catalog,
+        catalog_root,
+        &instrument_ids,
+        work_budget,
+    )?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    let mut read_back = catalog
-        .query_typed_data::<IndexPriceUpdate>(None, None, None, None, Some(files), false)
-        .context("query index prices from catalog")?;
-    read_back.sort_by_key(|p| {
-        (
-            p.ts_event.as_u64(),
-            p.instrument_id.to_string(),
-            p.value.as_decimal().to_string(),
-            p.ts_init.as_u64(),
-        )
-    });
+    let mut read_back = guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_typed_data::<IndexPriceUpdate>(None, None, None, None, Some(files), false)
+            .context("query index prices from catalog")
+    })?;
+    cooperative_stable_sort_by_display_guarded(
+        &mut read_back,
+        |row, lengths| {
+            lengths.observe(&row.instrument_id)?;
+            lengths.observe(&row.value.as_decimal())
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.instrument_id, &right.instrument_id))
+                .then_with(|| scratch.compare(&left.value.as_decimal(), &right.value.as_decimal()))
+                .then_with(|| left.ts_init.as_u64().cmp(&right.ts_init.as_u64()))
+        },
+        "index-price",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     Ok(read_back)
 }
 
@@ -1751,13 +2936,26 @@ pub fn canonical_rows_to_mark_price_updates<I: Instrument + ?Sized>(
     table: &CanonicalMarkPricesTable,
     instrument: &I,
 ) -> Result<Vec<MarkPriceUpdate>> {
+    canonical_rows_to_mark_price_updates_guarded(
+        table,
+        instrument,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+fn canonical_rows_to_mark_price_updates_guarded<I: Instrument + ?Sized>(
+    table: &CanonicalMarkPricesTable,
+    instrument: &I,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<MarkPriceUpdate>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
-    table
-        .rows
-        .iter()
-        .map(|row| canonical_row_to_mark_price_update(instrument_id, row, price_precision))
-        .collect()
+    collect_projected_rows_guarded(
+        &table.rows,
+        work_budget,
+        mark_price_row_materialized_bytes,
+        |row| canonical_row_to_mark_price_update(instrument_id, row, price_precision),
+    )
 }
 
 fn canonical_row_to_mark_price_update(
@@ -1797,11 +2995,32 @@ pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
-    table.validate()?;
-    let instrument = spec.build_instrument_any()?;
+    project_canonical_mark_to_catalog_guarded(
+        table,
+        spec,
+        catalog_root,
+        catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+/// Guarded counterpart of [`project_canonical_mark_to_catalog`].
+///
+/// # Errors
+///
+/// Returns an error on validation, conversion, budget expiry, or catalog I/O.
+pub fn project_canonical_mark_to_catalog_guarded<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalMarkPricesTable,
+    spec: &S,
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjection> {
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
+    let instrument = guarded_catalog_operation(work_budget, || spec.build_instrument_any())?;
     // Venue instrument metadata can be coarser than the accepted archive's
     // actual prints; widen precision to the data before binding and writing.
-    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument = widen_instrument_precision_for_data_guarded(instrument, table, work_budget)?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -1812,26 +3031,36 @@ pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
         "instrument id {instrument_id} does not match canonical rows {}",
         row_instrument_id
     );
-    let updates = canonical_rows_to_mark_price_updates(table, &instrument)?;
+    let updates = canonical_rows_to_mark_price_updates_guarded(table, &instrument, work_budget)?;
     let count = updates.len();
 
-    ensure_clean_catalog_root(catalog_root)?;
-    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .write_instruments(vec![instrument])
-        .context("write instrument to catalog")?;
-    catalog
-        .write_to_parquet(&updates, None, None, None)
-        .context("write mark prices to catalog")?;
-
-    Ok(CatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
-        nt_instrument_id: instrument_id.to_string(),
-        data_type: NT_DATA_TYPE_MARK_PRICE_UPDATE.to_string(),
-        trade_count: count,
-        catalog_hash: logical_catalog_hash(catalog_root)?,
-        fidelity_class: table.fidelity_class,
-    })
+    with_clean_catalog_root_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+        |catalog, projected_root| {
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_instruments(vec![instrument])
+                    .context("write instrument to catalog")
+            })?;
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_to_parquet(&updates, None, None, None)
+                    .context("write mark prices to catalog")
+            })?;
+            let catalog_hash = logical_catalog_hash_guarded(projected_root, work_budget)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok(CatalogProjection {
+                catalog_root: catalog_root.to_path_buf(),
+                nt_instrument_id: instrument_id.to_string(),
+                data_type: NT_DATA_TYPE_MARK_PRICE_UPDATE.to_string(),
+                trade_count: count,
+                catalog_hash,
+                fidelity_class: table.fidelity_class,
+            })
+        },
+    )
 }
 
 /// Prove the resolved NautilusTrader dependency can read the projected
@@ -1845,24 +3074,57 @@ pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
 ///
 /// Returns an error if the catalog query fails.
 pub fn read_back_mark(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec<MarkPriceUpdate>> {
+    read_back_mark_guarded(
+        catalog_root,
+        nt_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn read_back_mark_guarded(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<MarkPriceUpdate>> {
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     let instrument_ids = vec![nt_instrument_id.to_string()];
-    let files =
-        catalog_files_for_instruments::<MarkPriceUpdate>(&catalog, catalog_root, &instrument_ids)?;
+    let files = catalog_files_for_instruments_guarded::<MarkPriceUpdate>(
+        &catalog,
+        catalog_root,
+        &instrument_ids,
+        work_budget,
+    )?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    let mut read_back = catalog
-        .query_typed_data::<MarkPriceUpdate>(None, None, None, None, Some(files), false)
-        .context("query mark prices from catalog")?;
-    read_back.sort_by_key(|p| {
-        (
-            p.ts_event.as_u64(),
-            p.instrument_id.to_string(),
-            p.value.as_decimal().to_string(),
-            p.ts_init.as_u64(),
-        )
-    });
+    let mut read_back = guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_typed_data::<MarkPriceUpdate>(None, None, None, None, Some(files), false)
+            .context("query mark prices from catalog")
+    })?;
+    cooperative_stable_sort_by_display_guarded(
+        &mut read_back,
+        |row, lengths| {
+            lengths.observe(&row.instrument_id)?;
+            lengths.observe(&row.value.as_decimal())
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.instrument_id, &right.instrument_id))
+                .then_with(|| scratch.compare(&left.value.as_decimal(), &right.value.as_decimal()))
+                .then_with(|| left.ts_init.as_u64().cmp(&right.ts_init.as_u64()))
+        },
+        "mark-price",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     Ok(read_back)
 }
 
@@ -1880,12 +3142,25 @@ pub fn canonical_rows_to_funding_rate_updates<I: Instrument + ?Sized>(
     table: &CanonicalFundingRatesTable,
     instrument: &I,
 ) -> Result<Vec<FundingRateUpdate>> {
+    canonical_rows_to_funding_rate_updates_guarded(
+        table,
+        instrument,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+fn canonical_rows_to_funding_rate_updates_guarded<I: Instrument + ?Sized>(
+    table: &CanonicalFundingRatesTable,
+    instrument: &I,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<FundingRateUpdate>> {
     let instrument_id = instrument.id();
-    table
-        .rows
-        .iter()
-        .map(|row| canonical_row_to_funding_rate_update(instrument_id, row))
-        .collect()
+    collect_projected_rows_guarded(
+        &table.rows,
+        work_budget,
+        funding_rate_row_materialized_bytes,
+        |row| canonical_row_to_funding_rate_update(instrument_id, row),
+    )
 }
 
 fn canonical_row_to_funding_rate_update(
@@ -1934,11 +3209,41 @@ pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource
     spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
-    table.validate()?;
-    let instrument = spec.build_instrument_any()?;
+    project_canonical_funding_rates_to_catalog_guarded(
+        table,
+        spec,
+        catalog_root,
+        catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+/// Guarded counterpart of [`project_canonical_funding_rates_to_catalog`].
+///
+/// # Errors
+///
+/// Returns an error on validation, conversion, budget expiry, or catalog I/O.
+pub fn project_canonical_funding_rates_to_catalog_guarded<
+    S: CatalogInstrumentSpecSource + ?Sized,
+>(
+    table: &CanonicalFundingRatesTable,
+    spec: &S,
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjection> {
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
+    let instrument = guarded_catalog_operation(work_budget, || spec.build_instrument_any())?;
     let instrument_id = instrument.id();
     let instrument_id_text = instrument_id.to_string();
+    verify_canonical_rows_materialization(
+        &table.rows,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+        funding_rate_row_materialized_bytes,
+    )?;
     for (index, row) in table.rows.iter().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
         let row_instrument_id = row
             .nt_instrument_id
             .as_deref()
@@ -1948,27 +3253,38 @@ pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource
             "row {index}: instrument id {instrument_id} does not match canonical rows {}",
             row_instrument_id
         );
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     }
-    let updates = canonical_rows_to_funding_rate_updates(table, &instrument)?;
+    let updates = canonical_rows_to_funding_rate_updates_guarded(table, &instrument, work_budget)?;
     let count = updates.len();
 
-    ensure_clean_catalog_root(catalog_root)?;
-    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .write_instruments(vec![instrument])
-        .context("write instrument to catalog")?;
-    catalog
-        .write_to_parquet(&updates, None, None, None)
-        .context("write funding rates to catalog")?;
-
-    Ok(CatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
-        nt_instrument_id: instrument_id.to_string(),
-        data_type: NT_DATA_TYPE_FUNDING_RATE_UPDATE.to_string(),
-        trade_count: count,
-        catalog_hash: logical_catalog_hash(catalog_root)?,
-        fidelity_class: table.fidelity_class,
-    })
+    with_clean_catalog_root_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+        |catalog, projected_root| {
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_instruments(vec![instrument])
+                    .context("write instrument to catalog")
+            })?;
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_to_parquet(&updates, None, None, None)
+                    .context("write funding rates to catalog")
+            })?;
+            let catalog_hash = logical_catalog_hash_guarded(projected_root, work_budget)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok(CatalogProjection {
+                catalog_root: catalog_root.to_path_buf(),
+                nt_instrument_id: instrument_id.to_string(),
+                data_type: NT_DATA_TYPE_FUNDING_RATE_UPDATE.to_string(),
+                trade_count: count,
+                catalog_hash,
+                fidelity_class: table.fidelity_class,
+            })
+        },
+    )
 }
 
 /// Prove the resolved NautilusTrader dependency can read the projected
@@ -1981,29 +3297,55 @@ pub fn read_back_funding_rates(
     catalog_root: &Path,
     nt_instrument_id: &str,
 ) -> Result<Vec<FundingRateUpdate>> {
+    read_back_funding_rates_guarded(
+        catalog_root,
+        nt_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn read_back_funding_rates_guarded(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<FundingRateUpdate>> {
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     let instrument_ids = vec![nt_instrument_id.to_string()];
-    let files = catalog_files_for_instruments::<FundingRateUpdate>(
+    let files = catalog_files_for_instruments_guarded::<FundingRateUpdate>(
         &catalog,
         catalog_root,
         &instrument_ids,
+        work_budget,
     )?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    let mut read_back = catalog
-        .query_typed_data::<FundingRateUpdate>(None, None, None, None, Some(files), false)
-        .context("query funding rates from catalog")?;
-    read_back.sort_by(|a, b| {
-        a.ts_event
-            .cmp(&b.ts_event)
-            .then_with(|| a.instrument_id.cmp(&b.instrument_id))
-            .then_with(|| a.rate.cmp(&b.rate))
-            .then_with(|| a.rate.scale().cmp(&b.rate.scale()))
-            .then_with(|| a.interval.cmp(&b.interval))
-            .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
-            .then_with(|| a.ts_init.cmp(&b.ts_init))
-    });
+    let mut read_back = guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_typed_data::<FundingRateUpdate>(None, None, None, None, Some(files), false)
+            .context("query funding rates from catalog")
+    })?;
+    cooperative_stable_sort_by_key(
+        &mut read_back,
+        |row| {
+            (
+                row.ts_event,
+                row.instrument_id,
+                row.rate,
+                row.rate.scale(),
+                row.interval,
+                row.next_funding_ns,
+                row.ts_init,
+            )
+        },
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     Ok(read_back)
 }
 
@@ -2027,6 +3369,15 @@ pub fn canonical_rows_to_bars<I: Instrument + ?Sized>(
     table: &CanonicalBarsTable,
     instrument: &I,
 ) -> Result<Vec<Bar>> {
+    canonical_rows_to_bars_guarded(table, instrument, &OperatorWorkBudgetGuard::unbounded())
+}
+
+fn canonical_rows_to_bars_guarded<I: Instrument + ?Sized>(
+    table: &CanonicalBarsTable,
+    instrument: &I,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<Bar>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let instrument_id = instrument.id();
     let spec = BarSpecification::new_checked(
         table.bar_spec.step,
@@ -2037,11 +3388,13 @@ pub fn canonical_rows_to_bars<I: Instrument + ?Sized>(
     let bar_type = BarType::new(instrument_id, spec, AggregationSource::External);
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
-    table
-        .rows
-        .iter()
-        .map(|row| canonical_row_to_bar(bar_type, row, price_precision, size_precision))
-        .collect()
+    let bar_aggregation = table.bar_spec.aggregation.to_string();
+    collect_projected_rows_guarded(
+        &table.rows,
+        work_budget,
+        |row| bar_row_materialized_bytes(row, &bar_aggregation),
+        |row| canonical_row_to_bar(bar_type, row, price_precision, size_precision),
+    )
 }
 
 fn canonical_row_to_bar(
@@ -2086,11 +3439,32 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
-    table.validate()?;
-    let instrument = spec.build_instrument_any()?;
+    project_canonical_bars_to_catalog_guarded(
+        table,
+        spec,
+        catalog_root,
+        catalog_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+/// Guarded counterpart of [`project_canonical_bars_to_catalog`].
+///
+/// # Errors
+///
+/// Returns an error on validation, conversion, budget expiry, or catalog I/O.
+pub fn project_canonical_bars_to_catalog_guarded<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalBarsTable,
+    spec: &S,
+    catalog_root: &Path,
+    authoritative_output_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjection> {
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
+    let instrument = guarded_catalog_operation(work_budget, || spec.build_instrument_any())?;
     // Venue instrument metadata can be coarser than the accepted archive's
     // actual prints; widen precision to the data before binding and writing.
-    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument = widen_instrument_precision_for_data_guarded(instrument, table, work_budget)?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -2101,26 +3475,36 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
         "instrument id {instrument_id} does not match canonical rows {}",
         row_instrument_id
     );
-    let bars = canonical_rows_to_bars(table, &instrument)?;
+    let bars = canonical_rows_to_bars_guarded(table, &instrument, work_budget)?;
     let bar_count = bars.len();
 
-    ensure_clean_catalog_root(catalog_root)?;
-    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .write_instruments(vec![instrument])
-        .context("write instrument to catalog")?;
-    catalog
-        .write_to_parquet(&bars, None, None, None)
-        .context("write bars to catalog")?;
-
-    Ok(CatalogProjection {
-        catalog_root: catalog_root.to_path_buf(),
-        nt_instrument_id: instrument_id.to_string(),
-        data_type: NT_DATA_TYPE_BAR.to_string(),
-        trade_count: bar_count,
-        catalog_hash: logical_catalog_hash(catalog_root)?,
-        fidelity_class: table.fidelity_class,
-    })
+    with_clean_catalog_root_guarded(
+        catalog_root,
+        authoritative_output_root,
+        work_budget,
+        |catalog, projected_root| {
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_instruments(vec![instrument])
+                    .context("write instrument to catalog")
+            })?;
+            guarded_catalog_operation(work_budget, || {
+                catalog
+                    .write_to_parquet(&bars, None, None, None)
+                    .context("write bars to catalog")
+            })?;
+            let catalog_hash = logical_catalog_hash_guarded(projected_root, work_budget)?;
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            Ok(CatalogProjection {
+                catalog_root: catalog_root.to_path_buf(),
+                nt_instrument_id: instrument_id.to_string(),
+                data_type: NT_DATA_TYPE_BAR.to_string(),
+                trade_count: bar_count,
+                catalog_hash,
+                fidelity_class: table.fidelity_class,
+            })
+        },
+    )
 }
 
 /// Prove the resolved NautilusTrader dependency can read the projected `Bar`
@@ -2141,17 +3525,75 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
 ///
 /// Returns an error if the catalog query fails.
 pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec<Bar>> {
+    read_back_bars_guarded(
+        catalog_root,
+        nt_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn read_back_bars_guarded(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<Bar>> {
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
-    catalog
-        .query_typed_data::<Bar>(
-            Some(vec![nt_instrument_id.to_string()]),
-            None,
-            None,
-            None,
-            None,
-            true,
-        )
-        .context("query bars from catalog")
+    guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_typed_data::<Bar>(
+                Some(vec![nt_instrument_id.to_string()]),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .context("query bars from catalog")
+    })
+}
+
+pub(crate) fn assert_row_pair_equality_guarded<A: Debug, B: Debug>(
+    label: &str,
+    actual: &[A],
+    expected: &[B],
+    work_budget: &OperatorWorkBudgetGuard,
+    mut assert_row: impl FnMut(usize, &A, &B) -> Result<()>,
+) -> Result<()> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    ensure!(
+        actual.len() == expected.len(),
+        "{label} row count mismatch: actual {}, expected {}",
+        actual.len(),
+        expected.len()
+    );
+    let mut materialized_bytes = 0_u64;
+    for index in 0..actual.len() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let row_bytes = guarded_catalog_operation(work_budget, || {
+            let actual_debug = format!("{:?}", actual[index]);
+            let expected_debug = format!("{:?}", expected[index]);
+            size_of::<A>()
+                .checked_add(size_of::<B>())
+                .and_then(|bytes| bytes.checked_add(actual_debug.len()))
+                .and_then(|bytes| bytes.checked_add(expected_debug.len()))
+                .context("catalog equality materialized byte size overflow")
+        })?;
+        materialized_bytes = materialized_bytes
+            .checked_add(u64::try_from(row_bytes).context("catalog equality bytes do not fit u64")?)
+            .context("catalog equality materialized byte total overflow")?;
+        work_budget.verify_decoded_bytes(
+            materialized_bytes,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )?;
+        assert_row(index, &actual[index], &expected[index])?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    }
+    Ok(())
 }
 
 /// Deterministic SHA-256 hex over the logical NT catalog contents.
@@ -2159,160 +3601,133 @@ pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
 /// This intentionally hashes NT-read instruments and `TradeTick` values, not
 /// raw Parquet bytes or paths. Parquet writer metadata can legitimately drift
 /// across NT/Arrow builds while representing identical logical catalog input.
+fn for_each_catalog_hash_row_guarded<T: Debug>(
+    rows: &[T],
+    work_budget: &OperatorWorkBudgetGuard,
+    mut update: impl FnMut(&T) -> Result<()>,
+) -> Result<()> {
+    let mut materialized_bytes = 0_u64;
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let row_bytes = guarded_catalog_operation(work_budget, || {
+            size_of::<T>()
+                .checked_add(format!("{row:?}").len())
+                .context("catalog hash materialized row byte size overflow")
+        })?;
+        materialized_bytes = materialized_bytes
+            .checked_add(u64::try_from(row_bytes).context("catalog hash bytes do not fit u64")?)
+            .context("catalog hash materialized byte total overflow")?;
+        work_budget.verify_decoded_bytes(
+            materialized_bytes,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )?;
+        update(row)?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    }
+    Ok(())
+}
+
+/// Hash one already sorted logical family and consume its backing allocation.
+///
+/// Taking the vector by value makes the live-family bound structural: the
+/// caller cannot retain the previous market-data family while querying the
+/// next one unless it deliberately clones it.
+fn hash_owned_catalog_family_guarded<T: Debug>(
+    rows: Vec<T>,
+    work_budget: &OperatorWorkBudgetGuard,
+    update: impl FnMut(&T) -> Result<()>,
+) -> Result<()> {
+    for_each_catalog_hash_row_guarded(&rows, work_budget, update)
+}
+
 pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
+    logical_catalog_hash_guarded(root, &OperatorWorkBudgetGuard::unbounded())
+}
+
+pub(crate) fn logical_catalog_hash_guarded(
+    root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<String> {
+    guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+        || logical_catalog_hash_inner(root, work_budget),
+    )?
+}
+
+fn logical_catalog_hash_inner(
+    root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<String> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    let _catalog_preflight = preflight_nt_catalog_parquet_guarded(
+        root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     let mut catalog = ParquetDataCatalog::new(root, None, None, None, None);
-    let mut instruments = catalog
-        .query_instruments(None)
-        .context("query instruments from catalog for logical hash")?;
-    instruments.sort_by_key(|instrument| instrument.id().to_string());
-    let instrument_ids: Vec<String> = instruments
-        .iter()
-        .map(|instrument| instrument.id().to_string())
-        .collect();
-    let trade_files = catalog_files_for_instruments::<TradeTick>(&catalog, root, &instrument_ids)?;
+    let mut instruments = guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_instruments(None)
+            .context("query instruments from catalog for logical hash")
+    })?;
+    cooperative_stable_sort_by_display_guarded(
+        &mut instruments,
+        |instrument, lengths| lengths.observe(&instrument.id()),
+        |left, right, scratch| scratch.compare(&left.id(), &right.id()),
+        "instrument",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    let instrument_ids = collect_projected_rows_guarded(
+        &instruments,
+        work_budget,
+        |instrument| {
+            size_of::<InstrumentAny>()
+                .checked_add(instrument.id().to_string().len())
+                .context("catalog instrument id materialized byte size overflow")
+        },
+        |instrument| Ok(instrument.id().to_string()),
+    )?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"nautilus-logical-catalog.v1");
+    hash_owned_catalog_family_guarded(instruments, work_budget, |instrument| {
+        hasher.update([0u8]);
+        update_instrument_hash(&mut hasher, instrument, work_budget)
+    })?;
+    let trade_files = catalog_files_for_instruments_guarded::<TradeTick>(
+        &catalog,
+        root,
+        &instrument_ids,
+        work_budget,
+    )?;
     let mut ticks = if trade_files.is_empty() {
         Vec::new()
     } else {
-        catalog
-            .query_typed_data::<TradeTick>(None, None, None, None, Some(trade_files), false)
-            .context("query trade ticks from catalog for logical hash")?
+        guarded_catalog_operation(work_budget, || {
+            catalog
+                .query_typed_data::<TradeTick>(None, None, None, None, Some(trade_files), false)
+                .context("query trade ticks from catalog for logical hash")
+        })?
     };
-    ticks.sort_by_key(|tick| {
-        (
-            tick.ts_event.as_u64(),
-            tick.trade_id.to_string(),
-            tick.instrument_id.to_string(),
-        )
-    });
-    let delta_files =
-        catalog_files_for_instruments::<OrderBookDelta>(&catalog, root, &instrument_ids)?;
-    let mut deltas = if delta_files.is_empty() {
-        Vec::new()
-    } else {
-        catalog
-            .query_typed_data::<OrderBookDelta>(None, None, None, None, Some(delta_files), false)
-            .context("query order book deltas from catalog for logical hash")?
-    };
-    deltas.sort_by_key(|delta| {
-        (
-            delta.ts_event.as_u64(),
-            delta.instrument_id.to_string(),
-            delta.sequence,
-            delta.action.to_string(),
-            delta.order.side.to_string(),
-            delta.order.price.as_decimal().to_string(),
-            delta.order.size.as_decimal().to_string(),
-            delta.order.order_id,
-        )
-    });
-    // NautilusTrader keys the bar catalog directory by the full bar type, not by
-    // the bare instrument id, so bars are resolved through NautilusTrader's own
-    // identifier filtering (instrument ids passed to `query_typed_data`) rather
-    // than the instrument-directory file filter used for trades and deltas.
-    let mut bars = if instrument_ids.is_empty() {
-        Vec::new()
-    } else {
-        catalog
-            .query_typed_data::<Bar>(Some(instrument_ids.clone()), None, None, None, None, true)
-            .context("query bars from catalog for logical hash")?
-    };
-    bars.sort_by_key(|bar| {
-        (
-            bar.ts_event.as_u64(),
-            bar.bar_type.to_string(),
-            bar.open.as_decimal().to_string(),
-            bar.high.as_decimal().to_string(),
-            bar.low.as_decimal().to_string(),
-            bar.close.as_decimal().to_string(),
-            bar.volume.as_decimal().to_string(),
-        )
-    });
-    let quote_files = catalog_files_for_instruments::<QuoteTick>(&catalog, root, &instrument_ids)?;
-    let mut quotes = if quote_files.is_empty() {
-        Vec::new()
-    } else {
-        catalog
-            .query_typed_data::<QuoteTick>(None, None, None, None, Some(quote_files), false)
-            .context("query quote ticks from catalog for logical hash")?
-    };
-    quotes.sort_by_key(|quote| {
-        (
-            quote.ts_event.as_u64(),
-            quote.instrument_id.to_string(),
-            quote.bid_price.as_decimal().to_string(),
-            quote.ask_price.as_decimal().to_string(),
-            quote.bid_size.as_decimal().to_string(),
-            quote.ask_size.as_decimal().to_string(),
-        )
-    });
-    let index_files =
-        catalog_files_for_instruments::<IndexPriceUpdate>(&catalog, root, &instrument_ids)?;
-    let mut index_prices = if index_files.is_empty() {
-        Vec::new()
-    } else {
-        catalog
-            .query_typed_data::<IndexPriceUpdate>(None, None, None, None, Some(index_files), false)
-            .context("query index prices from catalog for logical hash")?
-    };
-    index_prices.sort_by_key(|p| {
-        (
-            p.ts_event.as_u64(),
-            p.instrument_id.to_string(),
-            p.value.as_decimal().to_string(),
-            p.ts_init.as_u64(),
-        )
-    });
-    let mark_files =
-        catalog_files_for_instruments::<MarkPriceUpdate>(&catalog, root, &instrument_ids)?;
-    let mut mark_prices = if mark_files.is_empty() {
-        Vec::new()
-    } else {
-        catalog
-            .query_typed_data::<MarkPriceUpdate>(None, None, None, None, Some(mark_files), false)
-            .context("query mark prices from catalog for logical hash")?
-    };
-    mark_prices.sort_by_key(|p| {
-        (
-            p.ts_event.as_u64(),
-            p.instrument_id.to_string(),
-            p.value.as_decimal().to_string(),
-            p.ts_init.as_u64(),
-        )
-    });
-    let funding_files =
-        catalog_files_for_instruments::<FundingRateUpdate>(&catalog, root, &instrument_ids)?;
-    let mut funding_rates = if funding_files.is_empty() {
-        Vec::new()
-    } else {
-        catalog
-            .query_typed_data::<FundingRateUpdate>(
-                None,
-                None,
-                None,
-                None,
-                Some(funding_files),
-                false,
-            )
-            .context("query funding rates from catalog for logical hash")?
-    };
-    funding_rates.sort_by(|a, b| {
-        a.ts_event
-            .cmp(&b.ts_event)
-            .then_with(|| a.instrument_id.cmp(&b.instrument_id))
-            .then_with(|| a.rate.cmp(&b.rate))
-            .then_with(|| a.rate.scale().cmp(&b.rate.scale()))
-            .then_with(|| a.interval.cmp(&b.interval))
-            .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
-            .then_with(|| a.ts_init.cmp(&b.ts_init))
-    });
-
-    let mut hasher = Sha256::new();
-    hasher.update(b"nautilus-logical-catalog.v1");
-    for instrument in instruments {
-        hasher.update([0u8]);
-        update_instrument_hash(&mut hasher, &instrument)?;
-    }
-    for tick in ticks {
+    cooperative_stable_sort_by_display_guarded(
+        &mut ticks,
+        |row, lengths| {
+            lengths.observe(&row.trade_id)?;
+            lengths.observe(&row.instrument_id)
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.trade_id, &right.trade_id))
+                .then_with(|| scratch.compare(&left.instrument_id, &right.instrument_id))
+        },
+        "trade",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    hash_owned_catalog_family_guarded(ticks, work_budget, |tick| {
         hasher.update([2u8]);
         hasher.update(tick.instrument_id.to_string().as_bytes());
         hasher.update([3u8]);
@@ -2327,8 +3742,66 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(tick.ts_event.as_u64().to_string().as_bytes());
         hasher.update([8u8]);
         hasher.update(tick.ts_init.as_u64().to_string().as_bytes());
-    }
-    for delta in deltas {
+        Ok(())
+    })?;
+    let delta_files = catalog_files_for_instruments_guarded::<OrderBookDelta>(
+        &catalog,
+        root,
+        &instrument_ids,
+        work_budget,
+    )?;
+    let mut deltas = if delta_files.is_empty() {
+        Vec::new()
+    } else {
+        guarded_catalog_operation(work_budget, || {
+            catalog
+                .query_typed_data::<OrderBookDelta>(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(delta_files),
+                    false,
+                )
+                .context("query order book deltas from catalog for logical hash")
+        })?
+    };
+    cooperative_stable_sort_by_display_guarded(
+        &mut deltas,
+        |row, lengths| {
+            lengths.observe(&row.instrument_id)?;
+            lengths.observe(&row.action)?;
+            lengths.observe(&row.order.side)?;
+            lengths.observe(&row.order.price.as_decimal())?;
+            lengths.observe(&row.order.size.as_decimal())
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.instrument_id, &right.instrument_id))
+                .then_with(|| left.sequence.cmp(&right.sequence))
+                .then_with(|| scratch.compare(&left.action, &right.action))
+                .then_with(|| scratch.compare(&left.order.side, &right.order.side))
+                .then_with(|| {
+                    scratch.compare(
+                        &left.order.price.as_decimal(),
+                        &right.order.price.as_decimal(),
+                    )
+                })
+                .then_with(|| {
+                    scratch.compare(
+                        &left.order.size.as_decimal(),
+                        &right.order.size.as_decimal(),
+                    )
+                })
+                .then_with(|| left.order.order_id.cmp(&right.order.order_id))
+        },
+        "order-book-delta",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    hash_owned_catalog_family_guarded(deltas, work_budget, |delta| {
         hasher.update([9u8]);
         hasher.update(delta.instrument_id.to_string().as_bytes());
         hasher.update([10u8]);
@@ -2349,8 +3822,49 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(delta.ts_event.as_u64().to_string().as_bytes());
         hasher.update([18u8]);
         hasher.update(delta.ts_init.as_u64().to_string().as_bytes());
-    }
-    for bar in bars {
+        Ok(())
+    })?;
+    // NautilusTrader keys the bar catalog directory by the full bar type, not by
+    // the bare instrument id, so bars are resolved through NautilusTrader's own
+    // identifier filtering (instrument ids passed to `query_typed_data`) rather
+    // than the instrument-directory file filter used for trades and deltas.
+    let mut bars = if instrument_ids.is_empty() {
+        Vec::new()
+    } else {
+        guarded_catalog_operation(work_budget, || {
+            catalog
+                .query_typed_data::<Bar>(Some(instrument_ids.clone()), None, None, None, None, true)
+                .context("query bars from catalog for logical hash")
+        })?
+    };
+    cooperative_stable_sort_by_display_guarded(
+        &mut bars,
+        |row, lengths| {
+            lengths.observe(&row.bar_type)?;
+            lengths.observe(&row.open.as_decimal())?;
+            lengths.observe(&row.high.as_decimal())?;
+            lengths.observe(&row.low.as_decimal())?;
+            lengths.observe(&row.close.as_decimal())?;
+            lengths.observe(&row.volume.as_decimal())
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.bar_type, &right.bar_type))
+                .then_with(|| scratch.compare(&left.open.as_decimal(), &right.open.as_decimal()))
+                .then_with(|| scratch.compare(&left.high.as_decimal(), &right.high.as_decimal()))
+                .then_with(|| scratch.compare(&left.low.as_decimal(), &right.low.as_decimal()))
+                .then_with(|| scratch.compare(&left.close.as_decimal(), &right.close.as_decimal()))
+                .then_with(|| {
+                    scratch.compare(&left.volume.as_decimal(), &right.volume.as_decimal())
+                })
+        },
+        "bar",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    hash_owned_catalog_family_guarded(bars, work_budget, |bar| {
         hasher.update([19u8]);
         hasher.update(bar.bar_type.to_string().as_bytes());
         hasher.update([20u8]);
@@ -2367,13 +3881,57 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(bar.ts_event.as_u64().to_string().as_bytes());
         hasher.update([26u8]);
         hasher.update(bar.ts_init.as_u64().to_string().as_bytes());
-    }
-    // Quote loop appended AFTER the bars loop with NEW unique domain-separator
-    // tags 27..33 (existing tags: 0,2..8 ticks; 9..18 deltas; 19..26 bars). The
-    // existing instrument/tick/delta/bar byte stream is unperturbed, so any
-    // committed reference catalog that holds zero quote files keeps hashing to
-    // its recorded value — this loop emits nothing for it.
-    for quote in quotes {
+        Ok(())
+    })?;
+    let quote_files = catalog_files_for_instruments_guarded::<QuoteTick>(
+        &catalog,
+        root,
+        &instrument_ids,
+        work_budget,
+    )?;
+    let mut quotes = if quote_files.is_empty() {
+        Vec::new()
+    } else {
+        guarded_catalog_operation(work_budget, || {
+            catalog
+                .query_typed_data::<QuoteTick>(None, None, None, None, Some(quote_files), false)
+                .context("query quote ticks from catalog for logical hash")
+        })?
+    };
+    cooperative_stable_sort_by_display_guarded(
+        &mut quotes,
+        |row, lengths| {
+            lengths.observe(&row.instrument_id)?;
+            lengths.observe(&row.bid_price.as_decimal())?;
+            lengths.observe(&row.ask_price.as_decimal())?;
+            lengths.observe(&row.bid_size.as_decimal())?;
+            lengths.observe(&row.ask_size.as_decimal())
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.instrument_id, &right.instrument_id))
+                .then_with(|| {
+                    scratch.compare(&left.bid_price.as_decimal(), &right.bid_price.as_decimal())
+                })
+                .then_with(|| {
+                    scratch.compare(&left.ask_price.as_decimal(), &right.ask_price.as_decimal())
+                })
+                .then_with(|| {
+                    scratch.compare(&left.bid_size.as_decimal(), &right.bid_size.as_decimal())
+                })
+                .then_with(|| {
+                    scratch.compare(&left.ask_size.as_decimal(), &right.ask_size.as_decimal())
+                })
+        },
+        "quote",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    // Quote domain tags are appended after bars, preserving logical-v1 bytes
+    // for catalogs without quote data.
+    hash_owned_catalog_family_guarded(quotes, work_budget, |quote| {
         hasher.update([27u8]);
         hasher.update(quote.instrument_id.to_string().as_bytes());
         hasher.update([28u8]);
@@ -2388,13 +3946,49 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(quote.ts_event.as_u64().to_string().as_bytes());
         hasher.update([33u8]);
         hasher.update(quote.ts_init.as_u64().to_string().as_bytes());
-    }
-    // Index-price loop appended AFTER the quote loop with NEW unique
-    // domain-separator tags 34..37 (existing tags end at 33 for quotes). Reusing
-    // any earlier tag would let two different families hash equal; these are
-    // fresh, so the committed reference catalog (which holds zero index files)
-    // keeps hashing to its recorded value — this loop emits nothing for it.
-    for index_price in index_prices {
+        Ok(())
+    })?;
+    let index_files = catalog_files_for_instruments_guarded::<IndexPriceUpdate>(
+        &catalog,
+        root,
+        &instrument_ids,
+        work_budget,
+    )?;
+    let mut index_prices = if index_files.is_empty() {
+        Vec::new()
+    } else {
+        guarded_catalog_operation(work_budget, || {
+            catalog
+                .query_typed_data::<IndexPriceUpdate>(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(index_files),
+                    false,
+                )
+                .context("query index prices from catalog for logical hash")
+        })?
+    };
+    cooperative_stable_sort_by_display_guarded(
+        &mut index_prices,
+        |row, lengths| {
+            lengths.observe(&row.instrument_id)?;
+            lengths.observe(&row.value.as_decimal())
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.instrument_id, &right.instrument_id))
+                .then_with(|| scratch.compare(&left.value.as_decimal(), &right.value.as_decimal()))
+                .then_with(|| left.ts_init.as_u64().cmp(&right.ts_init.as_u64()))
+        },
+        "logical index-price",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    hash_owned_catalog_family_guarded(index_prices, work_budget, |index_price| {
         hasher.update([34u8]);
         hasher.update(index_price.instrument_id.to_string().as_bytes());
         hasher.update([35u8]);
@@ -2403,13 +3997,49 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(index_price.ts_event.as_u64().to_string().as_bytes());
         hasher.update([37u8]);
         hasher.update(index_price.ts_init.as_u64().to_string().as_bytes());
-    }
-    // Mark-price loop appended AFTER the index loop with NEW unique
-    // domain-separator tags 38..41 (existing tags end at 37 for index prices).
-    // Reusing any earlier tag would let two different families hash equal; these
-    // are fresh, so the committed reference catalog (which holds zero mark files)
-    // keeps hashing to its recorded value — this loop emits nothing for it.
-    for mark_price in mark_prices {
+        Ok(())
+    })?;
+    let mark_files = catalog_files_for_instruments_guarded::<MarkPriceUpdate>(
+        &catalog,
+        root,
+        &instrument_ids,
+        work_budget,
+    )?;
+    let mut mark_prices = if mark_files.is_empty() {
+        Vec::new()
+    } else {
+        guarded_catalog_operation(work_budget, || {
+            catalog
+                .query_typed_data::<MarkPriceUpdate>(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(mark_files),
+                    false,
+                )
+                .context("query mark prices from catalog for logical hash")
+        })?
+    };
+    cooperative_stable_sort_by_display_guarded(
+        &mut mark_prices,
+        |row, lengths| {
+            lengths.observe(&row.instrument_id)?;
+            lengths.observe(&row.value.as_decimal())
+        },
+        |left, right, scratch| {
+            left.ts_event
+                .as_u64()
+                .cmp(&right.ts_event.as_u64())
+                .then_with(|| scratch.compare(&left.instrument_id, &right.instrument_id))
+                .then_with(|| scratch.compare(&left.value.as_decimal(), &right.value.as_decimal()))
+                .then_with(|| left.ts_init.as_u64().cmp(&right.ts_init.as_u64()))
+        },
+        "logical mark-price",
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    hash_owned_catalog_family_guarded(mark_prices, work_budget, |mark_price| {
         hasher.update([38u8]);
         hasher.update(mark_price.instrument_id.to_string().as_bytes());
         hasher.update([39u8]);
@@ -2418,23 +4048,52 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(mark_price.ts_event.as_u64().to_string().as_bytes());
         hasher.update([41u8]);
         hasher.update(mark_price.ts_init.as_u64().to_string().as_bytes());
-    }
-    // Funding-rate loop appended AFTER the mark loop with NEW unique
-    // domain-separator tags 42..47 (existing tags end at 41 for mark prices).
-    // Empty funding catalogs emit nothing, preserving existing reference hashes;
-    // funding-bearing catalog bytes are pinned by
-    // `funding_catalog_hash_matches_golden_v1`.
-    for funding_rate in funding_rates {
+        Ok(())
+    })?;
+    let funding_files = catalog_files_for_instruments_guarded::<FundingRateUpdate>(
+        &catalog,
+        root,
+        &instrument_ids,
+        work_budget,
+    )?;
+    let mut funding_rates = if funding_files.is_empty() {
+        Vec::new()
+    } else {
+        guarded_catalog_operation(work_budget, || {
+            catalog
+                .query_typed_data::<FundingRateUpdate>(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(funding_files),
+                    false,
+                )
+                .context("query funding rates from catalog for logical hash")
+        })?
+    };
+    cooperative_stable_sort_by_key(
+        &mut funding_rates,
+        |row| {
+            (
+                row.ts_event,
+                row.instrument_id,
+                row.rate,
+                row.rate.scale(),
+                row.interval,
+                row.next_funding_ns,
+                row.ts_init,
+            )
+        },
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+
+    hash_owned_catalog_family_guarded(funding_rates, work_budget, |funding_rate| {
         hasher.update([42u8]);
         hasher.update(funding_rate.instrument_id.to_string().as_bytes());
         hasher.update([43u8]);
-        // The funding rate is hashed byte/scale-faithfully via `to_string()` and is NOT rescaled
-        // to instrument precision (unlike index/mark, which go through `rescaled()` — see the
-        // index/mark hash paths). The logical catalog hash is therefore scale-SENSITIVE: a
-        // numerically-equal but differently-scaled rate (e.g. "0.0001" vs "0.000100") produces a
-        // different hash. This is by design — the `.rate.scale()` tie-break in this function's
-        // sort comparator deterministically orders scale-distinct equal rates, and the golden hash
-        // (`funding_catalog_hash_matches_golden_v1`) is therefore scale-bound.
+        // Preserve Decimal scale as part of logical-v1 identity.
         hasher.update(funding_rate.rate.to_string().as_bytes());
         hasher.update([44u8]);
         if let Some(value) = funding_rate.interval {
@@ -2452,38 +4111,75 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(funding_rate.ts_event.as_u64().to_string().as_bytes());
         hasher.update([47u8]);
         hasher.update(funding_rate.ts_init.as_u64().to_string().as_bytes());
-    }
+        Ok(())
+    })?;
+
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn catalog_files_for_instruments<T: CatalogPathPrefix>(
+fn catalog_files_for_instruments_guarded<T: CatalogPathPrefix>(
     catalog: &ParquetDataCatalog,
     catalog_root: &Path,
     instrument_ids: &[String],
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<String>> {
     if instrument_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let safe_instrument_ids: HashSet<String> = instrument_ids
-        .iter()
-        .map(|id| urisafe_instrument_id(id))
-        .collect();
-    let files = catalog
-        .query_files(T::path_prefix(), None, None, None)
-        .with_context(|| format!("query {} files from catalog", T::path_prefix()))?;
-    Ok(files
-        .into_iter()
-        .filter(|file| {
-            file.rsplit('/').nth(1).is_some_and(|directory| {
-                let decoded = urlencoding::decode(directory)
-                    .map(|value| value.into_owned())
-                    .unwrap_or_else(|_| directory.to_string());
-                let safe_directory = urisafe_instrument_id(&decoded);
-                safe_instrument_ids.contains(&safe_directory)
-            })
-        })
-        .map(|file| datafusion_catalog_file_path(catalog_root, &file))
-        .collect())
+    let mut safe_instrument_ids = HashSet::new();
+    safe_instrument_ids
+        .try_reserve(instrument_ids.len())
+        .context("reserve safe catalog instrument ids")?;
+    let mut instrument_id_bytes = 0_u64;
+    for id in instrument_ids {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let bytes = size_of::<String>()
+            .checked_add(id.len())
+            .context("catalog instrument id byte size overflow")?;
+        instrument_id_bytes = instrument_id_bytes
+            .checked_add(
+                u64::try_from(bytes).context("catalog instrument id bytes do not fit u64")?,
+            )
+            .context("catalog instrument id byte total overflow")?;
+        work_budget.verify_decoded_bytes(
+            instrument_id_bytes,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )?;
+        safe_instrument_ids.insert(urisafe_instrument_id(id));
+    }
+    let files = guarded_catalog_operation(work_budget, || {
+        catalog
+            .query_files(T::path_prefix(), None, None, None)
+            .with_context(|| format!("query {} files from catalog", T::path_prefix()))
+    })?;
+    let mut selected = Vec::new();
+    selected
+        .try_reserve_exact(files.len())
+        .context("reserve selected catalog files")?;
+    let mut file_path_bytes = 0_u64;
+    for file in &files {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let bytes = size_of::<String>()
+            .checked_add(file.len())
+            .context("catalog file path byte size overflow")?;
+        file_path_bytes = file_path_bytes
+            .checked_add(u64::try_from(bytes).context("catalog file path bytes do not fit u64")?)
+            .context("catalog file path byte total overflow")?;
+        work_budget
+            .verify_decoded_bytes(file_path_bytes, OperatorWorkBudgetStage::CatalogProjection)?;
+        let matches = file.rsplit('/').nth(1).is_some_and(|directory| {
+            let decoded = urlencoding::decode(directory)
+                .map(|value| value.into_owned())
+                .unwrap_or_else(|_| directory.to_string());
+            safe_instrument_ids.contains(&urisafe_instrument_id(&decoded))
+        });
+        if matches {
+            selected.push(datafusion_catalog_file_path(catalog_root, file));
+        }
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    }
+    Ok(selected)
 }
 
 fn datafusion_catalog_file_path(catalog_root: &Path, catalog_file: &str) -> String {
@@ -2511,13 +4207,17 @@ fn update_optional_hash_field<T: ToString>(hasher: &mut Sha256, label: &str, val
     }
 }
 
-fn update_instrument_hash(hasher: &mut Sha256, instrument: &InstrumentAny) -> Result<()> {
+fn update_instrument_hash(
+    hasher: &mut Sha256,
+    instrument: &InstrumentAny,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     match instrument {
         InstrumentAny::CurrencyPair(currency_pair) => {
             update_currency_pair_hash(hasher, currency_pair)?
         }
         InstrumentAny::BinaryOption(binary_option) => {
-            update_binary_option_hash(hasher, binary_option)?
+            update_binary_option_hash(hasher, binary_option, work_budget)?
         }
         InstrumentAny::CryptoPerpetual(crypto_perpetual) => {
             update_crypto_perpetual_hash(hasher, crypto_perpetual)?
@@ -2797,7 +4497,11 @@ fn update_crypto_future_hash(hasher: &mut Sha256, instrument: &CryptoFuture) -> 
     Ok(())
 }
 
-fn update_binary_option_hash(hasher: &mut Sha256, instrument: &BinaryOption) -> Result<()> {
+fn update_binary_option_hash(
+    hasher: &mut Sha256,
+    instrument: &BinaryOption,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     update_hash_field(hasher, "instrument.type", "binary_option");
     update_hash_field(hasher, "instrument.id", &instrument.id.to_string());
     update_hash_field(
@@ -2901,7 +4605,12 @@ fn update_binary_option_hash(hasher: &mut Sha256, instrument: &BinaryOption) -> 
         "instrument.min_price",
         instrument.min_price.as_ref(),
     );
-    update_optional_params_hash(hasher, "instrument.info", instrument.info.as_ref())?;
+    update_optional_params_hash(
+        hasher,
+        "instrument.info",
+        instrument.info.as_ref(),
+        work_budget,
+    )?;
     update_hash_field(
         hasher,
         "instrument.ts_event",
@@ -2919,21 +4628,65 @@ fn update_optional_params_hash(
     hasher: &mut Sha256,
     label: &str,
     value: Option<&Params>,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     let Some(params) = value else {
         update_hash_field(hasher, label, "<none>");
         return Ok(());
     };
     update_hash_field(hasher, &format!("{label}.len"), &params.len().to_string());
-    let mut entries = params.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(key, _)| key.as_str());
-    for (key, value) in entries {
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(params.len())
+        .context("reserve instrument params entries")?;
+    let byte_limit = work_budget
+        .decoded_byte_limit()
+        .map_or(usize::MAX, |limit| {
+            usize::try_from(limit).unwrap_or(usize::MAX)
+        });
+    for entry in params.iter() {
+        guarded_catalog_operation(work_budget, || {
+            let serialized = serde_json::to_string(entry.1)
+                .context("serialize instrument params value for byte preflight")?;
+            let bytes = size_of_val(entry)
+                .checked_add(entry.0.len())
+                .and_then(|bytes| bytes.checked_add(serialized.len()))
+                .context("instrument params materialized byte size overflow")?;
+            ensure!(
+                bytes <= byte_limit,
+                "instrument params entry requires {bytes} bytes, exceeding max_decoded_bytes {byte_limit}"
+            );
+            entries.push(entry);
+            Ok(())
+        })?;
+    }
+    cooperative_stable_sort_by(
+        &mut entries,
+        |(left_key, _), (right_key, _)| left_key.cmp(right_key),
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    let mut hash_materialized_bytes = 0_u64;
+    for (key, value) in &entries {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let serialized = serde_json::to_string(value)
+            .context("serialize instrument params value for hash byte preflight")?;
+        let bytes = size_of_val(*value)
+            .checked_add(key.len())
+            .and_then(|bytes| bytes.checked_add(serialized.len()))
+            .context("instrument params hash byte size overflow")?;
+        hash_materialized_bytes = hash_materialized_bytes
+            .checked_add(
+                u64::try_from(bytes).context("instrument params hash bytes do not fit u64")?,
+            )
+            .context("instrument params hash byte total overflow")?;
+        work_budget.verify_decoded_bytes(
+            hash_materialized_bytes,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )?;
         update_hash_field(hasher, &format!("{label}.key"), key);
-        update_hash_field(
-            hasher,
-            &format!("{label}.value"),
-            &serde_json::to_string(value).context("serialize instrument params value")?,
-        );
+        update_hash_field(hasher, &format!("{label}.value"), &serialized);
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     }
     Ok(())
 }
@@ -3052,6 +4805,16 @@ fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::{
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
     use super::*;
     use crate::{
         canonical_market_data::CanonicalBarSpec,
@@ -3065,6 +4828,120 @@ mod tests {
         },
     };
     use nautilus_model::enums::BarAggregation;
+
+    #[derive(Default)]
+    struct IncrementingClock {
+        ticks: AtomicU64,
+    }
+
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for IncrementingClock {
+        fn now(&self) -> Duration {
+            Duration::from_secs(self.ticks.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
+    #[derive(Debug)]
+    struct LogicalHashDropProbe(Arc<AtomicUsize>);
+
+    impl Drop for LogicalHashDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn logical_hash_family_consumer_drops_owned_rows_before_return() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let rows = vec![
+            LogicalHashDropProbe(Arc::clone(&drops)),
+            LogicalHashDropProbe(Arc::clone(&drops)),
+        ];
+
+        hash_owned_catalog_family_guarded(rows, &OperatorWorkBudgetGuard::unbounded(), |_row| {
+            Ok(())
+        })
+        .expect("consume one logical-hash family");
+
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn reusable_display_scratch_preserves_decimal_logical_catalog_v1_order() {
+        let left = Price::from_str("10.0").expect("left price");
+        let right = Price::from_str("2.0").expect("right price");
+        let mut values = vec![right.as_decimal(), left.as_decimal()];
+
+        cooperative_stable_sort_by_display_guarded(
+            &mut values,
+            |value, lengths| lengths.observe(value),
+            |left, right, scratch| scratch.compare(left, right),
+            "test decimal",
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect("sort decimal display keys");
+
+        assert_eq!(values, vec![left.as_decimal(), right.as_decimal()]);
+        assert_ne!(
+            left.cmp(&right),
+            left.as_decimal()
+                .to_string()
+                .cmp(&right.as_decimal().to_string())
+        );
+    }
+
+    #[test]
+    fn reusable_display_scratch_accepts_long_valid_display_keys() {
+        let long = format!("a{}", "x".repeat(4_096));
+        let mut values = vec!["b".to_string(), long.clone()];
+
+        cooperative_stable_sort_by_display_guarded(
+            &mut values,
+            |value, lengths| lengths.observe(value),
+            |left, right, scratch| scratch.compare(left, right),
+            "test long key",
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect("sort long display keys");
+
+        assert_eq!(values, vec![long, "b".to_string()]);
+    }
+
+    #[test]
+    fn display_scratch_low_budget_rejects_before_sort_allocation() {
+        let long = format!("a{}", "x".repeat(4_096));
+        let mut values = vec!["b".to_string(), long.clone()];
+        let original = values.clone();
+        let guard = OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_decoded_bytes: u64::try_from(long.len() - 1).expect("decoded byte limit"),
+                    max_source_rows: u64::MAX,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("construct low display-scratch budget");
+
+        let error = cooperative_stable_sort_by_display_guarded(
+            &mut values,
+            |value, lengths| lengths.observe(value),
+            |left, right, scratch| scratch.compare(left, right),
+            "test low budget",
+            &guard,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect_err("scratch request above max_decoded_bytes must fail before sorting");
+
+        assert!(
+            error.to_string().contains("max_decoded_bytes"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(values, original, "rejection must occur before sorting");
+    }
 
     fn spec() -> SpotInstrumentSpec {
         SpotInstrumentSpec {
@@ -3368,6 +5245,70 @@ mod tests {
             "ingest-run-test",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn guarded_trade_projection_expires_between_configured_row_chunks() {
+        let table = canonical_table();
+        let instrument = spec().build_instrument_any().expect("instrument");
+        let guard = OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: u64::MAX,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 5,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            Arc::new(IncrementingClock::default()),
+        )
+        .expect("guard");
+
+        let error = canonical_rows_to_trade_ticks_guarded(&table, &instrument, &guard)
+            .expect_err("projection must observe expiry within row conversion");
+
+        assert!(
+            error.to_string().contains("catalog_projection"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn guarded_row_equality_expires_between_configured_chunks() {
+        let guard = OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: u64::MAX,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 4,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            Arc::new(IncrementingClock::default()),
+        )
+        .expect("guard");
+        let mut comparisons = 0_usize;
+
+        let error = assert_row_pair_equality_guarded(
+            "test rows",
+            &[1_u8, 2, 3],
+            &[1_u8, 2, 3],
+            &guard,
+            |_index, actual, expected| {
+                comparisons += 1;
+                ensure!(actual == expected, "row mismatch");
+                Ok(())
+            },
+        )
+        .expect_err("equality must observe expiry between row chunks");
+
+        assert_eq!(comparisons, 1, "only the first authorized chunk may run");
+        assert!(
+            error.to_string().contains("catalog_projection"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -4013,6 +5954,272 @@ max_notional = "200000"
         assert_eq!(loaded[0].instrument_id.to_string(), "BNBUSDC.BYBIT");
         // 617 rescaled to price precision 1 -> 617.0
         assert_eq!(loaded[2].price, Price::from("617.0"));
+    }
+
+    fn catalog_preflight_guard(
+        max_source_rows: u64,
+        max_decoded_bytes: u64,
+        max_projected_row_groups: u64,
+    ) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::new(crate::operator_work_budget::OperatorWorkBudget::Backfill(
+            crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                max_source_rows,
+                max_decoded_bytes,
+                max_projected_row_groups,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("catalog preflight guard")
+    }
+
+    fn catalog_parquet_envelope_with_footer(footer: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::from(*b"PAR1");
+        bytes.extend_from_slice(footer);
+        bytes.extend_from_slice(
+            &u32::try_from(footer.len())
+                .expect("test footer length fits u32")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(b"PAR1");
+        bytes
+    }
+
+    #[test]
+    fn catalog_preflight_rejects_stray_parquet_before_nt_query() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        fs::write(
+            dir.path().join("stray.parquet"),
+            b"NOPE\x01\x00\x00\x00PAR1",
+        )
+        .expect("write stray Parquet");
+
+        let error = read_back_trade_ticks_guarded(
+            dir.path(),
+            "BNBUSDC.BYBIT",
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect_err("stray malformed Parquet must fail before NT query");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Parquet header magic is not PAR1"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn catalog_preflight_rejects_oversized_instrument_footer_before_nt_query() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let stray = dir.path().join("data/instruments/stray.parquet");
+        fs::write(&stray, b"PAR1\xff\xff\xff\xffPAR1").expect("write malformed instrument Parquet");
+
+        let error = read_back_trade_ticks_guarded(
+            dir.path(),
+            "BNBUSDC.BYBIT",
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect_err("oversized instrument footer must fail before NT query");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Parquet footer metadata length 4294967295 exceeds"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn catalog_preflight_rejects_tiny_footer_with_huge_list_before_builder() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let footer = [0x19, 0xf3, 0xff, 0xff, 0xff, 0xff, 0x0f];
+        fs::write(
+            dir.path().join("huge-list.parquet"),
+            catalog_parquet_envelope_with_footer(&footer),
+        )
+        .expect("write compact-Thrift list bomb");
+
+        let error = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &catalog_preflight_guard(8, 1_024, u64::MAX),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect_err("list cardinality must fail before catalog builder allocation");
+
+        assert!(
+            format!("{error:#}").contains(
+                "compact-Thrift collection cardinality 4294967295 exceeds max_source_rows 8"
+            ),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn instrument_preflight_rejects_nested_binary_length_before_builder() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let instrument_dir = dir.path().join("data/instruments");
+        fs::create_dir_all(&instrument_dir).expect("create instrument directory");
+        let footer = [0x1c, 0x18, 0x81, 0x01, 0x00, 0x00];
+        fs::write(
+            instrument_dir.join("nested-length.parquet"),
+            catalog_parquet_envelope_with_footer(&footer),
+        )
+        .expect("write compact-Thrift nested binary bomb");
+
+        let error = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &catalog_preflight_guard(8, 128, u64::MAX),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect_err("nested binary length must fail before instrument builder allocation");
+
+        assert!(
+            format!("{error:#}")
+                .contains("compact-Thrift binary length 129 exceeds max_decoded_bytes 128"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn catalog_preflight_enforces_all_file_row_groups_but_reports_market_data_only() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let unbounded = OperatorWorkBudgetGuard::unbounded();
+        let summary = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &unbounded,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect("preflight catalog");
+
+        assert!(summary.files.iter().any(|file| file.is_instrument_metadata));
+        assert!(
+            summary
+                .files
+                .iter()
+                .any(|file| !file.is_instrument_metadata)
+        );
+        assert_eq!(summary.market_data.rows, table.rows.len() as u64);
+        assert!(summary.total_rows > summary.market_data.rows);
+        assert!(summary.total_row_groups > summary.market_data.row_groups);
+
+        let guard = catalog_preflight_guard(u64::MAX, u64::MAX, summary.market_data.row_groups);
+        let error = read_back_trade_ticks_guarded(dir.path(), "BNBUSDC.BYBIT", &guard)
+            .expect_err("instrument row groups must count toward the aggregate safety limit");
+
+        assert!(
+            error.to_string().contains("max_projected_row_groups"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn catalog_preflight_rejects_many_tiny_files_at_row_group_derived_file_cap_plus_one() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let source = dir.path().join("tiny-0.parquet");
+        table
+            .write_parquet(&source)
+            .expect("write one-row-group Parquet");
+        let single = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect("preflight single tiny Parquet");
+        assert_eq!(single.files.len(), 1);
+        assert_eq!(single.total_row_groups, 1);
+        let allowed_files = 3_usize;
+        for index in 1..=allowed_files {
+            fs::copy(&source, dir.path().join(format!("tiny-{index}.parquet")))
+                .expect("copy valid tiny Parquet");
+        }
+
+        let error = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &catalog_preflight_guard(
+                u64::MAX,
+                u64::MAX,
+                u64::try_from(allowed_files).expect("allowed file count fits u64"),
+            ),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect_err("row-group-derived file-count cap plus one must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("catalog Parquet file count actual"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn catalog_preflight_combined_accounting_accepts_exact_cap_and_rejects_cap_plus_one() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let baseline = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect("baseline preflight");
+        assert!(baseline.total_accounted_bytes > 0);
+
+        preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &catalog_preflight_guard(u64::MAX, baseline.total_accounted_bytes, u64::MAX),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect("exact combined byte cap must pass");
+
+        let error = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &catalog_preflight_guard(
+                u64::MAX,
+                baseline
+                    .total_accounted_bytes
+                    .checked_sub(1)
+                    .expect("positive combined total"),
+                u64::MAX,
+            ),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect_err("combined cap plus one byte must fail closed");
+
+        assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
+    }
+
+    #[test]
+    fn catalog_preflight_rejects_zero_row_group_parquet() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("empty.parquet");
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("value", arrow::datatypes::DataType::Int64, false),
+        ]));
+        let file = std::fs::File::create(&path).expect("create empty Parquet");
+        let writer = parquet::arrow::ArrowWriter::try_new(file, schema, None)
+            .expect("construct empty Parquet writer");
+        writer.close().expect("close empty Parquet writer");
+
+        let error = preflight_nt_catalog_parquet_guarded(
+            dir.path(),
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .expect_err("zero-row-group files must not evade the structural file-count bound");
+
+        assert!(
+            error.to_string().contains("has zero row groups"),
+            "{error:#}"
+        );
     }
 
     fn quote_row(
@@ -5860,6 +8067,30 @@ max_notional = "200000"
     }
 
     #[test]
+    fn deterministic_trade_projector_reconciles_an_identical_stable_root() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let catalog_root = dir.path().join("catalog");
+
+        let first = project_canonical_trades_to_catalog(&table, &spec(), &catalog_root)
+            .expect("first projection");
+        let second = project_canonical_trades_to_catalog(&table, &spec(), &catalog_root)
+            .expect("identical retry projection");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            logical_catalog_hash(&catalog_root).expect("hash reconciled catalog"),
+            first.catalog_hash
+        );
+        assert_eq!(
+            read_back_trade_ticks(&catalog_root, &first.nt_instrument_id)
+                .expect("read reconciled catalog")
+                .len(),
+            table.rows.len()
+        );
+    }
+
+    #[test]
     fn catalog_hash_ignores_unrelated_relative_paths() {
         // Non-catalog sidecar bytes under different relative paths must not
         // affect the logical digest. The digest is over NT-read catalog records,
@@ -5874,6 +8105,264 @@ max_notional = "200000"
             logical_catalog_hash(root_a.path()).unwrap(),
             logical_catalog_hash(root_b.path()).unwrap(),
             "unrelated bytes under different relative paths must not change the logical hash"
+        );
+    }
+
+    #[test]
+    fn failed_projection_retains_only_unique_temp_and_preserves_preexisting_root() {
+        let parent = tempfile::TempDir::new().expect("temp dir");
+        let root = parent.path().join("catalog");
+        fs::create_dir(&root).expect("create caller-owned empty root");
+
+        let error = with_clean_catalog_root_guarded(
+            &root,
+            &root,
+            &OperatorWorkBudgetGuard::unbounded(),
+            |_catalog, temp_root| -> Result<()> {
+                fs::create_dir(temp_root.join("data"))?;
+                fs::write(temp_root.join("data/incomplete.parquet"), b"incomplete")?;
+                anyhow::bail!("injected projection failure")
+            },
+        )
+        .expect_err("injected failure must fail projection");
+
+        assert!(error.to_string().contains("injected projection failure"));
+        assert!(root.is_dir(), "caller-owned root must be preserved");
+        assert!(
+            fs::read_dir(&root)
+                .expect("read preserved root")
+                .next()
+                .is_none(),
+            "failed projection must not leak partial final data"
+        );
+        let retained = fs::read_dir(parent.path())
+            .expect("read parent")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1, "one failed unique root must be retained");
+        assert_eq!(
+            fs::read(retained[0].join("data/incomplete.parquet"))
+                .expect("read retained failed projection"),
+            b"incomplete"
+        );
+    }
+
+    #[test]
+    fn concurrent_projection_publish_has_one_create_only_winner() {
+        let parent = tempfile::TempDir::new().expect("temp dir");
+        let root = Arc::new(parent.path().join("catalog"));
+        fs::create_dir(root.as_path()).expect("create caller-owned empty root");
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = [b'A', b'B']
+            .into_iter()
+            .map(|payload| {
+                let root = Arc::clone(&root);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    with_clean_catalog_root_guarded(
+                        root.as_path(),
+                        root.as_path(),
+                        &OperatorWorkBudgetGuard::unbounded(),
+                        |_catalog, temp_root| {
+                            fs::create_dir(temp_root.join("data"))?;
+                            fs::write(temp_root.join("data/winner.parquet"), [payload])?;
+                            barrier.wait();
+                            Ok(payload)
+                        },
+                    )
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("publisher thread must not panic"))
+            .collect();
+
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+            1,
+            "create-only catalog publication must have one winner: {outcomes:?}"
+        );
+        let winner = fs::read(root.join("data/winner.parquet")).expect("read winner");
+        assert!(winner == [b'A'] || winner == [b'B']);
+        let retained = fs::read_dir(parent.path())
+            .expect("read parent")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained.len(),
+            2,
+            "both unique roots must remain isolated after the publish race"
+        );
+        assert_eq!(
+            retained
+                .iter()
+                .filter(|path| path.join("data/winner.parquet").is_file())
+                .count(),
+            1,
+            "only the losing publisher retains uncommitted data"
+        );
+    }
+
+    #[test]
+    fn identical_catalog_retry_succeeds_and_retains_only_retry_candidate_data() {
+        let parent = tempfile::TempDir::new().expect("temp dir");
+        let root = parent.path().join("catalog");
+        fs::create_dir(&root).expect("create caller-owned root");
+        let publish = || {
+            with_clean_catalog_root_guarded(
+                &root,
+                &root,
+                &OperatorWorkBudgetGuard::unbounded(),
+                |_catalog, temp_root| {
+                    fs::create_dir(temp_root.join("data"))?;
+                    fs::write(temp_root.join("data/catalog.parquet"), b"identical")?;
+                    Ok(())
+                },
+            )
+        };
+
+        publish().expect("first publication");
+        publish().expect("identical retry");
+
+        let retained = fs::read_dir(parent.path())
+            .expect("read parent")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 2, "each attempt keeps an ownership root");
+        assert_eq!(
+            retained
+                .iter()
+                .filter(|path| path.join("data/catalog.parquet").is_file())
+                .count(),
+            1,
+            "the first publication moves its candidate; only the create-conflict retry retains full data for lifecycle cleanup"
+        );
+    }
+
+    #[test]
+    fn failed_projection_retains_candidate_outside_authoritative_output() {
+        let parent = tempfile::TempDir::new().expect("temp dir");
+        let output = parent.path().join("authoritative-output");
+        let catalog_root = output.join("catalog");
+
+        let error = with_clean_catalog_root_guarded(
+            &catalog_root,
+            &output,
+            &OperatorWorkBudgetGuard::unbounded(),
+            |_catalog, candidate_root| -> Result<()> {
+                fs::create_dir(candidate_root.join("data"))?;
+                fs::write(
+                    candidate_root.join("data/incomplete.parquet"),
+                    b"incomplete",
+                )?;
+                anyhow::bail!("injected projection failure")
+            },
+        )
+        .expect_err("injected failure must fail projection");
+
+        assert!(error.to_string().contains("injected projection failure"));
+        assert!(output.is_dir(), "authoritative output must exist");
+        assert!(
+            fs::read_dir(&output)
+                .expect("read authoritative output")
+                .next()
+                .is_none(),
+            "failed candidate must never become an authoritative output entry"
+        );
+        let retained = fs::read_dir(parent.path())
+            .expect("read output parent")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1, "one external candidate is retained");
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&retained[0])
+                .expect("stat retained external candidate")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+            "external candidate workspace must remain private"
+        );
+        assert_eq!(
+            fs::read(retained[0].join("data/incomplete.parquet"))
+                .expect("read retained external candidate"),
+            b"incomplete"
+        );
+    }
+
+    #[test]
+    fn stale_external_candidate_cannot_gain_catalog_authority() {
+        let parent = tempfile::TempDir::new().expect("temp dir");
+        let output = parent.path().join("authoritative-output");
+        let catalog_root = output.join("catalog");
+        fs::create_dir_all(&output).expect("create output");
+        let stale_candidate = parent.path().join("authoritative-output.stale.tmp");
+        fs::create_dir_all(stale_candidate.join("data")).expect("create stale candidate");
+        fs::write(
+            stale_candidate.join("data/stale.parquet"),
+            b"must-not-publish",
+        )
+        .expect("seed stale candidate");
+
+        with_clean_catalog_root_guarded(
+            &catalog_root,
+            &output,
+            &OperatorWorkBudgetGuard::unbounded(),
+            |_catalog, candidate_root| {
+                fs::create_dir(candidate_root.join("data"))?;
+                fs::write(candidate_root.join("data/owned.parquet"), b"owned")?;
+                Ok(())
+            },
+        )
+        .expect("publish owned candidate");
+
+        assert_eq!(
+            fs::read(catalog_root.join("data/owned.parquet")).expect("read authoritative catalog"),
+            b"owned"
+        );
+        assert!(
+            !catalog_root.join("data/stale.parquet").exists(),
+            "stale external residue must not gain reader authority"
+        );
+        assert_eq!(
+            fs::read(stale_candidate.join("data/stale.parquet"))
+                .expect("stale residue remains external"),
+            b"must-not-publish"
+        );
+    }
+
+    #[test]
+    fn committed_projection_is_success_even_when_temp_cleanup_fails() {
+        let parent = tempfile::TempDir::new().expect("temp dir");
+        let final_root = parent.path().join("catalog/data");
+        fs::create_dir_all(&final_root).expect("create committed catalog root");
+        fs::write(final_root.join("committed.parquet"), b"committed")
+            .expect("seed committed catalog");
+        let temp_root = parent.path().join("catalog.tmp");
+        fs::create_dir(&temp_root).expect("create temp root");
+        fs::write(temp_root.join("late-residue"), b"force remove_dir failure")
+            .expect("seed cleanup residue");
+
+        let result = finish_committed_catalog_publication(&temp_root, "published");
+
+        assert_eq!(result, "published");
+        assert_eq!(
+            fs::read(final_root.join("committed.parquet")).expect("read committed catalog"),
+            b"committed"
+        );
+        assert!(
+            temp_root.exists(),
+            "test setup must exercise the failed best-effort cleanup path"
         );
     }
 }

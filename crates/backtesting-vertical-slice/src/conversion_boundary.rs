@@ -10,13 +10,19 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage};
+use crate::{
+    atomic_artifact_write::atomic_file_create_or_verify_guarded,
+    operator_work_budget::{
+        CooperativeDeadlineWriter, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+    },
+};
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
@@ -25,9 +31,9 @@ pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
 /// never write it, so existing single-table outputs stay byte-identical.
 pub const CONVERSION_TABLES_FILE: &str = "conversion-tables.json";
 
-pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v1";
-pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v1";
-pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v1";
+pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v2";
+pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v2";
+pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v2";
 
 /// Converter identity fields that must match before output can be reused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,13 +41,26 @@ pub struct ConversionFingerprint {
     pub source_proof_id: String,
     pub source_proof_version: u32,
     pub accepted_object_sha256: String,
+    /// Portable identity of the source-control artifact whose exact bytes
+    /// authorized this conversion (for RunSpec flows, the source-bindings
+    /// registry). This is deliberately generic so non-RunSpec conversions
+    /// bind their own authoritative control artifact through the same reuse
+    /// contract.
+    pub control_artifact_path: String,
+    pub control_artifact_sha256: String,
     pub converter_identity: String,
     pub converter_version: String,
     pub converter_config_hash: String,
 }
 
 impl ConversionFingerprint {
+    pub fn validate(&self) -> Result<()> {
+        self.validate_control_artifact_identity()
+    }
+
     pub fn validate_against(&self, expected: &Self) -> Result<()> {
+        self.validate()?;
+        expected.validate()?;
         ensure_identity_field(
             "source_proof_id",
             &self.source_proof_id,
@@ -60,6 +79,16 @@ impl ConversionFingerprint {
             &expected.accepted_object_sha256,
         )?;
         ensure_identity_field(
+            "control_artifact_path",
+            &self.control_artifact_path,
+            &expected.control_artifact_path,
+        )?;
+        ensure_identity_field(
+            "control_artifact_sha256",
+            &self.control_artifact_sha256,
+            &expected.control_artifact_sha256,
+        )?;
+        ensure_identity_field(
             "converter_identity",
             &self.converter_identity,
             &expected.converter_identity,
@@ -76,6 +105,18 @@ impl ConversionFingerprint {
         )?;
         Ok(())
     }
+
+    fn validate_control_artifact_identity(&self) -> Result<()> {
+        ensure!(
+            !self.control_artifact_path.trim().is_empty(),
+            "conversion control_artifact_path must not be empty"
+        );
+        ensure!(
+            crate::hashing::is_lowercase_sha256_hex(&self.control_artifact_sha256),
+            "conversion control_artifact_sha256 must be 64 lowercase-hex characters"
+        );
+        Ok(())
+    }
 }
 
 fn ensure_identity_field(field: &'static str, actual: &str, expected: &str) -> Result<()> {
@@ -86,7 +127,9 @@ fn ensure_identity_field(field: &'static str, actual: &str, expected: &str) -> R
     Ok(())
 }
 
-/// Durable stage marker for a conversion run.
+/// Local progress stage for a conversion run. This is never a remote
+/// completion authority; durable completion is represented only by the exact
+/// versioned terminal manifest in the operator lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversionCheckpointStage {
@@ -96,7 +139,8 @@ pub enum ConversionCheckpointStage {
     Completed,
 }
 
-/// Durable checkpoint written before and during conversion.
+/// Local checkpoint written before and during conversion. A `Completed` stage
+/// means conversion work finished locally, not that a durable run committed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversionCheckpoint {
     pub checkpoint_version: String,
@@ -335,6 +379,7 @@ impl ConversionManifest {
 
 /// Catalog-local metadata written next to the NT catalog projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConversionCatalogMetadata {
     pub metadata_version: String,
     pub manifest_hash: String,
@@ -348,8 +393,86 @@ pub struct ConversionCatalogMetadata {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub catalog_rows_by_nt_data_type: BTreeMap<String, usize>,
     pub output_catalog_uri: String,
-    pub execution_catalog_uri: String,
-    pub direct_s3_catalog_access_proven: bool,
+    #[serde(default)]
+    pub catalog_consumption: CatalogConsumption,
+}
+
+/// Exact immutable receipt identity produced by catalog publication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogPublicationReceiptIdentity {
+    pub catalog_root_uri: String,
+    pub receipt_uri: String,
+    pub receipt_sha256: String,
+    pub receipt_version_id: String,
+    pub physical_manifest_sha256: String,
+}
+
+impl CatalogPublicationReceiptIdentity {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.catalog_root_uri.starts_with("s3://") && self.catalog_root_uri.ends_with('/'),
+            "catalog publication root URI must be a canonical S3 directory URI"
+        );
+        ensure!(
+            !self.receipt_uri.trim().is_empty(),
+            "catalog publication receipt URI must not be empty"
+        );
+        let receipt_relative = self
+            .receipt_uri
+            .strip_prefix(&self.catalog_root_uri)
+            .context("catalog publication receipt URI must be beneath its exact catalog root")?;
+        ensure!(
+            !receipt_relative.is_empty() && !receipt_relative.ends_with('/'),
+            "catalog publication receipt URI must identify an object beneath its exact catalog root"
+        );
+        ensure!(
+            crate::hashing::is_lowercase_sha256_hex(&self.receipt_sha256),
+            "catalog publication receipt SHA-256 must be 64 lowercase-hex characters"
+        );
+        ensure!(
+            !self.receipt_version_id.trim().is_empty(),
+            "catalog publication receipt version id must not be empty"
+        );
+        ensure!(
+            crate::hashing::is_lowercase_sha256_hex(&self.physical_manifest_sha256),
+            "catalog publication physical-manifest SHA-256 must be 64 lowercase-hex characters"
+        );
+        Ok(())
+    }
+}
+
+/// Stable catalog-consumption identity persisted into catalog metadata.
+///
+/// A hydrated publication deliberately omits its private local hydration path:
+/// that path is a per-attempt implementation detail and would make an otherwise
+/// identical retry produce different metadata and result-contract bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CatalogConsumption {
+    #[default]
+    Unproven,
+    LocalCatalog {
+        catalog_uri: String,
+    },
+    HydratedPublication {
+        receipt: CatalogPublicationReceiptIdentity,
+    },
+}
+
+/// Runtime evidence used to bind one proven consumption path. Remote
+/// publication is consumable only after its exact receipt has been hydrated
+/// into one absolute local run view. The local hydration path is validated but
+/// never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogConsumptionEvidence {
+    LocalCatalog {
+        catalog_uri: String,
+    },
+    HydratedPublication {
+        local_catalog_root: PathBuf,
+        receipt: CatalogPublicationReceiptIdentity,
+    },
 }
 
 impl ConversionCatalogMetadata {
@@ -370,20 +493,58 @@ impl ConversionCatalogMetadata {
             catalog_nt_data_types: manifest.catalog_nt_data_types.clone(),
             catalog_rows_by_nt_data_type: manifest.catalog_rows_by_nt_data_type.clone(),
             output_catalog_uri: manifest.output_catalog_uri.clone(),
-            execution_catalog_uri: manifest.output_catalog_uri.clone(),
-            direct_s3_catalog_access_proven: false,
+            catalog_consumption: CatalogConsumption::Unproven,
+        }
+    }
+
+    /// Apply typed local-consumption evidence. Raw remote catalog execution is
+    /// intentionally not representable by this API.
+    pub fn with_catalog_consumption_evidence(
+        mut self,
+        evidence: CatalogConsumptionEvidence,
+    ) -> Result<Self> {
+        let consumption = match evidence {
+            CatalogConsumptionEvidence::LocalCatalog { catalog_uri } => {
+                validate_local_execution_catalog_uri(&catalog_uri)?;
+                CatalogConsumption::LocalCatalog { catalog_uri }
+            }
+            CatalogConsumptionEvidence::HydratedPublication {
+                local_catalog_root,
+                receipt,
+            } => {
+                validate_local_execution_catalog_root(&local_catalog_root)?;
+                receipt.validate()?;
+                CatalogConsumption::HydratedPublication { receipt }
+            }
+        };
+        ensure!(
+            matches!(self.catalog_consumption, CatalogConsumption::Unproven)
+                || self.catalog_consumption == consumption,
+            "catalog consumption identity cannot be replaced"
+        );
+        self.catalog_consumption = consumption;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn catalog_consumption_proven(&self) -> bool {
+        !matches!(self.catalog_consumption, CatalogConsumption::Unproven)
+    }
+
+    #[must_use]
+    pub fn hydrated_publication_receipt(&self) -> Option<&CatalogPublicationReceiptIdentity> {
+        match &self.catalog_consumption {
+            CatalogConsumption::HydratedPublication { receipt } => Some(receipt),
+            CatalogConsumption::Unproven | CatalogConsumption::LocalCatalog { .. } => None,
         }
     }
 
     #[must_use]
-    pub fn with_execution_catalog_access(
-        mut self,
-        execution_catalog_uri: impl Into<String>,
-        direct_s3_catalog_access_proven: bool,
-    ) -> Self {
-        self.execution_catalog_uri = execution_catalog_uri.into();
-        self.direct_s3_catalog_access_proven = direct_s3_catalog_access_proven;
-        self
+    pub fn local_catalog_uri(&self) -> Option<&str> {
+        match &self.catalog_consumption {
+            CatalogConsumption::LocalCatalog { catalog_uri } => Some(catalog_uri),
+            CatalogConsumption::Unproven | CatalogConsumption::HydratedPublication { .. } => None,
+        }
     }
 
     #[must_use]
@@ -458,22 +619,44 @@ impl ConversionCatalogMetadata {
             self.output_catalog_uri == manifest.output_catalog_uri,
             "catalog metadata output_catalog_uri mismatch"
         );
-        ensure!(
-            !self.execution_catalog_uri.trim().is_empty(),
-            "catalog metadata execution_catalog_uri must not be empty"
-        );
-        ensure!(
-            !self.direct_s3_catalog_access_proven
-                || self.execution_catalog_uri.starts_with("s3://"),
-            "catalog metadata cannot claim direct S3 access for non-S3 execution catalog URI {:?}",
-            self.execution_catalog_uri
-        );
+        match &self.catalog_consumption {
+            CatalogConsumption::Unproven => {}
+            CatalogConsumption::LocalCatalog { catalog_uri } => {
+                validate_local_execution_catalog_uri(catalog_uri)?;
+            }
+            CatalogConsumption::HydratedPublication { receipt } => receipt.validate()?,
+        }
         Ok(())
     }
 
     pub fn content_hash(&self) -> Result<String> {
         content_hash(self)
     }
+}
+
+fn validate_local_execution_catalog_uri(uri: &str) -> Result<()> {
+    ensure!(
+        !uri.trim().is_empty(),
+        "local execution catalog URI must not be empty"
+    );
+    ensure!(
+        !uri.contains("://") && Path::new(uri).is_absolute(),
+        "execution catalog URI must be an absolute local path, got {uri:?}"
+    );
+    Ok(())
+}
+
+fn validate_local_execution_catalog_root(root: &Path) -> Result<()> {
+    ensure!(
+        root.is_absolute(),
+        "hydrated execution catalog root must be absolute, got {}",
+        root.display()
+    );
+    ensure!(
+        root.to_str().is_some(),
+        "hydrated execution catalog root must be valid UTF-8"
+    );
+    Ok(())
 }
 
 /// One projected catalog table of a multi-table conversion.
@@ -540,6 +723,18 @@ pub fn write_conversion_tables_index(
     output_dir: &Path,
     records: &[ConversionTableRecord],
 ) -> Result<PathBuf> {
+    write_conversion_tables_index_guarded(
+        output_dir,
+        records,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub fn write_conversion_tables_index_guarded(
+    output_dir: &Path,
+    records: &[ConversionTableRecord],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<PathBuf> {
     ensure!(
         records.len() > 1,
         "conversion tables index is only written for multi-table conversions, got {} record(s)",
@@ -551,11 +746,12 @@ pub fn write_conversion_tables_index(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
     let path = output_dir.join(CONVERSION_TABLES_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    write_immutable_conversion_artifact_guarded(
         &path,
         CONVERSION_TABLES_FILE,
         &records,
-        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
     )
     .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
@@ -657,14 +853,17 @@ pub fn inspect_conversion_output(
     output_dir: &Path,
     expected: &ConversionFingerprint,
 ) -> Result<ConversionOutputState> {
+    expected.validate()?;
     if !output_dir.exists() {
         return Ok(ConversionOutputState::CleanNew);
     }
-    let entries = fs::read_dir(output_dir)
-        .with_context(|| format!("read conversion output dir {}", output_dir.display()))?
-        .collect::<std::io::Result<Vec<_>>>()
+    let mut entries = fs::read_dir(output_dir)
         .with_context(|| format!("read conversion output dir {}", output_dir.display()))?;
-    if entries.is_empty() {
+    let first_entry = entries
+        .next()
+        .transpose()
+        .with_context(|| format!("read conversion output dir {}", output_dir.display()))?;
+    if first_entry.is_none() {
         return Ok(ConversionOutputState::CleanNew);
     }
 
@@ -673,21 +872,19 @@ pub fn inspect_conversion_output(
     let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
 
     if !checkpoint_path.exists() {
-        bail!(
-            "dirty conversion output {}: non-empty output has no validated {CONVERSION_CHECKPOINT_FILE}",
-            output_dir.display()
-        );
+        return Ok(ConversionOutputState::ResumeFromCheckpoint {
+            stage: ConversionCheckpointStage::Started,
+        });
     }
 
     let checkpoint: ConversionCheckpoint = read_json(&checkpoint_path)?;
     checkpoint.validate_for(expected)?;
     let checkpoint_hash = checkpoint.content_hash()?;
 
-    if checkpoint.stage != ConversionCheckpointStage::Completed {
-        return Ok(ConversionOutputState::ResumeFromCheckpoint {
-            stage: checkpoint.stage,
-        });
-    }
+    ensure!(
+        checkpoint.stage == ConversionCheckpointStage::Completed,
+        "legacy nonterminal conversion checkpoint cannot be overwritten by the immutable completion protocol"
+    );
 
     if !manifest_path.exists() {
         bail!(
@@ -723,14 +920,20 @@ pub fn write_conversion_checkpoint(
     output_dir: &Path,
     checkpoint: &ConversionCheckpoint,
 ) -> Result<PathBuf> {
+    ensure!(
+        checkpoint.stage == ConversionCheckpointStage::Completed,
+        "only a completed immutable conversion checkpoint may be persisted"
+    );
+    checkpoint.validate_for(&checkpoint.fingerprint)?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
     let path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    write_immutable_conversion_artifact_guarded(
         &path,
         CONVERSION_CHECKPOINT_FILE,
         checkpoint,
-        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        &OperatorWorkBudgetGuard::unbounded(),
+        OperatorWorkBudgetStage::Finalize,
     )
     .with_context(|| format!("write {}", path.display()))?;
     Ok(path)
@@ -762,46 +965,80 @@ pub fn write_completed_conversion_artifacts_guarded(
         checkpoint.stage == ConversionCheckpointStage::Completed,
         "completion commit requires a completed conversion checkpoint"
     );
-    write_pending_conversion_artifacts(output_dir, manifest, metadata)?;
-    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
-    let checkpoint_bytes = crate::reference_artifact::canonical_json_bytes(checkpoint)
-        .context("serialize completed conversion checkpoint")?;
-    crate::atomic_artifact_write::atomic_write_guarded(
-        &checkpoint_path,
-        &checkpoint_bytes,
+    let checkpoint_hash = checkpoint.content_hash()?;
+    checkpoint.validate_for(&manifest.fingerprint)?;
+    manifest.validate_for(&manifest.fingerprint, &checkpoint_hash)?;
+    let manifest_hash = manifest.content_hash()?;
+    metadata.validate_against(manifest, &manifest_hash, &checkpoint_hash)?;
+    write_pending_conversion_artifacts(output_dir, manifest, metadata, work_budget)?;
+    write_immutable_conversion_artifact_guarded(
+        &output_dir.join(CONVERSION_CHECKPOINT_FILE),
+        CONVERSION_CHECKPOINT_FILE,
+        checkpoint,
         work_budget,
         OperatorWorkBudgetStage::Finalize,
     )
-    .with_context(|| format!("commit {}", checkpoint_path.display()))?;
+    .context("commit immutable completed conversion checkpoint")?;
     Ok(())
 }
 
 /// Write all local completion artifacts except the completed checkpoint commit
-/// object. A started checkpoint remains authoritative until the caller commits.
+/// object. Preterminal state is represented only by the immutable artifacts
+/// already present; no mutable started checkpoint is persisted.
 pub fn write_pending_conversion_artifacts(
     output_dir: &Path,
     manifest: &ConversionManifest,
     metadata: &ConversionCatalogMetadata,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
+    manifest.fingerprint.validate()?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
     let manifest_path = output_dir.join(CONVERSION_MANIFEST_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    write_immutable_conversion_artifact_guarded(
         &manifest_path,
         CONVERSION_MANIFEST_FILE,
         manifest,
-        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
     )
     .with_context(|| format!("write {}", manifest_path.display()))?;
     let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
-    crate::reference_artifact::write_reference_artifact_with_len(
+    write_immutable_conversion_artifact_guarded(
         &metadata_path,
         CATALOG_METADATA_FILE,
         metadata,
-        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
     )
     .with_context(|| format!("write {}", metadata_path.display()))?;
     Ok(())
+}
+
+fn write_immutable_conversion_artifact_guarded<T: Serialize>(
+    path: &Path,
+    role: &str,
+    value: &T,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let bytes = crate::reference_artifact::canonical_json_bytes(value)
+        .with_context(|| format!("serialize immutable {role}"))?;
+    work_budget.verify_decoded_bytes(
+        u64::try_from(bytes.len())
+            .context("immutable conversion artifact length does not fit u64")?,
+        stage,
+    )?;
+    atomic_file_create_or_verify_guarded(path, work_budget, stage, |file| {
+        let mut writer = CooperativeDeadlineWriter::new(file, work_budget, stage);
+        writer
+            .write_all(&bytes)
+            .with_context(|| format!("write immutable {role}"))?;
+        writer
+            .flush()
+            .with_context(|| format!("flush immutable {role}"))?;
+        Ok(())
+    })
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {

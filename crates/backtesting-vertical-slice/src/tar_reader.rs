@@ -168,7 +168,7 @@ impl<R: Read> TarMembers<R> {
             "tar member {name:?} declares {size} bytes, exceeding per-member limit {}",
             self.max_member_bytes
         );
-        let mut bytes = vec![0u8; usize_from_size(size, name)?];
+        let mut bytes = allocate_member_bytes(usize_from_size(size, name)?, name)?;
         read_exact_member(&mut self.reader, &mut bytes, name)?;
         consume_padding(&mut self.reader, size, name)?;
         String::from_utf8(bytes).with_context(|| format!("tar member {name:?} is not valid UTF-8"))
@@ -314,6 +314,15 @@ fn usize_from_size(size: u64, name: &str) -> Result<usize> {
         .with_context(|| format!("tar member {name:?} size {size} exceeds addressable memory"))
 }
 
+fn allocate_member_bytes(member_len: usize, name: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(member_len)
+        .with_context(|| format!("reserve {member_len} bytes for tar member {name:?}"))?;
+    bytes.resize(member_len, 0);
+    Ok(bytes)
+}
+
 /// Parse the NUL-terminated `name` field of a tar header.
 fn parse_name(header: &[u8; TAR_BLOCK]) -> String {
     let raw = &header[NAME_OFFSET..NAME_OFFSET + NAME_LEN];
@@ -343,7 +352,11 @@ fn parse_octal_size(header: &[u8; TAR_BLOCK]) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Write};
+    use std::{
+        cell::Cell,
+        io::{Cursor, Read, Write},
+        rc::Rc,
+    };
 
     use flate2::{Compression, write::GzEncoder};
 
@@ -440,6 +453,44 @@ mod tests {
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].name, "c.data");
         assert_eq!(members[0].text, "payload");
+    }
+
+    struct RecordingReader {
+        inner: Cursor<Vec<u8>>,
+        max_requested: Rc<Cell<usize>>,
+    }
+
+    impl Read for RecordingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.max_requested
+                .set(self.max_requested.get().max(buffer.len()));
+            self.inner.read(buffer)
+        }
+    }
+
+    #[test]
+    fn large_skipped_member_never_requests_more_than_one_tar_block() {
+        let mut tar = Vec::new();
+        push_member(&mut tar, "large.meta", &vec![b'x'; TAR_BLOCK * 8]);
+        push_member(&mut tar, "kept.data", b"payload");
+        tar.extend(std::iter::repeat_n(0_u8, TAR_BLOCK * 2));
+        let max_requested = Rc::new(Cell::new(0));
+        let reader = RecordingReader {
+            inner: Cursor::new(tar),
+            max_requested: max_requested.clone(),
+        };
+
+        let members = tar_members(reader, ".data", 1_024)
+            .collect::<Result<Vec<_>>>()
+            .expect("skip large non-matching member");
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, "kept.data");
+        assert!(
+            max_requested.get() <= TAR_BLOCK,
+            "tar parser requested {} bytes in one read",
+            max_requested.get()
+        );
     }
 
     #[test]
@@ -540,6 +591,15 @@ mod tests {
         }
         let err = parse_octal_size(&header).expect_err("all-space size field must fail loud");
         assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn matching_member_allocation_failure_is_reported() {
+        let error = allocate_member_bytes(usize::MAX, "huge.data")
+            .expect_err("an impossible member allocation must fail fallibly");
+        let expected = format!("reserve {} bytes for tar member \"huge.data\"", usize::MAX);
+
+        assert!(error.to_string().contains(&expected), "{error:#}");
     }
 
     #[test]

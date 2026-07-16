@@ -11,95 +11,119 @@
 //! artifacts.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
+    mem::size_of,
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
-use anyhow::{Context, Result, ensure};
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
+use futures_util::StreamExt;
 use nautilus_backtest::result::BacktestResult;
-use nautilus_persistence::parquet::create_object_store_from_path;
-use object_store::{
-    Error as ObjectStoreError, ObjectStore, ObjectStoreExt, PutMode, path::Path as ObjectPath,
-};
+use object_store::{ObjectStore, aws::AmazonS3};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::atomic_artifact_write::atomic_write;
+use crate::atomic_artifact_write::{
+    atomic_file_create_or_verify_guarded, open_pinned_regular_file,
+};
 use crate::{
     artifact_store::{
-        ArtifactStoreConfig, CatalogDispatchConfig, CreateOnlyArtifactWriter,
-        CreateOnlyProbeTranscript, PersistedCatalogProjection, PersistedCatalogProjectionObject,
-        ResolvedArtifactRoot, S3ConditionalPutMode,
+        ArtifactStoreConfig, BucketVersioningEnabled, CatalogDispatchConfig,
+        CatalogProjectionPublicationReceipt, CreateOnlyArtifactWriter, PersistedCatalogProjection,
+        PersistedCatalogProjectionObject, ResolvedArtifactRoot, S3ConditionalPutMode,
+        ensure_immutable_s3_version_id, hydrate_catalog_projection_from_receipt_guarded,
         persist_catalog_projection_for_source_binding_guarded,
+        recover_catalog_projection_from_current_receipt_guarded, required_versioned_create_result,
     },
     canonical_market_data::{
         CanonicalBarsTable, CanonicalFundingRatesTable, CanonicalIndexPricesTable,
         CanonicalMarkPricesTable, CanonicalOrderBookDeltasTable, CanonicalQuotesTable,
+        bar_row_materialized_bytes, delta_row_materialized_bytes,
+        funding_rate_row_materialized_bytes, mark_price_row_materialized_bytes,
+        point_price_row_materialized_bytes, quote_row_materialized_bytes,
     },
     canonical_trades::{
         BAR_TABLE_FAMILY, CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig,
         DELTAS_TABLE_FAMILY, FUNDING_RATES_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY,
         MARK_PRICES_TABLE_FAMILY, QUOTE_TABLE_FAMILY, RawPayloadConfig, RawPayloadContainer,
-        SourceAdapterKind, TRADE_TABLE_FAMILY, normalize_registered_bar_converter,
-        normalize_registered_event_stream_delta_converter, normalize_registered_funding_converter,
-        normalize_registered_index_converter,
+        SourceAdapterKind, TRADE_TABLE_FAMILY, canonical_trade_row_materialized_bytes,
+        normalize_registered_bar_converter, normalize_registered_event_stream_delta_converter,
+        normalize_registered_funding_converter, normalize_registered_index_converter,
         normalize_registered_jsonl_multi_interval_bar_converter,
         normalize_registered_mark_converter, normalize_registered_order_book_delta_converter,
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
         normalize_registered_seeded_l2_quote_converter,
         normalize_registered_tar_order_book_delta_converter,
         normalize_registered_tar_seeded_l2_quote_converter, require_registered_source_adapter,
-        require_registered_source_adapter_for_table_family,
+        require_registered_source_adapter_for_table_family, verify_canonical_rows_materialization,
+        verify_parquet_file_trailer_preflight, verify_single_parquet_metadata_budget,
     },
     catalog_projection::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
         NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
         NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
-        NT_DATA_TYPE_TRADE_TICK, actual_nt_market_data_metadata, logical_catalog_hash,
-        project_canonical_bars_to_catalog, project_canonical_funding_rates_to_catalog,
-        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
-        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
-        project_canonical_trades_to_catalog, projected_nt_market_data_row_groups, read_back_bars,
-        read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
-        read_back_quotes, read_back_trade_ticks, ts_init_nanos,
+        NT_DATA_TYPE_TRADE_TICK, actual_nt_market_data_metadata_guarded,
+        logical_catalog_hash_guarded, preflight_nt_catalog_parquet_guarded,
+        project_canonical_bars_to_catalog_guarded,
+        project_canonical_funding_rates_to_catalog_guarded,
+        project_canonical_index_to_catalog_guarded, project_canonical_mark_to_catalog_guarded,
+        project_canonical_order_book_deltas_to_catalog_guarded,
+        project_canonical_quotes_to_catalog_guarded, project_canonical_trades_to_catalog_guarded,
+        projected_nt_market_data_row_groups, read_back_bars_guarded,
+        read_back_funding_rates_guarded, read_back_index_guarded, read_back_mark_guarded,
+        read_back_order_book_deltas_guarded, read_back_quotes_guarded,
+        read_back_trade_ticks_guarded, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_TABLES_FILE,
-        ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
-        ConversionFingerprint, ConversionManifest, ConversionOutputState, ConversionTableRecord,
-        inspect_conversion_output, validate_conversion_tables_index,
-        write_completed_conversion_artifacts_guarded, write_conversion_checkpoint,
-        write_conversion_tables_index, write_pending_conversion_artifacts,
+        CatalogConsumptionEvidence, CatalogPublicationReceiptIdentity, ConversionCatalogMetadata,
+        ConversionCheckpoint, ConversionCheckpointStage, ConversionFingerprint, ConversionManifest,
+        ConversionOutputState, ConversionTableRecord, inspect_conversion_output,
+        validate_conversion_tables_index, write_completed_conversion_artifacts_guarded,
+        write_conversion_tables_index_guarded, write_pending_conversion_artifacts,
     },
-    nt_catalog_capability::{
-        NtCatalogCapabilityEvidence, NtCatalogCapabilityPlan, NtCatalogCapabilityProofArtifact,
-        NtCatalogCapabilityRunSpec,
-    },
+    hashing::is_lowercase_sha256_hex,
+    nt_catalog_capability::{NtCatalogSsmCredentialResolver, NtCatalogSsmParameterRefs},
     operator_work_budget::{
-        OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+        CooperativeDeadlineReader, CooperativeDeadlineWriter, ExactSizedObjectBuffer,
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, cooperative_stable_sort_by,
+        deserialize_json_with_budget, guarded_async_operation_outcome,
+        guarded_blocking_join_outcome, guarded_operation_outcome, read_file_with_budget,
+        sha256_exact_sized_open_file_guarded, sha256_hex_with_budget,
     },
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
-    run_manifest::{BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestCatalogInput},
+    run_manifest::{
+        BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION, BacktestRunManifestArtifact,
+        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, CATALOG_RUN_VIEW_AUTHORITY_FILE,
+        CatalogRunViewAuthority, ManifestCatalogInput, SubmittedRunIdentity,
+    },
     runner::{
-        BacktestRunInputs, BacktestRunOutput, assert_bar_read_back_matches,
-        assert_delta_read_back_matches, assert_funding_read_back_matches,
-        assert_index_read_back_matches, assert_mark_read_back_matches,
-        assert_quote_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
-        expected_iterations, iterations_mismatch, market_structure_label,
-        nt_extension_surface_claim_limits, result_contract_feed_labels, result_contract_warnings,
-        run_backtest, run_nt_backtest_node_guarded, run_purpose_label,
-        time_window_excludes_all_data, window_bound_nanos,
+        BacktestRunFinalizeInputs, BacktestRunInputs, BacktestRunOutput, PreparedBacktestRun,
+        assert_bar_read_back_matches_guarded, assert_delta_read_back_matches_guarded,
+        assert_funding_read_back_matches_guarded, assert_index_read_back_matches_guarded,
+        assert_mark_read_back_matches_guarded, assert_quote_read_back_matches_guarded,
+        assert_read_back_matches_guarded, assert_time_window_overlaps_data_guarded,
+        execute_prepared_backtest, expected_iterations_guarded, iterations_mismatch,
+        market_structure_label, mint_local_catalog_run_view_authority_guarded,
+        nt_extension_surface_claim_limits, prepare_backtest, result_contract_feed_labels,
+        result_contract_warnings, run_backtest, run_nt_backtest_node_guarded, run_purpose_label,
+        time_window_excludes_all_data, verify_catalog_run_view_authority_guarded,
+        window_bound_nanos,
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
-        SourceProofFidelityClass, SourceProofReport, read_source_binding_registry_from_path,
-        select_accepted_dataset_with_registry,
+        SourceProofFidelityClass, SourceProofReport, select_accepted_dataset_with_registry,
     },
 };
 
@@ -113,8 +137,14 @@ pub const RESULT_CONTRACT_FILE: &str = "backtest-result-contract.json";
 pub const BACKTEST_RUN_MANIFEST_FILE: &str = "backtest-run-manifest.json";
 /// Accepted source-proof artifact filename.
 pub const ACCEPTED_SOURCE_PROOF_FILE: &str = "accepted-source-proof.json";
+/// Final local completion commit binding the exact operator output file set.
+pub const OPERATOR_TERMINAL_SEAL_FILE: &str = "operator-terminal-seal.json";
 /// Published-catalog `BacktestNode` proof artifact filename.
 pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
+/// Sole remote completion authority for a durable catalog run.
+pub const DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.json";
+const PUBLISHED_CATALOG_PROOF_VERSION: &str = "published-catalog-proof.v2";
+const DURABLE_COMPLETION_MANIFEST_VERSION: &str = "durable-completion-manifest.v1";
 
 const OPERATOR_ATTESTED_REDACTED: &str = "operator-attested-redacted";
 const OPERATOR_ATTESTED_ELAPSED_TIME_SECS: f64 = 0.0;
@@ -143,10 +173,6 @@ pub struct RunSpec {
     pub artifact_store: Option<ArtifactStoreConfig>,
     #[serde(default)]
     pub catalog_dispatch: Option<CatalogDispatchConfig>,
-    #[serde(default)]
-    pub create_only_probe_id: Option<String>,
-    #[serde(default)]
-    pub nt_catalog_capability_proof: Option<NtCatalogCapabilityRunSpec>,
     /// Selector provenance hashes required for L2 replay result contracts.
     /// Only valid on run-specs whose accepted data is `L2_REPLAY`.
     #[serde(default)]
@@ -238,26 +264,6 @@ impl RunSpec {
     pub fn required_catalog_dispatch(&self) -> Result<&CatalogDispatchConfig> {
         self.catalog_dispatch.as_ref().context(
             "run spec missing [[catalog_dispatch.bindings]] required for artifact-store publish path",
-        )
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error when the run-spec omits the create-only probe id required
-    /// by the publish/proof path.
-    pub fn required_create_only_probe_id(&self) -> Result<&str> {
-        self.create_only_probe_id.as_deref().context(
-            "run spec missing create_only_probe_id required for artifact-store publish path",
-        )
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error when the run-spec omits the synthetic NT catalog
-    /// capability proof required by the publish/proof path.
-    pub fn required_nt_catalog_capability_proof(&self) -> Result<&NtCatalogCapabilityRunSpec> {
-        self.nt_catalog_capability_proof.as_ref().context(
-            "run spec missing [nt_catalog_capability_proof] required for artifact-store publish path",
         )
     }
 }
@@ -417,49 +423,1940 @@ pub struct RunArtifacts {
     pub conversion_manifest_path: PathBuf,
     pub conversion_checkpoint_path: PathBuf,
     pub catalog_metadata_path: PathBuf,
+    pub catalog_run_view_authority_path: PathBuf,
     pub canonical_catalog_uri: Option<String>,
-    pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>,
-    pub nt_catalog_capability_proof_artifact: Option<NtCatalogCapabilityProofArtifact>,
-    pub create_only_probe_transcript: Option<CreateOnlyProbeTranscript>,
     pub persisted_catalog_projection: Option<PersistedCatalogProjection>,
     pub persisted_catalog_objects: Vec<PersistedCatalogProjectionObject>,
     pub output: BacktestRunOutput,
+    pub(crate) batch_summary: OperatorRunSummary,
+    transient_catalog_root_lease: Option<TransientCatalogRootLease>,
 }
 
-/// One local artifact copied to the configured publish prefix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublishedArtifact {
-    pub local_path: PathBuf,
-    pub published_uri: String,
-    pub bytes: u64,
+/// Exact immutable S3 object identity carried by the durable terminal
+/// manifest. A current-key lookup is never an acceptable substitute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurableObjectVersionIdentity {
+    pub uri: String,
     pub sha256: String,
+    pub byte_len: u64,
+    pub version_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e_tag: Option<String>,
 }
 
-/// A verified local run plus the artifacts published to its configured prefix.
-pub struct PublishedRunArtifacts {
-    pub run: RunArtifacts,
-    pub published_artifacts: Vec<PublishedArtifact>,
-    pub published_catalog_proof: Option<PublishedCatalogProof>,
+impl DurableObjectVersionIdentity {
+    fn validate(&self, label: &str) -> Result<()> {
+        ensure!(!self.uri.trim().is_empty(), "{label} URI must not be empty");
+        ensure!(
+            is_lowercase_sha256_hex(&self.sha256),
+            "{label} SHA-256 must be lowercase hex"
+        );
+        ensure!(self.byte_len > 0, "{label} byte length must be positive");
+        ensure_immutable_s3_version_id(&format!("{label} S3 version ID"), &self.version_id)?;
+        if let Some(e_tag) = &self.e_tag {
+            ensure!(!e_tag.is_empty(), "{label} ETag must not be empty");
+        }
+        Ok(())
+    }
 }
 
-/// Optional publish-time proof configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PublishOptions {
-    pub prove_published_catalog: bool,
+/// Caller-retained, exact-version locator for the remote terminal manifest.
+/// It is returned by the commit path and must be supplied explicitly for a
+/// fast resume; the operator never discovers completion through a mutable
+/// current-key read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurableCompletionLocator {
+    pub object: DurableObjectVersionIdentity,
+}
+
+impl DurableCompletionLocator {
+    /// Validate the exact immutable identity carried by this locator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any URI, digest, length, or S3 version identity is
+    /// missing or malformed.
+    pub fn validate(&self) -> Result<()> {
+        self.object.validate("durable completion manifest")
+    }
+}
+
+/// Exactly one durable invocation authority. Execution consumes the accepted
+/// source bytes; resume consumes only an exact terminal locator and cannot
+/// accidentally retain or inspect a second source payload.
+pub enum DurableRunRequest {
+    Execute(Vec<u8>),
+    Resume(DurableCompletionLocator),
+}
+
+/// Scalar result of a fully validated durable fast resume. It deliberately
+/// does not fabricate [`RunArtifacts`] or rematerialize the canonical dataset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurableRunReceipt {
+    pub completion: DurableCompletionLocator,
+    pub run_id: String,
+    pub submitted_manifest_hash: String,
+    pub canonical_rows: u64,
+    pub nt_catalog_rows: u64,
+    pub catalog_hash: String,
+}
+
+/// One production durable lane with two honest outcomes: newly executed
+/// artifacts, or a validated remote terminal receipt.
+pub enum DurableRunOutcome {
+    Executed {
+        artifacts: Box<RunArtifacts>,
+        receipt: DurableRunReceipt,
+    },
+    Resumed(DurableRunReceipt),
+}
+
+impl DurableRunOutcome {
+    #[must_use]
+    pub fn receipt(&self) -> &DurableRunReceipt {
+        match self {
+            Self::Executed { receipt, .. } | Self::Resumed(receipt) => receipt,
+        }
+    }
+
+    #[must_use]
+    pub fn executed_artifacts(&self) -> Option<&RunArtifacts> {
+        match self {
+            Self::Executed { artifacts, .. } => Some(artifacts),
+            Self::Resumed(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DurableCompletionManifest {
+    manifest_version: String,
+    run_id: String,
+    submitted_manifest_hash: String,
+    fingerprint: ConversionFingerprint,
+    canonical_rows: u64,
+    nt_catalog_rows: u64,
+    catalog_hash: String,
+    publication_receipt: DurableObjectVersionIdentity,
+    result_contract: DurableObjectVersionIdentity,
+    catalog_metadata: DurableObjectVersionIdentity,
+    published_catalog_proof: DurableObjectVersionIdentity,
+    catalog_run_view_authority: DurableObjectVersionIdentity,
+}
+
+impl DurableCompletionManifest {
+    fn new(
+        spec: &RunSpec,
+        fingerprint: ConversionFingerprint,
+        summary: &OperatorRunSummary,
+        publication_receipt: DurableObjectVersionIdentity,
+        artifacts: DurableCompletionArtifacts,
+    ) -> Self {
+        Self {
+            manifest_version: DURABLE_COMPLETION_MANIFEST_VERSION.to_string(),
+            run_id: spec.manifest.run_id.clone(),
+            submitted_manifest_hash: spec.manifest.manifest_hash(),
+            fingerprint,
+            canonical_rows: summary.canonical_rows,
+            nt_catalog_rows: summary.nt_catalog_rows,
+            catalog_hash: summary.catalog_hash.clone(),
+            publication_receipt,
+            result_contract: artifacts.result_contract,
+            catalog_metadata: artifacts.catalog_metadata,
+            published_catalog_proof: artifacts.published_catalog_proof,
+            catalog_run_view_authority: artifacts.catalog_run_view_authority,
+        }
+    }
+
+    fn validate_for(&self, spec: &RunSpec, fingerprint: &ConversionFingerprint) -> Result<()> {
+        ensure!(
+            self.manifest_version == DURABLE_COMPLETION_MANIFEST_VERSION,
+            "unexpected durable completion manifest version"
+        );
+        ensure!(
+            self.run_id == spec.manifest.run_id
+                && self.submitted_manifest_hash == spec.manifest.manifest_hash(),
+            "durable completion manifest submitted-run identity mismatch"
+        );
+        self.fingerprint.validate_against(fingerprint)?;
+        ensure!(
+            self.canonical_rows > 0 && self.nt_catalog_rows == self.canonical_rows,
+            "durable completion manifest row summary is invalid"
+        );
+        ensure!(
+            is_lowercase_sha256_hex(&self.catalog_hash),
+            "durable completion manifest catalog hash must be lowercase SHA-256"
+        );
+        for (label, object) in [
+            ("publication receipt", &self.publication_receipt),
+            ("result contract", &self.result_contract),
+            ("catalog metadata", &self.catalog_metadata),
+            ("published catalog proof", &self.published_catalog_proof),
+            (
+                "catalog run-view authority",
+                &self.catalog_run_view_authority,
+            ),
+        ] {
+            object.validate(label)?;
+        }
+        ensure!(
+            self.result_contract.uri
+                == portable_artifact_uri(&spec.manifest.output_prefix, RESULT_CONTRACT_FILE)
+                && self.catalog_metadata.uri
+                    == portable_artifact_uri(&spec.manifest.output_prefix, CATALOG_METADATA_FILE)
+                && self.published_catalog_proof.uri
+                    == portable_artifact_uri(
+                        &spec.manifest.output_prefix,
+                        PUBLISHED_CATALOG_PROOF_FILE,
+                    )
+                && self.catalog_run_view_authority.uri
+                    == portable_artifact_uri(
+                        &spec.manifest.output_prefix,
+                        CATALOG_RUN_VIEW_AUTHORITY_FILE,
+                    ),
+            "durable completion manifest artifact URI mismatch"
+        );
+        let unique_uris = [
+            self.publication_receipt.uri.as_str(),
+            self.result_contract.uri.as_str(),
+            self.catalog_metadata.uri.as_str(),
+            self.published_catalog_proof.uri.as_str(),
+            self.catalog_run_view_authority.uri.as_str(),
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        ensure!(
+            unique_uris.len() == 5,
+            "durable completion manifest object URIs must be distinct"
+        );
+        Ok(())
+    }
+
+    fn summary(&self) -> OperatorRunSummary {
+        OperatorRunSummary {
+            canonical_rows: self.canonical_rows,
+            nt_catalog_rows: self.nt_catalog_rows,
+            catalog_hash: self.catalog_hash.clone(),
+        }
+    }
+}
+
+struct DurableCompletionArtifacts {
+    result_contract: DurableObjectVersionIdentity,
+    catalog_metadata: DurableObjectVersionIdentity,
+    published_catalog_proof: DurableObjectVersionIdentity,
+    catalog_run_view_authority: DurableObjectVersionIdentity,
+}
+
+/// Fully validated scalar receipt prepared before the operator terminal seal
+/// is committed. Batch execution can move these fields without any
+/// post-terminal validation, hashing, allocation-dependent aggregation, or I/O.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OperatorRunSummary {
+    pub canonical_rows: u64,
+    pub nt_catalog_rows: u64,
+    pub catalog_hash: String,
+}
+
+const OPERATOR_TERMINAL_SEAL_VERSION: &str = "operator-terminal-seal.v1";
+
+/// One exact regular file committed by an operator run. The terminal seal is
+/// deliberately excluded from this list so it can be written last without a
+/// content-hash cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperatorTerminalSealFile {
+    relative_path: String,
+    bytes: u64,
+    sha256: String,
+}
+
+/// Sole local operator-completion authority. A conversion checkpoint can
+/// prove that projection finished, but only this final create-only artifact
+/// binds the complete backtest output and permits batch carry-forward.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperatorTerminalSeal {
+    seal_version: String,
+    run_id: String,
+    submitted_manifest_hash: String,
+    fingerprint: ConversionFingerprint,
+    canonical_rows: u64,
+    nt_catalog_rows: u64,
+    catalog_hash: String,
+    files: Vec<OperatorTerminalSealFile>,
+    committed_at: String,
+}
+
+impl OperatorTerminalSeal {
+    fn new(
+        spec: &RunSpec,
+        fingerprint: ConversionFingerprint,
+        summary: &OperatorRunSummary,
+        files: Vec<OperatorTerminalSealFile>,
+    ) -> Self {
+        Self {
+            seal_version: OPERATOR_TERMINAL_SEAL_VERSION.to_string(),
+            run_id: spec.manifest.run_id.clone(),
+            submitted_manifest_hash: spec.manifest.manifest_hash(),
+            fingerprint,
+            canonical_rows: summary.canonical_rows,
+            nt_catalog_rows: summary.nt_catalog_rows,
+            catalog_hash: summary.catalog_hash.clone(),
+            files,
+            committed_at: spec.created_at_utc.clone(),
+        }
+    }
+
+    fn validate_for(&self, spec: &RunSpec, fingerprint: &ConversionFingerprint) -> Result<()> {
+        ensure!(
+            self.seal_version == OPERATOR_TERMINAL_SEAL_VERSION,
+            "unexpected operator terminal seal version: expected {OPERATOR_TERMINAL_SEAL_VERSION:?}, got {:?}",
+            self.seal_version
+        );
+        ensure!(
+            self.run_id == spec.manifest.run_id,
+            "operator terminal seal run_id mismatch"
+        );
+        ensure!(
+            self.submitted_manifest_hash == spec.manifest.manifest_hash(),
+            "operator terminal seal submitted manifest hash mismatch"
+        );
+        self.fingerprint.validate_against(fingerprint)?;
+        ensure!(
+            is_lowercase_sha256_hex(&self.catalog_hash),
+            "operator terminal seal catalog_hash must be lowercase SHA-256"
+        );
+        ensure!(
+            !self.committed_at.trim().is_empty() && self.committed_at == spec.created_at_utc,
+            "operator terminal seal committed_at mismatch"
+        );
+        ensure!(
+            !self.files.is_empty(),
+            "operator terminal seal exact file set must not be empty"
+        );
+        let mut previous: Option<&str> = None;
+        for file in &self.files {
+            ensure_safe_terminal_seal_relative_path(&file.relative_path)?;
+            ensure!(
+                file.relative_path != OPERATOR_TERMINAL_SEAL_FILE,
+                "operator terminal seal must exclude itself from the exact file set"
+            );
+            ensure!(
+                is_lowercase_sha256_hex(&file.sha256),
+                "operator terminal seal file {} has invalid SHA-256",
+                file.relative_path
+            );
+            ensure!(
+                file.bytes > 0,
+                "operator terminal seal file {} must have a positive byte length",
+                file.relative_path
+            );
+            if let Some(previous) = previous {
+                ensure!(
+                    previous < file.relative_path.as_str(),
+                    "operator terminal seal files must be strictly sorted and unique"
+                );
+            }
+            previous = Some(&file.relative_path);
+        }
+        Ok(())
+    }
+
+    fn summary(&self) -> OperatorRunSummary {
+        OperatorRunSummary {
+            canonical_rows: self.canonical_rows,
+            nt_catalog_rows: self.nt_catalog_rows,
+            catalog_hash: self.catalog_hash.clone(),
+        }
+    }
+}
+
+fn submitted_run_identity_for_spec(spec: &RunSpec) -> Result<SubmittedRunIdentity> {
+    SubmittedRunIdentity::new(&spec.manifest, &spec.manifest.manifest_hash())
+        .map_err(|error| anyhow::anyhow!(error))
+}
+
+fn persist_immutable_local_bytes_guarded(
+    path: &Path,
+    bytes: &[u8],
+    role: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    work_budget.verify_decoded_bytes(
+        u64::try_from(bytes.len())
+            .with_context(|| format!("immutable {role} byte length does not fit u64"))?,
+        stage,
+    )?;
+    atomic_file_create_or_verify_guarded(path, work_budget, stage, |file| {
+        let mut writer = CooperativeDeadlineWriter::new(file, work_budget, stage);
+        writer
+            .write_all(bytes)
+            .with_context(|| format!("write immutable {role}"))?;
+        writer
+            .flush()
+            .with_context(|| format!("flush immutable {role}"))?;
+        Ok(())
+    })
+    .with_context(|| format!("persist immutable {role} at {}", path.display()))
+}
+
+fn persist_catalog_run_view_authority_guarded(
+    spec: &RunSpec,
+    runtime_manifest: &BacktestingRunManifest,
+    authority: &CatalogRunViewAuthority,
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    let submitted_identity = submitted_run_identity_for_spec(spec)?;
+    let stage = OperatorWorkBudgetStage::CatalogProjection;
+    let bytes = authority.canonical_bytes_guarded(
+        runtime_manifest,
+        &submitted_identity,
+        work_budget,
+        stage,
+    )?;
+    let expected_sha256 = authority.authority_sha256_guarded(
+        runtime_manifest,
+        &submitted_identity,
+        work_budget,
+        stage,
+    )?;
+    ensure!(
+        sha256_hex_with_budget(&bytes, work_budget, stage)? == expected_sha256,
+        "catalog run-view authority canonical bytes/hash disagree"
+    );
+    let path = output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE);
+    persist_immutable_local_bytes_guarded(
+        &path,
+        &bytes,
+        "catalog run-view authority",
+        work_budget,
+        stage,
+    )
+}
+
+fn load_catalog_run_view_authority_guarded(
+    spec: &RunSpec,
+    runtime_manifest: &BacktestingRunManifest,
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogRunViewAuthority> {
+    let stage = OperatorWorkBudgetStage::CatalogProjection;
+    let path = output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE);
+    let bytes = read_file_with_budget(&path, work_budget, stage)?;
+    let authority: CatalogRunViewAuthority =
+        deserialize_json_with_budget(&bytes, work_budget, stage)
+            .with_context(|| format!("parse {}", path.display()))?;
+    let submitted_identity = submitted_run_identity_for_spec(spec)?;
+    let canonical = authority.canonical_bytes_guarded(
+        runtime_manifest,
+        &submitted_identity,
+        work_budget,
+        stage,
+    )?;
+    ensure!(
+        bytes == canonical,
+        "catalog run-view authority bytes are not canonical"
+    );
+    Ok(authority)
+}
+
+fn load_and_verify_catalog_run_view_authority_guarded(
+    spec: &RunSpec,
+    runtime_manifest: &BacktestingRunManifest,
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogRunViewAuthority> {
+    let authority =
+        load_catalog_run_view_authority_guarded(spec, runtime_manifest, output_dir, work_budget)?;
+    let submitted_identity = submitted_run_identity_for_spec(spec)?;
+    verify_catalog_run_view_authority_guarded(
+        runtime_manifest,
+        &submitted_identity,
+        &authority,
+        work_budget,
+    )?;
+    Ok(authority)
+}
+
+impl OperatorRunSummary {
+    fn trade(output: &BacktestRunOutput) -> Result<Self> {
+        let canonical_rows = u64::try_from(output.canonical_table.rows.len())
+            .context("trade canonical row count does not fit u64")?;
+        let nt_catalog_rows = u64::try_from(output.read_back_count)
+            .context("trade NT catalog row count does not fit u64")?;
+        ensure!(
+            is_lowercase_sha256_hex(&output.projection.catalog_hash),
+            "trade catalog hash is not lowercase SHA-256"
+        );
+        Ok(Self {
+            canonical_rows,
+            nt_catalog_rows,
+            catalog_hash: output.projection.catalog_hash.clone(),
+        })
+    }
+
+    fn multi(tables: &[ProjectedTableArtifacts], catalog_hash: &str) -> Result<Self> {
+        let canonical_rows = tables.iter().try_fold(0_u64, |total, table| {
+            let rows = u64::try_from(table.rows)
+                .context("multi-table canonical row count does not fit u64")?;
+            total
+                .checked_add(rows)
+                .context("multi-table canonical row count overflow")
+        })?;
+        ensure!(
+            is_lowercase_sha256_hex(catalog_hash),
+            "multi-table catalog hash is not lowercase SHA-256"
+        );
+        Ok(Self {
+            canonical_rows,
+            nt_catalog_rows: canonical_rows,
+            catalog_hash: catalog_hash.to_string(),
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CatalogInventorySummary {
+    data_rows: u64,
+    data_row_groups: u64,
+    decoded_bytes: u64,
+    files: BTreeMap<PathBuf, u64>,
+}
+
+fn nt_catalog_data_directory(nt_data_type: &str) -> Result<&'static str> {
+    match nt_data_type {
+        NT_DATA_TYPE_TRADE_TICK => Ok("trades"),
+        NT_DATA_TYPE_BAR => Ok("bars"),
+        NT_DATA_TYPE_ORDER_BOOK_DELTA => Ok("order_book_deltas"),
+        NT_DATA_TYPE_QUOTE_TICK => Ok("quotes"),
+        NT_DATA_TYPE_INDEX_PRICE_UPDATE => Ok("index_prices"),
+        NT_DATA_TYPE_MARK_PRICE_UPDATE => Ok("mark_prices"),
+        NT_DATA_TYPE_FUNDING_RATE_UPDATE => Ok("funding_rate_update"),
+        other => anyhow::bail!("unsupported completed-output NT data type {other:?}"),
+    }
+}
+
+fn collect_catalog_files_guarded(
+    catalog_root: &Path,
+    directory: &Path,
+    allowed_prefixes: &[PathBuf],
+    work_budget: &OperatorWorkBudgetGuard,
+    files: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    let mut entries = fs::read_dir(directory)
+        .with_context(|| format!("read completed catalog directory {}", directory.display()))?;
+    loop {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let Some(entry) = entries.next().transpose().with_context(|| {
+            format!("read completed catalog entry under {}", directory.display())
+        })?
+        else {
+            break;
+        };
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(catalog_root)
+            .with_context(|| format!("derive completed catalog path {}", path.display()))?
+            .to_path_buf();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read completed catalog file type {}", path.display()))?;
+        ensure!(
+            !file_type.is_symlink(),
+            "completed catalog contains symlink {}",
+            path.display()
+        );
+        if file_type.is_dir() {
+            ensure!(
+                allowed_prefixes
+                    .iter()
+                    .any(|prefix| prefix.starts_with(&relative) || relative.starts_with(prefix)),
+                "completed catalog contains unexpected directory {}",
+                relative.display()
+            );
+            collect_catalog_files_guarded(
+                catalog_root,
+                &path,
+                allowed_prefixes,
+                work_budget,
+                files,
+            )?;
+            continue;
+        }
+        ensure!(
+            file_type.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "parquet")
+                && allowed_prefixes
+                    .iter()
+                    .any(|prefix| relative.starts_with(prefix)),
+            "completed catalog contains unexpected file {}",
+            relative.display()
+        );
+        ensure!(
+            files.insert(relative.clone()),
+            "completed catalog enumerated duplicate file {}",
+            relative.display()
+        );
+    }
+    Ok(())
+}
+
+fn preflight_completed_catalog(
+    catalog_root: &Path,
+    nt_data_type: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogInventorySummary> {
+    ensure!(
+        catalog_root.is_dir(),
+        "completed catalog root is missing: {}",
+        catalog_root.display()
+    );
+    let data_prefix = PathBuf::from("data").join(nt_catalog_data_directory(nt_data_type)?);
+    let instrument_prefix = PathBuf::from("data").join("instruments");
+    let allowed_prefixes = [instrument_prefix.clone(), data_prefix.clone()];
+    let mut files = BTreeSet::new();
+    collect_catalog_files_guarded(
+        catalog_root,
+        catalog_root,
+        &allowed_prefixes,
+        work_budget,
+        &mut files,
+    )?;
+    let instrument_files = files
+        .iter()
+        .filter(|path| path.starts_with(&instrument_prefix))
+        .count();
+    let data_files = files
+        .iter()
+        .filter(|path| path.starts_with(&data_prefix))
+        .count();
+    ensure!(
+        instrument_files == 1 && data_files == 1 && files.len() == 2,
+        "completed catalog {} must contain exactly one instrument Parquet and one {nt_data_type} Parquet; found {instrument_files} instrument, {data_files} data, {} total",
+        catalog_root.display(),
+        files.len()
+    );
+
+    let preflight = preflight_nt_catalog_parquet_guarded(
+        catalog_root,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    ensure!(
+        preflight.files.len() == files.len()
+            && preflight
+                .files
+                .iter()
+                .all(|file| files.contains(&file.relative_path)),
+        "completed catalog {} Parquet inventory changed between exact-set traversal and preflight",
+        catalog_root.display()
+    );
+    let decoded_bytes = preflight
+        .total_file_bytes
+        .checked_add(preflight.total_footer_metadata_bytes)
+        .and_then(|total| total.checked_add(preflight.total_uncompressed_bytes))
+        .context("completed catalog decoded byte total overflow")?;
+    let files = preflight
+        .files
+        .into_iter()
+        .map(|file| (file.relative_path, file.file_bytes))
+        .collect::<BTreeMap<_, _>>();
+    Ok(CatalogInventorySummary {
+        data_rows: preflight.market_data.rows,
+        data_row_groups: preflight.market_data.row_groups,
+        decoded_bytes,
+        files,
+    })
+}
+
+fn completed_catalog_relative_path(spec: &RunSpec, uri: &str) -> Result<PathBuf> {
+    let prefix = spec.manifest.output_prefix.trim_end_matches('/');
+    let relative = uri
+        .strip_prefix(prefix)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .with_context(|| {
+            format!(
+                "completed output catalog URI {uri:?} is not under run output prefix {prefix:?}"
+            )
+        })?;
+    let path = PathBuf::from(relative);
+    ensure!(
+        !path.as_os_str().is_empty()
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))),
+        "completed output catalog URI has unsafe relative path {relative:?}"
+    );
+    Ok(path)
+}
+
+fn verify_catalog_root_set(
+    output_dir: &Path,
+    expected_roots: &BTreeSet<PathBuf>,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    for top_level in [CATALOG_DIR, NT_CATALOGS_DIR] {
+        let root = output_dir.join(top_level);
+        if !root.exists() {
+            continue;
+        }
+        let mut stack = vec![root];
+        while let Some(directory) = stack.pop() {
+            work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+            for entry in fs::read_dir(&directory)
+                .with_context(|| format!("audit completed catalog tree {}", directory.display()))?
+            {
+                let entry = entry?;
+                let path = entry.path();
+                let file_type = entry.file_type()?;
+                ensure!(
+                    !file_type.is_symlink(),
+                    "completed catalog tree contains symlink {}",
+                    path.display()
+                );
+                if file_type.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                ensure!(
+                    file_type.is_file(),
+                    "completed catalog contains special file {}",
+                    path.display()
+                );
+                let relative = path.strip_prefix(output_dir)?;
+                ensure!(
+                    expected_roots.iter().any(|root| relative.starts_with(root)),
+                    "completed output contains unindexed catalog file {}",
+                    relative.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_safe_terminal_seal_relative_path(relative: &str) -> Result<()> {
+    let path = Path::new(relative);
+    ensure!(
+        !relative.is_empty()
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))),
+        "operator terminal seal contains unsafe relative path {relative:?}"
+    );
+    ensure!(
+        path.components().all(|component| match component {
+            Component::Normal(value) => value.to_str().is_some(),
+            _ => false,
+        }),
+        "operator terminal seal path is not valid UTF-8: {relative:?}"
+    );
+    Ok(())
+}
+
+fn terminal_seal_relative_path(root: &Path, path: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(root)
+        .with_context(|| format!("derive terminal-seal path for {}", path.display()))?;
+    ensure!(
+        !relative.as_os_str().is_empty(),
+        "operator terminal seal cannot index its output root"
+    );
+    let relative = relative
+        .to_str()
+        .with_context(|| format!("terminal-seal path is not valid UTF-8: {}", path.display()))?
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    ensure_safe_terminal_seal_relative_path(&relative)?;
+    Ok(relative)
+}
+
+fn account_terminal_seal_inventory_bytes(
+    total: &mut u64,
+    relative: &str,
+    record_bytes: usize,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    let path_bytes = relative.len();
+    let item_bytes = record_bytes
+        .checked_add(path_bytes)
+        .context("operator terminal seal inventory item byte size overflow")?;
+    *total = total
+        .checked_add(
+            u64::try_from(item_bytes)
+                .context("operator terminal seal inventory item bytes do not fit u64")?,
+        )
+        .context("operator terminal seal inventory byte total overflow")?;
+    work_budget.verify_decoded_bytes(*total, OperatorWorkBudgetStage::Finalize)
+}
+
+/// Enumerate and stream-hash the exact regular-file set under one output root.
+/// Symlinks, special files, unbounded path inventories, and file growth or
+/// truncation are rejected before the resulting set can authorize resume.
+fn collect_operator_terminal_seal_files(
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<OperatorTerminalSealFile>> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    let root_metadata = fs::symlink_metadata(output_dir)
+        .with_context(|| format!("inspect operator output root {}", output_dir.display()))?;
+    ensure!(
+        root_metadata.file_type().is_dir() && !root_metadata.file_type().is_symlink(),
+        "operator output root must be a real directory: {}",
+        output_dir.display()
+    );
+
+    let mut directories = Vec::new();
+    directories
+        .try_reserve_exact(1)
+        .context("reserve operator terminal seal directory stack")?;
+    directories.push(output_dir.to_path_buf());
+    let mut files = Vec::new();
+    let mut inventory_bytes = 0_u64;
+    let mut total_regular_file_bytes = 0_u64;
+
+    while let Some(directory) = directories.pop() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("traverse operator output {}", directory.display()))?
+        {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+            let entry = entry.with_context(|| {
+                format!("read operator output entry under {}", directory.display())
+            })?;
+            let path = entry.path();
+            let relative = terminal_seal_relative_path(output_dir, &path)?;
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("inspect operator output entry {}", path.display()))?;
+            ensure!(
+                !file_type.is_symlink(),
+                "operator output contains symlink {}",
+                path.display()
+            );
+
+            if relative == OPERATOR_TERMINAL_SEAL_FILE {
+                ensure!(
+                    file_type.is_file(),
+                    "reserved operator terminal seal path is not a regular file"
+                );
+                continue;
+            }
+            if file_type.is_dir() {
+                account_terminal_seal_inventory_bytes(
+                    &mut inventory_bytes,
+                    &relative,
+                    size_of::<PathBuf>(),
+                    work_budget,
+                )?;
+                directories
+                    .try_reserve(1)
+                    .context("grow operator terminal seal directory stack")?;
+                directories.push(path);
+                continue;
+            }
+            ensure!(
+                file_type.is_file(),
+                "operator output contains special file {}",
+                path.display()
+            );
+            account_terminal_seal_inventory_bytes(
+                &mut inventory_bytes,
+                &relative,
+                size_of::<OperatorTerminalSealFile>()
+                    .checked_add(64)
+                    .context("operator terminal seal hash inventory size overflow")?,
+                work_budget,
+            )?;
+            let (mut file, identity) = open_pinned_regular_file(&path)
+                .with_context(|| format!("pin terminal-seal file {}", path.display()))?;
+            total_regular_file_bytes = total_regular_file_bytes
+                .checked_add(identity.byte_len)
+                .context("operator terminal seal regular-file byte total overflow")?;
+            work_budget.verify_decoded_bytes(
+                total_regular_file_bytes,
+                OperatorWorkBudgetStage::Finalize,
+            )?;
+            let sha256 = sha256_exact_sized_open_file_guarded(
+                &mut file,
+                &path,
+                identity.byte_len,
+                work_budget,
+                OperatorWorkBudgetStage::Finalize,
+            )
+            .with_context(|| format!("hash terminal-seal file {}", path.display()))?;
+            identity.revalidate_handle(&path, &file)?;
+            identity.revalidate_path(&path)?;
+            files
+                .try_reserve(1)
+                .context("grow operator terminal seal file inventory")?;
+            files.push(OperatorTerminalSealFile {
+                relative_path: relative,
+                bytes: identity.byte_len,
+                sha256,
+            });
+        }
+    }
+    cooperative_stable_sort_by(
+        &mut files,
+        |left, right| left.relative_path.cmp(&right.relative_path),
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
+    Ok(files)
+}
+
+fn preflight_completed_canonical_parquet(
+    path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<u64> {
+    let stage = OperatorWorkBudgetStage::CatalogProjection;
+    let (mut file, identity) = open_pinned_regular_file(path)
+        .with_context(|| format!("pin completed canonical Parquet {}", path.display()))?;
+    let trailer = verify_parquet_file_trailer_preflight(&mut file, path, work_budget, stage)?;
+    ensure!(
+        trailer.file_bytes == identity.byte_len,
+        "completed canonical Parquet {} changed length before metadata preflight",
+        path.display()
+    );
+    let builder_file = file
+        .try_clone()
+        .with_context(|| format!("clone completed canonical Parquet {}", path.display()))?;
+    let builder = guarded_operation_outcome(work_budget, stage, || {
+        ParquetRecordBatchReaderBuilder::try_new(builder_file)
+            .with_context(|| format!("read completed canonical metadata {}", path.display()))
+    })??;
+    let metadata = verify_single_parquet_metadata_budget(builder.metadata(), work_budget, stage)?;
+    ensure!(
+        metadata.rows > 0 && metadata.row_groups > 0,
+        "completed canonical Parquet {} must contain rows and row groups",
+        path.display()
+    );
+    let accounted_bytes = trailer
+        .file_bytes
+        .checked_add(trailer.footer_metadata_bytes)
+        .and_then(|total| total.checked_add(metadata.uncompressed_bytes))
+        .context("completed canonical Parquet accounted byte total overflow")?;
+    work_budget.verify_decoded_bytes(accounted_bytes, stage)?;
+    identity.revalidate_handle(path, &file)?;
+    identity.revalidate_path(path)?;
+    Ok(metadata.rows)
+}
+
+fn canonical_relative_for_catalog_subroot(catalog_subroot: &Path) -> Result<PathBuf> {
+    let relative = catalog_subroot
+        .strip_prefix(NT_CATALOGS_DIR)
+        .with_context(|| {
+            format!(
+                "completed non-trade catalog subroot must be below {NT_CATALOGS_DIR}: {}",
+                catalog_subroot.display()
+            )
+        })?;
+    ensure!(
+        !relative.as_os_str().is_empty()
+            && relative
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))),
+        "completed non-trade catalog subroot has unsafe relative path {}",
+        catalog_subroot.display()
+    );
+    Ok(relative.join(CANONICAL_TABLE_FILE))
+}
+
+fn insert_expected_catalog_files(
+    expected_files: &mut BTreeSet<PathBuf>,
+    catalog_relative: &Path,
+    inventory: &CatalogInventorySummary,
+) -> Result<()> {
+    for relative in inventory.files.keys() {
+        let path = catalog_relative.join(relative);
+        ensure!(
+            expected_files.insert(path.clone()),
+            "duplicate completed catalog file {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn verify_completed_operator_output_against_seal(
+    spec: &RunSpec,
+    expected_source_proof: &SourceProofReport,
+    accepted: &AcceptedDataset,
+    fingerprint: &ConversionFingerprint,
+    output_dir: &Path,
+    seal: &OperatorTerminalSeal,
+    current_files: &[OperatorTerminalSealFile],
+    verify_physical_catalog_view: bool,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<OperatorRunSummary> {
+    work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    seal.validate_for(spec, fingerprint)?;
+    ensure!(
+        seal.files.as_slice() == current_files,
+        "operator terminal seal exact file set or content hash mismatch"
+    );
+    let mut expected_files = BTreeSet::from([
+        PathBuf::from(ACCEPTED_SOURCE_PROOF_FILE),
+        PathBuf::from(RESULT_CONTRACT_FILE),
+        PathBuf::from(BACKTEST_RUN_MANIFEST_FILE),
+        PathBuf::from(crate::conversion_boundary::CONVERSION_MANIFEST_FILE),
+        PathBuf::from(CONVERSION_CHECKPOINT_FILE),
+        PathBuf::from(CATALOG_METADATA_FILE),
+    ]);
+    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
+    let manifest_path = output_dir.join(crate::conversion_boundary::CONVERSION_MANIFEST_FILE);
+    let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
+    let checkpoint: ConversionCheckpoint = read_json_artifact_guarded(
+        &checkpoint_path,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    checkpoint.validate_for(&fingerprint)?;
+    ensure!(
+        checkpoint.stage == ConversionCheckpointStage::Completed,
+        "completed-output verifier requires a completed checkpoint"
+    );
+    let checkpoint_hash = checkpoint.content_hash()?;
+    let manifest: ConversionManifest = read_json_artifact_guarded(
+        &manifest_path,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    manifest.validate_for(&fingerprint, &checkpoint_hash)?;
+    let manifest_hash = manifest.content_hash()?;
+    let metadata: ConversionCatalogMetadata = read_json_artifact_guarded(
+        &metadata_path,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    metadata.validate_against(&manifest, &manifest_hash, &checkpoint_hash)?;
+    ensure!(
+        is_lowercase_sha256_hex(&manifest.catalog_hash),
+        "completed conversion catalog hash is not lowercase SHA-256"
+    );
+
+    let adapter =
+        require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
+    let index_path = output_dir.join(CONVERSION_TABLES_FILE);
+    let mut expected_roots = BTreeSet::new();
+    let (canonical_rows, nt_catalog_rows, runtime_manifest) = if adapter.kind
+        == SourceAdapterKind::CsvNativeTrades
+    {
+        ensure!(
+            spec.manifest.catalog_inputs.len() == 1,
+            "trade completion requires exactly one RunSpec catalog input"
+        );
+        ensure!(
+            !index_path.exists(),
+            "trade completion must not contain {CONVERSION_TABLES_FILE}"
+        );
+        ensure!(
+            manifest.nt_data_type == NT_DATA_TYPE_TRADE_TICK,
+            "trade completion NT data type mismatch"
+        );
+        let relative = completed_catalog_relative_path(spec, &manifest.output_catalog_uri)?;
+        ensure!(
+            relative == Path::new(CATALOG_DIR),
+            "trade completion catalog root must be {CATALOG_DIR}"
+        );
+        expected_roots.insert(relative.clone());
+        let inventory = preflight_completed_catalog(
+            &output_dir.join(&relative),
+            &manifest.nt_data_type,
+            work_budget,
+        )?;
+        insert_expected_catalog_files(&mut expected_files, &relative, &inventory)?;
+        let actual_hash = logical_catalog_hash_guarded(&output_dir.join(&relative), work_budget)?;
+        ensure!(
+            actual_hash == manifest.catalog_hash,
+            "completed trade catalog hash mismatch"
+        );
+        let post_inventory = preflight_completed_catalog(
+            &output_dir.join(&relative),
+            &manifest.nt_data_type,
+            work_budget,
+        )?;
+        ensure!(
+            post_inventory == inventory,
+            "completed trade catalog changed during verification"
+        );
+        let canonical_rows = u64::try_from(manifest.canonical_rows)
+            .context("completed trade canonical rows do not fit u64")?;
+        let canonical_relative = PathBuf::from(CANONICAL_ARTIFACT_FILE);
+        let canonical_parquet_rows = preflight_completed_canonical_parquet(
+            &output_dir.join(&canonical_relative),
+            work_budget,
+        )?;
+        ensure!(
+            inventory.data_rows == canonical_rows && canonical_parquet_rows == canonical_rows,
+            "completed trade canonical/catalog rows do not match manifest"
+        );
+        ensure!(
+            expected_files.insert(canonical_relative),
+            "duplicate completed trade canonical artifact"
+        );
+        (
+            canonical_rows,
+            inventory.data_rows,
+            local_run_manifest_for_output(spec, output_dir)?,
+        )
+    } else if index_path.exists() {
+        ensure!(
+            expected_files.insert(PathBuf::from(CONVERSION_TABLES_FILE)),
+            "duplicate conversion tables artifact"
+        );
+        let indexed: Vec<ConversionTableRecord> = read_json_artifact_guarded(
+            &index_path,
+            work_budget,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )?;
+        ensure!(
+            indexed.len() > 1,
+            "multi-table completion index must contain more than one table"
+        );
+        ensure!(
+            indexed.len() == spec.manifest.catalog_inputs.len(),
+            "multi-table completion index has {} records but the current RunSpec binds {} catalog inputs",
+            indexed.len(),
+            spec.manifest.catalog_inputs.len()
+        );
+        let mut canonical_rows = 0_u64;
+        let mut nt_catalog_rows = 0_u64;
+        let mut inventories = BTreeMap::new();
+        let mut identities = BTreeSet::new();
+        let mut rows_by_data_type: BTreeMap<String, usize> = BTreeMap::new();
+        let primary_relative = completed_catalog_relative_path(spec, &manifest.output_catalog_uri)?;
+        let mut primary_matches = 0_usize;
+        for record in &indexed {
+            record.validate()?;
+            ensure!(
+                identities.insert((
+                    record.table_family.clone(),
+                    record.nt_instrument_id.clone(),
+                    record.data_type.clone(),
+                    record.bar_spec.clone(),
+                )),
+                "completed conversion tables index contains duplicate table identity {}/{}/{}",
+                record.table_family,
+                record.nt_instrument_id,
+                record.data_type
+            );
+            let rows_for_type = rows_by_data_type
+                .entry(record.data_type.clone())
+                .or_insert(0);
+            *rows_for_type = rows_for_type
+                .checked_add(record.rows)
+                .context("completed conversion tables row total overflow")?;
+            let relative = PathBuf::from(&record.subroot_uri);
+            ensure!(
+                relative.starts_with(NT_CATALOGS_DIR),
+                "multi-table catalog subroot must be under {NT_CATALOGS_DIR}"
+            );
+            ensure!(
+                expected_roots.insert(relative.clone()),
+                "duplicate completed catalog subroot {}",
+                relative.display()
+            );
+            let subroot = output_dir.join(&relative);
+            let inventory = preflight_completed_catalog(&subroot, &record.data_type, work_budget)?;
+            insert_expected_catalog_files(&mut expected_files, &relative, &inventory)?;
+            let record_rows =
+                u64::try_from(record.rows).context("conversion table rows do not fit u64")?;
+            let canonical_relative = canonical_relative_for_catalog_subroot(&relative)?;
+            let canonical_parquet_rows = preflight_completed_canonical_parquet(
+                &output_dir.join(&canonical_relative),
+                work_budget,
+            )?;
+            ensure!(
+                inventory.data_rows == record_rows && canonical_parquet_rows == record_rows,
+                "completed canonical/catalog {} rows do not match index",
+                relative.display()
+            );
+            ensure!(
+                expected_files.insert(canonical_relative.clone()),
+                "duplicate completed canonical file {}",
+                canonical_relative.display()
+            );
+            let actual_hash = logical_catalog_hash_guarded(&subroot, work_budget)
+                .with_context(|| format!("recompute guarded catalog hash {}", subroot.display()))?;
+            ensure!(
+                actual_hash == record.catalog_hash,
+                "completed conversion tables index subroot {} hash mismatch: recorded {:?}, recomputed {:?}",
+                record.subroot_uri,
+                record.catalog_hash,
+                actual_hash
+            );
+            if record.nt_instrument_id == manifest.nt_instrument_id
+                && record.data_type == manifest.nt_data_type
+                && record.catalog_hash == manifest.catalog_hash
+            {
+                ensure!(
+                    relative == primary_relative,
+                    "completed primary catalog subroot {} does not match manifest URI {}",
+                    relative.display(),
+                    primary_relative.display()
+                );
+                primary_matches = primary_matches
+                    .checked_add(1)
+                    .context("completed primary match count overflow")?;
+            }
+            inventories.insert(relative.clone(), inventory);
+            canonical_rows = canonical_rows
+                .checked_add(record_rows)
+                .context("completed canonical row total overflow")?;
+            nt_catalog_rows = nt_catalog_rows
+                .checked_add(inventory.data_rows)
+                .context("completed NT row total overflow")?;
+        }
+        ensure!(
+            rows_by_data_type == manifest.effective_catalog_rows_by_nt_data_type(),
+            "completed conversion tables per-data-type rows {:?} do not match manifest {:?}",
+            rows_by_data_type,
+            manifest.effective_catalog_rows_by_nt_data_type()
+        );
+        ensure!(
+            primary_matches == 1,
+            "completed conversion tables index must contain exactly one guarded primary record matching the manifest, found {primary_matches}"
+        );
+        verify_catalog_root_set(output_dir, &expected_roots, work_budget)?;
+        for record in &indexed {
+            let relative = PathBuf::from(&record.subroot_uri);
+            let post_inventory = preflight_completed_catalog(
+                &output_dir.join(&relative),
+                &record.data_type,
+                work_budget,
+            )?;
+            ensure!(
+                inventories.get(&relative) == Some(&post_inventory),
+                "completed catalog {} changed during verification",
+                relative.display()
+            );
+        }
+        (
+            canonical_rows,
+            nt_catalog_rows,
+            bind_completed_catalog_inputs(spec, output_dir, &indexed)?,
+        )
+    } else {
+        ensure!(
+            spec.manifest.catalog_inputs.len() == 1,
+            "completed RunSpec binds {} catalog inputs but is missing {CONVERSION_TABLES_FILE}",
+            spec.manifest.catalog_inputs.len()
+        );
+        let relative = completed_catalog_relative_path(spec, &manifest.output_catalog_uri)?;
+        ensure!(
+            relative.starts_with(NT_CATALOGS_DIR),
+            "non-trade catalog root must be under {NT_CATALOGS_DIR}"
+        );
+        expected_roots.insert(relative.clone());
+        let inventory = preflight_completed_catalog(
+            &output_dir.join(&relative),
+            &manifest.nt_data_type,
+            work_budget,
+        )?;
+        insert_expected_catalog_files(&mut expected_files, &relative, &inventory)?;
+        let actual_hash = logical_catalog_hash_guarded(&output_dir.join(&relative), work_budget)?;
+        ensure!(
+            actual_hash == manifest.catalog_hash,
+            "completed non-trade catalog hash mismatch"
+        );
+        let post_inventory = preflight_completed_catalog(
+            &output_dir.join(&relative),
+            &manifest.nt_data_type,
+            work_budget,
+        )?;
+        ensure!(
+            post_inventory == inventory,
+            "completed non-trade catalog changed during verification"
+        );
+        let canonical_rows = u64::try_from(manifest.canonical_rows)
+            .context("completed non-trade canonical rows do not fit u64")?;
+        let canonical_relative = canonical_relative_for_catalog_subroot(&relative)?;
+        let canonical_parquet_rows = preflight_completed_canonical_parquet(
+            &output_dir.join(&canonical_relative),
+            work_budget,
+        )?;
+        ensure!(
+            inventory.data_rows == canonical_rows && canonical_parquet_rows == canonical_rows,
+            "completed non-trade canonical/catalog rows do not match manifest"
+        );
+        ensure!(
+            expected_files.insert(canonical_relative.clone()),
+            "duplicate completed canonical file {}",
+            canonical_relative.display()
+        );
+        let mut runtime_manifest = spec.manifest.clone();
+        let runtime_input = runtime_manifest
+            .catalog_inputs
+            .first_mut()
+            .context("completed non-trade manifest has no catalog input")?;
+        runtime_input.catalog_path = output_dir
+            .join(&relative)
+            .to_str()
+            .context("completed non-trade catalog path is not UTF-8")?
+            .to_string();
+        runtime_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+        runtime_input.catalog_fs_storage_options.clear();
+        runtime_input.catalog_fs_rust_storage_options.clear();
+        (canonical_rows, inventory.data_rows, runtime_manifest)
+    };
+    verify_catalog_root_set(output_dir, &expected_roots, work_budget)?;
+    ensure!(
+        expected_files.insert(PathBuf::from(CATALOG_RUN_VIEW_AUTHORITY_FILE)),
+        "duplicate catalog run-view authority artifact"
+    );
+    if verify_physical_catalog_view {
+        load_and_verify_catalog_run_view_authority_guarded(
+            spec,
+            &runtime_manifest,
+            output_dir,
+            work_budget,
+        )?;
+    } else {
+        load_catalog_run_view_authority_guarded(spec, &runtime_manifest, output_dir, work_budget)?;
+    }
+
+    let written_source_proof: SourceProofReport = read_json_artifact_guarded(
+        &output_dir.join(ACCEPTED_SOURCE_PROOF_FILE),
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    ensure!(
+        written_source_proof == *expected_source_proof,
+        "sealed accepted-source proof does not match the proof accepted from current controls"
+    );
+
+    let written_run_manifest: BacktestRunManifestArtifact = read_json_artifact_guarded(
+        &output_dir.join(BACKTEST_RUN_MANIFEST_FILE),
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    let expected_run_manifest = spec
+        .manifest
+        .to_artifact_manifest()
+        .map_err(|error| anyhow::anyhow!("build expected run-manifest artifact: {error}"))?;
+    ensure!(
+        written_run_manifest.manifest_version == BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION
+            && written_run_manifest == expected_run_manifest,
+        "sealed backtest run manifest does not match the current RunSpec"
+    );
+
+    let contract: BacktestResultContract = read_json_artifact_guarded(
+        &output_dir.join(RESULT_CONTRACT_FILE),
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    contract
+        .validate()
+        .map_err(|error| anyhow::anyhow!("sealed result contract validation failed: {error}"))?;
+    let metadata_hash = metadata.content_hash()?;
+    ensure!(
+        contract.run_id == spec.manifest.run_id
+            && contract.manifest_hash == spec.manifest.manifest_hash()
+            && contract.source_proof_id == accepted.source_proof_id
+            && contract.source_proof_version == accepted.source_proof_version
+            && contract.acceptance_mode == accepted.acceptance_mode
+            && contract.accepted_by == accepted.accepted_by
+            && contract.accepted_at == accepted.accepted_at
+            && contract.accepted_object_sha256 == accepted.accepted_object_sha256
+            && contract.converter_identity == fingerprint.converter_identity
+            && contract.converter_version == fingerprint.converter_version
+            && contract.converter_config_hash == fingerprint.converter_config_hash
+            && contract.conversion_manifest_hash == manifest_hash
+            && contract.conversion_checkpoint_hash == checkpoint_hash
+            && contract.catalog_hash == manifest.catalog_hash
+            && contract.catalog_metadata_hash == metadata_hash
+            && contract.strategy_config_hash == spec.manifest.strategy_config_hash
+            && contract.execution_model == spec.manifest.execution_model,
+        "sealed result contract does not match current source, conversion, catalog, or RunSpec identities"
+    );
+    let expected_catalog_data_types = spec
+        .manifest
+        .catalog_inputs
+        .iter()
+        .map(|input| input.data_type.clone())
+        .collect::<Vec<_>>();
+    ensure!(
+        contract.catalog_data_types == expected_catalog_data_types,
+        "sealed result contract catalog_data_types do not match the current RunSpec"
+    );
+    ensure!(
+        contract.artifact_uris.source_proof_uri
+            == portable_artifact_uri(&spec.manifest.output_prefix, ACCEPTED_SOURCE_PROOF_FILE)
+            && contract.artifact_uris.catalog_metadata_uri
+                == portable_artifact_uri(&spec.manifest.output_prefix, CATALOG_METADATA_FILE)
+            && contract.artifact_uris.result_contract_uri
+                == portable_artifact_uri(&spec.manifest.output_prefix, RESULT_CONTRACT_FILE)
+            && contract.artifact_uris.nt_catalog_uri == manifest.output_catalog_uri,
+        "sealed result contract artifact URIs do not match current output identities"
+    );
+    let canonical_contract_relative =
+        completed_catalog_relative_path(spec, &contract.artifact_uris.canonical_table_uri)?;
+    ensure!(
+        expected_files.contains(&canonical_contract_relative),
+        "sealed result contract canonical_table_uri does not identify a sealed canonical Parquet"
+    );
+
+    let sealed_paths = seal
+        .files
+        .iter()
+        .map(|file| PathBuf::from(&file.relative_path))
+        .collect::<BTreeSet<_>>();
+    let published_proof_present = sealed_paths.contains(Path::new(PUBLISHED_CATALOG_PROOF_FILE));
+    ensure!(
+        published_proof_present == metadata.catalog_consumption_proven(),
+        "sealed published-catalog proof presence must exactly match catalog metadata: proof_present={}, metadata_proven={}",
+        published_proof_present,
+        metadata.catalog_consumption_proven()
+    );
+    if metadata.catalog_consumption_proven() {
+        let proof: PublishedCatalogProof = read_json_artifact_guarded(
+            &output_dir.join(PUBLISHED_CATALOG_PROOF_FILE),
+            work_budget,
+            OperatorWorkBudgetStage::Finalize,
+        )?;
+        proof.validate_against(&metadata, &contract, spec)?;
+        expected_files.insert(PathBuf::from(PUBLISHED_CATALOG_PROOF_FILE));
+    }
+    ensure!(
+        expected_files == sealed_paths,
+        "operator terminal seal file set contains missing or unexpected output artifacts: expected {expected_files:?}, sealed {sealed_paths:?}"
+    );
+
+    work_budget.verify_source_rows(canonical_rows, OperatorWorkBudgetStage::CatalogProjection)?;
+    let summary = OperatorRunSummary {
+        canonical_rows,
+        nt_catalog_rows,
+        catalog_hash: manifest.catalog_hash,
+    };
+    ensure!(
+        seal.summary() == summary,
+        "operator terminal seal summary does not match verified canonical/catalog output"
+    );
+    Ok(summary)
+}
+
+fn commit_operator_terminal_seal(
+    spec: &RunSpec,
+    expected_source_proof: &SourceProofReport,
+    accepted: &AcceptedDataset,
+    fingerprint: &ConversionFingerprint,
+    output_dir: &Path,
+    expected_summary: &OperatorRunSummary,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    let seal_path = output_dir.join(OPERATOR_TERMINAL_SEAL_FILE);
+    let files = collect_operator_terminal_seal_files(output_dir, work_budget)?;
+    let seal = OperatorTerminalSeal::new(spec, fingerprint.clone(), expected_summary, files);
+    let verified = verify_completed_operator_output_against_seal(
+        spec,
+        expected_source_proof,
+        accepted,
+        fingerprint,
+        output_dir,
+        &seal,
+        &seal.files,
+        true,
+        work_budget,
+    )?;
+    ensure!(
+        verified == *expected_summary,
+        "operator terminal seal candidate summary changed during precommit verification"
+    );
+    let post_verification_files = collect_operator_terminal_seal_files(output_dir, work_budget)?;
+    ensure!(
+        post_verification_files.as_slice() == seal.files.as_slice(),
+        "operator output changed after terminal-seal verification"
+    );
+    let seal_bytes = crate::reference_artifact::canonical_json_bytes(&seal)
+        .context("serialize operator terminal seal")?;
+    work_budget.verify_decoded_bytes(
+        u64::try_from(seal_bytes.len()).context("operator terminal seal bytes do not fit u64")?,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+
+    // This create-only rename is the final fallible operation. No artifact is
+    // accepted as complete before it, and no later I/O can reclassify it.
+    persist_immutable_local_bytes_guarded(
+        &seal_path,
+        &seal_bytes,
+        "operator terminal seal",
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )
+}
+
+/// Verify a committed operator output against current frozen controls and
+/// derive its report summary exclusively from sealed completion/catalog bytes.
+pub(crate) fn verify_completed_operator_output(
+    spec: &RunSpec,
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<OperatorRunSummary> {
+    registry.reassert_for(spec)?;
+    validate_converter_config(&spec.converter)?;
+    let (expected_source_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
+        spec,
+        &spec.accepted_object.sha256,
+        registry.registry(),
+    )?;
+    validate_converter_table_family(&spec.converter, &accepted.table_family)?;
+    let seal: OperatorTerminalSeal = read_json_artifact_guarded(
+        &output_dir.join(OPERATOR_TERMINAL_SEAL_FILE),
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    let current_files = collect_operator_terminal_seal_files(output_dir, work_budget)?;
+    let fingerprint = conversion_fingerprint_for(spec, &accepted, registry)?;
+    verify_completed_operator_output_against_seal(
+        spec,
+        &expected_source_proof,
+        &accepted,
+        &fingerprint,
+        output_dir,
+        &seal,
+        &current_files,
+        true,
+        work_budget,
+    )
+}
+
+/// Deadline-free, explicitly byte-capped probe used after a child process has
+/// terminated. It reads only the terminal seal and never traverses or hashes
+/// the output files named by that seal.
+pub(crate) enum OperatorTerminalSealProbe {
+    Absent,
+    Committed(OperatorRunSummary),
+}
+
+pub(crate) fn probe_operator_terminal_seal_summary_capped(
+    spec: &RunSpec,
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    max_seal_bytes: u64,
+) -> Result<OperatorTerminalSealProbe> {
+    ensure!(
+        max_seal_bytes > 0,
+        "terminal seal byte cap must be positive"
+    );
+    let seal_path = output_dir.join(OPERATOR_TERMINAL_SEAL_FILE);
+    match fs::symlink_metadata(&seal_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(OperatorTerminalSealProbe::Absent);
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect terminal seal {}", seal_path.display()));
+        }
+        Ok(metadata) => ensure!(
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+            "occupied terminal seal path is not a regular file"
+        ),
+    }
+    let (mut file, identity) = open_pinned_regular_file(&seal_path)?;
+    ensure!(
+        identity.byte_len > 0 && identity.byte_len <= max_seal_bytes,
+        "terminal seal byte length {} exceeds explicit cap {max_seal_bytes}",
+        identity.byte_len
+    );
+    let capacity = usize::try_from(identity.byte_len)
+        .context("terminal seal byte length does not fit usize")?;
+    let bounded_capacity = capacity
+        .checked_add(1)
+        .context("terminal seal capped read length overflow")?;
+    let bounded_read_len = identity
+        .byte_len
+        .checked_add(1)
+        .context("terminal seal capped read length overflow")?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(bounded_capacity)
+        .context("reserve capped terminal seal payload")?;
+    (&mut file)
+        .take(bounded_read_len)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read pinned terminal seal {}", seal_path.display()))?;
+    ensure!(
+        bytes.len() == capacity,
+        "terminal seal changed length while reading"
+    );
+    identity.revalidate(&seal_path, &file)?;
+    let seal: OperatorTerminalSeal = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse terminal seal {}", seal_path.display()))?;
+    let canonical = crate::reference_artifact::canonical_json_bytes(&seal)
+        .context("serialize canonical terminal seal")?;
+    ensure!(canonical == bytes, "terminal seal bytes are not canonical");
+
+    registry.reassert_for(spec)?;
+    validate_converter_config(&spec.converter)?;
+    let (_expected_source_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
+        spec,
+        &spec.accepted_object.sha256,
+        registry.registry(),
+    )?;
+    validate_converter_table_family(&spec.converter, &accepted.table_family)?;
+    let fingerprint = conversion_fingerprint_for(spec, &accepted, registry)?;
+    seal.validate_for(spec, &fingerprint)?;
+    ensure!(
+        seal.canonical_rows > 0 && seal.nt_catalog_rows == seal.canonical_rows,
+        "terminal seal summary row counts are invalid"
+    );
+    Ok(OperatorTerminalSealProbe::Committed(seal.summary()))
+}
+
+fn preflight_completed_output_before_inspection(
+    spec: &RunSpec,
+    expected_source_proof: &SourceProofReport,
+    accepted: &AcceptedDataset,
+    output_dir: &Path,
+    fingerprint: &ConversionFingerprint,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<bool> {
+    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
+    match fs::symlink_metadata(&checkpoint_path) {
+        Ok(metadata) => ensure!(
+            metadata.file_type().is_file(),
+            "conversion checkpoint {} is not a regular file",
+            checkpoint_path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect checkpoint path {}", checkpoint_path.display()));
+        }
+    }
+    let checkpoint: ConversionCheckpoint = read_json_artifact_guarded(
+        &checkpoint_path,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    checkpoint.validate_for(fingerprint)?;
+    ensure!(
+        checkpoint.stage == ConversionCheckpointStage::Completed,
+        "legacy nonterminal conversion checkpoint cannot be overwritten by the immutable completion protocol"
+    );
+    let seal_path = output_dir.join(OPERATOR_TERMINAL_SEAL_FILE);
+    match fs::symlink_metadata(&seal_path) {
+        Ok(metadata) => ensure!(
+            metadata.file_type().is_file(),
+            "operator terminal seal {} is not a regular file",
+            seal_path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect terminal seal path {}", seal_path.display()));
+        }
+    }
+    let seal: OperatorTerminalSeal =
+        read_json_artifact_guarded(&seal_path, work_budget, OperatorWorkBudgetStage::Finalize)?;
+    let current_files = collect_operator_terminal_seal_files(output_dir, work_budget)?;
+    verify_completed_operator_output_against_seal(
+        spec,
+        expected_source_proof,
+        accepted,
+        fingerprint,
+        output_dir,
+        &seal,
+        &current_files,
+        false,
+        work_budget,
+    )?;
+    Ok(true)
+}
+
+#[derive(Debug)]
+struct TransientCatalogRootLease {
+    catalog_root: PathBuf,
+    catalog_root_handle: fs::File,
+    #[cfg(unix)]
+    catalog_root_device: u64,
+    #[cfg(unix)]
+    catalog_root_inode: u64,
+    #[cfg(unix)]
+    catalog_root_uid: u32,
+    #[cfg(unix)]
+    catalog_root_mode: u32,
+}
+
+#[cfg(unix)]
+const PRIVATE_CATALOG_ROOT_MODE: u32 = 0o700;
+#[cfg(unix)]
+const UNIX_PERMISSION_MASK: u32 = 0o777;
+
+impl TransientCatalogRootLease {
+    fn acquire(output_dir: &Path) -> Result<Self> {
+        let catalog_root =
+            crate::atomic_artifact_write::unique_temp_path(&output_dir.join(CATALOG_DIR))
+                .context("derive unique transient catalog root")?;
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(PRIVATE_CATALOG_ROOT_MODE);
+        builder.create(&catalog_root).with_context(|| {
+            format!(
+                "atomically claim unique transient catalog root {}",
+                catalog_root.display()
+            )
+        })?;
+        #[cfg(unix)]
+        fs::set_permissions(
+            &catalog_root,
+            fs::Permissions::from_mode(PRIVATE_CATALOG_ROOT_MODE),
+        )
+        .with_context(|| {
+            format!(
+                "restrict transient catalog root permissions {}",
+                catalog_root.display()
+            )
+        })?;
+        Self::open_claimed(catalog_root)
+    }
+
+    fn acquire_stable(output_dir: &Path) -> Result<Self> {
+        let catalog_root = output_dir.join(CATALOG_DIR);
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(PRIVATE_CATALOG_ROOT_MODE);
+        match builder.create(&catalog_root) {
+            Ok(()) => {
+                #[cfg(unix)]
+                fs::set_permissions(
+                    &catalog_root,
+                    fs::Permissions::from_mode(PRIVATE_CATALOG_ROOT_MODE),
+                )
+                .with_context(|| {
+                    format!(
+                        "restrict stable transient catalog root permissions {}",
+                        catalog_root.display()
+                    )
+                })?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = fs::symlink_metadata(&catalog_root).with_context(|| {
+                    format!(
+                        "inspect stable transient catalog root {}",
+                        catalog_root.display()
+                    )
+                })?;
+                ensure!(
+                    metadata.file_type().is_dir(),
+                    "stable transient catalog root {} is not a real directory",
+                    catalog_root.display()
+                );
+                #[cfg(unix)]
+                {
+                    let output_metadata = fs::metadata(output_dir).with_context(|| {
+                        format!("inspect stable catalog parent {}", output_dir.display())
+                    })?;
+                    ensure!(
+                        metadata.uid() == output_metadata.uid(),
+                        "stable transient catalog root {} is owned by a different user",
+                        catalog_root.display()
+                    );
+                    ensure!(
+                        metadata.permissions().mode() & UNIX_PERMISSION_MASK
+                            == PRIVATE_CATALOG_ROOT_MODE,
+                        "stable transient catalog root {} must retain private {:o} permissions",
+                        catalog_root.display(),
+                        PRIVATE_CATALOG_ROOT_MODE
+                    );
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "claim stable transient catalog root {}",
+                        catalog_root.display()
+                    )
+                });
+            }
+        }
+        Self::open_claimed(catalog_root)
+    }
+
+    fn open_claimed(catalog_root: PathBuf) -> Result<Self> {
+        let catalog_root_handle = match fs::File::open(&catalog_root) {
+            Ok(handle) => handle,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "open claimed unique transient catalog root {}; retained it because pathname cleanup is prohibited",
+                        catalog_root.display()
+                    )
+                });
+            }
+        };
+        let catalog_root = catalog_root.canonicalize().with_context(|| {
+            format!(
+                "canonicalize transient catalog root {}",
+                catalog_root.display()
+            )
+        })?;
+        let catalog_root_metadata = catalog_root_handle
+            .metadata()
+            .with_context(|| format!("stat transient catalog root {}", catalog_root.display()))?;
+        ensure!(
+            catalog_root_metadata.is_dir(),
+            "transient catalog root {} is not a directory",
+            catalog_root.display()
+        );
+        let lease = Self {
+            catalog_root,
+            catalog_root_handle,
+            #[cfg(unix)]
+            catalog_root_device: catalog_root_metadata.dev(),
+            #[cfg(unix)]
+            catalog_root_inode: catalog_root_metadata.ino(),
+            #[cfg(unix)]
+            catalog_root_uid: catalog_root_metadata.uid(),
+            #[cfg(unix)]
+            catalog_root_mode: catalog_root_metadata.permissions().mode() & UNIX_PERMISSION_MASK,
+        };
+        lease.revalidate()?;
+        Ok(lease)
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        let catalog_root_now = self.catalog_root.canonicalize().with_context(|| {
+            format!(
+                "canonicalize leased transient catalog root {}",
+                self.catalog_root.display()
+            )
+        })?;
+        ensure!(
+            catalog_root_now == self.catalog_root,
+            "transient catalog root canonical identity changed"
+        );
+        let catalog_path_metadata = fs::metadata(&self.catalog_root).with_context(|| {
+            format!(
+                "stat leased transient catalog root path {}",
+                self.catalog_root.display()
+            )
+        })?;
+        let catalog_handle_metadata = self.catalog_root_handle.metadata().with_context(|| {
+            format!(
+                "stat held transient catalog root {}",
+                self.catalog_root.display()
+            )
+        })?;
+        ensure!(
+            catalog_path_metadata.is_dir() && catalog_handle_metadata.is_dir(),
+            "transient catalog root {} is no longer a directory",
+            self.catalog_root.display()
+        );
+        #[cfg(unix)]
+        ensure!(
+            catalog_path_metadata.dev() == self.catalog_root_device
+                && catalog_path_metadata.ino() == self.catalog_root_inode
+                && catalog_handle_metadata.dev() == self.catalog_root_device
+                && catalog_handle_metadata.ino() == self.catalog_root_inode
+                && catalog_path_metadata.uid() == self.catalog_root_uid
+                && catalog_handle_metadata.uid() == self.catalog_root_uid
+                && catalog_path_metadata.permissions().mode() & UNIX_PERMISSION_MASK
+                    == self.catalog_root_mode
+                && catalog_handle_metadata.permissions().mode() & UNIX_PERMISSION_MASK
+                    == self.catalog_root_mode
+                && self.catalog_root_mode == PRIVATE_CATALOG_ROOT_MODE,
+            "transient catalog root identity, owner, or private mode changed"
+        );
+        Ok(())
+    }
+
+    fn finish_retained(self, work_budget: &OperatorWorkBudgetGuard) -> Result<()> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        self.revalidate()?;
+        // The root is deliberately retained. A path-based recursive cleanup
+        // could race with a root or child replacement and delete foreign data.
+        // Stable projection roots are exact-reconciled retry state; unique
+        // hydration roots share the lifecycle of their owning output attempt.
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)
+    }
 }
 
 /// Evidence that NautilusTrader consumed the published catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublishedCatalogProof {
     pub proof_version: String,
     pub catalog_uri: String,
     pub catalog_fs_protocol: String,
-    pub direct_s3_catalog_access_proven: bool,
+    pub publication_receipt_uri: String,
+    pub publication_receipt_sha256: String,
+    pub publication_receipt_version_id: String,
+    pub publication_physical_manifest_sha256: String,
     pub expected_iterations: usize,
     pub nt_iterations: usize,
     pub run_config_id: Option<String>,
     pub nt_version: String,
     pub created_at: String,
+}
+
+impl PublishedCatalogProof {
+    fn validate_against(
+        &self,
+        metadata: &ConversionCatalogMetadata,
+        contract: &BacktestResultContract,
+        spec: &RunSpec,
+    ) -> Result<()> {
+        ensure!(
+            self.proof_version == PUBLISHED_CATALOG_PROOF_VERSION,
+            "unexpected published-catalog proof version"
+        );
+        let receipt = metadata
+            .hydrated_publication_receipt()
+            .context("published-catalog proof requires hydrated publication metadata")?;
+        let (catalog_scheme, _) = self
+            .catalog_uri
+            .split_once("://")
+            .context("published-catalog proof catalog URI is missing its scheme")?;
+        ensure!(
+            catalog_scheme == "s3" && self.catalog_fs_protocol == catalog_scheme,
+            "published-catalog proof must bind the exact S3 catalog scheme"
+        );
+        ensure!(
+            self.catalog_uri == receipt.catalog_root_uri
+                && self.catalog_uri == contract.artifact_uris.nt_catalog_uri
+                && self.publication_receipt_uri == receipt.receipt_uri
+                && contract.artifact_uris.nt_catalog_manifest_uri.as_deref()
+                    == Some(receipt.receipt_uri.as_str())
+                && self.publication_receipt_sha256 == receipt.receipt_sha256
+                && self.publication_receipt_version_id == receipt.receipt_version_id
+                && self.publication_physical_manifest_sha256 == receipt.physical_manifest_sha256,
+            "published-catalog proof receipt identity does not match metadata and result contract"
+        );
+        let expected_iterations = u64::try_from(self.expected_iterations)
+            .context("published-catalog expected iterations do not fit u64")?;
+        let nt_iterations = u64::try_from(self.nt_iterations)
+            .context("published-catalog NT iterations do not fit u64")?;
+        ensure!(
+            expected_iterations == contract.nt_result.iterations
+                && nt_iterations == contract.nt_result.iterations
+                && self.run_config_id == contract.nt_result.run_config_id,
+            "published-catalog proof result identity does not match the result contract"
+        );
+        ensure!(
+            self.nt_version == contract.nt_version
+                && self.nt_version == spec.manifest.resolved_nt_version
+                && self.created_at == contract.created_at
+                && self.created_at == spec.created_at_utc,
+            "published-catalog proof version or creation identity does not match the result contract and RunSpec"
+        );
+        Ok(())
+    }
 }
 
 /// Parse an RFC 3339 timestamp into Unix nanoseconds.
@@ -529,168 +2426,405 @@ fn replace_contract_claim_limit_uri(
 
 async fn persist_durable_contract_artifact(
     writer: &CreateOnlyArtifactWriter<'_>,
-    store: &dyn ObjectStore,
     artifact_root: &ResolvedArtifactRoot,
     local_path: &Path,
     uri: &str,
-    committed: bool,
     work_budget: &OperatorWorkBudgetGuard,
-) -> Result<()> {
-    let path = artifact_root.object_path_for_uri(uri)?;
+) -> Result<DurableObjectVersionIdentity> {
+    let path = guarded_operation_outcome(work_budget, OperatorWorkBudgetStage::Publish, || {
+        artifact_root.object_path_for_uri(uri)
+    })??;
+    let payload = read_file_with_budget(local_path, work_budget, OperatorWorkBudgetStage::Publish)
+        .with_context(|| {
+            format!(
+                "read durable contract artifact {} for {}",
+                local_path.display(),
+                uri
+            )
+        })?;
+    let byte_len = u64::try_from(payload.len())
+        .context("durable contract artifact length does not fit u64")?;
+    let sha256 = sha256_hex_with_budget(&payload, work_budget, OperatorWorkBudgetStage::Publish)?;
+    let version = writer
+        .put_create_idempotent_guarded(&path, payload, work_budget)
+        .await
+        .with_context(|| format!("persist durable contract artifact {uri}"))?;
+    let (version_id, e_tag) =
+        required_versioned_create_result(version, &format!("durable artifact {uri}"))?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let payload = fs::read(local_path).with_context(|| {
-        format!(
-            "read durable contract artifact {} for {}",
-            local_path.display(),
-            uri
-        )
-    })?;
-    if committed {
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        let existing = read_object_store_object(store, &path)
-            .await?
-            .with_context(|| format!("committed durable artifact {uri} is missing"))?;
-        ensure!(
-            existing.as_ref() == payload.as_slice(),
-            "committed durable artifact {uri} has different bytes"
-        );
-    } else {
-        writer
-            .put_create_idempotent_guarded(&path, payload, work_budget)
-            .await
-            .with_context(|| format!("persist durable contract artifact {uri}"))?;
-    }
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    Ok(())
+    Ok(DurableObjectVersionIdentity {
+        uri: uri.to_string(),
+        sha256,
+        byte_len,
+        version_id,
+        e_tag,
+    })
 }
 
 async fn persist_durable_contract_artifacts(
     writer: &CreateOnlyArtifactWriter<'_>,
-    store: &dyn ObjectStore,
     artifact_root: &ResolvedArtifactRoot,
     artifacts: &RunArtifacts,
     output_prefix: &str,
-    committed: bool,
     work_budget: &OperatorWorkBudgetGuard,
-) -> Result<()> {
+) -> Result<DurableCompletionArtifacts> {
     let uris = &artifacts.output.contract.artifact_uris;
     persist_durable_contract_artifact(
         writer,
-        store,
         artifact_root,
         &artifacts.proof_path,
         &uris.source_proof_uri,
-        committed,
+        work_budget,
+    )
+    .await?;
+    ensure!(
+        artifacts
+            .output
+            .conversion_catalog_metadata
+            .catalog_consumption_proven(),
+        "durable terminal manifest requires published catalog consumption proof"
+    );
+    let published_catalog_proof = persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts
+            .catalog_metadata_path
+            .with_file_name(PUBLISHED_CATALOG_PROOF_FILE),
+        &portable_artifact_uri(output_prefix, PUBLISHED_CATALOG_PROOF_FILE),
         work_budget,
     )
     .await?;
     persist_durable_contract_artifact(
         writer,
-        store,
         artifact_root,
         &artifacts.canonical_artifact_path,
         &uris.canonical_table_uri,
-        committed,
         work_budget,
     )
     .await?;
-    persist_durable_contract_artifact(
+    let catalog_metadata = persist_durable_contract_artifact(
         writer,
-        store,
         artifact_root,
         &artifacts.catalog_metadata_path,
         &uris.catalog_metadata_uri,
-        committed,
         work_budget,
     )
     .await?;
-    persist_durable_contract_artifact(
+    let result_contract = persist_durable_contract_artifact(
         writer,
-        store,
         artifact_root,
         &artifacts.contract_path,
         &uris.result_contract_uri,
-        committed,
         work_budget,
     )
     .await?;
     persist_durable_contract_artifact(
         writer,
-        store,
         artifact_root,
         &artifacts.run_manifest_path,
         &portable_artifact_uri(output_prefix, BACKTEST_RUN_MANIFEST_FILE),
-        committed,
+        work_budget,
+    )
+    .await?;
+    let catalog_run_view_authority = persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.catalog_run_view_authority_path,
+        &portable_artifact_uri(output_prefix, CATALOG_RUN_VIEW_AUTHORITY_FILE),
         work_budget,
     )
     .await?;
     persist_durable_contract_artifact(
         writer,
-        store,
         artifact_root,
         &artifacts.conversion_manifest_path,
         &portable_artifact_uri(
             output_prefix,
             crate::conversion_boundary::CONVERSION_MANIFEST_FILE,
         ),
-        committed,
         work_budget,
     )
     .await?;
-    Ok(())
+    Ok(DurableCompletionArtifacts {
+        result_contract,
+        catalog_metadata,
+        published_catalog_proof,
+        catalog_run_view_authority,
+    })
 }
 
-async fn read_object_store_object(
+async fn read_exact_durable_object_guarded(
     store: &dyn ObjectStore,
-    path: &ObjectPath,
-) -> Result<Option<Bytes>> {
-    let object = match store.get(path).await {
-        Ok(object) => object,
-        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("read object-store path {path}")),
+    artifact_root: &ResolvedArtifactRoot,
+    identity: &DurableObjectVersionIdentity,
+    label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<u8>> {
+    identity.validate(label)?;
+    ensure!(
+        identity.byte_len <= artifact_root.max_final_object_bytes(),
+        "{label} exceeds artifact_store.max_final_object_bytes"
+    );
+    let path = artifact_root.object_path_for_uri(&identity.uri)?;
+    let options = object_store::GetOptions {
+        version: Some(identity.version_id.clone()),
+        if_match: identity.e_tag.clone(),
+        ..object_store::GetOptions::default()
     };
-    object
-        .bytes()
-        .await
-        .map(Some)
-        .with_context(|| format!("read object-store bytes {path}"))
+    let result = guarded_async_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+        store.get_opts(&path, options),
+    )
+    .await?
+    .with_context(|| {
+        format!(
+            "get exact version {} of {label} at {}",
+            identity.version_id, identity.uri
+        )
+    })?;
+    ensure!(
+        result.meta.location == path
+            && result.meta.size == identity.byte_len
+            && result.range.start == 0
+            && result.range.end == identity.byte_len
+            && result.meta.version.as_deref() == Some(identity.version_id.as_str()),
+        "{label} exact-version response metadata mismatch"
+    );
+    if let Some(e_tag) = &identity.e_tag {
+        ensure!(
+            result.meta.e_tag.as_deref() == Some(e_tag.as_str()),
+            "{label} exact-version ETag mismatch"
+        );
+    }
+    let mut output = ExactSizedObjectBuffer::new(identity.byte_len)?;
+    let mut stream = result.into_stream();
+    loop {
+        let chunk = guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+            async { stream.next().await.transpose() },
+        )
+        .await?
+        .with_context(|| format!("stream exact-version {label}"))?;
+        let Some(chunk) = chunk else { break };
+        output.push(
+            &chunk,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )?;
+    }
+    let bytes = output.finish(work_budget, OperatorWorkBudgetStage::ObjectVerification)?;
+    let actual_sha256 = sha256_hex_with_budget(
+        &bytes,
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+    )?;
+    ensure!(
+        actual_sha256 == identity.sha256,
+        "{label} exact-version SHA-256 mismatch"
+    );
+    Ok(bytes)
 }
 
-async fn commit_durable_checkpoint(
+async fn validate_durable_completion_resume_guarded(
+    spec: &RunSpec,
+    fingerprint: &ConversionFingerprint,
+    artifact_root: &ResolvedArtifactRoot,
+    catalog_dispatch: &CatalogDispatchConfig,
     store: &dyn ObjectStore,
-    checkpoint_path: &ObjectPath,
-    checkpoint_bytes: &[u8],
-    _permit: OperatorWorkBudgetCommitPermit,
-) -> Result<()> {
-    match store
-        .put_opts(
-            checkpoint_path,
-            Bytes::copy_from_slice(checkpoint_bytes).into(),
-            PutMode::Create.into(),
+    locator: &DurableCompletionLocator,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<DurableRunReceipt> {
+    locator.object.validate("durable completion manifest")?;
+    ensure!(
+        locator.object.uri
+            == portable_artifact_uri(
+                &spec.manifest.output_prefix,
+                DURABLE_COMPLETION_MANIFEST_FILE,
+            ),
+        "durable completion locator URI does not match the submitted run"
+    );
+    let manifest: DurableCompletionManifest = {
+        let manifest_bytes = read_exact_durable_object_guarded(
+            store,
+            artifact_root,
+            &locator.object,
+            "durable completion manifest",
+            work_budget,
         )
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(ObjectStoreError::AlreadyExists { .. })
-        | Err(ObjectStoreError::Precondition { .. }) => {
-            let existing = read_object_store_object(store, checkpoint_path)
-                .await?
-                .context("durable completion checkpoint disappeared after create conflict")?;
-            ensure!(
-                existing.as_ref() == checkpoint_bytes,
-                "durable completion checkpoint won a create race with different bytes"
-            );
-            Ok(())
-        }
-        Err(error) => Err(error).context("create durable completion checkpoint"),
-    }
+        .await?;
+        let manifest: DurableCompletionManifest = deserialize_json_with_budget(
+            &manifest_bytes,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .context("parse durable completion manifest")?;
+        let canonical_manifest_bytes =
+            crate::reference_artifact::canonical_json_bytes(&manifest)
+                .context("serialize canonical durable completion manifest")?;
+        ensure!(
+            canonical_manifest_bytes == manifest_bytes,
+            "durable completion manifest bytes are not canonical"
+        );
+        manifest
+    };
+    manifest.validate_for(spec, fingerprint)?;
+
+    // Fetch sequentially so the retry path retains at most one exact small
+    // artifact payload at a time before parsing it into its typed form.
+    let receipt = {
+        let bytes = read_exact_durable_object_guarded(
+            store,
+            artifact_root,
+            &manifest.publication_receipt,
+            "catalog publication receipt",
+            work_budget,
+        )
+        .await?;
+        CatalogProjectionPublicationReceipt::parse_and_validate_guarded(
+            &bytes,
+            &manifest.publication_receipt.sha256,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )?
+    };
+    let contract: BacktestResultContract = {
+        let bytes = read_exact_durable_object_guarded(
+            store,
+            artifact_root,
+            &manifest.result_contract,
+            "result contract",
+            work_budget,
+        )
+        .await?;
+        deserialize_json_with_budget(
+            &bytes,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .context("parse exact-version result contract")?
+    };
+    contract
+        .validate()
+        .map_err(|error| anyhow::anyhow!("validate exact-version result contract: {error}"))?;
+    let metadata: ConversionCatalogMetadata = {
+        let bytes = read_exact_durable_object_guarded(
+            store,
+            artifact_root,
+            &manifest.catalog_metadata,
+            "catalog metadata",
+            work_budget,
+        )
+        .await?;
+        deserialize_json_with_budget(
+            &bytes,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .context("parse exact-version catalog metadata")?
+    };
+    let proof: PublishedCatalogProof = {
+        let bytes = read_exact_durable_object_guarded(
+            store,
+            artifact_root,
+            &manifest.published_catalog_proof,
+            "published catalog proof",
+            work_budget,
+        )
+        .await?;
+        deserialize_json_with_budget(
+            &bytes,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .context("parse exact-version published catalog proof")?
+    };
+    proof.validate_against(&metadata, &contract, spec)?;
+    let authority: CatalogRunViewAuthority = {
+        let bytes = read_exact_durable_object_guarded(
+            store,
+            artifact_root,
+            &manifest.catalog_run_view_authority,
+            "catalog run-view authority",
+            work_budget,
+        )
+        .await?;
+        let authority: CatalogRunViewAuthority = deserialize_json_with_budget(
+            &bytes,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .context("parse exact-version catalog run-view authority")?;
+        let submitted_identity = submitted_run_identity_for_spec(spec)?;
+        let canonical_authority = authority.canonical_bytes_guarded(
+            &spec.manifest,
+            &submitted_identity,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )?;
+        ensure!(
+            canonical_authority == bytes,
+            "catalog run-view authority bytes are not canonical"
+        );
+        authority
+    };
+    let [authority_root] = authority.roots.as_slice() else {
+        bail!("durable completion requires exactly one catalog run-view root")
+    };
+    ensure!(
+        authority_root.physical_manifest == receipt.physical_manifest
+            && authority_root.physical_manifest_sha256 == receipt.physical_manifest_sha256
+            && authority_root.logical_catalog_hash == manifest.catalog_hash,
+        "durable completion receipt and run-view authority disagree"
+    );
+    let expected_catalog_root = catalog_dispatch.catalog_root_for(
+        &spec.source_proof.source_binding,
+        spec.manifest.market_structure_fixture,
+        artifact_root,
+    )?;
+    ensure!(
+        receipt.catalog_root_uri == expected_catalog_root
+            && receipt.binding.source_binding == spec.source_proof.source_binding,
+        "durable completion receipt does not match source-binding dispatch"
+    );
+    let receipt_identity = metadata
+        .hydrated_publication_receipt()
+        .context("durable completion metadata lacks hydrated receipt identity")?;
+    ensure!(
+        receipt_identity.receipt_uri == manifest.publication_receipt.uri
+            && receipt_identity.receipt_sha256 == manifest.publication_receipt.sha256
+            && receipt_identity.receipt_version_id == manifest.publication_receipt.version_id
+            && receipt_identity.physical_manifest_sha256 == receipt.physical_manifest_sha256
+            && contract.catalog_hash == manifest.catalog_hash
+            && metadata.catalog_hash == manifest.catalog_hash
+            && contract.catalog_metadata_hash == metadata.content_hash()?
+            && u64::try_from(metadata.canonical_rows)
+                .context("catalog metadata canonical rows do not fit u64")?
+                == manifest.canonical_rows
+            && contract.nt_result.iterations == manifest.nt_catalog_rows,
+        "durable completion artifact claims do not match terminal summary"
+    );
+    Ok(DurableRunReceipt {
+        completion: locator.clone(),
+        run_id: manifest.run_id,
+        submitted_manifest_hash: manifest.submitted_manifest_hash,
+        canonical_rows: manifest.canonical_rows,
+        nt_catalog_rows: manifest.nt_catalog_rows,
+        catalog_hash: manifest.catalog_hash,
+    })
 }
 
 fn verify_completed_result_contract(
     path: &Path,
     contract: &BacktestResultContract,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<BacktestResultContract> {
-    let existing = read_json_artifact::<BacktestResultContract>(path)?;
+    let existing = read_json_artifact_guarded::<BacktestResultContract>(
+        path,
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
     let mut normalized = contract.clone();
     normalized.nt_result.machine_id = existing.nt_result.machine_id.clone();
     normalized.nt_result.instance_id = existing.nt_result.instance_id.clone();
@@ -870,9 +3004,128 @@ fn ensure_object_within_raw_payload_limit(
     Ok(())
 }
 
-fn read_source_binding_registry(path: &Path) -> Result<SourceBindingRegistry> {
-    read_source_binding_registry_from_path(path)
-        .with_context(|| format!("read source-bindings registry {}", path.display()))
+/// Opaque, hash-before-parse source-control snapshot used by every executable
+/// operator entry. Its fields are private so callers cannot pair arbitrary
+/// parsed registry values with a RunSpec identity.
+#[derive(Debug, Clone)]
+pub struct VerifiedSourceBindingRegistry {
+    declared_path: PathBuf,
+    resolved_path: PathBuf,
+    sha256: String,
+    _bytes: Arc<[u8]>,
+    registry: Arc<SourceBindingRegistry>,
+}
+
+impl VerifiedSourceBindingRegistry {
+    /// Read, hash, and only then parse the registry named by `spec`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured path cannot be resolved/read or the
+    /// snapshotted bytes are not a valid source-binding registry.
+    pub fn from_run_spec(spec: &RunSpec) -> Result<Self> {
+        Self::from_run_spec_guarded(spec, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Snapshot the registry through the caller's execution-plan byte and wall
+    /// budget. Direct executable entrypoints use this before parsing registry
+    /// TOML, so a large or stalled control file cannot bypass the run budget.
+    pub fn from_run_spec_guarded(
+        spec: &RunSpec,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Self> {
+        // Direct invocation trusts the exact bytes visible at this boundary;
+        // immutable run evidence binds the digest computed from this snapshot.
+        let resolved =
+            crate::source_proof::resolve_source_bindings_path(&spec.source_bindings_path)
+                .canonicalize()
+                .with_context(|| {
+                    format!(
+                        "resolve source-bindings registry {}",
+                        spec.source_bindings_path.display()
+                    )
+                })?;
+        let bytes = read_file_with_budget(
+            &resolved,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .with_context(|| format!("read source-bindings registry {}", resolved.display()))?;
+        Self::from_exact_bytes(spec, resolved, Arc::from(bytes))
+    }
+
+    /// Construct the same opaque snapshot from bytes already frozen and
+    /// hash-checked at the execution-pack boundary. This remains crate-private:
+    /// pack resolution is the sole owner of portable-path containment.
+    pub(crate) fn from_frozen_pack_bytes(
+        spec: &RunSpec,
+        resolved_path: PathBuf,
+        bytes: Arc<[u8]>,
+        expected_sha256: &str,
+    ) -> Result<Self> {
+        // Production pack execution has an independent caller pin: the frozen
+        // bytes must also match the v4 execution-record digest before parsing.
+        ensure!(
+            resolved_path.is_absolute(),
+            "resolved source-bindings pack path must be absolute: {}",
+            resolved_path.display()
+        );
+        ensure!(
+            is_lowercase_sha256_hex(expected_sha256),
+            "execution-pack source_bindings_sha256 must be 64 lowercase-hex characters"
+        );
+        let verified = Self::from_exact_bytes(spec, resolved_path.clone(), bytes)?;
+        ensure!(
+            verified.sha256 == expected_sha256,
+            "source-bindings registry {} SHA-256 mismatch: expected {}, got {}",
+            resolved_path.display(),
+            expected_sha256,
+            verified.sha256
+        );
+        Ok(verified)
+    }
+
+    fn from_exact_bytes(spec: &RunSpec, resolved_path: PathBuf, bytes: Arc<[u8]>) -> Result<Self> {
+        let actual_sha256 = hex::encode(Sha256::digest(bytes.as_ref()));
+        let text = std::str::from_utf8(bytes.as_ref()).with_context(|| {
+            format!(
+                "decode source-bindings registry {} as UTF-8",
+                resolved_path.display()
+            )
+        })?;
+        let registry = SourceBindingRegistry::from_toml_str(text).with_context(|| {
+            format!("parse source-bindings registry {}", resolved_path.display())
+        })?;
+        Ok(Self {
+            declared_path: spec.source_bindings_path.clone(),
+            resolved_path,
+            sha256: actual_sha256,
+            _bytes: bytes,
+            registry: Arc::new(registry),
+        })
+    }
+
+    pub(crate) fn reassert_for(&self, spec: &RunSpec) -> Result<()> {
+        ensure!(
+            self.declared_path == spec.source_bindings_path,
+            "verified source-bindings path mismatch: handle {:?}, run spec {:?}",
+            self.declared_path,
+            spec.source_bindings_path
+        );
+        Ok(())
+    }
+
+    fn registry(&self) -> &SourceBindingRegistry {
+        self.registry.as_ref()
+    }
+
+    pub(crate) fn resolved_path(&self) -> &Path {
+        &self.resolved_path
+    }
+
+    pub(crate) fn sha256(&self) -> &str {
+        &self.sha256
+    }
 }
 
 fn accepted_dataset_for_run_spec_hash_with_registry(
@@ -907,12 +3160,19 @@ fn local_run_manifest_for_output(
     spec: &RunSpec,
     output_dir: &Path,
 ) -> Result<BacktestingRunManifest> {
-    let catalog_path = output_dir
-        .join(CATALOG_DIR)
+    let mut manifest = spec.manifest.clone();
+    bind_runtime_manifest_to_local_catalog_root(&mut manifest, &output_dir.join(CATALOG_DIR))?;
+    Ok(manifest)
+}
+
+fn bind_runtime_manifest_to_local_catalog_root(
+    manifest: &mut BacktestingRunManifest,
+    catalog_root: &Path,
+) -> Result<()> {
+    let catalog_path = catalog_root
         .to_str()
         .context("catalog path is not valid UTF-8")?
         .to_string();
-    let mut manifest = spec.manifest.clone();
     {
         let catalog_input = manifest.single_catalog_input_mut().map_err(|error| {
             anyhow::anyhow!("local catalog manifest requires one catalog input: {error}")
@@ -922,7 +3182,7 @@ fn local_run_manifest_for_output(
         catalog_input.catalog_fs_storage_options.clear();
         catalog_input.catalog_fs_rust_storage_options.clear();
     }
-    Ok(manifest)
+    Ok(())
 }
 
 fn validate_local_run_manifest(
@@ -944,8 +3204,8 @@ pub fn validate_run_spec_manifest_for_object_hash(
     output_dir: &Path,
     object_sha256: &str,
 ) -> Result<()> {
-    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    validate_run_spec_manifest_for_object_hash_with_registry(
+    let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)?;
+    validate_run_spec_manifest_for_object_hash_with_verified_registry(
         spec,
         output_dir,
         object_sha256,
@@ -960,15 +3220,16 @@ pub fn validate_run_spec_manifest_for_object_hash(
 ///
 /// Returns an error when converter, source-proof ledger, or manifest
 /// validation fails.
-pub fn validate_run_spec_manifest_for_object_hash_with_registry(
+pub fn validate_run_spec_manifest_for_object_hash_with_verified_registry(
     spec: &RunSpec,
     output_dir: &Path,
     object_sha256: &str,
-    registry: &SourceBindingRegistry,
+    registry: &VerifiedSourceBindingRegistry,
 ) -> Result<()> {
+    registry.reassert_for(spec)?;
     validate_converter_config(&spec.converter)?;
     let (_, accepted) =
-        accepted_dataset_for_run_spec_hash_with_registry(spec, object_sha256, registry)?;
+        accepted_dataset_for_run_spec_hash_with_registry(spec, object_sha256, registry.registry())?;
     validate_converter_table_family(&spec.converter, &accepted.table_family)?;
     if spec.manifest.catalog_inputs.len() == 1 {
         let manifest = local_run_manifest_for_output(spec, output_dir)?;
@@ -981,30 +3242,6 @@ pub fn validate_run_spec_manifest_for_object_hash_with_registry(
     }
 }
 
-struct DeadlineCheckedReader<'a, R> {
-    inner: R,
-    work_budget: &'a OperatorWorkBudgetGuard,
-}
-
-impl<'a, R> DeadlineCheckedReader<'a, R> {
-    fn new(inner: R, work_budget: &'a OperatorWorkBudgetGuard) -> Self {
-        Self { inner, work_budget }
-    }
-}
-
-impl<R: Read> Read for DeadlineCheckedReader<'_, R> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        self.work_budget
-            .check_deadline(OperatorWorkBudgetStage::Decode)
-            .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
-        let read = self.inner.read(buffer)?;
-        self.work_budget
-            .check_deadline(OperatorWorkBudgetStage::Decode)
-            .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
-        Ok(read)
-    }
-}
-
 fn read_limited_bytes<R: Read>(
     reader: R,
     max_decoded_bytes: u64,
@@ -1014,7 +3251,11 @@ fn read_limited_bytes<R: Read>(
     let read_limit = max_decoded_bytes
         .checked_add(1)
         .context("converter.raw_payload.max_decoded_bytes is too large")?;
-    let mut limited = DeadlineCheckedReader::new(reader, work_budget).take(read_limit);
+    let mut limited =
+        CooperativeDeadlineReader::new(reader, work_budget, OperatorWorkBudgetStage::Decode)
+            .take(read_limit);
+    // Grow from bytes actually observed. The declared ceiling may be several
+    // GiB and is a rejection bound, never an allocation request.
     let mut bytes = Vec::new();
     limited
         .read_to_end(&mut bytes)
@@ -1048,7 +3289,7 @@ fn read_limited_csv_text<R: Read>(
 enum DecodedPayload {
     Text(String),
     TarMembers(Vec<crate::tar_reader::TarMember>),
-    ParquetBytes(Vec<u8>),
+    ParquetBytes(Bytes),
 }
 
 fn decode_object_payload(
@@ -1056,104 +3297,137 @@ fn decode_object_payload(
     object_bytes: &[u8],
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<DecodedPayload> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
-    validate_raw_payload_config(config)?;
-    match config.container {
-        RawPayloadContainer::CsvGzip => Ok(DecodedPayload::Text(read_limited_csv_text(
-            flate2::read::GzDecoder::new(object_bytes),
-            config.max_decoded_bytes,
-            "gzip csv object",
-            work_budget,
-        )?)),
-        RawPayloadContainer::CsvText => Ok(DecodedPayload::Text(read_limited_csv_text(
-            Cursor::new(object_bytes),
-            config.max_decoded_bytes,
-            "plain csv object",
-            work_budget,
-        )?)),
-        RawPayloadContainer::JsonlText => Ok(DecodedPayload::Text(read_limited_csv_text(
-            Cursor::new(object_bytes),
-            config.max_decoded_bytes,
-            "plain jsonl object",
-            work_budget,
-        )?)),
-        RawPayloadContainer::JsonlGzip => Ok(DecodedPayload::Text(read_limited_csv_text(
-            flate2::read::GzDecoder::new(object_bytes),
-            config.max_decoded_bytes,
-            "gzip jsonl object",
-            work_budget,
-        )?)),
-        RawPayloadContainer::SingleJsonlZip => {
-            let mut member = crate::zip_reader::zip_member_reader(object_bytes)
-                .context("open jsonl zip object")?;
-            ensure!(
-                member.declared_len() as u64 <= config.max_decoded_bytes,
-                "ZIP JSONL member declared size {} exceeds converter.raw_payload.max_decoded_bytes {}",
-                member.declared_len(),
-                config.max_decoded_bytes
-            );
-            let text = read_limited_csv_text(
-                &mut member,
-                config.max_decoded_bytes,
-                "single-member zip jsonl object",
-                work_budget,
-            )?;
-            work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
-            member.verify().context("verify jsonl zip member")?;
-            Ok(DecodedPayload::Text(text))
-        }
-        RawPayloadContainer::SingleCsvZip => {
-            let member_name = config
-                .zip_member
-                .as_deref()
-                .context("converter.raw_payload.zip_member is required for single_csv_zip")?;
-            let cursor = Cursor::new(object_bytes);
-            let mut archive = zip::ZipArchive::new(cursor).context("open zip csv object")?;
-            let member = archive
-                .by_name(member_name)
-                .with_context(|| format!("open zip member {member_name:?}"))?;
-            ensure!(
-                !member.is_dir(),
-                "configured zip member {member_name:?} is a directory"
-            );
-            Ok(DecodedPayload::Text(read_limited_csv_text(
-                member,
-                config.max_decoded_bytes,
-                &format!("zip member {member_name:?}"),
-                work_budget,
-            )?))
-        }
-        RawPayloadContainer::TarGzipJsonl => {
-            let member_suffix = config
-                .member_suffix
-                .as_deref()
-                .context("converter.raw_payload.member_suffix is required for tar_gzip_jsonl")?;
-            let max_member_bytes = config
-                .max_member_bytes
-                .context("converter.raw_payload.max_member_bytes is required for tar_gzip_jsonl")?;
-            let mut members = Vec::new();
-            let decoder = flate2::read::MultiGzDecoder::new(Cursor::new(object_bytes));
-            let reader = DeadlineCheckedReader::new(decoder, work_budget);
-            for member in crate::tar_reader::tar_members(reader, member_suffix, max_member_bytes) {
-                work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
-                members.push(member.context("stream gzip tar jsonl member")?);
-                work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+    guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Decode,
+        || -> Result<_> {
+            validate_raw_payload_config(config)?;
+            match config.container {
+                RawPayloadContainer::CsvGzip => Ok(DecodedPayload::Text(read_limited_csv_text(
+                    flate2::read::GzDecoder::new(object_bytes),
+                    config.max_decoded_bytes,
+                    "gzip csv object",
+                    work_budget,
+                )?)),
+                RawPayloadContainer::CsvText => Ok(DecodedPayload::Text(read_limited_csv_text(
+                    Cursor::new(object_bytes),
+                    config.max_decoded_bytes,
+                    "plain csv object",
+                    work_budget,
+                )?)),
+                RawPayloadContainer::JsonlText => Ok(DecodedPayload::Text(read_limited_csv_text(
+                    Cursor::new(object_bytes),
+                    config.max_decoded_bytes,
+                    "plain jsonl object",
+                    work_budget,
+                )?)),
+                RawPayloadContainer::JsonlGzip => Ok(DecodedPayload::Text(read_limited_csv_text(
+                    flate2::read::GzDecoder::new(object_bytes),
+                    config.max_decoded_bytes,
+                    "gzip jsonl object",
+                    work_budget,
+                )?)),
+                RawPayloadContainer::SingleJsonlZip => {
+                    let mut member = crate::zip_reader::zip_member_reader(object_bytes)
+                        .context("open jsonl zip object")?;
+                    ensure!(
+                        member.declared_len() as u64 <= config.max_decoded_bytes,
+                        "ZIP JSONL member declared size {} exceeds converter.raw_payload.max_decoded_bytes {}",
+                        member.declared_len(),
+                        config.max_decoded_bytes
+                    );
+                    let text = read_limited_csv_text(
+                        &mut member,
+                        config.max_decoded_bytes,
+                        "single-member zip jsonl object",
+                        work_budget,
+                    )?;
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+                    member.verify().context("verify jsonl zip member")?;
+                    Ok(DecodedPayload::Text(text))
+                }
+                RawPayloadContainer::SingleCsvZip => {
+                    let member_name = config.zip_member.as_deref().context(
+                        "converter.raw_payload.zip_member is required for single_csv_zip",
+                    )?;
+                    let cursor = Cursor::new(object_bytes);
+                    let mut archive =
+                        zip::ZipArchive::new(cursor).context("open zip csv object")?;
+                    let member = archive
+                        .by_name(member_name)
+                        .with_context(|| format!("open zip member {member_name:?}"))?;
+                    ensure!(
+                        !member.is_dir(),
+                        "configured zip member {member_name:?} is a directory"
+                    );
+                    Ok(DecodedPayload::Text(read_limited_csv_text(
+                        member,
+                        config.max_decoded_bytes,
+                        &format!("zip member {member_name:?}"),
+                        work_budget,
+                    )?))
+                }
+                RawPayloadContainer::TarGzipJsonl => {
+                    let member_suffix = config.member_suffix.as_deref().context(
+                        "converter.raw_payload.member_suffix is required for tar_gzip_jsonl",
+                    )?;
+                    let max_member_bytes = config.max_member_bytes.context(
+                        "converter.raw_payload.max_member_bytes is required for tar_gzip_jsonl",
+                    )?;
+                    let mut members = Vec::new();
+                    let mut retained_member_bytes = 0_u64;
+                    let decoder = flate2::read::MultiGzDecoder::new(Cursor::new(object_bytes));
+                    let reader = CooperativeDeadlineReader::new(
+                        decoder,
+                        work_budget,
+                        OperatorWorkBudgetStage::Decode,
+                    );
+                    for member in
+                        crate::tar_reader::tar_members(reader, member_suffix, max_member_bytes)
+                    {
+                        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+                        let member = member.context("stream gzip tar jsonl member")?;
+                        let member_bytes = u64::try_from(member.text.len())
+                            .context("tar JSONL member length does not fit u64")?;
+                        retained_member_bytes = retained_member_bytes
+                            .checked_add(member_bytes)
+                            .context("cumulative tar JSONL member length overflow")?;
+                        ensure!(
+                            retained_member_bytes <= config.max_decoded_bytes,
+                            "cumulative tar JSONL member bytes {retained_member_bytes} exceed converter.raw_payload.max_decoded_bytes {}",
+                            config.max_decoded_bytes
+                        );
+                        work_budget.verify_decoded_bytes(
+                            retained_member_bytes,
+                            OperatorWorkBudgetStage::Decode,
+                        )?;
+                        members.try_reserve(1).map_err(|error| {
+                            anyhow::anyhow!("reserve tar JSONL member: {error}")
+                        })?;
+                        members.push(member);
+                        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+                    }
+                    Ok(DecodedPayload::TarMembers(members))
+                }
+                RawPayloadContainer::ParquetFile => Ok(DecodedPayload::ParquetBytes(Bytes::from(
+                    read_limited_bytes(
+                        Cursor::new(object_bytes),
+                        config.max_object_bytes,
+                        "parquet object",
+                        work_budget,
+                    )?,
+                ))),
             }
-            Ok(DecodedPayload::TarMembers(members))
-        }
-        RawPayloadContainer::ParquetFile => Ok(DecodedPayload::ParquetBytes(read_limited_bytes(
-            Cursor::new(object_bytes),
-            config.max_object_bytes,
-            "parquet object",
-            work_budget,
-        )?)),
-    }
+        },
+    )?
 }
 
 struct CompletedOutputInputs<'a> {
+    spec: &'a RunSpec,
     verified_sha256: String,
     accepted_source_proof: SourceProofReport,
     accepted: &'a AcceptedDataset,
+    conversion_fingerprint: &'a ConversionFingerprint,
     canonical_artifact_path: PathBuf,
     catalog_root: PathBuf,
     proof_path: PathBuf,
@@ -1169,16 +3443,43 @@ struct CompletedOutputInputs<'a> {
     expected_catalog_hash: String,
     artifact_uris: ResultArtifactUris,
     created_at: &'a str,
-    spec_manifest: &'a BacktestingRunManifest,
     work_budget: &'a OperatorWorkBudgetGuard,
 }
 
 fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArtifacts> {
+    let seal: OperatorTerminalSeal = read_json_artifact_guarded(
+        &inputs
+            .catalog_root
+            .parent()
+            .context("completed trade catalog root has no output parent")?
+            .join(OPERATOR_TERMINAL_SEAL_FILE),
+        inputs.work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    let output_dir = inputs
+        .catalog_root
+        .parent()
+        .context("completed trade catalog root has no output parent")?;
+    let current_files = collect_operator_terminal_seal_files(output_dir, inputs.work_budget)?;
+    let sealed_summary = verify_completed_operator_output_against_seal(
+        inputs.spec,
+        &inputs.accepted_source_proof,
+        inputs.accepted,
+        inputs.conversion_fingerprint,
+        output_dir,
+        &seal,
+        &current_files,
+        false,
+        inputs.work_budget,
+    )?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let conversion_checkpoint: ConversionCheckpoint =
-        read_json_artifact(&inputs.conversion_checkpoint_path)?;
+    let conversion_checkpoint: ConversionCheckpoint = read_json_artifact_guarded(
+        &inputs.conversion_checkpoint_path,
+        inputs.work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     ensure!(
         conversion_checkpoint.content_hash()? == inputs.conversion_checkpoint_hash,
         "completed conversion checkpoint hash changed after inspection"
@@ -1186,8 +3487,11 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let conversion_manifest: ConversionManifest =
-        read_json_artifact(&inputs.conversion_manifest_path)?;
+    let conversion_manifest: ConversionManifest = read_json_artifact_guarded(
+        &inputs.conversion_manifest_path,
+        inputs.work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     ensure!(
         conversion_manifest.content_hash()? == inputs.conversion_manifest_hash,
         "completed conversion manifest hash changed after inspection"
@@ -1199,8 +3503,11 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let conversion_catalog_metadata: ConversionCatalogMetadata =
-        read_json_artifact(&inputs.catalog_metadata_path)?;
+    let conversion_catalog_metadata: ConversionCatalogMetadata = read_json_artifact_guarded(
+        &inputs.catalog_metadata_path,
+        inputs.work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     ensure!(
         conversion_catalog_metadata.checkpoint_hash == inputs.conversion_checkpoint_hash,
         "completed catalog metadata checkpoint_hash mismatch"
@@ -1220,8 +3527,9 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
 
-    let actual_catalog_hash = logical_catalog_hash(&inputs.catalog_root)
-        .with_context(|| format!("verify catalog hash {}", inputs.catalog_root.display()))?;
+    let actual_catalog_hash =
+        logical_catalog_hash_guarded(&inputs.catalog_root, inputs.work_budget)
+            .with_context(|| format!("verify catalog hash {}", inputs.catalog_root.display()))?;
     ensure!(
         actual_catalog_hash == inputs.expected_catalog_hash,
         "completed NT catalog hash mismatch: expected {:?}, got {:?}",
@@ -1231,9 +3539,13 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let canonical_table =
-        CanonicalTradesTable::read_parquet(&inputs.canonical_artifact_path, inputs.accepted)?;
-    let actual_metadata = actual_nt_market_data_metadata(&inputs.catalog_root)?;
+    let canonical_table = CanonicalTradesTable::read_parquet_guarded(
+        &inputs.canonical_artifact_path,
+        inputs.accepted,
+        inputs.work_budget,
+    )?;
+    let actual_metadata =
+        actual_nt_market_data_metadata_guarded(&inputs.catalog_root, inputs.work_budget)?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
@@ -1273,11 +3585,18 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         conversion_manifest.nt_instrument_id == manifest_catalog_input.nt_instrument_id,
         "completed conversion instrument does not match run manifest"
     );
-    assert_time_window_overlaps_data(&inputs.manifest, &canonical_table)?;
+    assert_time_window_overlaps_data_guarded(
+        &inputs.manifest,
+        &canonical_table,
+        inputs.work_budget,
+    )?;
 
-    let read_back =
-        read_back_trade_ticks(&inputs.catalog_root, &conversion_manifest.nt_instrument_id)
-            .context("read back completed NT catalog")?;
+    let read_back = read_back_trade_ticks_guarded(
+        &inputs.catalog_root,
+        &conversion_manifest.nt_instrument_id,
+        inputs.work_budget,
+    )
+    .context("read back completed NT catalog")?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
@@ -1287,6 +3606,20 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         read_back.len(),
         canonical_table.rows.len()
     );
+    assert_read_back_matches_guarded(
+        &read_back,
+        &canonical_table.rows,
+        &conversion_manifest.nt_instrument_id,
+        inputs.work_budget,
+    )?;
+
+    let submitted_identity = submitted_run_identity_for_spec(inputs.spec)?;
+    let catalog_run_view_authority = load_catalog_run_view_authority_guarded(
+        inputs.spec,
+        &inputs.manifest,
+        output_dir,
+        inputs.work_budget,
+    )?;
 
     let crate::runner::NtBacktestNodeRun {
         result: nt_result,
@@ -1294,14 +3627,20 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         config_override_report,
         run_guard_report,
         ..
-    } = run_nt_backtest_node_guarded(&inputs.manifest, inputs.work_budget)?;
+    } = run_nt_backtest_node_guarded(
+        &inputs.manifest,
+        &submitted_identity,
+        &catalog_run_view_authority,
+        inputs.work_budget,
+    )?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::Backtest)?;
-    let expected = expected_iterations(
+    let expected = expected_iterations_guarded(
         &canonical_table.rows,
         inputs.manifest.start_time,
         inputs.manifest.end_time,
+        inputs.work_budget,
     )
     .context("compute expected engine iterations")?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
@@ -1363,49 +3702,33 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     let mut output = BacktestRunOutput {
         canonical_table,
         projection,
+        catalog_run_view_authority,
         conversion_checkpoint,
         conversion_manifest,
         conversion_catalog_metadata,
         conversion_checkpoint_hash: inputs.conversion_checkpoint_hash,
         conversion_manifest_hash: inputs.conversion_manifest_hash,
         read_back_count,
+        expected_iterations: expected,
         nt_result,
         order_terminals,
         contract,
     };
     redact_operator_contract(&mut output, &inputs.catalog_root);
-    output.contract = verify_completed_result_contract(&inputs.contract_path, &output.contract)?;
+    output.contract = verify_completed_result_contract(
+        &inputs.contract_path,
+        &output.contract,
+        inputs.work_budget,
+    )?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::Finalize)?;
 
-    run_budgeted_stage(
-        inputs.work_budget,
-        OperatorWorkBudgetStage::Finalize,
-        || {
-            atomic_write(
-                &inputs.proof_path,
-                serde_json::to_string_pretty(&inputs.accepted_source_proof)
-                    .context("serialize accepted source proof")?
-                    .as_bytes(),
-            )
-            .with_context(|| format!("write {}", inputs.proof_path.display()))
-        },
-    )?;
-    run_budgeted_stage(
-        inputs.work_budget,
-        OperatorWorkBudgetStage::Finalize,
-        || {
-            atomic_write(
-                &inputs.run_manifest_path,
-                serde_json::to_string_pretty(&inputs.spec_manifest.to_artifact_manifest()?)
-                    .context("serialize resolved run manifest")?
-                    .as_bytes(),
-            )
-            .with_context(|| format!("write {}", inputs.run_manifest_path.display()))
-        },
-    )?;
-
+    let batch_summary = OperatorRunSummary::trade(&output)?;
+    ensure!(
+        batch_summary == sealed_summary,
+        "completed trade summary changed after sealed verification"
+    );
     Ok(RunArtifacts {
         verified_sha256: inputs.verified_sha256,
         accepted_source_proof: inputs.accepted_source_proof,
@@ -1417,13 +3740,13 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         conversion_manifest_path: inputs.conversion_manifest_path,
         conversion_checkpoint_path: inputs.conversion_checkpoint_path,
         catalog_metadata_path: inputs.catalog_metadata_path,
+        catalog_run_view_authority_path: output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE),
         canonical_catalog_uri: None,
-        nt_catalog_capability_plan: None,
-        nt_catalog_capability_proof_artifact: None,
-        create_only_probe_transcript: None,
         persisted_catalog_projection: None,
         persisted_catalog_objects: Vec::new(),
         output,
+        batch_summary,
+        transient_catalog_root_lease: None,
     })
 }
 
@@ -1432,15 +3755,22 @@ fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
+fn read_json_artifact_guarded<T: DeserializeOwned>(
+    path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<T> {
+    let bytes = read_file_with_budget(path, work_budget, stage)?;
+    deserialize_json_with_budget(&bytes, work_budget, stage)
+        .with_context(|| format!("parse {}", path.display()))
+}
+
 fn run_budgeted_stage<T>(
     work_budget: &OperatorWorkBudgetGuard,
     stage: OperatorWorkBudgetStage,
     operation: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
-    work_budget.check_deadline(stage)?;
-    let output = operation()?;
-    work_budget.check_deadline(stage)?;
-    Ok(output)
+    crate::operator_work_budget::guarded_operation_outcome(work_budget, stage, operation)?
 }
 
 /// Run the vertical slice from a parsed [`RunSpec`] and the raw bytes
@@ -1470,42 +3800,44 @@ pub fn run_from_run_spec_guarded(
     output_dir: &Path,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
-    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
+    let registry = VerifiedSourceBindingRegistry::from_run_spec_guarded(spec, work_budget)?;
     run_from_run_spec_inner(spec, object_bytes, output_dir, true, &registry, work_budget)
 }
 
-fn run_from_run_spec_pending_guarded(
+pub(crate) fn run_from_run_spec_with_verified_registry(
     spec: &RunSpec,
     object_bytes: &[u8],
     output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
-    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    run_from_run_spec_inner(
-        spec,
-        object_bytes,
-        output_dir,
-        false,
-        &registry,
-        work_budget,
-    )
+    registry.reassert_for(spec)?;
+    run_from_run_spec_inner(spec, object_bytes, output_dir, true, registry, work_budget)
 }
 
-/// Run the vertical slice against the exact source-binding registry snapshot
-/// already accepted by a caller's pre-payload control boundary.
-///
-/// # Errors
-///
-/// Returns the same errors as [`run_from_run_spec`], while guaranteeing the
-/// run never reopens `RunSpec::source_bindings_path`.
-pub fn run_from_run_spec_with_registry(
-    spec: &RunSpec,
-    object_bytes: &[u8],
-    output_dir: &Path,
-    registry: &SourceBindingRegistry,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<RunArtifacts> {
-    run_from_run_spec_inner(spec, object_bytes, output_dir, true, registry, work_budget)
+enum TradeRunPreparation {
+    Completed(RunArtifacts),
+    Prepared(PreparedTradeRunArtifacts),
+}
+
+struct PreparedTradeRunArtifacts {
+    verified_sha256: String,
+    accepted_source_proof: SourceProofReport,
+    accepted: AcceptedDataset,
+    conversion_fingerprint: ConversionFingerprint,
+    canonical_artifact_path: PathBuf,
+    catalog_root: PathBuf,
+    proof_path: PathBuf,
+    contract_path: PathBuf,
+    run_manifest_path: PathBuf,
+    conversion_manifest_path: PathBuf,
+    conversion_checkpoint_path: PathBuf,
+    catalog_metadata_path: PathBuf,
+    local_manifest: BacktestingRunManifest,
+    contract_manifest_hash: String,
+    artifact_uris: ResultArtifactUris,
+    backtest: PreparedBacktestRun,
+    transient_catalog_root_lease: Option<TransientCatalogRootLease>,
 }
 
 fn run_from_run_spec_inner(
@@ -1513,9 +3845,41 @@ fn run_from_run_spec_inner(
     object_bytes: &[u8],
     output_dir: &Path,
     reuse_completed_output: bool,
-    source_binding_registry: &SourceBindingRegistry,
+    source_binding_registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
+    match prepare_run_from_run_spec_inner(
+        spec,
+        object_bytes,
+        output_dir,
+        reuse_completed_output,
+        source_binding_registry,
+        work_budget,
+    )? {
+        TradeRunPreparation::Completed(artifacts) => Ok(artifacts),
+        TradeRunPreparation::Prepared(prepared) => {
+            let runtime_manifest = prepared.local_manifest.clone();
+            finalize_prepared_trade_run(
+                spec,
+                prepared,
+                runtime_manifest,
+                output_dir,
+                reuse_completed_output,
+                work_budget,
+            )
+        }
+    }
+}
+
+fn prepare_run_from_run_spec_inner(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    reuse_completed_output: bool,
+    source_binding_registry: &VerifiedSourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<TradeRunPreparation> {
+    source_binding_registry.reassert_for(spec)?;
     work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     validate_converter_config(&spec.converter)?;
     let adapter =
@@ -1544,10 +3908,11 @@ fn run_from_run_spec_inner(
 
     // Re-verify the accepted object content hash against the run-spec, so raw
     // staged data can never reach the backtest without matching the pinned hash.
-    let mut hasher = Sha256::new();
-    hasher.update(object_bytes);
-    let verified_sha256 = hex::encode(hasher.finalize());
-    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
+    let verified_sha256 = sha256_hex_with_budget(
+        object_bytes,
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+    )?;
     ensure!(
         verified_sha256 == spec.accepted_object.sha256,
         "object SHA-256 {verified_sha256} does not match run-spec {}",
@@ -1558,11 +3923,12 @@ fn run_from_run_spec_inner(
     let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
         spec,
         &verified_sha256,
-        source_binding_registry,
+        source_binding_registry.registry(),
     )?;
     validate_converter_table_family(&spec.converter, &accepted.table_family)?;
 
-    let conversion_fingerprint = conversion_fingerprint_for(spec, &accepted)?;
+    let conversion_fingerprint =
+        conversion_fingerprint_for(spec, &accepted, source_binding_registry)?;
     let canonical_path = output_dir.join(CANONICAL_ARTIFACT_FILE);
     let catalog_root = output_dir.join(CATALOG_DIR);
     let contract_path = output_dir.join(RESULT_CONTRACT_FILE);
@@ -1575,7 +3941,7 @@ fn run_from_run_spec_inner(
     let catalog_metadata_path = output_dir.join(crate::conversion_boundary::CATALOG_METADATA_FILE);
     // Bind the manifest catalog input to the local projection root.
     let contract_manifest_hash = spec.manifest.manifest_hash();
-    let manifest = local_run_manifest_for_output(spec, output_dir)?;
+    let mut manifest = local_run_manifest_for_output(spec, output_dir)?;
     validate_local_run_manifest(&manifest, &accepted)?;
     let artifact_uris = portable_artifact_uris(&manifest);
 
@@ -1591,12 +3957,20 @@ fn run_from_run_spec_inner(
     work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
 
     if reuse_completed_output {
+        let sealed_completion = preflight_completed_output_before_inspection(
+            spec,
+            &accepted_proof,
+            &accepted,
+            output_dir,
+            &conversion_fingerprint,
+            work_budget,
+        )?;
         match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
             ConversionOutputState::Complete {
                 manifest_hash,
                 checkpoint_hash,
                 catalog_hash,
-            } => {
+            } if sealed_completion => {
                 normalize_registered_trade_converter(
                     &spec.converter,
                     &accepted,
@@ -1607,10 +3981,12 @@ fn run_from_run_spec_inner(
                     work_budget,
                 )
                 .context("revalidate completed source rows against current work budget")?;
-                return run_from_completed_output(CompletedOutputInputs {
+                let completed_inputs = CompletedOutputInputs {
+                    spec,
                     verified_sha256,
                     accepted_source_proof: accepted_proof,
                     accepted: &accepted,
+                    conversion_fingerprint: &conversion_fingerprint,
                     canonical_artifact_path: canonical_path,
                     catalog_root,
                     proof_path,
@@ -1626,11 +4002,14 @@ fn run_from_run_spec_inner(
                     expected_catalog_hash: catalog_hash,
                     artifact_uris,
                     created_at: &spec.created_at_utc,
-                    spec_manifest: &spec.manifest,
                     work_budget,
+                };
+                return run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+                    run_from_completed_output(completed_inputs).map(TradeRunPreparation::Completed)
                 });
             }
-            ConversionOutputState::CleanNew
+            ConversionOutputState::Complete { .. }
+            | ConversionOutputState::CleanNew
             | ConversionOutputState::ResumeFromCheckpoint { .. } => {}
         }
     }
@@ -1638,31 +4017,21 @@ fn run_from_run_spec_inner(
     work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output dir {}", output_dir.display()))?;
-    for stale_completed_artifact in [
-        crate::conversion_boundary::CONVERSION_MANIFEST_FILE,
-        crate::conversion_boundary::CATALOG_METADATA_FILE,
-        PUBLISHED_CATALOG_PROOF_FILE,
-    ] {
-        let path = output_dir.join(stale_completed_artifact);
-        if path.exists() {
-            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-        }
-    }
-    write_conversion_checkpoint(
-        output_dir,
-        &ConversionCheckpoint::started(conversion_fingerprint, spec.created_at_utc.clone()),
-    )?;
-    // Start every local run from a clean catalog after the output prefix has
-    // been proven clean, idempotent, or resumable. NautilusTrader's
-    // `write_to_parquet` skips writing when a file for the same
-    // instrument/interval already exists, so an ungoverned leftover projection
-    // must never be silently stamped with a new source proof.
-    if catalog_root.exists() {
-        fs::remove_dir_all(&catalog_root)
-            .with_context(|| format!("clean catalog root {}", catalog_root.display()))?;
-    }
-
-    let mut output = run_backtest(BacktestRunInputs {
+    let (catalog_root, transient_catalog_root_lease) = if reuse_completed_output {
+        (catalog_root, None)
+    } else {
+        let lease = TransientCatalogRootLease::acquire_stable(output_dir)?;
+        let stable_catalog_root = lease.catalog_root.clone();
+        (stable_catalog_root, Some(lease))
+    };
+    bind_runtime_manifest_to_local_catalog_root(&mut manifest, &catalog_root)?;
+    validate_local_run_manifest(&manifest, &accepted)?;
+    let conversion_control_artifact_path = spec
+        .source_bindings_path
+        .to_str()
+        .context("source_bindings_path is not valid UTF-8")?;
+    let submitted_identity = submitted_run_identity_for_spec(spec)?;
+    let backtest_inputs = BacktestRunInputs {
         accepted: &accepted,
         identity,
         instrument_spec,
@@ -1671,300 +4040,646 @@ fn run_from_run_spec_inner(
         manifest: &manifest,
         contract_manifest_hash: &contract_manifest_hash,
         converter: &spec.converter,
+        conversion_control_artifact_path,
+        conversion_control_artifact_sha256: source_binding_registry.sha256(),
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
+        authoritative_output_root: output_dir,
         selector_provenance: None,
         created_at: &spec.created_at_utc,
-        artifact_uris,
+        artifact_uris: artifact_uris.clone(),
         work_budget,
-    })?;
-    redact_operator_contract(&mut output, &catalog_root);
-
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &proof_path,
-            serde_json::to_string_pretty(&accepted_proof)
-                .context("serialize accepted source proof")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", proof_path.display()))
-    })?;
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &contract_path,
-            serde_json::to_string_pretty(&output.contract)
-                .context("serialize result contract")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", contract_path.display()))
-    })?;
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &run_manifest_path,
-            serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-                .context("serialize resolved run manifest")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", run_manifest_path.display()))
-    })?;
-    if reuse_completed_output {
-        write_completed_conversion_artifacts_guarded(
-            output_dir,
-            &output.conversion_manifest,
-            &output.conversion_checkpoint,
-            &output.conversion_catalog_metadata,
-            work_budget,
-        )?;
-    } else {
-        write_pending_conversion_artifacts(
-            output_dir,
-            &output.conversion_manifest,
-            &output.conversion_catalog_metadata,
-        )?;
-    }
-
-    Ok(RunArtifacts {
+    };
+    let backtest = prepare_backtest(&backtest_inputs, submitted_identity)?;
+    Ok(TradeRunPreparation::Prepared(PreparedTradeRunArtifacts {
         verified_sha256,
         accepted_source_proof: accepted_proof,
+        accepted,
+        conversion_fingerprint,
         canonical_artifact_path: canonical_path,
         catalog_root,
         proof_path,
         contract_path,
         run_manifest_path,
-        conversion_manifest_path: output_dir
-            .join(crate::conversion_boundary::CONVERSION_MANIFEST_FILE),
-        conversion_checkpoint_path: output_dir
-            .join(crate::conversion_boundary::CONVERSION_CHECKPOINT_FILE),
-        catalog_metadata_path: output_dir.join(crate::conversion_boundary::CATALOG_METADATA_FILE),
+        conversion_manifest_path,
+        conversion_checkpoint_path,
+        catalog_metadata_path,
+        local_manifest: manifest,
+        contract_manifest_hash,
+        artifact_uris,
+        backtest,
+        transient_catalog_root_lease,
+    }))
+}
+
+fn finalize_prepared_trade_run(
+    spec: &RunSpec,
+    prepared: PreparedTradeRunArtifacts,
+    runtime_manifest: BacktestingRunManifest,
+    output_dir: &Path,
+    reuse_completed_output: bool,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<RunArtifacts> {
+    let runtime_catalog_root = PathBuf::from(
+        runtime_manifest
+            .single_catalog_input()
+            .map_err(|error| anyhow::anyhow!(error))?
+            .catalog_path
+            .as_str(),
+    );
+    let mut output = execute_prepared_backtest(
+        prepared.backtest,
+        BacktestRunFinalizeInputs {
+            accepted: &prepared.accepted,
+            runtime_manifest: &runtime_manifest,
+            contract_manifest_hash: &prepared.contract_manifest_hash,
+            selector_provenance: None,
+            created_at: &spec.created_at_utc,
+            artifact_uris: prepared.artifact_uris,
+            work_budget,
+        },
+    )?;
+    persist_catalog_run_view_authority_guarded(
+        spec,
+        &runtime_manifest,
+        &output.catalog_run_view_authority,
+        output_dir,
+        work_budget,
+    )?;
+    redact_operator_contract(&mut output, &runtime_catalog_root);
+
+    let proof_bytes = serde_json::to_vec_pretty(&prepared.accepted_source_proof)
+        .context("serialize accepted source proof")?;
+    persist_immutable_local_bytes_guarded(
+        &prepared.proof_path,
+        &proof_bytes,
+        "accepted source proof",
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    if reuse_completed_output {
+        let contract_bytes =
+            serde_json::to_vec_pretty(&output.contract).context("serialize result contract")?;
+        persist_immutable_local_bytes_guarded(
+            &prepared.contract_path,
+            &contract_bytes,
+            "result contract",
+            work_budget,
+            OperatorWorkBudgetStage::Finalize,
+        )?;
+    }
+    let run_manifest_bytes = serde_json::to_vec_pretty(&spec.manifest.to_artifact_manifest()?)
+        .context("serialize resolved run manifest")?;
+    persist_immutable_local_bytes_guarded(
+        &prepared.run_manifest_path,
+        &run_manifest_bytes,
+        "resolved run manifest",
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    let batch_summary = OperatorRunSummary::trade(&output)?;
+    let artifacts = RunArtifacts {
+        verified_sha256: prepared.verified_sha256,
+        accepted_source_proof: prepared.accepted_source_proof,
+        canonical_artifact_path: prepared.canonical_artifact_path,
+        catalog_root: prepared.catalog_root,
+        proof_path: prepared.proof_path,
+        contract_path: prepared.contract_path,
+        run_manifest_path: prepared.run_manifest_path,
+        conversion_manifest_path: prepared.conversion_manifest_path,
+        conversion_checkpoint_path: prepared.conversion_checkpoint_path,
+        catalog_metadata_path: prepared.catalog_metadata_path,
+        catalog_run_view_authority_path: output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE),
         canonical_catalog_uri: None,
-        nt_catalog_capability_plan: None,
-        nt_catalog_capability_proof_artifact: None,
-        create_only_probe_transcript: None,
         persisted_catalog_projection: None,
         persisted_catalog_objects: Vec::new(),
         output,
+        batch_summary,
+        transient_catalog_root_lease: prepared.transient_catalog_root_lease,
+    };
+    if reuse_completed_output {
+        write_completed_conversion_artifacts_guarded(
+            output_dir,
+            &artifacts.output.conversion_manifest,
+            &artifacts.output.conversion_checkpoint,
+            &artifacts.output.conversion_catalog_metadata,
+            work_budget,
+        )?;
+        commit_operator_terminal_seal(
+            spec,
+            &artifacts.accepted_source_proof,
+            &prepared.accepted,
+            &prepared.conversion_fingerprint,
+            output_dir,
+            &artifacts.batch_summary,
+            work_budget,
+        )?;
+    }
+    Ok(artifacts)
+}
+
+struct DurableRunSpecPreflight {
+    artifact_root: ResolvedArtifactRoot,
+    credential_parameters: NtCatalogSsmParameterRefs,
+    credential_region: String,
+}
+
+fn durable_run_spec_preflight(spec: &RunSpec) -> Result<DurableRunSpecPreflight> {
+    ensure!(
+        spec.source_proof.table_family == TRADE_TABLE_FAMILY,
+        "durable operator currently supports only the proven {TRADE_TABLE_FAMILY:?} table family; got {:?}",
+        spec.source_proof.table_family
+    );
+    let adapter =
+        require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::CsvNativeTrades,
+        "durable operator currently supports only the proven CSV-native trade adapter; got {:?}",
+        adapter.kind
+    );
+    let artifact_store = spec.required_artifact_store()?;
+    spec.validate_artifact_store_publish_config(artifact_store)?;
+    let artifact_root = artifact_store.resolve()?;
+    let catalog_dispatch = spec.required_catalog_dispatch()?;
+    catalog_dispatch.catalog_root_for(
+        &spec.source_proof.source_binding,
+        spec.manifest.market_structure_fixture,
+        &artifact_root,
+    )?;
+    let credential_parameters = spec
+        .manifest
+        .artifact_store
+        .ssm_parameters
+        .as_ref()
+        .context(
+            "durable artifact-store publication requires manifest SSM credential parameters",
+        )?;
+    ensure!(
+        credential_parameters.region == artifact_root.s3_region(),
+        "durable artifact-store SSM region must match artifact-store S3 region"
+    );
+    Ok(DurableRunSpecPreflight {
+        artifact_root,
+        credential_parameters: NtCatalogSsmParameterRefs {
+            access_key_id: credential_parameters.access_key_id.clone(),
+            secret_access_key: credential_parameters.secret_access_key.clone(),
+            session_token: credential_parameters.session_token.clone(),
+        },
+        credential_region: credential_parameters.region.clone(),
     })
 }
 
-/// Run the operator path and persist the projected NT catalog to the configured
-/// artifact store through source-binding dispatch.
+/// Validate every durable-only RunSpec surface without reading source bytes,
+/// resolving secrets, creating output, or contacting S3.
 ///
-/// # Errors
-///
-/// Returns an error if the base run fails, artifact-store config is invalid, the
-/// source binding cannot dispatch to one catalog root, or any create-only write
-/// is rejected.
-pub async fn run_from_run_spec_with_artifact_store<F>(
+/// Callers must run the ordinary manifest/source-binding preflight first; that
+/// consume boundary validates the configured SSM parameter-path syntax. This
+/// durable boundary then validates store agreement, dispatch identity, region,
+/// required SSM ownership, and the currently proven operator family.
+pub fn validate_durable_run_spec_preflight(spec: &RunSpec) -> Result<()> {
+    durable_run_spec_preflight(spec).map(|_| ())
+}
+
+/// Prepared, budget-guarded durable dispatcher shared by every production
+/// caller. Fields are private so an SSM credential or versioning proof cannot
+/// be separated from the exact store it prepared.
+pub struct DurableRunDispatcher {
+    store: AmazonS3,
+    versioning_enabled: BucketVersioningEnabled,
+}
+
+impl DurableRunDispatcher {
+    /// Resolve the sole SSM credential source and establish the configured
+    /// bucket-versioning capability after deterministic RunSpec preflight.
+    pub async fn prepare_guarded(
+        spec: &RunSpec,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Self> {
+        let preflight = guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+            || durable_run_spec_preflight(spec),
+        )??;
+        let resolver = guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            NtCatalogSsmCredentialResolver::from_region(&preflight.credential_region),
+        )
+        .await??;
+        let credentials = guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            resolver.resolve(&preflight.credential_parameters),
+        )
+        .await??;
+        let versioning_enabled = preflight
+            .artifact_root
+            .verify_bucket_versioning_enabled(&credentials, work_budget)
+            .await?;
+        let store = preflight
+            .artifact_root
+            .build_s3_object_store_with_credentials(&credentials)?;
+        Ok(Self {
+            store,
+            versioning_enabled,
+        })
+    }
+
+    /// Execute or exactly resume the sole durable operator under the caller's
+    /// execution-plan-derived budget.
+    pub async fn dispatch_guarded(
+        &self,
+        spec: &RunSpec,
+        request: DurableRunRequest,
+        output_dir: &Path,
+        registry: &VerifiedSourceBindingRegistry,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<DurableRunOutcome> {
+        run_from_run_spec_with_artifact_store_resume_guarded(
+            spec,
+            request,
+            output_dir,
+            &self.store,
+            &self.versioning_enabled,
+            registry,
+            work_budget,
+        )
+        .await
+    }
+}
+
+/// Guarded durable-catalog operator path used by validated backfill callers.
+pub async fn run_from_run_spec_with_artifact_store_guarded(
     spec: &RunSpec,
-    gz_bytes: &[u8],
+    object_bytes: Vec<u8>,
     output_dir: &Path,
     store: &dyn ObjectStore,
-    build_capability_evidence: F,
-) -> Result<RunArtifacts>
-where
-    F: FnOnce(
-        &ResolvedArtifactRoot,
-        &NtCatalogCapabilityPlan,
-        CreateOnlyProbeTranscript,
-    ) -> Result<NtCatalogCapabilityEvidence>,
-{
-    let work_budget = OperatorWorkBudgetGuard::unbounded();
-    run_from_run_spec_with_artifact_store_guarded(
+    versioning_enabled: &BucketVersioningEnabled,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<DurableRunOutcome> {
+    let registry = VerifiedSourceBindingRegistry::from_run_spec_guarded(spec, work_budget)?;
+    run_from_run_spec_with_artifact_store_resume_guarded(
         spec,
-        gz_bytes,
+        DurableRunRequest::Execute(object_bytes),
         output_dir,
         store,
-        |artifact_root, plan, create_only_probe, _work_budget| {
-            build_capability_evidence(artifact_root, plan, create_only_probe)
-        },
-        &work_budget,
+        versioning_enabled,
+        &registry,
+        work_budget,
     )
     .await
 }
 
-/// Guarded durable-catalog operator path used by validated backfill callers.
-pub async fn run_from_run_spec_with_artifact_store_guarded<F>(
+/// Guarded durable-catalog operator with an optional exact terminal locator.
+/// A supplied locator is validated before source bytes are copied or any local
+/// projection, hydration, BacktestNode execution, or remote PUT is attempted.
+pub async fn run_from_run_spec_with_artifact_store_resume_guarded(
     spec: &RunSpec,
-    gz_bytes: &[u8],
+    request: DurableRunRequest,
     output_dir: &Path,
     store: &dyn ObjectStore,
-    build_capability_evidence: F,
+    versioning_enabled: &BucketVersioningEnabled,
+    registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
-) -> Result<RunArtifacts>
-where
-    F: FnOnce(
-        &ResolvedArtifactRoot,
-        &NtCatalogCapabilityPlan,
-        CreateOnlyProbeTranscript,
-        &OperatorWorkBudgetGuard,
-    ) -> Result<NtCatalogCapabilityEvidence>,
-{
-    let artifact_store = spec.required_artifact_store()?;
-    spec.validate_artifact_store_publish_config(artifact_store)?;
-    let catalog_dispatch = spec.required_catalog_dispatch()?;
-    let create_only_probe_id = spec.required_create_only_probe_id()?;
-    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
-    let base_spec = spec.clone();
-    let base_gz_bytes = gz_bytes.to_vec();
-    let base_output_dir = output_dir.to_path_buf();
-    let source_binding_registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    let base_work_budget = work_budget.clone();
-    let mut artifacts = tokio::task::spawn_blocking(move || {
-        run_from_run_spec_inner(
+) -> Result<DurableRunOutcome> {
+    let (catalog_dispatch, artifact_root, source_binding_registry, fingerprint) =
+        guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+            || -> Result<_> {
+                let artifact_store = spec.required_artifact_store()?;
+                spec.validate_artifact_store_publish_config(artifact_store)?;
+                let catalog_dispatch = spec.required_catalog_dispatch()?;
+                let artifact_root = artifact_store.resolve()?;
+                artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
+                registry.reassert_for(spec)?;
+                let source_binding_registry = registry.clone();
+                let (_expected_source_proof, accepted) =
+                    accepted_dataset_for_run_spec_hash_with_registry(
+                        spec,
+                        &spec.accepted_object.sha256,
+                        source_binding_registry.registry(),
+                    )?;
+                let fingerprint =
+                    conversion_fingerprint_for(spec, &accepted, &source_binding_registry)?;
+                Ok((
+                    catalog_dispatch,
+                    artifact_root,
+                    source_binding_registry,
+                    fingerprint,
+                ))
+            },
+        )??;
+    let object_bytes = match request {
+        DurableRunRequest::Resume(completion) => {
+            let receipt = validate_durable_completion_resume_guarded(
+                spec,
+                &fingerprint,
+                &artifact_root,
+                catalog_dispatch,
+                store,
+                &completion,
+                work_budget,
+            )
+            .await?;
+            return Ok(DurableRunOutcome::Resumed(receipt));
+        }
+        DurableRunRequest::Execute(object_bytes) => object_bytes,
+    };
+
+    let (base_spec, base_output_dir, base_work_budget) = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+        || -> Result<_> { Ok((spec.clone(), output_dir.to_path_buf(), work_budget.clone())) },
+    )??;
+    let base_run = tokio::task::spawn_blocking(move || -> Result<_> {
+        match prepare_run_from_run_spec_inner(
             &base_spec,
-            &base_gz_bytes,
+            &object_bytes,
             &base_output_dir,
             false,
             &source_binding_registry,
             &base_work_budget,
-        )
-    })
-    .await
-    .context("join base run for artifact-store path")??;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let artifact_root = artifact_store.resolve()?;
-    let nt_catalog_capability_plan = nt_catalog_capability_proof.proof_plan(artifact_store)?;
-    let completed_checkpoint_bytes =
-        crate::reference_artifact::canonical_json_bytes(&artifacts.output.conversion_checkpoint)
-            .context("serialize durable completion checkpoint")?;
-    let completed_checkpoint_uri =
-        portable_artifact_uri(&spec.manifest.output_prefix, CONVERSION_CHECKPOINT_FILE);
-    let completed_checkpoint_path = artifact_root.object_path_for_uri(&completed_checkpoint_uri)?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let remote_checkpoint = read_object_store_object(store, &completed_checkpoint_path).await?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let remote_committed = if let Some(remote_checkpoint) = remote_checkpoint {
-        ensure!(
-            remote_checkpoint.as_ref() == completed_checkpoint_bytes.as_slice(),
-            "durable completion checkpoint already exists with different bytes"
-        );
-        true
-    } else {
-        false
-    };
+        )? {
+            TradeRunPreparation::Prepared(prepared) => Ok(prepared),
+            TradeRunPreparation::Completed(_) => {
+                bail!("durable preparation unexpectedly reused local completed output")
+            }
+        }
+    });
+    let prepared =
+        guarded_blocking_join_outcome(work_budget, OperatorWorkBudgetStage::Publish, base_run)
+            .await?
+            .context("join durable preparation for artifact-store path")??;
 
-    let writer = CreateOnlyArtifactWriter::new(store);
-    // The run-prefix checkpoint commits only run-prefix objects. Global
-    // capability/catalog roots retain their independent immutable protocols and
-    // may create or verify content on an idempotent run-prefix replay.
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let create_only_probe_transcript = writer
-        .probe_create_only_guarded(&artifact_root, create_only_probe_id, work_budget)
-        .await?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let nt_catalog_capability_evidence = build_capability_evidence(
-        &artifact_root,
-        &nt_catalog_capability_plan,
-        create_only_probe_transcript.clone(),
-        work_budget,
-    )?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let nt_catalog_capability_proof_artifact = nt_catalog_capability_proof
-        .persist_completed_proof_from_evidence_guarded(
-            artifact_store,
-            &writer,
-            &nt_catalog_capability_evidence,
-            work_budget,
-        )
-        .await?;
-    let persisted = persist_catalog_projection_for_source_binding_guarded(
+    let writer = CreateOnlyArtifactWriter::new(store, &artifact_root);
+    let expected_physical_manifest = match prepared
+        .backtest
+        .catalog_run_view_authority
+        .roots
+        .as_slice()
+    {
+        [root] => root.physical_manifest.clone(),
+        roots => bail!(
+            "single-table durable projection requires exactly one sealed catalog root, got {}",
+            roots.len()
+        ),
+    };
+    let persisted = match recover_catalog_projection_from_current_receipt_guarded(
         store,
         &artifact_root,
+        versioning_enabled,
         catalog_dispatch,
         &spec.source_proof.source_binding,
         spec.manifest.market_structure_fixture,
-        &artifacts.catalog_root,
+        &expected_physical_manifest,
+        work_budget,
+    )
+    .await?
+    {
+        Some(persisted) => persisted,
+        None => {
+            persist_catalog_projection_for_source_binding_guarded(
+                store,
+                &artifact_root,
+                versioning_enabled,
+                catalog_dispatch,
+                &spec.source_proof.source_binding,
+                spec.manifest.market_structure_fixture,
+                &prepared.catalog_root,
+                &expected_physical_manifest,
+                work_budget,
+            )
+            .await?
+        }
+    };
+
+    let hydration_root_lease = TransientCatalogRootLease::acquire(output_dir)
+        .context("claim private exact-version hydration root")?;
+    let hydrated = hydrate_catalog_projection_from_receipt_guarded(
+        store,
+        &artifact_root,
+        &persisted.receipt_locator(),
+        &expected_physical_manifest,
+        &hydration_root_lease.catalog_root,
         work_budget,
     )
     .await?;
-
-    artifacts.output.conversion_catalog_metadata = artifacts
-        .output
-        .conversion_catalog_metadata
-        .clone()
-        .with_execution_catalog_access(persisted.catalog_root_uri.clone(), true);
-    write_pending_conversion_artifacts(
-        output_dir,
-        &artifacts.output.conversion_manifest,
-        &artifacts.output.conversion_catalog_metadata,
-    )?;
-    artifacts.output.contract.catalog_metadata_hash = artifacts
-        .output
-        .conversion_catalog_metadata
-        .content_hash()
-        .context("hash durable catalog metadata")?;
-    let transient_catalog_uri = artifacts
-        .output
-        .contract
-        .artifact_uris
-        .nt_catalog_uri
-        .clone();
-    artifacts.output.contract.artifact_uris.nt_catalog_uri = persisted.catalog_root_uri.clone();
-    replace_contract_claim_limit_uri(
-        &mut artifacts.output.contract,
-        &transient_catalog_uri,
-        &persisted.catalog_root_uri,
+    ensure!(
+        hydrated.catalog_root_uri == persisted.catalog_root_uri
+            && hydrated.physical_manifest_sha256 == persisted.physical_manifest_sha256
+            && hydrated.receipt_sha256 == persisted.receipt_sha256
+            && hydrated.receipt_version_id == persisted.receipt_version_id,
+        "hydrated catalog identity differs from the just-published immutable receipt"
     );
-    artifacts
-        .output
-        .contract
-        .artifact_uris
-        .nt_catalog_manifest_uri = Some(persisted.manifest_uri.clone());
-    artifacts
-        .output
-        .contract
-        .validate()
-        .map_err(|error| anyhow::anyhow!("durable result contract validation failed: {error}"))?;
-    crate::reference_artifact::write_reference_artifact_with_len(
-        &artifacts.contract_path,
-        crate::result_contract::RESULT_CONTRACT_VERSION,
-        &artifacts.output.contract,
-        crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
-    )
-    .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
-    persist_durable_contract_artifacts(
+    let mut hydrated_manifest = prepared.local_manifest.clone();
+    bind_runtime_manifest_to_local_catalog_root(
+        &mut hydrated_manifest,
+        hydrated.local_catalog_root(),
+    )?;
+    hydrated.revalidate_for_runner_seal_guarded(&expected_physical_manifest, work_budget)?;
+    let (finalize_spec, finalize_output_dir, finalize_work_budget) = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Backtest,
+        || -> Result<_> { Ok((spec.clone(), output_dir.to_path_buf(), work_budget.clone())) },
+    )??;
+    let finalize_run = tokio::task::spawn_blocking(move || {
+        finalize_prepared_trade_run(
+            &finalize_spec,
+            prepared,
+            hydrated_manifest,
+            &finalize_output_dir,
+            false,
+            &finalize_work_budget,
+        )
+    });
+    let mut artifacts =
+        guarded_blocking_join_outcome(work_budget, OperatorWorkBudgetStage::Backtest, finalize_run)
+            .await?
+            .context("join sole hydrated BacktestNode execution")??;
+    let published_catalog_protocol = persisted
+        .catalog_root_uri
+        .split_once("://")
+        .map(|(protocol, _)| protocol)
+        .context("published catalog root URI is missing its protocol")?;
+    let hydrated_catalog_proof = PublishedCatalogProof {
+        proof_version: PUBLISHED_CATALOG_PROOF_VERSION.to_string(),
+        catalog_uri: persisted.catalog_root_uri.clone(),
+        catalog_fs_protocol: published_catalog_protocol.to_string(),
+        publication_receipt_uri: persisted.receipt_uri.clone(),
+        publication_receipt_sha256: persisted.receipt_sha256.clone(),
+        publication_receipt_version_id: persisted.receipt_version_id.clone(),
+        publication_physical_manifest_sha256: persisted.physical_manifest_sha256.clone(),
+        expected_iterations: artifacts.output.expected_iterations,
+        nt_iterations: artifacts.output.nt_result.iterations,
+        run_config_id: artifacts.output.nt_result.run_config_id.clone(),
+        nt_version: artifacts.output.contract.nt_version.clone(),
+        created_at: spec.created_at_utc.clone(),
+    };
+
+    guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+        || -> Result<()> {
+            artifacts.output.conversion_catalog_metadata = artifacts
+                .output
+                .conversion_catalog_metadata
+                .clone()
+                .with_catalog_consumption_evidence(
+                    CatalogConsumptionEvidence::HydratedPublication {
+                        local_catalog_root: hydrated.local_catalog_root().to_path_buf(),
+                        receipt: CatalogPublicationReceiptIdentity {
+                            catalog_root_uri: persisted.catalog_root_uri.clone(),
+                            receipt_uri: persisted.receipt_uri.clone(),
+                            receipt_sha256: persisted.receipt_sha256.clone(),
+                            receipt_version_id: persisted.receipt_version_id.clone(),
+                            physical_manifest_sha256: persisted.physical_manifest_sha256.clone(),
+                        },
+                    },
+                )?;
+            artifacts.output.contract.catalog_metadata_hash = artifacts
+                .output
+                .conversion_catalog_metadata
+                .content_hash()
+                .context("hash durable catalog metadata")?;
+            let transient_catalog_uri = artifacts
+                .output
+                .contract
+                .artifact_uris
+                .nt_catalog_uri
+                .clone();
+            artifacts.output.contract.artifact_uris.nt_catalog_uri =
+                persisted.catalog_root_uri.clone();
+            replace_contract_claim_limit_uri(
+                &mut artifacts.output.contract,
+                &transient_catalog_uri,
+                &persisted.catalog_root_uri,
+            );
+            artifacts
+                .output
+                .contract
+                .artifact_uris
+                .nt_catalog_manifest_uri = Some(persisted.receipt_uri.clone());
+            artifacts.output.contract.validate().map_err(|error| {
+                anyhow::anyhow!("durable result contract validation failed: {error}")
+            })?;
+            hydrated_catalog_proof.validate_against(
+                &artifacts.output.conversion_catalog_metadata,
+                &artifacts.output.contract,
+                spec,
+            )?;
+            let proof_bytes = serde_json::to_vec_pretty(&hydrated_catalog_proof)
+                .context("serialize hydrated catalog proof")?;
+            persist_immutable_local_bytes_guarded(
+                &output_dir.join(PUBLISHED_CATALOG_PROOF_FILE),
+                &proof_bytes,
+                "published catalog proof",
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )?;
+            write_pending_conversion_artifacts(
+                output_dir,
+                &artifacts.output.conversion_manifest,
+                &artifacts.output.conversion_catalog_metadata,
+                work_budget,
+            )?;
+            let contract_bytes =
+                crate::reference_artifact::canonical_json_bytes(&artifacts.output.contract)
+                    .context("serialize durable result contract")?;
+            persist_immutable_local_bytes_guarded(
+                &artifacts.contract_path,
+                &contract_bytes,
+                "durable result contract",
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )
+            .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
+            Ok(())
+        },
+    )??;
+    let durable_artifacts = persist_durable_contract_artifacts(
         &writer,
-        store,
         &artifact_root,
         &artifacts,
         &spec.manifest.output_prefix,
-        remote_committed,
         work_budget,
     )
     .await?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    write_completed_conversion_artifacts_guarded(
-        output_dir,
-        &artifacts.output.conversion_manifest,
-        &artifacts.output.conversion_checkpoint,
-        &artifacts.output.conversion_catalog_metadata,
+    let publication_receipt = DurableObjectVersionIdentity {
+        uri: persisted.receipt_uri.clone(),
+        sha256: persisted.receipt_sha256.clone(),
+        byte_len: persisted.receipt_byte_len,
+        version_id: persisted.receipt_version_id.clone(),
+        e_tag: persisted.receipt_e_tag.clone(),
+    };
+    let completion_manifest = DurableCompletionManifest::new(
+        spec,
+        fingerprint.clone(),
+        &artifacts.batch_summary,
+        publication_receipt,
+        durable_artifacts,
+    );
+    completion_manifest.validate_for(spec, &fingerprint)?;
+    let completion_payload = crate::reference_artifact::canonical_json_bytes(&completion_manifest)
+        .context("serialize durable completion manifest")?;
+    let completion_sha256 = sha256_hex_with_budget(
+        &completion_payload,
         work_budget,
+        OperatorWorkBudgetStage::Publish,
     )?;
-    if !remote_committed {
-        let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
-        commit_durable_checkpoint(
-            store,
-            &completed_checkpoint_path,
-            &completed_checkpoint_bytes,
-            permit,
-        )
-        .await?;
-    }
+    let completion_byte_len = u64::try_from(completion_payload.len())
+        .context("durable completion manifest length does not fit u64")?;
+    ensure!(
+        completion_byte_len <= artifact_root.max_final_object_bytes(),
+        "durable completion manifest exceeds artifact_store.max_final_object_bytes"
+    );
+    let completion_uri = portable_artifact_uri(
+        &spec.manifest.output_prefix,
+        DURABLE_COMPLETION_MANIFEST_FILE,
+    );
+    let prepared_completion = writer.prepare_terminal_create_uri(
+        &artifact_root,
+        &completion_uri,
+        completion_payload,
+        format!("durable completion manifest {completion_uri}"),
+    )?;
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri.clone());
-    artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
-    artifacts.nt_catalog_capability_proof_artifact = Some(nt_catalog_capability_proof_artifact);
-    artifacts.create_only_probe_transcript = Some(create_only_probe_transcript);
     artifacts.persisted_catalog_objects = persisted.objects.clone();
     artifacts.persisted_catalog_projection = Some(persisted);
-    if artifacts.catalog_root.exists() {
-        fs::remove_dir_all(&artifacts.catalog_root).with_context(|| {
-            format!(
-                "remove transient local catalog root {}",
-                artifacts.catalog_root.display()
-            )
-        })?;
-    }
-    Ok(artifacts)
+    drop(hydrated);
+    hydration_root_lease.finish_retained(work_budget)?;
+    let transient_catalog_root_lease = artifacts
+        .transient_catalog_root_lease
+        .take()
+        .context("durable operator is missing its transient catalog-root ownership lease")?;
+    transient_catalog_root_lease.finish_retained(work_budget)?;
+    let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
+    let confirmed_completion = writer
+        .create_or_confirm_terminal(prepared_completion, permit)
+        .await?;
+    let completion = DurableCompletionLocator {
+        object: DurableObjectVersionIdentity {
+            uri: completion_uri,
+            sha256: completion_sha256,
+            byte_len: completion_byte_len,
+            version_id: confirmed_completion.version_id,
+            e_tag: confirmed_completion.e_tag,
+        },
+    };
+    let receipt = DurableRunReceipt {
+        completion,
+        run_id: completion_manifest.run_id,
+        submitted_manifest_hash: completion_manifest.submitted_manifest_hash,
+        canonical_rows: completion_manifest.canonical_rows,
+        nt_catalog_rows: completion_manifest.nt_catalog_rows,
+        catalog_hash: completion_manifest.catalog_hash,
+    };
+    // The remote terminal manifest is the only durable completion authority.
+    // No I/O or fallible cleanup follows its create-only PUT.
+    Ok(DurableRunOutcome::Executed {
+        artifacts: Box::new(artifacts),
+        receipt,
+    })
 }
 
 /// Per-table catalog projection root directory under the artifact root.
@@ -2139,75 +4854,126 @@ impl NormalizedTable {
     /// # Errors
     ///
     /// Returns an error if a row's `ts_init` source clock is missing/non-positive.
-    fn ts_init_range(&self) -> Result<Option<(u64, u64)>> {
-        fn fold<R>(rows: &[R], ts_init: impl Fn(&R) -> Result<u64>) -> Result<Option<(u64, u64)>> {
+    fn ts_init_range(&self, work_budget: &OperatorWorkBudgetGuard) -> Result<Option<(u64, u64)>> {
+        fn fold<R>(
+            rows: &[R],
+            work_budget: &OperatorWorkBudgetGuard,
+            row_materialized_bytes: impl Fn(&R) -> Result<usize>,
+            ts_init: impl Fn(&R) -> Result<u64>,
+        ) -> Result<Option<(u64, u64)>> {
             let mut range: Option<(u64, u64)> = None;
+            verify_canonical_rows_materialization(
+                rows,
+                work_budget,
+                OperatorWorkBudgetStage::Backtest,
+                row_materialized_bytes,
+            )?;
             for row in rows {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
                 let ts = ts_init(row)?;
                 range = Some(match range {
                     Some((min, max)) => (min.min(ts), max.max(ts)),
                     None => (ts, ts),
                 });
+                work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
             }
             Ok(range)
         }
         match self {
-            Self::Trades(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("trade {}", row.trade_id),
-                )?
-                .as_u64())
-            }),
-            Self::Bars(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("bar close_time {}", row.close_time),
-                )?
-                .as_u64())
-            }),
-            Self::Deltas(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("delta sequence {}", row.sequence),
-                )?
-                .as_u64())
-            }),
-            Self::Quotes(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("quote {}", row.event_time),
-                )?
-                .as_u64())
-            }),
-            Self::Index(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("index price {}", row.event_time),
-                )?
-                .as_u64())
-            }),
-            Self::Mark(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("mark price {}", row.event_time),
-                )?
-                .as_u64())
-            }),
-            Self::Funding(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("funding rate {}", row.event_time),
-                )?
-                .as_u64())
-            }),
+            Self::Trades(table) => fold(
+                &table.rows,
+                work_budget,
+                canonical_trade_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("trade {}", row.trade_id),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Bars(table) => {
+                let bar_aggregation = table.bar_spec.aggregation.to_string();
+                fold(
+                    &table.rows,
+                    work_budget,
+                    |row| bar_row_materialized_bytes(row, &bar_aggregation),
+                    |row| {
+                        Ok(ts_init_nanos(
+                            row.availability_time,
+                            row.capture_time,
+                            &format!("bar close_time {}", row.close_time),
+                        )?
+                        .as_u64())
+                    },
+                )
+            }
+            Self::Deltas(table) => fold(
+                &table.rows,
+                work_budget,
+                delta_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("delta sequence {}", row.sequence),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Quotes(table) => fold(
+                &table.rows,
+                work_budget,
+                quote_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("quote {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Index(table) => fold(
+                &table.rows,
+                work_budget,
+                point_price_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("index price {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Mark(table) => fold(
+                &table.rows,
+                work_budget,
+                mark_price_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("mark price {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Funding(table) => fold(
+                &table.rows,
+                work_budget,
+                funding_rate_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("funding rate {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
         }
     }
 
@@ -2220,79 +4986,148 @@ impl NormalizedTable {
     /// # Errors
     ///
     /// Returns an error if a row's `ts_init` source clock is missing/non-positive.
-    fn windowed_count(&self, start: Option<u64>, end: Option<u64>) -> Result<usize> {
+    fn windowed_count(
+        &self,
+        start: Option<u64>,
+        end: Option<u64>,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<usize> {
         fn count<R>(
             rows: &[R],
             start: Option<u64>,
             end: Option<u64>,
+            work_budget: &OperatorWorkBudgetGuard,
+            row_materialized_bytes: impl Fn(&R) -> Result<usize>,
             ts_init: impl Fn(&R) -> Result<u64>,
         ) -> Result<usize> {
             let mut total = 0usize;
+            verify_canonical_rows_materialization(
+                rows,
+                work_budget,
+                OperatorWorkBudgetStage::Backtest,
+                row_materialized_bytes,
+            )?;
             for row in rows {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
                 let ts = ts_init(row)?;
                 if start.is_none_or(|start| ts >= start) && end.is_none_or(|end| ts <= end) {
-                    total += 1;
+                    total = total
+                        .checked_add(1)
+                        .context("expected iteration count overflow")?;
                 }
+                work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
             }
             Ok(total)
         }
         match self {
-            Self::Trades(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("trade {}", row.trade_id),
-                )?
-                .as_u64())
-            }),
-            Self::Bars(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("bar close_time {}", row.close_time),
-                )?
-                .as_u64())
-            }),
-            Self::Deltas(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("delta sequence {}", row.sequence),
-                )?
-                .as_u64())
-            }),
-            Self::Quotes(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("quote {}", row.event_time),
-                )?
-                .as_u64())
-            }),
-            Self::Index(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("index price {}", row.event_time),
-                )?
-                .as_u64())
-            }),
-            Self::Mark(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("mark price {}", row.event_time),
-                )?
-                .as_u64())
-            }),
-            Self::Funding(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("funding rate {}", row.event_time),
-                )?
-                .as_u64())
-            }),
+            Self::Trades(table) => count(
+                &table.rows,
+                start,
+                end,
+                work_budget,
+                canonical_trade_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("trade {}", row.trade_id),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Bars(table) => {
+                let bar_aggregation = table.bar_spec.aggregation.to_string();
+                count(
+                    &table.rows,
+                    start,
+                    end,
+                    work_budget,
+                    |row| bar_row_materialized_bytes(row, &bar_aggregation),
+                    |row| {
+                        Ok(ts_init_nanos(
+                            row.availability_time,
+                            row.capture_time,
+                            &format!("bar close_time {}", row.close_time),
+                        )?
+                        .as_u64())
+                    },
+                )
+            }
+            Self::Deltas(table) => count(
+                &table.rows,
+                start,
+                end,
+                work_budget,
+                delta_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("delta sequence {}", row.sequence),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Quotes(table) => count(
+                &table.rows,
+                start,
+                end,
+                work_budget,
+                quote_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("quote {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Index(table) => count(
+                &table.rows,
+                start,
+                end,
+                work_budget,
+                point_price_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("index price {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Mark(table) => count(
+                &table.rows,
+                start,
+                end,
+                work_budget,
+                mark_price_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("mark price {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
+            Self::Funding(table) => count(
+                &table.rows,
+                start,
+                end,
+                work_budget,
+                funding_rate_row_materialized_bytes,
+                |row| {
+                    Ok(ts_init_nanos(
+                        row.availability_time,
+                        row.capture_time,
+                        &format!("funding rate {}", row.event_time),
+                    )?
+                    .as_u64())
+                },
+            ),
         }
     }
 }
@@ -2352,6 +5187,7 @@ pub struct MultiTableRunArtifacts {
     pub conversion_manifest_path: PathBuf,
     pub conversion_checkpoint_path: PathBuf,
     pub catalog_metadata_path: PathBuf,
+    pub catalog_run_view_authority_path: PathBuf,
     /// Present only when the conversion produced more than one table.
     pub conversion_tables_path: Option<PathBuf>,
     pub tables: Vec<ProjectedTableArtifacts>,
@@ -2362,6 +5198,7 @@ pub struct MultiTableRunArtifacts {
     pub conversion_manifest_hash: String,
     pub nt_result: BacktestResult,
     pub contract: BacktestResultContract,
+    pub(crate) batch_summary: OperatorRunSummary,
 }
 
 /// Operator run artifacts across both runner dispatches.
@@ -2383,10 +5220,12 @@ pub fn run_operator_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<OperatorRunArtifacts> {
+    let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)?;
     run_operator_from_run_spec_guarded(
         spec,
         object_bytes,
         output_dir,
+        &registry,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -2395,35 +5234,41 @@ pub fn run_operator_from_run_spec_guarded(
     spec: &RunSpec,
     object_bytes: &[u8],
     output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<OperatorRunArtifacts> {
-    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    run_operator_from_run_spec_with_registry(spec, object_bytes, output_dir, &registry, work_budget)
+    run_operator_from_run_spec_with_verified_registry(
+        spec,
+        object_bytes,
+        output_dir,
+        registry,
+        work_budget,
+    )
 }
 
-/// Dispatch any registered adapter against an already parsed source-binding
-/// registry snapshot.
-///
-/// # Errors
-///
-/// Returns the same errors as [`run_operator_from_run_spec`] without reopening
-/// `RunSpec::source_bindings_path` in the selected operator core.
-pub fn run_operator_from_run_spec_with_registry(
+pub(crate) fn run_operator_from_run_spec_with_verified_registry(
     spec: &RunSpec,
     object_bytes: &[u8],
     output_dir: &Path,
-    registry: &SourceBindingRegistry,
+    registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<OperatorRunArtifacts> {
+    registry.reassert_for(spec)?;
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
     if adapter.kind == SourceAdapterKind::CsvNativeTrades {
         return Ok(OperatorRunArtifacts::Trade(Box::new(
-            run_from_run_spec_with_registry(spec, object_bytes, output_dir, registry, work_budget)?,
+            run_from_run_spec_with_verified_registry(
+                spec,
+                object_bytes,
+                output_dir,
+                registry,
+                work_budget,
+            )?,
         )));
     }
     Ok(OperatorRunArtifacts::MultiTable(Box::new(
-        run_multi_table_from_run_spec_with_registry(
+        run_multi_table_from_run_spec_with_verified_registry(
             spec,
             object_bytes,
             output_dir,
@@ -2436,18 +5281,28 @@ pub fn run_operator_from_run_spec_with_registry(
 fn conversion_fingerprint_for(
     spec: &RunSpec,
     accepted: &AcceptedDataset,
+    registry: &VerifiedSourceBindingRegistry,
 ) -> Result<ConversionFingerprint> {
-    Ok(ConversionFingerprint {
+    registry.reassert_for(spec)?;
+    let fingerprint = ConversionFingerprint {
         source_proof_id: accepted.source_proof_id.clone(),
         source_proof_version: accepted.source_proof_version,
         accepted_object_sha256: accepted.accepted_object_sha256.clone(),
+        control_artifact_path: spec
+            .source_bindings_path
+            .to_str()
+            .context("source_bindings_path is not valid UTF-8")?
+            .to_string(),
+        control_artifact_sha256: registry.sha256().to_string(),
         converter_identity: spec.converter.identity.clone(),
         converter_version: spec.converter.version.clone(),
         converter_config_hash: spec
             .converter
             .content_hash()
             .context("hash converter config")?,
-    })
+    };
+    fingerprint.validate()?;
+    Ok(fingerprint)
 }
 
 /// Normalize the decoded payload through the registered adapter dispatch for
@@ -2559,7 +5414,7 @@ fn normalize_tables_for_kind(
                 &spec.converter,
                 accepted,
                 &spec.identity.to_delta_identities(),
-                &bytes,
+                bytes,
                 capture_time_nanos,
                 run_id,
                 work_budget,
@@ -2781,48 +5636,102 @@ fn resolve_instrument_spec<'a>(
 
 /// Read the projected table back through NautilusTrader and prove count and
 /// content equality against the canonical rows.
-fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
+fn assert_planned_read_back(
+    planned: &PlannedTable,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     match &planned.table {
         NormalizedTable::Trades(table) => {
-            let ticks = read_back_trade_ticks(&planned.subroot, &planned.nt_instrument_id)
-                .context("catalog read-back failed")?;
+            let ticks = read_back_trade_ticks_guarded(
+                &planned.subroot,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
+            .context("catalog read-back failed")?;
             ensure!(
                 ticks.len() == table.rows.len(),
                 "catalog read-back {} does not match projected {} trades",
                 ticks.len(),
                 table.rows.len()
             );
-            assert_read_back_matches(&ticks, &table.rows, &planned.nt_instrument_id)
+            assert_read_back_matches_guarded(
+                &ticks,
+                &table.rows,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
         }
         NormalizedTable::Bars(table) => {
-            let bars = read_back_bars(&planned.subroot, &planned.nt_instrument_id)
-                .context("catalog read-back failed")?;
-            assert_bar_read_back_matches(&bars, table, &planned.nt_instrument_id)
+            let bars =
+                read_back_bars_guarded(&planned.subroot, &planned.nt_instrument_id, work_budget)
+                    .context("catalog read-back failed")?;
+            assert_bar_read_back_matches_guarded(
+                &bars,
+                table,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
         }
         NormalizedTable::Deltas(table) => {
-            let deltas = read_back_order_book_deltas(&planned.subroot, &planned.nt_instrument_id)
-                .context("catalog read-back failed")?;
-            assert_delta_read_back_matches(&deltas, table, &planned.nt_instrument_id)
+            let deltas = read_back_order_book_deltas_guarded(
+                &planned.subroot,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
+            .context("catalog read-back failed")?;
+            assert_delta_read_back_matches_guarded(
+                &deltas,
+                table,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
         }
         NormalizedTable::Quotes(table) => {
-            let quotes = read_back_quotes(&planned.subroot, &planned.nt_instrument_id)
-                .context("catalog read-back failed")?;
-            assert_quote_read_back_matches(&quotes, table, &planned.nt_instrument_id)
+            let quotes =
+                read_back_quotes_guarded(&planned.subroot, &planned.nt_instrument_id, work_budget)
+                    .context("catalog read-back failed")?;
+            assert_quote_read_back_matches_guarded(
+                &quotes,
+                table,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
         }
         NormalizedTable::Index(table) => {
-            let prices = read_back_index(&planned.subroot, &planned.nt_instrument_id)
-                .context("catalog read-back failed")?;
-            assert_index_read_back_matches(&prices, table, &planned.nt_instrument_id)
+            let prices =
+                read_back_index_guarded(&planned.subroot, &planned.nt_instrument_id, work_budget)
+                    .context("catalog read-back failed")?;
+            assert_index_read_back_matches_guarded(
+                &prices,
+                table,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
         }
         NormalizedTable::Mark(table) => {
-            let prices = read_back_mark(&planned.subroot, &planned.nt_instrument_id)
-                .context("catalog read-back failed")?;
-            assert_mark_read_back_matches(&prices, table, &planned.nt_instrument_id)
+            let prices =
+                read_back_mark_guarded(&planned.subroot, &planned.nt_instrument_id, work_budget)
+                    .context("catalog read-back failed")?;
+            assert_mark_read_back_matches_guarded(
+                &prices,
+                table,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
         }
         NormalizedTable::Funding(table) => {
-            let rates = read_back_funding_rates(&planned.subroot, &planned.nt_instrument_id)
-                .context("catalog read-back failed")?;
-            assert_funding_read_back_matches(&rates, table, &planned.nt_instrument_id)
+            let rates = read_back_funding_rates_guarded(
+                &planned.subroot,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
+            .context("catalog read-back failed")?;
+            assert_funding_read_back_matches_guarded(
+                &rates,
+                table,
+                &planned.nt_instrument_id,
+                work_budget,
+            )
         }
     }
 }
@@ -2860,6 +5769,62 @@ fn bind_catalog_inputs(
         );
     }
     Ok((manifest, bound_indices))
+}
+
+fn bind_completed_catalog_inputs(
+    spec: &RunSpec,
+    output_dir: &Path,
+    records: &[ConversionTableRecord],
+) -> Result<BacktestingRunManifest> {
+    let mut manifest = spec.manifest.clone();
+    let mut used = vec![false; records.len()];
+    for input in &mut manifest.catalog_inputs {
+        let candidates = records
+            .iter()
+            .enumerate()
+            .filter(|(index, record)| {
+                !used[*index]
+                    && record.nt_instrument_id == input.nt_instrument_id
+                    && record.data_type == input.data_type
+                    && match (&input.bar_spec, &record.bar_spec) {
+                        (Some(expected), Some(actual)) => expected == actual,
+                        (None, _) => true,
+                        (Some(_), None) => false,
+                    }
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let index = match candidates.as_slice() {
+            [index] => *index,
+            [] => bail!(
+                "completed catalog input {}/{} (bar_spec {:?}) matches no conversion-table record",
+                input.nt_instrument_id,
+                input.data_type,
+                input.bar_spec
+            ),
+            _ => bail!(
+                "completed catalog input {}/{} (bar_spec {:?}) ambiguously matches {} conversion-table records",
+                input.nt_instrument_id,
+                input.data_type,
+                input.bar_spec,
+                candidates.len()
+            ),
+        };
+        used[index] = true;
+        input.catalog_path = output_dir
+            .join(&records[index].subroot_uri)
+            .to_str()
+            .context("completed catalog subroot path is not UTF-8")?
+            .to_string();
+        input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+        input.catalog_fs_storage_options.clear();
+        input.catalog_fs_rust_storage_options.clear();
+    }
+    ensure!(
+        used.into_iter().all(|used| used),
+        "completed conversion-table records contain an unbound catalog root"
+    );
+    Ok(manifest)
 }
 
 fn find_planned_table_for_input(
@@ -2907,11 +5872,12 @@ fn find_planned_table_for_input(
 fn assert_tables_overlap_window(
     manifest: &BacktestingRunManifest,
     planned: &[PlannedTable],
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     let start = window_bound_nanos("start_time", manifest.start_time)?;
     let end = window_bound_nanos("end_time", manifest.end_time)?;
     for table in planned {
-        let Some((first, last)) = table.table.ts_init_range()? else {
+        let Some((first, last)) = table.table.ts_init_range(work_budget)? else {
             continue;
         };
         match time_window_excludes_all_data(start, end, first, last) {
@@ -3033,8 +5999,8 @@ pub fn run_multi_table_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<MultiTableRunArtifacts> {
-    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    run_multi_table_from_run_spec_with_registry(
+    let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)?;
+    run_multi_table_from_run_spec_with_verified_registry(
         spec,
         object_bytes,
         output_dir,
@@ -3043,13 +6009,14 @@ pub fn run_multi_table_from_run_spec(
     )
 }
 
-fn run_multi_table_from_run_spec_with_registry(
+fn run_multi_table_from_run_spec_with_verified_registry(
     spec: &RunSpec,
     object_bytes: &[u8],
     output_dir: &Path,
-    registry: &SourceBindingRegistry,
+    registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<MultiTableRunArtifacts> {
+    registry.reassert_for(spec)?;
     work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     validate_converter_config(&spec.converter)?;
     let adapter =
@@ -3067,10 +6034,11 @@ fn run_multi_table_from_run_spec_with_registry(
     );
     ensure_object_within_raw_payload_limit(&spec.converter.raw_payload, object_byte_len)?;
 
-    let mut hasher = Sha256::new();
-    hasher.update(object_bytes);
-    let verified_sha256 = hex::encode(hasher.finalize());
-    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
+    let verified_sha256 = sha256_hex_with_budget(
+        object_bytes,
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+    )?;
     ensure!(
         verified_sha256 == spec.accepted_object.sha256,
         "object SHA-256 {verified_sha256} does not match run-spec {}",
@@ -3078,14 +6046,17 @@ fn run_multi_table_from_run_spec_with_registry(
     );
 
     // Gate 1: accept the source proof and bind the object via the ledger.
-    let (accepted_proof, accepted) =
-        accepted_dataset_for_run_spec_hash_with_registry(spec, &verified_sha256, registry)?;
+    let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
+        spec,
+        &verified_sha256,
+        registry.registry(),
+    )?;
     validate_converter_table_family(&spec.converter, &accepted.table_family)?;
     // Gate 4 preflight on the declared (placeholder-path) inputs, before any
     // artifact is produced.
     validate_local_run_manifest(&spec.manifest, &accepted)?;
 
-    let conversion_fingerprint = conversion_fingerprint_for(spec, &accepted)?;
+    let conversion_fingerprint = conversion_fingerprint_for(spec, &accepted, registry)?;
     let contract_manifest_hash = spec.manifest.manifest_hash();
     let capture_time_nanos = rfc3339_to_nanos(&spec.capture_time_utc)?;
 
@@ -3098,15 +6069,23 @@ fn run_multi_table_from_run_spec_with_registry(
         output_dir.join(crate::conversion_boundary::CONVERSION_CHECKPOINT_FILE);
     let catalog_metadata_path = output_dir.join(CATALOG_METADATA_FILE);
 
+    let sealed_completion = preflight_completed_output_before_inspection(
+        spec,
+        &accepted_proof,
+        &accepted,
+        output_dir,
+        &conversion_fingerprint,
+        work_budget,
+    )?;
     let completed = match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
         ConversionOutputState::Complete {
             manifest_hash,
             checkpoint_hash,
             catalog_hash,
-        } => Some((manifest_hash, checkpoint_hash, catalog_hash)),
-        ConversionOutputState::CleanNew | ConversionOutputState::ResumeFromCheckpoint { .. } => {
-            None
-        }
+        } if sealed_completion => Some((manifest_hash, checkpoint_hash, catalog_hash)),
+        ConversionOutputState::Complete { .. }
+        | ConversionOutputState::CleanNew
+        | ConversionOutputState::ResumeFromCheckpoint { .. } => None,
     };
 
     // Decode and normalize on both paths: the completed path re-derives the
@@ -3138,10 +6117,11 @@ fn run_multi_table_from_run_spec_with_registry(
     )?;
 
     if let Some((manifest_hash, checkpoint_hash, primary_catalog_hash)) = completed {
-        return run_multi_from_completed_output(MultiCompletedInputs {
+        let completed_inputs = MultiCompletedInputs {
             spec,
             accepted: &accepted,
             accepted_proof,
+            conversion_fingerprint: &conversion_fingerprint,
             verified_sha256,
             planned,
             conversion_manifest_hash: manifest_hash,
@@ -3157,76 +6137,74 @@ fn run_multi_table_from_run_spec_with_registry(
             catalog_metadata_path,
             work_budget,
             projected_row_groups,
+        };
+        return run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
+            run_multi_from_completed_output(completed_inputs)
         });
     }
 
     work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output dir {}", output_dir.display()))?;
-    for stale_completed_artifact in [
-        crate::conversion_boundary::CONVERSION_MANIFEST_FILE,
-        CATALOG_METADATA_FILE,
-        CONVERSION_TABLES_FILE,
-    ] {
-        let path = output_dir.join(stale_completed_artifact);
-        if path.exists() {
-            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-        }
-    }
-    write_conversion_checkpoint(
-        output_dir,
-        &ConversionCheckpoint::started(conversion_fingerprint.clone(), spec.created_at_utc.clone()),
-    )?;
-    // Start every projection from a clean tree (same governance as the trade
-    // path's catalog-root clean): stale subroots or canonical artifacts must
-    // never be silently re-stamped under a new source proof.
-    for stale_tree in [
-        NT_CATALOGS_DIR,
-        TRADE_TABLE_FAMILY,
-        BAR_TABLE_FAMILY,
-        DELTAS_TABLE_FAMILY,
-        QUOTE_TABLE_FAMILY,
-        INDEX_PRICES_TABLE_FAMILY,
-        MARK_PRICES_TABLE_FAMILY,
-        FUNDING_RATES_TABLE_FAMILY,
-    ] {
-        let path = output_dir.join(stale_tree);
-        if path.exists() {
-            fs::remove_dir_all(&path).with_context(|| format!("clean {}", path.display()))?;
-        }
-    }
-
     // Gates 2+3 per table: projection, read-back, equality, canonical artifact.
     let mut catalog_hashes = Vec::with_capacity(planned.len());
     for table in &planned {
         work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
         let instrument_spec = resolve_instrument_spec(&spec.instrument_spec, table, table_count)?;
         let projection = match &table.table {
-            NormalizedTable::Trades(canonical) => {
-                project_canonical_trades_to_catalog(canonical, instrument_spec, &table.subroot)
-            }
-            NormalizedTable::Bars(canonical) => {
-                project_canonical_bars_to_catalog(canonical, instrument_spec, &table.subroot)
-            }
-            NormalizedTable::Deltas(canonical) => project_canonical_order_book_deltas_to_catalog(
+            NormalizedTable::Trades(canonical) => project_canonical_trades_to_catalog_guarded(
                 canonical,
                 instrument_spec,
                 &table.subroot,
+                output_dir,
+                work_budget,
             ),
-            NormalizedTable::Quotes(canonical) => {
-                project_canonical_quotes_to_catalog(canonical, instrument_spec, &table.subroot)
-            }
-            NormalizedTable::Index(canonical) => {
-                project_canonical_index_to_catalog(canonical, instrument_spec, &table.subroot)
-            }
-            NormalizedTable::Mark(canonical) => {
-                project_canonical_mark_to_catalog(canonical, instrument_spec, &table.subroot)
-            }
-            NormalizedTable::Funding(canonical) => project_canonical_funding_rates_to_catalog(
+            NormalizedTable::Bars(canonical) => project_canonical_bars_to_catalog_guarded(
                 canonical,
                 instrument_spec,
                 &table.subroot,
+                output_dir,
+                work_budget,
             ),
+            NormalizedTable::Deltas(canonical) => {
+                project_canonical_order_book_deltas_to_catalog_guarded(
+                    canonical,
+                    instrument_spec,
+                    &table.subroot,
+                    output_dir,
+                    work_budget,
+                )
+            }
+            NormalizedTable::Quotes(canonical) => project_canonical_quotes_to_catalog_guarded(
+                canonical,
+                instrument_spec,
+                &table.subroot,
+                output_dir,
+                work_budget,
+            ),
+            NormalizedTable::Index(canonical) => project_canonical_index_to_catalog_guarded(
+                canonical,
+                instrument_spec,
+                &table.subroot,
+                output_dir,
+                work_budget,
+            ),
+            NormalizedTable::Mark(canonical) => project_canonical_mark_to_catalog_guarded(
+                canonical,
+                instrument_spec,
+                &table.subroot,
+                output_dir,
+                work_budget,
+            ),
+            NormalizedTable::Funding(canonical) => {
+                project_canonical_funding_rates_to_catalog_guarded(
+                    canonical,
+                    instrument_spec,
+                    &table.subroot,
+                    output_dir,
+                    work_budget,
+                )
+            }
         }
         .with_context(|| format!("catalog projection failed for {}", table.subroot_relative))?;
         ensure!(
@@ -3241,7 +6219,7 @@ fn run_multi_table_from_run_spec_with_registry(
             projection.trade_count,
             table.table.rows_len()
         );
-        assert_planned_read_back(table)?;
+        assert_planned_read_back(table, work_budget)?;
         let parent = table
             .canonical_path
             .parent()
@@ -3250,13 +6228,27 @@ fn run_multi_table_from_run_spec_with_registry(
             .with_context(|| format!("create canonical artifact dir {}", parent.display()))?;
         work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
         match &table.table {
-            NormalizedTable::Trades(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Bars(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Deltas(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Quotes(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Index(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Mark(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Funding(canonical) => canonical.write_parquet(&table.canonical_path),
+            NormalizedTable::Trades(canonical) => {
+                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
+            }
+            NormalizedTable::Bars(canonical) => {
+                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
+            }
+            NormalizedTable::Deltas(canonical) => {
+                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
+            }
+            NormalizedTable::Quotes(canonical) => {
+                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
+            }
+            NormalizedTable::Index(canonical) => {
+                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
+            }
+            NormalizedTable::Mark(canonical) => {
+                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
+            }
+            NormalizedTable::Funding(canonical) => {
+                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
+            }
         }
         .with_context(|| {
             format!(
@@ -3271,7 +6263,7 @@ fn run_multi_table_from_run_spec_with_registry(
         planned
             .iter()
             .try_fold((0_u64, 0_u64), |(rows, row_groups), table| {
-                let metadata = actual_nt_market_data_metadata(&table.subroot)?;
+                let metadata = actual_nt_market_data_metadata_guarded(&table.subroot, work_budget)?;
                 Ok((
                     rows.checked_add(metadata.rows)
                         .context("actual projected row total overflow")?,
@@ -3304,7 +6296,7 @@ fn run_multi_table_from_run_spec_with_registry(
     // manifest; per-table window overlap.
     let (local_manifest, bound_indices) = bind_catalog_inputs(&spec.manifest, &planned)?;
     validate_local_run_manifest(&local_manifest, &accepted)?;
-    assert_tables_overlap_window(&local_manifest, &planned)?;
+    assert_tables_overlap_window(&local_manifest, &planned, work_budget)?;
     let primary_index = *bound_indices
         .first()
         .context("manifest must declare at least one catalog input")?;
@@ -3314,8 +6306,40 @@ fn run_multi_table_from_run_spec_with_registry(
     let (event_count_ledger_hash, selected_asset_ids_hash) =
         multi_selector_provenance(spec, &planned)?;
 
+    let submitted_identity = submitted_run_identity_for_spec(spec)?;
+    let mut logical_catalog_hashes = Vec::new();
+    logical_catalog_hashes
+        .try_reserve_exact(bound_indices.len())
+        .context("reserve bound logical catalog hashes")?;
+    for index in &bound_indices {
+        logical_catalog_hashes.push(
+            catalog_hashes
+                .get(*index)
+                .context("bound catalog hash index left projected bounds")?
+                .clone(),
+        );
+    }
+    let catalog_run_view_authority = mint_local_catalog_run_view_authority_guarded(
+        &local_manifest,
+        &submitted_identity,
+        &logical_catalog_hashes,
+        work_budget,
+    )?;
+    persist_catalog_run_view_authority_guarded(
+        spec,
+        &local_manifest,
+        &catalog_run_view_authority,
+        output_dir,
+        work_budget,
+    )?;
+
     // Gate 5: ONE BacktestNode run over the N-input manifest.
-    let nt_run = run_nt_backtest_node_guarded(&local_manifest, work_budget)?;
+    let nt_run = run_nt_backtest_node_guarded(
+        &local_manifest,
+        &submitted_identity,
+        &catalog_run_view_authority,
+        work_budget,
+    )?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let nt_result = nt_run.result;
     let config_override_report = nt_run.config_override_report;
@@ -3325,10 +6349,13 @@ fn run_multi_table_from_run_spec_with_registry(
     let mut expected = 0usize;
     for table in &planned {
         work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
-        expected += table
+        let table_count = table
             .table
-            .windowed_count(window_start, window_end)
+            .windowed_count(window_start, window_end, work_budget)
             .context("compute expected engine iterations for projected table")?;
+        expected = expected
+            .checked_add(table_count)
+            .context("aggregate expected engine iteration count overflow")?;
         work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     }
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
@@ -3423,55 +6450,47 @@ fn run_multi_table_from_run_spec_with_registry(
     .map_err(|error| anyhow::anyhow!("result contract construction failed: {error}"))?;
     redact_multi_operator_contract(&mut contract, &spec.manifest, &planned);
 
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &proof_path,
-            serde_json::to_string_pretty(&accepted_proof)
-                .context("serialize accepted source proof")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", proof_path.display()))
-    })?;
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &contract_path,
-            serde_json::to_string_pretty(&contract)
-                .context("serialize result contract")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", contract_path.display()))
-    })?;
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &run_manifest_path,
-            serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-                .context("serialize resolved run manifest")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", run_manifest_path.display()))
-    })?;
+    let proof_bytes =
+        serde_json::to_vec_pretty(&accepted_proof).context("serialize accepted source proof")?;
+    persist_immutable_local_bytes_guarded(
+        &proof_path,
+        &proof_bytes,
+        "accepted source proof",
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    let contract_bytes =
+        serde_json::to_vec_pretty(&contract).context("serialize result contract")?;
+    persist_immutable_local_bytes_guarded(
+        &contract_path,
+        &contract_bytes,
+        "result contract",
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    let run_manifest_bytes = serde_json::to_vec_pretty(&spec.manifest.to_artifact_manifest()?)
+        .context("serialize resolved run manifest")?;
+    persist_immutable_local_bytes_guarded(
+        &run_manifest_path,
+        &run_manifest_bytes,
+        "resolved run manifest",
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
     let conversion_tables_path = if planned.len() > 1 {
         let records: Vec<ConversionTableRecord> = planned
             .iter()
             .zip(catalog_hashes.iter())
             .map(|(table, hash)| table.record(hash.clone()))
             .collect();
-        Some(run_budgeted_stage(
+        Some(write_conversion_tables_index_guarded(
+            output_dir,
+            &records,
             work_budget,
-            OperatorWorkBudgetStage::Finalize,
-            || write_conversion_tables_index(output_dir, &records),
         )?)
     } else {
         None
     };
-    write_completed_conversion_artifacts_guarded(
-        output_dir,
-        &conversion_manifest,
-        &conversion_checkpoint,
-        &conversion_catalog_metadata,
-        work_budget,
-    )?;
-
     let tables = planned
         .iter()
         .zip(catalog_hashes.iter())
@@ -3487,9 +6506,9 @@ fn run_multi_table_from_run_spec_with_registry(
             rows: table.table.rows_len(),
             catalog_hash: hash.clone(),
         })
-        .collect();
-
-    Ok(MultiTableRunArtifacts {
+        .collect::<Vec<_>>();
+    let batch_summary = OperatorRunSummary::multi(&tables, &conversion_manifest.catalog_hash)?;
+    let artifacts = MultiTableRunArtifacts {
         verified_sha256,
         accepted_source_proof: accepted_proof,
         proof_path,
@@ -3498,6 +6517,7 @@ fn run_multi_table_from_run_spec_with_registry(
         conversion_manifest_path,
         conversion_checkpoint_path,
         catalog_metadata_path,
+        catalog_run_view_authority_path: output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE),
         conversion_tables_path,
         tables,
         conversion_checkpoint,
@@ -3507,13 +6527,32 @@ fn run_multi_table_from_run_spec_with_registry(
         conversion_manifest_hash,
         nt_result,
         contract,
-    })
+        batch_summary,
+    };
+    write_completed_conversion_artifacts_guarded(
+        output_dir,
+        &artifacts.conversion_manifest,
+        &artifacts.conversion_checkpoint,
+        &artifacts.conversion_catalog_metadata,
+        work_budget,
+    )?;
+    commit_operator_terminal_seal(
+        spec,
+        &artifacts.accepted_source_proof,
+        &accepted,
+        &conversion_fingerprint,
+        output_dir,
+        &artifacts.batch_summary,
+        work_budget,
+    )?;
+    Ok(artifacts)
 }
 
 struct MultiCompletedInputs<'a> {
     spec: &'a RunSpec,
     accepted: &'a AcceptedDataset,
     accepted_proof: SourceProofReport,
+    conversion_fingerprint: &'a ConversionFingerprint,
     verified_sha256: String,
     planned: Vec<PlannedTable>,
     conversion_manifest_hash: String,
@@ -3540,13 +6579,34 @@ fn run_multi_from_completed_output(
 ) -> Result<MultiTableRunArtifacts> {
     let spec = inputs.spec;
     let accepted = inputs.accepted;
+    let seal: OperatorTerminalSeal = read_json_artifact_guarded(
+        &inputs.output_dir.join(OPERATOR_TERMINAL_SEAL_FILE),
+        inputs.work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    let current_files =
+        collect_operator_terminal_seal_files(inputs.output_dir, inputs.work_budget)?;
+    let sealed_summary = verify_completed_operator_output_against_seal(
+        spec,
+        &inputs.accepted_proof,
+        accepted,
+        inputs.conversion_fingerprint,
+        inputs.output_dir,
+        &seal,
+        &current_files,
+        false,
+        inputs.work_budget,
+    )?;
     let planned = inputs.planned;
 
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let conversion_checkpoint: ConversionCheckpoint =
-        read_json_artifact(&inputs.conversion_checkpoint_path)?;
+    let conversion_checkpoint: ConversionCheckpoint = read_json_artifact_guarded(
+        &inputs.conversion_checkpoint_path,
+        inputs.work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     ensure!(
         conversion_checkpoint.content_hash()? == inputs.conversion_checkpoint_hash,
         "completed conversion checkpoint hash changed after inspection"
@@ -3554,8 +6614,11 @@ fn run_multi_from_completed_output(
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let conversion_manifest: ConversionManifest =
-        read_json_artifact(&inputs.conversion_manifest_path)?;
+    let conversion_manifest: ConversionManifest = read_json_artifact_guarded(
+        &inputs.conversion_manifest_path,
+        inputs.work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     ensure!(
         conversion_manifest.content_hash()? == inputs.conversion_manifest_hash,
         "completed conversion manifest hash changed after inspection"
@@ -3563,8 +6626,11 @@ fn run_multi_from_completed_output(
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let conversion_catalog_metadata: ConversionCatalogMetadata =
-        read_json_artifact(&inputs.catalog_metadata_path)?;
+    let conversion_catalog_metadata: ConversionCatalogMetadata = read_json_artifact_guarded(
+        &inputs.catalog_metadata_path,
+        inputs.work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     ensure!(
         conversion_catalog_metadata.checkpoint_hash == inputs.conversion_checkpoint_hash,
         "completed catalog metadata checkpoint_hash mismatch"
@@ -3588,9 +6654,9 @@ fn run_multi_from_completed_output(
         inputs
             .work_budget
             .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-        let actual_hash = logical_catalog_hash(&table.subroot)
+        let actual_hash = logical_catalog_hash_guarded(&table.subroot, inputs.work_budget)
             .with_context(|| format!("verify catalog hash {}", table.subroot.display()))?;
-        assert_planned_read_back(table)?;
+        assert_planned_read_back(table, inputs.work_budget)?;
         ensure!(
             table.canonical_path.is_file(),
             "completed conversion is missing canonical artifact {}",
@@ -3608,7 +6674,8 @@ fn run_multi_from_completed_output(
                 inputs
                     .work_budget
                     .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-                let metadata = actual_nt_market_data_metadata(&table.subroot)?;
+                let metadata =
+                    actual_nt_market_data_metadata_guarded(&table.subroot, inputs.work_budget)?;
                 inputs
                     .work_budget
                     .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
@@ -3682,7 +6749,7 @@ fn run_multi_from_completed_output(
     // Bind, validate, window-check, then gate 5 once.
     let (local_manifest, bound_indices) = bind_catalog_inputs(&spec.manifest, &planned)?;
     validate_local_run_manifest(&local_manifest, accepted)?;
-    assert_tables_overlap_window(&local_manifest, &planned)?;
+    assert_tables_overlap_window(&local_manifest, &planned, inputs.work_budget)?;
     let primary_index = *bound_indices
         .first()
         .context("manifest must declare at least one catalog input")?;
@@ -3707,7 +6774,20 @@ fn run_multi_from_completed_output(
     let (event_count_ledger_hash, selected_asset_ids_hash) =
         multi_selector_provenance(spec, &planned)?;
 
-    let nt_run = run_nt_backtest_node_guarded(&local_manifest, inputs.work_budget)?;
+    let submitted_identity = submitted_run_identity_for_spec(spec)?;
+    let catalog_run_view_authority = load_catalog_run_view_authority_guarded(
+        spec,
+        &local_manifest,
+        inputs.output_dir,
+        inputs.work_budget,
+    )?;
+
+    let nt_run = run_nt_backtest_node_guarded(
+        &local_manifest,
+        &submitted_identity,
+        &catalog_run_view_authority,
+        inputs.work_budget,
+    )?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::Backtest)?;
@@ -3721,10 +6801,13 @@ fn run_multi_from_completed_output(
         inputs
             .work_budget
             .check_deadline(OperatorWorkBudgetStage::Backtest)?;
-        expected += table
+        let table_count = table
             .table
-            .windowed_count(window_start, window_end)
+            .windowed_count(window_start, window_end, inputs.work_budget)
             .context("compute expected engine iterations for projected table")?;
+        expected = expected
+            .checked_add(table_count)
+            .context("aggregate expected engine iteration count overflow")?;
         inputs
             .work_budget
             .check_deadline(OperatorWorkBudgetStage::Backtest)?;
@@ -3776,37 +6859,11 @@ fn run_multi_from_completed_output(
     })
     .map_err(|error| anyhow::anyhow!("result contract construction failed: {error}"))?;
     redact_multi_operator_contract(&mut contract, &spec.manifest, &planned);
-    let contract = verify_completed_result_contract(&inputs.contract_path, &contract)?;
+    let contract =
+        verify_completed_result_contract(&inputs.contract_path, &contract, inputs.work_budget)?;
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::Finalize)?;
-
-    run_budgeted_stage(
-        inputs.work_budget,
-        OperatorWorkBudgetStage::Finalize,
-        || {
-            atomic_write(
-                &inputs.proof_path,
-                serde_json::to_string_pretty(&inputs.accepted_proof)
-                    .context("serialize accepted source proof")?
-                    .as_bytes(),
-            )
-            .with_context(|| format!("write {}", inputs.proof_path.display()))
-        },
-    )?;
-    run_budgeted_stage(
-        inputs.work_budget,
-        OperatorWorkBudgetStage::Finalize,
-        || {
-            atomic_write(
-                &inputs.run_manifest_path,
-                serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-                    .context("serialize resolved run manifest")?
-                    .as_bytes(),
-            )
-            .with_context(|| format!("write {}", inputs.run_manifest_path.display()))
-        },
-    )?;
 
     let conversion_tables_path =
         (planned.len() > 1).then(|| inputs.output_dir.join(CONVERSION_TABLES_FILE));
@@ -3825,7 +6882,12 @@ fn run_multi_from_completed_output(
             rows: table.table.rows_len(),
             catalog_hash: hash.clone(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let batch_summary = OperatorRunSummary::multi(&tables, &conversion_manifest.catalog_hash)?;
+    ensure!(
+        batch_summary == sealed_summary,
+        "completed multi-table summary changed after sealed verification"
+    );
 
     Ok(MultiTableRunArtifacts {
         verified_sha256: inputs.verified_sha256,
@@ -3836,6 +6898,7 @@ fn run_multi_from_completed_output(
         conversion_manifest_path: inputs.conversion_manifest_path,
         conversion_checkpoint_path: inputs.conversion_checkpoint_path,
         catalog_metadata_path: inputs.catalog_metadata_path,
+        catalog_run_view_authority_path: inputs.output_dir.join(CATALOG_RUN_VIEW_AUTHORITY_FILE),
         conversion_tables_path,
         tables,
         conversion_checkpoint,
@@ -3845,763 +6908,8 @@ fn run_multi_from_completed_output(
         conversion_manifest_hash: inputs.conversion_manifest_hash,
         nt_result,
         contract,
+        batch_summary,
     })
-}
-
-/// Run the vertical slice locally, then publish the verified artifact tree to
-/// `manifest.output_prefix`.
-///
-/// # Errors
-///
-/// Returns an error if the local run fails or if any artifact cannot be copied
-/// to the configured output prefix.
-pub fn run_from_run_spec_and_publish(
-    spec: &RunSpec,
-    object_bytes: &[u8],
-    output_dir: &Path,
-) -> Result<PublishedRunArtifacts> {
-    run_from_run_spec_and_publish_with_options(
-        spec,
-        object_bytes,
-        output_dir,
-        PublishOptions::default(),
-    )
-}
-
-pub fn run_from_run_spec_and_publish_with_options(
-    spec: &RunSpec,
-    object_bytes: &[u8],
-    output_dir: &Path,
-    options: PublishOptions,
-) -> Result<PublishedRunArtifacts> {
-    let mut resolver = |_region: &str, _path: &str| {
-        Err("artifact-store SSM resolver was not configured".to_string())
-    };
-    run_from_run_spec_and_publish_with_resolver(
-        spec,
-        object_bytes,
-        output_dir,
-        options,
-        &mut resolver,
-    )
-}
-
-pub fn run_from_run_spec_and_publish_with_resolver<F>(
-    spec: &RunSpec,
-    object_bytes: &[u8],
-    output_dir: &Path,
-    options: PublishOptions,
-    resolver: &mut F,
-) -> Result<PublishedRunArtifacts>
-where
-    F: FnMut(&str, &str) -> std::result::Result<String, String>,
-{
-    let storage_options = spec
-        .manifest
-        .artifact_store_storage_options_resolved(resolver)
-        .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?;
-    run_from_run_spec_and_publish_with_resolved_storage_options(
-        spec,
-        object_bytes,
-        output_dir,
-        options,
-        storage_options.as_ref(),
-    )
-}
-
-pub fn run_from_run_spec_and_publish_with_resolved_storage_options(
-    spec: &RunSpec,
-    object_bytes: &[u8],
-    output_dir: &Path,
-    options: PublishOptions,
-    storage_options: Option<&BTreeMap<String, String>>,
-) -> Result<PublishedRunArtifacts> {
-    run_from_run_spec_and_publish_with_resolved_storage_options_guarded(
-        spec,
-        object_bytes,
-        output_dir,
-        options,
-        storage_options,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
-pub fn run_from_run_spec_and_publish_with_resolved_storage_options_guarded(
-    spec: &RunSpec,
-    object_bytes: &[u8],
-    output_dir: &Path,
-    options: PublishOptions,
-    storage_options: Option<&BTreeMap<String, String>>,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<PublishedRunArtifacts> {
-    let mut run = if options.prove_published_catalog {
-        run_from_run_spec_pending_guarded(spec, object_bytes, output_dir, work_budget)?
-    } else {
-        run_from_run_spec_guarded(spec, object_bytes, output_dir, work_budget)?
-    };
-    let (published_artifacts, published_catalog_proof) = if options.prove_published_catalog {
-        let _phase_one_artifacts = publish_output_artifacts_with_storage_options_excluding(
-            output_dir,
-            &spec.manifest.output_prefix,
-            storage_options,
-            &[
-                CATALOG_METADATA_FILE,
-                RESULT_CONTRACT_FILE,
-                crate::conversion_boundary::CONVERSION_CHECKPOINT_FILE,
-            ],
-            work_budget,
-        )?;
-        let proof =
-            prove_published_catalog_consumption(spec, &run.output, storage_options, work_budget)
-                .context("published catalog proof failed")?;
-        write_published_catalog_proof(output_dir, &mut run, &proof, work_budget)?;
-        let published_artifacts = publish_completed_output_with_storage_options(
-            output_dir,
-            &spec.manifest.output_prefix,
-            storage_options,
-            work_budget,
-        )?;
-        (published_artifacts, Some(proof))
-    } else {
-        (
-            publish_completed_output_with_storage_options(
-                output_dir,
-                &spec.manifest.output_prefix,
-                storage_options,
-                work_budget,
-            )?,
-            None,
-        )
-    };
-    Ok(PublishedRunArtifacts {
-        run,
-        published_artifacts,
-        published_catalog_proof,
-    })
-}
-
-/// Publish every file under `output_dir` to `output_prefix`, preserving the
-/// relative artifact tree.
-///
-/// # Errors
-///
-/// Returns an error if `output_dir` is not a directory, if the prefix cannot be
-/// opened by NT's object-store support, or if any artifact write fails.
-pub fn publish_output_artifacts(
-    output_dir: &Path,
-    output_prefix: &str,
-) -> Result<Vec<PublishedArtifact>> {
-    publish_completed_output_with_storage_options(
-        output_dir,
-        output_prefix,
-        None,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-}
-
-fn publish_output_artifacts_with_storage_options_excluding(
-    output_dir: &Path,
-    output_prefix: &str,
-    storage_options: Option<&BTreeMap<String, String>>,
-    excluded_relative_paths: &[&str],
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<Vec<PublishedArtifact>> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    ensure!(
-        output_dir.is_dir(),
-        "output directory does not exist: {}",
-        output_dir.display()
-    );
-    let mut files = Vec::new();
-    for path in collect_output_files(output_dir)? {
-        // Fail loud on a path-strip error: a file we cannot relativize must not be
-        // silently included in (or dropped from) the publish set.
-        let relative = artifact_relative_path(output_dir, &path)?;
-        if !excluded_relative_paths.contains(&relative.as_str()) {
-            files.push(path);
-        }
-    }
-    ensure!(
-        !files.is_empty(),
-        "output directory has no artifacts: {}",
-        output_dir.display()
-    );
-
-    publish_selected_artifacts_with_storage_options(
-        output_dir,
-        &files,
-        output_prefix,
-        storage_options,
-        work_budget,
-    )
-}
-
-fn publish_completed_output_with_storage_options(
-    output_dir: &Path,
-    output_prefix: &str,
-    storage_options: Option<&BTreeMap<String, String>>,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<Vec<PublishedArtifact>> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    ensure!(
-        output_dir.is_dir(),
-        "output directory does not exist: {}",
-        output_dir.display()
-    );
-    let mut files = collect_output_files(output_dir)?;
-    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
-    let checkpoint_index = files
-        .iter()
-        .position(|path| path == &checkpoint_path)
-        .context("completed output is missing its conversion checkpoint")?;
-    let checkpoint: ConversionCheckpoint = read_json_artifact(&checkpoint_path)?;
-    checkpoint.validate_for(&checkpoint.fingerprint)?;
-    ensure!(
-        checkpoint.stage == ConversionCheckpointStage::Completed,
-        "published output conversion checkpoint is not completed"
-    );
-    files.remove(checkpoint_index);
-
-    ensure_local_publish_root_exists(output_prefix)?;
-    let object_store_options = storage_options
-        .cloned()
-        .map(|options| options.into_iter().collect());
-    let (object_store, base_path, _) =
-        create_object_store_from_path(output_prefix, object_store_options)
-            .with_context(|| format!("open output prefix {output_prefix:?}"))?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("build object-store runtime")?;
-    let checkpoint_object_path =
-        ObjectPath::from(published_object_key(&base_path, CONVERSION_CHECKPOINT_FILE));
-    let checkpoint_bytes = fs::read(&checkpoint_path)
-        .with_context(|| format!("read {}", checkpoint_path.display()))?;
-
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let committed =
-        read_published_object(&runtime, object_store.as_ref(), &checkpoint_object_path)?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    if let Some(existing_checkpoint) = committed {
-        ensure!(
-            existing_checkpoint.as_ref() == checkpoint_bytes.as_slice(),
-            "published completion checkpoint already exists under {output_prefix} with different bytes"
-        );
-        files.push(checkpoint_path);
-        return verify_published_files_exact(
-            output_dir,
-            &files,
-            output_prefix,
-            &base_path,
-            &runtime,
-            object_store.as_ref(),
-            work_budget,
-        );
-    }
-
-    let mut published = publish_selected_artifacts_with_storage_options(
-        output_dir,
-        &files,
-        output_prefix,
-        storage_options,
-        work_budget,
-    )?;
-
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let raced_checkpoint =
-        read_published_object(&runtime, object_store.as_ref(), &checkpoint_object_path)?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    if let Some(existing_checkpoint) = raced_checkpoint {
-        ensure!(
-            existing_checkpoint.as_ref() == checkpoint_bytes.as_slice(),
-            "published completion checkpoint won a create race under {output_prefix} with different bytes"
-        );
-        files.push(checkpoint_path);
-        return verify_published_files_exact(
-            output_dir,
-            &files,
-            output_prefix,
-            &base_path,
-            &runtime,
-            object_store.as_ref(),
-            work_budget,
-        );
-    }
-
-    verify_published_files_exact(
-        output_dir,
-        &files,
-        output_prefix,
-        &base_path,
-        &runtime,
-        object_store.as_ref(),
-        work_budget,
-    )?;
-    let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
-    let created = commit_remote_checkpoint(
-        &runtime,
-        object_store.as_ref(),
-        &checkpoint_object_path,
-        &checkpoint_bytes,
-        permit,
-    )
-    .with_context(|| format!("publish completion checkpoint to {output_prefix}"))?;
-    if !created {
-        files.push(checkpoint_path);
-        return verify_published_files_exact_after_commit(
-            output_dir,
-            &files,
-            output_prefix,
-            &base_path,
-            &runtime,
-            object_store.as_ref(),
-        );
-    }
-    published.push(published_artifact_description(
-        &checkpoint_path,
-        output_dir,
-        output_prefix,
-        &checkpoint_bytes,
-    )?);
-    Ok(published)
-}
-
-fn commit_remote_checkpoint(
-    runtime: &tokio::runtime::Runtime,
-    object_store: &dyn ObjectStore,
-    checkpoint_path: &ObjectPath,
-    checkpoint_bytes: &[u8],
-    _permit: OperatorWorkBudgetCommitPermit,
-) -> Result<bool> {
-    match runtime.block_on(object_store.put_opts(
-        checkpoint_path,
-        Bytes::copy_from_slice(checkpoint_bytes).into(),
-        PutMode::Create.into(),
-    )) {
-        Ok(_) => Ok(true),
-        Err(ObjectStoreError::AlreadyExists { .. })
-        | Err(ObjectStoreError::Precondition { .. }) => {
-            let existing = read_published_object(runtime, object_store, checkpoint_path)?
-                .context("published completion checkpoint disappeared after create conflict")?;
-            ensure!(
-                existing.as_ref() == checkpoint_bytes,
-                "published completion checkpoint won a create race with different bytes"
-            );
-            Ok(false)
-        }
-        Err(error) => Err(error).context("create published completion checkpoint"),
-    }
-}
-
-fn verify_published_files_exact(
-    output_dir: &Path,
-    files: &[PathBuf],
-    output_prefix: &str,
-    base_path: &str,
-    runtime: &tokio::runtime::Runtime,
-    object_store: &dyn ObjectStore,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<Vec<PublishedArtifact>> {
-    verify_published_files_exact_inner(
-        output_dir,
-        files,
-        output_prefix,
-        base_path,
-        runtime,
-        object_store,
-        Some(work_budget),
-    )
-}
-
-fn verify_published_files_exact_after_commit(
-    output_dir: &Path,
-    files: &[PathBuf],
-    output_prefix: &str,
-    base_path: &str,
-    runtime: &tokio::runtime::Runtime,
-    object_store: &dyn ObjectStore,
-) -> Result<Vec<PublishedArtifact>> {
-    verify_published_files_exact_inner(
-        output_dir,
-        files,
-        output_prefix,
-        base_path,
-        runtime,
-        object_store,
-        None,
-    )
-}
-
-fn verify_published_files_exact_inner(
-    output_dir: &Path,
-    files: &[PathBuf],
-    output_prefix: &str,
-    base_path: &str,
-    runtime: &tokio::runtime::Runtime,
-    object_store: &dyn ObjectStore,
-    work_budget: Option<&OperatorWorkBudgetGuard>,
-) -> Result<Vec<PublishedArtifact>> {
-    let mut verified = Vec::with_capacity(files.len());
-    for local_path in files {
-        let relative = artifact_relative_path(output_dir, local_path)?;
-        let object_path = ObjectPath::from(published_object_key(base_path, &relative));
-        let bytes =
-            fs::read(local_path).with_context(|| format!("read {}", local_path.display()))?;
-        if let Some(work_budget) = work_budget {
-            work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        }
-        let existing = read_published_object(runtime, object_store, &object_path)?
-            .with_context(|| format!("published artifact {relative} is missing"))?;
-        ensure!(
-            existing.as_ref() == bytes.as_slice(),
-            "published artifact {relative} already exists under {output_prefix} with different bytes"
-        );
-        if let Some(work_budget) = work_budget {
-            work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        }
-        verified.push(published_artifact_description(
-            local_path,
-            output_dir,
-            output_prefix,
-            &bytes,
-        )?);
-    }
-    Ok(verified)
-}
-
-fn published_artifact_description(
-    local_path: &Path,
-    output_dir: &Path,
-    output_prefix: &str,
-    bytes: &[u8],
-) -> Result<PublishedArtifact> {
-    let relative = artifact_relative_path(output_dir, local_path)?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(PublishedArtifact {
-        local_path: local_path.to_path_buf(),
-        published_uri: format!("{}/{relative}", output_prefix.trim_end_matches('/')),
-        bytes: bytes.len() as u64,
-        sha256: hex::encode(hasher.finalize()),
-    })
-}
-
-fn publish_selected_artifacts_with_storage_options(
-    output_dir: &Path,
-    files: &[PathBuf],
-    output_prefix: &str,
-    storage_options: Option<&BTreeMap<String, String>>,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<Vec<PublishedArtifact>> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    ensure_local_publish_root_exists(output_prefix)?;
-    let object_store_options = storage_options
-        .cloned()
-        .map(|options| options.into_iter().collect());
-    let (object_store, base_path, _) =
-        create_object_store_from_path(output_prefix, object_store_options)
-            .with_context(|| format!("open output prefix {output_prefix:?}"))?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("build object-store runtime")?;
-    let completion_path =
-        ObjectPath::from(published_object_key(&base_path, CONVERSION_CHECKPOINT_FILE));
-
-    let mut targets = Vec::with_capacity(files.len());
-    for local_path in files {
-        let relative = artifact_relative_path(output_dir, local_path)?;
-        ensure!(
-            relative != CONVERSION_CHECKPOINT_FILE,
-            "completion checkpoint must use the dedicated checkpoint-last publisher"
-        );
-        let object_path = ObjectPath::from(published_object_key(&base_path, &relative));
-        targets.push((local_path, relative, object_path));
-    }
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let committed =
-        read_published_object(&runtime, object_store.as_ref(), &completion_path)?.is_some();
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-
-    let mut published = Vec::with_capacity(targets.len());
-    for (local_path, relative, object_path) in targets {
-        let bytes =
-            fs::read(local_path).with_context(|| format!("read {}", local_path.display()))?;
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        match read_published_object(&runtime, object_store.as_ref(), &object_path)? {
-            Some(existing) => ensure!(
-                existing.as_ref() == bytes.as_slice(),
-                "published artifact {relative} already exists under {output_prefix} with different bytes"
-            ),
-            None => {
-                ensure!(
-                    !committed,
-                    "published artifact {relative} is missing under committed prefix {output_prefix}"
-                );
-                ensure!(
-                    read_published_object(&runtime, object_store.as_ref(), &completion_path,)?
-                        .is_none(),
-                    "published completion checkpoint already exists under {output_prefix}; refusing to fill an object under a committed prefix"
-                );
-                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                let put_result = runtime.block_on(object_store.put_opts(
-                    &object_path,
-                    Bytes::from(bytes.clone()).into(),
-                    PutMode::Create.into(),
-                ));
-                match put_result {
-                    Ok(_) => {}
-                    Err(ObjectStoreError::AlreadyExists { .. })
-                    | Err(ObjectStoreError::Precondition { .. }) => {
-                        let existing = read_published_object(
-                            &runtime,
-                            object_store.as_ref(),
-                            &object_path,
-                        )?
-                        .with_context(|| {
-                            format!(
-                                "published artifact {relative} disappeared after create conflict"
-                            )
-                        })?;
-                        ensure!(
-                            existing.as_ref() == bytes.as_slice(),
-                            "published artifact {relative} won a create race with different bytes"
-                        );
-                    }
-                    Err(error) => {
-                        return Err(error).with_context(|| {
-                            format!("publish artifact {relative} to {output_prefix}")
-                        });
-                    }
-                }
-            }
-        }
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        published.push(published_artifact_description(
-            local_path,
-            output_dir,
-            output_prefix,
-            &bytes,
-        )?);
-    }
-
-    Ok(published)
-}
-
-fn read_published_object(
-    runtime: &tokio::runtime::Runtime,
-    object_store: &dyn ObjectStore,
-    object_path: &ObjectPath,
-) -> Result<Option<Bytes>> {
-    let object = match runtime.block_on(object_store.get(object_path)) {
-        Ok(object) => object,
-        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
-        Err(error) => return Err(error).context("read published object"),
-    };
-    runtime
-        .block_on(object.bytes())
-        .map(Some)
-        .context("read published object bytes")
-}
-
-fn published_object_key(base_path: &str, relative: &str) -> String {
-    if base_path.is_empty() {
-        relative.to_string()
-    } else {
-        format!("{}/{}", base_path.trim_end_matches('/'), relative)
-    }
-}
-
-fn prove_published_catalog_consumption(
-    spec: &RunSpec,
-    local_output: &BacktestRunOutput,
-    storage_options: Option<&BTreeMap<String, String>>,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<PublishedCatalogProof> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
-    let (manifest, catalog_uri) = published_catalog_manifest(spec, storage_options)?;
-    let nt_result = run_nt_backtest_node_guarded(&manifest, work_budget)?.result;
-    let expected_iterations = local_output.nt_result.iterations;
-    ensure!(
-        nt_result.iterations == expected_iterations,
-        "published catalog BacktestNode iterations {} did not match local verified iterations {}",
-        nt_result.iterations,
-        expected_iterations
-    );
-    let catalog_input = manifest.single_catalog_input().map_err(|error| {
-        anyhow::anyhow!("published catalog proof requires one catalog input: {error}")
-    })?;
-    let direct_s3_catalog_access_proven =
-        catalog_input.catalog_fs_protocol == "s3" && catalog_uri.starts_with("s3://");
-    Ok(PublishedCatalogProof {
-        proof_version: "published-catalog-proof.v1".to_string(),
-        catalog_uri,
-        catalog_fs_protocol: catalog_input.catalog_fs_protocol.clone(),
-        direct_s3_catalog_access_proven,
-        expected_iterations,
-        nt_iterations: nt_result.iterations,
-        run_config_id: nt_result.run_config_id,
-        nt_version: local_output.contract.nt_version.clone(),
-        created_at: spec.created_at_utc.clone(),
-    })
-}
-
-fn published_catalog_manifest(
-    spec: &RunSpec,
-    storage_options: Option<&BTreeMap<String, String>>,
-) -> Result<(BacktestingRunManifest, String)> {
-    let catalog_uri = portable_artifact_uri(&spec.manifest.output_prefix, CATALOG_DIR);
-    let mut manifest = spec.manifest.clone();
-    manifest.artifact_store.storage_options.clear();
-    manifest.artifact_store.rust_storage_options.clear();
-    manifest.artifact_store.ssm_parameters = None;
-    {
-        let catalog_input = manifest.single_catalog_input_mut().map_err(|error| {
-            anyhow::anyhow!("published catalog manifest requires one catalog input: {error}")
-        })?;
-        catalog_input.catalog_fs_storage_options.clear();
-        catalog_input.catalog_fs_rust_storage_options.clear();
-        if let Some(local_path) = catalog_uri.strip_prefix("file://") {
-            catalog_input.catalog_path = local_path.to_string();
-            catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
-        } else if let Some((protocol, path)) = catalog_uri.split_once("://") {
-            catalog_input.catalog_path = path.to_string();
-            catalog_input.catalog_fs_protocol = protocol.to_string();
-            catalog_input.catalog_fs_rust_storage_options =
-                storage_options.cloned().unwrap_or_default();
-        } else {
-            catalog_input.catalog_path = catalog_uri.clone();
-            catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
-        }
-    }
-    Ok((manifest, catalog_uri))
-}
-
-fn write_published_catalog_proof(
-    output_dir: &Path,
-    run: &mut RunArtifacts,
-    proof: &PublishedCatalogProof,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<()> {
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        write_conversion_checkpoint(
-            output_dir,
-            &ConversionCheckpoint::started(
-                run.output.conversion_checkpoint.fingerprint.clone(),
-                run.output.conversion_checkpoint.updated_at.clone(),
-            ),
-        )
-        .map(|_| ())
-    })?;
-    let proof_path = output_dir.join(PUBLISHED_CATALOG_PROOF_FILE);
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &proof_path,
-            serde_json::to_string_pretty(proof)
-                .context("serialize published catalog proof")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", proof_path.display()))
-    })?;
-
-    run.output.conversion_catalog_metadata = run
-        .output
-        .conversion_catalog_metadata
-        .clone()
-        .with_execution_catalog_access(
-            proof.catalog_uri.clone(),
-            proof.direct_s3_catalog_access_proven,
-        );
-    run.output.contract.catalog_metadata_hash = run
-        .output
-        .conversion_catalog_metadata
-        .content_hash()
-        .context("hash updated catalog metadata")?;
-    run.output
-        .contract
-        .validate()
-        .map_err(|error| anyhow::anyhow!("updated result contract rejected: {error}"))?;
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        write_pending_conversion_artifacts(
-            output_dir,
-            &run.output.conversion_manifest,
-            &run.output.conversion_catalog_metadata,
-        )
-    })?;
-    run_budgeted_stage(work_budget, OperatorWorkBudgetStage::Finalize, || {
-        atomic_write(
-            &run.contract_path,
-            serde_json::to_string_pretty(&run.output.contract)
-                .context("serialize updated result contract")?
-                .as_bytes(),
-        )
-        .with_context(|| format!("write {}", run.contract_path.display()))
-    })?;
-    write_completed_conversion_artifacts_guarded(
-        output_dir,
-        &run.output.conversion_manifest,
-        &run.output.conversion_checkpoint,
-        &run.output.conversion_catalog_metadata,
-        work_budget,
-    )?;
-    Ok(())
-}
-
-fn ensure_local_publish_root_exists(output_prefix: &str) -> Result<()> {
-    let local_root = if let Some(path) = output_prefix.strip_prefix("file://") {
-        Some(Path::new(path))
-    } else if output_prefix.contains("://") {
-        None
-    } else {
-        Some(Path::new(output_prefix))
-    };
-    if let Some(root) = local_root {
-        fs::create_dir_all(root)
-            .with_context(|| format!("create local publish root {}", root.display()))?;
-    }
-    Ok(())
-}
-
-fn collect_output_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    collect_output_files_inner(root, &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-fn collect_output_files_inner(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(path).with_context(|| format!("read dir {}", path.display()))? {
-        let entry = entry.with_context(|| format!("read dir entry under {}", path.display()))?;
-        let entry_path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("read file type {}", entry_path.display()))?;
-        if file_type.is_dir() {
-            collect_output_files_inner(&entry_path, files)?;
-        } else if file_type.is_file() {
-            files.push(entry_path);
-        }
-    }
-    Ok(())
-}
-
-fn artifact_relative_path(root: &Path, file: &Path) -> Result<String> {
-    let relative = file
-        .strip_prefix(root)
-        .with_context(|| format!("artifact {} is outside {}", file.display(), root.display()))?;
-    let mut components = Vec::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(value) => components.push(value.to_string_lossy().to_string()),
-            other => anyhow::bail!("unsupported artifact path component {other:?}"),
-        }
-    }
-    ensure!(
-        !components.is_empty(),
-        "artifact path has no relative components: {}",
-        file.display()
-    );
-    Ok(components.join("/"))
 }
 
 #[cfg(test)]
@@ -4626,7 +6934,7 @@ mod tests {
     };
     use crate::conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
-        ConversionCatalogMetadata, ConversionCheckpoint, ConversionManifest,
+        CatalogConsumption, ConversionCatalogMetadata, ConversionCheckpoint, ConversionManifest,
     };
     use crate::result_contract::BacktestResultContract;
     use crate::run_manifest::{BacktestRunManifestArtifact, NtSurfaceClassification};
@@ -4670,6 +6978,168 @@ mod tests {
         encoder.finish().expect("gzip finish")
     }
 
+    #[test]
+    fn transient_catalog_root_lease_finish_retains_its_unique_root() {
+        let output = tempfile::tempdir().expect("output dir");
+        let lease = TransientCatalogRootLease::acquire(output.path())
+            .expect("acquire transient catalog root");
+        let catalog_root = lease.catalog_root.clone();
+        fs::write(catalog_root.join("owned.parquet"), b"owned").expect("write owned catalog file");
+
+        lease
+            .finish_retained(&OperatorWorkBudgetGuard::unbounded())
+            .expect("finish retained transient catalog root");
+
+        assert_eq!(
+            fs::read(catalog_root.join("owned.parquet")).expect("retained owned catalog file"),
+            b"owned"
+        );
+        assert!(!output.path().join(CATALOG_DIR).exists());
+    }
+
+    #[test]
+    fn stable_transient_catalog_root_lease_reopens_existing_root_without_cleanup() {
+        let output = tempfile::tempdir().expect("output dir");
+        let first = TransientCatalogRootLease::acquire_stable(output.path())
+            .expect("acquire stable catalog root");
+        let catalog_root = first.catalog_root.clone();
+        fs::write(catalog_root.join("candidate.parquet"), b"candidate")
+            .expect("write deterministic candidate");
+        first
+            .finish_retained(&OperatorWorkBudgetGuard::unbounded())
+            .expect("finish retained stable root");
+
+        let retry = TransientCatalogRootLease::acquire_stable(output.path())
+            .expect("retry reopens stable catalog root");
+        assert_eq!(retry.catalog_root, catalog_root);
+        assert_eq!(
+            fs::read(catalog_root.join("candidate.parquet")).expect("candidate remains"),
+            b"candidate"
+        );
+        retry
+            .finish_retained(&OperatorWorkBudgetGuard::unbounded())
+            .expect("finish retained retry root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_transient_catalog_root_rejects_permissive_existing_mode() {
+        let output = tempfile::tempdir().expect("output dir");
+        let catalog_root = output.path().join(CATALOG_DIR);
+        fs::create_dir(&catalog_root).expect("preexisting catalog root");
+        fs::set_permissions(&catalog_root, fs::Permissions::from_mode(0o755))
+            .expect("make existing root permissive");
+
+        let error = TransientCatalogRootLease::acquire_stable(output.path())
+            .expect_err("permissive existing root must fail closed");
+
+        assert!(error.to_string().contains("private"), "{error:#}");
+        assert_eq!(
+            fs::metadata(&catalog_root)
+                .expect("stat preserved root")
+                .permissions()
+                .mode()
+                & UNIX_PERMISSION_MASK,
+            0o755,
+            "retry validation must not chmod a foreign root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transient_catalog_root_lease_rejects_mode_change_after_acquisition() {
+        let output = tempfile::tempdir().expect("output dir");
+        let lease = TransientCatalogRootLease::acquire_stable(output.path())
+            .expect("acquire stable catalog root");
+        let catalog_root = lease.catalog_root.clone();
+        fs::set_permissions(&catalog_root, fs::Permissions::from_mode(0o755))
+            .expect("make leased root permissive");
+
+        let error = lease
+            .finish_retained(&OperatorWorkBudgetGuard::unbounded())
+            .expect_err("lease must recheck exact private mode");
+
+        assert!(
+            error.to_string().contains("private mode changed"),
+            "{error:#}"
+        );
+        assert_eq!(
+            fs::metadata(&catalog_root)
+                .expect("stat retained changed root")
+                .permissions()
+                .mode()
+                & UNIX_PERMISSION_MASK,
+            0o755,
+            "failed revalidation must not mutate or delete the changed root"
+        );
+    }
+
+    #[test]
+    fn abandoned_unique_catalog_root_never_blocks_a_retry() {
+        let output = tempfile::tempdir().expect("output dir");
+        let abandoned = TransientCatalogRootLease::acquire(output.path())
+            .expect("acquire first transient catalog root");
+        let abandoned_root = abandoned.catalog_root.clone();
+        fs::write(abandoned_root.join("partial.parquet"), b"partial")
+            .expect("write abandoned partial catalog");
+        std::mem::forget(abandoned);
+
+        let retry = TransientCatalogRootLease::acquire(output.path())
+            .expect("retry acquires a different transient catalog root");
+        let retry_root = retry.catalog_root.clone();
+
+        assert_ne!(retry_root, abandoned_root);
+        assert!(abandoned_root.join("partial.parquet").exists());
+        assert!(!output.path().join(CATALOG_DIR).exists());
+        retry
+            .finish_retained(&OperatorWorkBudgetGuard::unbounded())
+            .expect("finish retained retry root");
+        assert!(retry_root.is_dir(), "finished retry root is retained");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transient_catalog_root_lease_rejects_replacement_without_deleting_it() {
+        let output = tempfile::tempdir().expect("output dir");
+        let lease = TransientCatalogRootLease::acquire(output.path())
+            .expect("acquire transient catalog root");
+        let catalog_root = lease.catalog_root.clone();
+        let displaced_root = output.path().join("displaced-catalog");
+        fs::rename(&catalog_root, &displaced_root).expect("displace owned root");
+        fs::create_dir(&catalog_root).expect("replacement catalog root");
+        fs::write(catalog_root.join("foreign.parquet"), b"foreign")
+            .expect("write replacement content");
+
+        let error = lease
+            .finish_retained(&OperatorWorkBudgetGuard::unbounded())
+            .expect_err("identity replacement must fail closed before finish");
+
+        assert!(error.to_string().contains("identity changed"), "{error:#}");
+        assert_eq!(
+            fs::read(catalog_root.join("foreign.parquet")).expect("replacement remains"),
+            b"foreign"
+        );
+    }
+
+    #[test]
+    fn transient_catalog_root_finish_deadline_retains_owned_residue() {
+        let output = tempfile::tempdir().expect("output dir");
+        let lease = TransientCatalogRootLease::acquire(output.path())
+            .expect("acquire transient catalog root");
+        let catalog_root = lease.catalog_root.clone();
+        fs::write(catalog_root.join("partial.parquet"), b"partial").expect("write partial catalog");
+
+        let error = lease
+            .finish_retained(&expiring_test_work_budget(0))
+            .expect_err("expired finish must fail closed");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+        assert_eq!(
+            fs::read(catalog_root.join("partial.parquet")).expect("retained partial catalog"),
+            b"partial"
+        );
+    }
+
     fn zip_single_csv(member_name: &str, text: &str) -> Vec<u8> {
         let cursor = Cursor::new(Vec::new());
         let mut writer = zip::ZipWriter::new(cursor);
@@ -4680,36 +7150,13 @@ mod tests {
         writer.finish().expect("finish zip").into_inner()
     }
 
-    fn write_test_completed_checkpoint(output_dir: &Path) -> PathBuf {
-        let checkpoint = ConversionCheckpoint::completed(
-            ConversionFingerprint {
-                source_proof_id: "source-proof".to_string(),
-                source_proof_version: 1,
-                accepted_object_sha256: "accepted-object".to_string(),
-                converter_identity: "converter".to_string(),
-                converter_version: "1".to_string(),
-                converter_config_hash: "converter-config".to_string(),
-            },
-            1,
-            "catalog-hash",
-            "2026-07-15T00:00:00Z",
-        );
-        write_conversion_checkpoint(output_dir, &checkpoint).expect("write completed checkpoint")
-    }
-
-    fn test_publish_prefix(published_root: &Path) -> String {
-        format!(
-            "file://{}/backtests/published-run",
-            published_root.display()
-        )
-    }
-
     fn test_work_budget(
         max_source_rows: u64,
         max_projected_row_groups: u64,
     ) -> OperatorWorkBudgetGuard {
         OperatorWorkBudgetGuard::new(crate::operator_work_budget::OperatorWorkBudget::Backfill(
             crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                max_decoded_bytes: u64::MAX,
                 max_source_rows,
                 max_projected_row_groups,
                 max_wall_seconds: 60,
@@ -4755,6 +7202,7 @@ mod tests {
         OperatorWorkBudgetGuard::with_clock(
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_decoded_bytes: u64::MAX,
                     max_source_rows: 1,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 1,
@@ -4793,6 +7241,100 @@ mod tests {
             member_suffix: None,
         };
         spec
+    }
+
+    #[test]
+    fn verified_registry_handle_cannot_authorize_a_different_run_spec_path() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let original = run_spec_for(&object_bytes);
+        let verified = VerifiedSourceBindingRegistry::from_run_spec(&original)
+            .expect("verify original source bindings");
+        let mut changed = original;
+        changed.source_bindings_path = PathBuf::from("different-source-bindings.toml");
+        let output = tempfile::tempdir().expect("output dir");
+
+        let error = match run_from_run_spec_with_verified_registry(
+            &changed,
+            &object_bytes,
+            output.path(),
+            &verified,
+            &OperatorWorkBudgetGuard::unbounded(),
+        ) {
+            Ok(_) => panic!("verified registry must not authorize changed control identity"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("verified source-bindings path mismatch"),
+            "{error:#}"
+        );
+        assert!(
+            !output.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "registry identity rejection must precede artifact writes"
+        );
+    }
+
+    #[test]
+    fn verified_registry_guard_rejects_snapshot_above_work_budget_before_reading() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&object_bytes);
+        let work_budget = OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                BackfillExecutionWorkBudget {
+                    max_decoded_bytes: 1,
+                    max_source_rows: 1,
+                    max_projected_row_groups: 1,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("bounded source-binding registry budget");
+
+        let error = VerifiedSourceBindingRegistry::from_run_spec_guarded(&spec, &work_budget)
+            .expect_err("source-binding snapshot must obey the execution-plan byte ceiling");
+
+        assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
+    }
+
+    #[test]
+    fn verified_registry_executes_from_frozen_bytes_without_reopening_path() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&object_bytes);
+        let fixture = tempfile::tempdir().expect("fixture dir");
+        let registry_bytes = fs::read(crate::source_proof::resolve_source_bindings_path(
+            &spec.source_bindings_path,
+        ))
+        .expect("read committed source bindings");
+        let registry_path = fixture.path().join("source-bindings.toml");
+        fs::write(&registry_path, &registry_bytes).expect("write registry snapshot source");
+        spec.source_bindings_path = registry_path.clone();
+        let verified = VerifiedSourceBindingRegistry::from_run_spec(&spec)
+            .expect("freeze source-binding registry");
+        let expected_sha256 = verified.sha256().to_string();
+        fs::write(&registry_path, b"not = [valid toml")
+            .expect("replace registry path after snapshot");
+        let output_dir = fixture.path().join("output");
+
+        let artifacts = run_from_run_spec_with_verified_registry(
+            &spec,
+            &object_bytes,
+            &output_dir,
+            &verified,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect("frozen registry remains sole execution input");
+
+        assert_eq!(
+            artifacts
+                .output
+                .conversion_manifest
+                .fingerprint
+                .control_artifact_sha256,
+            expected_sha256
+        );
     }
 
     #[test]
@@ -4885,6 +7427,21 @@ mod tests {
     }
 
     #[test]
+    fn tiny_decode_does_not_allocate_from_a_huge_declared_ceiling() {
+        let payload = b"tiny";
+        let bytes = read_limited_bytes(
+            Cursor::new(payload),
+            5_u64 * 1_024 * 1_024 * 1_024,
+            "tiny payload with five-GiB ceiling",
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect("the ceiling is a rejection bound, not an allocation request");
+
+        assert_eq!(bytes, payload);
+        assert!(bytes.capacity() < 1_024 * 1_024);
+    }
+
+    #[test]
     fn decode_jsonl_text_payload_decodes_within_bound() {
         let config = payload_config(RawPayloadContainer::JsonlText);
         let payload =
@@ -4909,6 +7466,7 @@ mod tests {
         let guard = OperatorWorkBudgetGuard::with_clock(
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_decoded_bytes: u64::MAX,
                     max_source_rows: 1,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 1,
@@ -4986,6 +7544,7 @@ mod tests {
         let guard = OperatorWorkBudgetGuard::with_clock(
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_decoded_bytes: u64::MAX,
                     max_source_rows: 1,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 1,
@@ -5098,6 +7657,22 @@ mod tests {
             err.to_string().contains("big.jsonl") || err.to_string().contains("member"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn decode_tar_gzip_jsonl_rejects_cumulative_members_over_decoded_bound() {
+        let mut config = payload_config(RawPayloadContainer::TarGzipJsonl);
+        config.member_suffix = Some(".jsonl".to_string());
+        config.max_member_bytes = Some(8);
+        config.max_decoded_bytes = 10;
+        let archive = gzip_tar(&[
+            ("a.jsonl", b"123456".as_slice()),
+            ("b.jsonl", b"abcdef".as_slice()),
+        ]);
+        let error = decode_test_payload(&config, &archive)
+            .err()
+            .expect("aggregate decoded bytes over the configured bound must be rejected");
+        assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
     }
 
     #[test]
@@ -5258,6 +7833,47 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
         assert_eq!(artifacts.output.read_back_count, 3);
+        assert_eq!(
+            artifacts.output.projection.catalog_root, artifacts.catalog_root,
+            "fresh runtime manifest must bind the deterministic catalog root"
+        );
+        assert_eq!(
+            artifacts.catalog_root,
+            dir.path().join(CATALOG_DIR),
+            "local retries must project through one stable catalog pathname"
+        );
+        let mut runtime_manifest = spec.manifest.clone();
+        bind_runtime_manifest_to_local_catalog_root(&mut runtime_manifest, &artifacts.catalog_root)
+            .expect("bind transient runtime location");
+        let submitted_identity = submitted_run_identity_for_spec(&spec)
+            .expect("derive identity from immutable submitted manifest");
+        artifacts
+            .output
+            .catalog_run_view_authority
+            .validate_for_runtime_manifest(
+                &runtime_manifest,
+                &submitted_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+                OperatorWorkBudgetStage::Backtest,
+            )
+            .expect("catalog location-only rewrite remains authorized");
+        runtime_manifest.nt_streaming_chunk_size += 1;
+        let semantic_error = artifacts
+            .output
+            .catalog_run_view_authority
+            .validate_for_runtime_manifest(
+                &runtime_manifest,
+                &submitted_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+                OperatorWorkBudgetStage::Backtest,
+            )
+            .expect_err("runtime semantic rewrite must be rejected");
+        assert!(
+            semantic_error
+                .to_string()
+                .contains("outside the allowed catalog location rewrite"),
+            "{semantic_error}"
+        );
         assert!(artifacts.contract_path.exists(), "result contract written");
         assert!(artifacts.proof_path.exists(), "accepted proof written");
         assert!(
@@ -5286,6 +7902,122 @@ mod tests {
                 .map(|input| input.data_type.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn completed_output_requires_an_exact_terminal_seal() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+        let registry = VerifiedSourceBindingRegistry::from_run_spec(&spec)
+            .expect("verify source-binding registry");
+        let work_budget = OperatorWorkBudgetGuard::unbounded();
+        let seal_path = dir.path().join(OPERATOR_TERMINAL_SEAL_FILE);
+
+        assert!(seal_path.is_file(), "operator terminal seal written last");
+        verify_completed_operator_output(&spec, dir.path(), &registry, &work_budget)
+            .expect("intact sealed output verifies");
+
+        for path in [
+            artifacts.canonical_artifact_path,
+            artifacts.contract_path,
+            artifacts.proof_path,
+            artifacts.run_manifest_path,
+            dir.path().join(CATALOG_RUN_VIEW_AUTHORITY_FILE),
+        ] {
+            let original = fs::read(&path).expect("read sealed artifact");
+            fs::write(&path, b"corrupt after terminal seal").expect("corrupt sealed artifact");
+            let error =
+                verify_completed_operator_output(&spec, dir.path(), &registry, &work_budget)
+                    .expect_err("corrupt sealed artifact must reject resume");
+            assert!(
+                error.to_string().contains("terminal seal"),
+                "corruption must fail at the exact-set seal: {error:#}"
+            );
+            fs::write(&path, original).expect("restore sealed artifact");
+            verify_completed_operator_output(&spec, dir.path(), &registry, &work_budget)
+                .expect("restored sealed output verifies");
+        }
+
+        let stray_path = dir.path().join("late-addition.parquet");
+        fs::write(&stray_path, b"late addition").expect("plant stray file");
+        let error = verify_completed_operator_output(&spec, dir.path(), &registry, &work_budget)
+            .expect_err("stray file must reject resume");
+        assert!(
+            error.to_string().contains("terminal seal"),
+            "stray file must fail at the exact-set seal: {error:#}"
+        );
+        fs::remove_file(&stray_path).expect("remove test stray");
+
+        fs::remove_file(&seal_path).expect("remove terminal seal");
+        run_from_run_spec(&spec, &gz, dir.path())
+            .expect("completed checkpoint without a seal must deterministically finalize");
+        assert!(
+            seal_path.is_file(),
+            "retry recreates the sole terminal marker"
+        );
+        verify_completed_operator_output(&spec, dir.path(), &registry, &work_budget)
+            .expect("re-finalized output verifies");
+    }
+
+    #[test]
+    fn retry_after_catalog_authority_crash_reconciles_immutable_artifacts() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+        let authority_path = dir.path().join(CATALOG_RUN_VIEW_AUTHORITY_FILE);
+        let authority_before = fs::read(&authority_path).expect("read authority");
+
+        for path in [
+            dir.path().join(OPERATOR_TERMINAL_SEAL_FILE),
+            artifacts.conversion_checkpoint_path,
+            artifacts.conversion_manifest_path,
+            artifacts.catalog_metadata_path,
+            artifacts.proof_path,
+            artifacts.contract_path,
+            artifacts.run_manifest_path,
+        ] {
+            fs::remove_file(path).expect("simulate crash before local completion");
+        }
+
+        run_from_run_spec(&spec, &gz, dir.path())
+            .expect("retry must reconcile the existing canonical catalog and authority");
+        assert_eq!(
+            fs::read(&authority_path).expect("read reconciled authority"),
+            authority_before,
+            "retry must verify rather than replace the existing authority"
+        );
+        assert!(
+            dir.path().join(OPERATOR_TERMINAL_SEAL_FILE).is_file(),
+            "retry reaches the sole local terminal marker"
+        );
+    }
+
+    #[test]
+    fn retry_rejects_conflicting_deterministic_artifact_without_replacement() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+        fs::remove_file(dir.path().join(OPERATOR_TERMINAL_SEAL_FILE))
+            .expect("simulate missing terminal seal");
+        let conflict = b"foreign result contract";
+        fs::write(&artifacts.contract_path, conflict).expect("plant conflict");
+
+        let error = run_from_run_spec(&spec, &gz, dir.path())
+            .expect_err("retry must reject conflicting immutable bytes");
+        assert!(
+            format!("{error:#}").contains("different bytes"),
+            "{error:#}"
+        );
+        assert_eq!(
+            fs::read(&artifacts.contract_path).expect("read preserved conflict"),
+            conflict,
+            "conflict handling must not overwrite the existing target"
+        );
+        assert!(!dir.path().join(OPERATOR_TERMINAL_SEAL_FILE).exists());
     }
 
     #[test]
@@ -5461,6 +8193,12 @@ mod tests {
     fn run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);
+        let expected_source_bindings_sha256 = sha256_hex(
+            &fs::read(crate::source_proof::resolve_source_bindings_path(
+                &spec.source_bindings_path,
+            ))
+            .expect("read committed source bindings"),
+        );
         let dir = tempfile::TempDir::new().unwrap();
         let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
 
@@ -5490,6 +8228,22 @@ mod tests {
             checkpoint.fingerprint.converter_config_hash,
             converter_config_hash
         );
+        assert_eq!(
+            manifest.fingerprint.control_artifact_path,
+            spec.source_bindings_path.to_str().unwrap()
+        );
+        assert_eq!(
+            manifest.fingerprint.control_artifact_sha256,
+            expected_source_bindings_sha256
+        );
+        assert_eq!(
+            checkpoint.fingerprint.control_artifact_path,
+            spec.source_bindings_path.to_str().unwrap()
+        );
+        assert_eq!(
+            checkpoint.fingerprint.control_artifact_sha256,
+            expected_source_bindings_sha256
+        );
         assert_eq!(metadata.manifest_hash, manifest_hash);
         assert_eq!(metadata.checkpoint_hash, checkpoint_hash);
         assert_eq!(
@@ -5500,14 +8254,9 @@ mod tests {
             metadata.output_catalog_uri,
             artifacts.output.contract.artifact_uris.nt_catalog_uri
         );
-        assert_eq!(
-            metadata.execution_catalog_uri, metadata.output_catalog_uri,
-            "catalog-metadata.json is byte-deterministic: execution_catalog_uri \
-             must be the portable output_catalog_uri, never the transient local path"
-        );
         assert!(
-            !metadata.direct_s3_catalog_access_proven,
-            "local operator path must not claim direct S3 BacktestNode consumption"
+            matches!(metadata.catalog_consumption, CatalogConsumption::Unproven),
+            "fresh catalog metadata must not persist a transient local execution path"
         );
         assert_eq!(
             artifacts.output.contract.converter_identity,
@@ -5544,6 +8293,127 @@ mod tests {
     }
 
     #[test]
+    fn hydrated_receipt_metadata_and_contract_are_retry_stable_across_local_roots() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+        let receipt = CatalogPublicationReceiptIdentity {
+            catalog_root_uri: "s3://bolt-parquet/nt-catalog/v1/projection=test/".to_string(),
+            receipt_uri: "s3://bolt-parquet/nt-catalog/v1/projection=test/publication-receipt.json"
+                .to_string(),
+            receipt_sha256: "1".repeat(64),
+            receipt_version_id: "receipt-version".to_string(),
+            physical_manifest_sha256: "2".repeat(64),
+        };
+        let bind_retry = |local_catalog_root: PathBuf| {
+            artifacts
+                .output
+                .conversion_catalog_metadata
+                .clone()
+                .with_catalog_consumption_evidence(
+                    CatalogConsumptionEvidence::HydratedPublication {
+                        local_catalog_root,
+                        receipt: receipt.clone(),
+                    },
+                )
+                .expect("bind hydrated retry evidence")
+        };
+        let first_metadata = bind_retry(dir.path().join("hydration-attempt-a"));
+        let second_metadata = bind_retry(dir.path().join("hydration-attempt-b"));
+
+        assert_eq!(first_metadata, second_metadata);
+        assert_eq!(
+            serde_json::to_vec(&first_metadata).unwrap(),
+            serde_json::to_vec(&second_metadata).unwrap(),
+            "private hydration roots must not alter persisted metadata bytes"
+        );
+
+        let bind_contract = |metadata: &ConversionCatalogMetadata| {
+            let mut contract = artifacts.output.contract.clone();
+            contract.catalog_metadata_hash = metadata.content_hash().unwrap();
+            contract.artifact_uris.nt_catalog_uri = receipt.catalog_root_uri.clone();
+            contract.artifact_uris.nt_catalog_manifest_uri = Some(receipt.receipt_uri.clone());
+            serde_json::to_vec(&contract).unwrap()
+        };
+        assert_eq!(
+            bind_contract(&first_metadata),
+            bind_contract(&second_metadata),
+            "retry-local hydration roots must not alter result-contract bytes"
+        );
+    }
+
+    #[test]
+    fn published_catalog_proof_binds_receipt_result_and_run_spec() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+        let receipt = CatalogPublicationReceiptIdentity {
+            catalog_root_uri: "s3://bolt-parquet/nt-catalog/v1/projection=test/".to_string(),
+            receipt_uri: "s3://bolt-parquet/nt-catalog/v1/projection=test/publication-receipt.json"
+                .to_string(),
+            receipt_sha256: "1".repeat(64),
+            receipt_version_id: "receipt-version".to_string(),
+            physical_manifest_sha256: "2".repeat(64),
+        };
+        let metadata = artifacts
+            .output
+            .conversion_catalog_metadata
+            .clone()
+            .with_catalog_consumption_evidence(CatalogConsumptionEvidence::HydratedPublication {
+                local_catalog_root: dir.path().join("hydrated-catalog"),
+                receipt: receipt.clone(),
+            })
+            .expect("bind hydrated receipt");
+        let mut contract = artifacts.output.contract.clone();
+        contract.catalog_metadata_hash = metadata.content_hash().unwrap();
+        contract.artifact_uris.nt_catalog_uri = receipt.catalog_root_uri.clone();
+        contract.artifact_uris.nt_catalog_manifest_uri = Some(receipt.receipt_uri.clone());
+        let iterations = usize::try_from(contract.nt_result.iterations).unwrap();
+        let proof = PublishedCatalogProof {
+            proof_version: PUBLISHED_CATALOG_PROOF_VERSION.to_string(),
+            catalog_uri: receipt.catalog_root_uri.clone(),
+            catalog_fs_protocol: "s3".to_string(),
+            publication_receipt_uri: receipt.receipt_uri.clone(),
+            publication_receipt_sha256: receipt.receipt_sha256.clone(),
+            publication_receipt_version_id: receipt.receipt_version_id.clone(),
+            publication_physical_manifest_sha256: receipt.physical_manifest_sha256.clone(),
+            expected_iterations: iterations,
+            nt_iterations: iterations,
+            run_config_id: contract.nt_result.run_config_id.clone(),
+            nt_version: contract.nt_version.clone(),
+            created_at: contract.created_at.clone(),
+        };
+
+        proof
+            .validate_against(&metadata, &contract, &spec)
+            .expect("fully bound proof");
+
+        let mut wrong_scheme = proof.clone();
+        wrong_scheme.catalog_fs_protocol = "file".to_string();
+        assert!(
+            wrong_scheme
+                .validate_against(&metadata, &contract, &spec)
+                .is_err()
+        );
+        let mut wrong_result = proof.clone();
+        wrong_result.expected_iterations += 1;
+        assert!(
+            wrong_result
+                .validate_against(&metadata, &contract, &spec)
+                .is_err()
+        );
+        let mut wrong_run_config = proof;
+        wrong_run_config.run_config_id = Some("other-run-config".to_string());
+        assert!(
+            wrong_run_config
+                .validate_against(&metadata, &contract, &spec)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn run_from_run_spec_rejects_tampered_object() {
         // The committed run-spec pins the real (uncommitted) object hash; feeding
         // it the synthetic bytes must trip the SHA-256 re-verification.
@@ -5558,7 +8428,7 @@ mod tests {
     }
 
     #[test]
-    fn run_from_run_spec_rejects_dirty_output_without_conversion_checkpoint() {
+    fn run_from_run_spec_rejects_unexpected_preterminal_residue_at_seal() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);
         let dir = tempfile::TempDir::new().unwrap();
@@ -5568,7 +8438,7 @@ mod tests {
             .err()
             .expect("dirty output must be rejected");
 
-        assert!(err.to_string().contains("dirty conversion output"), "{err}");
+        assert!(format!("{err:#}").contains("unexpected"), "{err:#}");
         assert!(
             dir.path().join("stale.parquet").exists(),
             "dirty evidence must be preserved for inspection"
@@ -5595,10 +8465,10 @@ mod tests {
             .expect_err("third source record must exceed the two-row budget");
 
         assert!(error.to_string().contains("max_source_rows"), "{error:#}");
-        let checkpoint: ConversionCheckpoint =
-            read_json_artifact(&dir.path().join(CONVERSION_CHECKPOINT_FILE))
-                .expect("started checkpoint remains inspectable");
-        assert_ne!(checkpoint.stage, ConversionCheckpointStage::Completed);
+        assert!(
+            !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "preterminal failure must not persist a mutable started checkpoint"
+        );
     }
 
     #[test]
@@ -5623,12 +8493,10 @@ mod tests {
             !dir.path().join(CATALOG_DIR).exists(),
             "catalog bytes must not exist after projection-budget rejection"
         );
-        let checkpoint_path = dir.path().join(CONVERSION_CHECKPOINT_FILE);
-        if checkpoint_path.exists() {
-            let checkpoint: ConversionCheckpoint =
-                read_json_artifact(&checkpoint_path).expect("inspect nonterminal checkpoint");
-            assert_ne!(checkpoint.stage, ConversionCheckpointStage::Completed);
-        }
+        assert!(
+            !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "preterminal rejection must not persist a mutable started checkpoint"
+        );
     }
 
     #[test]
@@ -5660,7 +8528,8 @@ mod tests {
             fs::read(&first.conversion_manifest_path).expect("read manifest bytes");
         let metadata_before = fs::read(&first.catalog_metadata_path).expect("read metadata bytes");
         let catalog_hash_before =
-            logical_catalog_hash(&first.catalog_root).expect("hash completed catalog");
+            crate::catalog_projection::logical_catalog_hash(&first.catalog_root)
+                .expect("hash completed catalog");
         let guard = test_work_budget(100, 0);
 
         let error = run_from_run_spec_guarded(&spec, &gz, dir.path(), &guard)
@@ -5687,413 +8556,28 @@ mod tests {
             metadata_before
         );
         assert_eq!(
-            logical_catalog_hash(&first.catalog_root).expect("catalog remains"),
+            crate::catalog_projection::logical_catalog_hash(&first.catalog_root)
+                .expect("catalog remains"),
             catalog_hash_before
         );
     }
 
     #[test]
-    fn run_from_run_spec_reuses_completed_output_without_rebuilding_catalog() {
+    fn run_from_run_spec_rejects_a_stray_file_in_a_completed_catalog() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);
         let dir = tempfile::TempDir::new().unwrap();
         let first = run_from_run_spec(&spec, &gz, dir.path()).expect("first run");
-        let checkpoint_json =
-            fs::read_to_string(&first.conversion_checkpoint_path).expect("checkpoint");
-        let manifest_json = fs::read_to_string(&first.conversion_manifest_path).expect("manifest");
-        let metadata_json = fs::read_to_string(&first.catalog_metadata_path).expect("metadata");
-        let contract_json = fs::read_to_string(&first.contract_path).expect("contract");
-        let catalog_hash = first.output.projection.catalog_hash.clone();
-        let read_back_count = first.output.read_back_count;
+        let stray = first.catalog_root.join("stray.parquet");
+        fs::write(&stray, b"not part of the committed exact set").expect("plant stray file");
 
-        let catalog_marker = first.catalog_root.join(".reuse-sentinel");
-        fs::write(&catalog_marker, b"must survive completed-output reuse").expect("marker");
+        let error = run_from_run_spec(&spec, &gz, dir.path())
+            .expect_err("completed-output reuse must reject a stray catalog file");
 
-        let second = run_from_run_spec(&spec, &gz, dir.path()).expect("second run");
-
+        assert!(error.to_string().contains("unexpected file"), "{error:#}");
         assert!(
-            catalog_marker.exists(),
-            "completed conversion output must be reused without deleting the NT catalog root"
-        );
-        assert_eq!(
-            fs::read_to_string(&second.conversion_checkpoint_path).expect("checkpoint"),
-            checkpoint_json
-        );
-        assert_eq!(
-            fs::read_to_string(&second.conversion_manifest_path).expect("manifest"),
-            manifest_json
-        );
-        assert_eq!(
-            fs::read_to_string(&second.catalog_metadata_path).expect("metadata"),
-            metadata_json
-        );
-        assert_eq!(
-            fs::read_to_string(&second.contract_path).expect("contract"),
-            contract_json
-        );
-        assert_eq!(second.output.projection.catalog_hash, catalog_hash);
-        assert_eq!(second.output.read_back_count, read_back_count);
-    }
-
-    #[test]
-    fn run_from_run_spec_and_publish_copies_artifacts_to_configured_prefix() {
-        let gz = gzip(SAMPLE_CSV);
-        let mut spec = run_spec_for(&gz);
-        let local_dir = tempfile::TempDir::new().unwrap();
-        let published_root = tempfile::TempDir::new().unwrap();
-        let artifact_root = format!("file://{}", published_root.path().display());
-        spec.manifest.artifact_root = artifact_root.clone();
-        spec.manifest.output_prefix = format!("{artifact_root}/backtests/published-run");
-
-        let published =
-            run_from_run_spec_and_publish(&spec, &gz, local_dir.path()).expect("published run");
-
-        assert_eq!(published.run.output.read_back_count, 3);
-        assert!(
-            !published.published_artifacts.is_empty(),
-            "artifact publish set must be reported"
-        );
-        assert!(
-            published
-                .published_artifacts
-                .iter()
-                .any(|artifact| artifact.published_uri.ends_with(BACKTEST_RUN_MANIFEST_FILE)),
-            "publish set must include the artifact-local run manifest"
-        );
-        for artifact in &published.published_artifacts {
-            assert!(
-                artifact
-                    .published_uri
-                    .starts_with(&spec.manifest.output_prefix),
-                "{}",
-                artifact.published_uri
-            );
-        }
-        assert_eq!(
-            fs::read_to_string(
-                published_root
-                    .path()
-                    .join("backtests/published-run/conversion-manifest.json"),
-            )
-            .expect("published manifest"),
-            fs::read_to_string(local_dir.path().join(CONVERSION_MANIFEST_FILE))
-                .expect("local manifest")
-        );
-        assert!(
-            published_root
-                .path()
-                .join("backtests/published-run/nt-catalog/data/trades/BNBUSDC.BYBIT")
-                .is_dir(),
-            "published NT catalog tree must include trade data"
-        );
-    }
-
-    #[test]
-    fn publish_output_artifacts_accepts_identical_completed_prefix_without_writes() {
-        let output_dir = tempfile::TempDir::new().unwrap();
-        fs::write(output_dir.path().join("result-contract.json"), b"result").unwrap();
-        write_test_completed_checkpoint(output_dir.path());
-        let published_root = tempfile::TempDir::new().unwrap();
-        let output_prefix = test_publish_prefix(published_root.path());
-
-        let first = publish_output_artifacts(output_dir.path(), &output_prefix)
-            .expect("first publish succeeds");
-        let second = publish_output_artifacts(output_dir.path(), &output_prefix)
-            .expect("identical committed publish is idempotent");
-
-        assert_eq!(first, second);
-        assert!(
-            second.last().is_some_and(|artifact| artifact
-                .published_uri
-                .ends_with(CONVERSION_CHECKPOINT_FILE)),
-            "completion checkpoint must be reported last"
-        );
-    }
-
-    #[test]
-    fn publish_output_artifacts_resumes_partial_uncommitted_prefix() {
-        let output_dir = tempfile::TempDir::new().unwrap();
-        fs::write(output_dir.path().join("a.json"), b"a").unwrap();
-        fs::write(output_dir.path().join("b.json"), b"b").unwrap();
-        write_test_completed_checkpoint(output_dir.path());
-        let published_root = tempfile::TempDir::new().unwrap();
-        let output_prefix = test_publish_prefix(published_root.path());
-        let remote_root = published_root.path().join("backtests/published-run");
-        fs::create_dir_all(&remote_root).unwrap();
-        fs::write(remote_root.join("a.json"), b"a").unwrap();
-
-        let published = publish_output_artifacts(output_dir.path(), &output_prefix)
-            .expect("partial uncommitted prefix resumes");
-
-        assert_eq!(fs::read(remote_root.join("b.json")).unwrap(), b"b");
-        assert!(remote_root.join(CONVERSION_CHECKPOINT_FILE).is_file());
-        assert!(
-            published.last().is_some_and(|artifact| artifact
-                .published_uri
-                .ends_with(CONVERSION_CHECKPOINT_FILE))
-        );
-    }
-
-    #[test]
-    fn publish_output_artifacts_rejects_conflicting_uncommitted_artifact() {
-        let output_dir = tempfile::TempDir::new().unwrap();
-        fs::write(
-            output_dir.path().join("result-contract.json"),
-            b"new-result",
-        )
-        .unwrap();
-        write_test_completed_checkpoint(output_dir.path());
-        let published_root = tempfile::TempDir::new().unwrap();
-        let output_prefix = test_publish_prefix(published_root.path());
-        let existing = published_root
-            .path()
-            .join("backtests/published-run/result-contract.json");
-        fs::create_dir_all(existing.parent().unwrap()).unwrap();
-        fs::write(&existing, b"existing-result").unwrap();
-
-        let err = publish_output_artifacts(output_dir.path(), &output_prefix)
-            .expect_err("publish must reject pre-existing artifact");
-
-        assert!(err.to_string().contains("already exists"), "{err}");
-        assert_eq!(
-            fs::read(&existing).unwrap(),
-            b"existing-result",
-            "existing published artifact must not be overwritten"
-        );
-        assert!(
-            !published_root
-                .path()
-                .join("backtests/published-run")
-                .join(CONVERSION_CHECKPOINT_FILE)
-                .exists(),
-            "a conflict must not commit the prefix"
-        );
-    }
-
-    #[test]
-    fn publish_output_artifacts_never_repairs_a_committed_prefix() {
-        let output_dir = tempfile::TempDir::new().unwrap();
-        fs::write(output_dir.path().join("result-contract.json"), b"result").unwrap();
-        let local_checkpoint = write_test_completed_checkpoint(output_dir.path());
-        let published_root = tempfile::TempDir::new().unwrap();
-        let output_prefix = test_publish_prefix(published_root.path());
-        let remote_root = published_root.path().join("backtests/published-run");
-        fs::create_dir_all(&remote_root).unwrap();
-        fs::copy(
-            local_checkpoint,
-            remote_root.join(CONVERSION_CHECKPOINT_FILE),
-        )
-        .unwrap();
-
-        let err = publish_output_artifacts(output_dir.path(), &output_prefix)
-            .expect_err("committed prefix with a missing object must fail");
-
-        assert!(err.to_string().contains("is missing"), "{err:#}");
-        assert!(
-            !remote_root.join("result-contract.json").exists(),
-            "committed prefix must remain verify-only"
-        );
-    }
-
-    #[test]
-    fn expired_publication_guard_writes_no_remote_completion_artifact() {
-        let output_dir = tempfile::TempDir::new().unwrap();
-        fs::write(output_dir.path().join("result-contract.json"), b"result").unwrap();
-        write_test_completed_checkpoint(output_dir.path());
-        let published_root = tempfile::TempDir::new().unwrap();
-        let output_prefix = test_publish_prefix(published_root.path());
-        let clock = Arc::new(TestWorkBudgetClock::default());
-        let guard = OperatorWorkBudgetGuard::with_clock(
-            crate::operator_work_budget::OperatorWorkBudget::Backfill(
-                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
-                    max_source_rows: 1,
-                    max_projected_row_groups: 1,
-                    max_wall_seconds: 1,
-                    require_object_selection_metadata: false,
-                },
-            ),
-            clock.clone(),
-        )
-        .expect("guard");
-        clock.set(Duration::from_secs(1));
-
-        let error = publish_completed_output_with_storage_options(
-            output_dir.path(),
-            &output_prefix,
-            None,
-            &guard,
-        )
-        .expect_err("deadline equality must reject publication");
-
-        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
-        let remote_root = published_root.path().join("backtests/published-run");
-        assert!(!remote_root.join(CONVERSION_CHECKPOINT_FILE).exists());
-        assert!(!remote_root.join("result-contract.json").exists());
-    }
-
-    #[test]
-    fn prove_mode_expiry_after_pending_base_leaves_local_checkpoint_started() {
-        let gz = gzip(SAMPLE_CSV);
-        let spec = run_spec_for(&gz);
-        let output_dir = tempfile::TempDir::new().unwrap();
-        let clock = Arc::new(TestWorkBudgetClock::default());
-        let guard = OperatorWorkBudgetGuard::with_clock(
-            crate::operator_work_budget::OperatorWorkBudget::Backfill(
-                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
-                    max_source_rows: 10,
-                    max_projected_row_groups: 10,
-                    max_wall_seconds: 60,
-                    require_object_selection_metadata: false,
-                },
-            ),
-            clock.clone(),
-        )
-        .expect("guard");
-        let mut run = run_from_run_spec_pending_guarded(&spec, &gz, output_dir.path(), &guard)
-            .expect("pending base run");
-        let proof = PublishedCatalogProof {
-            proof_version: "published-catalog-proof.v1".to_string(),
-            catalog_uri: portable_artifact_uri(&spec.manifest.output_prefix, CATALOG_DIR),
-            catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
-            direct_s3_catalog_access_proven: false,
-            expected_iterations: run.output.nt_result.iterations,
-            nt_iterations: run.output.nt_result.iterations,
-            run_config_id: run.output.nt_result.run_config_id.clone(),
-            nt_version: run.output.contract.nt_version.clone(),
-            created_at: spec.created_at_utc.clone(),
-        };
-        clock.set(Duration::from_secs(60));
-
-        let error = write_published_catalog_proof(output_dir.path(), &mut run, &proof, &guard)
-            .expect_err("proof finalization must reject deadline equality");
-
-        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
-        let checkpoint: ConversionCheckpoint =
-            read_json_artifact(&output_dir.path().join(CONVERSION_CHECKPOINT_FILE))
-                .expect("pending checkpoint");
-        assert_eq!(checkpoint.stage, ConversionCheckpointStage::Started);
-    }
-
-    #[test]
-    fn run_from_run_spec_and_publish_can_prove_published_catalog_consumption() {
-        let gz = gzip(SAMPLE_CSV);
-        let mut spec = run_spec_for(&gz);
-        let local_dir = tempfile::TempDir::new().unwrap();
-        let published_root = tempfile::TempDir::new().unwrap();
-        let artifact_root = format!("file://{}", published_root.path().display());
-        spec.manifest.artifact_root = artifact_root.clone();
-        spec.manifest.output_prefix = format!("{artifact_root}/backtests/published-run");
-
-        let published = run_from_run_spec_and_publish_with_options(
-            &spec,
-            &gz,
-            local_dir.path(),
-            PublishOptions {
-                prove_published_catalog: true,
-            },
-        )
-        .expect("published run with catalog proof");
-
-        let proof = published
-            .published_catalog_proof
-            .expect("published catalog proof");
-        assert_eq!(proof.nt_iterations, 3);
-        assert_eq!(proof.expected_iterations, 3);
-        assert_eq!(
-            proof.catalog_uri,
-            format!("{}/{}", spec.manifest.output_prefix, CATALOG_DIR)
-        );
-        assert!(
-            !proof.direct_s3_catalog_access_proven,
-            "file publish proof must not claim direct S3"
-        );
-        assert!(
-            published_root
-                .path()
-                .join("backtests/published-run/published-catalog-proof.json")
-                .is_file(),
-            "published proof artifact must be copied after the direct catalog run"
-        );
-    }
-
-    #[test]
-    fn run_from_run_spec_and_publish_rejects_s3_without_ssm_before_running_backtest() {
-        let gz = gzip(SAMPLE_CSV);
-        let mut spec = run_spec_for(&gz);
-        let local_dir = tempfile::TempDir::new().unwrap();
-        spec.manifest.output_prefix = "s3://example-bucket/backtests/published-run".to_string();
-        spec.manifest.artifact_store.rust_storage_options =
-            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
-
-        let err = match run_from_run_spec_and_publish_with_options(
-            &spec,
-            &gz,
-            local_dir.path(),
-            PublishOptions {
-                prove_published_catalog: true,
-            },
-        ) {
-            Ok(_) => panic!("publish must reject missing SSM credential binding"),
-            Err(error) => error,
-        };
-
-        assert!(
-            err.to_string()
-                .contains("artifact_store.ssm_parameters must resolve"),
-            "publish must fail on missing SSM credential binding: {err}"
-        );
-        assert!(
-            !local_dir.path().join(CONVERSION_MANIFEST_FILE).exists(),
-            "publish credential validation must happen before local conversion/backtest artifacts are written"
-        );
-    }
-
-    #[test]
-    fn published_catalog_manifest_uses_resolved_artifact_store_options() {
-        let gz = gzip(SAMPLE_CSV);
-        let mut spec = run_spec_for(&gz);
-        spec.manifest.output_prefix = "s3://example-bucket/backtests/published-run".to_string();
-        spec.manifest.artifact_store.rust_storage_options =
-            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
-        spec.manifest.artifact_store.ssm_parameters =
-            Some(crate::run_manifest::ManifestArtifactStoreSsmParameters {
-                region: "us-east-1".to_string(),
-                access_key_id: "/bolt/artifacts/access-key-id".to_string(),
-                secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
-                session_token: None,
-            });
-        let resolved_options = BTreeMap::from([
-            ("region".to_string(), "us-east-1".to_string()),
-            ("access_key_id".to_string(), "AKIATEST".to_string()),
-            ("secret_access_key".to_string(), "secret-value".to_string()),
-        ]);
-
-        let (manifest, catalog_uri) =
-            published_catalog_manifest(&spec, Some(&resolved_options)).expect("manifest");
-
-        assert_eq!(
-            catalog_uri,
-            "s3://example-bucket/backtests/published-run/nt-catalog"
-        );
-        assert_eq!(manifest.catalog_inputs[0].catalog_fs_protocol, "s3");
-        assert_eq!(
-            manifest.catalog_inputs[0].catalog_path,
-            "example-bucket/backtests/published-run/nt-catalog"
-        );
-        assert!(
-            manifest.catalog_inputs[0]
-                .catalog_fs_storage_options
-                .is_empty()
-        );
-        assert_eq!(
-            manifest.catalog_inputs[0].catalog_fs_rust_storage_options,
-            resolved_options
-        );
-        assert!(
-            !serde_json::to_string(&manifest)
-                .expect("serialize manifest")
-                .contains("/bolt/artifacts"),
-            "published catalog manifest must not carry SSM parameter paths into NT"
+            stray.exists(),
+            "fail-closed verification must not mutate evidence"
         );
     }
 
@@ -6476,8 +8960,8 @@ table_families = ["trades", "bars"]
     fn committed_result_contract_records_catalog_metadata_fixture_claim() {
         let contract: BacktestResultContract =
             serde_json::from_str(COMMITTED_RESULT_CONTRACT).expect("result contract parses");
-        let metadata: ConversionCatalogMetadata =
-            serde_json::from_str(COMMITTED_CATALOG_METADATA).expect("catalog metadata parses");
+        let metadata: serde_json::Value =
+            serde_json::from_str(COMMITTED_CATALOG_METADATA).expect("legacy metadata JSON parses");
         // This committed contract is an operator-attested historical fixture; keep its
         // recorded claim stable instead of recomputing it with current writer semantics.
         assert_eq!(
@@ -6488,13 +8972,11 @@ table_families = ["trades", "bars"]
             contract.artifact_uris.catalog_metadata_uri,
             "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/catalog-metadata.json"
         );
-        assert_eq!(
-            metadata.execution_catalog_uri,
-            "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/nt-catalog"
-        );
+        assert_eq!(metadata["metadata_version"], "catalog-metadata.v1");
+        assert_eq!(metadata["direct_s3_catalog_access_proven"], false);
         assert!(
-            !metadata.direct_s3_catalog_access_proven,
-            "reference artifact must not claim direct S3 execution"
+            serde_json::from_str::<ConversionCatalogMetadata>(COMMITTED_CATALOG_METADATA).is_err(),
+            "current metadata schema must reject legacy direct-access fields"
         );
     }
 

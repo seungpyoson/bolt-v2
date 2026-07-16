@@ -953,6 +953,7 @@ mod tests {
     use crate::backfill_conversion_batch::{
         BACKFILL_CONVERSION_BATCH_PLAN_SCHEMA_VERSION, BackfillConversionBatchSelection,
     };
+    use crate::operator::{DurableCompletionLocator, DurableObjectVersionIdentity};
     use crate::source_universe_batch_execution::{
         SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
         SourceUniverseBatchExecutionFailureRecord, SourceUniverseBatchExecutionRecord,
@@ -1043,6 +1044,17 @@ mod tests {
                 canonical_rows: 0,
                 nt_catalog_rows: 0,
                 catalog_hash: digest.clone(),
+                durable_completion: Some(DurableCompletionLocator {
+                    object: DurableObjectVersionIdentity {
+                        uri: format!(
+                            "s3://test-bucket/backtests/run-{sequence}/durable-completion-manifest.json"
+                        ),
+                        sha256: digest.clone(),
+                        byte_len: 1,
+                        version_id: format!("test-version-{sequence}"),
+                        e_tag: None,
+                    },
+                }),
                 output_dir: PathBuf::from(format!("test-output-{sequence}")),
             })
             .collect();
@@ -1059,6 +1071,7 @@ mod tests {
                     selected_object_sha256: digest.clone(),
                     execution_record_sha256: digest.clone(),
                     selected_object_bytes: 1,
+                    attempt_output: None,
                     failure_stage: "test".to_string(),
                     error: "test failure".to_string(),
                 }

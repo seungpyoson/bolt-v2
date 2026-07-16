@@ -1,33 +1,39 @@
-use futures_util::stream::BoxStream;
+use futures_util::{StreamExt, stream::BoxStream};
 use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
-    Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
+    Attributes, CopyOptions, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
+    ObjectMeta, ObjectStore, ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload,
+    PutResult, Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
 };
 use std::{
     fmt, fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use backtesting_vertical_slice::{
     artifact_store::{
-        ArtifactIndexCommitPlan, ArtifactIndexCommitState, ArtifactIndexEvent,
-        ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow,
+        ArtifactIndexAuditEpoch, ArtifactIndexCommitPlan, ArtifactIndexCommitState,
+        ArtifactIndexEvent, ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow,
         ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
         ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogDispatchConfig,
-        CatalogProjectionBinding, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
-        CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
-        StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
-        persist_catalog_projection_for_source_binding_guarded,
+        CatalogProjectionBinding, CatalogProjectionPublicationReceipt, CreateOnlyArtifactWriter,
+        CreateOnlyProbeTranscript, CreateOnlyWriteDisposition, ResolvedArtifactRoot,
+        S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES, S3ArtifactStoreCredentials,
+        StoredArtifactIndexPointer, hydrate_catalog_projection_from_receipt_guarded,
+        is_terminal_create_indeterminate, persist_catalog_projection_for_source_binding_guarded,
     },
     backfill_execution_plan::BackfillExecutionWorkBudget,
-    conversion_boundary::{CONVERSION_MANIFEST_FILE, ConversionCatalogMetadata},
+    conversion_boundary::{
+        CONVERSION_MANIFEST_FILE, CatalogConsumption, ConversionCatalogMetadata,
+    },
     nt_catalog_capability::{
         NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
         NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofDocument,
@@ -35,12 +41,21 @@ use backtesting_vertical_slice::{
         SYNTHETIC_SOURCE_PROOF_ID,
     },
     operator::{
-        CATALOG_DIR, RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store,
+        CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableRunOutcome, DurableRunRequest,
+        RunArtifacts, RunSpec, VerifiedSourceBindingRegistry, run_from_run_spec,
         run_from_run_spec_with_artifact_store_guarded,
+        run_from_run_spec_with_artifact_store_resume_guarded,
     },
-    operator_work_budget::{OperatorWorkBudget, OperatorWorkBudgetClock, OperatorWorkBudgetGuard},
+    operator_work_budget::{
+        OperatorWorkBudget, OperatorWorkBudgetClock, OperatorWorkBudgetGuard,
+        OperatorWorkBudgetStage,
+    },
     result_contract::BacktestResultContract,
-    run_manifest::{ManifestArtifactStoreSsmParameters, MarketStructureFixture},
+    run_manifest::{
+        CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION, CATALOG_RUN_VIEW_AUTHORITY_FILE,
+        CatalogProjectionManifestDocument, CatalogProjectionManifestObject,
+        ManifestArtifactStoreSsmParameters, MarketStructureFixture,
+    },
 };
 use flate2::{Compression, write::GzEncoder};
 use serde::Deserialize;
@@ -49,6 +64,77 @@ use sha2::{Digest, Sha256};
 const COMMITTED_RUN_SPEC: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
 );
+const CAPABILITY_PROOF_SPEC: &str = r#"
+proof_run_id = "synthetic-capability-proof"
+nt_revision = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+credential_source = "ssm"
+proof_artifact_object_name = "nt-catalog-capability-proof.json"
+expected_storage_options_keys = ["region"]
+synthetic_fixture_coverage = ["binary-option", "perps-spot"]
+synthetic_source_proof_id = "synthetic-fixture"
+provenance = "synthetic"
+
+[synthetic_fixtures.binary_option]
+instrument_id = "RA001BINARY.POLYMARKET"
+raw_symbol = "RA001BINARY"
+asset_class = "ALTERNATIVE"
+currency = "USDC"
+activation_ns = 1700000000000000000
+expiration_ns = 1700086400000000000
+price_increment = "0.001"
+size_increment = "0.01"
+
+[synthetic_fixtures.perps_spot]
+instrument_id = "RA001PERP.BYBIT"
+raw_symbol = "RA001PERP"
+base_currency = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+price_increment = "0.1"
+size_increment = "0.001"
+
+[[synthetic_fixtures.trade_ticks]]
+instrument_id = "RA001BINARY.POLYMARKET"
+price = "0.500"
+size = "1.00"
+aggressor_side = "BUYER"
+trade_id = "ra001-binary-0"
+ts_event = 1700000000000000001
+ts_init = 1700000000000000001
+
+[[synthetic_fixtures.trade_ticks]]
+instrument_id = "RA001PERP.BYBIT"
+price = "50000.0"
+size = "0.010"
+aggressor_side = "SELLER"
+trade_id = "ra001-perps-spot-0"
+ts_event = 1700000000000000002
+ts_init = 1700000000000000002
+
+[ambient_credential_scrub]
+unset_env_vars = [
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_DEFAULT_REGION",
+  "AWS_REGION",
+  "AWS_ENDPOINT",
+  "AWS_ENDPOINT_URL_S3",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AWS_ROLE_ARN",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_PROFILE",
+]
+profile_file_paths_redirected = true
+imds_blocked = true
+
+[ssm_parameter_refs]
+access_key_id = "/bolt-v2/research/catalog/aws-access-key-id"
+secret_access_key = "/bolt-v2/research/catalog/aws-secret-access-key"
+session_token = "/bolt-v2/research/catalog/aws-session-token"
+"#;
 const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
     1,1772323201665,617.2,0.3,buy,0\n\
     2,1772323312219,617.9,0.1456,sell,0\n\
@@ -57,6 +143,26 @@ const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
 struct ObservationExpiryClock {
     observations: AtomicUsize,
     expires_after_observation: usize,
+}
+
+#[derive(Default)]
+struct ManualClock {
+    now_millis: AtomicU64,
+}
+
+impl ManualClock {
+    fn set(&self, now: Duration) {
+        self.now_millis.store(
+            u64::try_from(now.as_millis()).expect("test clock milliseconds fit u64"),
+            Ordering::SeqCst,
+        );
+    }
+}
+
+impl OperatorWorkBudgetClock for ManualClock {
+    fn now(&self) -> Duration {
+        Duration::from_millis(self.now_millis.load(Ordering::SeqCst))
+    }
 }
 
 impl OperatorWorkBudgetClock for ObservationExpiryClock {
@@ -72,6 +178,7 @@ impl OperatorWorkBudgetClock for ObservationExpiryClock {
 fn one_second_guard(clock: Arc<ObservationExpiryClock>) -> OperatorWorkBudgetGuard {
     OperatorWorkBudgetGuard::with_clock(
         OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
+            max_decoded_bytes: u64::MAX,
             max_source_rows: 1,
             max_projected_row_groups: 10,
             max_wall_seconds: 1,
@@ -86,6 +193,13 @@ fn gzip(text: &str) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(text.as_bytes()).expect("gzip write");
     encoder.finish().expect("gzip finish")
+}
+
+fn executed_durable_artifacts(outcome: DurableRunOutcome) -> Box<RunArtifacts> {
+    match outcome {
+        DurableRunOutcome::Executed { artifacts, .. } => artifacts,
+        DurableRunOutcome::Resumed(_) => panic!("test expected a newly executed durable run"),
+    }
 }
 
 async fn assert_store_uri_matches_file(
@@ -119,13 +233,20 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn expected_catalog_projection_manifest_sha256(entries: &[(&str, usize, &str)]) -> String {
-    let mut lines = entries
+fn catalog_physical_manifest(entries: &[(&str, &[u8])]) -> CatalogProjectionManifestDocument {
+    let mut objects = entries
         .iter()
-        .map(|(relative_path, byte_len, sha256)| format!("{relative_path}\t{byte_len}\t{sha256}\n"))
+        .map(|(relative_path, payload)| CatalogProjectionManifestObject {
+            relative_path: (*relative_path).to_string(),
+            byte_len: u64::try_from(payload.len()).expect("catalog test payload length"),
+            sha256: sha256_hex(payload),
+        })
         .collect::<Vec<_>>();
-    lines.sort();
-    sha256_hex(lines.concat().as_bytes())
+    objects.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    CatalogProjectionManifestDocument {
+        schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+        objects,
+    }
 }
 
 fn committed_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
@@ -148,7 +269,11 @@ struct CommittedCapabilityProofFixture {
 }
 
 fn committed_capability_proof_fixture() -> CommittedCapabilityProofFixture {
-    toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec capability proof parses")
+    CommittedCapabilityProofFixture {
+        artifact_store: artifact_config(),
+        nt_catalog_capability_proof: toml::from_str(CAPABILITY_PROOF_SPEC)
+            .expect("dedicated capability proof fixture parses"),
+    }
 }
 
 fn successful_capability_evidence(
@@ -232,12 +357,14 @@ fn synthetic_capability_proof(
 fn artifact_config_toml() -> &'static str {
     r#"
 artifact_root = "s3://bolt-ra-artifacts/prod"
+max_final_object_bytes = 1048576
 catalog_projection_manifest_object = "catalog-projection-manifest.json"
 
 [s3]
 region = "us-east-1"
 conditional_put = "etag"
 copy_if_not_exists = "multipart"
+terminal_commit_timeout_seconds = 60
 
 [create_only_probe]
 prefix = ".writer-probe"
@@ -363,6 +490,39 @@ fn artifact_store_rejects_disabled_s3_conditional_put() {
     assert!(err.to_string().contains("conditional_put"), "{err}");
 }
 
+#[test]
+fn artifact_store_requires_positive_sub_single_put_final_object_cap() {
+    let missing = artifact_config_toml().replace("max_final_object_bytes = 1048576\n", "");
+    let missing_error = toml::from_str::<ArtifactStoreConfig>(&missing)
+        .expect_err("missing final-object byte cap must not parse");
+    assert!(
+        missing_error.to_string().contains("max_final_object_bytes"),
+        "{missing_error}"
+    );
+
+    for invalid_cap in [0, S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES] {
+        let mut config = artifact_config();
+        config.max_final_object_bytes = invalid_cap;
+        let error = config
+            .resolve()
+            .expect_err("invalid final-object byte cap must fail closed");
+        assert!(
+            error.to_string().contains("max_final_object_bytes"),
+            "{error}"
+        );
+    }
+
+    let mut config = artifact_config();
+    config.max_final_object_bytes = S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES - 1;
+    let root = config
+        .resolve()
+        .expect("largest permitted single-PUT cap resolves");
+    assert_eq!(
+        root.max_final_object_bytes(),
+        S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES - 1
+    );
+}
+
 #[derive(Debug)]
 struct NoListObjectStore {
     inner: InMemory,
@@ -451,13 +611,48 @@ impl ObjectStore for NoListObjectStore {
 #[derive(Debug)]
 struct S3PreconditionOnCreateConflictStore {
     inner: InMemory,
+    put_attempts: AtomicUsize,
+    dishonest_get_path: Option<ObjectPath>,
+    dishonest_get_size: Option<u64>,
+    dishonest_get_range: Option<std::ops::Range<u64>>,
 }
 
 impl S3PreconditionOnCreateConflictStore {
     fn new() -> Self {
         Self {
             inner: InMemory::new(),
+            put_attempts: AtomicUsize::new(0),
+            dishonest_get_path: None,
+            dishonest_get_size: None,
+            dishonest_get_range: None,
         }
+    }
+
+    fn with_dishonest_conflict_metadata(path: ObjectPath, reported_size: u64) -> Self {
+        Self {
+            inner: InMemory::new(),
+            put_attempts: AtomicUsize::new(0),
+            dishonest_get_path: Some(path),
+            dishonest_get_size: Some(reported_size),
+            dishonest_get_range: None,
+        }
+    }
+
+    fn with_dishonest_conflict_range(
+        path: ObjectPath,
+        reported_range: std::ops::Range<u64>,
+    ) -> Self {
+        Self {
+            inner: InMemory::new(),
+            put_attempts: AtomicUsize::new(0),
+            dishonest_get_path: Some(path),
+            dishonest_get_size: None,
+            dishonest_get_range: Some(reported_range),
+        }
+    }
+
+    fn put_attempts(&self) -> usize {
+        self.put_attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -465,6 +660,10 @@ impl fmt::Display for S3PreconditionOnCreateConflictStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("S3PreconditionOnCreateConflictStore")
     }
+}
+
+async fn conflict_body_must_not_be_polled() -> ObjectStoreResult<bytes::Bytes> {
+    panic!("conflict verifier polled body after metadata mismatch")
 }
 
 #[async_trait::async_trait]
@@ -475,6 +674,7 @@ impl ObjectStore for S3PreconditionOnCreateConflictStore {
         payload: PutPayload,
         opts: PutOptions,
     ) -> ObjectStoreResult<PutResult> {
+        self.put_attempts.fetch_add(1, Ordering::SeqCst);
         if matches!(opts.mode, PutMode::Create) && self.inner.head(location).await.is_ok() {
             return Err(object_store::Error::Precondition {
                 path: location.to_string(),
@@ -500,7 +700,523 @@ impl ObjectStore for S3PreconditionOnCreateConflictStore {
         location: &ObjectPath,
         options: GetOptions,
     ) -> ObjectStoreResult<GetResult> {
-        self.inner.get_opts(location, options).await
+        let mut result = self.inner.get_opts(location, options).await?;
+        if self.dishonest_get_path.as_ref() == Some(location) {
+            if let Some(reported_size) = self.dishonest_get_size {
+                result.meta.size = reported_size;
+            }
+            if let Some(reported_range) = &self.dishonest_get_range {
+                result.range = reported_range.clone();
+            }
+            let body: BoxStream<'static, ObjectStoreResult<bytes::Bytes>> =
+                futures_util::stream::once(conflict_body_must_not_be_polled()).boxed();
+            result.payload = GetResultPayload::Stream(body);
+        }
+        Ok(result)
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, ObjectStoreResult<ObjectPath>>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectPath>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&ObjectPath>,
+        offset: &ObjectPath,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> ObjectStoreResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjectPath,
+        to: &ObjectPath,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+type CatalogPutHook = Arc<dyn Fn(&ObjectPath, usize) + Send + Sync>;
+type CatalogGetHook = Arc<dyn Fn(&ObjectPath, usize) + Send + Sync>;
+
+#[derive(Clone)]
+struct VersionedCatalogObject {
+    location: ObjectPath,
+    version_id: String,
+    bytes: bytes::Bytes,
+    meta: ObjectMeta,
+}
+
+#[derive(Default)]
+struct VersionedCatalogState {
+    versions: Vec<VersionedCatalogObject>,
+    current: Vec<(ObjectPath, String)>,
+}
+
+#[derive(Clone)]
+enum CurrentMutationAfterHead {
+    Overwrite(bytes::Bytes),
+    Delete,
+}
+
+struct VersionedCatalogStore {
+    inner: InMemory,
+    state: Mutex<VersionedCatalogState>,
+    put_attempts: Mutex<Vec<ObjectPath>>,
+    successful_puts: AtomicUsize,
+    successful_gets: AtomicUsize,
+    omit_version_for: Mutex<Vec<ObjectPath>>,
+    empty_version_for: Mutex<Vec<ObjectPath>>,
+    null_version_for: Mutex<Vec<ObjectPath>>,
+    omit_get_version_for: Mutex<Vec<ObjectPath>>,
+    lost_put_ack_for: Mutex<Vec<ObjectPath>>,
+    pending_put_for: Mutex<Vec<ObjectPath>>,
+    fail_exact_version_get_for: Mutex<Vec<ObjectPath>>,
+    exact_version_get_attempts: Mutex<Vec<(ObjectPath, String, Option<String>)>>,
+    current_mutation_after_head_for: Mutex<Vec<(ObjectPath, CurrentMutationAfterHead)>>,
+    after_successful_put: Option<CatalogPutHook>,
+    after_successful_get: Option<CatalogGetHook>,
+}
+
+impl VersionedCatalogStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemory::new(),
+            state: Mutex::new(VersionedCatalogState::default()),
+            put_attempts: Mutex::new(Vec::new()),
+            successful_puts: AtomicUsize::new(0),
+            successful_gets: AtomicUsize::new(0),
+            omit_version_for: Mutex::new(Vec::new()),
+            empty_version_for: Mutex::new(Vec::new()),
+            null_version_for: Mutex::new(Vec::new()),
+            omit_get_version_for: Mutex::new(Vec::new()),
+            lost_put_ack_for: Mutex::new(Vec::new()),
+            pending_put_for: Mutex::new(Vec::new()),
+            fail_exact_version_get_for: Mutex::new(Vec::new()),
+            exact_version_get_attempts: Mutex::new(Vec::new()),
+            current_mutation_after_head_for: Mutex::new(Vec::new()),
+            after_successful_put: None,
+            after_successful_get: None,
+        }
+    }
+
+    fn with_omitted_version(self, path: ObjectPath) -> Self {
+        self.omit_version_for
+            .lock()
+            .expect("omitted version lock")
+            .push(path);
+        self
+    }
+
+    fn omit_version(&self, path: ObjectPath) {
+        self.omit_get_version_for
+            .lock()
+            .expect("omitted GET version lock")
+            .push(path);
+    }
+
+    fn with_empty_version(self, path: ObjectPath) -> Self {
+        self.empty_version_for
+            .lock()
+            .expect("empty version lock")
+            .push(path);
+        self
+    }
+
+    fn with_null_version(self, path: ObjectPath) -> Self {
+        self.null_version_for
+            .lock()
+            .expect("null version lock")
+            .push(path);
+        self
+    }
+
+    fn with_lost_put_ack(self, path: ObjectPath) -> Self {
+        self.lost_put_ack_for
+            .lock()
+            .expect("lost put acknowledgement lock")
+            .push(path);
+        self
+    }
+
+    fn with_pending_put(self, path: ObjectPath) -> Self {
+        self.pending_put_for
+            .lock()
+            .expect("pending PUT lock")
+            .push(path);
+        self
+    }
+
+    fn with_failed_exact_version_get(self, path: ObjectPath) -> Self {
+        self.fail_exact_version_get_for
+            .lock()
+            .expect("failed exact-version GET lock")
+            .push(path);
+        self
+    }
+
+    fn with_current_overwrite_after_head(self, path: ObjectPath, bytes: Vec<u8>) -> Self {
+        self.current_mutation_after_head_for
+            .lock()
+            .expect("current mutation after HEAD lock")
+            .push((path, CurrentMutationAfterHead::Overwrite(bytes.into())));
+        self
+    }
+
+    fn with_current_delete_after_head(self, path: ObjectPath) -> Self {
+        self.current_mutation_after_head_for
+            .lock()
+            .expect("current mutation after HEAD lock")
+            .push((path, CurrentMutationAfterHead::Delete));
+        self
+    }
+
+    fn with_after_successful_put(mut self, hook: CatalogPutHook) -> Self {
+        self.after_successful_put = Some(hook);
+        self
+    }
+
+    fn with_after_successful_get(mut self, hook: CatalogGetHook) -> Self {
+        self.after_successful_get = Some(hook);
+        self
+    }
+
+    fn put_attempts(&self) -> Vec<ObjectPath> {
+        self.put_attempts.lock().expect("put attempts lock").clone()
+    }
+
+    fn omits_version(&self, path: &ObjectPath) -> bool {
+        self.omit_version_for
+            .lock()
+            .expect("omitted version lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn returns_empty_version(&self, path: &ObjectPath) -> bool {
+        self.empty_version_for
+            .lock()
+            .expect("empty version lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn returns_null_version(&self, path: &ObjectPath) -> bool {
+        self.null_version_for
+            .lock()
+            .expect("null version lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn omits_get_version(&self, path: &ObjectPath) -> bool {
+        self.omit_get_version_for
+            .lock()
+            .expect("omitted GET version lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn loses_put_ack(&self, path: &ObjectPath) -> bool {
+        self.lost_put_ack_for
+            .lock()
+            .expect("lost put acknowledgement lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn keeps_put_pending(&self, path: &ObjectPath) -> bool {
+        self.pending_put_for
+            .lock()
+            .expect("pending PUT lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn fails_exact_version_get(&self, path: &ObjectPath) -> bool {
+        self.fail_exact_version_get_for
+            .lock()
+            .expect("failed exact-version GET lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn exact_version_get_attempts(&self) -> Vec<(ObjectPath, String, Option<String>)> {
+        self.exact_version_get_attempts
+            .lock()
+            .expect("exact version GET attempts lock")
+            .clone()
+    }
+
+    fn recorded_version(&self, path: &ObjectPath) -> Option<(String, Option<String>)> {
+        let state = self.state.lock().expect("catalog version state lock");
+        let version_id = state
+            .current
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .map(|(_, version_id)| version_id)?;
+        state
+            .versions
+            .iter()
+            .find(|object| object.location == *path && object.version_id == *version_id)
+            .map(|object| (object.version_id.clone(), object.meta.e_tag.clone()))
+    }
+
+    fn recorded_object_version(
+        &self,
+        path: &ObjectPath,
+        version_id: &str,
+    ) -> Option<VersionedCatalogObject> {
+        self.state
+            .lock()
+            .expect("catalog version state lock")
+            .versions
+            .iter()
+            .find(|object| object.location == *path && object.version_id == version_id)
+            .cloned()
+    }
+
+    async fn record_current_version(
+        &self,
+        location: &ObjectPath,
+        version_id: String,
+        e_tag: Option<String>,
+    ) -> ObjectStoreResult<()> {
+        let current = self.inner.get(location).await?;
+        let mut meta = current.meta.clone();
+        let bytes = current.bytes().await?;
+        meta.version = Some(version_id.clone());
+        if e_tag.is_some() {
+            meta.e_tag = e_tag;
+        }
+        let mut state = self.state.lock().expect("catalog version state lock");
+        state.versions.push(VersionedCatalogObject {
+            location: location.clone(),
+            version_id: version_id.clone(),
+            bytes,
+            meta,
+        });
+        if let Some((_, current_version)) = state
+            .current
+            .iter_mut()
+            .find(|(candidate, _)| candidate == location)
+        {
+            *current_version = version_id;
+        } else {
+            state.current.push((location.clone(), version_id));
+        }
+        Ok(())
+    }
+
+    fn take_current_mutation_after_head(
+        &self,
+        location: &ObjectPath,
+    ) -> Option<CurrentMutationAfterHead> {
+        let mut mutations = self
+            .current_mutation_after_head_for
+            .lock()
+            .expect("current mutation after HEAD lock");
+        let index = mutations
+            .iter()
+            .position(|(candidate, _)| candidate == location)?;
+        Some(mutations.remove(index).1)
+    }
+
+    async fn apply_current_mutation_after_head(
+        &self,
+        location: &ObjectPath,
+        mutation: CurrentMutationAfterHead,
+    ) -> ObjectStoreResult<()> {
+        match mutation {
+            CurrentMutationAfterHead::Overwrite(bytes) => {
+                let result = self
+                    .inner
+                    .put_opts(location, bytes.into(), PutOptions::default())
+                    .await?;
+                let sequence = self.successful_puts.fetch_add(1, Ordering::SeqCst) + 1;
+                self.record_current_version(
+                    location,
+                    format!("catalog-version-{sequence}"),
+                    result.e_tag,
+                )
+                .await
+            }
+            CurrentMutationAfterHead::Delete => {
+                self.inner.delete(location).await?;
+                self.state
+                    .lock()
+                    .expect("catalog version state lock")
+                    .current
+                    .retain(|(candidate, _)| candidate != location);
+                Ok(())
+            }
+        }
+    }
+}
+
+impl fmt::Debug for VersionedCatalogStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VersionedCatalogStore")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for VersionedCatalogStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("VersionedCatalogStore")
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for VersionedCatalogStore {
+    async fn put_opts(
+        &self,
+        location: &ObjectPath,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
+        self.put_attempts
+            .lock()
+            .expect("put attempts lock")
+            .push(location.clone());
+        let mut result = self.inner.put_opts(location, payload, opts).await?;
+        let sequence = self.successful_puts.fetch_add(1, Ordering::SeqCst) + 1;
+        let version_id = format!("catalog-version-{sequence}");
+        let e_tag = result.e_tag.clone();
+        self.record_current_version(location, version_id.clone(), e_tag)
+            .await?;
+        if self.returns_null_version(location) {
+            result.version = Some("null".to_string());
+        } else if self.returns_empty_version(location) {
+            result.version = Some(String::new());
+        } else if !self.omits_version(location) {
+            result.version = Some(version_id);
+        }
+        if let Some(hook) = &self.after_successful_put {
+            hook(location, sequence);
+        }
+        if self.loses_put_ack(location) {
+            return Err(object_store::Error::Generic {
+                store: "VersionedCatalogStore",
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "synthetic lost PutObject acknowledgement",
+                )),
+            });
+        }
+        if self.keeps_put_pending(location) {
+            return std::future::pending::<ObjectStoreResult<PutResult>>().await;
+        }
+        Ok(result)
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjectPath,
+        opts: PutMultipartOptions,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjectPath,
+        options: GetOptions,
+    ) -> ObjectStoreResult<GetResult> {
+        if let Some(requested_version) = options.version.as_ref() {
+            self.exact_version_get_attempts
+                .lock()
+                .expect("exact version GET attempts lock")
+                .push((
+                    location.clone(),
+                    requested_version.clone(),
+                    options.if_match.clone(),
+                ));
+            if self.fails_exact_version_get(location) {
+                return Err(object_store::Error::Generic {
+                    store: "VersionedCatalogStore",
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionAborted,
+                        "synthetic exact-version GET failure",
+                    )),
+                });
+            }
+            let Some(mut object) = self.recorded_object_version(location, requested_version) else {
+                return Err(object_store::Error::NotFound {
+                    path: location.to_string(),
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "requested object version does not exist",
+                    )),
+                });
+            };
+            if let Some(if_match) = options.if_match.as_ref()
+                && object.meta.e_tag.as_ref() != Some(if_match)
+            {
+                return Err(object_store::Error::Precondition {
+                    path: location.to_string(),
+                    source: Box::new(std::io::Error::other(
+                        "requested exact-version ETag does not match",
+                    )),
+                });
+            }
+            if self.omits_get_version(location) {
+                object.meta.version = None;
+            }
+            let range = 0..object.meta.size;
+            let payload =
+                futures_util::stream::once(
+                    async move { Ok::<_, object_store::Error>(object.bytes) },
+                )
+                .boxed();
+            let result = GetResult {
+                payload: GetResultPayload::Stream(payload),
+                meta: object.meta,
+                range,
+                attributes: Attributes::default(),
+            };
+            let sequence = self.successful_gets.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(hook) = &self.after_successful_get {
+                hook(location, sequence);
+            }
+            return Ok(result);
+        }
+
+        let is_head = options.head;
+        let mut result = self.inner.get_opts(location, options).await?;
+        if let Some((version_id, e_tag)) = self.recorded_version(location) {
+            result.meta.version = (!self.omits_get_version(location)).then_some(version_id);
+            if e_tag.is_some() {
+                result.meta.e_tag = e_tag;
+            }
+        }
+        if is_head && let Some(mutation) = self.take_current_mutation_after_head(location) {
+            self.apply_current_mutation_after_head(location, mutation)
+                .await?;
+        }
+        let sequence = self.successful_gets.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(hook) = &self.after_successful_get {
+            hook(location, sequence);
+        }
+        Ok(result)
     }
 
     fn delete_stream(
@@ -588,26 +1304,68 @@ fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {
 }
 
 #[tokio::test]
-async fn create_only_idempotent_replay_accepts_s3_precondition_for_same_payload() {
-    let store = S3PreconditionOnCreateConflictStore::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
-    let path = ObjectPath::from("artifact-index/v1/events/kind=backtests/event=event-001.json");
-    let payload = br#"{"event_id":"event-001"}"#.to_vec();
+async fn put_conflict_rejects_dishonest_existing_size_before_polling_body() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let probe_id = "dishonest-create-conflict-size";
+    let path = root
+        .object_path_for_uri(&root.create_only_probe_uri(probe_id))
+        .expect("probe path under artifact root");
+    let reported_size = u64::try_from(probe_id.len()).expect("payload size") + 1;
+    let store =
+        S3PreconditionOnCreateConflictStore::with_dishonest_conflict_metadata(path, reported_size);
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
 
-    let (_version, disposition) = writer
-        .put_create_idempotent_with_disposition(&path, payload.clone())
+    let error = writer
+        .probe_create_only_guarded(&root, probe_id, &OperatorWorkBudgetGuard::unbounded())
         .await
-        .expect("first create succeeds");
-    assert_eq!(disposition, CreateOnlyWriteDisposition::Created);
+        .expect_err("dishonest conflict metadata must fail closed");
 
-    let (_version, disposition) = writer
-        .put_create_idempotent_with_disposition(&path, payload)
+    assert!(error.to_string().contains("Content-Length"), "{error:#}");
+    assert_eq!(store.put_attempts(), 2);
+}
+
+#[tokio::test]
+async fn put_conflict_rejects_dishonest_existing_range_before_polling_body() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let probe_id = "dishonest-create-conflict-range";
+    let path = root
+        .object_path_for_uri(&root.create_only_probe_uri(probe_id))
+        .expect("probe path under artifact root");
+    let payload_size = u64::try_from(probe_id.len()).expect("payload size");
+    let store =
+        S3PreconditionOnCreateConflictStore::with_dishonest_conflict_range(path, 1..payload_size);
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
+
+    let error = writer
+        .probe_create_only_guarded(&root, probe_id, &OperatorWorkBudgetGuard::unbounded())
         .await
-        .expect("S3 precondition conflict with same payload is idempotent");
-    assert_eq!(
-        disposition,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+        .expect_err("dishonest conflict range must fail closed");
+
+    assert!(error.to_string().contains("response range"), "{error:#}");
+    assert_eq!(store.put_attempts(), 2);
+}
+
+#[tokio::test]
+async fn copy_conflict_rejects_dishonest_existing_size_before_polling_body() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let probe_id = "dishonest-copy-conflict";
+    let destination_uri = root.create_only_probe_copy_dest_uri(probe_id);
+    let destination_path = root
+        .object_path_for_uri(&destination_uri)
+        .expect("copy destination under artifact root");
+    let reported_size = u64::try_from(probe_id.len()).expect("probe id size") + 1;
+    let store = S3PreconditionOnCreateConflictStore::with_dishonest_conflict_metadata(
+        destination_path,
+        reported_size,
     );
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
+
+    let error = writer
+        .probe_create_only_guarded(&root, probe_id, &OperatorWorkBudgetGuard::unbounded())
+        .await
+        .expect_err("dishonest copy-conflict metadata must fail closed");
+
+    assert!(error.to_string().contains("Content-Length"), "{error:#}");
 }
 
 #[tokio::test]
@@ -734,11 +1492,19 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
             .is_err(),
         "capability proof must reject missing duplicate copy-if-not-exists evidence"
     );
-    let store = InMemory::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
+    let persisted_path = committed_root
+        .object_path_for_uri(&plan.proof_artifact_uri)
+        .expect("proof artifact uri is under artifact root");
+    let store = VersionedCatalogStore::new().with_lost_put_ack(persisted_path.clone());
+    let writer = CreateOnlyArtifactWriter::new(&store, &committed_root);
     let persisted = fixture
         .nt_catalog_capability_proof
-        .persist_completed_proof_from_evidence(&fixture.artifact_store, &writer, &evidence)
+        .persist_completed_proof_from_evidence_guarded(
+            &fixture.artifact_store,
+            &writer,
+            &evidence,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
         .await
         .expect("proof artifact persists create-only");
     assert!(persisted.proof_artifact_uri.ends_with(
@@ -747,15 +1513,26 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     assert_eq!(persisted.proof_artifact_sha256.len(), 64);
     assert_eq!(
         persisted.proof_artifact_create_only_write,
-        CreateOnlyWriteDisposition::Created
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
     );
+    let (persisted_version_id, persisted_e_tag) = store
+        .recorded_version(&persisted_path)
+        .expect("capability proof exact version");
+    assert_eq!(persisted.proof_artifact_version_id, persisted_version_id);
+    assert_eq!(persisted.proof_artifact_e_tag, persisted_e_tag);
     persisted
         .proof
         .direct_s3_catalog_access_proven(&committed_root)
         .expect("persisted proof validates");
-    let persisted_path = committed_root
-        .object_path_for_uri(&persisted.proof_artifact_uri)
-        .expect("proof artifact uri is under artifact root");
+    assert_eq!(
+        store
+            .exact_version_get_attempts()
+            .iter()
+            .filter(|(path, _, _)| path == &persisted_path)
+            .count(),
+        1,
+        "capability proof lost-ack recovery must use one exact-version GET"
+    );
     let persisted_bytes = store
         .get(&persisted_path)
         .await
@@ -778,7 +1555,12 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         .expect("persisted proof document validates");
     let idempotent_persisted = fixture
         .nt_catalog_capability_proof
-        .persist_completed_proof_from_evidence(&fixture.artifact_store, &writer, &evidence)
+        .persist_completed_proof_from_evidence_guarded(
+            &fixture.artifact_store,
+            &writer,
+            &evidence,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
         .await
         .expect("same proof artifact bytes are idempotent");
     assert_eq!(
@@ -793,10 +1575,11 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     changed_valid_evidence.read_back.query_files_result_count += 1;
     let err = fixture
         .nt_catalog_capability_proof
-        .persist_completed_proof_from_evidence(
+        .persist_completed_proof_from_evidence_guarded(
             &fixture.artifact_store,
             &writer,
             &changed_valid_evidence,
+            &OperatorWorkBudgetGuard::unbounded(),
         )
         .await
         .expect_err("changed proof artifact bytes must be rejected at the same URI");
@@ -852,6 +1635,132 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
 }
 
 #[tokio::test]
+async fn capability_proof_rejects_writer_bound_to_a_different_artifact_root_before_put() {
+    let fixture = committed_capability_proof_fixture();
+    let writer_root = fixture.artifact_store.resolve().expect("writer root");
+    let mut requested_store = fixture.artifact_store.clone();
+    requested_store.artifact_root = "s3://different-artifact-bucket/prod".to_string();
+    let requested_root = requested_store.resolve().expect("requested root");
+    let evidence =
+        successful_capability_evidence(&requested_root, &fixture.nt_catalog_capability_proof);
+    let store = VersionedCatalogStore::new();
+    let writer = CreateOnlyArtifactWriter::new(&store, &writer_root);
+
+    let error = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence_guarded(
+            &requested_store,
+            &writer,
+            &evidence,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .await
+        .expect_err("mismatched writer root must fail before terminal publication");
+
+    assert!(
+        error
+            .to_string()
+            .contains("not bound to the supplied artifact root"),
+        "{error:#}"
+    );
+    assert!(
+        store.put_attempts().is_empty(),
+        "writer/root mismatch reached the object store"
+    );
+}
+
+#[tokio::test]
+async fn capability_proof_serialization_budget_rejects_before_terminal_put() {
+    let fixture = committed_capability_proof_fixture();
+    let root = fixture.artifact_store.resolve().expect("artifact root");
+    let evidence = successful_capability_evidence(&root, &fixture.nt_catalog_capability_proof);
+    let store = VersionedCatalogStore::new();
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
+    let guard =
+        OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
+            max_decoded_bytes: 1,
+            max_source_rows: 1,
+            max_projected_row_groups: 1,
+            max_wall_seconds: 60,
+            require_object_selection_metadata: false,
+        }))
+        .expect("memory-capped guard");
+
+    let error = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence_guarded(
+            &fixture.artifact_store,
+            &writer,
+            &evidence,
+            &guard,
+        )
+        .await
+        .expect_err("proof serialization must honor the work-budget cap");
+
+    assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
+    assert!(store.put_attempts().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn committed_terminal_create_timeout_is_indeterminate_and_never_retries_put() {
+    let fixture = committed_capability_proof_fixture();
+    let root = fixture.artifact_store.resolve().expect("artifact root");
+    let evidence = successful_capability_evidence(&root, &fixture.nt_catalog_capability_proof);
+    let plan = fixture
+        .nt_catalog_capability_proof
+        .proof_plan(&fixture.artifact_store)
+        .expect("proof plan");
+    let proof_path = root
+        .object_path_for_uri(&plan.proof_artifact_uri)
+        .expect("proof path");
+    let store = VersionedCatalogStore::new().with_pending_put(proof_path.clone());
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
+
+    let error = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence_guarded(
+            &fixture.artifact_store,
+            &writer,
+            &evidence,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .await
+        .expect_err("pending terminal PUT must hit the configured hard tail bound");
+
+    assert!(is_terminal_create_indeterminate(&error), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("effective terminal timeout"),
+        "{error:#}"
+    );
+    assert_eq!(
+        store
+            .put_attempts()
+            .iter()
+            .filter(|path| *path == &proof_path)
+            .count(),
+        1,
+        "timed-out terminal creates must never retry automatically"
+    );
+    let committed_version = store
+        .recorded_version(&proof_path)
+        .expect("the pending acknowledgement follows a committed version");
+    let committed_bytes = store
+        .get_opts(
+            &proof_path,
+            GetOptions {
+                version: Some(committed_version.0),
+                ..GetOptions::default()
+            },
+        )
+        .await
+        .expect("the committed exact version remains readable")
+        .bytes()
+        .await
+        .expect("committed proof bytes");
+    assert!(!committed_bytes.is_empty());
+}
+
+#[tokio::test]
 async fn capability_proof_expiry_after_preparation_writes_no_terminal_proof() {
     let fixture = committed_capability_proof_fixture();
     let root = fixture.artifact_store.resolve().expect("artifact root");
@@ -864,9 +1773,11 @@ async fn capability_proof_expiry_after_preparation_writes_no_terminal_proof() {
         .object_path_for_uri(&plan.proof_artifact_uri)
         .expect("proof path");
     let store = InMemory::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
     let guard = one_second_guard(Arc::new(ObservationExpiryClock {
         observations: AtomicUsize::new(0),
+        // Construction and preparation precheck succeed; the unconditional
+        // preparation postcheck expires before terminal authorization.
         expires_after_observation: 2,
     }));
 
@@ -890,12 +1801,23 @@ async fn capability_proof_commit_is_not_invalidated_by_a_later_clock_observation
     let fixture = committed_capability_proof_fixture();
     let root = fixture.artifact_store.resolve().expect("artifact root");
     let evidence = successful_capability_evidence(&root, &fixture.nt_catalog_capability_proof);
-    let store = InMemory::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
-    let guard = one_second_guard(Arc::new(ObservationExpiryClock {
-        observations: AtomicUsize::new(0),
-        expires_after_observation: 3,
-    }));
+    let clock = Arc::new(ManualClock::default());
+    let hook_clock = clock.clone();
+    let store = VersionedCatalogStore::new().with_after_successful_put(Arc::new(
+        move |_path, _sequence| hook_clock.set(Duration::from_secs(1)),
+    ));
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
+    let guard = OperatorWorkBudgetGuard::with_clock(
+        OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
+            max_decoded_bytes: u64::MAX,
+            max_source_rows: 1,
+            max_projected_row_groups: 10,
+            max_wall_seconds: 1,
+            require_object_selection_metadata: false,
+        }),
+        clock,
+    )
+    .expect("guard");
 
     fixture
         .nt_catalog_capability_proof
@@ -917,6 +1839,22 @@ fn rejects_local_or_non_s3_canonical_artifact_roots() {
 
     config.artifact_root = "file:///tmp/not-canonical".to_string();
     assert!(config.resolve().is_err());
+}
+
+#[test]
+fn rejects_zero_terminal_commit_timeout() {
+    let mut config = artifact_config();
+    config.s3.terminal_commit_timeout_seconds = 0;
+
+    let error = config
+        .resolve()
+        .expect_err("terminal commit timeout must be positive");
+    assert!(
+        error
+            .to_string()
+            .contains("terminal_commit_timeout_seconds must be positive"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -1046,10 +1984,14 @@ fn dispatches_source_bindings_to_catalog_projection_roots_without_venue_paths() 
 async fn create_only_probe_requires_duplicate_create_rejection() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
 
     let transcript = writer
-        .probe_create_only(&root, "probe-run-123")
+        .probe_create_only_guarded(
+            &root,
+            "probe-run-123",
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
         .await
         .expect("create-only probe");
 
@@ -1097,7 +2039,7 @@ async fn create_only_probe_requires_duplicate_create_rejection() {
 async fn create_only_probe_expiry_after_setup_writes_no_probe_object() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
     let guard = one_second_guard(Arc::new(ObservationExpiryClock {
         observations: AtomicUsize::new(0),
         expires_after_observation: 2,
@@ -1120,14 +2062,22 @@ async fn create_only_probe_expiry_after_setup_writes_no_probe_object() {
 async fn create_only_probe_replays_existing_same_payload_sentinels() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
+    let writer = CreateOnlyArtifactWriter::new(&store, &root);
 
     let first = writer
-        .probe_create_only(&root, "probe-run-123")
+        .probe_create_only_guarded(
+            &root,
+            "probe-run-123",
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
         .await
         .expect("first create-only probe");
     let replay = writer
-        .probe_create_only(&root, "probe-run-123")
+        .probe_create_only_guarded(
+            &root,
+            "probe-run-123",
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
         .await
         .expect("same-payload probe replay must be idempotent");
 
@@ -1140,331 +2090,1484 @@ async fn create_only_probe_replays_existing_same_payload_sentinels() {
     assert!(replay.duplicate_copy_rejected);
 }
 
-#[tokio::test]
-async fn persists_catalog_projection_directory_with_create_only_dispatch() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = CatalogDispatchConfig {
+fn catalog_dispatch(projection_id: &str) -> CatalogDispatchConfig {
+    CatalogDispatchConfig {
         bindings: vec![CatalogProjectionBinding {
             source_binding: "binary-official".to_string(),
             market_structure_fixture: MarketStructureFixture::BinaryOption,
-            catalog_projection_id: "projection-run-123".to_string(),
+            catalog_projection_id: projection_id.to_string(),
         }],
-    };
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    let nested_dir = temp
-        .path()
-        .join("data/trade_tick/instrument=BTC-USD.BINARY");
-    fs::create_dir_all(&nested_dir).expect("catalog directory");
-    fs::write(temp.path().join("metadata.json"), br#"{"schema":"nt"}"#).expect("metadata");
-    fs::write(nested_dir.join("part-000.parquet"), b"trade-ticks").expect("catalog data");
+    }
+}
 
-    let store = InMemory::new();
-    let persisted = persist_catalog_projection_for_source_binding(
+fn write_catalog_file(root: &Path, relative_path: &str, payload: &[u8]) {
+    let path = root.join(relative_path);
+    fs::create_dir_all(path.parent().expect("catalog object parent"))
+        .expect("create catalog object parent");
+    fs::write(path, payload).expect("write catalog object");
+}
+
+fn create_private_hydration_root(parent: &Path, name: &str) -> PathBuf {
+    let root = parent.join(name);
+    fs::create_dir(&root).expect("create private hydration root");
+    #[cfg(unix)]
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("set private hydration root mode");
+    root
+}
+
+#[tokio::test]
+async fn catalog_publication_receipt_crosslinks_shared_manifest_and_versions_and_is_last() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-run-123");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let trade_path = "data/trade_tick/instrument=BTC-USD.BINARY/part-000.parquet";
+    let metadata_path = "metadata/instrument=BTC-USD.BINARY/part-000.parquet";
+    write_catalog_file(temp.path(), trade_path, b"trade-ticks");
+    write_catalog_file(temp.path(), metadata_path, b"instrument-metadata");
+    let physical_manifest = catalog_physical_manifest(&[
+        (trade_path, b"trade-ticks"),
+        (metadata_path, b"instrument-metadata"),
+    ]);
+    let store = VersionedCatalogStore::new();
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
         &dispatch,
         "binary-official",
         MarketStructureFixture::BinaryOption,
         temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("catalog persisted");
+    .expect("catalog publication");
 
     assert_eq!(
         persisted.catalog_root_uri,
         "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=projection-run-123/"
     );
-    assert_eq!(persisted.binding.source_binding, "binary-official");
     assert_eq!(
-        persisted.binding.market_structure_fixture,
-        MarketStructureFixture::BinaryOption
-    );
-    assert_eq!(
-        persisted.binding.catalog_projection_id,
-        "projection-run-123"
-    );
-    assert_eq!(persisted.objects.len(), 2);
-    let metadata_sha256 = sha256_hex(br#"{"schema":"nt"}"#);
-    let catalog_sha256 = sha256_hex(b"trade-ticks");
-    assert_eq!(
-        persisted.manifest_uri,
+        persisted.receipt_uri,
         "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=projection-run-123/catalog-projection-manifest.json"
     );
+    assert_eq!(persisted.objects.len(), physical_manifest.objects.len());
     assert_eq!(
-        persisted.manifest_create_only_write,
-        CreateOnlyWriteDisposition::Created
-    );
-    assert_eq!(
-        persisted.manifest_sha256,
-        expected_catalog_projection_manifest_sha256(&[
-            (
-                "data/trade_tick/instrument=BTC-USD.BINARY/part-000.parquet",
-                b"trade-ticks".len(),
-                &catalog_sha256
-            ),
-            (
-                "metadata.json",
-                br#"{"schema":"nt"}"#.len(),
-                &metadata_sha256
-            ),
-        ]),
-        "catalog projection manifest hash must be derived from sorted relative path, size, and object hash"
+        persisted
+            .objects
+            .iter()
+            .map(|object| object.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        physical_manifest
+            .objects
+            .iter()
+            .map(|object| object.relative_path.as_str())
+            .collect::<Vec<_>>()
     );
     assert!(
         persisted
             .objects
             .iter()
-            .all(|object| object.create_only_write == CreateOnlyWriteDisposition::Created),
-        "first catalog projection persist must record create-only object creation"
+            .all(|object| !object.version_id.is_empty()
+                && object.create_only_write == CreateOnlyWriteDisposition::Created)
     );
-    let manifest_object_path = root
-        .object_path_for_uri(&persisted.manifest_uri)
-        .expect("manifest under artifact root");
-    let manifest_bytes = store
-        .get(&manifest_object_path)
-        .await
-        .expect("projection manifest object")
-        .bytes()
-        .await
-        .expect("projection manifest bytes");
-    let manifest_json: serde_json::Value =
-        serde_json::from_slice(&manifest_bytes).expect("projection manifest json");
+    let expected_manifest_sha256 = physical_manifest
+        .manifest_sha256_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::Publish,
+        )
+        .expect("shared physical manifest hash");
+    assert_eq!(persisted.physical_manifest_sha256, expected_manifest_sha256);
+    assert!(!persisted.receipt_version_id.is_empty());
     assert_eq!(
-        manifest_json["schema_version"].as_str(),
-        Some("catalog-projection-manifest-v1")
-    );
-    assert_eq!(
-        manifest_json["manifest_sha256"].as_str(),
-        Some(persisted.manifest_sha256.as_str())
-    );
-    assert_eq!(
-        manifest_json["binding"]["source_binding"].as_str(),
-        Some(persisted.binding.source_binding.as_str())
-    );
-    let manifest_objects = manifest_json["objects"]
-        .as_array()
-        .expect("projection manifest objects array");
-    assert!(
-        manifest_objects
-            .iter()
-            .all(|object| object.get("create_only_write").is_none()),
-        "projection manifest bytes must not include per-run create-only dispositions"
-    );
-    assert!(
-        persisted
-            .objects
-            .iter()
-            .any(|object| object.uri.ends_with("/metadata.json"))
-    );
-    let catalog_object = persisted
-        .objects
-        .iter()
-        .find(|object| object.uri.ends_with("/part-000.parquet"))
-        .expect("catalog parquet object");
-    assert_eq!(
-        catalog_object.relative_path,
-        "data/trade_tick/instrument=BTC-USD.BINARY/part-000.parquet"
-    );
-    let object_path = root
-        .object_path_for_uri(&catalog_object.uri)
-        .expect("uri under artifact root");
-    let stored = store
-        .get(&object_path)
-        .await
-        .expect("created catalog object")
-        .bytes()
-        .await
-        .expect("catalog object bytes");
-    assert_eq!(stored.as_ref(), b"trade-ticks");
-    assert_eq!(catalog_object.byte_len, b"trade-ticks".len());
-    assert_eq!(
-        catalog_object.create_only_write,
+        persisted.receipt_create_only_write,
         CreateOnlyWriteDisposition::Created
     );
+
+    let receipt_path = root
+        .object_path_for_uri(&persisted.receipt_uri)
+        .expect("receipt path");
+    let receipt_bytes = store
+        .get(&receipt_path)
+        .await
+        .expect("receipt object")
+        .bytes()
+        .await
+        .expect("receipt bytes");
+    assert_eq!(persisted.receipt_sha256, sha256_hex(&receipt_bytes));
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&receipt_bytes).expect("publication receipt JSON");
+    assert_eq!(
+        receipt["schema_version"].as_str(),
+        Some("catalog-projection-publication-receipt-v1")
+    );
+    assert_eq!(
+        receipt["physical_manifest_sha256"].as_str(),
+        Some(persisted.physical_manifest_sha256.as_str())
+    );
+    assert_eq!(
+        receipt["physical_manifest"],
+        serde_json::to_value(&physical_manifest).expect("physical manifest value")
+    );
+    assert_eq!(
+        receipt["binding"]["source_binding"].as_str(),
+        Some("binary-official")
+    );
+    let receipt_objects = receipt["objects"].as_array().expect("receipt objects");
+    assert_eq!(receipt_objects.len(), persisted.objects.len());
+    for (receipt_object, persisted_object) in receipt_objects.iter().zip(&persisted.objects) {
+        assert_eq!(
+            receipt_object["relative_path"].as_str(),
+            Some(persisted_object.relative_path.as_str())
+        );
+        assert_eq!(
+            receipt_object["uri"].as_str(),
+            Some(persisted_object.uri.as_str())
+        );
+        assert_eq!(
+            receipt_object["version_id"].as_str(),
+            Some(persisted_object.version_id.as_str())
+        );
+        assert_eq!(
+            receipt_object["sha256"].as_str(),
+            Some(persisted_object.sha256.as_str())
+        );
+        assert_eq!(
+            receipt_object["byte_len"].as_u64(),
+            Some(persisted_object.byte_len)
+        );
+        // A conditional create can succeed after an S3 delete marker. The
+        // committed exact version/hash/length tuple, not create-only status,
+        // is therefore the immutable read authority.
+        assert!(receipt_object.get("create_only_write").is_none());
+    }
+    assert_eq!(store.put_attempts().last(), Some(&receipt_path));
+
+    let restarted_receipt = CatalogProjectionPublicationReceipt::parse_and_validate_guarded(
+        &receipt_bytes,
+        &persisted.receipt_sha256,
+        &OperatorWorkBudgetGuard::unbounded(),
+        OperatorWorkBudgetStage::Publish,
+    )
+    .expect("receipt must be loadable and authoritative after process restart");
+    assert_eq!(restarted_receipt.physical_manifest, physical_manifest);
+    assert_eq!(
+        restarted_receipt.objects[0].version_id,
+        persisted.objects[0].version_id
+    );
+
+    let authority_uri = format!(
+        "{}{}",
+        persisted.catalog_root_uri, CATALOG_RUN_VIEW_AUTHORITY_FILE
+    );
+    let authority_path = root
+        .object_path_for_uri(&authority_uri)
+        .expect("authority remote path");
+    assert!(store.head(&authority_path).await.is_err());
+    assert!(!temp.path().join(CATALOG_RUN_VIEW_AUTHORITY_FILE).exists());
 }
 
 #[tokio::test]
-async fn catalog_projection_expiry_after_local_hashing_writes_no_object() {
+async fn catalog_publication_idempotence_preserves_existing_object_and_receipt_versions() {
     let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = CatalogDispatchConfig {
-        bindings: vec![CatalogProjectionBinding {
-            source_binding: "binary-official".to_string(),
-            market_structure_fixture: MarketStructureFixture::BinaryOption,
-            catalog_projection_id: "projection-expiry".to_string(),
-        }],
-    };
+    let dispatch = catalog_dispatch("projection-idempotent");
     let temp = tempfile::TempDir::new().expect("temp dir");
-    fs::write(temp.path().join("metadata.json"), br#"{"schema":"nt"}"#).expect("metadata");
-    let store = InMemory::new();
-    let guard = one_second_guard(Arc::new(ObservationExpiryClock {
-        observations: AtomicUsize::new(0),
-        expires_after_observation: 2,
-    }));
-    let object_uri = format!(
-        "{}metadata.json",
-        root.nt_catalog_projection_root("projection-expiry")
-    );
-    let object_path = root
-        .object_path_for_uri(&object_uri)
-        .expect("catalog object path");
+    write_catalog_file(temp.path(), "part-000.parquet", b"same-catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"same-catalog")]);
+    let store = VersionedCatalogStore::new();
 
-    let error = persist_catalog_projection_for_source_binding_guarded(
+    let first = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
         &dispatch,
         "binary-official",
         MarketStructureFixture::BinaryOption,
         temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("first publication");
+    let replay = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("idempotent publication replay");
+
+    assert_eq!(replay.receipt_sha256, first.receipt_sha256);
+    assert_eq!(replay.receipt_version_id, first.receipt_version_id);
+    assert_eq!(replay.objects[0].version_id, first.objects[0].version_id);
+    assert_eq!(
+        replay.receipt_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    assert_eq!(
+        replay.objects[0].create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+}
+
+#[tokio::test]
+async fn catalog_publication_recovers_lost_receipt_ack_via_exact_version() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-lost-receipt-ack");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"same-catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"same-catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-lost-receipt-ack"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new().with_lost_put_ack(receipt_path.clone());
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("lost receipt acknowledgement is reconciled exactly");
+
+    let (recorded_version, recorded_e_tag) = store
+        .recorded_version(&receipt_path)
+        .expect("receipt version was committed before acknowledgement was lost");
+    assert_eq!(persisted.receipt_version_id, recorded_version);
+    assert_eq!(persisted.receipt_e_tag, recorded_e_tag);
+    assert_eq!(
+        persisted.receipt_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    assert_eq!(
+        store
+            .put_attempts()
+            .iter()
+            .filter(|path| *path == &receipt_path)
+            .count(),
+        1,
+        "reconciliation must never retry the terminal create"
+    );
+    assert_eq!(
+        store
+            .exact_version_get_attempts()
+            .into_iter()
+            .filter(|(path, _, _)| path == &receipt_path)
+            .collect::<Vec<_>>(),
+        vec![(receipt_path, recorded_version, recorded_e_tag)],
+        "lost acknowledgement recovery must bind the current HEAD to one exact-version GET"
+    );
+}
+
+#[tokio::test]
+async fn lost_ack_reconciliation_reads_historical_version_after_current_overwrite() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-head-overwrite-race");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-head-overwrite-race"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new()
+        .with_lost_put_ack(receipt_path.clone())
+        .with_current_overwrite_after_head(receipt_path.clone(), b"new-current".to_vec());
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("exact-version reconciliation survives a current overwrite after HEAD");
+
+    let historical = store
+        .get_opts(
+            &receipt_path,
+            GetOptions {
+                version: Some(persisted.receipt_version_id.clone()),
+                ..GetOptions::default()
+            },
+        )
+        .await
+        .expect("historical receipt version")
+        .bytes()
+        .await
+        .expect("historical receipt bytes");
+    assert_eq!(sha256_hex(&historical), persisted.receipt_sha256);
+    let current = store
+        .get(&receipt_path)
+        .await
+        .expect("overwritten current receipt")
+        .bytes()
+        .await
+        .expect("overwritten current bytes");
+    assert_eq!(current.as_ref(), b"new-current");
+}
+
+#[tokio::test]
+async fn lost_ack_reconciliation_reads_historical_version_after_current_delete() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-head-delete-race");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-head-delete-race"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new()
+        .with_lost_put_ack(receipt_path.clone())
+        .with_current_delete_after_head(receipt_path.clone());
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("exact-version reconciliation survives current deletion after HEAD");
+
+    assert!(store.head(&receipt_path).await.is_err());
+    let historical = store
+        .get_opts(
+            &receipt_path,
+            GetOptions {
+                version: Some(persisted.receipt_version_id),
+                ..GetOptions::default()
+            },
+        )
+        .await
+        .expect("deleted current retains historical receipt version")
+        .bytes()
+        .await
+        .expect("historical receipt bytes");
+    assert_eq!(sha256_hex(&historical), persisted.receipt_sha256);
+}
+
+#[tokio::test]
+async fn catalog_publication_surfaces_typed_indeterminate_after_lost_ack_and_failed_confirmation() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-indeterminate-receipt");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-indeterminate-receipt"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new()
+        .with_lost_put_ack(receipt_path.clone())
+        .with_failed_exact_version_get(receipt_path.clone());
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("unconfirmed lost acknowledgement must be typed indeterminate");
+
+    assert!(is_terminal_create_indeterminate(&error), "{error:#}");
+    assert_eq!(
+        store
+            .put_attempts()
+            .iter()
+            .filter(|path| *path == &receipt_path)
+            .count(),
+        1,
+        "an indeterminate terminal create must never be retried"
+    );
+    assert!(
+        store.inner.head(&receipt_path).await.is_ok(),
+        "the synthetic store committed before dropping the acknowledgement"
+    );
+    assert_eq!(
+        store
+            .exact_version_get_attempts()
+            .iter()
+            .filter(|(path, _, _)| path == &receipt_path)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn catalog_publication_rejects_different_bytes_at_terminal_receipt_key() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-conflicting-receipt");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-conflicting-receipt"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new();
+    store
+        .put_opts(
+            &receipt_path,
+            b"occupied-by-different-bytes".to_vec().into(),
+            PutMode::Overwrite.into(),
+        )
+        .await
+        .expect("seed conflicting versioned receipt");
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("different terminal bytes must fail as a hard conflict");
+
+    assert!(!is_terminal_create_indeterminate(&error), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("byte length")
+            || format!("{error:#}").contains("different payload"),
+        "{error:#}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn exact_version_receipt_hydration_builds_only_the_shared_physical_manifest() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-hydration");
+    let source = tempfile::TempDir::new().expect("source temp dir");
+    let first_path = "data/trades/instrument=BTC-USD/part-000.parquet";
+    let second_path = "data/trades/instrument=ETH-USD/part-000.parquet";
+    write_catalog_file(source.path(), first_path, b"btc-trades");
+    write_catalog_file(source.path(), second_path, b"eth-trades");
+    let physical_manifest =
+        catalog_physical_manifest(&[(first_path, b"btc-trades"), (second_path, b"eth-trades")]);
+    let store = VersionedCatalogStore::new();
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        source.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish hydration source");
+    let hydration_parent = tempfile::TempDir::new().expect("hydration parent");
+    let hydration_root =
+        create_private_hydration_root(hydration_parent.path(), "catalog-hydration");
+    let guard = OperatorWorkBudgetGuard::unbounded();
+    let heartbeat = tokio::spawn(async {
+        tokio::task::yield_now().await;
+    });
+
+    let hydrated = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &persisted.receipt_locator(),
+        &physical_manifest,
+        &hydration_root,
         &guard,
     )
     .await
-    .expect_err("expiry after local hashing must fence the immutable object put");
+    .expect("exact-version hydration");
+
+    assert!(
+        heartbeat.is_finished(),
+        "hydration disk writes must yield the async runtime"
+    );
+    heartbeat.await.expect("hydration heartbeat");
+    assert_eq!(hydrated.local_catalog_root(), hydration_root);
+    assert_eq!(hydrated.object_count, physical_manifest.objects.len());
+    assert_eq!(hydrated.receipt_sha256, persisted.receipt_sha256);
+    assert_eq!(
+        fs::metadata(&hydration_root)
+            .expect("hydration root metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "hydration root remains private and writable for stable retry"
+    );
+    assert_eq!(
+        fs::metadata(hydration_root.join("data"))
+            .expect("hydration data directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o500,
+        "hydrated nested directories are sealed read/execute-only"
+    );
+    assert_eq!(
+        fs::metadata(hydration_root.join(first_path))
+            .expect("hydrated first object metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o400,
+        "hydrated files are sealed owner-read-only"
+    );
+    assert_eq!(
+        fs::read(hydration_root.join(first_path)).expect("hydrated first object"),
+        b"btc-trades"
+    );
+    assert_eq!(
+        fs::read(hydration_root.join(second_path)).expect("hydrated second object"),
+        b"eth-trades"
+    );
+    assert!(
+        !hydration_root
+            .join(CATALOG_RUN_VIEW_AUTHORITY_FILE)
+            .exists()
+    );
+    assert!(
+        !hydration_root
+            .join("catalog-projection-manifest.json")
+            .exists(),
+        "remote receipt must not enter the hydrated NT root"
+    );
+    hydrated
+        .revalidate_for_runner_seal_guarded(&physical_manifest, &guard)
+        .expect("retained root and exact set revalidate; runner owns content hashes");
+}
+
+#[tokio::test]
+async fn hydration_rejects_wrong_receipt_version_before_touching_private_root() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-wrong-receipt-version");
+    let source = tempfile::TempDir::new().expect("source temp dir");
+    write_catalog_file(source.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let store = VersionedCatalogStore::new();
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        source.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish hydration source");
+    let mut locator = persisted.receipt_locator();
+    locator.receipt_version_id = "wrong-version".to_string();
+    let hydration_parent = tempfile::TempDir::new().expect("hydration parent");
+    let hydration_root =
+        create_private_hydration_root(hydration_parent.path(), "catalog-hydration");
+
+    let error = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &locator,
+        &physical_manifest,
+        &hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("wrong receipt version must fail closed");
+
+    assert!(format!("{error:#}").contains("exact version"), "{error:#}");
+    assert!(
+        fs::read_dir(&hydration_root)
+            .expect("hydration root")
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn hydration_rejects_missing_returned_object_version_without_authority() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-missing-hydration-version");
+    let source = tempfile::TempDir::new().expect("source temp dir");
+    write_catalog_file(source.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let store = VersionedCatalogStore::new();
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        source.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish hydration source");
+    let object_path = root
+        .object_path_for_uri(&persisted.objects[0].uri)
+        .expect("published object path");
+    store.omit_version(object_path);
+    let hydration_parent = tempfile::TempDir::new().expect("hydration parent");
+    let hydration_root =
+        create_private_hydration_root(hydration_parent.path(), "catalog-hydration");
+
+    let error = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &persisted.receipt_locator(),
+        &physical_manifest,
+        &hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("missing returned object version must fail closed");
+
+    assert!(format!("{error:#}").contains("version"), "{error:#}");
+    assert!(
+        !hydration_root
+            .join(CATALOG_RUN_VIEW_AUTHORITY_FILE)
+            .exists()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hydration_fd_relative_traversal_rejects_intermediate_symlink_swap() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-hydration-symlink-swap");
+    let source = tempfile::TempDir::new().expect("source temp dir");
+    let relative_path = "data/trades/part-000.parquet";
+    write_catalog_file(source.path(), relative_path, b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[(relative_path, b"catalog")]);
+    let hydration_parent = tempfile::TempDir::new().expect("hydration parent");
+    let hydration_root =
+        create_private_hydration_root(hydration_parent.path(), "catalog-hydration");
+    let outside = tempfile::TempDir::new().expect("outside hydration target");
+    let symlink_path = hydration_root.join("data");
+    let outside_path = outside.path().to_path_buf();
+    let store =
+        VersionedCatalogStore::new().with_after_successful_get(Arc::new(move |_path, sequence| {
+            if sequence == 2 {
+                std::os::unix::fs::symlink(&outside_path, &symlink_path)
+                    .expect("swap intermediate hydration directory to symlink");
+            }
+        }));
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        source.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish hydration source");
+
+    let error = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &persisted.receipt_locator(),
+        &physical_manifest,
+        &hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("fd-relative traversal must reject symlink substitution");
+
+    assert!(
+        format!("{error:#}").contains("without following symlinks")
+            || format!("{error:#}").contains("openat"),
+        "{error:#}"
+    );
+    assert!(!outside.path().join("trades/part-000.parquet").exists());
+    assert!(!outside.path().join("part-000.parquet").exists());
+}
+
+#[tokio::test]
+async fn hydration_root_lease_rejects_path_replacement_before_runner_seal() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-root-lease");
+    let source = tempfile::TempDir::new().expect("source temp dir");
+    write_catalog_file(source.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let store = VersionedCatalogStore::new();
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        source.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish hydration source");
+    let hydration_parent = tempfile::TempDir::new().expect("hydration parent");
+    let hydration_root =
+        create_private_hydration_root(hydration_parent.path(), "catalog-hydration");
+    let hydrated = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &persisted.receipt_locator(),
+        &physical_manifest,
+        &hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("hydrate catalog");
+    let displaced = hydration_parent.path().join("displaced-catalog");
+    fs::rename(&hydration_root, &displaced).expect("displace hydrated root");
+    let replacement = create_private_hydration_root(hydration_parent.path(), "catalog-hydration");
+    write_catalog_file(&replacement, "part-000.parquet", b"catalog");
+
+    let error = hydrated
+        .revalidate_for_runner_seal_guarded(
+            &physical_manifest,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect_err("retained lease must reject root path replacement");
+
+    assert!(format!("{error:#}").contains("identity"), "{error:#}");
+}
+
+#[test]
+fn receipt_parse_rejects_noncanonical_json_even_when_hash_matches_bytes() {
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let physical_manifest_sha256 = physical_manifest
+        .manifest_sha256_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::Publish,
+        )
+        .expect("physical manifest hash");
+    let receipt = serde_json::json!({
+        "schema_version": "catalog-projection-publication-receipt-v1",
+        "catalog_root_uri": "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=canonical/",
+        "physical_manifest_sha256": physical_manifest_sha256,
+        "physical_manifest": physical_manifest,
+        "binding": {
+            "source_binding": "binary-official",
+            "market_structure_fixture": "binary-option",
+            "catalog_projection_id": "canonical"
+        },
+        "objects": [{
+            "relative_path": "part-000.parquet",
+            "uri": "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=canonical/part-000.parquet",
+            "sha256": sha256_hex(b"catalog"),
+            "byte_len": 7,
+            "version_id": "version-1"
+        }]
+    });
+    let noncanonical = serde_json::to_vec_pretty(&receipt).expect("noncanonical receipt bytes");
+    let noncanonical_hash = sha256_hex(&noncanonical);
+
+    let error = CatalogProjectionPublicationReceipt::parse_and_validate_guarded(
+        &noncanonical,
+        &noncanonical_hash,
+        &OperatorWorkBudgetGuard::unbounded(),
+        OperatorWorkBudgetStage::ObjectVerification,
+    )
+    .expect_err("pretty JSON must not pass canonical receipt validation");
+
+    assert!(format!("{error:#}").contains("not canonical"), "{error:#}");
+}
+
+#[tokio::test]
+async fn catalog_manifest_hash_mismatch_fails_before_any_put() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-manifest-mismatch");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"actual");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"absent")]);
+    let store = VersionedCatalogStore::new();
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("producer manifest mismatch must fail before publication");
+
+    assert!(format!("{error:#}").contains("SHA-256"), "{error:#}");
+    assert!(store.put_attempts().is_empty());
+}
+
+#[tokio::test]
+async fn catalog_projection_accepts_file_at_exact_final_object_cap() {
+    const FINAL_OBJECT_CAP: u64 = 4_096;
+    let mut config = artifact_config();
+    config.max_final_object_bytes = FINAL_OBJECT_CAP;
+    let root = config.resolve().expect("valid exact-cap artifact root");
+    let dispatch = catalog_dispatch("projection-exact-cap");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let payload = vec![0x5a; FINAL_OBJECT_CAP as usize];
+    write_catalog_file(temp.path(), "part-000.parquet", &payload);
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", payload.as_slice())]);
+    let store = VersionedCatalogStore::new();
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("exact-cap object publication");
+
+    assert_eq!(persisted.objects[0].byte_len, FINAL_OBJECT_CAP);
+}
+
+#[tokio::test]
+async fn catalog_projection_work_budget_memory_cap_rejects_before_single_put() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-memory-cap");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let payload = vec![0x5a; 4_096];
+    write_catalog_file(temp.path(), "part-000.parquet", &payload);
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", payload.as_slice())]);
+    let work_budget =
+        OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
+            max_decoded_bytes: 1_024,
+            max_source_rows: 1,
+            max_projected_row_groups: 8,
+            max_wall_seconds: 60,
+            require_object_selection_metadata: false,
+        }))
+        .expect("memory-capped work budget");
+    let store = VersionedCatalogStore::new();
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &work_budget,
+    )
+    .await
+    .expect_err("work-budget memory cap must reject a protocol-valid object");
+
+    assert!(
+        format!("{error:#}").contains("max_decoded_bytes"),
+        "{error:#}"
+    );
+    assert!(store.put_attempts().is_empty());
+}
+
+#[tokio::test]
+async fn catalog_projection_rejects_cap_plus_one_before_any_object_put() {
+    const FINAL_OBJECT_CAP: u64 = 8;
+    let mut config = artifact_config();
+    config.max_final_object_bytes = FINAL_OBJECT_CAP;
+    let root = config.resolve().expect("valid cap-plus-one artifact root");
+    let dispatch = catalog_dispatch("projection-cap-plus-one");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let at_cap = vec![0x5a; FINAL_OBJECT_CAP as usize];
+    let over_cap = vec![0x5a; FINAL_OBJECT_CAP as usize + 1];
+    write_catalog_file(temp.path(), "at-cap.parquet", &at_cap);
+    write_catalog_file(temp.path(), "cap-plus-one.parquet", &over_cap);
+    let physical_manifest = catalog_physical_manifest(&[
+        ("at-cap.parquet", at_cap.as_slice()),
+        ("cap-plus-one.parquet", over_cap.as_slice()),
+    ]);
+    let store = VersionedCatalogStore::new();
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("cap-plus-one object must fail before publication");
+
+    assert!(
+        format!("{error:#}").contains("cap-plus-one.parquet"),
+        "{error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("max_final_object_bytes"),
+        "{error:#}"
+    );
+    assert!(store.put_attempts().is_empty());
+}
+
+#[tokio::test]
+async fn catalog_publication_receipt_payload_obeys_final_object_cap() {
+    let mut config = artifact_config();
+    config.max_final_object_bytes = 1;
+    let root = config.resolve().expect("valid one-byte artifact root");
+    let dispatch = catalog_dispatch("projection-receipt-cap");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "one-byte.parquet", &[0x5a]);
+    let physical_manifest = catalog_physical_manifest(&[("one-byte.parquet", &[0x5a])]);
+    let store = VersionedCatalogStore::new();
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("oversized receipt must fail closed");
+
+    assert!(
+        format!("{error:#}").contains("publication receipt payload"),
+        "{error:#}"
+    );
+    let receipt_path = root
+        .object_path_for_uri(&root.catalog_projection_manifest_object_uri("projection-receipt-cap"))
+        .expect("receipt path");
+    assert!(store.head(&receipt_path).await.is_err());
+}
+
+#[tokio::test]
+async fn catalog_projection_expiry_before_publication_writes_no_object() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-expiry");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let store = VersionedCatalogStore::new();
+    let guard = one_second_guard(Arc::new(ObservationExpiryClock {
+        observations: AtomicUsize::new(0),
+        expires_after_observation: 1,
+    }));
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &guard,
+    )
+    .await
+    .expect_err("expired work budget must fence publication");
 
     assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
-    assert!(store.head(&object_path).await.is_err());
+    assert!(store.put_attempts().is_empty());
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn rejects_catalog_projection_symlink_without_following() {
     let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = CatalogDispatchConfig {
-        bindings: vec![CatalogProjectionBinding {
-            source_binding: "binary-official".to_string(),
-            market_structure_fixture: MarketStructureFixture::BinaryOption,
-            catalog_projection_id: "projection-run-123".to_string(),
-        }],
-    };
+    let dispatch = catalog_dispatch("projection-symlink");
     let temp = tempfile::TempDir::new().expect("temp dir");
     let outside = tempfile::TempDir::new().expect("outside dir");
-    fs::create_dir_all(outside.path().join("data/trade_tick")).expect("outside catalog dir");
-    fs::write(
-        outside.path().join("data/trade_tick/part-000.parquet"),
-        b"outside-root",
-    )
-    .expect("outside catalog data");
+    write_catalog_file(outside.path(), "part-000.parquet", b"outside-root");
     std::os::unix::fs::symlink(outside.path(), temp.path().join("linked-catalog"))
         .expect("catalog symlink");
+    let physical_manifest =
+        catalog_physical_manifest(&[("linked-catalog/part-000.parquet", b"outside-root")]);
+    let store = VersionedCatalogStore::new();
 
-    let store = InMemory::new();
-    let err = persist_catalog_projection_for_source_binding(
+    let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
         &dispatch,
         "binary-official",
         MarketStructureFixture::BinaryOption,
         temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("catalog projection must reject symlinks instead of following them");
+    .expect_err("catalog symlink must fail closed");
+
+    assert!(format!("{error:#}").contains("non-regular"), "{error:#}");
+    assert!(store.put_attempts().is_empty());
+}
+
+#[tokio::test]
+async fn changed_authorized_catalog_bytes_conflict_with_existing_immutable_object() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-conflict");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"first");
+    let first_manifest = catalog_physical_manifest(&[("part-000.parquet", b"first")]);
+    let store = VersionedCatalogStore::new();
+    persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &first_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("first immutable publication");
+    write_catalog_file(temp.path(), "part-000.parquet", b"other");
+    let changed_manifest = catalog_physical_manifest(&[("part-000.parquet", b"other")]);
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &changed_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("changed immutable object must conflict");
 
     assert!(
-        format!("{err:#}").contains("catalog projection contains non-regular file linked-catalog"),
-        "{err:#}"
+        format!("{error:#}").contains("different payload"),
+        "{error:#}"
     );
 }
 
 #[tokio::test]
-async fn rejects_duplicate_catalog_projection_bytes() {
+async fn catalog_publication_rejects_late_stray_before_receipt() {
     let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = CatalogDispatchConfig {
-        bindings: vec![CatalogProjectionBinding {
-            source_binding: "binary-official".to_string(),
-            market_structure_fixture: MarketStructureFixture::BinaryOption,
-            catalog_projection_id: "projection-run-123".to_string(),
-        }],
-    };
+    let dispatch = catalog_dispatch("projection-late-stray");
     let temp = tempfile::TempDir::new().expect("temp dir");
-    let catalog_file = temp.path().join("data/trade_tick/part-000.parquet");
-    fs::create_dir_all(catalog_file.parent().expect("parent")).expect("catalog directory");
-    fs::write(&catalog_file, b"first").expect("first catalog data");
+    write_catalog_file(temp.path(), "a.parquet", b"first");
+    write_catalog_file(temp.path(), "b.parquet", b"second");
+    let physical_manifest =
+        catalog_physical_manifest(&[("a.parquet", b"first"), ("b.parquet", b"second")]);
+    let stray_path = temp.path().join("late-stray.parquet");
+    let store =
+        VersionedCatalogStore::new().with_after_successful_put(Arc::new(move |_path, sequence| {
+            if sequence == 1 {
+                fs::write(&stray_path, b"stray").expect("plant late stray");
+            }
+        }));
 
-    let store = InMemory::new();
-    let first = persist_catalog_projection_for_source_binding(
+    let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
         &dispatch,
         "binary-official",
         MarketStructureFixture::BinaryOption,
         temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("first catalog persist");
-    let idempotent = persist_catalog_projection_for_source_binding(
-        &store,
-        &root,
-        &dispatch,
-        "binary-official",
-        MarketStructureFixture::BinaryOption,
-        temp.path(),
-    )
-    .await
-    .expect("same catalog bytes are idempotent");
-    assert_eq!(
-        idempotent.manifest_sha256, first.manifest_sha256,
-        "same catalog bytes must produce the same sorted projection manifest hash"
-    );
-    assert_eq!(
-        idempotent.manifest_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
-        "same manifest bytes must be an idempotent create-only replay"
-    );
+    .expect_err("late stray must prevent receipt");
+
     assert!(
-        idempotent
-            .objects
+        format!("{error:#}").contains("unexpected object"),
+        "{error:#}"
+    );
+    let receipt_path = root
+        .object_path_for_uri(&root.catalog_projection_manifest_object_uri("projection-late-stray"))
+        .expect("receipt path");
+    assert!(store.head(&receipt_path).await.is_err());
+}
+
+#[tokio::test]
+async fn catalog_publication_rejects_missing_object_before_receipt() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-late-missing");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "a.parquet", b"first");
+    write_catalog_file(temp.path(), "b.parquet", b"second");
+    let physical_manifest =
+        catalog_physical_manifest(&[("a.parquet", b"first"), ("b.parquet", b"second")]);
+    let missing_path = temp.path().join("b.parquet");
+    let store =
+        VersionedCatalogStore::new().with_after_successful_put(Arc::new(move |_path, sequence| {
+            if sequence == 1 {
+                fs::remove_file(&missing_path).expect("remove pending catalog object");
+            }
+        }));
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("missing object must prevent receipt");
+
+    assert!(format!("{error:#}").contains("b.parquet"), "{error:#}");
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-late-missing"),
+        )
+        .expect("receipt path");
+    assert!(store.head(&receipt_path).await.is_err());
+}
+
+#[tokio::test]
+async fn catalog_publication_rejects_same_length_mutation_after_put() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-late-mutation");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"first");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"first")]);
+    let mutation_path = temp.path().join("part-000.parquet");
+    let store =
+        VersionedCatalogStore::new().with_after_successful_put(Arc::new(move |_path, sequence| {
+            if sequence == 1 {
+                fs::write(&mutation_path, b"other").expect("same-length mutation");
+            }
+        }));
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("same-length mutation must prevent receipt");
+
+    assert!(
+        format!("{error:#}").contains("identity") || format!("{error:#}").contains("changed"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn catalog_publication_requires_object_version_id() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-object-version");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let object_uri = format!(
+        "{}part-000.parquet",
+        root.nt_catalog_projection_root("projection-object-version")
+    );
+    let object_path = root
+        .object_path_for_uri(&object_uri)
+        .expect("catalog object path");
+    let store = VersionedCatalogStore::new().with_omitted_version(object_path);
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("missing object version must fail closed");
+
+    assert!(format!("{error:#}").contains("version ID"), "{error:#}");
+    assert_eq!(store.put_attempts().len(), 1);
+}
+
+#[tokio::test]
+async fn catalog_publication_reconciles_missing_receipt_version_exactly() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-receipt-version");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-receipt-version"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new().with_omitted_version(receipt_path.clone());
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("missing acknowledgement version is reconciled through HEAD and exact GET");
+
+    assert_eq!(
+        persisted.receipt_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    assert_eq!(
+        store
+            .put_attempts()
             .iter()
-            .all(|object| object.create_only_write
-                == CreateOnlyWriteDisposition::AlreadyExistedSamePayload),
-        "same-payload create-only conflicts must be recorded as idempotent, not rewritten"
+            .filter(|path| *path == &receipt_path)
+            .count(),
+        1
     );
-    fs::write(&catalog_file, b"second").expect("second catalog data");
+    assert_eq!(
+        store
+            .exact_version_get_attempts()
+            .iter()
+            .filter(|(path, _, _)| path == &receipt_path)
+            .count(),
+        1
+    );
+}
 
-    let err = persist_catalog_projection_for_source_binding(
+#[tokio::test]
+async fn catalog_publication_reconciles_null_receipt_version_exactly() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-null-receipt-version");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-null-receipt-version"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new().with_null_version(receipt_path.clone());
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
         &dispatch,
         "binary-official",
         MarketStructureFixture::BinaryOption,
         temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("duplicate projection bytes must be rejected");
+    .expect("null acknowledgement version is reconciled through HEAD and exact GET");
 
-    assert!(format!("{err:#}").contains("different payload"), "{err:#}");
+    assert_eq!(
+        persisted.receipt_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    assert_eq!(
+        store
+            .exact_version_get_attempts()
+            .iter()
+            .filter(|(path, _, _)| path == &receipt_path)
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
-async fn rejects_catalog_dispatch_fixture_mismatch() {
+async fn empty_receipt_version_with_unprovable_exact_identity_is_typed_indeterminate() {
     let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = CatalogDispatchConfig {
-        bindings: vec![CatalogProjectionBinding {
-            source_binding: "binary-official".to_string(),
-            market_structure_fixture: MarketStructureFixture::BinaryOption,
-            catalog_projection_id: "projection-run-123".to_string(),
-        }],
-    };
+    let dispatch = catalog_dispatch("projection-empty-receipt-version");
     let temp = tempfile::TempDir::new().expect("temp dir");
-    let catalog_file = temp.path().join("data/trade_tick/part-000.parquet");
-    fs::create_dir_all(catalog_file.parent().expect("parent")).expect("catalog directory");
-    fs::write(&catalog_file, b"fixture-mismatch").expect("catalog data");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-empty-receipt-version"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new()
+        .with_empty_version(receipt_path.clone())
+        .with_failed_exact_version_get(receipt_path.clone());
 
-    let store = InMemory::new();
-    let err = persist_catalog_projection_for_source_binding(
+    let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("unprovable empty acknowledgement version must be indeterminate");
+
+    assert!(is_terminal_create_indeterminate(&error), "{error:#}");
+    assert_eq!(
+        store
+            .put_attempts()
+            .iter()
+            .filter(|path| *path == &receipt_path)
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .exact_version_get_attempts()
+            .iter()
+            .filter(|(path, _, _)| path == &receipt_path)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn broad_catalog_publication_keeps_manifest_order_without_retained_file_vector() {
+    const OBJECT_COUNT: usize = 64;
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-broad");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let mut objects = Vec::new();
+    for index in 0..OBJECT_COUNT {
+        let relative_path = format!("data/trades/instrument={index:04}/part-000.parquet");
+        let payload = format!("catalog-{index:04}").into_bytes();
+        write_catalog_file(temp.path(), &relative_path, &payload);
+        objects.push(CatalogProjectionManifestObject {
+            relative_path,
+            byte_len: u64::try_from(payload.len()).expect("payload length"),
+            sha256: sha256_hex(&payload),
+        });
+    }
+    let physical_manifest = CatalogProjectionManifestDocument {
+        schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+        objects,
+    };
+    let store = VersionedCatalogStore::new();
+
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("broad catalog publication");
+
+    assert_eq!(persisted.objects.len(), OBJECT_COUNT);
+    assert_eq!(store.put_attempts().len(), OBJECT_COUNT + 1);
+    let source = include_str!("../src/artifact_store.rs");
+    assert!(!source.contains("struct PreparedCatalogProjectionFile"));
+    assert!(!source.contains("struct CatalogProjectionManifestDocument<'"));
+    assert!(!source.contains("Vec<fs::File>"));
+    assert!(!source.contains("preflight_catalog_projection_contents_guarded"));
+}
+
+#[tokio::test]
+async fn rejects_catalog_dispatch_fixture_mismatch_before_any_put() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-fixture-mismatch");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"fixture-mismatch");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"fixture-mismatch")]);
+    let store = VersionedCatalogStore::new();
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
         &dispatch,
         "binary-official",
         MarketStructureFixture::PerpsSpot,
         temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("market_structure_fixture mismatch must reject catalog persistence");
+    .expect_err("market-structure fixture mismatch must reject publication");
 
     assert!(
-        err.to_string()
+        error
+            .to_string()
             .contains("market_structure_fixture mismatch"),
-        "{err}"
+        "{error:#}"
     );
+    assert!(store.put_attempts().is_empty());
 }
 
 #[test]
@@ -1495,13 +3598,21 @@ async fn operator_artifact_store_path_rejects_artifact_store_region_mismatch_bef
         .insert("region".to_string(), "us-west-2".to_string());
     let output_dir = tempfile::TempDir::new().expect("temp dir");
     let store = InMemory::new();
+    let artifact_root = spec
+        .required_artifact_store()
+        .expect("artifact-store config")
+        .resolve()
+        .expect("artifact root");
+    let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
 
-    let err = match run_from_run_spec_with_artifact_store(
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+    let err = match run_from_run_spec_with_artifact_store_guarded(
         &spec,
-        &gz,
+        gz,
         output_dir.path(),
         &store,
-        |_, _, _| panic!("artifact-store region mismatch must fail before runtime evidence"),
+        &versioning,
+        &work_budget,
     )
     .await
     {
@@ -1532,13 +3643,21 @@ async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch
     });
     let output_dir = tempfile::TempDir::new().expect("temp dir");
     let store = InMemory::new();
+    let artifact_root = spec
+        .required_artifact_store()
+        .expect("artifact-store config")
+        .resolve()
+        .expect("artifact root");
+    let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
 
-    let err = match run_from_run_spec_with_artifact_store(
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+    let err = match run_from_run_spec_with_artifact_store_guarded(
         &spec,
-        &gz,
+        gz,
         output_dir.path(),
         &store,
-        |_, _, _| panic!("artifact-store SSM region mismatch must fail before runtime evidence"),
+        &versioning,
+        &work_budget,
     )
     .await
     {
@@ -1562,17 +3681,22 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let gz = gzip(SAMPLE_CSV);
     let spec = committed_run_spec_for(&gz);
     let output_dir = tempfile::TempDir::new().expect("temp dir");
-    let store = InMemory::new();
     let artifact_store = spec
         .required_artifact_store()
         .expect("artifact-store config");
     let catalog_dispatch = spec
         .required_catalog_dispatch()
         .expect("catalog dispatch config");
-    let nt_catalog_capability_proof = spec
-        .required_nt_catalog_capability_proof()
-        .expect("NT catalog capability proof config");
     let artifact_root = artifact_store.resolve().expect("artifact root resolves");
+    let completion_uri = format!(
+        "{}/{}",
+        spec.manifest.output_prefix.trim_end_matches('/'),
+        DURABLE_COMPLETION_MANIFEST_FILE
+    );
+    let completion_path = artifact_root
+        .object_path_for_uri(&completion_uri)
+        .expect("durable completion path");
+    let store = VersionedCatalogStore::new().with_lost_put_ack(completion_path.clone());
     let expected_catalog_root = catalog_dispatch
         .catalog_root_for(
             &spec.source_proof.source_binding,
@@ -1580,37 +3704,49 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             &artifact_root,
         )
         .expect("source binding dispatches");
+    let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
 
     let work_budget = OperatorWorkBudgetGuard::unbounded();
-    let artifacts = run_from_run_spec_with_artifact_store_guarded(
+    let outcome = run_from_run_spec_with_artifact_store_guarded(
         &spec,
-        &gz,
+        gz.clone(),
         output_dir.path(),
         &store,
-        |artifact_root, plan, create_only_probe, callback_work_budget| {
-            assert!(
-                std::ptr::eq(callback_work_budget, &work_budget),
-                "guarded durable operator must pass its exact shared guard to runtime evidence"
-            );
-            let mut evidence =
-                successful_capability_evidence(artifact_root, nt_catalog_capability_proof);
-            evidence.read_back.catalog_uri = plan.synthetic_catalog_root_uri.clone();
-            evidence.nt_catalog_storage_option_keys = plan.storage_options_keys.clone();
-            evidence.create_only_probe = create_only_probe;
-            Ok(evidence)
-        },
+        &versioning,
         &work_budget,
     )
     .await
     .expect("operator artifact-store run");
+    let completion_locator = outcome.receipt().completion.clone();
+    assert_eq!(completion_locator.object.uri, completion_uri);
+    assert_eq!(
+        store
+            .exact_version_get_attempts()
+            .iter()
+            .filter(|(path, _, _)| path == &completion_path)
+            .count(),
+        1,
+        "durable completion lost-ack recovery must use one exact-version GET"
+    );
+    let artifacts = executed_durable_artifacts(outcome);
 
     assert_eq!(
         artifacts.canonical_catalog_uri.as_deref(),
         Some(expected_catalog_root.as_str())
     );
     assert!(
-        !artifacts.catalog_root.exists(),
-        "artifact-store path must remove the transient local NT catalog after durable persistence"
+        artifacts.catalog_root.is_dir(),
+        "artifact-store path retains the identity-owned projection for deterministic retry and audit"
+    );
+    let persisted_projection = artifacts
+        .persisted_catalog_projection
+        .as_ref()
+        .expect("durable run persists the exact catalog projection");
+    assert_eq!(artifacts.output.catalog_run_view_authority.roots.len(), 1);
+    assert_eq!(
+        artifacts.output.catalog_run_view_authority.roots[0].physical_manifest_sha256,
+        persisted_projection.physical_manifest_sha256,
+        "retained local projection and immutable S3 receipt must bind the same physical manifest"
     );
     assert_eq!(
         artifacts.output.contract.artifact_uris.nt_catalog_uri,
@@ -1635,79 +3771,6 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         "durable contract claim limits must reference the persisted catalog root"
     );
     assert!(
-        artifacts
-            .create_only_probe_transcript
-            .as_ref()
-            .expect("create-only probe transcript")
-            .duplicate_create_rejected
-    );
-    assert!(
-        artifacts
-            .create_only_probe_transcript
-            .as_ref()
-            .expect("create-only probe transcript")
-            .duplicate_copy_rejected
-    );
-    let nt_catalog_capability_plan = artifacts
-        .nt_catalog_capability_plan
-        .as_ref()
-        .expect("NT catalog capability proof plan");
-    assert_eq!(
-        nt_catalog_capability_plan.synthetic_catalog_root_uri,
-        "s3://bolt-parquet/nt-research-analytics/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/"
-    );
-    assert_eq!(
-        nt_catalog_capability_plan.proof_artifact_uri,
-        "s3://bolt-parquet/nt-research-analytics/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/nt-catalog-capability-proof.json"
-    );
-    assert_eq!(
-        nt_catalog_capability_plan.storage_options_keys,
-        vec!["region".to_string()]
-    );
-    let proof_artifact = artifacts
-        .nt_catalog_capability_proof_artifact
-        .as_ref()
-        .expect("operator must persist NT catalog capability proof artifact");
-    assert_eq!(
-        proof_artifact.proof_artifact_uri,
-        nt_catalog_capability_plan.proof_artifact_uri
-    );
-    assert_eq!(
-        proof_artifact.proof_artifact_create_only_write,
-        CreateOnlyWriteDisposition::Created
-    );
-    assert_eq!(
-        proof_artifact.evidence.create_only_probe,
-        *artifacts
-            .create_only_probe_transcript
-            .as_ref()
-            .expect("create-only probe transcript")
-    );
-    assert_eq!(
-        proof_artifact.evidence.read_back.catalog_uri,
-        nt_catalog_capability_plan.synthetic_catalog_root_uri
-    );
-    let proof_artifact_path = artifact_store
-        .resolve()
-        .expect("artifact root")
-        .object_path_for_uri(&proof_artifact.proof_artifact_uri)
-        .expect("proof artifact path");
-    let proof_artifact_bytes = store
-        .get(&proof_artifact_path)
-        .await
-        .expect("proof artifact exists")
-        .bytes()
-        .await
-        .expect("proof artifact bytes");
-    assert_eq!(
-        sha256_hex(proof_artifact_bytes.as_ref()),
-        proof_artifact.proof_artifact_sha256
-    );
-    let proof_document: NtCatalogCapabilityProofDocument =
-        serde_json::from_slice(proof_artifact_bytes.as_ref()).expect("proof document parses");
-    assert_eq!(proof_document.proof, proof_artifact.proof);
-    assert_eq!(proof_document.evidence, proof_artifact.evidence);
-    assert!(
         !artifacts.persisted_catalog_objects.is_empty(),
         "operator must persist projected catalog objects through artifact-store dispatch"
     );
@@ -1716,48 +3779,42 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         .as_ref()
         .expect("operator must expose persisted catalog projection proof");
     assert_eq!(
-        persisted_projection.manifest_create_only_write,
+        persisted_projection.receipt_create_only_write,
         CreateOnlyWriteDisposition::Created
     );
     assert_eq!(
         persisted_projection.binding.source_binding,
         spec.source_proof.source_binding
     );
-    assert_eq!(
-        persisted_projection.manifest_sha256,
-        expected_catalog_projection_manifest_sha256(
-            &persisted_projection
-                .objects
-                .iter()
-                .map(|object| {
-                    (
-                        object.relative_path.as_str(),
-                        object.byte_len,
-                        object.sha256.as_str(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        )
+    assert!(!persisted_projection.physical_manifest_sha256.is_empty());
+    assert!(
+        persisted_projection
+            .objects
+            .iter()
+            .all(|object| !object.version_id.is_empty())
     );
     assert_eq!(
         artifacts.output.contract.catalog_hash,
         artifacts.output.conversion_catalog_metadata.catalog_hash,
         "durable result contract must keep catalog_hash coherent with catalog metadata"
     );
+    let CatalogConsumption::HydratedPublication { receipt } = &artifacts
+        .output
+        .conversion_catalog_metadata
+        .catalog_consumption
+    else {
+        panic!("artifact-store path must record exact-version hydrated publication evidence")
+    };
+    assert_eq!(receipt.catalog_root_uri, expected_catalog_root);
+    assert_eq!(receipt.receipt_uri, persisted_projection.receipt_uri);
+    assert_eq!(receipt.receipt_sha256, persisted_projection.receipt_sha256);
     assert_eq!(
-        artifacts
-            .output
-            .conversion_catalog_metadata
-            .execution_catalog_uri,
-        expected_catalog_root,
-        "artifact-store path must rewrite catalog metadata to the durable catalog root"
+        receipt.receipt_version_id,
+        persisted_projection.receipt_version_id
     );
-    assert!(
-        artifacts
-            .output
-            .conversion_catalog_metadata
-            .direct_s3_catalog_access_proven,
-        "artifact-store path must record the proved direct-S3 catalog access"
+    assert_eq!(
+        receipt.physical_manifest_sha256,
+        persisted_projection.physical_manifest_sha256
     );
     assert_eq!(
         artifacts.output.contract.catalog_metadata_hash,
@@ -1783,7 +3840,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .artifact_uris
             .nt_catalog_manifest_uri
             .as_deref(),
-        Some(persisted_projection.manifest_uri.as_str())
+        Some(persisted_projection.receipt_uri.as_str())
     );
     let persisted_contract_json =
         fs::read_to_string(&artifacts.contract_path).expect("durable contract json");
@@ -1798,7 +3855,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .artifact_uris
             .nt_catalog_manifest_uri
             .as_deref(),
-        Some(persisted_projection.manifest_uri.as_str())
+        Some(persisted_projection.receipt_uri.as_str())
     );
     assert!(
         artifacts
@@ -1852,65 +3909,115 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .bytes()
             .await
             .expect("persisted catalog bytes");
-        assert_eq!(stored.len(), object.byte_len);
+        assert_eq!(
+            u64::try_from(stored.len()).expect("stored catalog byte length"),
+            object.byte_len
+        );
     }
-    let manifest_path = artifact_root
-        .object_path_for_uri(&persisted_projection.manifest_uri)
-        .expect("operator projection manifest under artifact root");
-    let manifest_bytes = store
-        .get(&manifest_path)
+    let receipt_path = artifact_root
+        .object_path_for_uri(&persisted_projection.receipt_uri)
+        .expect("operator publication receipt under artifact root");
+    let receipt_bytes = store
+        .get(&receipt_path)
         .await
-        .expect("operator projection manifest")
+        .expect("operator publication receipt")
         .bytes()
         .await
-        .expect("operator projection manifest bytes");
-    assert!(
-        serde_json::from_slice::<serde_json::Value>(&manifest_bytes)
-            .expect("operator projection manifest json")["objects"]
-            .as_array()
-            .expect("objects array")
-            .len()
-            == persisted_projection.objects.len()
+        .expect("operator publication receipt bytes");
+    let receipt = CatalogProjectionPublicationReceipt::parse_and_validate_guarded(
+        &receipt_bytes,
+        &persisted_projection.receipt_sha256,
+        &OperatorWorkBudgetGuard::unbounded(),
+        OperatorWorkBudgetStage::Publish,
+    );
+    let receipt = receipt.expect("operator publication receipt validates after restart");
+    assert_eq!(receipt.objects.len(), persisted_projection.objects.len());
+    assert_eq!(
+        receipt.physical_manifest_sha256,
+        persisted_projection.physical_manifest_sha256
     );
 
-    let mut second_spec = spec.clone();
-    second_spec.create_only_probe_id =
-        Some("backtesting-vertical-slice-bnbusdc-2026-03-01-rerun".to_string());
-    second_spec
-        .nt_catalog_capability_proof
-        .as_mut()
-        .expect("run spec carries NT catalog capability proof")
-        .proof_run_id = "synthetic-capability-proof-rerun".to_string();
-    let second = run_from_run_spec_with_artifact_store(
+    let put_count_before_resume = store.put_attempts().len();
+    let resumed_output = tempfile::TempDir::new().expect("resumed output dir");
+    let source_bindings = VerifiedSourceBindingRegistry::from_run_spec(&spec)
+        .expect("snapshot source bindings for durable resume");
+    let resumed = run_from_run_spec_with_artifact_store_resume_guarded(
+        &spec,
+        DurableRunRequest::Resume(completion_locator.clone()),
+        resumed_output.path(),
+        &store,
+        &versioning,
+        &source_bindings,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("exact terminal locator resumes without execution");
+    assert!(matches!(resumed, DurableRunOutcome::Resumed(_)));
+    assert_eq!(store.put_attempts().len(), put_count_before_resume);
+    assert!(
+        fs::read_dir(resumed_output.path())
+            .expect("read resumed output")
+            .next()
+            .is_none(),
+        "validated terminal resume must not materialize local output"
+    );
+
+    let mut wrong_terminal_version = completion_locator.clone();
+    wrong_terminal_version.object.version_id = "wrong-terminal-version".to_string();
+    let error = match run_from_run_spec_with_artifact_store_resume_guarded(
+        &spec,
+        DurableRunRequest::Resume(wrong_terminal_version),
+        resumed_output.path(),
+        &store,
+        &versioning,
+        &source_bindings,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    {
+        Ok(_) => panic!("wrong terminal version must fail closed without current-key fallback"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("version"), "{error:#}");
+    assert_eq!(store.put_attempts().len(), put_count_before_resume);
+
+    let second_spec = spec.clone();
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+    let second = run_from_run_spec_with_artifact_store_guarded(
         &second_spec,
-        &gz,
+        gz,
         output_dir.path(),
         &store,
-        |artifact_root, plan, create_only_probe| {
-            let mut evidence =
-                successful_capability_evidence(artifact_root, nt_catalog_capability_proof);
-            evidence.read_back.catalog_uri = plan.synthetic_catalog_root_uri.clone();
-            evidence.nt_catalog_storage_option_keys = plan.storage_options_keys.clone();
-            evidence.create_only_probe = create_only_probe;
-            Ok(evidence)
-        },
+        &versioning,
+        &work_budget,
     )
     .await
     .expect("operator artifact-store rerun replays idempotently");
+    let second = executed_durable_artifacts(second);
     assert_eq!(
         second.canonical_catalog_uri.as_deref(),
         Some(expected_catalog_root.as_str())
     );
     assert!(
-        !second.catalog_root.exists(),
-        "artifact-store rerun should still remove the transient local NT catalog after durable persistence"
+        second.catalog_root.is_dir(),
+        "artifact-store rerun retains the identity-owned projection for deterministic retry and audit"
+    );
+    assert_eq!(second.output.catalog_run_view_authority.roots.len(), 1);
+    assert_eq!(
+        second.output.catalog_run_view_authority.roots[0].physical_manifest_sha256,
+        second
+            .persisted_catalog_projection
+            .as_ref()
+            .expect("second persisted projection")
+            .physical_manifest_sha256,
+        "rerun local projection and reused immutable S3 receipt must bind the same physical manifest"
     );
     assert_eq!(
         second
             .persisted_catalog_projection
             .as_ref()
             .expect("second persisted projection")
-            .manifest_create_only_write,
+            .receipt_create_only_write,
         CreateOnlyWriteDisposition::AlreadyExistedSamePayload
     );
     assert!(
@@ -1921,14 +4028,6 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
                 == CreateOnlyWriteDisposition::AlreadyExistedSamePayload),
         "artifact-store rerun must idempotently reuse durable catalog objects"
     );
-    assert_eq!(
-        second
-            .nt_catalog_capability_proof_artifact
-            .as_ref()
-            .expect("second proof artifact")
-            .proof_artifact_create_only_write,
-        CreateOnlyWriteDisposition::Created
-    );
     let second_contract: BacktestResultContract = serde_json::from_str(
         &fs::read_to_string(&second.contract_path).expect("second durable contract json"),
     )
@@ -1938,50 +4037,44 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .artifact_uris
             .nt_catalog_manifest_uri
             .as_deref(),
-        Some(persisted_projection.manifest_uri.as_str())
+        Some(persisted_projection.receipt_uri.as_str())
     );
 }
 
-#[tokio::test]
-async fn create_only_writer_refuses_to_overwrite_existing_object() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-    let store = InMemory::new();
-    let writer = CreateOnlyArtifactWriter::new(&store);
-    let object_uri =
-        root.backtest_run_root(MarketStructureFixture::PerpsSpot, "run-123") + "result.json";
-    let object_path = root
-        .object_path_for_uri(&object_uri)
-        .expect("uri under artifact root");
+#[test]
+fn terminal_keys_have_one_root_bound_preparation_and_create_route() {
+    const ARTIFACT_STORE_SOURCE: &str = include_str!("../src/artifact_store.rs");
+    const CAPABILITY_SOURCE: &str = include_str!("../src/nt_catalog_capability.rs");
+    const OPERATOR_SOURCE: &str = include_str!("../src/operator.rs");
 
-    writer
-        .put_create_uri(&root, &object_uri, br#"{"status":"first"}"#.to_vec())
-        .await
-        .expect("first create succeeds");
-    let err = writer
-        .put_create_uri(&root, &object_uri, br#"{"status":"second"}"#.to_vec())
-        .await
-        .expect_err("second create must fail");
-    assert!(format!("{err:#}").contains("already exists"), "{err:#}");
-
-    let stored = store
-        .get(&object_path)
-        .await
-        .expect("created object")
-        .bytes()
-        .await
-        .expect("object bytes");
-    assert_eq!(stored.as_ref(), br#"{"status":"first"}"#);
-
+    assert!(!ARTIFACT_STORE_SOURCE.contains("pub async fn put_create"));
+    assert!(!ARTIFACT_STORE_SOURCE.contains("pub async fn put_create_idempotent"));
+    assert!(!ARTIFACT_STORE_SOURCE.contains("put_create_uri("));
     assert!(
-        writer
-            .put_create_uri(
-                &root,
-                "s3://other-bucket/prod/backtests/v1/run=run-123/result.json",
-                br#"{"status":"outside"}"#.to_vec(),
-            )
-            .await
-            .is_err()
+        !ARTIFACT_STORE_SOURCE
+            .contains("pub async fn persist_catalog_projection_for_source_binding(")
     );
+    assert!(!ARTIFACT_STORE_SOURCE.contains("pub async fn probe_create_only("));
+    assert!(!CAPABILITY_SOURCE.contains("pub fn run_nt_catalog_s3_conformance_probe("));
+    assert!(!CAPABILITY_SOURCE.contains("pub fn runtime_evidence("));
+    assert!(!CAPABILITY_SOURCE.contains("pub async fn persist_completed_proof_from_evidence("));
+
+    for (label, source) in [
+        ("catalog receipt", ARTIFACT_STORE_SOURCE),
+        ("capability proof", CAPABILITY_SOURCE),
+        ("durable completion", OPERATOR_SOURCE),
+    ] {
+        assert_eq!(
+            source.matches(".prepare_terminal_create_uri(").count(),
+            1,
+            "{label} must have exactly one root-bound terminal preparation route"
+        );
+        assert_eq!(
+            source.matches(".create_or_confirm_terminal(").count(),
+            1,
+            "{label} must have exactly one terminal create route"
+        );
+    }
 }
 
 fn sha256(ch: char) -> String {
@@ -2105,6 +4198,69 @@ fn commit_plan_with_writer(
         audit_epoch_ids: vec![audit_epoch_id.to_string()],
         writer_id: writer_id.to_string(),
     }
+}
+
+#[tokio::test]
+async fn artifact_index_rejects_every_oversize_create_before_store_put() {
+    let mut config = artifact_config();
+    config.max_final_object_bytes = 8;
+    let root = config.resolve().expect("small valid artifact cap");
+    let store = S3PreconditionOnCreateConflictStore::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "oversize-index-run"),
+        "oversize-index-event",
+        "oversize-index-run",
+    );
+    let snapshot = ArtifactIndexSnapshot::new(
+        "oversize-index-snapshot",
+        ArtifactKind::Backtests,
+        vec![ArtifactIndexSnapshotRow::from_event(
+            &event,
+            ArtifactIndexCommitState::Committed,
+        )],
+    )
+    .expect("snapshot is valid");
+    let pointer = ArtifactIndexPointer::from_snapshot(&root, &snapshot)
+        .expect("pointer derives from snapshot");
+    let audit_epoch = ArtifactIndexAuditEpoch {
+        audit_epoch_id: "2026-06-13T00:00:21Z".to_string(),
+        artifact_kind: ArtifactKind::Backtests,
+        prior_snapshot_id: None,
+        new_snapshot_id: snapshot.snapshot_id.clone(),
+        writer_id: "backtesting-engine-writer".to_string(),
+        prior_pointer_e_tag: None,
+        new_pointer_e_tag: Some("new-pointer-etag".to_string()),
+    };
+
+    for error in [
+        writer
+            .put_event(&root, &event)
+            .await
+            .expect_err("oversize event must fail closed"),
+        writer
+            .put_snapshot(&root, &snapshot)
+            .await
+            .expect_err("oversize snapshot must fail closed"),
+        writer
+            .append_audit_epoch(&root, &audit_epoch)
+            .await
+            .expect_err("oversize audit epoch must fail closed"),
+        writer
+            .create_latest_pointer(&root, &pointer)
+            .await
+            .expect_err("oversize latest pointer must fail closed"),
+    ] {
+        assert!(
+            error.to_string().contains("max_final_object_bytes"),
+            "{error:#}"
+        );
+    }
+    assert_eq!(
+        store.put_attempts(),
+        0,
+        "oversize artifact-index payload reached the object store"
+    );
 }
 
 #[tokio::test]

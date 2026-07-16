@@ -33,7 +33,7 @@
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::Cursor, mem::size_of};
 
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_model::enums::BarAggregation;
@@ -48,9 +48,13 @@ use super::{
     canonical_trades::{
         BAR_TRANSFORM_IDENTITY, CanonicalInstrumentIdentity, CsvTimestampUnit,
         JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY, PAGED_JSON_BARS_TRANSFORM_IDENTITY,
-        TradesPartition, column_index,
+        TradesPartition, column_index, verify_canonical_rows_materialization,
     },
-    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    operator_work_budget::{
+        CooperativeDeadlineReader, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+        cooperative_stable_sort_by_key, deserialize_json_stream_with_budget,
+        deserialize_json_with_budget, for_each_nonempty_text_record_with_budget,
+    },
     source_proof::AcceptedDataset,
 };
 
@@ -276,41 +280,110 @@ fn bar_interval_nanos_for_spec(spec: CanonicalBarSpec) -> Result<Option<i64>> {
 /// is not a multiple of the base interval, or the interval is not representable
 /// as a fixed-duration NautilusTrader bar unit.
 pub fn bar_spec_from_open_times(open_times: &[i64]) -> Result<CanonicalBarSpec> {
-    let mut times: Vec<i64> = open_times.to_vec();
-    times.sort_unstable();
-    times.dedup();
+    bar_spec_from_open_times_with_meter(open_times, &OperatorWorkBudgetGuard::unbounded())
+}
+
+fn sorted_unique_open_times_with_meter(
+    open_times: &[i64],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<i64>> {
+    verify_canonical_rows_materialization(
+        open_times,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+        |_time| Ok(size_of::<i64>()),
+    )?;
+    let mut times = Vec::new();
+    times
+        .try_reserve_exact(open_times.len())
+        .context("reserve bar open times")?;
+    for time in open_times {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        times.push(*time);
+    }
+    sort_unique_open_times_with_meter(times, work_budget)
+}
+
+fn sort_unique_open_times_with_meter(
+    mut times: Vec<i64>,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<i64>> {
+    cooperative_stable_sort_by_key(
+        &mut times,
+        |time| *time,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+    )?;
+    verify_canonical_rows_materialization(
+        &times,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+        |_time| Ok(size_of::<i64>()),
+    )?;
+    let mut unique = Vec::new();
+    unique
+        .try_reserve_exact(times.len())
+        .context("reserve unique bar open times")?;
+    for time in &times {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        if unique.last() != Some(time) {
+            unique.push(*time);
+        }
+    }
+    Ok(unique)
+}
+
+fn bar_spec_from_open_times_with_meter(
+    open_times: &[i64],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CanonicalBarSpec> {
+    let times = sorted_unique_open_times_with_meter(open_times, work_budget)?;
+    bar_spec_from_sorted_unique_open_times_with_meter(&times, work_budget)
+}
+
+fn bar_spec_from_sorted_unique_open_times_with_meter(
+    times: &[i64],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CanonicalBarSpec> {
     ensure!(
         times.len() >= 2,
         "cannot derive bar interval from fewer than two distinct bar-open times"
     );
 
-    let mut gaps: Vec<u64> = Vec::with_capacity(times.len() - 1);
-    for window in times.windows(2) {
-        let delta = window[1]
-            .checked_sub(window[0])
+    let mut gaps: Vec<u64> = Vec::new();
+    gaps.try_reserve_exact(times.len() - 1)
+        .context("reserve bar-open gaps")?;
+    let mut base = u64::MAX;
+    for index in 0..times.len() - 1 {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        let delta = times[index + 1]
+            .checked_sub(times[index])
             .context("bar-open time underflow")?;
         let delta = u64::try_from(delta).context("negative bar-open gap")?;
         ensure!(delta > 0, "duplicate bar-open time survived dedup");
+        base = base.min(delta);
         gaps.push(delta);
     }
 
-    let base = *gaps.iter().min().expect("at least one gap");
+    debug_assert_ne!(base, u64::MAX, "at least one gap was derived");
     // The base nanosecond interval scaled to milliseconds for unit selection.
     let base_ms = base
         .checked_div(NANOS_PER_MILLISECOND)
         .filter(|_| base.is_multiple_of(NANOS_PER_MILLISECOND))
         .context("bar interval is not a whole number of milliseconds")?;
     for gap in &gaps {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         ensure!(
             gap.is_multiple_of(base),
             "bar gaps are not multiples of the base interval \
-             ({gap} ns is not a multiple of {base} ns)"
+                 ({gap} ns is not a multiple of {base} ns)"
         );
     }
     bar_spec_from_interval_ms(base_ms)
 }
 
 /// One parsed CSV bar, before identity/provenance assembly.
+#[derive(Clone)]
 struct ParsedBarRow {
     instrument_key: Option<String>,
     open_time: i64,
@@ -320,6 +393,24 @@ struct ParsedBarRow {
     low: String,
     close: String,
     volume: String,
+}
+
+fn parsed_bar_row_materialized_bytes(row: &ParsedBarRow) -> Result<usize> {
+    [
+        row.instrument_key.as_deref(),
+        Some(row.open.as_str()),
+        Some(row.high.as_str()),
+        Some(row.low.as_str()),
+        Some(row.close.as_str()),
+        Some(row.volume.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .try_fold(size_of::<ParsedBarRow>(), |bytes, value| {
+        bytes
+            .checked_add(value.len())
+            .context("parsed bar materialized byte size overflow")
+    })
 }
 
 /// Normalize an accepted CSV bar object into one [`CanonicalBarsTable`] per
@@ -414,7 +505,11 @@ pub(crate) fn normalize_csv_native_bars_with_meter(
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(mapping.has_headers)
         .trim(csv::Trim::All)
-        .from_reader(csv_text.as_bytes());
+        .from_reader(CooperativeDeadlineReader::new(
+            Cursor::new(csv_text.as_bytes()),
+            work_budget,
+            OperatorWorkBudgetStage::Normalize,
+        ));
     let header_columns: Vec<String> = if mapping.has_headers {
         let header_columns = reader
             .headers()
@@ -597,17 +692,32 @@ pub(crate) fn normalize_csv_native_bars_with_meter(
                 let rows = groups
                     .get(instrument_key)
                     .context("internal: group_order key absent from groups")?;
-                let mut opens: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
-                opens.sort_unstable();
-                opens.dedup();
+                verify_canonical_rows_materialization(
+                    rows,
+                    work_budget,
+                    OperatorWorkBudgetStage::Normalize,
+                    parsed_bar_row_materialized_bytes,
+                )?;
+                let mut raw_opens = Vec::new();
+                raw_opens
+                    .try_reserve_exact(rows.len())
+                    .context("reserve declared-interval bar open times")?;
+                for row in rows {
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+                    raw_opens.push(row.open_time);
+                }
+                let opens = sort_unique_open_times_with_meter(raw_opens, work_budget)?;
                 if opens.len() < 2 {
                     continue;
                 }
                 // Prefix the instrument key while preserving the specific
                 // derivation failure (e.g. "not a multiple") in the Display, as
                 // the derive path does — a `with_context` wrapper would bury it.
-                let derived = bar_spec_from_open_times(&opens)
-                    .map_err(|error| anyhow::anyhow!("instrument {instrument_key:?}: {error:#}"))?;
+                let derived =
+                    bar_spec_from_sorted_unique_open_times_with_meter(&opens, work_budget)
+                        .map_err(|error| {
+                            anyhow::anyhow!("instrument {instrument_key:?}: {error:#}")
+                        })?;
                 ensure!(
                     declared == derived,
                     "instrument {instrument_key:?}: declared bar interval {declared:?} does not \
@@ -626,9 +736,21 @@ pub(crate) fn normalize_csv_native_bars_with_meter(
                 let rows = groups
                     .get(instrument_key)
                     .context("internal: group_order key absent from groups")?;
-                let mut opens: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
-                opens.sort_unstable();
-                opens.dedup();
+                verify_canonical_rows_materialization(
+                    rows,
+                    work_budget,
+                    OperatorWorkBudgetStage::Normalize,
+                    parsed_bar_row_materialized_bytes,
+                )?;
+                let mut raw_opens = Vec::new();
+                raw_opens
+                    .try_reserve_exact(rows.len())
+                    .context("reserve derived-interval bar open times")?;
+                for row in rows {
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+                    raw_opens.push(row.open_time);
+                }
+                let opens = sort_unique_open_times_with_meter(raw_opens, work_budget)?;
                 // A single-bar instrument cannot prove a gap; the derive path
                 // demands an explicit declaration with an operator-actionable
                 // message before delegating to the shared min-gap derivation.
@@ -645,8 +767,11 @@ pub(crate) fn normalize_csv_native_bars_with_meter(
                 // generic message in `to_string()`, masking the operator-
                 // actionable cause and diverging from the declared-interval
                 // path, which surfaces "not a multiple" at the top level.
-                let instrument_spec = bar_spec_from_open_times(&opens)
-                    .map_err(|error| anyhow::anyhow!("instrument {instrument_key:?}: {error:#}"))?;
+                let instrument_spec =
+                    bar_spec_from_sorted_unique_open_times_with_meter(&opens, work_budget)
+                        .map_err(|error| {
+                            anyhow::anyhow!("instrument {instrument_key:?}: {error:#}")
+                        })?;
                 match &object_spec {
                     None => object_spec = Some(instrument_spec),
                     Some(existing) => {
@@ -687,6 +812,7 @@ pub(crate) fn normalize_csv_native_bars_with_meter(
             parsed_rows,
             capture_time_nanos,
             ingest_run_id,
+            work_budget,
         )?;
         tables.push(table);
     }
@@ -838,26 +964,19 @@ pub(crate) fn normalize_paged_json_bars_with_meter(
 
     let mut parsed_rows: Vec<ParsedBarRow> = Vec::new();
     let mut object_open_times: Vec<i64> = Vec::new();
-    // Accept either one envelope object (which may span multiple lines, e.g. a
-    // pretty-printed body) or newline-separated compact envelope objects (the
-    // backfill may concatenate page bodies). The whole text is tried as one
-    // envelope FIRST; only when that parse fails is the text split per line,
-    // because a multi-page concatenation is never itself valid JSON while a
-    // single envelope may legitimately contain newlines.
-    let pages: Vec<String> = match serde_json::from_str::<serde_json::Value>(json_text) {
-        Ok(_) => vec![json_text.to_string()],
-        Err(_) => json_text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(str::to_string)
-            .collect(),
-    };
+    // One streaming parse accepts either a pretty-printed single envelope or
+    // whitespace-separated page envelopes without first parsing the whole
+    // payload speculatively and then parsing it again.
+    let pages = deserialize_json_stream_with_budget::<serde_json::Value>(
+        json_text.as_bytes(),
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+    )
+    .context("invalid paged-JSON envelope stream")?;
     let mut saw_envelope = false;
-    for (page_index, line) in pages.iter().enumerate() {
+    for (page_index, envelope) in pages.iter().enumerate() {
         saw_envelope = true;
-        let envelope: serde_json::Value = serde_json::from_str(line)
-            .with_context(|| format!("page {page_index}: invalid JSON envelope"))?;
-        let rows_value = walk_json_path(&envelope, &path_segments).with_context(|| {
+        let rows_value = walk_json_path(envelope, &path_segments).with_context(|| {
             format!(
                 "page {page_index}: rows_path {:?} does not resolve in envelope",
                 mapping.rows_path
@@ -894,7 +1013,7 @@ pub(crate) fn normalize_paged_json_bars_with_meter(
 
     // Reconcile the declared period against the data, exactly as the CSV path
     // reconciles a declared interval, so a mis-declared step fails loud.
-    let derived_spec = bar_spec_from_open_times(&object_open_times)?;
+    let derived_spec = bar_spec_from_open_times_with_meter(&object_open_times, work_budget)?;
     ensure!(
         declared_spec == derived_spec,
         "declared bar interval {declared_spec:?} does not match interval derived from open times {derived_spec:?}"
@@ -910,6 +1029,7 @@ pub(crate) fn normalize_paged_json_bars_with_meter(
         parsed_rows,
         capture_time_nanos,
         ingest_run_id,
+        work_budget,
     )?;
     Ok(vec![table])
 }
@@ -1233,115 +1353,122 @@ pub(crate) fn normalize_jsonl_multi_interval_bars_with_meter(
     let mut group_order: Vec<GroupKey> = Vec::new();
     let mut groups: BTreeMap<GroupKey, Vec<ParsedBarRow>> = BTreeMap::new();
 
-    for (line_index, line) in jsonl_text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
-        let location = format!("line {}", line_index + 1);
-        let record: serde_json::Value = serde_json::from_str(line)
+    for_each_nonempty_text_record_with_budget(
+        jsonl_text,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+        |line_index, line| {
+            work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
+            let location = format!("line {}", line_index + 1);
+            let record: serde_json::Value = deserialize_json_with_budget(
+                line.as_bytes(),
+                work_budget,
+                OperatorWorkBudgetStage::Normalize,
+            )
             .with_context(|| format!("{location}: invalid JSON object"))?;
 
-        let interval_token = json_scalar_to_string(
-            record.get(&mapping.interval_field).with_context(|| {
-                format!(
-                    "{location}: missing interval field {:?}",
-                    mapping.interval_field
-                )
-            })?,
-            &location,
-            "interval",
-        )?;
-        ensure!(
-            mapping.interval_token_map.contains_key(&interval_token),
-            "{location}: interval token {interval_token:?} is not in interval_token_map"
-        );
-
-        let instrument_key = match &mapping.instrument_field {
-            Some(instrument_field) => {
-                let raw = json_scalar_to_string(
-                    record.get(instrument_field).with_context(|| {
-                        format!("{location}: missing instrument field {instrument_field:?}")
-                    })?,
-                    &location,
-                    "instrument",
-                )?;
-                ensure!(!raw.is_empty(), "{location}: empty instrument field");
-                Some(raw)
-            }
-            None => None,
-        };
-
-        let at = |field: &str, label: &str| -> Result<String> {
-            json_scalar_to_string(
-                record
-                    .get(field)
-                    .with_context(|| format!("{location}: missing {label} field {field:?}"))?,
+            let interval_token = json_scalar_to_string(
+                record.get(&mapping.interval_field).with_context(|| {
+                    format!(
+                        "{location}: missing interval field {:?}",
+                        mapping.interval_field
+                    )
+                })?,
                 &location,
-                label,
-            )
-        };
-        let open_time_raw = at(&mapping.open_time_field, "open_time")?;
-        let open = at(&mapping.open_field, "open")?;
-        let high = at(&mapping.high_field, "high")?;
-        let low = at(&mapping.low_field, "low")?;
-        let close = at(&mapping.close_field, "close")?;
-        let volume = at(&mapping.volume_field, "volume")?;
-        let close_time_raw = match &mapping.close_time_field {
-            Some(close_time_field) => Some(at(close_time_field, "close_time")?),
-            None => None,
-        };
+                "interval",
+            )?;
+            ensure!(
+                mapping.interval_token_map.contains_key(&interval_token),
+                "{location}: interval token {interval_token:?} is not in interval_token_map"
+            );
 
-        let open_time = mapping
-            .timestamp_unit
-            .parse_to_nanos(&open_time_raw)
-            .with_context(|| format!("{location}: invalid open_time {open_time_raw:?}"))?;
-        ensure!(open_time > 0, "{location}: non-positive open_time");
-        let close_time = match close_time_raw {
-            Some(close_time_raw) => Some(
-                mapping
-                    .timestamp_unit
-                    .parse_to_nanos(&close_time_raw)
-                    .with_context(|| {
-                        format!("{location}: invalid close_time {close_time_raw:?}")
-                    })?,
-            ),
-            None => None,
-        };
-        for (label, value) in [
-            ("open", &open),
-            ("high", &high),
-            ("low", &low),
-            ("close", &close),
-            ("volume", &volume),
-        ] {
-            ensure!(!value.trim().is_empty(), "{location}: empty {label}");
-        }
-        apply_price_sign_policy_at(
-            &location,
-            mapping.price_sign_policy,
-            &open,
-            &high,
-            &low,
-            &close,
-        )?;
+            let instrument_key = match &mapping.instrument_field {
+                Some(instrument_field) => {
+                    let raw = json_scalar_to_string(
+                        record.get(instrument_field).with_context(|| {
+                            format!("{location}: missing instrument field {instrument_field:?}")
+                        })?,
+                        &location,
+                        "instrument",
+                    )?;
+                    ensure!(!raw.is_empty(), "{location}: empty instrument field");
+                    Some(raw)
+                }
+                None => None,
+            };
 
-        let key: GroupKey = (instrument_key.clone(), interval_token);
-        let group = groups.entry(key.clone()).or_insert_with(|| {
-            group_order.push(key.clone());
-            Vec::new()
-        });
-        group.push(ParsedBarRow {
-            instrument_key,
-            open_time,
-            close_time,
-            open,
-            high,
-            low,
-            close,
-            volume,
-        });
-    }
+            let at = |field: &str, label: &str| -> Result<String> {
+                json_scalar_to_string(
+                    record
+                        .get(field)
+                        .with_context(|| format!("{location}: missing {label} field {field:?}"))?,
+                    &location,
+                    label,
+                )
+            };
+            let open_time_raw = at(&mapping.open_time_field, "open_time")?;
+            let open = at(&mapping.open_field, "open")?;
+            let high = at(&mapping.high_field, "high")?;
+            let low = at(&mapping.low_field, "low")?;
+            let close = at(&mapping.close_field, "close")?;
+            let volume = at(&mapping.volume_field, "volume")?;
+            let close_time_raw = match &mapping.close_time_field {
+                Some(close_time_field) => Some(at(close_time_field, "close_time")?),
+                None => None,
+            };
+
+            let open_time = mapping
+                .timestamp_unit
+                .parse_to_nanos(&open_time_raw)
+                .with_context(|| format!("{location}: invalid open_time {open_time_raw:?}"))?;
+            ensure!(open_time > 0, "{location}: non-positive open_time");
+            let close_time = match close_time_raw {
+                Some(close_time_raw) => Some(
+                    mapping
+                        .timestamp_unit
+                        .parse_to_nanos(&close_time_raw)
+                        .with_context(|| {
+                            format!("{location}: invalid close_time {close_time_raw:?}")
+                        })?,
+                ),
+                None => None,
+            };
+            for (label, value) in [
+                ("open", &open),
+                ("high", &high),
+                ("low", &low),
+                ("close", &close),
+                ("volume", &volume),
+            ] {
+                ensure!(!value.trim().is_empty(), "{location}: empty {label}");
+            }
+            apply_price_sign_policy_at(
+                &location,
+                mapping.price_sign_policy,
+                &open,
+                &high,
+                &low,
+                &close,
+            )?;
+
+            let key: GroupKey = (instrument_key.clone(), interval_token);
+            let group = groups.entry(key.clone()).or_insert_with(|| {
+                group_order.push(key.clone());
+                Vec::new()
+            });
+            group.push(ParsedBarRow {
+                instrument_key,
+                open_time,
+                close_time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+            });
+            Ok(())
+        },
+    )?;
 
     ensure!(
         !group_order.is_empty(),
@@ -1373,6 +1500,7 @@ pub(crate) fn normalize_jsonl_multi_interval_bars_with_meter(
             parsed_rows,
             capture_time_nanos,
             ingest_run_id,
+            work_budget,
         )?;
         tables.push(table);
     }
@@ -1412,16 +1540,26 @@ fn assemble_bar_table(
     parsed_rows: Vec<ParsedBarRow>,
     capture_time_nanos: i64,
     ingest_run_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CanonicalBarsTable> {
     let canonical_instrument_key = format!(
         "{}/{}/{}",
         accepted.venue, accepted.product_family, identity.instrument_id
     );
     let transform_hash = compute_bar_transform_hash(transform_identity);
-    let parsed_rows = dedup_sorted_bar_rows(parsed_rows)?;
+    let parsed_rows = dedup_sorted_bar_rows(parsed_rows, work_budget)?;
 
-    let mut rows = Vec::with_capacity(parsed_rows.len());
-    for parsed in parsed_rows {
+    verify_canonical_rows_materialization(
+        &parsed_rows,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+        parsed_bar_row_materialized_bytes,
+    )?;
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(parsed_rows.len())
+        .context("reserve canonical bar rows")?;
+    for parsed in &parsed_rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         let close_time = match parsed.close_time {
             Some(close_time) => close_time,
             None => {
@@ -1458,12 +1596,13 @@ fn assemble_bar_table(
             source_proof_id: accepted.source_proof_id.clone(),
             payload_hash: accepted.object.sha256.clone(),
             transform_hash: transform_hash.clone(),
-            open: parsed.open,
-            high: parsed.high,
-            low: parsed.low,
-            close: parsed.close,
-            volume: parsed.volume,
+            open: parsed.open.clone(),
+            high: parsed.high.clone(),
+            low: parsed.low.clone(),
+            close: parsed.close.clone(),
+            volume: parsed.volume.clone(),
         });
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
 
     let table = CanonicalBarsTable {
@@ -1484,7 +1623,7 @@ fn assemble_bar_table(
         bar_spec,
         rows,
     };
-    table.validate()?;
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::Normalize)?;
     Ok(table)
 }
 
@@ -1494,10 +1633,28 @@ fn assemble_bar_table(
 /// A duplicate `open_time` is collapsed only when its OHLCV strings are
 /// byte-identical to the row already kept; a disagreeing duplicate is a corrupt
 /// object and fails loud.
-fn dedup_sorted_bar_rows(mut rows: Vec<ParsedBarRow>) -> Result<Vec<ParsedBarRow>> {
-    rows.sort_by_key(|row| row.open_time);
-    let mut deduped: Vec<ParsedBarRow> = Vec::with_capacity(rows.len());
-    for row in rows {
+fn dedup_sorted_bar_rows(
+    mut rows: Vec<ParsedBarRow>,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<ParsedBarRow>> {
+    cooperative_stable_sort_by_key(
+        &mut rows,
+        |row| row.open_time,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+    )?;
+    verify_canonical_rows_materialization(
+        &rows,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+        parsed_bar_row_materialized_bytes,
+    )?;
+    let mut deduped: Vec<ParsedBarRow> = Vec::new();
+    deduped
+        .try_reserve_exact(rows.len())
+        .context("reserve deduplicated bar rows")?;
+    for row in &rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
         if let Some(last) = deduped.last()
             && last.open_time == row.open_time
         {
@@ -1514,7 +1671,8 @@ fn dedup_sorted_bar_rows(mut rows: Vec<ParsedBarRow>) -> Result<Vec<ParsedBarRow
             );
             continue;
         }
-        deduped.push(row);
+        deduped.push(row.clone());
+        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
     Ok(deduped)
 }
@@ -2768,6 +2926,7 @@ table_families = ["bars"]
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 1,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 60,
                     require_object_selection_metadata: false,

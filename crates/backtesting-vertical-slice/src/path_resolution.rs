@@ -193,38 +193,6 @@ pub fn resolve_contained_output_component(output_root: &Path, component: &str) -
     }
 }
 
-/// Atomically claim an absent operator output directory, or validate an
-/// already-existing real directory, below the canonical batch output root.
-///
-/// This establishes the strongest pathname claim available through `std`.
-/// Callers must still revalidate after long-running external work because
-/// downstream NautilusTrader/operator APIs reopen artifacts by pathname rather
-/// than accepting a directory handle.
-///
-/// # Errors
-///
-/// Returns the same errors as [`resolve_contained_output_component`], plus any
-/// error creating an absent output directory.
-pub fn claim_contained_output_component(output_root: &Path, component: &str) -> Result<PathBuf> {
-    validate_portable_path_component("operator_run_id", component)?;
-    let canonical_root = output_root.canonicalize().with_context(|| {
-        format!(
-            "canonicalize batch output directory {}",
-            output_root.display()
-        )
-    })?;
-    let candidate = canonical_root.join(component);
-    match std::fs::create_dir(&candidate) {
-        Ok(()) => resolve_contained_output_component(&canonical_root, component),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            resolve_contained_output_component(&canonical_root, component)
-        }
-        Err(error) => {
-            Err(error).with_context(|| format!("claim operator output {}", candidate.display()))
-        }
-    }
-}
-
 /// Resolve a CLI-supplied path that must reference an existing input, with no
 /// referencing-artifact directory to anchor against (the binary entrypoint
 /// variant of [`resolve_existing_path`]).

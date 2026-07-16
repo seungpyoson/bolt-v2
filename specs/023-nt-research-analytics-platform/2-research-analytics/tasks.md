@@ -1,6 +1,6 @@
 # Tasks: Research Analytics
 
-- [x] RA-001 Gate-0: wire durable + immutable S3 write into the existing venue converters and add config-driven venue dispatch so all converted NT catalog data lands in the canonical S3 artifact_root instead of a local reproduce-on-demand path. Durability/immutability is WE-BUILD via the conditional create-only writer over object_store's PutMode::Create (S3 If-None-Match) per ../reference/normalization-catalog-plan.v3.md — NT's own catalog write is non-atomic head() + unconditional object_store.put (overwrite-by-default; NT names no PutMode, zero PutMode hits in NT crates), not a create-only facility. Read access stays NT (from_uri S3).
+- [x] RA-001 Gate-0: provide a config-selected durable S3 path for operator runs that opt into artifact-store publication. Durability/immutability is WE-BUILD via manifest-bound, create-only publication and exact-version hydration; NT's catalog writer is not the publication authority. Backtest reads stay NT through the sole hydrated local-catalog binding.
 - [x] RA-002 Define point-in-time feature join rules and leakage fixtures.
 - [x] RA-003 Implement leakage-check fixtures that fail closed on future-data access.
 - [x] RA-004 Implement a thin reader helper (~dozens LOC) over NT typed query<T> (instrument + time + SQL where pushdown) and DataBackendSession (DataFusion SQL -> Arrow) to expose catalog data to research notebooks without duplicating NT's query surface.

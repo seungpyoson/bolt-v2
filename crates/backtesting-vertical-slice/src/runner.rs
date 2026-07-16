@@ -12,9 +12,19 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    fmt, fs,
+    mem::{size_of, size_of_val},
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
+};
+
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(target_os = "linux")]
+use std::os::{
+    fd::{AsRawFd, FromRawFd},
+    unix::{ffi::OsStrExt, fs::OpenOptionsExt},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -47,10 +57,12 @@ use bolt_v2::{
 use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
+use nautilus_common::cache::Cache;
 use nautilus_core::UnixNanos;
 #[cfg(test)]
 use nautilus_model::orderbook::OrderBook;
 use nautilus_model::{
+    accounts::AccountAny,
     data::{
         Bar, BarSpecification, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
         MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick,
@@ -59,11 +71,11 @@ use nautilus_model::{
         AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide, OrderStatus,
         PriceType,
     },
-    events::OrderEventAny,
-    identifiers::{ClientId, InstrumentId, Venue},
-    orders::Order,
+    events::{OrderEventAny, OrderFilled, PositionAdjusted},
+    identifiers::{ClientId, InstrumentId, TradeId, Venue},
+    orders::{Order, OrderAny},
     position::Position,
-    types::{AccountBalance, Price, Quantity},
+    types::{AccountBalance, Currency, Money, Price, Quantity},
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -72,14 +84,18 @@ use serde::Serialize;
 use crate::hashing::sha256_hex;
 
 use super::{
+    canonical_market_data::funding_rate_row_materialized_bytes,
     canonical_trades::{
         CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, ConverterConfig,
-        TradeAggressorSide, normalize_registered_trade_converter,
+        TradeAggressorSide, canonical_trade_row_materialized_bytes,
+        normalize_registered_trade_converter, verify_canonical_rows_materialization,
     },
     catalog_projection::{
-        CatalogInstrumentSpecSource, CatalogProjection, actual_nt_market_data_metadata,
-        project_canonical_trades_to_catalog, projected_nt_market_data_row_groups,
-        read_back_trade_ticks, ts_event_nanos, ts_init_nanos,
+        CatalogInstrumentSpecSource, CatalogProjection, actual_nt_market_data_metadata_guarded,
+        assert_row_pair_equality_guarded, logical_catalog_hash_guarded,
+        preflight_nt_catalog_parquet_guarded, project_canonical_trades_to_catalog,
+        project_canonical_trades_to_catalog_guarded, projected_nt_market_data_row_groups,
+        read_back_trade_ticks_guarded, ts_event_nanos, ts_init_nanos,
     },
     conversion_boundary::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
@@ -88,19 +104,32 @@ use super::{
         domain_statistics_from_analyzer, register_domain_statistics, resolve_domain_statistics,
     },
     mechanical_probe_strategy::{MechanicalTradeReplayProbe, MechanicalTradeReplayProbeConfig},
-    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    operator_work_budget::{
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, cooperative_stable_sort_by,
+        cooperative_stable_sort_by_key, guarded_operation_outcome,
+        sha256_exact_sized_open_file_guarded,
+    },
     path_resolution::resolve_existing_input_path,
     result_contract::{
         BacktestFeedLabel, BacktestResultContract, BacktestRunGuardReport, ResultArtifactUris,
         ResultContractInputs, build_result_contract,
     },
     run_manifest::{
-        BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
+        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
+        CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION, CATALOG_RUN_VIEW_AUTHORITY_SCHEMA_VERSION,
+        CatalogProjectionManifestDocument, CatalogProjectionManifestObject,
+        CatalogRunViewAuthority, CatalogRunViewInputAuthority, CatalogRunViewRootAuthority,
+        ManifestCatalogInput, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
         STRATEGY_BINARY_ORACLE_MAKER, STRATEGY_HURST_VPIN_DIRECTIONAL,
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_ORDER_EXECUTION_MODE,
-        StrategySource,
+        StrategySource, SubmittedRunIdentity,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
+};
+
+use crate::{
+    atomic_artifact_write::open_pinned_regular_file,
+    pinned_regular_file::PinnedRegularFileFingerprint,
 };
 
 /// Strategy parameter key for the bar type.
@@ -528,10 +557,16 @@ pub struct BacktestRunInputs<'a> {
     pub manifest: &'a BacktestingRunManifest,
     pub contract_manifest_hash: &'a str,
     pub converter: &'a ConverterConfig,
+    /// Exact source-control artifact identity authorizing this conversion.
+    pub conversion_control_artifact_path: &'a str,
+    pub conversion_control_artifact_sha256: &'a str,
     /// Local path for the canonical normalized Parquet artifact.
     pub canonical_artifact_path: &'a Path,
     /// Local catalog projection root.
     pub catalog_root: &'a Path,
+    /// Authoritative output boundary. Projection candidates are created as
+    /// private siblings outside this root and can never enter its exact seal.
+    pub authoritative_output_root: &'a Path,
     pub selector_provenance: Option<BacktestSelectorProvenance<'a>>,
     pub created_at: &'a str,
     pub artifact_uris: ResultArtifactUris,
@@ -565,12 +600,18 @@ fn selector_provenance_hashes<'a>(
 pub struct BacktestRunOutput {
     pub canonical_table: CanonicalTradesTable,
     pub projection: CatalogProjection,
+    /// Post-projection authority bytes which publication/hydration must reuse unchanged.
+    pub catalog_run_view_authority: CatalogRunViewAuthority,
     pub conversion_checkpoint: ConversionCheckpoint,
     pub conversion_manifest: ConversionManifest,
     pub conversion_catalog_metadata: ConversionCatalogMetadata,
     pub conversion_checkpoint_hash: String,
     pub conversion_manifest_hash: String,
     pub read_back_count: usize,
+    /// Independently derived number of catalog rows the configured NT window
+    /// must deliver. Durable publication records this value separately from
+    /// the sole BacktestNode result.
+    pub expected_iterations: usize,
     pub nt_result: BacktestResult,
     /// Terminal state of every order the engine produced, captured from the
     /// post-run cache. Lets callers assert order-level outcomes (e.g. every
@@ -578,6 +619,40 @@ pub struct BacktestRunOutput {
     /// explains any non-fill terminal state.
     pub order_terminals: Vec<OrderTerminalRecord>,
     pub contract: BacktestResultContract,
+}
+
+/// Projection-complete trade run which has not yet executed BacktestNode.
+///
+/// The type is crate-private and consumed by [`execute_prepared_backtest`], so
+/// durable callers can publish and hydrate the exact sealed catalog between
+/// projection and the one NT execution without fabricating a partial
+/// [`BacktestRunOutput`].
+pub(crate) struct PreparedBacktestRun {
+    pub(crate) canonical_table: CanonicalTradesTable,
+    pub(crate) projection: CatalogProjection,
+    pub(crate) catalog_run_view_authority: CatalogRunViewAuthority,
+    pub(crate) conversion_checkpoint: ConversionCheckpoint,
+    pub(crate) conversion_manifest: ConversionManifest,
+    pub(crate) conversion_catalog_metadata: ConversionCatalogMetadata,
+    pub(crate) conversion_checkpoint_hash: String,
+    pub(crate) conversion_manifest_hash: String,
+    conversion_catalog_metadata_hash: String,
+    pub(crate) read_back_count: usize,
+    pub(crate) expected_iterations: usize,
+    submitted_identity: SubmittedRunIdentity,
+}
+
+/// Submitted intent and runtime catalog binding needed to finish one prepared
+/// trade run. The runtime manifest may differ from the submitted manifest only
+/// in the catalog-location fields allowed by [`SubmittedRunIdentity`].
+pub(crate) struct BacktestRunFinalizeInputs<'a> {
+    pub(crate) accepted: &'a AcceptedDataset,
+    pub(crate) runtime_manifest: &'a BacktestingRunManifest,
+    pub(crate) contract_manifest_hash: &'a str,
+    pub(crate) selector_provenance: Option<BacktestSelectorProvenance<'a>>,
+    pub(crate) created_at: &'a str,
+    pub(crate) artifact_uris: ResultArtifactUris,
+    pub(crate) work_budget: &'a OperatorWorkBudgetGuard,
 }
 
 #[derive(Default)]
@@ -1188,18 +1263,1480 @@ fn ensure_settlement_currency_funded(
     Ok(())
 }
 
-pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
-    run_nt_backtest_node_guarded(manifest, &OperatorWorkBudgetGuard::unbounded())
+const TRUSTED_CATALOG_ROOT_MODE: u32 = 0o700;
+const SEALED_CATALOG_DIRECTORY_MODE: u32 = 0o500;
+const SEALED_CATALOG_FILE_MODE: u32 = 0o400;
+const CATALOG_PERMISSION_MASK: u32 = 0o7777;
+
+#[cfg(target_os = "linux")]
+fn non_root_catalog_effective_uid() -> Result<u32> {
+    // SAFETY: `geteuid` has no preconditions and does not mutate process state.
+    let effective_uid = unsafe { libc::geteuid() };
+    ensure!(
+        effective_uid != 0,
+        "trusted local catalog execution requires a non-root dedicated service account"
+    );
+    Ok(effective_uid)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_trusted_catalog_directory_metadata(
+    path: &Path,
+    metadata: &fs::Metadata,
+    expected_mode: u32,
+) -> Result<()> {
+    let effective_uid = non_root_catalog_effective_uid()?;
+    ensure!(
+        metadata.file_type().is_dir(),
+        "catalog run-view path must be a real directory, not a symlink: {}",
+        path.display()
+    );
+    ensure!(
+        metadata.uid() == effective_uid,
+        "catalog run-view directory must be owned by the worker effective UID: {}",
+        path.display()
+    );
+    ensure!(
+        metadata.mode() & CATALOG_PERMISSION_MASK == expected_mode,
+        "catalog run-view directory {} must retain exact {:04o} permissions",
+        path.display(),
+        expected_mode
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_trusted_catalog_file_metadata(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    let effective_uid = non_root_catalog_effective_uid()?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "catalog run-view object must be a regular file: {}",
+        path.display()
+    );
+    ensure!(
+        metadata.uid() == effective_uid,
+        "catalog run-view object must be owned by the worker effective UID: {}",
+        path.display()
+    );
+    ensure!(
+        metadata.mode() & CATALOG_PERMISSION_MASK == SEALED_CATALOG_FILE_MODE,
+        "catalog run-view object {} must retain exact {:04o} permissions",
+        path.display(),
+        SEALED_CATALOG_FILE_MODE
+    );
+    ensure!(
+        metadata.nlink() == 1,
+        "catalog run-view object {} must have link count 1, found {}",
+        path.display(),
+        metadata.nlink()
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CatalogDirectoryIdentity {
+    path: PathBuf,
+    expected_mode: u32,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    modified_seconds: i64,
+    #[cfg(unix)]
+    modified_nanoseconds: i64,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
+}
+
+impl CatalogDirectoryIdentity {
+    fn capture(path: &Path, expected_mode: u32) -> Result<Self> {
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("lstat catalog run-view directory {}", path.display()))?;
+        #[cfg(not(target_os = "linux"))]
+        bail!(
+            "trusted local catalog directory identity checks require Linux for {}",
+            path.display()
+        );
+        #[cfg(target_os = "linux")]
+        {
+            validate_trusted_catalog_directory_metadata(path, &metadata, expected_mode)?;
+            Ok(Self {
+                path: path.to_path_buf(),
+                expected_mode,
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                modified_seconds: metadata.mtime(),
+                modified_nanoseconds: metadata.mtime_nsec(),
+                changed_seconds: metadata.ctime(),
+                changed_nanoseconds: metadata.ctime_nsec(),
+            })
+        }
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        let actual = Self::capture(&self.path, self.expected_mode)?;
+        ensure!(
+            actual == *self,
+            "catalog run-view directory identity changed: {}",
+            self.path.display()
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct SealedCatalogFile {
+    relative_path: String,
+    path: PathBuf,
+    byte_len: u64,
+    sha256: String,
+    fingerprint: PinnedRegularFileFingerprint,
+}
+
+#[cfg(target_os = "linux")]
+const CATALOG_PARENT_WATCH_MASK: u32 = libc::IN_ATTRIB
+    | libc::IN_DELETE_SELF
+    | libc::IN_MOVE_SELF
+    | libc::IN_UNMOUNT
+    | libc::IN_ONESHOT
+    | libc::IN_ONLYDIR
+    | libc::IN_DONT_FOLLOW;
+
+#[cfg(target_os = "linux")]
+const CATALOG_DIRECTORY_WATCH_MASK: u32 = libc::IN_ATTRIB
+    | libc::IN_CLOSE_WRITE
+    | libc::IN_CREATE
+    | libc::IN_DELETE
+    | libc::IN_DELETE_SELF
+    | libc::IN_MODIFY
+    | libc::IN_MOVED_FROM
+    | libc::IN_MOVED_TO
+    | libc::IN_MOVE_SELF
+    | libc::IN_UNMOUNT
+    | libc::IN_ONESHOT
+    | libc::IN_ONLYDIR
+    | libc::IN_DONT_FOLLOW;
+
+#[cfg(target_os = "linux")]
+const CATALOG_FILE_WATCH_MASK: u32 = libc::IN_ATTRIB
+    | libc::IN_CLOSE_WRITE
+    | libc::IN_DELETE_SELF
+    | libc::IN_MODIFY
+    | libc::IN_MOVE_SELF
+    | libc::IN_UNMOUNT
+    | libc::IN_ONESHOT
+    | libc::IN_DONT_FOLLOW;
+
+/// Linux kernel witness for catalog namespace and ordinary filesystem-API
+/// content mutations between the final pre-run capture and the final post-run
+/// physical verification.
+///
+/// The inotify descriptor is deliberately never drained. Every requested watch
+/// is one-shot, so the first relevant event makes the descriptor permanently
+/// readable without allowing an attacker to grow an unbounded userspace event
+/// buffer. Watch removal and queue overflow also make it readable and therefore
+/// fail closed. Read-only NT access is excluded from every mask.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct CatalogMutationWitness {
+    inotify: fs::File,
+    watch_count: usize,
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+struct CatalogMutationWitness;
+
+#[cfg(target_os = "linux")]
+impl CatalogMutationWitness {
+    fn arm(
+        root: &Path,
+        relative_directories: &[PathBuf],
+        objects: &[CatalogProjectionManifestObject],
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Self> {
+        work_budget.check_deadline(stage)?;
+        ensure!(
+            root.is_absolute(),
+            "catalog mutation witness requires an absolute catalog root: {}",
+            root.display()
+        );
+        let ancestor_count = root.ancestors().skip(1).count();
+        let watch_count = relative_directories
+            .len()
+            .checked_add(objects.len())
+            .and_then(|count| count.checked_add(ancestor_count))
+            .and_then(|count| count.checked_add(1))
+            .context("catalog mutation witness watch count overflow")?;
+        let watch_inventory_bytes = watch_count
+            .checked_mul(size_of::<libc::inotify_event>())
+            .context("catalog mutation witness inventory byte count overflow")?;
+        verify_one_materialization(
+            size_of::<libc::inotify_event>(),
+            work_budget,
+            stage,
+            "catalog mutation witness inventory entry",
+        )?;
+        work_budget.verify_decoded_bytes(
+            u64::try_from(watch_inventory_bytes)
+                .context("catalog mutation witness inventory bytes do not fit u64")?,
+            stage,
+        )?;
+
+        // SAFETY: successful `inotify_init1` returns one newly owned descriptor,
+        // transferred immediately into `File` below.
+        let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("create nonblocking catalog mutation witness");
+        }
+        // SAFETY: the successful syscall returned a uniquely owned descriptor.
+        let inotify = unsafe { fs::File::from_raw_fd(descriptor) };
+        for ancestor in root.ancestors().skip(1) {
+            work_budget.check_deadline(stage)?;
+            Self::add_watch_guarded(
+                &inotify,
+                ancestor,
+                CATALOG_PARENT_WATCH_MASK,
+                watch_inventory_bytes,
+                work_budget,
+                stage,
+            )?;
+        }
+        Self::add_watch_guarded(
+            &inotify,
+            root,
+            CATALOG_DIRECTORY_WATCH_MASK,
+            watch_inventory_bytes,
+            work_budget,
+            stage,
+        )?;
+        for relative in relative_directories {
+            work_budget.check_deadline(stage)?;
+            Self::add_relative_watch_guarded(
+                &inotify,
+                root,
+                relative,
+                CATALOG_DIRECTORY_WATCH_MASK,
+                watch_inventory_bytes,
+                work_budget,
+                stage,
+            )?;
+        }
+        for object in objects {
+            work_budget.check_deadline(stage)?;
+            Self::add_relative_watch_guarded(
+                &inotify,
+                root,
+                Path::new(&object.relative_path),
+                CATALOG_FILE_WATCH_MASK,
+                watch_inventory_bytes,
+                work_budget,
+                stage,
+            )?;
+        }
+        work_budget.check_deadline(stage)?;
+        Ok(Self {
+            inotify,
+            watch_count,
+        })
+    }
+
+    fn add_watch_guarded(
+        inotify: &fs::File,
+        path: &Path,
+        mask: u32,
+        retained_inventory_bytes: usize,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        Self::add_watch_components_guarded(
+            inotify,
+            &[path.as_os_str().as_bytes()],
+            || path.display().to_string(),
+            mask,
+            retained_inventory_bytes,
+            work_budget,
+            stage,
+        )
+    }
+
+    fn add_relative_watch_guarded(
+        inotify: &fs::File,
+        root: &Path,
+        relative: &Path,
+        mask: u32,
+        retained_inventory_bytes: usize,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        ensure!(
+            !relative.is_absolute() && !relative.as_os_str().is_empty(),
+            "catalog mutation witness relative path must be non-empty and relative: {}",
+            relative.display()
+        );
+        let root_bytes = root.as_os_str().as_bytes();
+        let separator: &[u8] = if root_bytes.ends_with(b"/") {
+            b""
+        } else {
+            b"/"
+        };
+        Self::add_watch_components_guarded(
+            inotify,
+            &[root_bytes, separator, relative.as_os_str().as_bytes()],
+            || format!("{}/{}", root.display(), relative.display()),
+            mask,
+            retained_inventory_bytes,
+            work_budget,
+            stage,
+        )
+    }
+
+    fn add_watch_components_guarded(
+        inotify: &fs::File,
+        path_components: &[&[u8]],
+        path_label: impl Fn() -> String,
+        mask: u32,
+        retained_inventory_bytes: usize,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        ensure!(
+            path_components
+                .iter()
+                .all(|component| !component.contains(&0)),
+            "catalog mutation witness path contains an interior NUL: {}",
+            path_label()
+        );
+        let requested_bytes = path_components
+            .iter()
+            .try_fold(0_usize, |total, component| {
+                total.checked_add(component.len())
+            })
+            .context("catalog mutation witness path byte count overflow")?
+            .checked_add(1)
+            .context("catalog mutation witness path byte count overflow")?;
+        verify_one_materialization(
+            requested_bytes,
+            work_budget,
+            stage,
+            "catalog mutation witness path",
+        )?;
+        work_budget.verify_decoded_bytes(
+            u64::try_from(
+                retained_inventory_bytes
+                    .checked_add(requested_bytes)
+                    .context("catalog mutation witness live byte count overflow")?,
+            )
+            .context("catalog mutation witness live bytes do not fit u64")?,
+            stage,
+        )?;
+        let mut nul_terminated_path = Vec::new();
+        guarded_operation_outcome(work_budget, stage, || {
+            nul_terminated_path
+                .try_reserve_exact(requested_bytes)
+                .map_err(|error| anyhow::anyhow!("reserve catalog witness path: {error}"))
+        })??;
+        verify_one_materialization(
+            nul_terminated_path.capacity(),
+            work_budget,
+            stage,
+            "catalog mutation witness allocated path",
+        )?;
+        work_budget.verify_decoded_bytes(
+            u64::try_from(
+                retained_inventory_bytes
+                    .checked_add(nul_terminated_path.capacity())
+                    .context("catalog mutation witness allocated live byte count overflow")?,
+            )
+            .context("catalog mutation witness allocated live bytes do not fit u64")?,
+            stage,
+        )?;
+        for component in path_components {
+            nul_terminated_path.extend_from_slice(component);
+        }
+        nul_terminated_path.push(0);
+        // SAFETY: the descriptor is a live inotify instance and the path buffer
+        // is NUL-terminated and retained for the duration of the syscall.
+        let watch_descriptor = unsafe {
+            libc::inotify_add_watch(
+                inotify.as_raw_fd(),
+                nul_terminated_path.as_ptr().cast(),
+                mask,
+            )
+        };
+        if watch_descriptor < 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("arm catalog mutation witness for {}", path_label()));
+        }
+        work_budget.check_deadline(stage)
+    }
+
+    fn assert_quiescent(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        let mut descriptor = libc::pollfd {
+            fd: self.inotify.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `descriptor` points to one initialized pollfd for a live
+        // inotify descriptor; timeout zero performs a nonblocking observation.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
+        if ready < 0 {
+            return Err(std::io::Error::last_os_error()).context("poll catalog mutation witness");
+        }
+        ensure!(
+            ready == 0 && descriptor.revents == 0,
+            "catalog mutation witness observed a catalog change, watch loss, queue overflow, or descriptor failure across {} watches (poll revents={:#x})",
+            self.watch_count,
+            descriptor.revents
+        );
+        work_budget.check_deadline(stage)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl CatalogMutationWitness {
+    fn arm(
+        _root: &Path,
+        _relative_directories: &[PathBuf],
+        _objects: &[CatalogProjectionManifestObject],
+        _work_budget: &OperatorWorkBudgetGuard,
+        _stage: OperatorWorkBudgetStage,
+    ) -> Result<Self> {
+        bail!(
+            "catalog execution-window mutation witness requires Linux inotify; no equivalent fail-closed primitive is implemented for this platform"
+        )
+    }
+
+    fn assert_quiescent(
+        &self,
+        _work_budget: &OperatorWorkBudgetGuard,
+        _stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        bail!(
+            "catalog execution-window mutation witness requires Linux inotify; no equivalent fail-closed primitive is implemented for this platform"
+        )
+    }
+}
+
+trait ExpectedCatalogFile {
+    fn relative_path(&self) -> &str;
+}
+
+impl ExpectedCatalogFile for CatalogProjectionManifestObject {
+    fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+}
+
+impl ExpectedCatalogFile for SealedCatalogFile {
+    fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+}
+
+#[derive(Debug)]
+struct SealedCatalogRoot {
+    root: PathBuf,
+    trusted_root_lease: TrustedCatalogRootLease,
+    relative_directories: Vec<PathBuf>,
+    directories: Vec<CatalogDirectoryIdentity>,
+    files: Vec<SealedCatalogFile>,
+    mutation_witness: CatalogMutationWitness,
+}
+
+#[derive(Debug)]
+struct SealedNtCatalogRunView {
+    roots: Vec<SealedCatalogRoot>,
+}
+
+/// Pinned trust boundary for one local NT catalog root.
+///
+/// This protocol assumes one non-root dedicated service account. A hostile
+/// process with the same UID, or a hostile root process, is outside the threat
+/// model because either can alter or introspect the worker itself. No run input
+/// is allowed to select or attest the trusted UID.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct TrustedCatalogRootLease {
+    path: PathBuf,
+    handle: fs::File,
+    device: u64,
+    inode: u64,
+    owner_uid: u32,
+    filesystem_type: libc::c_long,
+}
+
+#[cfg(target_os = "linux")]
+impl TrustedCatalogRootLease {
+    fn open(root: &Path) -> Result<Self> {
+        Self::open_with_filesystem_classifier(root, supported_local_catalog_filesystem)
+    }
+
+    fn open_with_filesystem_classifier(
+        root: &Path,
+        classifier: impl FnOnce(libc::c_long) -> bool,
+    ) -> Result<Self> {
+        let effective_uid = non_root_catalog_effective_uid()?;
+        let path_metadata = fs::symlink_metadata(root)
+            .with_context(|| format!("lstat catalog run-view root {}", root.display()))?;
+        validate_trusted_catalog_directory_metadata(
+            root,
+            &path_metadata,
+            TRUSTED_CATALOG_ROOT_MODE,
+        )?;
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(root)
+            .with_context(|| format!("open trusted catalog run-view root {}", root.display()))?;
+        let handle_metadata = handle
+            .metadata()
+            .with_context(|| format!("fstat catalog run-view root {}", root.display()))?;
+        validate_trusted_catalog_directory_metadata(
+            root,
+            &handle_metadata,
+            TRUSTED_CATALOG_ROOT_MODE,
+        )?;
+        ensure!(
+            handle_metadata.dev() == path_metadata.dev()
+                && handle_metadata.ino() == path_metadata.ino(),
+            "catalog run-view root identity changed while validating {}",
+            root.display()
+        );
+        let filesystem_type = catalog_filesystem_type(&handle, root)?;
+        ensure!(
+            classifier(filesystem_type),
+            "catalog run-view root must use a supported local filesystem; f_type={filesystem_type:#x} for {}",
+            root.display()
+        );
+        let final_path_metadata = fs::symlink_metadata(root).with_context(|| {
+            format!(
+                "re-lstat catalog run-view root after pinning {}",
+                root.display()
+            )
+        })?;
+        validate_trusted_catalog_directory_metadata(
+            root,
+            &final_path_metadata,
+            TRUSTED_CATALOG_ROOT_MODE,
+        )?;
+        ensure!(
+            final_path_metadata.dev() == handle_metadata.dev()
+                && final_path_metadata.ino() == handle_metadata.ino(),
+            "catalog run-view root identity changed after pinning {}",
+            root.display()
+        );
+        Ok(Self {
+            path: root.to_path_buf(),
+            handle,
+            device: handle_metadata.dev(),
+            inode: handle_metadata.ino(),
+            owner_uid: effective_uid,
+            filesystem_type,
+        })
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        let effective_uid = non_root_catalog_effective_uid()?;
+        ensure!(
+            effective_uid == self.owner_uid,
+            "catalog worker effective UID changed while the trusted root lease was live"
+        );
+        let path_metadata = fs::symlink_metadata(&self.path)
+            .with_context(|| format!("re-lstat catalog run-view root {}", self.path.display()))?;
+        validate_trusted_catalog_directory_metadata(
+            &self.path,
+            &path_metadata,
+            TRUSTED_CATALOG_ROOT_MODE,
+        )?;
+        let handle_metadata = self
+            .handle
+            .metadata()
+            .with_context(|| format!("re-fstat catalog run-view root {}", self.path.display()))?;
+        validate_trusted_catalog_directory_metadata(
+            &self.path,
+            &handle_metadata,
+            TRUSTED_CATALOG_ROOT_MODE,
+        )?;
+        ensure!(
+            path_metadata.dev() == self.device
+                && path_metadata.ino() == self.inode
+                && handle_metadata.dev() == self.device
+                && handle_metadata.ino() == self.inode,
+            "catalog run-view root identity changed while its lease was live: {}",
+            self.path.display()
+        );
+        let filesystem_type = catalog_filesystem_type(&self.handle, &self.path)?;
+        ensure!(
+            filesystem_type == self.filesystem_type,
+            "catalog run-view root filesystem identity changed while its lease was live: {}",
+            self.path.display()
+        );
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn catalog_filesystem_type(handle: &fs::File, root: &Path) -> Result<libc::c_long> {
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `filesystem` points to writable storage for one statfs result and
+    // `handle` is a live descriptor for the already pinned directory.
+    let result = unsafe { libc::fstatfs(handle.as_raw_fd(), filesystem.as_mut_ptr()) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("fstatfs catalog run-view root {}", root.display()));
+    }
+    // SAFETY: successful `fstatfs` initialized the complete structure.
+    let filesystem = unsafe { filesystem.assume_init() };
+    Ok(filesystem.f_type)
+}
+
+#[cfg(target_os = "linux")]
+fn supported_local_catalog_filesystem(filesystem_type: libc::c_long) -> bool {
+    matches!(
+        filesystem_type,
+        libc::EXT4_SUPER_MAGIC
+            | libc::XFS_SUPER_MAGIC
+            | libc::BTRFS_SUPER_MAGIC
+            | libc::F2FS_SUPER_MAGIC
+            | libc::TMPFS_MAGIC
+            | libc::OVERLAYFS_SUPER_MAGIC
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+struct TrustedCatalogRootLease;
+
+#[cfg(not(target_os = "linux"))]
+impl TrustedCatalogRootLease {
+    fn open(_root: &Path) -> Result<Self> {
+        bail!("trusted local catalog run views require Linux filesystem validation")
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        bail!("trusted local catalog run views require Linux filesystem validation")
+    }
+}
+
+fn validate_trusted_local_catalog_root(root: &Path) -> Result<TrustedCatalogRootLease> {
+    TrustedCatalogRootLease::open(root)
+}
+
+impl SealedNtCatalogRunView {
+    fn capture(
+        manifest: &BacktestingRunManifest,
+        submitted_identity: &SubmittedRunIdentity,
+        authority: &CatalogRunViewAuthority,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Self> {
+        authority
+            .validate_for_runtime_manifest(
+                manifest,
+                submitted_identity,
+                work_budget,
+                OperatorWorkBudgetStage::Backtest,
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let mut roots = Vec::new();
+        roots
+            .try_reserve_exact(authority.roots.len())
+            .context("reserve manifest-authorized catalog roots")?;
+        for (root_index, root_authority) in authority.roots.iter().enumerate() {
+            for binding in &root_authority.catalog_inputs {
+                let input_index = usize::try_from(binding.catalog_input_index)
+                    .context("authority catalog input index does not fit usize")?;
+                let input = manifest
+                    .catalog_inputs
+                    .get(input_index)
+                    .context("authority catalog input index left runtime bounds")?;
+                validate_local_catalog_input(input_index, input)?;
+            }
+            let first_index = usize::try_from(root_authority.catalog_inputs[0].catalog_input_index)
+                .context("authority first catalog input index does not fit usize")?;
+            let first_input = manifest
+                .catalog_inputs
+                .get(first_index)
+                .context("authority first catalog input index left runtime bounds")?;
+            let root = PathBuf::from(&first_input.catalog_path);
+            roots.push(
+                SealedCatalogRoot::capture(&root, root_authority, work_budget).with_context(
+                    || {
+                        format!(
+                            "seal authority catalog root[{root_index}] {}",
+                            root.display()
+                        )
+                    },
+                )?,
+            );
+        }
+        for (index, root) in roots.iter().enumerate() {
+            ensure!(
+                roots.iter().enumerate().all(|(other_index, other)| {
+                    index == other_index
+                        || (!root.root.starts_with(&other.root)
+                            && !other.root.starts_with(&root.root))
+                }),
+                "catalog run-view roots must be disjoint; overlapping root {} is unsafe",
+                root.root.display()
+            );
+        }
+        for root in &roots {
+            root.mutation_witness
+                .assert_quiescent(work_budget, OperatorWorkBudgetStage::Backtest)
+                .with_context(|| {
+                    format!(
+                        "catalog mutation witness observed a mutation before BacktestNode construction for {}",
+                        root.root.display()
+                    )
+                })?;
+        }
+        Ok(Self { roots })
+    }
+
+    fn reverify(&self, work_budget: &OperatorWorkBudgetGuard) -> Result<()> {
+        for root in &self.roots {
+            root.reverify(work_budget)?;
+        }
+        Ok(())
+    }
+}
+
+impl SealedCatalogRoot {
+    fn capture(
+        root: &Path,
+        authority: &CatalogRunViewRootAuthority,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Self> {
+        let trusted_root_lease = validate_trusted_local_catalog_root(root)?;
+        authority
+            .physical_manifest
+            .validate_guarded(work_budget, OperatorWorkBudgetStage::Backtest)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let actual_manifest_sha256 = authority
+            .physical_manifest
+            .manifest_sha256_guarded(work_budget, OperatorWorkBudgetStage::Backtest)?;
+        ensure!(
+            actual_manifest_sha256 == authority.physical_manifest_sha256,
+            "physical catalog manifest hash {} does not match declared {}",
+            actual_manifest_sha256,
+            authority.physical_manifest_sha256
+        );
+        let relative_directories = expected_catalog_directories(
+            &authority.physical_manifest,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        let mutation_witness = CatalogMutationWitness::arm(
+            root,
+            &relative_directories,
+            &authority.physical_manifest.objects,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        verify_catalog_tree_exact(
+            root,
+            &relative_directories,
+            &authority.physical_manifest.objects,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        let directories =
+            capture_catalog_directory_identities(root, &relative_directories, work_budget)?;
+        // The producer authority already binds its logical hash to this exact
+        // physical manifest. Re-hash only the physical objects here, once per
+        // run, and retain their identities for post-run verification. The
+        // already-armed kernel witness closes the path-based NT read race,
+        // including a swap-and-restore which would evade a later snapshot.
+        let files = capture_catalog_file_identities(
+            root,
+            &authority.physical_manifest.objects,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        verify_catalog_tree_exact(
+            root,
+            &relative_directories,
+            &files,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        for directory in &directories {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
+            directory.revalidate()?;
+        }
+        trusted_root_lease.revalidate()?;
+        mutation_witness
+            .assert_quiescent(work_budget, OperatorWorkBudgetStage::Backtest)
+            .context("catalog mutation witness observed a pre-run mutation")?;
+        let sealed = Self {
+            root: root.to_path_buf(),
+            trusted_root_lease,
+            relative_directories,
+            directories,
+            files,
+            mutation_witness,
+        };
+        Ok(sealed)
+    }
+
+    fn reverify(&self, work_budget: &OperatorWorkBudgetGuard) -> Result<()> {
+        let stage = OperatorWorkBudgetStage::Backtest;
+        self.trusted_root_lease.revalidate()?;
+        self.mutation_witness
+            .assert_quiescent(work_budget, stage)
+            .context("catalog mutation witness observed an execution-window mutation")?;
+        for directory in &self.directories {
+            work_budget.check_deadline(stage)?;
+            directory.revalidate()?;
+        }
+        verify_catalog_tree_exact(
+            &self.root,
+            &self.relative_directories,
+            &self.files,
+            work_budget,
+            stage,
+        )?;
+        for file in &self.files {
+            work_budget.check_deadline(stage)?;
+            let (mut handle, actual_identity) = open_pinned_regular_file(&file.path)?;
+            let metadata = handle
+                .metadata()
+                .with_context(|| format!("fstat catalog run-view file {}", file.path.display()))?;
+            #[cfg(target_os = "linux")]
+            validate_trusted_catalog_file_metadata(&file.path, &metadata)?;
+            #[cfg(not(target_os = "linux"))]
+            bail!("trusted local catalog file validation requires Linux");
+            ensure!(
+                actual_identity.fingerprint() == file.fingerprint,
+                "catalog run-view file identity changed: {}",
+                file.path.display()
+            );
+            let actual_sha256 = sha256_exact_sized_open_file_guarded(
+                &mut handle,
+                &file.path,
+                file.byte_len,
+                work_budget,
+                stage,
+            )?;
+            ensure!(
+                actual_sha256 == file.sha256,
+                "catalog run-view file content changed: {}",
+                file.path.display()
+            );
+            actual_identity.revalidate_path(&file.path)?;
+            actual_identity.revalidate_handle(&file.path, &handle)?;
+        }
+        self.trusted_root_lease.revalidate()?;
+        self.mutation_witness
+            .assert_quiescent(work_budget, stage)
+            .context("catalog mutation witness observed a post-run verification mutation")
+    }
+}
+
+fn validate_local_catalog_input(index: usize, input: &ManifestCatalogInput) -> Result<()> {
+    ensure!(
+        input.catalog_fs_protocol == CATALOG_FS_PROTOCOL_NONE,
+        "catalog_inputs[{index}] uses remote protocol {:?}; BacktestNode may only bind to a locally hydrated sealed run view",
+        input.catalog_fs_protocol
+    );
+    ensure!(
+        input.catalog_fs_storage_options.is_empty()
+            && input.catalog_fs_rust_storage_options.is_empty(),
+        "catalog_inputs[{index}] local sealed run view must not carry remote storage options"
+    );
+    ensure!(
+        !input.catalog_path.is_empty() && !input.catalog_path.contains("://"),
+        "catalog_inputs[{index}] must name a local hydrated path, not a raw object-store URI: {:?}",
+        input.catalog_path
+    );
+    Ok(())
+}
+
+fn expected_catalog_directories(
+    manifest: &CatalogProjectionManifestDocument,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<Vec<PathBuf>> {
+    let mut directories = BTreeSet::new();
+    for object in &manifest.objects {
+        work_budget.check_deadline(stage)?;
+        let mut parent = Path::new(&object.relative_path).parent();
+        while let Some(path) = parent.filter(|path| !path.as_os_str().is_empty()) {
+            directories.insert(path.to_path_buf());
+            parent = path.parent();
+        }
+    }
+    let mut sorted = Vec::new();
+    sorted
+        .try_reserve_exact(directories.len())
+        .context("reserve expected catalog directory inventory")?;
+    sorted.extend(directories);
+    Ok(sorted)
+}
+
+fn capture_catalog_directory_identities(
+    root: &Path,
+    relative_directories: &[PathBuf],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<CatalogDirectoryIdentity>> {
+    let mut identities = Vec::new();
+    identities
+        .try_reserve_exact(relative_directories.len())
+        .context("reserve catalog directory identities")?;
+    for relative in relative_directories {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
+        identities.push(CatalogDirectoryIdentity::capture(
+            &root.join(relative),
+            SEALED_CATALOG_DIRECTORY_MODE,
+        )?);
+    }
+    Ok(identities)
+}
+
+fn capture_catalog_file_identities(
+    root: &Path,
+    objects: &[CatalogProjectionManifestObject],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<Vec<SealedCatalogFile>> {
+    let mut files = Vec::new();
+    files
+        .try_reserve_exact(objects.len())
+        .context("reserve sealed catalog file identities")?;
+    let mut total_bytes = 0_u64;
+    for object in objects {
+        work_budget.check_deadline(stage)?;
+        total_bytes = total_bytes
+            .checked_add(object.byte_len)
+            .context("catalog physical manifest byte total overflow")?;
+        work_budget.verify_decoded_bytes(total_bytes, stage)?;
+        let path = root.join(&object.relative_path);
+        let (mut handle, identity) = open_pinned_regular_file(&path)?;
+        #[cfg(target_os = "linux")]
+        {
+            let metadata = handle
+                .metadata()
+                .with_context(|| format!("fstat catalog run-view file {}", path.display()))?;
+            validate_trusted_catalog_file_metadata(&path, &metadata)?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        bail!("trusted local catalog file validation requires Linux");
+        ensure!(
+            identity.byte_len == object.byte_len,
+            "catalog file {} has {} bytes, expected {}",
+            path.display(),
+            identity.byte_len,
+            object.byte_len
+        );
+        let actual_sha256 = sha256_exact_sized_open_file_guarded(
+            &mut handle,
+            &path,
+            object.byte_len,
+            work_budget,
+            stage,
+        )?;
+        ensure!(
+            actual_sha256 == object.sha256,
+            "catalog file {} hash {} does not match manifest {}",
+            path.display(),
+            actual_sha256,
+            object.sha256
+        );
+        identity.revalidate_path(&path)?;
+        identity.revalidate_handle(&path, &handle)?;
+        let fingerprint = identity.fingerprint();
+        files.push(SealedCatalogFile {
+            relative_path: object.relative_path.clone(),
+            path,
+            byte_len: object.byte_len,
+            sha256: object.sha256.clone(),
+            fingerprint,
+        });
+    }
+    Ok(files)
+}
+
+fn verify_catalog_tree_exact<T: ExpectedCatalogFile>(
+    root: &Path,
+    relative_directories: &[PathBuf],
+    objects: &[T],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let stack_capacity = relative_directories
+        .len()
+        .checked_add(1)
+        .context("catalog exact-set stack capacity overflow")?;
+    let mut stack = Vec::new();
+    stack
+        .try_reserve_exact(stack_capacity)
+        .context("reserve catalog exact-set traversal stack")?;
+    stack.push(root.to_path_buf());
+    let mut directory_count = 0_usize;
+    let mut file_count = 0_usize;
+    while let Some(directory) = stack.pop() {
+        work_budget.check_deadline(stage)?;
+        directory_count = directory_count
+            .checked_add(1)
+            .context("catalog exact-set directory count overflow")?;
+        ensure!(
+            directory_count <= stack_capacity,
+            "catalog run view gained an unexpected directory under {}",
+            root.display()
+        );
+        let metadata = fs::symlink_metadata(&directory)
+            .with_context(|| format!("lstat catalog directory {}", directory.display()))?;
+        ensure!(
+            metadata.file_type().is_dir(),
+            "catalog path must remain a real directory: {}",
+            directory.display()
+        );
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("read catalog directory {}", directory.display()))?
+        {
+            work_budget.check_deadline(stage)?;
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .with_context(|| format!("derive catalog relative path for {}", path.display()))?;
+            let entry_metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("lstat catalog entry {}", path.display()))?;
+            let file_type = entry_metadata.file_type();
+            ensure!(
+                !file_type.is_symlink(),
+                "catalog run view contains symlink {}",
+                path.display()
+            );
+            if file_type.is_dir() {
+                ensure!(
+                    relative_directories
+                        .binary_search_by(|expected| expected.as_path().cmp(relative))
+                        .is_ok(),
+                    "catalog run view contains unexpected directory {}",
+                    path.display()
+                );
+                stack.push(path);
+                continue;
+            }
+            ensure!(
+                file_type.is_file(),
+                "catalog run view contains special file {}",
+                path.display()
+            );
+            let relative = relative
+                .to_str()
+                .with_context(|| format!("catalog path is not valid UTF-8: {}", path.display()))?;
+            ensure!(
+                objects
+                    .binary_search_by(|object| object.relative_path().cmp(relative))
+                    .is_ok(),
+                "catalog run view contains unexpected file {}",
+                path.display()
+            );
+            file_count = file_count
+                .checked_add(1)
+                .context("catalog exact-set file count overflow")?;
+            ensure!(
+                file_count <= objects.len(),
+                "catalog run view contains more files than its physical manifest"
+            );
+        }
+    }
+    ensure!(
+        directory_count == stack_capacity,
+        "catalog run view is missing a manifest directory: expected {stack_capacity}, found {directory_count}"
+    );
+    ensure!(
+        file_count == objects.len(),
+        "catalog run view file set differs from its physical manifest: expected {}, found {file_count}",
+        objects.len()
+    );
+    Ok(())
+}
+
+/// Convert a completed producer-owned catalog tree into the only local form
+/// that may be authorized for `BacktestNode`: a writable private root holding
+/// read/execute-only directories and read-only, single-link regular files.
+/// The root remains `0700` so deterministic create-only retry can inspect and
+/// reconcile an already committed `data` tree without rewriting it.
+pub(crate) fn seal_trusted_local_catalog_permissions_guarded(
+    root: &Path,
+    manifest: &CatalogProjectionManifestDocument,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (root, manifest, work_budget, stage);
+        bail!("trusted local catalog permission sealing requires Linux")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let effective_uid = non_root_catalog_effective_uid()?;
+        let root_metadata =
+            guarded_operation_outcome(work_budget, stage, || fs::symlink_metadata(root))??;
+        ensure!(
+            root_metadata.file_type().is_dir(),
+            "catalog publisher root must be a real directory: {}",
+            root.display()
+        );
+        ensure!(
+            root_metadata.uid() == effective_uid,
+            "catalog publisher root must be owned by the worker effective UID: {}",
+            root.display()
+        );
+        guarded_operation_outcome(work_budget, stage, || {
+            fs::set_permissions(root, fs::Permissions::from_mode(TRUSTED_CATALOG_ROOT_MODE))
+        })??;
+
+        let relative_directories = expected_catalog_directories(manifest, work_budget, stage)?;
+        verify_catalog_tree_exact(
+            root,
+            &relative_directories,
+            &manifest.objects,
+            work_budget,
+            stage,
+        )?;
+
+        for object in &manifest.objects {
+            work_budget.check_deadline(stage)?;
+            let path = root.join(&object.relative_path);
+            let (handle, _) = open_pinned_regular_file(&path)?;
+            let metadata = handle
+                .metadata()
+                .with_context(|| format!("fstat catalog publisher object {}", path.display()))?;
+            ensure!(
+                metadata.file_type().is_file(),
+                "catalog publisher object must be a regular file: {}",
+                path.display()
+            );
+            ensure!(
+                metadata.uid() == effective_uid,
+                "catalog publisher object must be owned by the worker effective UID: {}",
+                path.display()
+            );
+            ensure!(
+                metadata.nlink() == 1,
+                "catalog publisher object {} must have link count 1, found {}",
+                path.display(),
+                metadata.nlink()
+            );
+            guarded_operation_outcome(work_budget, stage, || {
+                handle.set_permissions(fs::Permissions::from_mode(SEALED_CATALOG_FILE_MODE))
+            })??;
+            drop(handle);
+            let (handle, identity) = open_pinned_regular_file(&path)?;
+            let final_metadata = handle.metadata().with_context(|| {
+                format!(
+                    "re-fstat sealed catalog publisher object {}",
+                    path.display()
+                )
+            })?;
+            validate_trusted_catalog_file_metadata(&path, &final_metadata)?;
+            identity.revalidate_path(&path)?;
+            identity.revalidate_handle(&path, &handle)?;
+        }
+
+        for relative in &relative_directories {
+            work_budget.check_deadline(stage)?;
+            let path = root.join(relative);
+            let metadata =
+                guarded_operation_outcome(work_budget, stage, || fs::symlink_metadata(&path))??;
+            ensure!(
+                metadata.file_type().is_dir(),
+                "catalog publisher directory must be a real directory: {}",
+                path.display()
+            );
+            ensure!(
+                metadata.uid() == effective_uid,
+                "catalog publisher directory must be owned by the worker effective UID: {}",
+                path.display()
+            );
+            guarded_operation_outcome(work_budget, stage, || {
+                fs::set_permissions(
+                    &path,
+                    fs::Permissions::from_mode(SEALED_CATALOG_DIRECTORY_MODE),
+                )
+            })??;
+            let final_metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("re-lstat sealed catalog directory {}", path.display()))?;
+            validate_trusted_catalog_directory_metadata(
+                &path,
+                &final_metadata,
+                SEALED_CATALOG_DIRECTORY_MODE,
+            )?;
+        }
+
+        let root_metadata = fs::symlink_metadata(root)
+            .with_context(|| format!("re-lstat sealed catalog root {}", root.display()))?;
+        validate_trusted_catalog_directory_metadata(
+            root,
+            &root_metadata,
+            TRUSTED_CATALOG_ROOT_MODE,
+        )?;
+        verify_catalog_tree_exact(
+            root,
+            &relative_directories,
+            &manifest.objects,
+            work_budget,
+            stage,
+        )
+    }
+}
+
+pub(crate) fn seal_local_catalog_projection_manifest_guarded(
+    root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogProjectionManifestDocument> {
+    let stage = OperatorWorkBudgetStage::CatalogProjection;
+    let preflight = preflight_nt_catalog_parquet_guarded(root, work_budget, stage)?;
+    ensure!(
+        !preflight.files.is_empty(),
+        "cannot seal an empty local NT catalog at {}",
+        root.display()
+    );
+    let mut objects = Vec::new();
+    objects
+        .try_reserve_exact(preflight.files.len())
+        .context("reserve physical catalog manifest objects")?;
+    for file in preflight.files {
+        work_budget.check_deadline(stage)?;
+        let relative_path = file.relative_path.to_str().with_context(|| {
+            format!(
+                "catalog relative path is not valid UTF-8: {}",
+                file.relative_path.display()
+            )
+        })?;
+        let path = root.join(&file.relative_path);
+        let (mut handle, identity) = open_pinned_regular_file(&path)?;
+        ensure!(
+            identity.byte_len == file.file_bytes,
+            "catalog preflight length changed before sealing {}",
+            path.display()
+        );
+        let sha256 = sha256_exact_sized_open_file_guarded(
+            &mut handle,
+            &path,
+            file.file_bytes,
+            work_budget,
+            stage,
+        )?;
+        identity.revalidate_path(&path)?;
+        identity.revalidate_handle(&path, &handle)?;
+        objects.push(CatalogProjectionManifestObject {
+            relative_path: relative_path.to_string(),
+            byte_len: file.file_bytes,
+            sha256,
+        });
+    }
+    cooperative_stable_sort_by(
+        &mut objects,
+        |left, right| left.relative_path.cmp(&right.relative_path),
+        work_budget,
+        stage,
+    )?;
+    let manifest = CatalogProjectionManifestDocument {
+        schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+        objects,
+    };
+    manifest
+        .validate_guarded(work_budget, stage)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let relative_directories = expected_catalog_directories(&manifest, work_budget, stage)?;
+    verify_catalog_tree_exact(
+        root,
+        &relative_directories,
+        &manifest.objects,
+        work_budget,
+        stage,
+    )?;
+    Ok(manifest)
+}
+
+fn seal_and_hash_local_catalog_projection_guarded(
+    root: &Path,
+    expected_logical_hash: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    after_logical_hash: impl FnOnce(&CatalogProjectionManifestDocument) -> Result<()>,
+) -> Result<(CatalogProjectionManifestDocument, String)> {
+    let stage = OperatorWorkBudgetStage::CatalogProjection;
+    let physical_manifest = seal_local_catalog_projection_manifest_guarded(root, work_budget)?;
+    let actual_logical_hash = logical_catalog_hash_guarded(root, work_budget)
+        .with_context(|| format!("hash projected NT catalog {}", root.display()))?;
+    ensure!(
+        actual_logical_hash == expected_logical_hash,
+        "projected logical catalog hash {} does not match producer result {} for {}",
+        actual_logical_hash,
+        expected_logical_hash,
+        root.display()
+    );
+    after_logical_hash(&physical_manifest)?;
+    seal_trusted_local_catalog_permissions_guarded(root, &physical_manifest, work_budget, stage)?;
+    let relative_directories =
+        expected_catalog_directories(&physical_manifest, work_budget, stage)?;
+    let sealed_files =
+        capture_catalog_file_identities(root, &physical_manifest.objects, work_budget, stage)?;
+    verify_catalog_tree_exact(
+        root,
+        &relative_directories,
+        &sealed_files,
+        work_budget,
+        stage,
+    )?;
+    Ok((physical_manifest, actual_logical_hash))
+}
+
+/// Mint the post-projection authority consumed by the sole BacktestNode path.
+///
+/// `submitted_identity` comes from the immutable run specification.
+/// `runtime_manifest` may differ only in hydrated path/protocol
+/// details; the authority deliberately contains no machine-local path bytes.
+pub(crate) fn mint_local_catalog_run_view_authority_guarded(
+    runtime_manifest: &BacktestingRunManifest,
+    submitted_identity: &SubmittedRunIdentity,
+    logical_catalog_hashes: &[String],
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<CatalogRunViewAuthority> {
+    ensure!(
+        submitted_identity.run_id() == runtime_manifest.run_id,
+        "submitted run id {:?} does not match runtime run id {:?}",
+        submitted_identity.run_id(),
+        runtime_manifest.run_id
+    );
+    ensure!(
+        logical_catalog_hashes.len() == runtime_manifest.catalog_inputs.len(),
+        "expected one logical catalog hash per runtime input: got {}, expected {}",
+        logical_catalog_hashes.len(),
+        runtime_manifest.catalog_inputs.len()
+    );
+    let mut roots: Vec<CatalogRunViewRootAuthority> = Vec::new();
+    roots
+        .try_reserve_exact(runtime_manifest.catalog_inputs.len())
+        .context("reserve catalog run-view authority roots")?;
+    for (input_index, input) in runtime_manifest.catalog_inputs.iter().enumerate() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        validate_local_catalog_input(input_index, input)?;
+        let input_index_u64 = u64::try_from(input_index).context("catalog input index overflow")?;
+        let binding = CatalogRunViewInputAuthority {
+            catalog_input_index: input_index_u64,
+            data_type: input.data_type.clone(),
+            nt_instrument_id: input.nt_instrument_id.clone(),
+        };
+        let existing_root = roots.iter().position(|root| {
+            usize::try_from(root.catalog_inputs[0].catalog_input_index)
+                .ok()
+                .and_then(|index| runtime_manifest.catalog_inputs.get(index))
+                .is_some_and(|existing| existing.catalog_path == input.catalog_path)
+        });
+        if let Some(root_index) = existing_root {
+            ensure!(
+                roots[root_index].logical_catalog_hash == logical_catalog_hashes[input_index],
+                "catalog inputs sharing root {:?} declare different logical hashes",
+                input.catalog_path
+            );
+            roots[root_index].catalog_inputs.push(binding);
+            continue;
+        }
+
+        let root_path = Path::new(&input.catalog_path);
+        let (physical_manifest, actual_logical_hash) =
+            seal_and_hash_local_catalog_projection_guarded(
+                root_path,
+                &logical_catalog_hashes[input_index],
+                work_budget,
+                |_manifest| Ok(()),
+            )?;
+        let mut catalog_inputs = Vec::new();
+        catalog_inputs
+            .try_reserve_exact(runtime_manifest.catalog_inputs.len())
+            .context("reserve catalog root input bindings")?;
+        catalog_inputs.push(binding);
+        roots.push(CatalogRunViewRootAuthority {
+            catalog_inputs,
+            logical_catalog_hash: actual_logical_hash,
+            physical_manifest_sha256: physical_manifest
+                .manifest_sha256_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?,
+            physical_manifest,
+        });
+    }
+    let authority = CatalogRunViewAuthority {
+        schema_version: CATALOG_RUN_VIEW_AUTHORITY_SCHEMA_VERSION.to_string(),
+        run_id: submitted_identity.run_id().to_string(),
+        submitted_manifest_hash: submitted_identity.manifest_hash().to_string(),
+        roots,
+    };
+    authority
+        .validate_for_runtime_manifest(
+            runtime_manifest,
+            submitted_identity,
+            work_budget,
+            OperatorWorkBudgetStage::CatalogProjection,
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(authority)
+}
+
+pub(crate) fn run_nt_backtest_node(
+    manifest: &BacktestingRunManifest,
+    submitted_identity: &SubmittedRunIdentity,
+    authority: &CatalogRunViewAuthority,
+) -> Result<NtBacktestNodeRun> {
+    run_nt_backtest_node_guarded(
+        manifest,
+        submitted_identity,
+        authority,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
 }
 
 pub(crate) fn run_nt_backtest_node_guarded(
     manifest: &BacktestingRunManifest,
+    submitted_identity: &SubmittedRunIdentity,
+    authority: &CatalogRunViewAuthority,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<NtBacktestNodeRun> {
+    guarded_operation_outcome(work_budget, OperatorWorkBudgetStage::Backtest, || {
+        run_nt_backtest_node_guarded_inner(manifest, submitted_identity, authority, work_budget)
+    })?
+}
+
+/// Revalidate one producer-minted authority against the exact local catalog
+/// run view without constructing an alternate execution path.
+pub(crate) fn verify_catalog_run_view_authority_guarded(
+    manifest: &BacktestingRunManifest,
+    submitted_identity: &SubmittedRunIdentity,
+    authority: &CatalogRunViewAuthority,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    SealedNtCatalogRunView::capture(manifest, submitted_identity, authority, work_budget)?;
+    Ok(())
+}
+
+fn run_nt_backtest_node_guarded_inner(
+    manifest: &BacktestingRunManifest,
+    submitted_identity: &SubmittedRunIdentity,
+    authority: &CatalogRunViewAuthority,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<NtBacktestNodeRun> {
     work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
+    let catalog_run_view =
+        SealedNtCatalogRunView::capture(manifest, submitted_identity, authority, work_budget)?;
     let reconstructed_reference_current_price_data =
         reconstructed_reference_current_price_data(manifest)?;
     let domain_statistics = resolve_domain_statistics(&manifest.domain_metrics)?;
@@ -1237,9 +2774,12 @@ pub(crate) fn run_nt_backtest_node_guarded(
             .add_data(instrument_settlement_data, None, false, true)
             .context("add instrument settlement close events")?;
     }
-    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
-    let mut results = node.run().context("run BacktestNode")?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
+    let run_outcome =
+        guarded_operation_outcome(work_budget, OperatorWorkBudgetStage::Backtest, || {
+            node.run().context("run BacktestNode")
+        })?;
+    catalog_run_view.reverify(work_budget)?;
+    let mut results = run_outcome?;
     ensure!(
         results.len() == 1,
         "expected exactly one backtest result, got {}",
@@ -1256,24 +2796,87 @@ pub(crate) fn run_nt_backtest_node_guarded(
             .with_context(|| format!("no engine for run id {} after run", manifest.run_id))?;
         let (positions, account_balances): (Vec<_>, Vec<_>) = {
             let cache = engine.kernel().cache.borrow();
-            let positions = cache
-                .positions(None, None, None, None, None)
-                .into_iter()
-                .map(|position| position.cloned())
-                .collect();
-            let account_balances = std::iter::once(&manifest.venue)
-                .chain(manifest.additional_venues.iter())
-                .filter_map(|venue| cache.account_for_venue(&Venue::from(venue.nt_venue.as_str())))
-                .flat_map(|account| account.balances().into_values())
-                .collect();
+            let positions = capture_positions(&cache, work_budget)?;
+
+            let mut account_balances = Vec::new();
+            for venue in std::iter::once(&manifest.venue).chain(manifest.additional_venues.iter()) {
+                let venue_bytes = size_of::<Venue>()
+                    .checked_add(venue.nt_venue.len())
+                    .context("post-backtest venue materialized byte size overflow")?;
+                verify_one_materialization(
+                    venue_bytes,
+                    work_budget,
+                    OperatorWorkBudgetStage::Backtest,
+                    "post-backtest venue",
+                )?;
+                let nt_venue = Venue::from(venue.nt_venue.as_str());
+                let Some(account) = cache.account_for_venue(&nt_venue) else {
+                    continue;
+                };
+                let balances = match account.as_ref() {
+                    AccountAny::Margin(account) => &account.base.balances,
+                    AccountAny::Cash(account) => &account.base.balances,
+                    AccountAny::Betting(account) => &account.base.balances,
+                };
+                try_reserve_exact_guarded(
+                    &mut account_balances,
+                    balances.len(),
+                    work_budget,
+                    OperatorWorkBudgetStage::Backtest,
+                )?;
+                for index in 0..balances.len() {
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
+                    let balance = balances
+                        .get_index(index)
+                        .context("account balance index disappeared during capture")?
+                        .1;
+                    account_balances.push(*balance);
+                    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
+                }
+            }
             (positions, account_balances)
         };
-        domain_analyzer.add_positions(&positions);
-        for (name, value) in domain_statistics_from_analyzer(&domain_analyzer, &domain_statistics) {
-            nt_result.stats_general.insert(name, value);
+        guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+            || -> Result<()> {
+                domain_analyzer.add_positions(&positions);
+                Ok(())
+            },
+        )??;
+        let derived_statistics = guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+            || -> Result<_> {
+                Ok(domain_statistics_from_analyzer(
+                    &domain_analyzer,
+                    &domain_statistics,
+                ))
+            },
+        )??;
+        for (name, value) in derived_statistics {
+            let statistic_bytes = size_of::<String>()
+                .checked_add(size_of_val(&value))
+                .and_then(|bytes| bytes.checked_add(name.len()))
+                .and_then(|bytes| bytes.checked_add(size_of::<usize>() * 2))
+                .context("domain statistic materialized byte size overflow")?;
+            verify_one_materialization(
+                statistic_bytes,
+                work_budget,
+                OperatorWorkBudgetStage::Backtest,
+                "domain statistic",
+            )?;
+            guarded_operation_outcome(
+                work_budget,
+                OperatorWorkBudgetStage::Backtest,
+                || -> Result<()> {
+                    nt_result.stats_general.insert(name, value);
+                    Ok(())
+                },
+            )??;
         }
         (
-            capture_order_terminals(engine)?,
+            capture_order_terminals(engine, work_budget)?,
             positions,
             account_balances,
         )
@@ -1297,62 +2900,404 @@ pub(crate) fn run_nt_backtest_node_guarded(
     })
 }
 
+fn verify_one_materialization(
+    materialized_bytes: usize,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    label: &str,
+) -> Result<()> {
+    work_budget.check_deadline(stage)?;
+    work_budget
+        .verify_decoded_bytes(
+            u64::try_from(materialized_bytes)
+                .with_context(|| format!("{label} materialized bytes do not fit u64"))?,
+            stage,
+        )
+        .with_context(|| format!("{label} requires {materialized_bytes} materialized bytes"))?;
+    work_budget.check_deadline(stage)
+}
+
+fn try_reserve_exact_guarded<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    if additional == 0 {
+        return work_budget.check_deadline(stage);
+    }
+    let allocation_rows = values
+        .len()
+        .checked_add(additional)
+        .context("guarded vector reservation length overflow")?;
+    let allocation_bytes = allocation_rows
+        .checked_mul(size_of::<T>())
+        .context("guarded vector reservation byte size overflow")?;
+    verify_one_materialization(
+        allocation_bytes,
+        work_budget,
+        stage,
+        "guarded vector reservation",
+    )?;
+    guarded_operation_outcome(work_budget, stage, || {
+        values
+            .try_reserve_exact(additional)
+            .map_err(|error| anyhow::anyhow!("reserve bounded vector capacity: {error}"))
+    })??;
+    Ok(())
+}
+
+fn collect_sorted_cache_ids_guarded<T>(
+    expected_count: usize,
+    ids: impl IntoIterator<Item = T>,
+    label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<T>>
+where
+    T: Copy + Ord,
+{
+    let stage = OperatorWorkBudgetStage::Backtest;
+    work_budget.check_deadline(stage)?;
+    work_budget.verify_source_rows(
+        u64::try_from(expected_count).with_context(|| format!("{label} count does not fit u64"))?,
+        stage,
+    )?;
+    ensure!(
+        size_of::<T>() > 0,
+        "{label} identifier type must occupy storage"
+    );
+    let mut ids = ids.into_iter();
+    let mut sorted_ids = Vec::new();
+    try_reserve_exact_guarded(&mut sorted_ids, expected_count, work_budget, stage)?;
+    while sorted_ids.len() < expected_count {
+        work_budget.check_deadline(stage)?;
+        let id = ids.next().with_context(|| {
+            format!(
+                "{label} lazy iterator ended after {} of {expected_count} identifiers",
+                sorted_ids.len()
+            )
+        })?;
+        sorted_ids.push(id);
+        work_budget.check_deadline(stage)?;
+    }
+    ensure!(
+        ids.next().is_none(),
+        "{label} lazy iterator yielded more than the counted {expected_count} identifiers"
+    );
+    cooperative_stable_sort_by_key(&mut sorted_ids, |id| *id, work_budget, stage)?;
+    for pair in sorted_ids.windows(2) {
+        work_budget.check_deadline(stage)?;
+        ensure!(
+            pair[0] < pair[1],
+            "{label} lazy iterator yielded duplicate identifiers"
+        );
+    }
+    Ok(sorted_ids)
+}
+
+fn capture_positions(
+    cache: &Cache,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<Position>> {
+    let stage = OperatorWorkBudgetStage::Backtest;
+    work_budget.check_deadline(stage)?;
+    let expected_count = cache.positions_total_count(None, None, None, None, None);
+    work_budget.check_deadline(stage)?;
+    // The former bulk query passed no filters and sorted by PositionId. The
+    // all-ID iterator exposes the same set without allocating NT's reference
+    // Vec; sorting those IDs preserves the established deterministic order.
+    let position_ids = collect_sorted_cache_ids_guarded(
+        expected_count,
+        cache.iter_position_ids(None, None, None, None),
+        "post-backtest position",
+        work_budget,
+    )?;
+    let mut positions = Vec::new();
+    try_reserve_exact_guarded(&mut positions, position_ids.len(), work_budget, stage)?;
+    let mut materialized_bytes = 0_u64;
+    for position_id in &position_ids {
+        work_budget.check_deadline(stage)?;
+        let position = cache.position_ref(position_id).with_context(|| {
+            format!("post-backtest position {position_id} disappeared during bounded capture")
+        })?;
+        materialized_bytes = materialized_bytes
+            .checked_add(
+                u64::try_from(position_materialized_bytes(&position)?)
+                    .context("post-backtest position bytes do not fit u64")?,
+            )
+            .context("post-backtest position materialized byte total overflow")?;
+        work_budget.verify_decoded_bytes(materialized_bytes, stage)?;
+        positions.push(position.cloned());
+        work_budget.check_deadline(stage)?;
+    }
+    ensure!(
+        positions.len() == expected_count,
+        "captured {} post-backtest positions, expected {expected_count}",
+        positions.len()
+    );
+    work_budget.check_deadline(stage)?;
+    Ok(positions)
+}
+
+fn position_materialized_bytes(position: &Position) -> Result<usize> {
+    let mut bytes = size_of::<Position>();
+    for (capacity, element_bytes) in [
+        (position.events.capacity(), size_of::<OrderFilled>()),
+        (
+            position.adjustments.capacity(),
+            size_of::<PositionAdjusted>(),
+        ),
+        (
+            position.trade_ids.capacity(),
+            size_of::<TradeId>() + size_of::<usize>() * 2,
+        ),
+        (
+            position.commissions.capacity(),
+            size_of::<Currency>() + size_of::<Money>() + size_of::<usize>() * 2,
+        ),
+    ] {
+        let dynamic_bytes = capacity
+            .checked_mul(element_bytes)
+            .context("position dynamic allocation byte size overflow")?;
+        bytes = bytes
+            .checked_add(dynamic_bytes)
+            .context("position materialized byte size overflow")?;
+    }
+    Ok(bytes)
+}
+
+struct GuardedDebugWriter<'a> {
+    output: String,
+    max_bytes: usize,
+    work_budget: &'a OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    failure: Option<anyhow::Error>,
+}
+
+impl fmt::Write for GuardedDebugWriter<'_> {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self.failure.is_some() {
+            return Err(fmt::Error);
+        }
+        if let Err(error) = self.work_budget.check_deadline(self.stage) {
+            self.failure = Some(error);
+            return Err(fmt::Error);
+        }
+        let Some(next_len) = self.output.len().checked_add(value.len()) else {
+            self.failure = Some(anyhow::anyhow!(
+                "post-backtest debug rendering byte size overflow"
+            ));
+            return Err(fmt::Error);
+        };
+        if next_len > self.max_bytes {
+            self.failure = Some(anyhow::anyhow!(
+                "post-backtest debug rendering requires more than {} bytes, exceeding its max_decoded_bytes allowance",
+                self.max_bytes
+            ));
+            return Err(fmt::Error);
+        }
+        if let Err(error) = self.output.try_reserve_exact(value.len()) {
+            self.failure = Some(anyhow::anyhow!(
+                "reserve bounded post-backtest debug rendering capacity: {error}"
+            ));
+            return Err(fmt::Error);
+        }
+        self.output.push_str(value);
+        if let Err(error) = self.work_budget.check_deadline(self.stage) {
+            self.failure = Some(error);
+            return Err(fmt::Error);
+        }
+        Ok(())
+    }
+}
+
+fn render_debug_guarded<T: fmt::Debug>(
+    value: &T,
+    fixed_bytes: usize,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<String> {
+    let byte_limit = work_budget
+        .decoded_byte_limit()
+        .map_or(usize::MAX, |limit| {
+            usize::try_from(limit).unwrap_or(usize::MAX)
+        });
+    ensure!(
+        fixed_bytes <= byte_limit,
+        "post-backtest debug fixed materialization {fixed_bytes} exceeds max_decoded_bytes {byte_limit}"
+    );
+    work_budget.check_deadline(stage)?;
+    let mut writer = GuardedDebugWriter {
+        output: String::new(),
+        max_bytes: byte_limit - fixed_bytes,
+        work_budget,
+        stage,
+        failure: None,
+    };
+    let result = fmt::write(&mut writer, format_args!("{value:?}"));
+    if let Some(error) = writer.failure {
+        return Err(error);
+    }
+    result.map_err(|_| anyhow::anyhow!("format bounded post-backtest debug value"))?;
+    work_budget.check_deadline(stage)?;
+    Ok(writer.output)
+}
+
 /// Capture the terminal state of every order in the engine's post-run cache.
-fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalRecord>> {
+fn capture_order_terminals(
+    engine: &BacktestEngine,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<OrderTerminalRecord>> {
     let cache = engine.kernel().cache.borrow();
-    cache
-        .orders(None, None, None, None, None)
-        .into_iter()
-        .map(|order| -> Result<OrderTerminalRecord> {
-            let initialized = order
-                .events()
-                .iter()
-                .find_map(|event| match event {
-                    OrderEventAny::Initialized(initialized) => Some(initialized),
-                    _ => None,
-                })
-                .context("cached order has no initialization event")?;
-            Ok(OrderTerminalRecord {
-                client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                order_type: order.order_type().to_string(),
-                status: order.status(),
-                quantity: order.quantity().to_string(),
-                filled_qty: order.filled_qty().to_string(),
-                initialized_quantity: initialized.quantity,
-                initialized_quote_quantity: initialized.quote_quantity,
-                effective_quantity: order.quantity(),
-                submission_timestamp: order.events().iter().find_map(|event| match event {
-                    OrderEventAny::Submitted(submitted) => Some(submitted.ts_event),
-                    _ => None,
-                }),
-                fills: order
-                    .events()
-                    .iter()
-                    .filter_map(|event| match event {
-                        OrderEventAny::Filled(fill) => Some(*fill),
-                        _ => None,
-                    })
-                    .collect(),
-                events_debug: order
-                    .events()
-                    .iter()
-                    .map(|event| format!("{event:?}"))
-                    .collect(),
-            })
+    let stage = OperatorWorkBudgetStage::Backtest;
+    work_budget.check_deadline(stage)?;
+    let expected_count = cache.orders_total_count(None, None, None, None, None);
+    work_budget.check_deadline(stage)?;
+    // The former bulk query passed no filters and sorted by ClientOrderId. The
+    // all-ID iterator exposes the same set without allocating NT's reference
+    // Vec; sorting those IDs preserves the established deterministic order.
+    let client_order_ids = collect_sorted_cache_ids_guarded(
+        expected_count,
+        cache.iter_client_order_ids(None, None, None, None),
+        "post-backtest order",
+        work_budget,
+    )?;
+    let mut terminals = Vec::new();
+    try_reserve_exact_guarded(&mut terminals, client_order_ids.len(), work_budget, stage)?;
+    let mut materialized_bytes = 0_u64;
+    for client_order_id in &client_order_ids {
+        work_budget.check_deadline(stage)?;
+        let order = cache.order_ref(client_order_id).with_context(|| {
+            format!("post-backtest order {client_order_id} disappeared during bounded capture")
+        })?;
+        materialized_bytes = materialized_bytes
+            .checked_add(
+                u64::try_from(order_terminal_base_materialized_bytes(&order, work_budget)?)
+                    .context("post-backtest order terminal bytes do not fit u64")?,
+            )
+            .context("post-backtest order terminal materialized byte total overflow")?;
+        work_budget.verify_decoded_bytes(materialized_bytes, stage)?;
+        terminals.push(capture_order_terminal_guarded(&order, work_budget)?);
+        work_budget.check_deadline(stage)?;
+    }
+    ensure!(
+        terminals.len() == expected_count,
+        "captured {} post-backtest order terminals, expected {expected_count}",
+        terminals.len()
+    );
+    work_budget.check_deadline(stage)?;
+    Ok(terminals)
+}
+
+fn order_terminal_base_materialized_bytes(
+    order: &OrderAny,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<usize> {
+    let rendered = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Backtest,
+        || -> Result<[String; 5]> {
+            Ok([
+                order.client_order_id().to_string(),
+                order.order_side().to_string(),
+                order.order_type().to_string(),
+                order.quantity().to_string(),
+                order.filled_qty().to_string(),
+            ])
+        },
+    )??;
+    rendered
+        .iter()
+        .try_fold(size_of::<OrderTerminalRecord>(), |bytes, value| {
+            bytes
+                .checked_add(value.len())
+                .context("order-terminal base materialized byte size overflow")
         })
-        .collect()
+}
+
+fn capture_order_terminal_guarded(
+    order: &OrderAny,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<OrderTerminalRecord> {
+    let events = order.events();
+    let mut initialized_quantity = None;
+    let mut initialized_quote_quantity = None;
+    let mut submission_timestamp = None;
+    let mut fills = Vec::new();
+    let mut events_debug = Vec::new();
+    for event in events {
+        let fill_bytes = match event {
+            OrderEventAny::Filled(_) => size_of::<OrderFilled>(),
+            _ => 0,
+        };
+        let fixed_bytes = size_of::<String>()
+            .checked_add(fill_bytes)
+            .context("order-event fixed materialized byte size overflow")?;
+        let rendered = render_debug_guarded(
+            event,
+            fixed_bytes,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        try_reserve_exact_guarded(
+            &mut events_debug,
+            1,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        match event {
+            OrderEventAny::Initialized(initialized) => {
+                initialized_quantity = Some(initialized.quantity);
+                initialized_quote_quantity = Some(initialized.quote_quantity);
+            }
+            OrderEventAny::Submitted(submitted) => {
+                submission_timestamp = Some(submitted.ts_event);
+            }
+            OrderEventAny::Filled(fill) => {
+                try_reserve_exact_guarded(
+                    &mut fills,
+                    1,
+                    work_budget,
+                    OperatorWorkBudgetStage::Backtest,
+                )?;
+                fills.push(*fill);
+            }
+            _ => {}
+        }
+        events_debug.push(rendered);
+    }
+    let initialized_quantity =
+        initialized_quantity.context("cached order has no initialization event")?;
+    let initialized_quote_quantity =
+        initialized_quote_quantity.context("cached order has no initialization event")?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
+    Ok(OrderTerminalRecord {
+        client_order_id: order.client_order_id().to_string(),
+        order_side: order.order_side().to_string(),
+        order_type: order.order_type().to_string(),
+        status: order.status(),
+        quantity: order.quantity().to_string(),
+        filled_qty: order.filled_qty().to_string(),
+        initialized_quantity,
+        initialized_quote_quantity,
+        effective_quantity: order.quantity(),
+        submission_timestamp,
+        fills,
+        events_debug,
+    })
 }
 
 #[cfg(test)]
 fn run_nt_backtest_node_with_execution_contract<F>(
     manifest: &BacktestingRunManifest,
+    submitted_identity: &SubmittedRunIdentity,
+    authority: &CatalogRunViewAuthority,
     validator: F,
 ) -> Result<NtBacktestNodeRun>
 where
     F: FnOnce(&NtBacktestNodeRun) -> Result<crate::execution_contract::ExecutionContractReport>,
 {
-    let mut output = run_nt_backtest_node(manifest)?;
+    let mut output = run_nt_backtest_node(manifest, submitted_identity, authority)?;
     output.execution_contract_report = Some(validator(&output)?);
     Ok(output)
 }
@@ -1384,6 +3329,31 @@ fn replay_executable_book_at_submission(
 /// validation, catalog projection, read-back proof, NautilusTrader execution, or
 /// result-contract construction.
 pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> {
+    let submitted_identity =
+        SubmittedRunIdentity::new(inputs.manifest, inputs.contract_manifest_hash)
+            .map_err(|error| anyhow::anyhow!(error))?;
+    let prepared = prepare_backtest(&inputs, submitted_identity)?;
+    execute_prepared_backtest(
+        prepared,
+        BacktestRunFinalizeInputs {
+            accepted: inputs.accepted,
+            runtime_manifest: inputs.manifest,
+            contract_manifest_hash: inputs.contract_manifest_hash,
+            selector_provenance: inputs.selector_provenance,
+            created_at: inputs.created_at,
+            artifact_uris: inputs.artifact_uris,
+            work_budget: inputs.work_budget,
+        },
+    )
+}
+
+/// Normalize, project, read back, and seal one trade catalog without running
+/// BacktestNode. Durable callers use this boundary to publish and hydrate the
+/// exact catalog before the sole NT execution.
+pub(crate) fn prepare_backtest(
+    inputs: &BacktestRunInputs<'_>,
+    submitted_identity: SubmittedRunIdentity,
+) -> Result<PreparedBacktestRun> {
     ensure!(
         !inputs.converter.version.trim().is_empty(),
         "converter_version must not be empty"
@@ -1392,7 +3362,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         !inputs.contract_manifest_hash.trim().is_empty(),
         "contract_manifest_hash must not be empty"
     );
-
+    ensure!(
+        inputs.contract_manifest_hash == submitted_identity.manifest_hash(),
+        "preparation manifest hash differs from the submitted identity"
+    );
     // Gate 4 preflight: reject unsupported NT/config surfaces before producing
     // derived canonical or catalog artifacts.
     inputs
@@ -1434,17 +3407,19 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
     canonical_table
-        .write_parquet(inputs.canonical_artifact_path)
+        .write_parquet_guarded(inputs.canonical_artifact_path, inputs.work_budget)
         .context("write canonical artifact failed")?;
 
     // Gate 3: NautilusTrader catalog projection + read-back proof.
     inputs
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
-    let projection = project_canonical_trades_to_catalog(
+    let projection = project_canonical_trades_to_catalog_guarded(
         &canonical_table,
         inputs.instrument_spec,
         inputs.catalog_root,
+        inputs.authoritative_output_root,
+        inputs.work_budget,
     )
     .context("catalog projection failed")?;
     // Bind the manifest's catalog instrument id to the projected/read-back id.
@@ -1458,20 +3433,26 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         manifest_catalog_input.nt_instrument_id,
         projection.nt_instrument_id
     );
-    let read_back = read_back_trade_ticks(inputs.catalog_root, &projection.nt_instrument_id)
-        .context("catalog read-back failed")?;
+    let read_back = read_back_trade_ticks_guarded(
+        inputs.catalog_root,
+        &projection.nt_instrument_id,
+        inputs.work_budget,
+    )
+    .context("catalog read-back failed")?;
     ensure!(
         read_back.len() == canonical_table.rows.len(),
         "catalog read-back {} does not match projected {} trades",
         read_back.len(),
         canonical_table.rows.len()
     );
-    assert_read_back_matches(
+    assert_read_back_matches_guarded(
         &read_back,
         &canonical_table.rows,
         &projection.nt_instrument_id,
+        inputs.work_budget,
     )?;
-    let actual_metadata = actual_nt_market_data_metadata(inputs.catalog_root)?;
+    let actual_metadata =
+        actual_nt_market_data_metadata_guarded(inputs.catalog_root, inputs.work_budget)?;
     let canonical_rows = u64::try_from(canonical_table.rows.len())
         .context("canonical row count does not fit u64")?;
     ensure!(
@@ -1491,40 +3472,36 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     // An optional manifest time window must overlap the accepted data's event
     // range, or the engine would filter out every accepted trade and still
     // "succeed" over zero data while stamping the accepted source/catalog hash.
-    assert_time_window_overlaps_data(inputs.manifest, &canonical_table)?;
+    assert_time_window_overlaps_data_guarded(
+        inputs.manifest,
+        &canonical_table,
+        inputs.work_budget,
+    )?;
 
-    // Gate 5: BacktestNode execution.
-    let NtBacktestNodeRun {
-        result: nt_result,
-        order_terminals,
-        config_override_report,
-        run_guard_report,
-        ..
-    } = run_nt_backtest_node_guarded(inputs.manifest, inputs.work_budget)?;
-    // The read-back proof above loads the catalog through one NautilusTrader code
-    // path; the engine consumed it through another. Bind the two by asserting the
-    // engine's own iteration count equals the number of accepted trades inside the
-    // manifest's `[start_time, end_time]` window: NautilusTrader increments
-    // `iterations` exactly once per data point delivered to the engine loop and
-    // does not count data trimmed outside that window, so the expectation is the
-    // windowed accepted-trade count (the whole accepted set when no window is set).
-    // A run that silently processed zero (or a divergent count of) the in-window
-    // accepted trades — while still stamping the accepted source/catalog hash — is
-    // rejected here rather than producing a contract over data the engine never saw.
-    let expected = expected_iterations(
+    // Seal the projection before any BacktestNode execution. The authority is
+    // portable across the allowed local catalog-location rewrite, so durable
+    // execution can publish and hydrate these exact bytes before consuming it.
+    let catalog_run_view_authority = mint_local_catalog_run_view_authority_guarded(
+        inputs.manifest,
+        &submitted_identity,
+        std::slice::from_ref(&projection.catalog_hash),
+        inputs.work_budget,
+    )
+    .context("mint catalog run-view authority")?;
+    let expected_iterations = expected_iterations_guarded(
         &canonical_table.rows,
         inputs.manifest.start_time,
         inputs.manifest.end_time,
+        inputs.work_budget,
     )
     .context("compute expected engine iterations")?;
-    if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
-        bail!("backtest did not consume the accepted data: {reason}");
-    }
 
     let conversion_fingerprint = ConversionFingerprint {
         source_proof_id: inputs.accepted.source_proof_id.clone(),
         source_proof_version: inputs.accepted.source_proof_version,
         accepted_object_sha256: inputs.accepted.accepted_object_sha256.clone(),
+        control_artifact_path: inputs.conversion_control_artifact_path.to_string(),
+        control_artifact_sha256: inputs.conversion_control_artifact_sha256.to_string(),
         converter_identity: inputs.converter.identity.clone(),
         converter_version: inputs.converter.version.clone(),
         converter_config_hash: inputs
@@ -1532,6 +3509,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
             .content_hash()
             .context("hash converter config")?,
     };
+    conversion_fingerprint.validate()?;
     let conversion_checkpoint = ConversionCheckpoint::completed(
         conversion_fingerprint.clone(),
         canonical_table.rows.len(),
@@ -1555,13 +3533,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     let conversion_manifest_hash = conversion_manifest
         .content_hash()
         .context("hash conversion manifest")?;
-    // execution_catalog_uri / direct_s3_catalog_access_proven keep the
-    // deterministic defaults from `from_manifest` (the portable
-    // output_catalog_uri; direct access = false): catalog-metadata.json is a
-    // byte-deterministic artifact, so the transient local projection path must
-    // never be stamped into it. The portable execution URI is recorded later by
-    // the published-catalog proof path when (and only when) direct access is
-    // actually proven.
+    // Keep the deterministic unproven consumption state from `from_manifest`:
+    // catalog-metadata.json must never contain the transient local projection
+    // path. A later publication path may replace this with stable consumption
+    // evidence after a runner has consumed the sealed view.
     let conversion_catalog_metadata = ConversionCatalogMetadata::from_manifest(
         &conversion_manifest,
         conversion_manifest_hash.clone(),
@@ -1571,14 +3546,90 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .content_hash()
         .context("hash catalog metadata")?;
 
+    Ok(PreparedBacktestRun {
+        canonical_table,
+        projection,
+        catalog_run_view_authority,
+        conversion_checkpoint,
+        conversion_manifest,
+        conversion_catalog_metadata,
+        conversion_checkpoint_hash,
+        conversion_manifest_hash,
+        conversion_catalog_metadata_hash,
+        read_back_count: read_back.len(),
+        expected_iterations,
+        submitted_identity,
+    })
+}
+
+/// Consume one projection-complete trade run with exactly one BacktestNode
+/// execution, then bind that result into the objective result contract.
+pub(crate) fn execute_prepared_backtest(
+    prepared: PreparedBacktestRun,
+    inputs: BacktestRunFinalizeInputs<'_>,
+) -> Result<BacktestRunOutput> {
+    ensure!(
+        inputs.contract_manifest_hash == prepared.submitted_identity.manifest_hash(),
+        "finalization manifest hash differs from the prepared submitted identity"
+    );
+    ensure!(
+        prepared
+            .conversion_manifest
+            .fingerprint
+            .source_proof_id
+            .as_str()
+            == inputs.accepted.source_proof_id.as_str()
+            && prepared
+                .conversion_manifest
+                .fingerprint
+                .source_proof_version
+                == inputs.accepted.source_proof_version
+            && prepared
+                .conversion_manifest
+                .fingerprint
+                .accepted_object_sha256
+                .as_str()
+                == inputs.accepted.accepted_object_sha256.as_str(),
+        "finalization accepted dataset differs from the prepared conversion identity"
+    );
+    ensure!(
+        prepared.conversion_manifest.completed_at.as_str() == inputs.created_at,
+        "finalization creation time differs from the prepared conversion identity"
+    );
+    ensure!(
+        prepared.conversion_manifest.output_catalog_uri.as_str()
+            == inputs.artifact_uris.nt_catalog_uri.as_str(),
+        "finalization catalog URI differs from the prepared conversion identity"
+    );
+    let NtBacktestNodeRun {
+        result: nt_result,
+        order_terminals,
+        config_override_report,
+        run_guard_report,
+        ..
+    } = run_nt_backtest_node_guarded(
+        inputs.runtime_manifest,
+        &prepared.submitted_identity,
+        &prepared.catalog_run_view_authority,
+        inputs.work_budget,
+    )?;
+    // The read-back proof loads the catalog through one NautilusTrader code
+    // path; the engine consumes it through another. Bind the two by asserting
+    // the sole engine result equals the independently derived in-window count.
+    if let Some(reason) = iterations_mismatch(nt_result.iterations, prepared.expected_iterations) {
+        bail!("backtest did not consume the accepted data: {reason}");
+    }
+
     // Gate 6: objective result contract.
-    let warnings = result_contract_warnings(&nt_result, canonical_table.fidelity_class);
+    let warnings = result_contract_warnings(&nt_result, prepared.canonical_table.fidelity_class);
     let mut claim_limits = inputs.accepted.result_contract_claim_limits();
-    claim_limits.extend(nt_extension_surface_claim_limits(inputs.manifest)?);
-    let (event_count_ledger_hash, selected_asset_ids_hash) =
-        selector_provenance_hashes(canonical_table.fidelity_class, inputs.selector_provenance)?;
+    claim_limits.extend(nt_extension_surface_claim_limits(inputs.runtime_manifest)?);
+    let (event_count_ledger_hash, selected_asset_ids_hash) = selector_provenance_hashes(
+        prepared.canonical_table.fidelity_class,
+        inputs.selector_provenance,
+    )?;
     let contract = build_result_contract(ResultContractInputs {
-        run_id: &inputs.manifest.run_id,
+        run_id: &inputs.runtime_manifest.run_id,
         source_proof_id: &inputs.accepted.source_proof_id,
         source_proof_version: inputs.accepted.source_proof_version,
         manifest_hash: inputs.contract_manifest_hash,
@@ -1586,33 +3637,36 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         accepted_by: &inputs.accepted.accepted_by,
         accepted_at: &inputs.accepted.accepted_at,
         accepted_object_sha256: &inputs.accepted.accepted_object_sha256,
-        converter_identity: &conversion_manifest.fingerprint.converter_identity,
-        converter_version: &conversion_manifest.fingerprint.converter_version,
-        converter_config_hash: &conversion_manifest.fingerprint.converter_config_hash,
-        conversion_manifest_hash: &conversion_manifest_hash,
-        conversion_checkpoint_hash: &conversion_checkpoint_hash,
-        catalog_hash: &projection.catalog_hash,
-        catalog_metadata_hash: &conversion_catalog_metadata_hash,
+        converter_identity: &prepared.conversion_manifest.fingerprint.converter_identity,
+        converter_version: &prepared.conversion_manifest.fingerprint.converter_version,
+        converter_config_hash: &prepared
+            .conversion_manifest
+            .fingerprint
+            .converter_config_hash,
+        conversion_manifest_hash: &prepared.conversion_manifest_hash,
+        conversion_checkpoint_hash: &prepared.conversion_checkpoint_hash,
+        catalog_hash: &prepared.projection.catalog_hash,
+        catalog_metadata_hash: &prepared.conversion_catalog_metadata_hash,
         event_count_ledger_hash,
         selected_asset_ids_hash,
-        strategy: &inputs.manifest.strategy,
-        execution_model: &inputs.manifest.execution_model,
-        venue_queue_position: inputs.manifest.venue.queue_position,
+        strategy: &inputs.runtime_manifest.strategy,
+        execution_model: &inputs.runtime_manifest.execution_model,
+        venue_queue_position: inputs.runtime_manifest.venue.queue_position,
         catalog_data_types: inputs
-            .manifest
+            .runtime_manifest
             .catalog_inputs
             .iter()
             .map(|input| input.data_type.clone())
             .collect(),
-        run_purpose: run_purpose_label(inputs.manifest),
-        market_structure_fixture: market_structure_label(inputs.manifest),
-        fidelity_class: canonical_table.fidelity_class,
+        run_purpose: run_purpose_label(inputs.runtime_manifest),
+        market_structure_fixture: market_structure_label(inputs.runtime_manifest),
+        fidelity_class: prepared.canonical_table.fidelity_class,
         claim_limits,
         warnings,
         mechanical_blockers: Vec::new(),
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),
-        feed_labels: result_contract_feed_labels(inputs.manifest),
+        feed_labels: result_contract_feed_labels(inputs.runtime_manifest),
         nt_result: &nt_result,
         artifact_uris: inputs.artifact_uris,
         created_at: inputs.created_at,
@@ -1620,14 +3674,16 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     .map_err(|error| anyhow::anyhow!("result contract construction failed: {error}"))?;
 
     Ok(BacktestRunOutput {
-        canonical_table,
-        projection,
-        conversion_checkpoint,
-        conversion_manifest,
-        conversion_catalog_metadata,
-        conversion_checkpoint_hash,
-        conversion_manifest_hash,
-        read_back_count: read_back.len(),
+        canonical_table: prepared.canonical_table,
+        projection: prepared.projection,
+        catalog_run_view_authority: prepared.catalog_run_view_authority,
+        conversion_checkpoint: prepared.conversion_checkpoint,
+        conversion_manifest: prepared.conversion_manifest,
+        conversion_catalog_metadata: prepared.conversion_catalog_metadata,
+        conversion_checkpoint_hash: prepared.conversion_checkpoint_hash,
+        conversion_manifest_hash: prepared.conversion_manifest_hash,
+        read_back_count: prepared.read_back_count,
+        expected_iterations: prepared.expected_iterations,
         nt_result,
         order_terminals,
         contract,
@@ -1662,78 +3718,130 @@ pub(crate) fn assert_read_back_matches(
     canonical_rows: &[CanonicalTradeRow],
     expected_instrument_id: &str,
 ) -> Result<()> {
+    assert_read_back_matches_guarded(
+        read_back,
+        canonical_rows,
+        expected_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_read_back_matches_guarded(
+    read_back: &[TradeTick],
+    canonical_rows: &[CanonicalTradeRow],
+    expected_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
-    let rows_by_id: BTreeMap<&str, &CanonicalTradeRow> = canonical_rows
-        .iter()
-        .map(|row| (row.trade_id.as_str(), row))
-        .collect();
+    let expected_id = InstrumentId::from_str(expected_instrument_id)
+        .with_context(|| format!("invalid expected_instrument_id {expected_instrument_id:?}"))?;
+    let mut rows_by_id: BTreeMap<&str, &CanonicalTradeRow> = BTreeMap::new();
+    verify_canonical_rows_materialization(
+        canonical_rows,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+        canonical_trade_row_materialized_bytes,
+    )?;
+    for row in canonical_rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        ensure!(
+            rows_by_id.insert(row.trade_id.as_str(), row).is_none(),
+            "canonical rows contain duplicate trade id {}",
+            row.trade_id
+        );
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    }
     ensure!(
         rows_by_id.len() == canonical_rows.len(),
         "canonical rows contain duplicate trade ids"
     );
-    let expected_ids: BTreeSet<&str> = rows_by_id.keys().copied().collect();
-    let mut actual_ids: BTreeSet<String> = BTreeSet::new();
+    let mut actual_ids: BTreeSet<TradeId> = BTreeSet::new();
+    let mut matched_rows = Vec::new();
+    try_reserve_exact_guarded(
+        &mut matched_rows,
+        read_back.len(),
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
     for tick in read_back {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
         ensure!(
-            tick.instrument_id.to_string() == expected_instrument_id,
+            tick.instrument_id == expected_id,
             "catalog read-back tick instrument {} does not match projected {expected_instrument_id}",
             tick.instrument_id
         );
-        let trade_id = tick.trade_id.to_string();
+        let trade_id = tick.trade_id;
         let row = rows_by_id.get(trade_id.as_str()).with_context(|| {
             format!("catalog read-back trade id {trade_id} is absent from the canonical rows")
         })?;
-        // Value faithfulness, not just identity: a projection that silently
-        // corrupted a price, size, side, or timestamp must not pass the gate.
-        let expected_price = Decimal::from_str(&row.price)
-            .with_context(|| format!("canonical price {:?}", row.price))?;
         ensure!(
-            tick.price.as_decimal() == expected_price,
-            "catalog read-back price {} for trade {trade_id} does not match canonical {}",
-            tick.price,
-            row.price
+            actual_ids.insert(trade_id),
+            "catalog read-back contains a duplicate trade id"
         );
-        let expected_size = Decimal::from_str(&row.size)
-            .with_context(|| format!("canonical size {:?}", row.size))?;
-        ensure!(
-            tick.size.as_decimal() == expected_size,
-            "catalog read-back size {} for trade {trade_id} does not match canonical {}",
-            tick.size,
-            row.size
-        );
-        ensure!(
-            aggressor_label(tick.aggressor_side) == row.aggressor_side,
-            "catalog read-back side {:?} for trade {trade_id} does not match canonical {}",
-            tick.aggressor_side,
-            row.aggressor_side
-        );
-        let label = format!("trade {}", row.trade_id);
-        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-        ensure!(
-            tick.ts_event.as_u64() == expected_ts_event,
-            "catalog read-back ts_event {} for trade {trade_id} does not match canonical {expected_ts_event}",
-            tick.ts_event.as_u64()
-        );
-        // ts_init must equal the projection's availability-or-capture derivation,
-        // not the event clock: NautilusTrader replays and windows by ts_init, so a
-        // projection that stamped the wrong receipt clock must fail this gate. The
-        // expectation is derived through the same shared owner the seam uses, so
-        // the two cannot drift (NO DUAL PATHS).
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            tick.ts_init.as_u64() == expected_ts_init,
-            "catalog read-back ts_init {} for trade {trade_id} does not match canonical {expected_ts_init}",
-            tick.ts_init.as_u64()
-        );
-        actual_ids.insert(trade_id);
+        matched_rows.push(*row);
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     }
-    let actual_set: BTreeSet<&str> = actual_ids.iter().map(String::as_str).collect();
+    // Every actual id was already proven present in `rows_by_id` above. With
+    // duplicates rejected, equal cardinality proves set equality without a
+    // second unguarded full-map pass.
     ensure!(
-        expected_ids == actual_set,
+        actual_ids.len() == rows_by_id.len(),
         "catalog read-back trade ids do not match the canonical rows"
     );
-    Ok(())
+    assert_row_pair_equality_guarded(
+        "trade catalog read-back",
+        read_back,
+        &matched_rows,
+        work_budget,
+        |_index, tick, row| {
+            let row = *row;
+            let trade_id = tick.trade_id;
+            // Value faithfulness, not just identity: a projection that silently
+            // corrupted a price, size, side, or timestamp must not pass the gate.
+            let expected_price = Decimal::from_str(&row.price)
+                .with_context(|| format!("canonical price {:?}", row.price))?;
+            ensure!(
+                tick.price.as_decimal() == expected_price,
+                "catalog read-back price {} for trade {trade_id} does not match canonical {}",
+                tick.price,
+                row.price
+            );
+            let expected_size = Decimal::from_str(&row.size)
+                .with_context(|| format!("canonical size {:?}", row.size))?;
+            ensure!(
+                tick.size.as_decimal() == expected_size,
+                "catalog read-back size {} for trade {trade_id} does not match canonical {}",
+                tick.size,
+                row.size
+            );
+            ensure!(
+                aggressor_label(tick.aggressor_side) == row.aggressor_side,
+                "catalog read-back side {:?} for trade {trade_id} does not match canonical {}",
+                tick.aggressor_side,
+                row.aggressor_side
+            );
+            let label = format!("trade {}", row.trade_id);
+            let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            ensure!(
+                tick.ts_event.as_u64() == expected_ts_event,
+                "catalog read-back ts_event {} for trade {trade_id} does not match canonical {expected_ts_event}",
+                tick.ts_event.as_u64()
+            );
+            // ts_init must equal the projection's availability-or-capture derivation,
+            // not the event clock: NautilusTrader replays and windows by ts_init, so a
+            // projection that stamped the wrong receipt clock must fail this gate. The
+            // expectation is derived through the same shared owner the seam uses, so
+            // the two cannot drift (NO DUAL PATHS).
+            let expected_ts_init =
+                ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            ensure!(
+                tick.ts_init.as_u64() == expected_ts_init,
+                "catalog read-back ts_init {} for trade {trade_id} does not match canonical {expected_ts_init}",
+                tick.ts_init.as_u64()
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Canonical aggressor-side label for a NautilusTrader [`AggressorSide`], so a
@@ -1757,6 +3865,20 @@ pub(crate) fn assert_bar_read_back_matches(
     table: &super::canonical_market_data::CanonicalBarsTable,
     expected_instrument_id: &str,
 ) -> Result<()> {
+    assert_bar_read_back_matches_guarded(
+        read_back,
+        table,
+        expected_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_bar_read_back_matches_guarded(
+    read_back: &[Bar],
+    table: &super::canonical_market_data::CanonicalBarsTable,
+    expected_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     ensure!(
         read_back.len() == table.rows.len(),
         "bar catalog read-back count {} does not match canonical rows {}",
@@ -1769,60 +3891,66 @@ pub(crate) fn assert_bar_read_back_matches(
         PriceType::Last,
     )
     .map_err(|error| anyhow::anyhow!("invalid canonical bar specification: {error}"))?;
-    for (index, (bar, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
-        ensure!(
-            bar.bar_type.instrument_id().to_string() == expected_instrument_id,
-            "bar read-back {index} instrument {} does not match projected {expected_instrument_id}",
-            bar.bar_type.instrument_id()
-        );
-        ensure!(
-            bar.bar_type.spec() == expected_spec,
-            "bar read-back {index} spec {:?} does not match canonical {:?}",
-            bar.bar_type.spec(),
-            expected_spec
-        );
-        ensure!(
-            bar.bar_type.aggregation_source() == AggregationSource::External,
-            "bar read-back {index} must be externally aggregated"
-        );
-        for (label, actual, expected) in [
-            ("open", bar.open.as_decimal(), &row.open),
-            ("high", bar.high.as_decimal(), &row.high),
-            ("low", bar.low.as_decimal(), &row.low),
-            ("close", bar.close.as_decimal(), &row.close),
-        ] {
-            let expected = Decimal::from_str(expected)
-                .with_context(|| format!("canonical {label} {expected:?}"))?;
+    assert_row_pair_equality_guarded(
+        "bar catalog read-back",
+        read_back,
+        &table.rows,
+        work_budget,
+        |index, bar, row| {
             ensure!(
-                actual == expected,
-                "bar read-back {index} {label} {actual} does not match canonical {expected}"
+                bar.bar_type.instrument_id().to_string() == expected_instrument_id,
+                "bar read-back {index} instrument {} does not match projected {expected_instrument_id}",
+                bar.bar_type.instrument_id()
             );
-        }
-        let expected_volume = Decimal::from_str(&row.volume)
-            .with_context(|| format!("canonical volume {:?}", row.volume))?;
-        ensure!(
-            bar.volume.as_decimal() == expected_volume,
-            "bar read-back {index} volume {} does not match canonical {expected_volume}",
-            bar.volume
-        );
-        let label = format!("bar close_time {}", row.close_time);
-        let expected_ts_event = ts_event_nanos(row.close_time, &label)?.as_u64();
-        ensure!(
-            bar.ts_event.as_u64() == expected_ts_event,
-            "bar read-back {index} ts_event {} does not match canonical close_time {expected_ts_event}",
-            bar.ts_event.as_u64()
-        );
-        // ts_init is the bar's availability-or-capture receipt clock (the clock
-        // NautilusTrader replays by), derived through the shared projection owner.
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            bar.ts_init.as_u64() == expected_ts_init,
-            "bar read-back {index} ts_init {} does not match canonical {expected_ts_init}",
-            bar.ts_init.as_u64()
-        );
-    }
-    Ok(())
+            ensure!(
+                bar.bar_type.spec() == expected_spec,
+                "bar read-back {index} spec {:?} does not match canonical {:?}",
+                bar.bar_type.spec(),
+                expected_spec
+            );
+            ensure!(
+                bar.bar_type.aggregation_source() == AggregationSource::External,
+                "bar read-back {index} must be externally aggregated"
+            );
+            for (label, actual, expected) in [
+                ("open", bar.open.as_decimal(), &row.open),
+                ("high", bar.high.as_decimal(), &row.high),
+                ("low", bar.low.as_decimal(), &row.low),
+                ("close", bar.close.as_decimal(), &row.close),
+            ] {
+                let expected = Decimal::from_str(expected)
+                    .with_context(|| format!("canonical {label} {expected:?}"))?;
+                ensure!(
+                    actual == expected,
+                    "bar read-back {index} {label} {actual} does not match canonical {expected}"
+                );
+            }
+            let expected_volume = Decimal::from_str(&row.volume)
+                .with_context(|| format!("canonical volume {:?}", row.volume))?;
+            ensure!(
+                bar.volume.as_decimal() == expected_volume,
+                "bar read-back {index} volume {} does not match canonical {expected_volume}",
+                bar.volume
+            );
+            let label = format!("bar close_time {}", row.close_time);
+            let expected_ts_event = ts_event_nanos(row.close_time, &label)?.as_u64();
+            ensure!(
+                bar.ts_event.as_u64() == expected_ts_event,
+                "bar read-back {index} ts_event {} does not match canonical close_time {expected_ts_event}",
+                bar.ts_event.as_u64()
+            );
+            // ts_init is the bar's availability-or-capture receipt clock (the clock
+            // NautilusTrader replays by), derived through the shared projection owner.
+            let expected_ts_init =
+                ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            ensure!(
+                bar.ts_init.as_u64() == expected_ts_init,
+                "bar read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+                bar.ts_init.as_u64()
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Prove an order-book-delta catalog read-back is value-faithful, mirroring
@@ -1836,6 +3964,20 @@ pub(crate) fn assert_delta_read_back_matches(
     table: &super::canonical_market_data::CanonicalOrderBookDeltasTable,
     expected_instrument_id: &str,
 ) -> Result<()> {
+    assert_delta_read_back_matches_guarded(
+        read_back,
+        table,
+        expected_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_delta_read_back_matches_guarded(
+    read_back: &[OrderBookDelta],
+    table: &super::canonical_market_data::CanonicalOrderBookDeltasTable,
+    expected_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     use super::canonical_market_data::{DeltaAction, DeltaSide};
     ensure!(
         read_back.len() == table.rows.len(),
@@ -1843,89 +3985,95 @@ pub(crate) fn assert_delta_read_back_matches(
         read_back.len(),
         table.rows.len()
     );
-    for (index, (delta, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
-        ensure!(
-            delta.instrument_id.to_string() == expected_instrument_id,
-            "delta read-back {index} instrument {} does not match projected {expected_instrument_id}",
-            delta.instrument_id
-        );
-        ensure!(
-            delta.sequence == row.sequence,
-            "delta read-back {index} sequence {} does not match canonical {}",
-            delta.sequence,
-            row.sequence
-        );
-        ensure!(
-            delta.flags == row.flags,
-            "delta read-back {index} flags {} does not match canonical {}",
-            delta.flags,
-            row.flags
-        );
-        let label = format!("delta sequence {}", row.sequence);
-        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-        ensure!(
-            delta.ts_event.as_u64() == expected_ts_event,
-            "delta read-back {index} ts_event {} does not match canonical {expected_ts_event}",
-            delta.ts_event.as_u64()
-        );
-        // CLEAR deltas carry ts_init too, so this gate covers them as well: the
-        // expectation is the availability-or-capture receipt clock derived through
-        // the shared projection owner (NautilusTrader replays by ts_init).
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            delta.ts_init.as_u64() == expected_ts_init,
-            "delta read-back {index} ts_init {} does not match canonical {expected_ts_init}",
-            delta.ts_init.as_u64()
-        );
-        let actual_action = match delta.action {
-            BookAction::Clear => DeltaAction::Clear.as_str(),
-            BookAction::Add => DeltaAction::Add.as_str(),
-            BookAction::Update => DeltaAction::Update.as_str(),
-            BookAction::Delete => DeltaAction::Delete.as_str(),
-        };
-        ensure!(
-            actual_action == row.action,
-            "delta read-back {index} action {actual_action} does not match canonical {}",
-            row.action
-        );
-        if row.action == DeltaAction::Clear.as_str() {
-            // CLEAR rows carry no side/price/size in the canonical vocabulary;
-            // NautilusTrader represents them with a null book order.
-            continue;
-        }
-        let actual_side = match delta.order.side {
-            OrderSide::Buy => DeltaSide::Buy.as_str(),
-            OrderSide::Sell => DeltaSide::Sell.as_str(),
-            OrderSide::NoOrderSide => "NO_ORDER_SIDE",
-        };
-        ensure!(
-            actual_side == row.side,
-            "delta read-back {index} side {actual_side} does not match canonical {}",
-            row.side
-        );
-        let expected_price = Decimal::from_str(&row.price)
-            .with_context(|| format!("canonical price {:?}", row.price))?;
-        ensure!(
-            delta.order.price.as_decimal() == expected_price,
-            "delta read-back {index} price {} does not match canonical {expected_price}",
-            delta.order.price
-        );
-        let expected_size = Decimal::from_str(&row.size)
-            .with_context(|| format!("canonical size {:?}", row.size))?;
-        ensure!(
-            delta.order.size.as_decimal() == expected_size,
-            "delta read-back {index} size {} does not match canonical {expected_size}",
-            delta.order.size
-        );
-        ensure!(
-            delta.order.order_id == row.order_id,
-            "delta read-back {index} order_id {} does not match canonical {}",
-            delta.order.order_id,
-            row.order_id
-        );
-    }
-    Ok(())
+    assert_row_pair_equality_guarded(
+        "delta catalog read-back",
+        read_back,
+        &table.rows,
+        work_budget,
+        |index, delta, row| {
+            ensure!(
+                delta.instrument_id.to_string() == expected_instrument_id,
+                "delta read-back {index} instrument {} does not match projected {expected_instrument_id}",
+                delta.instrument_id
+            );
+            ensure!(
+                delta.sequence == row.sequence,
+                "delta read-back {index} sequence {} does not match canonical {}",
+                delta.sequence,
+                row.sequence
+            );
+            ensure!(
+                delta.flags == row.flags,
+                "delta read-back {index} flags {} does not match canonical {}",
+                delta.flags,
+                row.flags
+            );
+            let label = format!("delta sequence {}", row.sequence);
+            let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            ensure!(
+                delta.ts_event.as_u64() == expected_ts_event,
+                "delta read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+                delta.ts_event.as_u64()
+            );
+            // CLEAR deltas carry ts_init too, so this gate covers them as well: the
+            // expectation is the availability-or-capture receipt clock derived through
+            // the shared projection owner (NautilusTrader replays by ts_init).
+            let expected_ts_init =
+                ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            ensure!(
+                delta.ts_init.as_u64() == expected_ts_init,
+                "delta read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+                delta.ts_init.as_u64()
+            );
+            let actual_action = match delta.action {
+                BookAction::Clear => DeltaAction::Clear.as_str(),
+                BookAction::Add => DeltaAction::Add.as_str(),
+                BookAction::Update => DeltaAction::Update.as_str(),
+                BookAction::Delete => DeltaAction::Delete.as_str(),
+            };
+            ensure!(
+                actual_action == row.action,
+                "delta read-back {index} action {actual_action} does not match canonical {}",
+                row.action
+            );
+            if row.action == DeltaAction::Clear.as_str() {
+                // CLEAR rows carry no side/price/size in the canonical vocabulary;
+                // NautilusTrader represents them with a null book order.
+                return Ok(());
+            }
+            let actual_side = match delta.order.side {
+                OrderSide::Buy => DeltaSide::Buy.as_str(),
+                OrderSide::Sell => DeltaSide::Sell.as_str(),
+                OrderSide::NoOrderSide => "NO_ORDER_SIDE",
+            };
+            ensure!(
+                actual_side == row.side,
+                "delta read-back {index} side {actual_side} does not match canonical {}",
+                row.side
+            );
+            let expected_price = Decimal::from_str(&row.price)
+                .with_context(|| format!("canonical price {:?}", row.price))?;
+            ensure!(
+                delta.order.price.as_decimal() == expected_price,
+                "delta read-back {index} price {} does not match canonical {expected_price}",
+                delta.order.price
+            );
+            let expected_size = Decimal::from_str(&row.size)
+                .with_context(|| format!("canonical size {:?}", row.size))?;
+            ensure!(
+                delta.order.size.as_decimal() == expected_size,
+                "delta read-back {index} size {} does not match canonical {expected_size}",
+                delta.order.size
+            );
+            ensure!(
+                delta.order.order_id == row.order_id,
+                "delta read-back {index} order_id {} does not match canonical {}",
+                delta.order.order_id,
+                row.order_id
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Prove a top-of-book quote catalog read-back is value-faithful, mirroring
@@ -1940,49 +4088,69 @@ pub(crate) fn assert_quote_read_back_matches(
     table: &super::canonical_market_data::CanonicalQuotesTable,
     expected_instrument_id: &str,
 ) -> Result<()> {
+    assert_quote_read_back_matches_guarded(
+        read_back,
+        table,
+        expected_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_quote_read_back_matches_guarded(
+    read_back: &[QuoteTick],
+    table: &super::canonical_market_data::CanonicalQuotesTable,
+    expected_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     ensure!(
         read_back.len() == table.rows.len(),
         "quote catalog read-back count {} does not match canonical rows {}",
         read_back.len(),
         table.rows.len()
     );
-    for (index, (quote, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
-        ensure!(
-            quote.instrument_id.to_string() == expected_instrument_id,
-            "quote read-back {index} instrument {} does not match projected {expected_instrument_id}",
-            quote.instrument_id
-        );
-        for (label, actual, expected) in [
-            ("bid", quote.bid_price.as_decimal(), &row.bid),
-            ("ask", quote.ask_price.as_decimal(), &row.ask),
-            ("bid_size", quote.bid_size.as_decimal(), &row.bid_size),
-            ("ask_size", quote.ask_size.as_decimal(), &row.ask_size),
-        ] {
-            let expected = Decimal::from_str(expected)
-                .with_context(|| format!("canonical {label} {expected:?}"))?;
+    assert_row_pair_equality_guarded(
+        "quote catalog read-back",
+        read_back,
+        &table.rows,
+        work_budget,
+        |index, quote, row| {
             ensure!(
-                actual == expected,
-                "quote read-back {index} {label} {actual} does not match canonical {expected}"
+                quote.instrument_id.to_string() == expected_instrument_id,
+                "quote read-back {index} instrument {} does not match projected {expected_instrument_id}",
+                quote.instrument_id
             );
-        }
-        let label = format!("quote {}", row.event_time);
-        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-        ensure!(
-            quote.ts_event.as_u64() == expected_ts_event,
-            "quote read-back {index} ts_event {} does not match canonical {expected_ts_event}",
-            quote.ts_event.as_u64()
-        );
-        // ts_init is the availability-or-capture receipt clock (the clock
-        // NautilusTrader replays by), derived through the shared projection owner.
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            quote.ts_init.as_u64() == expected_ts_init,
-            "quote read-back {index} ts_init {} does not match canonical {expected_ts_init}",
-            quote.ts_init.as_u64()
-        );
-    }
-    Ok(())
+            for (label, actual, expected) in [
+                ("bid", quote.bid_price.as_decimal(), &row.bid),
+                ("ask", quote.ask_price.as_decimal(), &row.ask),
+                ("bid_size", quote.bid_size.as_decimal(), &row.bid_size),
+                ("ask_size", quote.ask_size.as_decimal(), &row.ask_size),
+            ] {
+                let expected = Decimal::from_str(expected)
+                    .with_context(|| format!("canonical {label} {expected:?}"))?;
+                ensure!(
+                    actual == expected,
+                    "quote read-back {index} {label} {actual} does not match canonical {expected}"
+                );
+            }
+            let label = format!("quote {}", row.event_time);
+            let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            ensure!(
+                quote.ts_event.as_u64() == expected_ts_event,
+                "quote read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+                quote.ts_event.as_u64()
+            );
+            // ts_init is the availability-or-capture receipt clock (the clock
+            // NautilusTrader replays by), derived through the shared projection owner.
+            let expected_ts_init =
+                ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            ensure!(
+                quote.ts_init.as_u64() == expected_ts_init,
+                "quote read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+                quote.ts_init.as_u64()
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Prove an index-price catalog read-back is value-faithful, mirroring
@@ -1997,43 +4165,63 @@ pub(crate) fn assert_index_read_back_matches(
     table: &super::canonical_market_data::CanonicalIndexPricesTable,
     expected_instrument_id: &str,
 ) -> Result<()> {
+    assert_index_read_back_matches_guarded(
+        read_back,
+        table,
+        expected_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_index_read_back_matches_guarded(
+    read_back: &[IndexPriceUpdate],
+    table: &super::canonical_market_data::CanonicalIndexPricesTable,
+    expected_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     ensure!(
         read_back.len() == table.rows.len(),
         "index catalog read-back count {} does not match canonical rows {}",
         read_back.len(),
         table.rows.len()
     );
-    for (index, (update, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
-        ensure!(
-            update.instrument_id.to_string() == expected_instrument_id,
-            "index read-back {index} instrument {} does not match projected {expected_instrument_id}",
-            update.instrument_id
-        );
-        let expected_value = Decimal::from_str(&row.value)
-            .with_context(|| format!("canonical value {:?}", row.value))?;
-        ensure!(
-            update.value.as_decimal() == expected_value,
-            "index read-back {index} value {} does not match canonical {expected_value}",
-            update.value.as_decimal()
-        );
-        let label = format!("index price {}", row.event_time);
-        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-        ensure!(
-            update.ts_event.as_u64() == expected_ts_event,
-            "index read-back {index} ts_event {} does not match canonical {expected_ts_event}",
-            update.ts_event.as_u64()
-        );
-        // ts_init is the availability-or-capture receipt clock (the clock
-        // NautilusTrader replays by), derived through the shared projection owner.
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            update.ts_init.as_u64() == expected_ts_init,
-            "index read-back {index} ts_init {} does not match canonical {expected_ts_init}",
-            update.ts_init.as_u64()
-        );
-    }
-    Ok(())
+    assert_row_pair_equality_guarded(
+        "index catalog read-back",
+        read_back,
+        &table.rows,
+        work_budget,
+        |index, update, row| {
+            ensure!(
+                update.instrument_id.to_string() == expected_instrument_id,
+                "index read-back {index} instrument {} does not match projected {expected_instrument_id}",
+                update.instrument_id
+            );
+            let expected_value = Decimal::from_str(&row.value)
+                .with_context(|| format!("canonical value {:?}", row.value))?;
+            ensure!(
+                update.value.as_decimal() == expected_value,
+                "index read-back {index} value {} does not match canonical {expected_value}",
+                update.value.as_decimal()
+            );
+            let label = format!("index price {}", row.event_time);
+            let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            ensure!(
+                update.ts_event.as_u64() == expected_ts_event,
+                "index read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+                update.ts_event.as_u64()
+            );
+            // ts_init is the availability-or-capture receipt clock (the clock
+            // NautilusTrader replays by), derived through the shared projection owner.
+            let expected_ts_init =
+                ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            ensure!(
+                update.ts_init.as_u64() == expected_ts_init,
+                "index read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+                update.ts_init.as_u64()
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Prove a mark-price catalog read-back is value-faithful, mirroring
@@ -2048,43 +4236,63 @@ pub(crate) fn assert_mark_read_back_matches(
     table: &super::canonical_market_data::CanonicalMarkPricesTable,
     expected_instrument_id: &str,
 ) -> Result<()> {
+    assert_mark_read_back_matches_guarded(
+        read_back,
+        table,
+        expected_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_mark_read_back_matches_guarded(
+    read_back: &[MarkPriceUpdate],
+    table: &super::canonical_market_data::CanonicalMarkPricesTable,
+    expected_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     ensure!(
         read_back.len() == table.rows.len(),
         "mark catalog read-back count {} does not match canonical rows {}",
         read_back.len(),
         table.rows.len()
     );
-    for (index, (update, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
-        ensure!(
-            update.instrument_id.to_string() == expected_instrument_id,
-            "mark read-back {index} instrument {} does not match projected {expected_instrument_id}",
-            update.instrument_id
-        );
-        let expected_value = Decimal::from_str(&row.value)
-            .with_context(|| format!("canonical value {:?}", row.value))?;
-        ensure!(
-            update.value.as_decimal() == expected_value,
-            "mark read-back {index} value {} does not match canonical {expected_value}",
-            update.value.as_decimal()
-        );
-        let label = format!("mark price {}", row.event_time);
-        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-        ensure!(
-            update.ts_event.as_u64() == expected_ts_event,
-            "mark read-back {index} ts_event {} does not match canonical {expected_ts_event}",
-            update.ts_event.as_u64()
-        );
-        // ts_init is the availability-or-capture receipt clock (the clock
-        // NautilusTrader replays by), derived through the shared projection owner.
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            update.ts_init.as_u64() == expected_ts_init,
-            "mark read-back {index} ts_init {} does not match canonical {expected_ts_init}",
-            update.ts_init.as_u64()
-        );
-    }
-    Ok(())
+    assert_row_pair_equality_guarded(
+        "mark catalog read-back",
+        read_back,
+        &table.rows,
+        work_budget,
+        |index, update, row| {
+            ensure!(
+                update.instrument_id.to_string() == expected_instrument_id,
+                "mark read-back {index} instrument {} does not match projected {expected_instrument_id}",
+                update.instrument_id
+            );
+            let expected_value = Decimal::from_str(&row.value)
+                .with_context(|| format!("canonical value {:?}", row.value))?;
+            ensure!(
+                update.value.as_decimal() == expected_value,
+                "mark read-back {index} value {} does not match canonical {expected_value}",
+                update.value.as_decimal()
+            );
+            let label = format!("mark price {}", row.event_time);
+            let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            ensure!(
+                update.ts_event.as_u64() == expected_ts_event,
+                "mark read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+                update.ts_event.as_u64()
+            );
+            // ts_init is the availability-or-capture receipt clock (the clock
+            // NautilusTrader replays by), derived through the shared projection owner.
+            let expected_ts_init =
+                ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            ensure!(
+                update.ts_init.as_u64() == expected_ts_init,
+                "mark read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+                update.ts_init.as_u64()
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Prove a funding-rate catalog read-back is value-faithful, mirroring
@@ -2105,6 +4313,20 @@ pub(crate) fn assert_funding_read_back_matches(
     table: &super::canonical_market_data::CanonicalFundingRatesTable,
     expected_instrument_id: &str,
 ) -> Result<()> {
+    assert_funding_read_back_matches_guarded(
+        read_back,
+        table,
+        expected_instrument_id,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_funding_read_back_matches_guarded(
+    read_back: &[FundingRateUpdate],
+    table: &super::canonical_market_data::CanonicalFundingRatesTable,
+    expected_instrument_id: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     ensure!(
         read_back.len() == table.rows.len(),
         "funding catalog read-back count {} does not match canonical rows {}",
@@ -2123,21 +4345,32 @@ pub(crate) fn assert_funding_read_back_matches(
     type FundingSortKey = (u64, Decimal, u32, Option<u16>, Option<u64>, u64);
 
     // Read-back side: fields are already typed; the key is infallible.
-    let mut sorted_read_back: Vec<(FundingSortKey, &FundingRateUpdate)> = read_back
-        .iter()
-        .map(|update| {
-            let key: FundingSortKey = (
-                update.ts_event.as_u64(),
-                update.rate,
-                update.rate.scale(),
-                update.interval,
-                update.next_funding_ns.map(|value| value.as_u64()),
-                update.ts_init.as_u64(),
-            );
-            (key, update)
-        })
-        .collect();
-    sorted_read_back.sort_by_key(|entry| entry.0);
+    let mut sorted_read_back: Vec<(FundingSortKey, &FundingRateUpdate)> = Vec::new();
+    try_reserve_exact_guarded(
+        &mut sorted_read_back,
+        read_back.len(),
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    for update in read_back {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let key: FundingSortKey = (
+            update.ts_event.as_u64(),
+            update.rate,
+            update.rate.scale(),
+            update.interval,
+            update.next_funding_ns.map(|value| value.as_u64()),
+            update.ts_init.as_u64(),
+        );
+        sorted_read_back.push((key, update));
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    }
+    cooperative_stable_sort_by_key(
+        &mut sorted_read_back,
+        |entry| entry.0,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
 
     // Canonical side: key derivation is fallible (timestamp helpers, rate parse,
     // next-funding cast), so pre-compute keys in a fallible pass before sorting
@@ -2145,85 +4378,105 @@ pub(crate) fn assert_funding_read_back_matches(
     let mut sorted_rows: Vec<(
         FundingSortKey,
         &super::canonical_market_data::CanonicalFundingRateRow,
-    )> = table
-        .rows
-        .iter()
-        .map(|row| {
-            let label = format!("funding rate {}", row.event_time);
-            let ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-            let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-            let rate = Decimal::from_str(&row.rate)
+    )> = Vec::new();
+    verify_canonical_rows_materialization(
+        &table.rows,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+        funding_rate_row_materialized_bytes,
+    )?;
+    try_reserve_exact_guarded(
+        &mut sorted_rows,
+        table.rows.len(),
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+    for row in &table.rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+        let label = format!("funding rate {}", row.event_time);
+        let ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+        let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+        let rate = Decimal::from_str(&row.rate)
+            .with_context(|| format!("canonical rate {:?}", row.rate))?;
+        let next_funding_ns = row
+            .next_funding_time
+            .map(u64::try_from)
+            .transpose()
+            .with_context(|| format!("canonical next_funding_time {:?}", row.next_funding_time))?;
+        let key: FundingSortKey = (
+            ts_event,
+            rate,
+            rate.scale(),
+            row.interval_minutes,
+            next_funding_ns,
+            ts_init,
+        );
+        sorted_rows.push((key, row));
+        work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
+    }
+    cooperative_stable_sort_by_key(
+        &mut sorted_rows,
+        |entry| entry.0,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )?;
+
+    assert_row_pair_equality_guarded(
+        "funding catalog read-back",
+        &sorted_read_back,
+        &sorted_rows,
+        work_budget,
+        |index, (_, update), (_, row)| {
+            ensure!(
+                update.instrument_id == expected_id,
+                "funding read-back {index} instrument {} does not match projected {expected_instrument_id}",
+                update.instrument_id
+            );
+            let expected_rate = Decimal::from_str(&row.rate)
                 .with_context(|| format!("canonical rate {:?}", row.rate))?;
-            let next_funding_ns = row
+            ensure!(
+                update.rate == expected_rate && update.rate.scale() == expected_rate.scale(),
+                "funding read-back {index} rate {} (scale {}) does not match canonical {expected_rate} (scale {})",
+                update.rate,
+                update.rate.scale(),
+                expected_rate.scale()
+            );
+            ensure!(
+                update.interval == row.interval_minutes,
+                "funding read-back {index} interval {:?} does not match canonical {:?}",
+                update.interval,
+                row.interval_minutes
+            );
+            let expected_next = row
                 .next_funding_time
                 .map(u64::try_from)
                 .transpose()
                 .with_context(|| {
                     format!("canonical next_funding_time {:?}", row.next_funding_time)
                 })?;
-            let key: FundingSortKey = (
-                ts_event,
-                rate,
-                rate.scale(),
-                row.interval_minutes,
-                next_funding_ns,
-                ts_init,
+            ensure!(
+                update.next_funding_ns.map(|value| value.as_u64()) == expected_next,
+                "funding read-back {index} next_funding_ns {:?} does not match canonical {:?}",
+                update.next_funding_ns.map(|value| value.as_u64()),
+                expected_next
             );
-            Ok((key, row))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    sorted_rows.sort_by_key(|entry| entry.0);
-
-    for (index, ((_, update), (_, row))) in
-        sorted_read_back.iter().zip(sorted_rows.iter()).enumerate()
-    {
-        ensure!(
-            update.instrument_id == expected_id,
-            "funding read-back {index} instrument {} does not match projected {expected_instrument_id}",
-            update.instrument_id
-        );
-        let expected_rate = Decimal::from_str(&row.rate)
-            .with_context(|| format!("canonical rate {:?}", row.rate))?;
-        ensure!(
-            update.rate == expected_rate && update.rate.scale() == expected_rate.scale(),
-            "funding read-back {index} rate {} (scale {}) does not match canonical {expected_rate} (scale {})",
-            update.rate,
-            update.rate.scale(),
-            expected_rate.scale()
-        );
-        ensure!(
-            update.interval == row.interval_minutes,
-            "funding read-back {index} interval {:?} does not match canonical {:?}",
-            update.interval,
-            row.interval_minutes
-        );
-        let expected_next = row
-            .next_funding_time
-            .map(u64::try_from)
-            .transpose()
-            .with_context(|| format!("canonical next_funding_time {:?}", row.next_funding_time))?;
-        ensure!(
-            update.next_funding_ns.map(|value| value.as_u64()) == expected_next,
-            "funding read-back {index} next_funding_ns {:?} does not match canonical {:?}",
-            update.next_funding_ns.map(|value| value.as_u64()),
-            expected_next
-        );
-        let label = format!("funding rate {}", row.event_time);
-        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-        ensure!(
-            update.ts_event.as_u64() == expected_ts_event,
-            "funding read-back {index} ts_event {} does not match canonical {expected_ts_event}",
-            update.ts_event.as_u64()
-        );
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            update.ts_init.as_u64() == expected_ts_init,
-            "funding read-back {index} ts_init {} does not match canonical {expected_ts_init}",
-            update.ts_init.as_u64()
-        );
-    }
-    Ok(())
+            let label = format!("funding rate {}", row.event_time);
+            let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            ensure!(
+                update.ts_event.as_u64() == expected_ts_event,
+                "funding read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+                update.ts_event.as_u64()
+            );
+            let expected_ts_init =
+                ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            ensure!(
+                update.ts_init.as_u64() == expected_ts_init,
+                "funding read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+                update.ts_init.as_u64()
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Reason the NautilusTrader engine did not process exactly the accepted data, or
@@ -2266,10 +4519,26 @@ pub(crate) fn expected_iterations(
     start: Option<i64>,
     end: Option<i64>,
 ) -> Result<usize> {
+    expected_iterations_guarded(rows, start, end, &OperatorWorkBudgetGuard::unbounded())
+}
+
+pub(crate) fn expected_iterations_guarded(
+    rows: &[CanonicalTradeRow],
+    start: Option<i64>,
+    end: Option<i64>,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<usize> {
     let start = window_bound_nanos("start_time", start)?;
     let end = window_bound_nanos("end_time", end)?;
     let mut count = 0usize;
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::Backtest,
+        canonical_trade_row_materialized_bytes,
+    )?;
     for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
         let ts_init = ts_init_nanos(
             row.availability_time,
             row.capture_time,
@@ -2277,8 +4546,11 @@ pub(crate) fn expected_iterations(
         )?
         .as_u64();
         if start.is_none_or(|start| ts_init >= start) && end.is_none_or(|end| ts_init <= end) {
-            count += 1;
+            count = count
+                .checked_add(1)
+                .context("expected backtest iteration count overflow")?;
         }
+        work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     }
     Ok(count)
 }
@@ -2313,8 +4585,27 @@ pub(crate) fn assert_time_window_overlaps_data(
     manifest: &BacktestingRunManifest,
     canonical_table: &CanonicalTradesTable,
 ) -> Result<()> {
+    assert_time_window_overlaps_data_guarded(
+        manifest,
+        canonical_table,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+}
+
+pub(crate) fn assert_time_window_overlaps_data_guarded(
+    manifest: &BacktestingRunManifest,
+    canonical_table: &CanonicalTradesTable,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
     let mut range: Option<(u64, u64)> = None;
+    verify_canonical_rows_materialization(
+        &canonical_table.rows,
+        work_budget,
+        OperatorWorkBudgetStage::Backtest,
+        canonical_trade_row_materialized_bytes,
+    )?;
     for row in &canonical_table.rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
         let ts_init = ts_init_nanos(
             row.availability_time,
             row.capture_time,
@@ -2325,6 +4616,7 @@ pub(crate) fn assert_time_window_overlaps_data(
             Some((min, max)) => (min.min(ts_init), max.max(ts_init)),
             None => (ts_init, ts_init),
         });
+        work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
     }
     let Some((first, last)) = range else {
         return Ok(());
@@ -2376,12 +4668,15 @@ mod tests {
         str::FromStr,
     };
 
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt;
+
     use anyhow::{Context, Result, ensure};
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         data::{OrderBookDelta, TradeTick},
         enums::{AggressorSide, AssetClass, BookAction, OrderSide},
-        identifiers::{InstrumentId, Symbol, TradeId},
+        identifiers::{ClientOrderId, InstrumentId, PositionId, Symbol, TradeId},
         instruments::{BinaryOption, Instrument, InstrumentAny},
         types::{Currency, Money, Price, Quantity},
     };
@@ -2393,12 +4688,18 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        apply_backtest_config_override, assert_read_back_matches,
-        canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
-        expected_iterations, iterations_mismatch, load_bolt_v3_config, raw_taker_config,
-        replay_executable_book_at_submission, resolve_existing_input_path, run_nt_backtest_node,
-        run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
-        time_window_excludes_all_data,
+        CatalogMutationWitness, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+        SealedCatalogRoot, TrustedCatalogRootLease, apply_backtest_config_override,
+        assert_read_back_matches, canonical_resolved_taker_config_bytes,
+        capture_catalog_directory_identities, capture_catalog_file_identities,
+        collect_sorted_cache_ids_guarded, ensure_settlement_currency_funded,
+        expected_catalog_directories, expected_iterations, iterations_mismatch,
+        load_bolt_v3_config, mint_local_catalog_run_view_authority_guarded, raw_taker_config,
+        render_debug_guarded, replay_executable_book_at_submission, resolve_existing_input_path,
+        run_nt_backtest_node, run_nt_backtest_node_with_execution_contract,
+        seal_trusted_local_catalog_permissions_guarded, selector_provenance_hashes,
+        time_window_excludes_all_data, try_reserve_exact_guarded,
+        validate_trusted_local_catalog_root, verify_catalog_tree_exact,
     };
     use crate::canonical_market_data::{
         CanonicalIndexPriceRow, CanonicalIndexPricesTable, CanonicalQuotesTable,
@@ -2417,13 +4718,15 @@ mod tests {
     };
     use crate::run_manifest::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
+        CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION, CatalogProjectionManifestDocument,
+        CatalogProjectionManifestObject, CatalogRunViewAuthority, CatalogRunViewRootAuthority,
         ManifestArtifactStore, ManifestBacktestConfigOverride, ManifestCatalogInput,
         ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
         ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
         RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_FEE_BPS,
         STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
-        StrategySourceKind,
+        StrategySourceKind, SubmittedRunIdentity,
     };
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
@@ -2440,7 +4743,611 @@ mod tests {
     const MAKER_SMOKE_QUESTION_ID: &str = "question-sample-event";
     const MAKER_SMOKE_CLIENT_ID: &str = "maker_execution_client";
     const MAKER_SMOKE_RUN_ID: &str = "binary-oracle-maker-backtest-smoke";
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trusted_catalog_root_rejects_permissive_mode() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        for mode in [0o755, 0o1700] {
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(mode))
+                .expect("set non-exact root mode");
+
+            let error =
+                TrustedCatalogRootLease::open_with_filesystem_classifier(directory.path(), |_| {
+                    true
+                })
+                .expect_err("catalog root outside exact private mode must fail closed");
+
+            assert!(error.to_string().contains("0700"), "{error:#}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trusted_catalog_root_rejects_unsupported_filesystem_classification() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("set private root mode");
+
+        let error =
+            TrustedCatalogRootLease::open_with_filesystem_classifier(directory.path(), |_| false)
+                .expect_err("unsupported filesystem classification must fail closed");
+
+        assert!(
+            error.to_string().contains("supported local filesystem"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trusted_catalog_root_lease_rejects_mode_mutation() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("set private root mode");
+        let lease =
+            TrustedCatalogRootLease::open_with_filesystem_classifier(directory.path(), |_| true)
+                .expect("pin trusted root");
+
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755))
+            .expect("mutate root mode");
+        let error = lease
+            .revalidate()
+            .expect_err("root mode mutation must invalidate the lease");
+
+        assert!(error.to_string().contains("0700"), "{error:#}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trusted_catalog_root_lease_rejects_identity_replacement() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let root = parent.path().join("catalog");
+        let displaced = parent.path().join("catalog.displaced");
+        fs::create_dir(&root).expect("create catalog root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("set private root mode");
+        let lease = TrustedCatalogRootLease::open_with_filesystem_classifier(&root, |_| true)
+            .expect("pin trusted root");
+
+        fs::rename(&root, &displaced).expect("displace trusted root");
+        fs::create_dir(&root).expect("create replacement root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("set replacement root mode");
+        let error = lease
+            .revalidate()
+            .expect_err("root identity replacement must invalidate the lease");
+
+        assert!(error.to_string().contains("identity"), "{error:#}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_catalog_capture_rejects_hardlinked_file() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("set private root mode");
+        let file = directory.path().join("data.parquet");
+        fs::write(&file, b"PAR1").expect("write catalog file");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).expect("seal catalog file");
+        fs::hard_link(&file, directory.path().join("outside-manifest-hardlink"))
+            .expect("create hard link");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data.parquet".to_string(),
+                byte_len: 4,
+                sha256: crate::hashing::sha256_hex(b"PAR1"),
+            }],
+        };
+
+        let error = capture_catalog_file_identities(
+            directory.path(),
+            &manifest.objects,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect_err("hardlinked catalog object must fail closed");
+
+        assert!(error.to_string().contains("link count"), "{error:#}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_catalog_capture_rejects_writable_nested_directory() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("set private root mode");
+        let data = directory.path().join("data");
+        fs::create_dir(&data).expect("create nested directory");
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700))
+            .expect("leave nested directory writable");
+        let file = data.join("data.parquet");
+        fs::write(&file, b"PAR1").expect("write catalog file");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).expect("seal catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data/data.parquet".to_string(),
+                byte_len: 4,
+                sha256: crate::hashing::sha256_hex(b"PAR1"),
+            }],
+        };
+        let authority = CatalogRunViewRootAuthority {
+            catalog_inputs: Vec::new(),
+            logical_catalog_hash: "test-logical-hash".to_string(),
+            physical_manifest_sha256: manifest
+                .manifest_sha256_guarded(&guard, OperatorWorkBudgetStage::Backtest)
+                .expect("hash physical manifest"),
+            physical_manifest: manifest,
+        };
+
+        let error = SealedCatalogRoot::capture(directory.path(), &authority, &guard)
+            .expect_err("writable nested catalog directory must fail closed");
+
+        assert!(error.to_string().contains("0500"), "{error:#}");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sealed_physical_catalog_root_for_test(root: &Path) -> SealedCatalogRoot {
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let payload = fs::read(root.join("data.parquet")).expect("read test catalog file");
+        let manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data.parquet".to_string(),
+                byte_len: u64::try_from(payload.len()).expect("test payload length fits u64"),
+                sha256: crate::hashing::sha256_hex(&payload),
+            }],
+        };
+        let relative_directories =
+            expected_catalog_directories(&manifest, &guard, OperatorWorkBudgetStage::Backtest)
+                .expect("derive expected test directories");
+        seal_trusted_local_catalog_permissions_guarded(
+            root,
+            &manifest,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect("seal test catalog permissions");
+        let trusted_root_lease =
+            validate_trusted_local_catalog_root(root).expect("pin trusted test catalog root");
+        let mutation_witness = CatalogMutationWitness::arm(
+            root,
+            &relative_directories,
+            &manifest.objects,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect("arm test catalog mutation witness");
+        verify_catalog_tree_exact(
+            root,
+            &relative_directories,
+            &manifest.objects,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect("verify initial exact set");
+        let directories = capture_catalog_directory_identities(root, &relative_directories, &guard)
+            .expect("capture test directory identities");
+        let files = capture_catalog_file_identities(
+            root,
+            &manifest.objects,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect("capture test file identities");
+        SealedCatalogRoot {
+            root: root.to_path_buf(),
+            trusted_root_lease,
+            relative_directories,
+            directories,
+            files,
+            mutation_witness,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_catalog_run_view_rejects_same_length_mutation() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        let file = directory.path().join("data.parquet");
+        fs::write(&file, b"PAR1").expect("write catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let view = sealed_physical_catalog_root_for_test(directory.path());
+
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600))
+            .expect("make catalog file writable for mutation");
+        fs::write(&file, b"PAR2").expect("mutate same-length catalog file");
+        let error = view
+            .reverify(&guard)
+            .expect_err("same-length mutation must invalidate the sealed view");
+
+        assert!(
+            error.to_string().contains("catalog mutation witness"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_catalog_run_view_rejects_a_late_parquet_file() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::write(directory.path().join("data.parquet"), b"PAR1").expect("write catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let view = sealed_physical_catalog_root_for_test(directory.path());
+
+        fs::write(directory.path().join("stray.parquet"), b"PAR1")
+            .expect("plant late catalog file");
+        let error = view
+            .reverify(&guard)
+            .expect_err("late Parquet must invalidate the exact set");
+
+        assert!(
+            error.to_string().contains("catalog mutation witness"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn catalog_mutation_witness_accepts_an_unchanged_execution_window() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::write(directory.path().join("data.parquet"), b"PAR1").expect("write catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let view = sealed_physical_catalog_root_for_test(directory.path());
+
+        view.reverify(&guard)
+            .expect("read-only execution window must leave the witness quiet");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_catalog_capture_rejects_physical_hash_mismatch_without_logical_decode() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::write(directory.path().join("data.parquet"), b"EVIL")
+            .expect("write mismatched catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data.parquet".to_string(),
+                byte_len: 4,
+                sha256: crate::hashing::sha256_hex(b"PAR1"),
+            }],
+        };
+        let authority = CatalogRunViewRootAuthority {
+            catalog_inputs: Vec::new(),
+            logical_catalog_hash: "producer-logical-hash-is-not-recomputed-here".to_string(),
+            physical_manifest_sha256: manifest
+                .manifest_sha256_guarded(&guard, OperatorWorkBudgetStage::Backtest)
+                .expect("hash physical manifest"),
+            physical_manifest: manifest,
+        };
+        seal_trusted_local_catalog_permissions_guarded(
+            directory.path(),
+            &authority.physical_manifest,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect("seal mismatched catalog permissions");
+
+        let error = SealedCatalogRoot::capture(directory.path(), &authority, &guard)
+            .expect_err("physical bytes differing from the authority must fail closed");
+
+        assert!(
+            error.to_string().contains("does not match manifest"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn catalog_mutation_witness_inventory_is_bounded_by_work_budget() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::write(directory.path().join("data.parquet"), b"PAR1").expect("write catalog file");
+        let manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data.parquet".to_string(),
+                byte_len: 4,
+                sha256: crate::hashing::sha256_hex(b"PAR1"),
+            }],
+        };
+        let watch_count = directory
+            .path()
+            .ancestors()
+            .skip(1)
+            .count()
+            .checked_add(1)
+            .and_then(|count| count.checked_add(manifest.objects.len()))
+            .expect("test watch count");
+        let inventory_bytes = watch_count
+            .checked_mul(std::mem::size_of::<libc::inotify_event>())
+            .expect("test watch inventory bytes");
+        let guard = OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: u64::try_from(inventory_bytes - 1)
+                        .expect("test inventory byte limit"),
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("bounded witness guard");
+        let relative_directories =
+            expected_catalog_directories(&manifest, &guard, OperatorWorkBudgetStage::Backtest)
+                .expect("derive expected directories");
+
+        let error = CatalogMutationWitness::arm(
+            directory.path(),
+            &relative_directories,
+            &manifest.objects,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect_err("watch inventory above max_decoded_bytes must fail before arming");
+
+        assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn catalog_mutation_witness_rejects_root_swap_and_restore_aba() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        let root = directory.path().to_path_buf();
+        fs::write(root.join("data.parquet"), b"PAR1").expect("write catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let view = sealed_physical_catalog_root_for_test(&root);
+        let mut displaced_name = root
+            .file_name()
+            .expect("temp catalog root has a name")
+            .to_os_string();
+        displaced_name.push(".displaced");
+        let displaced = root
+            .parent()
+            .expect("temp catalog root has a parent")
+            .join(displaced_name);
+
+        fs::rename(&root, &displaced).expect("displace sealed catalog root");
+        fs::create_dir(&root).expect("create transient replacement root");
+        fs::write(root.join("data.parquet"), b"EVIL").expect("write replacement catalog file");
+        fs::remove_dir_all(&root).expect("remove transient replacement root");
+        fs::rename(&displaced, &root).expect("restore original catalog root");
+
+        let error = view
+            .reverify(&guard)
+            .expect_err("swap-and-restore must invalidate the execution window");
+        assert!(
+            error.to_string().contains("catalog mutation witness"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn catalog_mutation_witness_fails_closed_without_linux_inotify() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::write(directory.path().join("data.parquet"), b"PAR1").expect("write catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data.parquet".to_string(),
+                byte_len: 4,
+                sha256: crate::hashing::sha256_hex(b"PAR1"),
+            }],
+        };
+        let relative_directories =
+            expected_catalog_directories(&manifest, &guard, OperatorWorkBudgetStage::Backtest)
+                .expect("derive expected directories");
+
+        let error = CatalogMutationWitness::arm(
+            directory.path(),
+            &relative_directories,
+            &manifest.objects,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect_err("non-Linux execution must fail closed without an equivalent witness");
+
+        assert!(
+            error.to_string().contains("requires Linux inotify"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn physical_catalog_manifest_rejects_a_preexisting_stray_file() {
+        let directory = tempfile::tempdir().expect("temp catalog");
+        fs::write(directory.path().join("data.parquet"), b"PAR1").expect("write catalog file");
+        fs::write(directory.path().join("stray.parquet"), b"PAR1")
+            .expect("write stray catalog file");
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "data.parquet".to_string(),
+                byte_len: 4,
+                sha256: crate::hashing::sha256_hex(b"PAR1"),
+            }],
+        };
+        let relative_directories =
+            expected_catalog_directories(&manifest, &guard, OperatorWorkBudgetStage::Backtest)
+                .expect("derive expected directories");
+
+        let error = verify_catalog_tree_exact(
+            directory.path(),
+            &relative_directories,
+            &manifest.objects,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect_err("preexisting stray file must not self-authorize");
+
+        assert!(error.to_string().contains("unexpected file"), "{error:#}");
+    }
+
+    #[test]
+    fn catalog_authority_rechecks_physical_bytes_after_logical_hash() -> Result<()> {
+        let directory = tempfile::tempdir().context("create catalog")?;
+        write_maker_smoke_catalog(directory.path())?;
+        let expected_logical_hash =
+            logical_catalog_hash_guarded(directory.path(), &OperatorWorkBudgetGuard::unbounded())?;
+
+        let error = seal_and_hash_local_catalog_projection_guarded(
+            directory.path(),
+            &expected_logical_hash,
+            &OperatorWorkBudgetGuard::unbounded(),
+            |manifest| {
+                let object = manifest.objects.first().context("catalog object")?;
+                let path = directory.path().join(&object.relative_path);
+                let mut bytes = fs::read(&path).context("read catalog object")?;
+                bytes[0] ^= 0xff;
+                fs::write(path, bytes).context("mutate after logical hash")
+            },
+        )
+        .expect_err("post-logical physical mutation must fail closed");
+
+        ensure!(
+            error.to_string().contains("hash") || error.to_string().contains("changed"),
+            "unexpected error: {error:#}"
+        );
+        Ok(())
+    }
     const MAKER_SMOKE_TS_NS: u64 = 1_772_323_201_665_000_000;
+
+    fn tiny_post_backtest_work_budget(max_decoded_bytes: u64) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::new(crate::operator_work_budget::OperatorWorkBudget::Backfill(
+            crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                max_source_rows: u64::MAX,
+                max_decoded_bytes,
+                max_projected_row_groups: u64::MAX,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("tiny post-backtest work budget")
+    }
+
+    #[test]
+    fn guarded_vector_reservation_rejects_before_allocating_over_decoded_limit() {
+        let guard = tiny_post_backtest_work_budget(8);
+        let mut values = Vec::<u64>::new();
+
+        let error =
+            try_reserve_exact_guarded(&mut values, 2, &guard, OperatorWorkBudgetStage::Backtest)
+                .expect_err("two u64 values must exceed max_decoded_bytes");
+
+        assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
+        assert_eq!(values.capacity(), 0, "rejection must precede allocation");
+    }
+
+    #[test]
+    fn lazy_cache_identifier_capture_is_deterministic_for_both_nt_id_types() {
+        let max_id_bytes = u64::try_from(
+            std::mem::size_of::<ClientOrderId>().max(std::mem::size_of::<PositionId>()),
+        )
+        .expect("identifier size fits u64");
+        let guard = tiny_post_backtest_work_budget(
+            max_id_bytes
+                .checked_mul(3)
+                .expect("three identifier byte limit"),
+        );
+        let order_ids = [
+            ClientOrderId::new("order-c"),
+            ClientOrderId::new("order-a"),
+            ClientOrderId::new("order-b"),
+        ];
+        let sorted_order_ids =
+            collect_sorted_cache_ids_guarded(order_ids.len(), order_ids, "test order", &guard)
+                .expect("capture order IDs within the decoded-byte budget");
+        assert_eq!(
+            sorted_order_ids,
+            [
+                ClientOrderId::new("order-a"),
+                ClientOrderId::new("order-b"),
+                ClientOrderId::new("order-c"),
+            ]
+        );
+
+        let position_ids = [
+            PositionId::new("position-c"),
+            PositionId::new("position-a"),
+            PositionId::new("position-b"),
+        ];
+        let sorted_position_ids = collect_sorted_cache_ids_guarded(
+            position_ids.len(),
+            position_ids,
+            "test position",
+            &guard,
+        )
+        .expect("capture position IDs within the decoded-byte budget");
+        assert_eq!(
+            sorted_position_ids,
+            [
+                PositionId::new("position-a"),
+                PositionId::new("position-b"),
+                PositionId::new("position-c"),
+            ]
+        );
+    }
+
+    #[test]
+    fn lazy_cache_identifier_capture_rejects_count_drift() {
+        let identifier_bytes =
+            u64::try_from(std::mem::size_of::<ClientOrderId>()).expect("identifier size fits u64");
+        let guard = tiny_post_backtest_work_budget(
+            identifier_bytes
+                .checked_mul(2)
+                .expect("two identifier byte limit"),
+        );
+        let error = collect_sorted_cache_ids_guarded(
+            2,
+            [ClientOrderId::new("only-order")],
+            "test order",
+            &guard,
+        )
+        .expect_err("counted cache cardinality must match lazy iteration");
+
+        assert!(
+            error.to_string().contains("ended after 1 of 2 identifiers"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    struct ChunkedDebugFixture;
+
+    impl std::fmt::Debug for ChunkedDebugFixture {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Write::write_str(formatter, "1234")?;
+            std::fmt::Write::write_str(formatter, "5678")?;
+            std::fmt::Write::write_str(formatter, "9")
+        }
+    }
+
+    #[test]
+    fn guarded_debug_rendering_rejects_incrementally_at_decoded_byte_cap() {
+        let guard = tiny_post_backtest_work_budget(8);
+
+        let error = render_debug_guarded(
+            &ChunkedDebugFixture,
+            0,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect_err("ninth rendered byte must fail without an unbounded Debug string");
+
+        assert!(
+            error.to_string().contains("requires more than 8 bytes"),
+            "{error:#}"
+        );
+    }
 
     fn canonical_row(
         trade_id: &str,
@@ -2962,15 +5869,18 @@ mod tests {
         }
     }
 
-    fn maker_smoke_catalog_input(catalog_path: &str, instrument_id: &str) -> ManifestCatalogInput {
+    fn maker_smoke_catalog_input(catalog_root: &Path) -> ManifestCatalogInput {
         ManifestCatalogInput {
-            catalog_path: catalog_path.to_string(),
+            catalog_path: catalog_root.display().to_string(),
             catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
             catalog_fs_storage_options: BTreeMap::new(),
             catalog_fs_rust_storage_options: BTreeMap::new(),
             data_type: "TradeTick".to_string(),
-            nt_instrument_id: instrument_id.to_string(),
-            instrument_ids: None,
+            nt_instrument_id: MAKER_SMOKE_YES_INSTRUMENT.to_string(),
+            instrument_ids: Some(vec![
+                MAKER_SMOKE_YES_INSTRUMENT.to_string(),
+                MAKER_SMOKE_NO_INSTRUMENT.to_string(),
+            ]),
             start_time: None,
             end_time: None,
             filter_expr: None,
@@ -2983,7 +5893,7 @@ mod tests {
     }
 
     fn maker_smoke_manifest(catalog_root: &Path) -> BacktestingRunManifest {
-        let catalog_path = catalog_root.to_str().expect("catalog path is UTF-8");
+        let catalog_input = maker_smoke_catalog_input(catalog_root);
         BacktestingRunManifest {
             manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
             run_id: MAKER_SMOKE_RUN_ID.to_string(),
@@ -3020,13 +5930,10 @@ mod tests {
             strategy_config_hash: sha256_hex(maker_smoke_config_toml().as_bytes()),
             venue: maker_smoke_venue(),
             additional_venues: Vec::new(),
-            catalog_inputs: vec![
-                maker_smoke_catalog_input(catalog_path, MAKER_SMOKE_YES_INSTRUMENT),
-                maker_smoke_catalog_input(catalog_path, MAKER_SMOKE_NO_INSTRUMENT),
-            ],
+            nt_streaming_chunk_size: 128,
+            catalog_inputs: vec![catalog_input],
             reconstructed_reference_current_price: Vec::new(),
             instrument_settlements: Vec::new(),
-            catalog_hash: sha256_hex(catalog_path.as_bytes()),
             execution_model: "nt_backtest_node".to_string(),
             artifact_root: "memory://maker-smoke".to_string(),
             output_prefix: "maker-smoke".to_string(),
@@ -3041,13 +5948,84 @@ mod tests {
         }
     }
 
+    fn maker_smoke_authority(
+        manifest: &BacktestingRunManifest,
+        catalog_root: &Path,
+    ) -> (SubmittedRunIdentity, CatalogRunViewAuthority) {
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let logical_hash =
+            logical_catalog_hash_guarded(catalog_root, &guard).expect("hash maker smoke catalog");
+        let submitted_identity = SubmittedRunIdentity::new(manifest, &manifest.manifest_hash())
+            .expect("build maker smoke submitted identity");
+        let authority = mint_local_catalog_run_view_authority_guarded(
+            manifest,
+            &submitted_identity,
+            &[logical_hash],
+            &guard,
+        )
+        .expect("mint maker smoke catalog authority");
+        (submitted_identity, authority)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn catalog_authority_mint_seals_nested_directories_and_files() {
+        let tempdir = tempfile::TempDir::new().expect("create maker smoke catalog root");
+        write_maker_smoke_catalog(tempdir.path()).expect("write maker smoke catalog");
+        let manifest = maker_smoke_manifest(tempdir.path());
+
+        let (_, authority) = maker_smoke_authority(&manifest, tempdir.path());
+        let physical_manifest = &authority
+            .roots
+            .first()
+            .expect("maker smoke authority root")
+            .physical_manifest;
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let directories = expected_catalog_directories(
+            physical_manifest,
+            &guard,
+            OperatorWorkBudgetStage::Backtest,
+        )
+        .expect("derive sealed catalog directories");
+
+        assert_eq!(
+            fs::metadata(tempdir.path())
+                .expect("catalog root metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        for relative in directories {
+            assert_eq!(
+                fs::metadata(tempdir.path().join(relative))
+                    .expect("sealed catalog directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o500
+            );
+        }
+        for object in &physical_manifest.objects {
+            assert_eq!(
+                fs::metadata(tempdir.path().join(&object.relative_path))
+                    .expect("sealed catalog file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o400
+            );
+        }
+    }
+
     #[test]
     fn binary_oracle_maker_manifest_runs_through_backtest_node() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create maker smoke catalog root")?;
         write_maker_smoke_catalog(tempdir.path())?;
         let manifest = maker_smoke_manifest(tempdir.path());
+        let (submitted_identity, authority) = maker_smoke_authority(&manifest, tempdir.path());
 
-        let output = run_nt_backtest_node(&manifest)
+        let output = run_nt_backtest_node(&manifest, &submitted_identity, &authority)
             .context("run binary-oracle maker manifest through BacktestNode")?;
 
         ensure!(
@@ -3084,6 +6062,25 @@ mod tests {
     }
 
     #[test]
+    fn backtest_node_refuses_stray_file_added_after_authority_mint() -> Result<()> {
+        let tempdir = tempfile::TempDir::new().context("create sealed catalog root")?;
+        write_maker_smoke_catalog(tempdir.path())?;
+        let manifest = maker_smoke_manifest(tempdir.path());
+        let (submitted_identity, authority) = maker_smoke_authority(&manifest, tempdir.path());
+        fs::write(tempdir.path().join("stray.parquet"), b"PAR1").context("plant stray Parquet")?;
+
+        let error = run_nt_backtest_node(&manifest, &submitted_identity, &authority)
+            .err()
+            .context("BacktestNode path accepted a stray physical object")?;
+        ensure!(
+            error.to_string().contains("unexpected file")
+                || error.to_string().contains("exact set"),
+            "unexpected stray-file rejection: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn runner_propagates_execution_contract_validator_failure() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create execution smoke catalog root")?;
         write_execution_contract_smoke_catalog(tempdir.path())?;
@@ -3097,9 +6094,13 @@ mod tests {
             ("side".to_string(), "buy".to_string()),
         ]);
         manifest.catalog_inputs.truncate(1);
-        let result = run_nt_backtest_node_with_execution_contract(&manifest, |_| {
-            anyhow::bail!("execution-contract-validator-sentinel")
-        });
+        let (submitted_identity, authority) = maker_smoke_authority(&manifest, tempdir.path());
+        let result = run_nt_backtest_node_with_execution_contract(
+            &manifest,
+            &submitted_identity,
+            &authority,
+            |_| anyhow::bail!("execution-contract-validator-sentinel"),
+        );
         let error = match result {
             Ok(_) => anyhow::bail!("runner ignored the execution-contract validator failure"),
             Err(error) => error,
@@ -3207,8 +6208,9 @@ mod tests {
         write_maker_smoke_catalog(tempdir.path())?;
         let mut manifest = maker_smoke_manifest(tempdir.path());
         manifest.strategy.registry_key = "binary_oracle_maker_typo".to_string();
+        let (submitted_identity, authority) = maker_smoke_authority(&manifest, tempdir.path());
 
-        let error = run_nt_backtest_node(&manifest)
+        let error = run_nt_backtest_node(&manifest, &submitted_identity, &authority)
             .err()
             .context("unknown strategy unexpectedly ran")?;
 
@@ -3397,7 +6399,7 @@ mod tests {
             },
         ];
 
-        let manifest = issue_789_manifest(Issue789Catalogs {
+        let catalogs = Issue789Catalogs {
             okx_catalog,
             okx_catalog_hash: okx_projection.catalog_hash.clone(),
             bybit_catalog,
@@ -3412,16 +6414,50 @@ mod tests {
             down_instrument_id,
             reference_rows: reconstructed_reference_rows_from_okx(&okx_quotes)?,
             instrument_settlements,
-        })?;
+        };
+        let manifest = issue_789_manifest(&catalogs)?;
+        if manifest.catalog_inputs.len() > 1 {
+            let error = manifest
+                .to_nt_run_config()
+                .err()
+                .context("pinned NT accepted multi-input streaming")?;
+            ensure!(
+                error.to_string().contains("exactly one catalog input"),
+                "unexpected pinned-NT multi-input rejection: {error}"
+            );
+            return Ok(());
+        }
+        let logical_hashes = vec![
+            catalogs.okx_catalog_hash.clone(),
+            catalogs.bybit_catalog_hash.clone(),
+            catalogs.chainlink_catalog_hash.clone(),
+            catalogs.up_catalog_hash.clone(),
+            catalogs.up_catalog_hash.clone(),
+            catalogs.down_catalog_hash.clone(),
+            catalogs.down_catalog_hash.clone(),
+        ];
+        let submitted_identity = SubmittedRunIdentity::new(&manifest, &manifest.manifest_hash())
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let authority = mint_local_catalog_run_view_authority_guarded(
+            &manifest,
+            &submitted_identity,
+            &logical_hashes,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )?;
 
-        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output| {
-            validate_issue_789_execution_contract(
-                output,
-                &manifest,
-                &up_projection,
-                &down_projection,
-            )
-        })
+        let output = run_nt_backtest_node_with_execution_contract(
+            &manifest,
+            &submitted_identity,
+            &authority,
+            |output| {
+                validate_issue_789_execution_contract(
+                    output,
+                    &manifest,
+                    &up_projection,
+                    &down_projection,
+                )
+            },
+        )
         .context("run issue #789 first real free-data taker P/L slice")?;
         let guard = output
             .run_guard_report
@@ -4257,18 +7293,7 @@ mod tests {
         instrument_settlements: Vec<ManifestInstrumentSettlementInput>,
     }
 
-    fn issue_789_manifest(catalogs: Issue789Catalogs) -> Result<BacktestingRunManifest> {
-        let catalog_hash = sha256_hex(
-            format!(
-                "{}{}{}{}{}",
-                catalogs.okx_catalog_hash,
-                catalogs.bybit_catalog_hash,
-                catalogs.chainlink_catalog_hash,
-                catalogs.up_catalog_hash,
-                catalogs.down_catalog_hash
-            )
-            .as_bytes(),
-        );
+    fn issue_789_manifest(catalogs: &Issue789Catalogs) -> Result<BacktestingRunManifest> {
         let mut manifest = BacktestingRunManifest {
             manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
             run_id: "issue-789-first-real-free-data-taker-pl".to_string(),
@@ -4334,6 +7359,7 @@ mod tests {
                 issue_789_venue("BYBIT", "USDT", "L1_MBP", false, false),
                 issue_789_venue("CHAINLINK", "USD", "L1_MBP", false, false),
             ],
+            nt_streaming_chunk_size: 128,
             catalog_inputs: vec![
                 catalog_input(
                     &catalogs.okx_catalog,
@@ -4378,9 +7404,8 @@ mod tests {
                     None,
                 ),
             ],
-            reconstructed_reference_current_price: catalogs.reference_rows,
-            instrument_settlements: catalogs.instrument_settlements,
-            catalog_hash,
+            reconstructed_reference_current_price: catalogs.reference_rows.clone(),
+            instrument_settlements: catalogs.instrument_settlements.clone(),
             execution_model: "nt_backtest_node".to_string(),
             artifact_root: "memory://issue-789".to_string(),
             output_prefix: "issue-789-first-real-free-data-taker-pl".to_string(),

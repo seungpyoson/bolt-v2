@@ -17,7 +17,10 @@ use sha2::{Digest, Sha256};
 use super::{
     canonical_market_data::{CanonicalQuoteRow, CanonicalQuotesTable, NORMALIZED_SCHEMA_VERSION},
     canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit, TradesPartition},
-    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    operator_work_budget::{
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, deserialize_json_with_budget,
+        for_each_nonempty_text_record_with_budget,
+    },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
     tar_reader::TarMember,
 };
@@ -263,23 +266,28 @@ fn parse_seeded_l2_jsonl_with_meter(
 ) -> Result<Vec<SeededL2QuoteEvent>> {
     validate_mapping(mapping)?;
     let mut events = Vec::new();
-    for (line_index, line) in jsonl_text.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
-        let value: Value = serde_json::from_str(trimmed)
+    for_each_nonempty_text_record_with_budget(
+        jsonl_text,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+        |line_index, line| {
+            let trimmed = line.trim();
+            work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
+            let value: Value = deserialize_json_with_budget(
+                trimmed.as_bytes(),
+                work_budget,
+                OperatorWorkBudgetStage::Normalize,
+            )
             .with_context(|| format!("line {}: invalid JSON", line_index + 1))?;
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-        events.push(parse_seeded_l2_json_value(
-            mapping,
-            &value,
-            line_index + 1,
-            work_budget,
-        )?);
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-    }
+            events.push(parse_seeded_l2_json_value(
+                mapping,
+                &value,
+                line_index + 1,
+                work_budget,
+            )?);
+            Ok(())
+        },
+    )?;
     ensure!(!events.is_empty(), "seeded L2 quote JSONL is empty");
     Ok(events)
 }
@@ -351,9 +359,7 @@ fn normalize_seeded_l2_events_with_meter(
         payload_hash: provenance.payload_hash.clone(),
         rows,
     };
-    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-    table.validate()?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::Normalize)?;
     Ok(table)
 }
 
@@ -727,6 +733,7 @@ mod tests {
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 1,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 1,
                     require_object_selection_metadata: false,

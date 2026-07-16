@@ -22,11 +22,10 @@
 //! [`SourceProofFidelityClass::MarkReplay`], and funding-rate updates require
 //! [`SourceProofFidelityClass::FundingReplay`].
 
-use std::{fs::File, path::Path, sync::Arc};
+use std::{mem::size_of, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
 use arrow::{
-    array::{ArrayRef, Int64Array, StringArray, UInt8Array, UInt16Array, UInt64Array},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -34,11 +33,22 @@ use nautilus_model::{
     data::BarSpecification,
     enums::{BarAggregation, PriceType, RecordFlag},
 };
-use parquet::arrow::ArrowWriter;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use super::{canonical_trades::TradesPartition, source_proof::SourceProofFidelityClass};
+use super::{
+    canonical_trades::{
+        TradesPartition, constant_utf8_column_guarded, estimated_arrow_row_bytes,
+        int64_column_guarded, optional_int64_column_guarded, optional_uint16_column_guarded,
+        optional_utf8_column_guarded, uint8_column_guarded, uint64_column_guarded,
+        utf8_column_guarded, verify_canonical_rows_materialization,
+        write_canonical_parquet_guarded,
+    },
+    operator_work_budget::{
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, guarded_operation_outcome,
+    },
+    source_proof::SourceProofFidelityClass,
+};
 
 /// Contracted semantic schema version for normalized market-data rows.
 ///
@@ -164,6 +174,24 @@ impl CanonicalOrderBookDeltasTable {
     ///
     /// Returns an error describing the first contract violation.
     pub fn validate(&self) -> Result<()> {
+        self.validate_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CanonicalWrite,
+        )
+    }
+
+    pub(crate) fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        verify_canonical_rows_materialization(
+            &self.rows,
+            work_budget,
+            stage,
+            delta_row_materialized_bytes,
+        )?;
         ensure!(
             self.schema_version == NORMALIZED_SCHEMA_VERSION,
             "unexpected schema_version {:?}",
@@ -197,7 +225,9 @@ impl CanonicalOrderBookDeltasTable {
         let snapshot_flag = RecordFlag::F_SNAPSHOT as u8;
         let last_flag = RecordFlag::F_LAST as u8;
         let mut previous_event_time = i64::MIN;
-        for (index, row) in self.rows.iter().enumerate() {
+        let mut index = 0_usize;
+        for row in &self.rows {
+            work_budget.check_deadline(stage)?;
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
                 "row {index}: schema_version mismatch"
@@ -250,9 +280,14 @@ impl CanonicalOrderBookDeltasTable {
                 }
             }
             validate_delta_action_payload(index, row, snapshot_flag)?;
+            index = index
+                .checked_add(1)
+                .context("canonical delta validation row index overflow")?;
+            work_budget.check_deadline(stage)?;
         }
 
-        validate_snapshot_f_last(&self.rows, last_flag)?;
+        validate_snapshot_f_last(&self.rows, last_flag, work_budget, stage)?;
+        work_budget.check_deadline(stage)?;
         Ok(())
     }
 }
@@ -329,10 +364,18 @@ fn validate_delta_action_payload(
 /// `F_LAST`); a single-level delta is a one-row event that carries `F_LAST` on
 /// its own row. A `CLEAR` may therefore appear only at an event start, and the
 /// final row of the table must close its event with `F_LAST`.
-fn validate_snapshot_f_last(rows: &[CanonicalOrderBookDeltaRow], last_flag: u8) -> Result<()> {
+fn validate_snapshot_f_last(
+    rows: &[CanonicalOrderBookDeltaRow],
+    last_flag: u8,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
     let mut at_event_start = true;
     let mut previous_was_clear = false;
-    for (index, row) in rows.iter().enumerate() {
+    let mut index = 0_usize;
+    verify_canonical_rows_materialization(rows, work_budget, stage, delta_row_materialized_bytes)?;
+    for row in rows {
+        work_budget.check_deadline(stage)?;
         let is_clear = row.action == DeltaAction::Clear.as_str();
         if is_clear {
             ensure!(
@@ -351,6 +394,10 @@ fn validate_snapshot_f_last(rows: &[CanonicalOrderBookDeltaRow], last_flag: u8) 
         previous_was_clear = is_clear;
         let closes_event = row.flags & last_flag != 0;
         at_event_start = closes_event;
+        index = index
+            .checked_add(1)
+            .context("snapshot validation row index overflow")?;
+        work_budget.check_deadline(stage)?;
     }
     ensure!(
         at_event_start,
@@ -439,6 +486,22 @@ impl CanonicalBarsTable {
     ///
     /// Returns an error describing the first contract violation.
     pub fn validate(&self) -> Result<()> {
+        self.validate_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CanonicalWrite,
+        )
+    }
+
+    pub(crate) fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        let bar_aggregation = self.bar_spec.aggregation.to_string();
+        verify_canonical_rows_materialization(&self.rows, work_budget, stage, |row| {
+            bar_row_materialized_bytes(row, &bar_aggregation)
+        })?;
         ensure!(
             self.schema_version == NORMALIZED_SCHEMA_VERSION,
             "unexpected schema_version {:?}",
@@ -484,7 +547,9 @@ impl CanonicalBarsTable {
 
         let mut previous_open_time = i64::MIN;
         let mut previous_close_time = i64::MIN;
-        for (index, row) in self.rows.iter().enumerate() {
+        let mut index = 0_usize;
+        for row in &self.rows {
+            work_budget.check_deadline(stage)?;
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
                 "row {index}: schema_version mismatch"
@@ -553,7 +618,12 @@ impl CanonicalBarsTable {
             );
             previous_close_time = row.close_time;
             validate_bar_ohlcv(index, row)?;
+            index = index
+                .checked_add(1)
+                .context("canonical bar validation row index overflow")?;
+            work_budget.check_deadline(stage)?;
         }
+        work_budget.check_deadline(stage)?;
         Ok(())
     }
 }
@@ -657,6 +727,24 @@ impl CanonicalQuotesTable {
     ///
     /// Returns an error describing the first contract violation.
     pub fn validate(&self) -> Result<()> {
+        self.validate_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CanonicalWrite,
+        )
+    }
+
+    pub(crate) fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        verify_canonical_rows_materialization(
+            &self.rows,
+            work_budget,
+            stage,
+            quote_row_materialized_bytes,
+        )?;
         ensure!(
             self.schema_version == NORMALIZED_SCHEMA_VERSION,
             "unexpected schema_version {:?}",
@@ -685,7 +773,9 @@ impl CanonicalQuotesTable {
         );
 
         let mut previous_event_time = i64::MIN;
-        for (index, row) in self.rows.iter().enumerate() {
+        let mut index = 0_usize;
+        for row in &self.rows {
+            work_budget.check_deadline(stage)?;
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
                 "row {index}: schema_version mismatch"
@@ -740,7 +830,12 @@ impl CanonicalQuotesTable {
                 }
             }
             validate_quote_spread(index, row)?;
+            index = index
+                .checked_add(1)
+                .context("canonical quote validation row index overflow")?;
+            work_budget.check_deadline(stage)?;
         }
+        work_budget.check_deadline(stage)?;
         Ok(())
     }
 }
@@ -874,6 +969,24 @@ impl CanonicalIndexPricesTable {
     ///
     /// Returns an error describing the first contract violation.
     pub fn validate(&self) -> Result<()> {
+        self.validate_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CanonicalWrite,
+        )
+    }
+
+    pub(crate) fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        verify_canonical_rows_materialization(
+            &self.rows,
+            work_budget,
+            stage,
+            point_price_row_materialized_bytes,
+        )?;
         ensure!(
             self.schema_version == NORMALIZED_SCHEMA_VERSION,
             "unexpected schema_version {:?}",
@@ -905,7 +1018,9 @@ impl CanonicalIndexPricesTable {
         );
 
         let mut previous_event_time = i64::MIN;
-        for (index, row) in self.rows.iter().enumerate() {
+        let mut index = 0_usize;
+        for row in &self.rows {
+            work_budget.check_deadline(stage)?;
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
                 "row {index}: schema_version mismatch"
@@ -968,7 +1083,12 @@ impl CanonicalIndexPricesTable {
                 value > Decimal::ZERO,
                 "row {index}: non-positive value {value}"
             );
+            index = index
+                .checked_add(1)
+                .context("canonical index validation row index overflow")?;
+            work_budget.check_deadline(stage)?;
         }
+        work_budget.check_deadline(stage)?;
         Ok(())
     }
 }
@@ -1041,6 +1161,24 @@ impl CanonicalMarkPricesTable {
     ///
     /// Returns an error describing the first contract violation.
     pub fn validate(&self) -> Result<()> {
+        self.validate_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CanonicalWrite,
+        )
+    }
+
+    pub(crate) fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        verify_canonical_rows_materialization(
+            &self.rows,
+            work_budget,
+            stage,
+            mark_price_row_materialized_bytes,
+        )?;
         ensure!(
             self.schema_version == NORMALIZED_SCHEMA_VERSION,
             "unexpected schema_version {:?}",
@@ -1072,7 +1210,9 @@ impl CanonicalMarkPricesTable {
         );
 
         let mut previous_event_time = i64::MIN;
-        for (index, row) in self.rows.iter().enumerate() {
+        let mut index = 0_usize;
+        for row in &self.rows {
+            work_budget.check_deadline(stage)?;
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
                 "row {index}: schema_version mismatch"
@@ -1135,7 +1275,12 @@ impl CanonicalMarkPricesTable {
                 value > Decimal::ZERO,
                 "row {index}: non-positive value {value}"
             );
+            index = index
+                .checked_add(1)
+                .context("canonical mark validation row index overflow")?;
+            work_budget.check_deadline(stage)?;
         }
+        work_budget.check_deadline(stage)?;
         Ok(())
     }
 }
@@ -1206,6 +1351,24 @@ impl CanonicalFundingRatesTable {
     ///
     /// Returns an error describing the first contract violation.
     pub fn validate(&self) -> Result<()> {
+        self.validate_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CanonicalWrite,
+        )
+    }
+
+    pub(crate) fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        verify_canonical_rows_materialization(
+            &self.rows,
+            work_budget,
+            stage,
+            funding_rate_row_materialized_bytes,
+        )?;
         ensure!(
             self.schema_version == NORMALIZED_SCHEMA_VERSION,
             "unexpected schema_version {:?}",
@@ -1237,7 +1400,9 @@ impl CanonicalFundingRatesTable {
         );
 
         let mut previous_event_time = i64::MIN;
-        for (index, row) in self.rows.iter().enumerate() {
+        let mut index = 0_usize;
+        for row in &self.rows {
+            work_budget.check_deadline(stage)?;
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
                 "row {index}: schema_version mismatch"
@@ -1313,23 +1478,227 @@ impl CanonicalFundingRatesTable {
                     row.event_time
                 );
             }
+            index = index
+                .checked_add(1)
+                .context("canonical funding validation row index overflow")?;
+            work_budget.check_deadline(stage)?;
         }
+        work_budget.check_deadline(stage)?;
         Ok(())
     }
 }
 
-/// Write one canonical table record batch as a Parquet artifact.
-///
-/// Shared by the bar and order-book-delta canonical writers; mirrors the
-/// trades writer in [`super::canonical_trades::CanonicalTradesTable`].
-fn write_record_batch_parquet(batch: &RecordBatch, path: &Path) -> Result<()> {
-    let file = File::create(path)
-        .with_context(|| format!("failed to create canonical artifact {}", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, batch.schema(), None)
-        .context("failed to construct parquet writer")?;
-    writer.write(batch).context("failed to write batch")?;
-    writer.close().context("failed to finalize parquet")?;
-    Ok(())
+pub(crate) fn delta_row_materialized_bytes(row: &CanonicalOrderBookDeltaRow) -> Result<usize> {
+    estimated_arrow_row_bytes(
+        [
+            Some(row.schema_version.as_str()),
+            Some(row.ingest_run_id.as_str()),
+            Some(row.source_binding.as_str()),
+            Some(row.venue.as_str()),
+            Some(row.product_family.as_str()),
+            Some(row.product_category.as_str()),
+            Some(row.instrument_id.as_str()),
+            Some(row.canonical_instrument_key.as_str()),
+            Some(row.venue_symbol.as_str()),
+            row.nt_instrument_id.as_deref(),
+            row.source_sequence.as_deref(),
+            Some(row.raw_payload_id.as_str()),
+            Some(row.source_proof_id.as_str()),
+            Some(row.payload_hash.as_str()),
+            Some(row.transform_hash.as_str()),
+            Some(row.action.as_str()),
+            Some(row.side.as_str()),
+            Some(row.price.as_str()),
+            Some(row.size.as_str()),
+        ],
+        [
+            size_of::<i64>(),
+            size_of::<i64>(),
+            size_of::<i64>(),
+            size_of::<u64>(),
+            size_of::<u8>(),
+            size_of::<u64>(),
+        ],
+    )
+}
+
+pub(crate) fn bar_row_materialized_bytes(
+    row: &CanonicalBarRow,
+    bar_aggregation: &str,
+) -> Result<usize> {
+    estimated_arrow_row_bytes(
+        [
+            Some(row.schema_version.as_str()),
+            Some(row.ingest_run_id.as_str()),
+            Some(row.source_binding.as_str()),
+            Some(row.venue.as_str()),
+            Some(row.product_family.as_str()),
+            Some(row.product_category.as_str()),
+            Some(row.instrument_id.as_str()),
+            Some(row.canonical_instrument_key.as_str()),
+            Some(row.venue_symbol.as_str()),
+            row.nt_instrument_id.as_deref(),
+            row.source_sequence.as_deref(),
+            Some(row.raw_payload_id.as_str()),
+            Some(row.source_proof_id.as_str()),
+            Some(row.payload_hash.as_str()),
+            Some(row.transform_hash.as_str()),
+            Some(bar_aggregation),
+            Some(row.open.as_str()),
+            Some(row.high.as_str()),
+            Some(row.low.as_str()),
+            Some(row.close.as_str()),
+            Some(row.volume.as_str()),
+        ],
+        [
+            size_of::<i64>(),
+            size_of::<i64>(),
+            size_of::<i64>(),
+            size_of::<i64>(),
+            size_of::<i64>(),
+        ],
+    )
+}
+
+pub(crate) fn quote_row_materialized_bytes(row: &CanonicalQuoteRow) -> Result<usize> {
+    estimated_arrow_row_bytes(
+        [
+            Some(row.schema_version.as_str()),
+            Some(row.ingest_run_id.as_str()),
+            Some(row.source_binding.as_str()),
+            Some(row.venue.as_str()),
+            Some(row.product_family.as_str()),
+            Some(row.product_category.as_str()),
+            Some(row.instrument_id.as_str()),
+            Some(row.canonical_instrument_key.as_str()),
+            Some(row.venue_symbol.as_str()),
+            row.nt_instrument_id.as_deref(),
+            row.source_sequence.as_deref(),
+            Some(row.raw_payload_id.as_str()),
+            Some(row.source_proof_id.as_str()),
+            Some(row.payload_hash.as_str()),
+            Some(row.transform_hash.as_str()),
+            Some(row.bid.as_str()),
+            Some(row.ask.as_str()),
+            Some(row.bid_size.as_str()),
+            Some(row.ask_size.as_str()),
+        ],
+        [size_of::<i64>(), size_of::<i64>(), size_of::<i64>()],
+    )
+}
+
+pub(crate) fn point_price_row_materialized_bytes(row: &CanonicalIndexPriceRow) -> Result<usize> {
+    point_price_fields_materialized_bytes(
+        &row.schema_version,
+        &row.ingest_run_id,
+        &row.source_binding,
+        &row.venue,
+        &row.product_family,
+        &row.product_category,
+        &row.instrument_id,
+        &row.canonical_instrument_key,
+        &row.venue_symbol,
+        row.nt_instrument_id.as_deref(),
+        row.source_sequence.as_deref(),
+        &row.raw_payload_id,
+        &row.source_proof_id,
+        &row.payload_hash,
+        &row.transform_hash,
+        &row.value,
+    )
+}
+
+pub(crate) fn mark_price_row_materialized_bytes(row: &CanonicalMarkPriceRow) -> Result<usize> {
+    point_price_fields_materialized_bytes(
+        &row.schema_version,
+        &row.ingest_run_id,
+        &row.source_binding,
+        &row.venue,
+        &row.product_family,
+        &row.product_category,
+        &row.instrument_id,
+        &row.canonical_instrument_key,
+        &row.venue_symbol,
+        row.nt_instrument_id.as_deref(),
+        row.source_sequence.as_deref(),
+        &row.raw_payload_id,
+        &row.source_proof_id,
+        &row.payload_hash,
+        &row.transform_hash,
+        &row.value,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn point_price_fields_materialized_bytes(
+    schema_version: &str,
+    ingest_run_id: &str,
+    source_binding: &str,
+    venue: &str,
+    product_family: &str,
+    product_category: &str,
+    instrument_id: &str,
+    canonical_instrument_key: &str,
+    venue_symbol: &str,
+    nt_instrument_id: Option<&str>,
+    source_sequence: Option<&str>,
+    raw_payload_id: &str,
+    source_proof_id: &str,
+    payload_hash: &str,
+    transform_hash: &str,
+    value: &str,
+) -> Result<usize> {
+    estimated_arrow_row_bytes(
+        [
+            Some(schema_version),
+            Some(ingest_run_id),
+            Some(source_binding),
+            Some(venue),
+            Some(product_family),
+            Some(product_category),
+            Some(instrument_id),
+            Some(canonical_instrument_key),
+            Some(venue_symbol),
+            nt_instrument_id,
+            source_sequence,
+            Some(raw_payload_id),
+            Some(source_proof_id),
+            Some(payload_hash),
+            Some(transform_hash),
+            Some(value),
+        ],
+        [size_of::<i64>(), size_of::<i64>(), size_of::<i64>()],
+    )
+}
+
+pub(crate) fn funding_rate_row_materialized_bytes(row: &CanonicalFundingRateRow) -> Result<usize> {
+    estimated_arrow_row_bytes(
+        [
+            Some(row.schema_version.as_str()),
+            Some(row.ingest_run_id.as_str()),
+            Some(row.source_binding.as_str()),
+            Some(row.venue.as_str()),
+            Some(row.product_family.as_str()),
+            Some(row.product_category.as_str()),
+            Some(row.instrument_id.as_str()),
+            Some(row.canonical_instrument_key.as_str()),
+            Some(row.venue_symbol.as_str()),
+            row.nt_instrument_id.as_deref(),
+            row.source_sequence.as_deref(),
+            Some(row.raw_payload_id.as_str()),
+            Some(row.source_proof_id.as_str()),
+            Some(row.payload_hash.as_str()),
+            Some(row.transform_hash.as_str()),
+            Some(row.rate.as_str()),
+        ],
+        [
+            size_of::<i64>(),
+            size_of::<i64>(),
+            size_of::<i64>(),
+            size_of::<u16>(),
+            size_of::<i64>(),
+        ],
+    )
 }
 
 impl CanonicalOrderBookDeltasTable {
@@ -1369,40 +1738,29 @@ impl CanonicalOrderBookDeltasTable {
         ]))
     }
 
-    fn to_record_batch(&self) -> Result<RecordBatch> {
-        let utf8_col = |f: fn(&CanonicalOrderBookDeltaRow) -> &str| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        let int64_col = |f: fn(&CanonicalOrderBookDeltaRow) -> i64| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
+    fn to_record_batch_guarded(
+        &self,
+        rows: &[CanonicalOrderBookDeltaRow],
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<RecordBatch> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        let utf8_col =
+            |f: fn(&CanonicalOrderBookDeltaRow) -> &str| utf8_column_guarded(rows, work_budget, f);
+        let int64_col =
+            |f: fn(&CanonicalOrderBookDeltaRow) -> i64| int64_column_guarded(rows, work_budget, f);
         let opt_utf8_col = |f: fn(&CanonicalOrderBookDeltaRow) -> Option<&str>| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_utf8_column_guarded(rows, work_budget, f)
         };
         let opt_int64_col = |f: fn(&CanonicalOrderBookDeltaRow) -> Option<i64>| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_int64_column_guarded(rows, work_budget, f)
         };
-        let uint64_col = |f: fn(&CanonicalOrderBookDeltaRow) -> u64| {
-            Arc::new(UInt64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        let uint8_col = |f: fn(&CanonicalOrderBookDeltaRow) -> u8| {
-            Arc::new(UInt8Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        RecordBatch::try_new(
+        let uint64_col =
+            |f: fn(&CanonicalOrderBookDeltaRow) -> u64| uint64_column_guarded(rows, work_budget, f);
+        let uint8_col =
+            |f: fn(&CanonicalOrderBookDeltaRow) -> u8| uint8_column_guarded(rows, work_budget, f);
+        let batch = RecordBatch::try_new(
             Self::arrow_schema(),
-            vec![
+            [
                 utf8_col(|r| r.schema_version.as_str()),
                 utf8_col(|r| r.ingest_run_id.as_str()),
                 utf8_col(|r| r.source_binding.as_str()),
@@ -1428,9 +1786,13 @@ impl CanonicalOrderBookDeltasTable {
                 uint64_col(|r| r.order_id),
                 uint8_col(|r| r.flags),
                 uint64_col(|r| r.sequence),
-            ],
+            ]
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         )
-        .context("failed to build canonical order-book-delta record batch")
+        .context("failed to build canonical order-book-delta record batch")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        Ok(batch)
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -1439,8 +1801,28 @@ impl CanonicalOrderBookDeltasTable {
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
     pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.validate()?;
-        write_record_batch_parquet(&self.to_record_batch()?, path)
+        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Write this table atomically while enforcing the shared work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on validation, budget expiry, or Parquet I/O failure.
+    pub fn write_parquet_guarded(
+        &self,
+        path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
+        write_canonical_parquet_guarded(
+            &self.rows,
+            Self::arrow_schema(),
+            path,
+            work_budget,
+            delta_row_materialized_bytes,
+            |rows, guard| self.to_record_batch_guarded(rows, guard),
+        )
     }
 }
 
@@ -1485,37 +1867,28 @@ impl CanonicalBarsTable {
         ]))
     }
 
-    fn to_record_batch(&self) -> Result<RecordBatch> {
-        let utf8_col = |f: fn(&CanonicalBarRow) -> &str| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        let int64_col = |f: fn(&CanonicalBarRow) -> i64| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
+    fn to_record_batch_guarded(
+        &self,
+        rows: &[CanonicalBarRow],
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<RecordBatch> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        let utf8_col = |f: fn(&CanonicalBarRow) -> &str| utf8_column_guarded(rows, work_budget, f);
+        let int64_col = |f: fn(&CanonicalBarRow) -> i64| int64_column_guarded(rows, work_budget, f);
         let opt_utf8_col = |f: fn(&CanonicalBarRow) -> Option<&str>| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_utf8_column_guarded(rows, work_budget, f)
         };
         let opt_int64_col = |f: fn(&CanonicalBarRow) -> Option<i64>| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_int64_column_guarded(rows, work_budget, f)
         };
         let bar_step = i64::try_from(self.bar_spec.step).context("bar_spec step overflow")?;
-        let bar_step_col = Arc::new(Int64Array::from(vec![bar_step; self.rows.len()])) as ArrayRef;
+        let bar_step_col = int64_column_guarded(rows, work_budget, |_| bar_step)?;
         let bar_aggregation = self.bar_spec.aggregation.to_string();
-        let bar_aggregation_col = Arc::new(StringArray::from(vec![
-            bar_aggregation.as_str();
-            self.rows.len()
-        ])) as ArrayRef;
-        RecordBatch::try_new(
+        let bar_aggregation_col =
+            constant_utf8_column_guarded(rows, work_budget, &bar_aggregation)?;
+        let batch = RecordBatch::try_new(
             Self::arrow_schema(),
-            vec![
+            [
                 utf8_col(|r| r.schema_version.as_str()),
                 utf8_col(|r| r.ingest_run_id.as_str()),
                 utf8_col(|r| r.source_binding.as_str()),
@@ -1535,16 +1908,20 @@ impl CanonicalBarsTable {
                 utf8_col(|r| r.source_proof_id.as_str()),
                 utf8_col(|r| r.payload_hash.as_str()),
                 utf8_col(|r| r.transform_hash.as_str()),
-                bar_step_col,
-                bar_aggregation_col,
+                Ok(bar_step_col),
+                Ok(bar_aggregation_col),
                 utf8_col(|r| r.open.as_str()),
                 utf8_col(|r| r.high.as_str()),
                 utf8_col(|r| r.low.as_str()),
                 utf8_col(|r| r.close.as_str()),
                 utf8_col(|r| r.volume.as_str()),
-            ],
+            ]
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         )
-        .context("failed to build canonical bar record batch")
+        .context("failed to build canonical bar record batch")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        Ok(batch)
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -1553,8 +1930,29 @@ impl CanonicalBarsTable {
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
     pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.validate()?;
-        write_record_batch_parquet(&self.to_record_batch()?, path)
+        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Write this table atomically while enforcing the shared work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on validation, budget expiry, or Parquet I/O failure.
+    pub fn write_parquet_guarded(
+        &self,
+        path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
+        let bar_aggregation = self.bar_spec.aggregation.to_string();
+        write_canonical_parquet_guarded(
+            &self.rows,
+            Self::arrow_schema(),
+            path,
+            work_budget,
+            |row| bar_row_materialized_bytes(row, &bar_aggregation),
+            |rows, guard| self.to_record_batch_guarded(rows, guard),
+        )
     }
 }
 
@@ -1592,30 +1990,25 @@ impl CanonicalQuotesTable {
         ]))
     }
 
-    fn to_record_batch(&self) -> Result<RecordBatch> {
-        let utf8_col = |f: fn(&CanonicalQuoteRow) -> &str| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        let int64_col = |f: fn(&CanonicalQuoteRow) -> i64| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
+    fn to_record_batch_guarded(
+        &self,
+        rows: &[CanonicalQuoteRow],
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<RecordBatch> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        let utf8_col =
+            |f: fn(&CanonicalQuoteRow) -> &str| utf8_column_guarded(rows, work_budget, f);
+        let int64_col =
+            |f: fn(&CanonicalQuoteRow) -> i64| int64_column_guarded(rows, work_budget, f);
         let opt_utf8_col = |f: fn(&CanonicalQuoteRow) -> Option<&str>| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_utf8_column_guarded(rows, work_budget, f)
         };
         let opt_int64_col = |f: fn(&CanonicalQuoteRow) -> Option<i64>| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_int64_column_guarded(rows, work_budget, f)
         };
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Self::arrow_schema(),
-            vec![
+            [
                 utf8_col(|r| r.schema_version.as_str()),
                 utf8_col(|r| r.ingest_run_id.as_str()),
                 utf8_col(|r| r.source_binding.as_str()),
@@ -1638,9 +2031,13 @@ impl CanonicalQuotesTable {
                 utf8_col(|r| r.ask.as_str()),
                 utf8_col(|r| r.bid_size.as_str()),
                 utf8_col(|r| r.ask_size.as_str()),
-            ],
+            ]
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         )
-        .context("failed to build canonical quote record batch")
+        .context("failed to build canonical quote record batch")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        Ok(batch)
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -1649,8 +2046,28 @@ impl CanonicalQuotesTable {
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
     pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.validate()?;
-        write_record_batch_parquet(&self.to_record_batch()?, path)
+        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Write this table atomically while enforcing the shared work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on validation, budget expiry, or Parquet I/O failure.
+    pub fn write_parquet_guarded(
+        &self,
+        path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
+        write_canonical_parquet_guarded(
+            &self.rows,
+            Self::arrow_schema(),
+            path,
+            work_budget,
+            quote_row_materialized_bytes,
+            |rows, guard| self.to_record_batch_guarded(rows, guard),
+        )
     }
 }
 
@@ -1689,30 +2106,25 @@ impl CanonicalIndexPricesTable {
         ]))
     }
 
-    fn to_record_batch(&self) -> Result<RecordBatch> {
-        let utf8_col = |f: fn(&CanonicalIndexPriceRow) -> &str| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        let int64_col = |f: fn(&CanonicalIndexPriceRow) -> i64| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
+    fn to_record_batch_guarded(
+        &self,
+        rows: &[CanonicalIndexPriceRow],
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<RecordBatch> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        let utf8_col =
+            |f: fn(&CanonicalIndexPriceRow) -> &str| utf8_column_guarded(rows, work_budget, f);
+        let int64_col =
+            |f: fn(&CanonicalIndexPriceRow) -> i64| int64_column_guarded(rows, work_budget, f);
         let opt_utf8_col = |f: fn(&CanonicalIndexPriceRow) -> Option<&str>| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_utf8_column_guarded(rows, work_budget, f)
         };
         let opt_int64_col = |f: fn(&CanonicalIndexPriceRow) -> Option<i64>| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_int64_column_guarded(rows, work_budget, f)
         };
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Self::arrow_schema(),
-            vec![
+            [
                 utf8_col(|r| r.schema_version.as_str()),
                 utf8_col(|r| r.ingest_run_id.as_str()),
                 utf8_col(|r| r.source_binding.as_str()),
@@ -1732,9 +2144,13 @@ impl CanonicalIndexPricesTable {
                 utf8_col(|r| r.payload_hash.as_str()),
                 utf8_col(|r| r.transform_hash.as_str()),
                 utf8_col(|r| r.value.as_str()),
-            ],
+            ]
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         )
-        .context("failed to build canonical index price record batch")
+        .context("failed to build canonical index price record batch")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        Ok(batch)
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -1743,8 +2159,28 @@ impl CanonicalIndexPricesTable {
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
     pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.validate()?;
-        write_record_batch_parquet(&self.to_record_batch()?, path)
+        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Write this table atomically while enforcing the shared work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on validation, budget expiry, or Parquet I/O failure.
+    pub fn write_parquet_guarded(
+        &self,
+        path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
+        write_canonical_parquet_guarded(
+            &self.rows,
+            Self::arrow_schema(),
+            path,
+            work_budget,
+            point_price_row_materialized_bytes,
+            |rows, guard| self.to_record_batch_guarded(rows, guard),
+        )
     }
 }
 
@@ -1783,30 +2219,25 @@ impl CanonicalMarkPricesTable {
         ]))
     }
 
-    fn to_record_batch(&self) -> Result<RecordBatch> {
-        let utf8_col = |f: fn(&CanonicalMarkPriceRow) -> &str| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        let int64_col = |f: fn(&CanonicalMarkPriceRow) -> i64| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
+    fn to_record_batch_guarded(
+        &self,
+        rows: &[CanonicalMarkPriceRow],
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<RecordBatch> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        let utf8_col =
+            |f: fn(&CanonicalMarkPriceRow) -> &str| utf8_column_guarded(rows, work_budget, f);
+        let int64_col =
+            |f: fn(&CanonicalMarkPriceRow) -> i64| int64_column_guarded(rows, work_budget, f);
         let opt_utf8_col = |f: fn(&CanonicalMarkPriceRow) -> Option<&str>| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_utf8_column_guarded(rows, work_budget, f)
         };
         let opt_int64_col = |f: fn(&CanonicalMarkPriceRow) -> Option<i64>| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_int64_column_guarded(rows, work_budget, f)
         };
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Self::arrow_schema(),
-            vec![
+            [
                 utf8_col(|r| r.schema_version.as_str()),
                 utf8_col(|r| r.ingest_run_id.as_str()),
                 utf8_col(|r| r.source_binding.as_str()),
@@ -1826,9 +2257,13 @@ impl CanonicalMarkPricesTable {
                 utf8_col(|r| r.payload_hash.as_str()),
                 utf8_col(|r| r.transform_hash.as_str()),
                 utf8_col(|r| r.value.as_str()),
-            ],
+            ]
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         )
-        .context("failed to build canonical mark price record batch")
+        .context("failed to build canonical mark price record batch")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        Ok(batch)
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -1837,8 +2272,28 @@ impl CanonicalMarkPricesTable {
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
     pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.validate()?;
-        write_record_batch_parquet(&self.to_record_batch()?, path)
+        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Write this table atomically while enforcing the shared work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on validation, budget expiry, or Parquet I/O failure.
+    pub fn write_parquet_guarded(
+        &self,
+        path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
+        write_canonical_parquet_guarded(
+            &self.rows,
+            Self::arrow_schema(),
+            path,
+            work_budget,
+            mark_price_row_materialized_bytes,
+            |rows, guard| self.to_record_batch_guarded(rows, guard),
+        )
     }
 }
 
@@ -1880,35 +2335,28 @@ impl CanonicalFundingRatesTable {
         ]))
     }
 
-    fn to_record_batch(&self) -> Result<RecordBatch> {
-        let utf8_col = |f: fn(&CanonicalFundingRateRow) -> &str| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
-        let int64_col = |f: fn(&CanonicalFundingRateRow) -> i64| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
-        };
+    fn to_record_batch_guarded(
+        &self,
+        rows: &[CanonicalFundingRateRow],
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<RecordBatch> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        let utf8_col =
+            |f: fn(&CanonicalFundingRateRow) -> &str| utf8_column_guarded(rows, work_budget, f);
+        let int64_col =
+            |f: fn(&CanonicalFundingRateRow) -> i64| int64_column_guarded(rows, work_budget, f);
         let opt_utf8_col = |f: fn(&CanonicalFundingRateRow) -> Option<&str>| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_utf8_column_guarded(rows, work_budget, f)
         };
         let opt_int64_col = |f: fn(&CanonicalFundingRateRow) -> Option<i64>| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_int64_column_guarded(rows, work_budget, f)
         };
         let opt_u16_col = |f: fn(&CanonicalFundingRateRow) -> Option<u16>| {
-            Arc::new(UInt16Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as ArrayRef
+            optional_uint16_column_guarded(rows, work_budget, f)
         };
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Self::arrow_schema(),
-            vec![
+            [
                 utf8_col(|r| r.schema_version.as_str()),
                 utf8_col(|r| r.ingest_run_id.as_str()),
                 utf8_col(|r| r.source_binding.as_str()),
@@ -1930,9 +2378,13 @@ impl CanonicalFundingRatesTable {
                 utf8_col(|r| r.rate.as_str()),
                 opt_u16_col(|r| r.interval_minutes),
                 opt_int64_col(|r| r.next_funding_time),
-            ],
+            ]
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         )
-        .context("failed to build canonical funding rate record batch")
+        .context("failed to build canonical funding rate record batch")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        Ok(batch)
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -1941,8 +2393,28 @@ impl CanonicalFundingRatesTable {
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
     pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.validate()?;
-        write_record_batch_parquet(&self.to_record_batch()?, path)
+        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Write this table atomically while enforcing the shared work budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on validation, budget expiry, or Parquet I/O failure.
+    pub fn write_parquet_guarded(
+        &self,
+        path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
+        write_canonical_parquet_guarded(
+            &self.rows,
+            Self::arrow_schema(),
+            path,
+            work_budget,
+            funding_rate_row_materialized_bytes,
+            |rows, guard| self.to_record_batch_guarded(rows, guard),
+        )
     }
 }
 

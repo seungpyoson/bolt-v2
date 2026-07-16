@@ -20,7 +20,7 @@ use backtesting_vertical_slice::{
     backfill_object_staging as object_staging, backfill_preflight as preflight,
     backfill_readiness as readiness, backfill_source_proof_scope as source_scope,
     conversion_boundary::{self, ConversionCatalogMetadata},
-    first_proof_selector as first_proof, nt_catalog_proof,
+    first_proof_selector as first_proof,
     run_manifest::ManifestArtifactStore,
     selected_source_slice, source_catalog_mapping_readiness as mapping_readiness,
     source_proof::{
@@ -33,6 +33,7 @@ use backtesting_vertical_slice::{
     source_proof_shortlist as proof_shortlist, source_selection_readiness,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const HASH_WHAT_YOU_WRITE_MODULES: &[&str] = &[
@@ -49,7 +50,6 @@ const HASH_WHAT_YOU_WRITE_MODULES: &[&str] = &[
     "backfill_source_proof_scope",
     "conversion_boundary",
     "first_proof_selector",
-    "nt_catalog_proof",
     "selected_source_slice",
     "source_catalog_mapping_readiness",
     "source_proof_evidence_staging",
@@ -64,6 +64,24 @@ const COMMITTED_BNBUSDC_CATALOG_METADATA_BYTES_SHA256: &str =
     "e210155d7ad09c3595999b64f963fa8c8d0f5050913cd923e1f26a26d4632d14";
 const COMMITTED_BNBUSDC_CATALOG_METADATA_COMPACT_SHA256: &str =
     "f82bd70268d1df4163c1746ad79194fc987082e4b6ab9cdc82d6d8275990e882";
+
+#[derive(Serialize, Deserialize)]
+struct FrozenV1ConversionCatalogMetadata {
+    metadata_version: String,
+    manifest_hash: String,
+    checkpoint_hash: String,
+    catalog_hash: String,
+    nt_data_type: String,
+    nt_instrument_id: String,
+    canonical_rows: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    catalog_nt_data_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    catalog_rows_by_nt_data_type: BTreeMap<String, usize>,
+    output_catalog_uri: String,
+    execution_catalog_uri: String,
+    direct_s3_catalog_access_proven: bool,
+}
 
 // This allowlist is intentionally narrow: these compact serializations either
 // hash the compact bytes they also write, as artifact_store does, or are
@@ -176,8 +194,12 @@ fn committed_bnbusdc_catalog_metadata_fixture_claim_is_anchored_to_frozen_bytes(
         ));
     }
 
-    let parsed: ConversionCatalogMetadata =
-        serde_json::from_slice(&metadata_bytes).context("parse committed catalog metadata")?;
+    let parsed: FrozenV1ConversionCatalogMetadata = serde_json::from_slice(&metadata_bytes)
+        .context("parse frozen v1 committed catalog metadata")?;
+    assert!(
+        serde_json::from_slice::<ConversionCatalogMetadata>(&metadata_bytes).is_err(),
+        "current catalog metadata must reject frozen direct-access fields"
+    );
     let compact_bytes =
         serde_json::to_vec(&parsed).context("compact committed catalog metadata")?;
     let actual_compact_hash = sha256_hex(&compact_bytes);
@@ -372,10 +394,6 @@ fn writer_cases() -> Vec<WriterCase> {
         WriterCase {
             module: "first_proof_selector",
             write: write_first_proof_selector_claims,
-        },
-        WriterCase {
-            module: "nt_catalog_proof",
-            write: write_nt_catalog_proof_claims,
         },
         WriterCase {
             module: "selected_source_slice",
@@ -936,68 +954,6 @@ fn write_first_proof_selector_claims(dir: &Path) -> Result<Vec<HashClaim>> {
     ])
 }
 
-fn write_nt_catalog_proof_claims(dir: &Path) -> Result<Vec<HashClaim>> {
-    let catalog_root = dir.join("catalog");
-    let output_dir = dir.join("proof-output");
-    let spec_path = dir.join("proof.toml");
-    fs::write(
-        &spec_path,
-        format!(
-            r#"
-proof_id = "nt-catalog-proof-hash-test"
-catalog_uri = "file://{catalog_root}"
-output_dir = "{output_dir}"
-ticks_per_instrument = 1
-base_timestamp_nanos = 1740787200000000000
-trade_interval_nanos = 1000000000
-
-[artifact_store]
-storage_options = {{}}
-rust_storage_options = {{ region = "local-test" }}
-
-[[instruments]]
-symbol = "BTCUSDT"
-venue = "SIM"
-base_currency = "BTC"
-quote_currency = "USDT"
-price_precision = 2
-size_precision = 3
-price_increment = "0.01"
-size_increment = "0.001"
-quantity = "0.500"
-price_start = "50000.00"
-
-[[instruments]]
-symbol = "ETHUSDT"
-venue = "SIM"
-base_currency = "ETH"
-quote_currency = "USDT"
-price_precision = 2
-size_precision = 3
-price_increment = "0.01"
-size_increment = "0.001"
-quantity = "1.500"
-price_start = "3000.00"
-"#,
-            catalog_root = catalog_root.display(),
-            output_dir = output_dir.display(),
-        ),
-    )
-    .context("write nt catalog proof spec")?;
-    let artifact = nt_catalog_proof::run_nt_catalog_proof_from_spec_file_with_resolver(
-        &spec_path,
-        &mut |_, _| Ok("unused-secret".to_string()),
-    )
-    .context("run nt catalog proof")?;
-    Ok(vec![claim(
-        "nt_catalog_proof",
-        "content_hash",
-        artifact.report_path,
-        artifact.content_hash,
-        Some(artifact.report_bytes),
-    )])
-}
-
 fn write_selected_source_slice_claims(dir: &Path) -> Result<Vec<HashClaim>> {
     let source_path = dir.join("source.parquet");
     let selector_path = dir.join("selector.json");
@@ -1355,6 +1311,9 @@ fn conversion_fingerprint() -> conversion_boundary::ConversionFingerprint {
         source_proof_id: "proof-test".to_string(),
         source_proof_version: 1,
         accepted_object_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            .to_string(),
+        control_artifact_path: "synthetic-control.json".to_string(),
+        control_artifact_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
             .to_string(),
         converter_identity: "converter-test".to_string(),
         converter_version: "1".to_string(),

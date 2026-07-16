@@ -56,21 +56,23 @@ use crate::{
     catalog_projection::{ensure_binary_option_catalog_persistable, logical_catalog_hash},
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
-        ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
-        ConversionOutputState, inspect_conversion_output, write_completed_conversion_artifacts,
+        CatalogConsumptionEvidence, ConversionCatalogMetadata, ConversionCheckpoint,
+        ConversionFingerprint, ConversionManifest, ConversionOutputState,
+        inspect_conversion_output, write_completed_conversion_artifacts,
     },
     first_proof_selector::{FirstProofSelectorReport, FirstProofSelectorStatus},
+    operator_work_budget::OperatorWorkBudgetGuard,
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
     run_manifest::{
-        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, MarketStructureFixture,
-        parse_manifest_toml,
+        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, CatalogRunViewAuthority,
+        MarketStructureFixture, SubmittedRunIdentity, parse_manifest_toml,
     },
     runner::{
-        iterations_mismatch, market_structure_label, nt_extension_surface_claim_limits,
-        result_contract_feed_labels, result_contract_warnings, run_nt_backtest_node,
-        run_purpose_label,
+        iterations_mismatch, market_structure_label, mint_local_catalog_run_view_authority_guarded,
+        nt_extension_surface_claim_limits, result_contract_feed_labels, result_contract_warnings,
+        run_nt_backtest_node, run_purpose_label,
     },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
     source_proof::{AcceptanceMode, SourceProofFidelityClass, SourceProofUsageScope},
@@ -243,7 +245,6 @@ pub struct PmxtOneOffConversionProjectionSpec {
     pub normalized_schema_version: String,
     pub output_catalog_uri: String,
     pub execution_catalog_uri: String,
-    pub direct_s3_catalog_access_proven: bool,
     pub completed_at: String,
 }
 
@@ -276,6 +277,7 @@ pub struct PmxtOneOffBacktestContractSpec<'a> {
 #[derive(Debug)]
 pub struct PmxtOneOffBacktestContractOutput {
     pub nt_result: BacktestResult,
+    pub catalog_run_view_authority: CatalogRunViewAuthority,
     pub contract: BacktestResultContract,
 }
 
@@ -290,7 +292,6 @@ pub struct PmxtOneOffArtifactRootRunSpec {
     pub normalized_schema_version: String,
     pub output_catalog_uri: String,
     pub execution_catalog_uri: String,
-    pub direct_s3_catalog_access_proven: bool,
     pub acceptance_mode: AcceptanceMode,
     pub accepted_by: String,
     pub accepted_at: String,
@@ -316,7 +317,6 @@ pub struct PmxtOneOffArtifactRootRunTomlSpec {
     pub fingerprint: ConversionFingerprint,
     pub manifest_path: PathBuf,
     pub normalized_schema_version: String,
-    pub direct_s3_catalog_access_proven: bool,
     pub acceptance_mode: AcceptanceMode,
     pub accepted_by: String,
     pub accepted_at: String,
@@ -442,7 +442,6 @@ fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
             normalized_schema_version: spec.normalized_schema_version,
             output_catalog_uri,
             execution_catalog_uri,
-            direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
             acceptance_mode: spec.acceptance_mode,
             accepted_by: spec.accepted_by,
             accepted_at: spec.accepted_at,
@@ -1418,10 +1417,9 @@ fn write_new_pmxt_one_off_conversion_projection(
         conversion_manifest_hash.clone(),
         conversion_checkpoint_hash.clone(),
     )
-    .with_execution_catalog_access(
-        spec.execution_catalog_uri,
-        spec.direct_s3_catalog_access_proven,
-    );
+    .with_catalog_consumption_evidence(CatalogConsumptionEvidence::LocalCatalog {
+        catalog_uri: spec.execution_catalog_uri,
+    })?;
     let conversion_catalog_metadata_hash = conversion_catalog_metadata
         .content_hash()
         .context("hash PMXT one-off catalog metadata")?;
@@ -1513,7 +1511,8 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
         "PMXT one-off completed manifest catalog_hash mismatch"
     );
     ensure!(
-        conversion_catalog_metadata.execution_catalog_uri == spec.execution_catalog_uri,
+        conversion_catalog_metadata.local_catalog_uri()
+            == Some(spec.execution_catalog_uri.as_str()),
         "PMXT one-off completed catalog metadata execution_catalog_uri mismatch"
     );
     ensure!(
@@ -1527,9 +1526,10 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
         "PMXT one-off completed catalog metadata data-type bindings mismatch"
     );
     ensure!(
-        conversion_catalog_metadata.direct_s3_catalog_access_proven
-            == spec.direct_s3_catalog_access_proven,
-        "PMXT one-off completed catalog metadata direct_s3_catalog_access_proven mismatch"
+        conversion_catalog_metadata
+            .hydrated_publication_receipt()
+            .is_none(),
+        "PMXT one-off completed catalog metadata cannot claim remote publication hydration"
     );
 
     Ok(PmxtOneOffCompletedConversionProjection {
@@ -1781,8 +1781,28 @@ fn run_pmxt_one_off_l2_backtest_contract_with_base(
     );
 
     let runtime_manifest = manifest_with_resolved_catalog_paths(spec.manifest, base_dir);
-    let nt_run =
-        run_nt_backtest_node(&runtime_manifest).context("run PMXT one-off L2 BacktestNode")?;
+    let submitted_identity = SubmittedRunIdentity::new(spec.manifest, spec.manifest_hash)
+        .map_err(|error| anyhow::anyhow!(error))
+        .context("validate PMXT submitted run identity")?;
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+    let logical_catalog_hashes = runtime_manifest
+        .catalog_inputs
+        .iter()
+        .map(|_| completed.catalog_projection.catalog_hash.clone())
+        .collect::<Vec<_>>();
+    let catalog_run_view_authority = mint_local_catalog_run_view_authority_guarded(
+        &runtime_manifest,
+        &submitted_identity,
+        &logical_catalog_hashes,
+        &work_budget,
+    )
+    .context("mint PMXT catalog run-view authority")?;
+    let nt_run = run_nt_backtest_node(
+        &runtime_manifest,
+        &submitted_identity,
+        &catalog_run_view_authority,
+    )
+    .context("run PMXT one-off L2 BacktestNode")?;
     let nt_result = nt_run.result;
     let expected_iterations = expected_pmxt_backtest_iterations(spec.manifest, completed)?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
@@ -1838,6 +1858,7 @@ fn run_pmxt_one_off_l2_backtest_contract_with_base(
 
     Ok(PmxtOneOffBacktestContractOutput {
         nt_result,
+        catalog_run_view_authority,
         contract,
     })
 }
@@ -1867,11 +1888,27 @@ fn write_pmxt_one_off_l2_artifact_root_run_with_base(
     spec: PmxtOneOffArtifactRootRunSpec,
     base_dir: &Path,
 ) -> Result<PmxtOneOffArtifactRootRun> {
+    spec.fingerprint.validate()?;
     let selected_source_parquet_path =
         resolve_existing_path(base_dir, &spec.selected_source.selected_source_parquet_path);
     ensure!(
         spec.fingerprint.accepted_object_sha256 == sha256_file(&selected_source_parquet_path)?,
         "PMXT one-off conversion fingerprint accepted_object_sha256 must match selected-source parquet"
+    );
+    let selected_source_report_path =
+        resolve_existing_path(base_dir, &spec.selected_source.selected_source_report_path);
+    ensure!(
+        spec.fingerprint.control_artifact_path
+            == spec
+                .selected_source
+                .selected_source_report_path
+                .to_str()
+                .context("PMXT selected-source report path is not valid UTF-8")?,
+        "PMXT one-off conversion control_artifact_path must match selected-source report path"
+    );
+    ensure!(
+        spec.fingerprint.control_artifact_sha256 == sha256_file(&selected_source_report_path)?,
+        "PMXT one-off conversion control_artifact_sha256 must match selected-source report"
     );
     ensure!(
         spec.artifact_uris.nt_catalog_uri == spec.output_catalog_uri,
@@ -1894,7 +1931,6 @@ fn write_pmxt_one_off_l2_artifact_root_run_with_base(
             normalized_schema_version: spec.normalized_schema_version,
             output_catalog_uri: spec.output_catalog_uri,
             execution_catalog_uri: spec.execution_catalog_uri,
-            direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
             completed_at: spec.created_at.clone(),
         },
         base_dir,

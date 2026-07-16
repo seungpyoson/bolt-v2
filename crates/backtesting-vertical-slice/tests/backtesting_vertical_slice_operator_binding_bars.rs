@@ -30,6 +30,7 @@ use backtesting_vertical_slice::{
     operator::{
         MultiTableRunArtifacts, OperatorRunArtifacts, RESULT_CONTRACT_FILE, RunSpec,
         RunSpecInstrumentIdentities, RunSpecInstrumentSpecs, run_operator_from_run_spec,
+        validate_durable_run_spec_preflight,
     },
     run_manifest::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, ManifestArtifactStore,
@@ -412,8 +413,6 @@ fn run_spec(
         manifest,
         artifact_store: committed.artifact_store,
         catalog_dispatch: committed.catalog_dispatch,
-        create_only_probe_id: committed.create_only_probe_id,
-        nt_catalog_capability_proof: committed.nt_catalog_capability_proof,
         selector_provenance: None,
     }
 }
@@ -687,4 +686,43 @@ fn tampered_tables_index_fails_loud_on_reuse() {
             || err.to_string().contains(CONVERSION_TABLES_FILE),
         "{err}"
     );
+}
+
+#[test]
+fn stray_parquet_in_one_multi_table_subroot_fails_loud_on_reuse() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let (spec, object_bytes) =
+        two_interval_run_spec(temp.path(), "operator-binding-stray-multi-catalog");
+    let output_dir = temp.path().join("out");
+    let artifacts = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &output_dir).expect("operator run"),
+    );
+    let stray = artifacts.tables[0].subroot.join("stray.parquet");
+    fs::write(&stray, b"not part of the committed exact set").expect("plant stray parquet");
+
+    let error = run_operator_from_run_spec(&spec, object_bytes, &output_dir)
+        .expect_err("multi-table reuse must reject a stray catalog file");
+
+    assert!(
+        error.to_string().contains("unexpected file") || error.to_string().contains("exactly one"),
+        "{error:#}"
+    );
+    assert!(
+        stray.exists(),
+        "verification must not mutate stray evidence"
+    );
+}
+
+#[test]
+fn source_universe_durable_preflight_rejects_non_trade_family_without_output() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let (spec, _) = two_interval_run_spec(temp.path(), "source-universe-durable-bars");
+    let output = temp.path().join("must-not-exist");
+
+    let error = validate_durable_run_spec_preflight(&spec)
+        .expect_err("bars must fail before durable source bytes or output");
+
+    assert!(error.to_string().contains("supports only"), "{error:#}");
+    assert!(error.to_string().contains("trades"), "{error:#}");
+    assert!(!output.exists());
 }

@@ -43,6 +43,7 @@ pub struct BackfillExecutionPlanSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackfillExecutionWorkBudget {
+    pub max_decoded_bytes: u64,
     pub max_source_rows: u64,
     pub max_projected_row_groups: u64,
     pub max_wall_seconds: u64,
@@ -472,6 +473,7 @@ pub fn validate_backfill_execution_control_bytes(
         run_spec_sha256.clone(),
         &BackfillExecutionRunBinding::from_run_spec(&run_spec),
         BackfillExecutionWorkBudget {
+            max_decoded_bytes: execution_plan.max_decoded_bytes,
             max_source_rows: execution_plan.max_source_rows,
             max_projected_row_groups: execution_plan.max_projected_row_groups,
             max_wall_seconds: execution_plan.max_wall_seconds,
@@ -744,6 +746,7 @@ pub fn write_backfill_execution_plan_from_spec_file(
     let (run_spec, run_spec_hash) = read_run_spec(&resolved_run_spec_path, &spec.run_spec_path)?;
     let run_binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
     let work_budget = BackfillExecutionWorkBudget {
+        max_decoded_bytes: run_binding.max_decoded_bytes,
         max_source_rows: spec.max_source_rows,
         max_projected_row_groups: spec.max_projected_row_groups,
         max_wall_seconds: spec.max_wall_seconds,

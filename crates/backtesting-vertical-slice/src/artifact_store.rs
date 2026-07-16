@@ -1,29 +1,60 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::{Component, Path, PathBuf},
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+#[cfg(unix)]
+use std::{
+    os::fd::{AsRawFd, FromRawFd},
+    os::unix::ffi::OsStrExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
 };
 
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail, ensure};
+use bytes::Bytes;
+use futures_util::StreamExt;
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Path as ObjectPath};
+use object_store::{
+    Error as ObjectStoreError, GetOptions, ObjectStore, ObjectStoreExt, PutMode, UpdateVersion,
+    path::Path as ObjectPath,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     operator_work_budget::{
-        OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+        ExactSizedObjectBuffer, OperatorWorkBudgetCommitPermit, OperatorWorkBudgetGuard,
+        OperatorWorkBudgetStage, deserialize_json_with_budget, guarded_async_operation_outcome,
+        guarded_operation_outcome, read_exact_sized_hashed_pinned_file_guarded,
+        serialize_json_to_vec_guarded, sha256_hex_with_budget, sha256_json_guarded,
     },
-    run_manifest::MarketStructureFixture,
+    run_manifest::{
+        CATALOG_RUN_VIEW_AUTHORITY_FILE, CatalogProjectionManifestDocument, MarketStructureFixture,
+    },
+    runner::seal_trusted_local_catalog_permissions_guarded,
 };
 
-const CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION: &str = "catalog-projection-manifest-v1";
+#[cfg(test)]
+use crate::atomic_artifact_write::validate_pinned_regular_file_identity;
+
+pub const CATALOG_PROJECTION_PUBLICATION_RECEIPT_SCHEMA_VERSION: &str =
+    "catalog-projection-publication-receipt-v1";
+/// Amazon S3's documented 5 GB ceiling for one `PutObject` request, expressed
+/// in binary bytes.
+pub const S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactStoreConfig {
     pub artifact_root: String,
+    /// Protocol and peak retained-payload-memory ceiling. The pinned
+    /// `object_store` single-PUT path materializes one complete object, so this
+    /// is intentionally both an S3 size cap and a per-object memory cap.
+    pub max_final_object_bytes: u64,
     pub s3: S3ArtifactStoreConfig,
     pub create_only_probe: CreateOnlyProbeConfig,
     pub catalog_projection_manifest_object: String,
@@ -37,6 +68,10 @@ pub struct S3ArtifactStoreConfig {
     pub region: String,
     pub conditional_put: S3ConditionalPutMode,
     pub copy_if_not_exists: S3CopyIfNotExistsMode,
+    /// Hard tail bound for one terminal create plus exact-version
+    /// reconciliation. Expiry is reported as an indeterminate commit, never as
+    /// proof that no object was created.
+    pub terminal_commit_timeout_seconds: u64,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -44,6 +79,29 @@ pub struct S3ArtifactStoreCredentials {
     access_key_id: String,
     secret_access_key: String,
     session_token: Option<String>,
+}
+
+/// Opaque proof that the configured S3 bucket reported versioning `Enabled`
+/// before the durable publisher was entered.
+///
+/// The fields are deliberately private: production code can obtain this value
+/// only from [`ResolvedArtifactRoot::verify_bucket_versioning_enabled`]. Each
+/// individual create still has to return a non-`null` version ID, which closes
+/// the race where versioning is suspended after this read-only preflight.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BucketVersioningEnabled {
+    bucket: String,
+    region: String,
+}
+
+fn ensure_bucket_versioning_status_enabled(
+    status: Option<&aws_sdk_s3::types::BucketVersioningStatus>,
+) -> Result<()> {
+    ensure!(
+        status == Some(&aws_sdk_s3::types::BucketVersioningStatus::Enabled),
+        "artifact bucket versioning must be Enabled before durable publication; reported {status:?}"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +210,7 @@ const RESEARCH_ANALYTICS_ARTIFACT_FAMILIES: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedArtifactRoot {
     artifact_root: String,
+    max_final_object_bytes: u64,
     s3: S3ArtifactStoreConfig,
     create_only_probe: CreateOnlyProbeConfig,
     catalog_projection_manifest_object: String,
@@ -159,13 +218,42 @@ pub struct ResolvedArtifactRoot {
     lifecycle: ArtifactLifecyclePolicy,
 }
 
+fn enforce_final_object_byte_cap(
+    object_label: &str,
+    object_bytes: u64,
+    max_final_object_bytes: u64,
+) -> Result<()> {
+    ensure!(
+        max_final_object_bytes > 0,
+        "artifact_store.max_final_object_bytes must be positive"
+    );
+    ensure!(
+        max_final_object_bytes < S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES,
+        "artifact_store.max_final_object_bytes {max_final_object_bytes} must be strictly below \
+         S3 single-PUT protocol ceiling {S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES} bytes; multipart \
+         publication is prohibited"
+    );
+    ensure!(
+        object_bytes <= max_final_object_bytes,
+        "{object_label} is {object_bytes} bytes, exceeding artifact_store.max_final_object_bytes \
+         {max_final_object_bytes}; multipart publication is prohibited"
+    );
+    Ok(())
+}
+
 impl ArtifactStoreConfig {
     /// # Errors
     ///
-    /// Returns an error when the configured canonical root or subpaths are not
-    /// valid artifact-store paths.
+    /// Returns an error when the final-object byte cap is invalid or the
+    /// configured canonical root or subpaths are not valid artifact-store
+    /// paths.
     pub fn resolve(&self) -> Result<ResolvedArtifactRoot> {
         let artifact_root = normalize_artifact_root(&self.artifact_root)?;
+        enforce_final_object_byte_cap(
+            "artifact-store configuration",
+            0,
+            self.max_final_object_bytes,
+        )?;
         let s3 = self.s3.resolve()?;
         let create_only_probe = CreateOnlyProbeConfig {
             prefix: normalize_subpath("create_only_probe.prefix", &self.create_only_probe.prefix)?,
@@ -211,6 +299,7 @@ impl ArtifactStoreConfig {
         ensure_probe_prefix_is_private(&create_only_probe, &subpaths)?;
         Ok(ResolvedArtifactRoot {
             artifact_root,
+            max_final_object_bytes: self.max_final_object_bytes,
             s3,
             create_only_probe,
             catalog_projection_manifest_object,
@@ -259,10 +348,15 @@ impl S3ArtifactStoreConfig {
             region == self.region,
             "s3.region must not contain leading or trailing whitespace"
         );
+        ensure!(
+            self.terminal_commit_timeout_seconds > 0,
+            "s3.terminal_commit_timeout_seconds must be positive"
+        );
         Ok(Self {
             region: region.to_string(),
             conditional_put: self.conditional_put,
             copy_if_not_exists: self.copy_if_not_exists,
+            terminal_commit_timeout_seconds: self.terminal_commit_timeout_seconds,
         })
     }
 }
@@ -317,6 +411,11 @@ impl ResolvedArtifactRoot {
     }
 
     #[must_use]
+    pub const fn max_final_object_bytes(&self) -> u64 {
+        self.max_final_object_bytes
+    }
+
+    #[must_use]
     pub fn s3_region(&self) -> &str {
         &self.s3.region
     }
@@ -351,6 +450,81 @@ impl ResolvedArtifactRoot {
         builder
             .build()
             .context("build artifact_root S3 object store")
+    }
+
+    /// Perform the read-only S3 control-plane check which gates every durable
+    /// publication run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `GetBucketVersioning` fails or the bucket reports
+    /// any state other than `Enabled` (including an absent status).
+    pub async fn verify_bucket_versioning_enabled(
+        &self,
+        credentials: &S3ArtifactStoreCredentials,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<BucketVersioningEnabled> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        let bucket = artifact_bucket_name(&self.artifact_root)?.to_string();
+        let sdk_credentials = aws_sdk_s3::config::Credentials::new(
+            credentials.access_key_id().to_string(),
+            credentials.secret_access_key().to_string(),
+            credentials.session_token().map(str::to_string),
+            None,
+            "bolt-v2-ssm",
+        );
+        let sdk_config = aws_sdk_s3::Config::builder()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new(self.s3.region.clone()))
+            .credentials_provider(sdk_credentials)
+            .build();
+        let client = aws_sdk_s3::Client::from_conf(sdk_config);
+        let response = guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            client.get_bucket_versioning().bucket(&bucket).send(),
+        )
+        .await?
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "AWS S3 GetBucketVersioning failed for configured artifact bucket: {}",
+                aws_sdk_s3::error::DisplayErrorContext(&error)
+            )
+        })?;
+        ensure_bucket_versioning_status_enabled(response.status())?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+        Ok(BucketVersioningEnabled {
+            bucket,
+            region: self.s3.region.clone(),
+        })
+    }
+
+    /// Construct the same opaque preflight proof for debug-only object-store
+    /// contract tests. This symbol is absent from release binaries; production
+    /// callers must use the AWS control-plane check above.
+    #[cfg(debug_assertions)]
+    #[must_use]
+    pub fn emulate_bucket_versioning_enabled_for_contract_test(&self) -> BucketVersioningEnabled {
+        BucketVersioningEnabled {
+            bucket: artifact_bucket_name(&self.artifact_root)
+                .expect("resolved artifact root must contain a bucket")
+                .to_string(),
+            region: self.s3.region.clone(),
+        }
+    }
+
+    /// Require that an opaque preflight proof belongs to this exact resolved
+    /// bucket and region.
+    pub fn validate_bucket_versioning_capability(
+        &self,
+        capability: &BucketVersioningEnabled,
+    ) -> Result<()> {
+        let bucket = artifact_bucket_name(&self.artifact_root)?;
+        ensure!(
+            capability.bucket == bucket && capability.region == self.s3.region,
+            "bucket-versioning capability does not match the configured artifact root"
+        );
+        Ok(())
     }
 
     #[must_use]
@@ -675,40 +849,738 @@ pub struct CatalogProjectionBinding {
     pub catalog_projection_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PersistedCatalogProjectionObject {
     pub relative_path: String,
     pub uri: String,
     pub sha256: String,
-    pub byte_len: usize,
+    pub byte_len: u64,
+    pub version_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e_tag: Option<String>,
+    #[serde(skip_serializing)]
     pub create_only_write: CreateOnlyWriteDisposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedCatalogProjection {
     pub catalog_root_uri: String,
-    pub manifest_uri: String,
-    pub manifest_sha256: String,
-    pub manifest_create_only_write: CreateOnlyWriteDisposition,
+    pub receipt_uri: String,
+    pub receipt_byte_len: u64,
+    pub physical_manifest_sha256: String,
+    pub receipt_sha256: String,
+    pub receipt_version_id: String,
+    pub receipt_e_tag: Option<String>,
+    pub receipt_create_only_write: CreateOnlyWriteDisposition,
     pub binding: CatalogProjectionBinding,
     pub objects: Vec<PersistedCatalogProjectionObject>,
 }
 
-#[derive(Serialize)]
-struct CatalogProjectionManifestDocument<'a> {
-    schema_version: &'static str,
-    catalog_root_uri: &'a str,
-    manifest_sha256: &'a str,
-    binding: &'a CatalogProjectionBinding,
-    objects: Vec<CatalogProjectionManifestObject<'a>>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogProjectionPublicationReceiptLocator {
+    pub receipt_uri: String,
+    pub receipt_sha256: String,
+    pub receipt_version_id: String,
+    pub receipt_e_tag: Option<String>,
+}
+
+impl PersistedCatalogProjection {
+    #[must_use]
+    pub fn receipt_locator(&self) -> CatalogProjectionPublicationReceiptLocator {
+        CatalogProjectionPublicationReceiptLocator {
+            receipt_uri: self.receipt_uri.clone(),
+            receipt_sha256: self.receipt_sha256.clone(),
+            receipt_version_id: self.receipt_version_id.clone(),
+            receipt_e_tag: self.receipt_e_tag.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogProjectionPublicationObject {
+    pub relative_path: String,
+    pub uri: String,
+    pub sha256: String,
+    pub byte_len: u64,
+    pub version_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e_tag: Option<String>,
+}
+
+/// Immutable read authority for one published catalog projection.
+///
+/// S3 `If-None-Match` is collision protection, not the integrity authority: on
+/// a versioned bucket it may create a new current version when the prior
+/// current version is a delete marker. Readers therefore bind every object to
+/// this receipt's exact version ID, byte length, and SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogProjectionPublicationReceipt {
+    pub schema_version: String,
+    pub catalog_root_uri: String,
+    pub physical_manifest_sha256: String,
+    pub physical_manifest: CatalogProjectionManifestDocument,
+    pub binding: CatalogProjectionBinding,
+    pub objects: Vec<CatalogProjectionPublicationObject>,
 }
 
 #[derive(Serialize)]
-struct CatalogProjectionManifestObject<'a> {
+struct CatalogProjectionPublicationReceiptRef<'a> {
+    schema_version: &'static str,
+    catalog_root_uri: &'a str,
+    physical_manifest_sha256: &'a str,
+    physical_manifest: &'a CatalogProjectionManifestDocument,
+    binding: &'a CatalogProjectionBinding,
+    objects: &'a [PersistedCatalogProjectionObject],
+}
+
+impl CatalogProjectionPublicationReceiptRef<'_> {
+    fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        validate_catalog_projection_publication_receipt_parts(
+            self.schema_version,
+            self.catalog_root_uri,
+            self.physical_manifest_sha256,
+            self.physical_manifest,
+            self.binding,
+            self.objects.len(),
+            self.objects
+                .iter()
+                .map(CatalogProjectionPublicationObjectView::from),
+            work_budget,
+            stage,
+        )
+    }
+
+    fn canonical_bytes_guarded(
+        &self,
+        retained_publication_metadata_bytes: u64,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Vec<u8>> {
+        self.validate_guarded(work_budget, stage)?;
+        let serialized_bytes = serialized_json_len_guarded(self, work_budget, stage)?;
+        verify_cumulative_retained_bytes(
+            "catalog publication metadata plus canonical receipt serialization",
+            &[retained_publication_metadata_bytes, serialized_bytes],
+            work_budget,
+            stage,
+        )?;
+        let bytes = serialize_json_to_vec_guarded(self, work_budget, stage)?;
+        verify_cumulative_retained_bytes(
+            "catalog publication metadata plus canonical receipt payload",
+            &[
+                retained_publication_metadata_bytes,
+                u64::try_from(bytes.capacity())
+                    .context("canonical receipt capacity does not fit u64")?,
+            ],
+            work_budget,
+            stage,
+        )?;
+        Ok(bytes)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CatalogProjectionPublicationObjectView<'a> {
     relative_path: &'a str,
     uri: &'a str,
     sha256: &'a str,
-    byte_len: usize,
+    byte_len: u64,
+    version_id: &'a str,
+    e_tag: Option<&'a str>,
+}
+
+impl<'a> From<&'a CatalogProjectionPublicationObject>
+    for CatalogProjectionPublicationObjectView<'a>
+{
+    fn from(object: &'a CatalogProjectionPublicationObject) -> Self {
+        Self {
+            relative_path: &object.relative_path,
+            uri: &object.uri,
+            sha256: &object.sha256,
+            byte_len: object.byte_len,
+            version_id: &object.version_id,
+            e_tag: object.e_tag.as_deref(),
+        }
+    }
+}
+
+impl<'a> From<&'a PersistedCatalogProjectionObject> for CatalogProjectionPublicationObjectView<'a> {
+    fn from(object: &'a PersistedCatalogProjectionObject) -> Self {
+        Self {
+            relative_path: &object.relative_path,
+            uri: &object.uri,
+            sha256: &object.sha256,
+            byte_len: object.byte_len,
+            version_id: &object.version_id,
+            e_tag: object.e_tag.as_deref(),
+        }
+    }
+}
+
+fn validate_catalog_projection_publication_receipt_parts<'a>(
+    schema_version: &str,
+    catalog_root_uri: &str,
+    physical_manifest_sha256: &str,
+    physical_manifest: &CatalogProjectionManifestDocument,
+    binding: &CatalogProjectionBinding,
+    object_count: usize,
+    objects: impl Iterator<Item = CatalogProjectionPublicationObjectView<'a>>,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    work_budget.check_deadline(stage)?;
+    ensure!(
+        schema_version == CATALOG_PROJECTION_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+        "unsupported catalog projection publication receipt schema_version {schema_version:?}"
+    );
+    ensure!(
+        catalog_root_uri.starts_with("s3://") && catalog_root_uri.ends_with('/'),
+        "catalog publication receipt catalog_root_uri must be an S3 directory URI"
+    );
+    ensure_path_token(
+        "catalog_projection_id",
+        &binding.catalog_projection_id,
+        PathTokenMode::AllowEquals,
+    )?;
+    ensure!(
+        !binding.source_binding.trim().is_empty(),
+        "catalog publication receipt source_binding must not be blank"
+    );
+    physical_manifest
+        .validate_guarded(work_budget, stage)
+        .map_err(anyhow::Error::from)
+        .context("validate receipt physical manifest")?;
+    ensure_sha256(
+        "catalog publication receipt physical_manifest_sha256",
+        physical_manifest_sha256,
+    )?;
+    let actual_physical_manifest_sha256 = physical_manifest
+        .manifest_sha256_guarded(work_budget, stage)
+        .context("hash receipt physical manifest")?;
+    ensure!(
+        actual_physical_manifest_sha256 == physical_manifest_sha256,
+        "catalog publication receipt physical_manifest_sha256 mismatch: expected {physical_manifest_sha256}, got {actual_physical_manifest_sha256}"
+    );
+    ensure!(
+        object_count == physical_manifest.objects.len(),
+        "catalog publication receipt object count {object_count} does not match physical manifest {}",
+        physical_manifest.objects.len()
+    );
+    work_budget.verify_actual_row_groups(
+        u64::try_from(object_count)
+            .context("catalog publication receipt object count does not fit u64")?,
+        stage,
+    )?;
+
+    let mut metadata_bytes =
+        u64::try_from(std::mem::size_of::<CatalogProjectionPublicationReceipt>())
+            .context("catalog publication receipt metadata size does not fit u64")?;
+    for (receipt_object, physical_object) in objects.zip(&physical_manifest.objects) {
+        work_budget.check_deadline(stage)?;
+        ensure!(
+            receipt_object.relative_path == physical_object.relative_path,
+            "catalog publication receipt relative_path {:?} does not match physical manifest {:?}",
+            receipt_object.relative_path,
+            physical_object.relative_path
+        );
+        ensure!(
+            receipt_object.byte_len == physical_object.byte_len,
+            "catalog publication receipt byte_len for {} does not match physical manifest",
+            physical_object.relative_path
+        );
+        ensure!(
+            receipt_object.sha256 == physical_object.sha256,
+            "catalog publication receipt SHA-256 for {} does not match physical manifest",
+            physical_object.relative_path
+        );
+        ensure_immutable_s3_version_id(
+            &format!(
+                "catalog publication receipt version_id for {}",
+                physical_object.relative_path
+            ),
+            &receipt_object.version_id,
+        )?;
+        if let Some(e_tag) = receipt_object.e_tag {
+            ensure!(
+                !e_tag.is_empty(),
+                "catalog publication receipt ETag for {} must not be empty",
+                physical_object.relative_path
+            );
+        }
+        ensure!(
+            receipt_object
+                .uri
+                .strip_prefix(catalog_root_uri)
+                .is_some_and(|suffix| suffix == physical_object.relative_path.as_str()),
+            "catalog publication receipt URI {:?} is not the exact root-relative locator for {}",
+            receipt_object.uri,
+            physical_object.relative_path
+        );
+        let object_metadata_bytes = receipt_object
+            .relative_path
+            .len()
+            .checked_add(receipt_object.uri.len())
+            .and_then(|value| value.checked_add(receipt_object.sha256.len()))
+            .and_then(|value| value.checked_add(receipt_object.version_id.len()))
+            .and_then(|value| value.checked_add(receipt_object.e_tag.map_or(0, str::len)))
+            .and_then(|value| {
+                value.checked_add(std::mem::size_of::<CatalogProjectionPublicationObject>())
+            })
+            .context("catalog publication receipt object metadata size overflow")?;
+        metadata_bytes = metadata_bytes
+            .checked_add(
+                u64::try_from(object_metadata_bytes)
+                    .context("catalog publication receipt object metadata does not fit u64")?,
+            )
+            .context("catalog publication receipt metadata total overflow")?;
+    }
+    metadata_bytes = metadata_bytes
+        .checked_add(
+            u64::try_from(
+                schema_version
+                    .len()
+                    .checked_add(catalog_root_uri.len())
+                    .and_then(|value| value.checked_add(physical_manifest_sha256.len()))
+                    .and_then(|value| value.checked_add(binding.source_binding.len()))
+                    .and_then(|value| value.checked_add(binding.catalog_projection_id.len()))
+                    .context("catalog publication receipt header metadata size overflow")?,
+            )
+            .context("catalog publication receipt header metadata does not fit u64")?,
+        )
+        .context("catalog publication receipt metadata total overflow")?;
+    work_budget.verify_decoded_bytes(metadata_bytes, stage)?;
+    work_budget.check_deadline(stage)
+}
+
+impl CatalogProjectionPublicationReceipt {
+    fn retained_memory_bytes(&self) -> Result<u64> {
+        let mut retained = u64::try_from(std::mem::size_of::<Self>())
+            .context("catalog publication receipt retained size does not fit u64")?;
+        let string_capacity = |value: &String| -> Result<u64> {
+            u64::try_from(value.capacity())
+                .context("catalog publication receipt string capacity does not fit u64")
+        };
+        for value in [
+            &self.schema_version,
+            &self.catalog_root_uri,
+            &self.physical_manifest_sha256,
+            &self.binding.source_binding,
+            &self.binding.catalog_projection_id,
+            &self.physical_manifest.schema_version,
+        ] {
+            retained = retained
+                .checked_add(string_capacity(value)?)
+                .context("catalog publication receipt retained string total overflow")?;
+        }
+        retained = retained
+            .checked_add(
+                u64::try_from(
+                    self.physical_manifest
+                        .objects
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<
+                            crate::run_manifest::CatalogProjectionManifestObject,
+                        >())
+                        .context("physical manifest retained vector capacity overflow")?,
+                )
+                .context("physical manifest retained vector bytes do not fit u64")?,
+            )
+            .context("catalog publication receipt retained total overflow")?;
+        for object in &self.physical_manifest.objects {
+            retained = retained
+                .checked_add(string_capacity(&object.relative_path)?)
+                .context("physical manifest retained path total overflow")?;
+            retained = retained
+                .checked_add(string_capacity(&object.sha256)?)
+                .context("physical manifest retained hash total overflow")?;
+        }
+        retained = retained
+            .checked_add(
+                u64::try_from(
+                    self.objects
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<CatalogProjectionPublicationObject>())
+                        .context("publication receipt object vector capacity overflow")?,
+                )
+                .context("publication receipt object vector bytes do not fit u64")?,
+            )
+            .context("catalog publication receipt retained total overflow")?;
+        for object in &self.objects {
+            for value in [
+                &object.relative_path,
+                &object.uri,
+                &object.sha256,
+                &object.version_id,
+            ] {
+                retained = retained
+                    .checked_add(string_capacity(value)?)
+                    .context("publication receipt retained object string total overflow")?;
+            }
+            if let Some(e_tag) = &object.e_tag {
+                retained = retained
+                    .checked_add(string_capacity(e_tag)?)
+                    .context("publication receipt retained ETag total overflow")?;
+            }
+        }
+        Ok(retained)
+    }
+
+    /// Validate that this receipt is only locator/version evidence for the
+    /// embedded shared physical manifest, never a second content authority.
+    pub fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        validate_catalog_projection_publication_receipt_parts(
+            &self.schema_version,
+            &self.catalog_root_uri,
+            &self.physical_manifest_sha256,
+            &self.physical_manifest,
+            &self.binding,
+            self.objects.len(),
+            self.objects
+                .iter()
+                .map(CatalogProjectionPublicationObjectView::from),
+            work_budget,
+            stage,
+        )
+    }
+
+    /// Canonical compact JSON bytes for immutable publication and replay.
+    pub fn canonical_bytes_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Vec<u8>> {
+        self.validate_guarded(work_budget, stage)?;
+        let retained_receipt_bytes = self.retained_memory_bytes()?;
+        let serialized_bytes = serialized_json_len_guarded(self, work_budget, stage)?;
+        verify_cumulative_retained_bytes(
+            "catalog publication receipt plus canonical serialization",
+            &[retained_receipt_bytes, serialized_bytes],
+            work_budget,
+            stage,
+        )?;
+        let bytes = serialize_json_to_vec_guarded(self, work_budget, stage)?;
+        verify_cumulative_retained_bytes(
+            "catalog publication receipt plus canonical serialization",
+            &[
+                retained_receipt_bytes,
+                u64::try_from(bytes.capacity())
+                    .context("canonical receipt capacity does not fit u64")?,
+            ],
+            work_budget,
+            stage,
+        )?;
+        Ok(bytes)
+    }
+
+    /// SHA-256 of the canonical receipt JSON without materializing it.
+    pub fn receipt_sha256_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<String> {
+        self.validate_guarded(work_budget, stage)?;
+        sha256_json_guarded(self, work_budget, stage)
+    }
+
+    /// Parse a committed receipt, require exact canonical bytes, and bind the
+    /// caller-supplied immutable receipt hash before any hydration is allowed.
+    pub fn parse_and_validate_guarded(
+        bytes: &[u8],
+        expected_receipt_sha256: &str,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Self> {
+        let input_retained_bytes = u64::try_from(bytes.len())
+            .context("catalog publication receipt byte length does not fit u64")?;
+        Self::parse_and_validate_with_input_retained_guarded(
+            bytes,
+            input_retained_bytes,
+            expected_receipt_sha256,
+            work_budget,
+            stage,
+        )
+    }
+
+    fn parse_and_validate_with_input_retained_guarded(
+        bytes: &[u8],
+        input_retained_bytes: u64,
+        expected_receipt_sha256: &str,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Self> {
+        ensure_sha256(
+            "expected catalog publication receipt SHA-256",
+            expected_receipt_sha256,
+        )?;
+        let wire_bytes = u64::try_from(bytes.len())
+            .context("catalog publication receipt wire bytes do not fit u64")?;
+        ensure!(
+            input_retained_bytes >= wire_bytes,
+            "catalog publication receipt retained input bytes cannot be smaller than wire bytes"
+        );
+        work_budget.verify_decoded_bytes(input_retained_bytes, stage)?;
+        let actual_receipt_sha256 = sha256_hex_with_budget(bytes, work_budget, stage)?;
+        ensure!(
+            actual_receipt_sha256 == expected_receipt_sha256,
+            "catalog publication receipt SHA-256 mismatch: expected {expected_receipt_sha256}, got {actual_receipt_sha256}"
+        );
+        let conservative_parsed_bytes =
+            conservative_parsed_receipt_retained_upper_bound(bytes, work_budget, stage)?;
+        verify_cumulative_retained_bytes(
+            "catalog publication receipt wire plus parsed-memory upper bound",
+            &[input_retained_bytes, conservative_parsed_bytes],
+            work_budget,
+            stage,
+        )?;
+        let receipt: Self = deserialize_json_with_budget(bytes, work_budget, stage)
+            .context("parse catalog projection publication receipt")?;
+        receipt.validate_guarded(work_budget, stage)?;
+        let retained_receipt_bytes = receipt.retained_memory_bytes()?;
+        verify_cumulative_retained_bytes(
+            "catalog publication receipt wire plus parsed document",
+            &[input_retained_bytes, retained_receipt_bytes],
+            work_budget,
+            stage,
+        )?;
+        let canonical_bytes_len = serialized_json_len_guarded(&receipt, work_budget, stage)?;
+        verify_cumulative_retained_bytes(
+            "catalog publication receipt wire, parsed document, and canonical serialization",
+            &[
+                input_retained_bytes,
+                retained_receipt_bytes,
+                canonical_bytes_len,
+            ],
+            work_budget,
+            stage,
+        )?;
+        let canonical_bytes = receipt.canonical_bytes_guarded(work_budget, stage)?;
+        verify_cumulative_retained_bytes(
+            "catalog publication receipt wire, parsed document, and canonical serialization",
+            &[
+                input_retained_bytes,
+                retained_receipt_bytes,
+                u64::try_from(canonical_bytes.capacity())
+                    .context("canonical receipt capacity does not fit u64")?,
+            ],
+            work_budget,
+            stage,
+        )?;
+        ensure!(
+            canonical_bytes == bytes,
+            "catalog projection publication receipt bytes are not canonical"
+        );
+        let canonical_sha256 = receipt.receipt_sha256_guarded(work_budget, stage)?;
+        ensure!(
+            canonical_sha256 == expected_receipt_sha256,
+            "canonical catalog publication receipt SHA-256 mismatch: expected {expected_receipt_sha256}, got {canonical_sha256}"
+        );
+        Ok(receipt)
+    }
+}
+
+struct PrivateCatalogRootLease {
+    path: PathBuf,
+    directory: fs::File,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl std::fmt::Debug for PrivateCatalogRootLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PrivateCatalogRootLease")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PrivateCatalogRootLease {
+    fn open_empty(path: &Path) -> Result<Self> {
+        let path_metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("inspect private hydration root {}", path.display()))?;
+        ensure!(
+            path_metadata.file_type().is_dir(),
+            "private hydration root {} must be a real directory",
+            path.display()
+        );
+        validate_private_catalog_root_permissions(path, &path_metadata)?;
+        let mut entries = fs::read_dir(path)
+            .with_context(|| format!("read private hydration root {}", path.display()))?;
+        ensure!(
+            entries.next().transpose()?.is_none(),
+            "private hydration root {} must be empty",
+            path.display()
+        );
+        #[cfg(unix)]
+        let directory = {
+            let mut options = fs::OpenOptions::new();
+            options
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+            options
+                .open(path)
+                .with_context(|| format!("open private hydration root {}", path.display()))?
+        };
+        #[cfg(not(unix))]
+        let directory = fs::File::open(path)
+            .with_context(|| format!("open private hydration root {}", path.display()))?;
+        let handle_metadata = directory
+            .metadata()
+            .with_context(|| format!("fstat private hydration root {}", path.display()))?;
+        ensure!(
+            handle_metadata.file_type().is_dir(),
+            "private hydration root handle {} is not a directory",
+            path.display()
+        );
+        #[cfg(unix)]
+        ensure!(
+            path_metadata.dev() == handle_metadata.dev()
+                && path_metadata.ino() == handle_metadata.ino(),
+            "private hydration root {} changed identity while opening",
+            path.display()
+        );
+        let final_path_metadata = fs::symlink_metadata(path).with_context(|| {
+            format!(
+                "reinspect private hydration root {} after open",
+                path.display()
+            )
+        })?;
+        ensure!(
+            final_path_metadata.file_type().is_dir(),
+            "private hydration root {} changed type while opening",
+            path.display()
+        );
+        validate_private_catalog_root_permissions(path, &final_path_metadata)?;
+        #[cfg(unix)]
+        ensure!(
+            final_path_metadata.dev() == handle_metadata.dev()
+                && final_path_metadata.ino() == handle_metadata.ino(),
+            "private hydration root {} changed namespace identity while opening",
+            path.display()
+        );
+        Ok(Self {
+            path: path.to_path_buf(),
+            directory,
+            #[cfg(unix)]
+            device: handle_metadata.dev(),
+            #[cfg(unix)]
+            inode: handle_metadata.ino(),
+        })
+    }
+
+    fn revalidate(&self) -> Result<()> {
+        let path_metadata = fs::symlink_metadata(&self.path)
+            .with_context(|| format!("reinspect private hydration root {}", self.path.display()))?;
+        ensure!(
+            path_metadata.file_type().is_dir(),
+            "private hydration root {} is no longer a real directory",
+            self.path.display()
+        );
+        validate_private_catalog_root_permissions(&self.path, &path_metadata)?;
+        let handle_metadata = self
+            .directory
+            .metadata()
+            .with_context(|| format!("re-fstat private hydration root {}", self.path.display()))?;
+        ensure!(
+            handle_metadata.file_type().is_dir(),
+            "private hydration root handle {} is no longer a directory",
+            self.path.display()
+        );
+        #[cfg(unix)]
+        ensure!(
+            path_metadata.dev() == self.device
+                && path_metadata.ino() == self.inode
+                && handle_metadata.dev() == self.device
+                && handle_metadata.ino() == self.inode,
+            "private hydration root {} changed identity",
+            self.path.display()
+        );
+        let final_path_metadata = fs::symlink_metadata(&self.path).with_context(|| {
+            format!(
+                "reinspect private hydration root {} after fstat",
+                self.path.display()
+            )
+        })?;
+        ensure!(
+            final_path_metadata.file_type().is_dir(),
+            "private hydration root {} changed type during revalidation",
+            self.path.display()
+        );
+        validate_private_catalog_root_permissions(&self.path, &final_path_metadata)?;
+        #[cfg(unix)]
+        ensure!(
+            final_path_metadata.dev() == self.device && final_path_metadata.ino() == self.inode,
+            "private hydration root {} changed namespace identity during revalidation",
+            self.path.display()
+        );
+        Ok(())
+    }
+}
+
+/// A verified local catalog view whose private root descriptor must remain
+/// alive until the runner seals the same shared physical manifest.
+#[derive(Debug)]
+pub struct HydratedCatalogProjection {
+    root_lease: PrivateCatalogRootLease,
+    pub catalog_root_uri: String,
+    pub binding: CatalogProjectionBinding,
+    pub physical_manifest_sha256: String,
+    pub receipt_sha256: String,
+    pub receipt_version_id: String,
+    pub object_count: usize,
+}
+
+impl HydratedCatalogProjection {
+    #[must_use]
+    pub fn local_catalog_root(&self) -> &Path {
+        &self.root_lease.path
+    }
+
+    /// Re-pin the retained root and re-check the exact manifest set immediately
+    /// before runner sealing. The runner owns its content pre/post hashes;
+    /// dropping this lease discards hydration authority.
+    pub fn revalidate_for_runner_seal_guarded(
+        &self,
+        expected_physical_manifest: &CatalogProjectionManifestDocument,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.root_lease.revalidate()?;
+        verify_local_catalog_projection_exact_set_guarded(
+            &self.root_lease.path,
+            expected_physical_manifest,
+            work_budget,
+            OperatorWorkBudgetStage::Backtest,
+        )?;
+        self.root_lease.revalidate()
+    }
+}
+
+#[cfg(unix)]
+fn validate_private_catalog_root_permissions(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    ensure!(
+        metadata.permissions().mode() & 0o777 == 0o700,
+        "private hydration root {} must have mode 0700",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_private_catalog_root_permissions(_path: &Path, _metadata: &fs::Metadata) -> Result<()> {
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -716,6 +1588,56 @@ struct CatalogProjectionManifestObject<'a> {
 pub enum CreateOnlyWriteDisposition {
     Created,
     AlreadyExistedSamePayload,
+}
+
+/// One non-cloneable terminal create prepared completely before the caller
+/// consumes its one-use commit permit.
+pub(crate) struct PreparedTerminalCreate {
+    path: ObjectPath,
+    payload: Bytes,
+    byte_len: u64,
+    object_label: String,
+}
+
+/// Fully acknowledged or exact-version-confirmed terminal object identity.
+pub(crate) struct ConfirmedTerminalCreate {
+    pub(crate) version_id: String,
+    pub(crate) e_tag: Option<String>,
+    pub(crate) disposition: CreateOnlyWriteDisposition,
+}
+
+/// The create request may have committed, but exact-version discovery could
+/// not prove either outcome. Callers must stop; automatic retry or cleanup is
+/// forbidden.
+#[derive(Debug)]
+pub struct TerminalCreateIndeterminate {
+    detail: String,
+}
+
+impl std::fmt::Display for TerminalCreateIndeterminate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "terminal create is indeterminate: {}",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for TerminalCreateIndeterminate {}
+
+#[must_use]
+pub fn is_terminal_create_indeterminate(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<TerminalCreateIndeterminate>()
+            .is_some()
+    })
+}
+
+enum TerminalCreateConfirmationFailure {
+    Conflict(anyhow::Error),
+    Indeterminate(anyhow::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -776,47 +1698,25 @@ impl CatalogDispatchConfig {
     }
 }
 
-/// # Errors
-///
-/// Returns an error if the source binding does not dispatch to one configured
-/// catalog root, the local projection is empty or unreadable, or any create-only
-/// write is rejected.
-pub async fn persist_catalog_projection_for_source_binding(
-    store: &dyn ObjectStore,
-    artifact_root: &ResolvedArtifactRoot,
-    dispatch: &CatalogDispatchConfig,
-    source_binding: &str,
-    expected_market_structure_fixture: MarketStructureFixture,
-    local_catalog_root: &Path,
-) -> Result<PersistedCatalogProjection> {
-    persist_catalog_projection_for_source_binding_guarded(
-        store,
-        artifact_root,
-        dispatch,
-        source_binding,
-        expected_market_structure_fixture,
-        local_catalog_root,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-}
-
 /// Persist one catalog projection while checking the shared operator deadline
 /// before and after every immutable object write.
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`persist_catalog_projection_for_source_binding`]
-/// and fails when the operator work budget expires.
+/// Returns an error if dispatch, local projection validation, immutable object
+/// publication, or the explicit operator work budget fails.
 pub async fn persist_catalog_projection_for_source_binding_guarded(
     store: &dyn ObjectStore,
     artifact_root: &ResolvedArtifactRoot,
+    versioning_enabled: &BucketVersioningEnabled,
     dispatch: &CatalogDispatchConfig,
     source_binding: &str,
     expected_market_structure_fixture: MarketStructureFixture,
     local_catalog_root: &Path,
+    expected_physical_manifest: &CatalogProjectionManifestDocument,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<PersistedCatalogProjection> {
+    artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
     catalog_projection_for_source_binding_guarded(
         store,
         artifact_root,
@@ -824,9 +1724,124 @@ pub async fn persist_catalog_projection_for_source_binding_guarded(
         source_binding,
         expected_market_structure_fixture,
         local_catalog_root,
+        expected_physical_manifest,
         work_budget,
     )
     .await
+}
+
+/// Recover a fully committed catalog publication from the current receipt
+/// without attempting any catalog-object PUT.
+///
+/// The current lookup is used only for discovery. The returned locator pins
+/// the exact non-`null` receipt version and every subsequent read uses exact
+/// versions. The receipt must also reproduce the caller's independently
+/// sealed physical manifest and configured source binding byte-for-byte.
+pub async fn recover_catalog_projection_from_current_receipt_guarded(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    versioning_enabled: &BucketVersioningEnabled,
+    dispatch: &CatalogDispatchConfig,
+    source_binding: &str,
+    expected_market_structure_fixture: MarketStructureFixture,
+    expected_physical_manifest: &CatalogProjectionManifestDocument,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Option<PersistedCatalogProjection>> {
+    artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
+    let stage = OperatorWorkBudgetStage::Publish;
+    let binding = dispatch
+        .binding_for(source_binding, expected_market_structure_fixture)?
+        .clone();
+    let catalog_root_uri = artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id);
+    let receipt_uri =
+        artifact_root.catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
+    let receipt_path = artifact_root.object_path_for_uri(&receipt_uri)?;
+    let get = match guarded_async_operation_outcome(work_budget, stage, store.get(&receipt_path))
+        .await?
+    {
+        Ok(get) => get,
+        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("discover catalog publication receipt {receipt_uri}"));
+        }
+    };
+    let receipt_byte_len = get.meta.size;
+    ensure!(
+        receipt_byte_len > 0,
+        "discovered catalog publication receipt is empty"
+    );
+    enforce_final_object_byte_cap(
+        "discovered catalog publication receipt",
+        receipt_byte_len,
+        artifact_root.max_final_object_bytes,
+    )?;
+    let receipt_version_id = get.meta.version.clone().with_context(|| {
+        format!("catalog publication receipt {receipt_uri} has no S3 version ID")
+    })?;
+    ensure_immutable_s3_version_id(
+        "discovered catalog publication receipt S3 version ID",
+        &receipt_version_id,
+    )?;
+    let receipt_e_tag = get.meta.e_tag.clone();
+    validate_versioned_get_metadata(
+        &get,
+        &receipt_path,
+        receipt_byte_len,
+        &receipt_version_id,
+        receipt_e_tag.as_deref(),
+        "discovered catalog publication receipt",
+    )?;
+    let receipt_bytes = collect_exact_get_result_guarded(
+        get,
+        receipt_byte_len,
+        work_budget,
+        stage,
+        "discovered catalog publication receipt",
+    )
+    .await?;
+    let receipt_sha256 = sha256_hex_with_budget(&receipt_bytes, work_budget, stage)?;
+    let receipt = CatalogProjectionPublicationReceipt::parse_and_validate_guarded(
+        &receipt_bytes,
+        &receipt_sha256,
+        work_budget,
+        stage,
+    )?;
+    let expected_physical_manifest_sha256 = expected_physical_manifest
+        .manifest_sha256_guarded(work_budget, stage)
+        .context("hash caller-sealed physical manifest for receipt recovery")?;
+    ensure!(
+        receipt.catalog_root_uri == catalog_root_uri
+            && receipt.binding == binding
+            && receipt.physical_manifest == *expected_physical_manifest
+            && receipt.physical_manifest_sha256 == expected_physical_manifest_sha256,
+        "discovered catalog publication receipt does not match the caller-sealed projection"
+    );
+    let objects = receipt
+        .objects
+        .into_iter()
+        .map(|object| PersistedCatalogProjectionObject {
+            relative_path: object.relative_path,
+            uri: object.uri,
+            sha256: object.sha256,
+            byte_len: object.byte_len,
+            version_id: object.version_id,
+            e_tag: object.e_tag,
+            create_only_write: CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
+        })
+        .collect();
+    Ok(Some(PersistedCatalogProjection {
+        catalog_root_uri,
+        receipt_uri,
+        receipt_byte_len,
+        physical_manifest_sha256: expected_physical_manifest_sha256,
+        receipt_sha256,
+        receipt_version_id,
+        receipt_e_tag,
+        receipt_create_only_write: CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
+        binding,
+        objects,
+    }))
 }
 
 async fn catalog_projection_for_source_binding_guarded(
@@ -836,179 +1851,1804 @@ async fn catalog_projection_for_source_binding_guarded(
     source_binding: &str,
     expected_market_structure_fixture: MarketStructureFixture,
     local_catalog_root: &Path,
+    expected_physical_manifest: &CatalogProjectionManifestDocument,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<PersistedCatalogProjection> {
-    ensure!(
-        local_catalog_root.is_dir(),
-        "local catalog projection root {} is not a directory",
-        local_catalog_root.display()
-    );
-    let binding = dispatch
-        .binding_for(source_binding, expected_market_structure_fixture)?
-        .clone();
-    let catalog_root_uri = artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id);
-    let mut file_paths = Vec::new();
-    collect_regular_files(local_catalog_root, local_catalog_root, &mut file_paths)?;
-    ensure!(
-        !file_paths.is_empty(),
-        "local catalog projection root {} contains no files",
-        local_catalog_root.display()
-    );
+    let (binding, catalog_root_uri, physical_manifest_sha256) = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+        || -> Result<_> {
+            let root_metadata = fs::symlink_metadata(local_catalog_root).with_context(|| {
+                format!(
+                    "inspect local catalog projection root {}",
+                    local_catalog_root.display()
+                )
+            })?;
+            ensure!(
+                root_metadata.file_type().is_dir(),
+                "local catalog projection root {} must be a real directory",
+                local_catalog_root.display()
+            );
+            expected_physical_manifest
+                .validate_guarded(work_budget, OperatorWorkBudgetStage::Publish)
+                .map_err(anyhow::Error::from)
+                .context("validate producer-minted catalog physical manifest")?;
+            ensure!(
+                artifact_root.catalog_projection_manifest_object.as_str()
+                    != CATALOG_RUN_VIEW_AUTHORITY_FILE,
+                "catalog publication receipt object must not overwrite the catalog run-view authority file"
+            );
+            for object in &expected_physical_manifest.objects {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                ensure!(
+                    object.relative_path
+                        != artifact_root.catalog_projection_manifest_object.as_str(),
+                    "catalog physical manifest contains configured publication receipt object {}",
+                    object.relative_path
+                );
+                ensure!(
+                    object.relative_path != CATALOG_RUN_VIEW_AUTHORITY_FILE,
+                    "catalog physical manifest contains reserved run-view authority object {}",
+                    object.relative_path
+                );
+            }
+            let configured_binding =
+                dispatch.binding_for(source_binding, expected_market_structure_fixture)?;
+            let binding = CatalogProjectionBinding {
+                source_binding: clone_string_guarded(
+                    &configured_binding.source_binding,
+                    "catalog publication source binding",
+                    work_budget,
+                    OperatorWorkBudgetStage::Publish,
+                )?,
+                market_structure_fixture: configured_binding.market_structure_fixture,
+                catalog_projection_id: clone_string_guarded(
+                    &configured_binding.catalog_projection_id,
+                    "catalog publication projection ID",
+                    work_budget,
+                    OperatorWorkBudgetStage::Publish,
+                )?,
+            };
+            let catalog_root_uri =
+                artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id);
+            let physical_manifest_sha256 = expected_physical_manifest
+                .manifest_sha256_guarded(work_budget, OperatorWorkBudgetStage::Publish)
+                .context("hash producer-minted catalog physical manifest")?;
+            Ok((binding, catalog_root_uri, physical_manifest_sha256))
+        },
+    )??;
 
-    let writer = CreateOnlyArtifactWriter::new(store);
-    let mut objects = Vec::with_capacity(file_paths.len());
-    for file_path in file_paths {
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        let relative_path = file_path
-            .strip_prefix(local_catalog_root)
-            .with_context(|| format!("derive catalog relative path for {}", file_path.display()))?;
-        let relative_key = relative_catalog_object_key(relative_path)?;
-        ensure!(
-            relative_key != artifact_root.catalog_projection_manifest_object.as_str(),
-            "local catalog projection contains reserved manifest object {relative_key}"
-        );
-        let uri = format!(
-            "{}/{}",
-            catalog_root_uri.trim_end_matches('/'),
-            relative_key
-        );
-        let object_path = artifact_root.object_path_for_uri(&uri)?;
-        let payload =
-            fs::read(&file_path).with_context(|| format!("read {}", file_path.display()))?;
-        let sha256 = sha256_bytes(&payload);
-        let byte_len = payload.len();
-        let (_version, create_only_write) = writer
+    verify_local_catalog_projection_exact_set_guarded(
+        local_catalog_root,
+        expected_physical_manifest,
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+    )?;
+    let planned_publication_peak = preflight_catalog_publication_retained_peak(
+        expected_physical_manifest,
+        &binding,
+        &catalog_root_uri,
+        &physical_manifest_sha256,
+        artifact_root.max_final_object_bytes,
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+    )?;
+    let maximum_catalog_payload_bytes = expected_physical_manifest
+        .objects
+        .iter()
+        .map(|object| object.byte_len)
+        .max()
+        .context("catalog physical manifest must contain an object")?;
+
+    let writer = CreateOnlyArtifactWriter::new(store, artifact_root);
+    let mut objects = Vec::new();
+    objects
+        .try_reserve_exact(expected_physical_manifest.objects.len())
+        .context("reserve persisted catalog publication objects")?;
+    let excess_object_slots = objects
+        .capacity()
+        .checked_sub(expected_physical_manifest.objects.len())
+        .context("persisted catalog object vector capacity regressed below reservation")?;
+    let excess_vector_bytes = u64::try_from(
+        excess_object_slots
+            .checked_mul(std::mem::size_of::<PersistedCatalogProjectionObject>())
+            .context("persisted catalog excess vector capacity overflow")?,
+    )
+    .context("persisted catalog excess vector bytes do not fit u64")?;
+    verify_cumulative_retained_bytes(
+        "catalog publication planned peak plus allocator vector slack",
+        &[planned_publication_peak, excess_vector_bytes],
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+    )?;
+    for expected_object in &expected_physical_manifest.objects {
+        let (file_path, uri, object_path) = guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            || -> Result<_> {
+                let file_path = contained_catalog_object_path(
+                    local_catalog_root,
+                    &expected_object.relative_path,
+                    work_budget,
+                    OperatorWorkBudgetStage::Publish,
+                )?;
+                enforce_final_object_byte_cap(
+                    &format!("catalog projection file {}", expected_object.relative_path),
+                    expected_object.byte_len,
+                    artifact_root.max_final_object_bytes,
+                )?;
+                let uri = catalog_object_uri_guarded(
+                    &catalog_root_uri,
+                    &expected_object.relative_path,
+                    work_budget,
+                    OperatorWorkBudgetStage::Publish,
+                );
+                let uri = uri?;
+                let object_path = artifact_root.object_path_for_uri(&uri)?;
+                Ok((file_path, uri, object_path))
+            },
+        )??;
+        let (payload, identity) = read_exact_sized_hashed_pinned_file_guarded(
+            &file_path,
+            expected_object.byte_len,
+            &expected_object.sha256,
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+        )
+        .with_context(|| {
+            format!(
+                "read producer-authorized catalog object {}",
+                expected_object.relative_path
+            )
+        })?;
+        verify_retained_vec_capacity(
+            &format!(
+                "single-PUT catalog projection payload {}",
+                expected_object.relative_path
+            ),
+            payload.capacity(),
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+        )?;
+        let (version, create_only_write) = writer
             .put_create_idempotent_with_disposition_guarded(&object_path, payload, work_budget)
             .await
             .with_context(|| format!("persist catalog object {uri}"))?;
+        identity.revalidate_path(&file_path).with_context(|| {
+            format!(
+                "revalidate local catalog object {} after remote create",
+                expected_object.relative_path
+            )
+        })?;
+        let (version_id, e_tag) =
+            required_versioned_create_result(version, &format!("catalog projection object {uri}"))?;
+        let current_retained_metadata = catalog_publication_retained_metadata_bytes(
+            expected_physical_manifest,
+            &binding,
+            &catalog_root_uri,
+            &physical_manifest_sha256,
+            &objects,
+        )?;
+        let e_tag_capacity = e_tag
+            .as_ref()
+            .map(|value| string_capacity_bytes(value, "catalog object ETag"))
+            .transpose()?
+            .unwrap_or(0);
+        let relative_path_bytes = u64::try_from(expected_object.relative_path.len())
+            .context("catalog object relative_path length does not fit u64")?;
+        let sha256_bytes = u64::try_from(expected_object.sha256.len())
+            .context("catalog object SHA-256 length does not fit u64")?;
+        let prospective_object_strings = string_capacity_bytes(&uri, "catalog object URI")?
+            .checked_add(string_capacity_bytes(
+                &version_id,
+                "catalog object version ID",
+            )?)
+            .and_then(|value| value.checked_add(e_tag_capacity))
+            .and_then(|value| value.checked_add(relative_path_bytes))
+            .and_then(|value| value.checked_add(sha256_bytes))
+            .context("prospective catalog object string allocation overflow")?;
+        verify_cumulative_retained_bytes(
+            "catalog publication retained metadata, returned version evidence, owned strings, and next payload",
+            &[
+                current_retained_metadata,
+                prospective_object_strings,
+                maximum_catalog_payload_bytes,
+            ],
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+        )?;
         objects.push(PersistedCatalogProjectionObject {
-            relative_path: relative_key,
+            relative_path: clone_string_guarded(
+                &expected_object.relative_path,
+                "persisted catalog relative_path",
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )?,
             uri,
-            sha256,
-            byte_len,
+            sha256: clone_string_guarded(
+                &expected_object.sha256,
+                "persisted catalog SHA-256",
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+            )?,
+            byte_len: expected_object.byte_len,
+            version_id,
+            e_tag,
             create_only_write,
         });
+        let retained_metadata = catalog_publication_retained_metadata_bytes(
+            expected_physical_manifest,
+            &binding,
+            &catalog_root_uri,
+            &physical_manifest_sha256,
+            &objects,
+        )?;
+        verify_cumulative_retained_bytes(
+            "catalog publication live metadata plus next sequential single-PUT payload",
+            &[retained_metadata, maximum_catalog_payload_bytes],
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+        )?;
     }
-    objects.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    let manifest_sha256 = catalog_projection_manifest_sha256(&objects);
-    let manifest_uri =
-        artifact_root.catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
-    let manifest_path = artifact_root.object_path_for_uri(&manifest_uri)?;
-    let manifest_payload =
-        crate::reference_artifact::canonical_json_bytes(&CatalogProjectionManifestDocument {
-            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION,
-            catalog_root_uri: catalog_root_uri.as_str(),
-            manifest_sha256: manifest_sha256.as_str(),
-            binding: &binding,
-            objects: objects
-                .iter()
-                .map(|object| CatalogProjectionManifestObject {
-                    relative_path: object.relative_path.as_str(),
-                    uri: object.uri.as_str(),
-                    sha256: object.sha256.as_str(),
-                    byte_len: object.byte_len,
-                })
-                .collect(),
-        })
-        .context("serialize catalog projection manifest")?;
+    verify_local_catalog_projection_exact_set_guarded(
+        local_catalog_root,
+        expected_physical_manifest,
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+    )?;
+
+    let receipt = CatalogProjectionPublicationReceiptRef {
+        schema_version: CATALOG_PROJECTION_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+        catalog_root_uri: &catalog_root_uri,
+        physical_manifest_sha256: &physical_manifest_sha256,
+        physical_manifest: expected_physical_manifest,
+        binding: &binding,
+        objects: &objects,
+    };
+
+    let (receipt_uri, receipt_path) = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+        || -> Result<_> {
+            let receipt_uri = artifact_root
+                .catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
+            let receipt_path = artifact_root.object_path_for_uri(&receipt_uri)?;
+            Ok((receipt_uri, receipt_path))
+        },
+    )??;
+    let receipt_path_bytes = u64::try_from(receipt_path.as_ref().len())
+        .context("catalog publication receipt object path length does not fit u64")?;
+    let retained_publication_metadata = catalog_publication_retained_metadata_bytes(
+        expected_physical_manifest,
+        &binding,
+        &catalog_root_uri,
+        &physical_manifest_sha256,
+        &objects,
+    )?
+    .checked_add(string_capacity_bytes(
+        &receipt_uri,
+        "catalog publication receipt URI",
+    )?)
+    .and_then(|value| value.checked_add(receipt_path_bytes))
+    .context("catalog publication retained receipt locator total overflow")?;
+    let receipt_payload = receipt
+        .canonical_bytes_guarded(
+            retained_publication_metadata,
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+        )
+        .context("serialize catalog projection publication receipt")?;
+    let receipt_payload_bytes = u64::try_from(receipt_payload.len())
+        .context("catalog projection publication receipt length does not fit u64")?;
+    enforce_final_object_byte_cap(
+        "catalog projection publication receipt payload",
+        receipt_payload_bytes,
+        artifact_root.max_final_object_bytes,
+    )?;
+    let receipt_sha256 = sha256_hex_with_budget(
+        &receipt_payload,
+        work_budget,
+        OperatorWorkBudgetStage::Publish,
+    )
+    .context("hash canonical catalog projection publication receipt")?;
+    let prepared_receipt = writer.prepare_terminal_create_uri(
+        artifact_root,
+        &receipt_uri,
+        receipt_payload,
+        format!("catalog projection publication receipt {receipt_uri}"),
+    )?;
     let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
-    let (_version, manifest_create_only_write) =
-        commit_catalog_projection_manifest(&writer, &manifest_path, manifest_payload, permit)
-            .await
-            .with_context(|| format!("persist catalog projection manifest {manifest_uri}"))?;
+    let confirmed_receipt = writer
+        .create_or_confirm_terminal(prepared_receipt, permit)
+        .await
+        .with_context(|| format!("persist catalog projection publication receipt {receipt_uri}"))?;
     Ok(PersistedCatalogProjection {
         catalog_root_uri,
-        manifest_uri,
-        manifest_sha256,
-        manifest_create_only_write,
+        receipt_uri,
+        receipt_byte_len: receipt_payload_bytes,
+        physical_manifest_sha256,
+        receipt_sha256,
+        receipt_version_id: confirmed_receipt.version_id,
+        receipt_e_tag: confirmed_receipt.e_tag,
+        receipt_create_only_write: confirmed_receipt.disposition,
         binding,
         objects,
     })
 }
 
-async fn commit_catalog_projection_manifest(
-    writer: &CreateOnlyArtifactWriter<'_>,
-    manifest_path: &ObjectPath,
-    manifest_payload: Vec<u8>,
-    _permit: OperatorWorkBudgetCommitPermit,
-) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
-    writer
-        .put_create_idempotent_with_disposition(manifest_path, manifest_payload)
-        .await
-}
+/// Hydrate one restart-safe local NT catalog solely from the exact receipt and
+/// S3 object versions. The retained private-root lease is the only successful
+/// return path and must live through runner sealing.
+///
+/// # Errors
+///
+/// Returns an error on any receipt/version/ETag/content mismatch, non-private
+/// or non-empty local root, unexpected local entry, cap breach, or deadline.
+pub async fn hydrate_catalog_projection_from_receipt_guarded(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    locator: &CatalogProjectionPublicationReceiptLocator,
+    expected_physical_manifest: &CatalogProjectionManifestDocument,
+    private_local_catalog_root: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<HydratedCatalogProjection> {
+    let stage = OperatorWorkBudgetStage::ObjectVerification;
+    work_budget.check_deadline(stage)?;
+    ensure_sha256(
+        "catalog publication receipt locator SHA-256",
+        &locator.receipt_sha256,
+    )?;
+    ensure_immutable_s3_version_id(
+        "catalog publication receipt locator version ID",
+        &locator.receipt_version_id,
+    )?;
+    if let Some(e_tag) = &locator.receipt_e_tag {
+        ensure!(
+            !e_tag.is_empty(),
+            "catalog publication receipt locator ETag must not be empty"
+        );
+    }
+    expected_physical_manifest
+        .validate_guarded(work_budget, stage)
+        .map_err(anyhow::Error::from)
+        .context("validate caller-expected hydration physical manifest")?;
+    let expected_physical_manifest_sha256 = expected_physical_manifest
+        .manifest_sha256_guarded(work_budget, stage)
+        .context("hash caller-expected hydration physical manifest")?;
 
-fn catalog_projection_manifest_sha256(objects: &[PersistedCatalogProjectionObject]) -> String {
-    let mut lines = objects
+    let receipt_path = artifact_root.object_path_for_uri(&locator.receipt_uri)?;
+    let receipt_get = get_exact_version_guarded(
+        store,
+        &receipt_path,
+        &locator.receipt_version_id,
+        locator.receipt_e_tag.as_deref(),
+        work_budget,
+        stage,
+        "catalog publication receipt",
+    )
+    .await?;
+    let receipt_byte_len = receipt_get.meta.size;
+    ensure!(
+        receipt_byte_len > 0,
+        "catalog publication receipt returned an empty payload"
+    );
+    enforce_final_object_byte_cap(
+        "catalog publication receipt hydration payload",
+        receipt_byte_len,
+        artifact_root.max_final_object_bytes,
+    )?;
+    work_budget.verify_decoded_bytes(receipt_byte_len, stage)?;
+    validate_versioned_get_metadata(
+        &receipt_get,
+        &receipt_path,
+        receipt_byte_len,
+        &locator.receipt_version_id,
+        locator.receipt_e_tag.as_deref(),
+        "catalog publication receipt",
+    )?;
+    let receipt_bytes = collect_exact_get_result_guarded(
+        receipt_get,
+        receipt_byte_len,
+        work_budget,
+        stage,
+        "catalog publication receipt",
+    )
+    .await?;
+    verify_retained_vec_capacity(
+        "hydrated catalog publication receipt",
+        receipt_bytes.capacity(),
+        work_budget,
+        stage,
+    )?;
+    let receipt =
+        CatalogProjectionPublicationReceipt::parse_and_validate_with_input_retained_guarded(
+            &receipt_bytes,
+            u64::try_from(receipt_bytes.capacity())
+                .context("hydrated receipt retained capacity does not fit u64")?,
+            &locator.receipt_sha256,
+            work_budget,
+            stage,
+        )?;
+    ensure!(
+        receipt.physical_manifest == *expected_physical_manifest,
+        "catalog publication receipt physical manifest does not exactly match caller authority"
+    );
+    ensure!(
+        receipt.physical_manifest_sha256 == expected_physical_manifest_sha256,
+        "catalog publication receipt physical manifest hash does not match caller authority"
+    );
+    let expected_catalog_root_uri =
+        artifact_root.nt_catalog_projection_root(&receipt.binding.catalog_projection_id);
+    ensure!(
+        receipt.catalog_root_uri == expected_catalog_root_uri,
+        "catalog publication receipt root {:?} does not match configured projection root {:?}",
+        receipt.catalog_root_uri,
+        expected_catalog_root_uri
+    );
+    let expected_receipt_uri = artifact_root
+        .catalog_projection_manifest_object_uri(&receipt.binding.catalog_projection_id);
+    ensure!(
+        locator.receipt_uri == expected_receipt_uri,
+        "catalog publication receipt URI {:?} does not match configured receipt URI {:?}",
+        locator.receipt_uri,
+        expected_receipt_uri
+    );
+
+    let root_lease = PrivateCatalogRootLease::open_empty(private_local_catalog_root)?;
+    root_lease.revalidate()?;
+    for (receipt_object, physical_object) in receipt
+        .objects
         .iter()
-        .map(|object| {
-            format!(
-                "{}\t{}\t{}\n",
-                object.relative_path, object.byte_len, object.sha256
-            )
-        })
-        .collect::<Vec<_>>();
-    lines.sort();
-    sha256_bytes(lines.concat().as_bytes())
+        .zip(&expected_physical_manifest.objects)
+    {
+        work_budget.check_deadline(stage)?;
+        root_lease.revalidate()?;
+        let expected_uri = format!(
+            "{}{}",
+            receipt.catalog_root_uri, physical_object.relative_path
+        );
+        ensure!(
+            receipt_object.uri == expected_uri,
+            "catalog receipt object URI is not derived from its root and canonical relative path"
+        );
+        enforce_final_object_byte_cap(
+            &format!("hydrated catalog object {}", physical_object.relative_path),
+            physical_object.byte_len,
+            artifact_root.max_final_object_bytes,
+        )?;
+        work_budget.verify_decoded_bytes(physical_object.byte_len, stage)?;
+        let remote_path = artifact_root.object_path_for_uri(&expected_uri)?;
+        let object_get = get_exact_version_guarded(
+            store,
+            &remote_path,
+            &receipt_object.version_id,
+            receipt_object.e_tag.as_deref(),
+            work_budget,
+            stage,
+            &format!("catalog object {}", physical_object.relative_path),
+        )
+        .await?;
+        validate_versioned_get_metadata(
+            &object_get,
+            &remote_path,
+            physical_object.byte_len,
+            &receipt_object.version_id,
+            receipt_object.e_tag.as_deref(),
+            &format!("catalog object {}", physical_object.relative_path),
+        )?;
+        let (local_path, local_file) = create_private_hydration_file(
+            &root_lease,
+            &physical_object.relative_path,
+            work_budget,
+            stage,
+        )?;
+        stream_versioned_object_to_local_file_guarded(
+            object_get,
+            local_file,
+            &local_path,
+            physical_object.byte_len,
+            &physical_object.sha256,
+            work_budget,
+            stage,
+        )
+        .await?;
+        root_lease.revalidate()?;
+    }
+
+    seal_trusted_local_catalog_permissions_guarded(
+        private_local_catalog_root,
+        expected_physical_manifest,
+        work_budget,
+        stage,
+    )?;
+    verify_local_catalog_projection_exact_set_guarded(
+        private_local_catalog_root,
+        expected_physical_manifest,
+        work_budget,
+        stage,
+    )?;
+    root_lease.revalidate()?;
+    Ok(HydratedCatalogProjection {
+        root_lease,
+        catalog_root_uri: receipt.catalog_root_uri,
+        binding: receipt.binding,
+        physical_manifest_sha256: expected_physical_manifest_sha256,
+        receipt_sha256: locator.receipt_sha256.clone(),
+        receipt_version_id: locator.receipt_version_id.clone(),
+        object_count: receipt.objects.len(),
+    })
 }
 
-fn collect_regular_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("read directory {}", dir.display()))? {
-        let entry =
-            entry.with_context(|| format!("read directory entry under {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("read file type for {}", path.display()))?;
-        if file_type.is_dir() {
-            collect_regular_files(root, &path, files)?;
-        } else if file_type.is_file() {
-            files.push(path);
-        } else {
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            bail!(
-                "catalog projection contains non-regular file {}",
-                relative.display()
-            );
-        }
+async fn get_exact_version_guarded(
+    store: &dyn ObjectStore,
+    object_path: &ObjectPath,
+    version_id: &str,
+    e_tag: Option<&str>,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    object_label: &str,
+) -> Result<object_store::GetResult> {
+    let options = object_store::GetOptions {
+        version: Some(version_id.to_string()),
+        if_match: e_tag.map(str::to_string),
+        ..object_store::GetOptions::default()
+    };
+    let outcome =
+        guarded_async_operation_outcome(work_budget, stage, store.get_opts(object_path, options))
+            .await?;
+    outcome.with_context(|| format!("get exact version of {object_label} at {object_path}"))
+}
+
+fn validate_versioned_get_metadata(
+    result: &object_store::GetResult,
+    expected_path: &ObjectPath,
+    expected_byte_len: u64,
+    expected_version_id: &str,
+    expected_e_tag: Option<&str>,
+    object_label: &str,
+) -> Result<()> {
+    ensure!(
+        result.meta.location == *expected_path,
+        "{object_label} returned location {} instead of {expected_path}",
+        result.meta.location
+    );
+    ensure!(
+        result.meta.size == expected_byte_len,
+        "{object_label} returned {} bytes instead of exact expected {expected_byte_len}",
+        result.meta.size
+    );
+    ensure!(
+        result.range.start == 0 && result.range.end == expected_byte_len,
+        "{object_label} response range {:?} is not exact 0..{expected_byte_len}",
+        result.range
+    );
+    ensure!(
+        result.meta.version.as_deref() == Some(expected_version_id),
+        "{object_label} returned version {:?} instead of exact receipt version {expected_version_id:?}",
+        result.meta.version
+    );
+    if let Some(expected_e_tag) = expected_e_tag {
+        ensure!(
+            result.meta.e_tag.as_deref() == Some(expected_e_tag),
+            "{object_label} returned ETag {:?} instead of exact receipt ETag {expected_e_tag:?}",
+            result.meta.e_tag
+        );
     }
     Ok(())
 }
 
-fn relative_catalog_object_key(path: &Path) -> Result<String> {
-    let mut parts = Vec::new();
-    for component in path.components() {
-        let Component::Normal(part) = component else {
-            bail!("catalog object path must be relative: {}", path.display());
+async fn collect_exact_get_result_guarded(
+    result: object_store::GetResult,
+    expected_byte_len: u64,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    object_label: &str,
+) -> Result<Vec<u8>> {
+    let mut buffer = ExactSizedObjectBuffer::new(expected_byte_len)?;
+    let mut stream = result.into_stream();
+    loop {
+        let outcome = guarded_async_operation_outcome(work_budget, stage, async {
+            stream.next().await.transpose()
+        })
+        .await?;
+        let Some(chunk) = outcome.with_context(|| format!("stream {object_label}"))? else {
+            break;
         };
-        let part = part.to_str().with_context(|| {
-            format!("catalog object path is not valid UTF-8: {}", path.display())
-        })?;
-        ensure_path_token("catalog_object_path", part, PathTokenMode::AllowEquals)?;
-        parts.push(part.to_string());
+        work_budget.verify_decoded_bytes(
+            u64::try_from(chunk.len())
+                .with_context(|| format!("{object_label} chunk length does not fit u64"))?,
+            stage,
+        )?;
+        buffer.push(&chunk, work_budget, stage)?;
+    }
+    buffer.finish(work_budget, stage)
+}
+
+#[cfg(unix)]
+fn create_private_hydration_file(
+    root_lease: &PrivateCatalogRootLease,
+    relative_path: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<(PathBuf, fs::File)> {
+    work_budget.check_deadline(stage)?;
+    let relative_path_bytes = relative_path.as_bytes();
+    visit_bytes_cooperatively(relative_path_bytes, work_budget, stage)?;
+    let mut maximum_component_bytes = 0_usize;
+    let mut component_count = 0_usize;
+    for component in relative_path.split('/') {
+        let component_bytes = component.as_bytes();
+        work_budget.check_deadline(stage)?;
+        ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "hydration relative path {relative_path:?} is not canonical"
+        );
+        ensure!(
+            !component_bytes.contains(&0),
+            "hydration path component contains an interior NUL"
+        );
+        work_budget.check_deadline(stage)?;
+        maximum_component_bytes = maximum_component_bytes.max(component_bytes.len());
+        component_count = component_count
+            .checked_add(1)
+            .context("hydration path component count overflow")?;
     }
     ensure!(
-        !parts.is_empty(),
+        component_count > 0,
+        "hydration relative path must contain a final file component"
+    );
+    let display_path_capacity = root_lease
+        .path
+        .as_os_str()
+        .as_bytes()
+        .len()
+        .checked_add(1)
+        .and_then(|value| value.checked_add(relative_path_bytes.len()))
+        .context("private hydration display path capacity overflow")?;
+    let component_c_string_capacity = maximum_component_bytes
+        .checked_add(1)
+        .context("private hydration component C string capacity overflow")?;
+    verify_cumulative_retained_bytes(
+        "private hydration display path and component control allocation",
+        &[
+            u64::try_from(display_path_capacity)
+                .context("private hydration display path capacity does not fit u64")?,
+            u64::try_from(component_c_string_capacity)
+                .context("private hydration component capacity does not fit u64")?,
+        ],
+        work_budget,
+        stage,
+    )?;
+
+    let mut display_path = PathBuf::new();
+    display_path
+        .try_reserve_exact(display_path_capacity)
+        .context("reserve private hydration display path")?;
+    verify_cumulative_retained_bytes(
+        "private hydration retained display path and component control allocation",
+        &[
+            u64::try_from(display_path.capacity())
+                .context("private hydration retained display path does not fit u64")?,
+            u64::try_from(component_c_string_capacity)
+                .context("private hydration component capacity does not fit u64")?,
+        ],
+        work_budget,
+        stage,
+    )?;
+    display_path.push(&root_lease.path);
+    root_lease.revalidate()?;
+    work_budget.check_deadline(stage)?;
+    let mut directory = root_lease
+        .directory
+        .try_clone()
+        .context("duplicate private hydration root descriptor")?;
+    work_budget.check_deadline(stage)?;
+    let mut components = relative_path.split('/').peekable();
+    while let Some(component) = components.next() {
+        work_budget.check_deadline(stage)?;
+        let component_capacity = component
+            .len()
+            .checked_add(1)
+            .context("hydration component C string capacity overflow")?;
+        let mut component_bytes = Vec::new();
+        component_bytes
+            .try_reserve_exact(component_capacity)
+            .context("reserve hydration component C string")?;
+        component_bytes.extend_from_slice(component.as_bytes());
+        work_budget.check_deadline(stage)?;
+        // SAFETY: the complete preflight above rejected every interior NUL;
+        // capacity also includes the terminator added by CString.
+        let component_c = unsafe { std::ffi::CString::from_vec_unchecked(component_bytes) };
+        display_path.push(component);
+        if components.peek().is_some() {
+            let next_directory = match openat_hydration_directory(&directory, &component_c) {
+                Ok(directory) => directory,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // SAFETY: `directory` is a retained directory descriptor and
+                    // `component_c` is one validated NUL-free path component.
+                    let created = unsafe {
+                        libc::mkdirat(directory.as_raw_fd(), component_c.as_ptr(), 0o700)
+                    };
+                    if created != 0 {
+                        let create_error = std::io::Error::last_os_error();
+                        if create_error.kind() != std::io::ErrorKind::AlreadyExists {
+                            return Err(create_error).with_context(|| {
+                                format!(
+                                    "mkdirat private hydration directory {}",
+                                    display_path.display()
+                                )
+                            });
+                        }
+                    }
+                    openat_hydration_directory(&directory, &component_c).with_context(|| {
+                        format!(
+                            "openat newly created hydration directory {}",
+                            display_path.display()
+                        )
+                    })?
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "openat hydration directory {} without following symlinks",
+                            display_path.display()
+                        )
+                    });
+                }
+            };
+            let metadata = next_directory
+                .metadata()
+                .with_context(|| format!("fstat hydration directory {}", display_path.display()))?;
+            ensure!(
+                metadata.file_type().is_dir(),
+                "hydration path component {} is not a directory",
+                display_path.display()
+            );
+            ensure!(
+                metadata.permissions().mode() & 0o777 == 0o700,
+                "hydration directory {} must have mode 0700",
+                display_path.display()
+            );
+            directory = next_directory;
+            root_lease.revalidate()?;
+        } else {
+            // SAFETY: `directory` is a retained directory descriptor,
+            // `component_c` is one validated NUL-free final component, and the
+            // returned descriptor is immediately owned by `File` on success.
+            let raw_fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    component_c.as_ptr(),
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_CLOEXEC,
+                    0o600,
+                )
+            };
+            if raw_fd < 0 {
+                return Err(std::io::Error::last_os_error()).with_context(|| {
+                    format!(
+                        "openat create-new hydration object {}",
+                        display_path.display()
+                    )
+                });
+            }
+            // SAFETY: successful `openat` returned one new owned descriptor.
+            let file = unsafe { fs::File::from_raw_fd(raw_fd) };
+            let metadata = file.metadata().with_context(|| {
+                format!("fstat new hydration object {}", display_path.display())
+            })?;
+            ensure!(
+                metadata.file_type().is_file(),
+                "new hydration object {} is not a regular file",
+                display_path.display()
+            );
+            ensure!(
+                metadata.permissions().mode() & 0o777 == 0o600,
+                "new hydration object {} must have mode 0600",
+                display_path.display()
+            );
+            root_lease.revalidate()?;
+            return Ok((display_path, file));
+        }
+    }
+    bail!("hydration relative path must contain a final file component")
+}
+
+#[cfg(unix)]
+fn openat_hydration_directory(
+    parent: &fs::File,
+    component: &std::ffi::CStr,
+) -> std::io::Result<fs::File> {
+    // SAFETY: `parent` remains a live directory descriptor for this call and
+    // `component` is one NUL-terminated relative component. O_NOFOLLOW and
+    // O_DIRECTORY reject both symlink substitution and non-directory entries.
+    let raw_fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            component.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: successful `openat` returned one new owned descriptor.
+    Ok(unsafe { fs::File::from_raw_fd(raw_fd) })
+}
+
+#[cfg(not(unix))]
+fn create_private_hydration_file(
+    _root_lease: &PrivateCatalogRootLease,
+    _relative_path: &str,
+    _work_budget: &OperatorWorkBudgetGuard,
+    _stage: OperatorWorkBudgetStage,
+) -> Result<(PathBuf, fs::File)> {
+    bail!("race-free catalog hydration requires Unix fd-relative filesystem operations")
+}
+
+async fn stream_versioned_object_to_local_file_guarded(
+    result: object_store::GetResult,
+    file: fs::File,
+    local_path: &Path,
+    expected_byte_len: u64,
+    expected_sha256: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let mut file = tokio::fs::File::from_std(file);
+    let mut stream = result.into_stream();
+    let mut observed_byte_len = 0_u64;
+    let mut hasher = Sha256::new();
+    loop {
+        let outcome = guarded_async_operation_outcome(work_budget, stage, async {
+            stream.next().await.transpose()
+        })
+        .await?;
+        let Some(chunk) = outcome
+            .with_context(|| format!("stream catalog object into {}", local_path.display()))?
+        else {
+            break;
+        };
+        work_budget.verify_decoded_bytes(
+            u64::try_from(chunk.len())
+                .context("catalog hydration chunk length does not fit u64")?,
+            stage,
+        )?;
+        work_budget.check_deadline(stage)?;
+        observed_byte_len = observed_byte_len
+            .checked_add(
+                u64::try_from(chunk.len())
+                    .context("catalog hydration write length does not fit u64")?,
+            )
+            .context("catalog hydration observed byte length overflow")?;
+        ensure!(
+            observed_byte_len <= expected_byte_len,
+            "hydrated catalog object {} exceeded exact expected byte length {expected_byte_len}",
+            local_path.display()
+        );
+        file.write_all(&chunk)
+            .await
+            .with_context(|| format!("write hydration object {}", local_path.display()))?;
+        hasher.update(&chunk);
+        work_budget.check_deadline(stage)?;
+    }
+    ensure!(
+        observed_byte_len == expected_byte_len,
+        "hydrated catalog object {} has {observed_byte_len} bytes instead of exact expected {expected_byte_len}",
+        local_path.display()
+    );
+    file.flush()
+        .await
+        .with_context(|| format!("flush hydration object {}", local_path.display()))?;
+    file.sync_all()
+        .await
+        .with_context(|| format!("sync hydration object {}", local_path.display()))?;
+    let metadata = file
+        .metadata()
+        .await
+        .with_context(|| format!("fstat hydrated object {}", local_path.display()))?;
+    ensure!(
+        metadata.file_type().is_file() && metadata.len() == expected_byte_len,
+        "hydrated catalog object {} changed type or length while writing",
+        local_path.display()
+    );
+    let actual_sha256 = sha256_digest_hex_guarded(hasher.finalize(), work_budget, stage)?;
+    ensure!(
+        actual_sha256 == expected_sha256,
+        "hydrated catalog object {} SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}",
+        local_path.display()
+    );
+    work_budget.check_deadline(stage)
+}
+
+fn sha256_digest_hex_guarded(
+    digest: impl AsRef<[u8]>,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    work_budget.check_deadline(stage)?;
+    let bytes = digest.as_ref();
+    let capacity = bytes
+        .len()
+        .checked_mul(2)
+        .context("SHA-256 hex capacity overflow")?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(capacity)
+        .context("reserve SHA-256 hex output")?;
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    work_budget.check_deadline(stage)?;
+    Ok(output)
+}
+
+pub(crate) fn required_versioned_create_result(
+    version: UpdateVersion,
+    object_label: &str,
+) -> Result<(String, Option<String>)> {
+    let version_id = version.version.with_context(|| {
+        format!("{object_label} did not return an S3 version ID; versioned publication is required")
+    })?;
+    ensure_immutable_s3_version_id(&format!("{object_label} S3 version ID"), &version_id)?;
+    Ok((version_id, version.e_tag))
+}
+
+pub(crate) fn ensure_immutable_s3_version_id(label: &str, version_id: &str) -> Result<()> {
+    ensure!(!version_id.is_empty(), "{label} must not be empty");
+    ensure!(
+        version_id != "null",
+        "{label} is the S3 null version; bucket versioning must remain Enabled"
+    );
+    Ok(())
+}
+
+struct BudgetJsonLengthWriter<'a> {
+    bytes_written: u64,
+    work_budget: &'a OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+}
+
+impl Write for BudgetJsonLengthWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.work_budget
+            .check_deadline(self.stage)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(
+                u64::try_from(buffer.len())
+                    .map_err(|_| std::io::Error::other("JSON write length does not fit u64"))?,
+            )
+            .ok_or_else(|| std::io::Error::other("JSON serialized length overflow"))?;
+        self.work_budget
+            .verify_decoded_bytes(self.bytes_written, self.stage)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+        self.work_budget
+            .check_deadline(self.stage)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.work_budget
+            .check_deadline(self.stage)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))
+    }
+}
+
+fn serialized_json_len_guarded<T: Serialize>(
+    value: &T,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<u64> {
+    work_budget.check_deadline(stage)?;
+    let mut writer = BudgetJsonLengthWriter {
+        bytes_written: 0,
+        work_budget,
+        stage,
+    };
+    serde_json::to_writer(&mut writer, value).context("measure guarded canonical JSON")?;
+    writer.flush().context("flush guarded JSON length writer")?;
+    work_budget.check_deadline(stage)?;
+    Ok(writer.bytes_written)
+}
+
+fn visit_bytes_cooperatively(
+    bytes: &[u8],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    work_budget.verify_decoded_bytes(
+        u64::try_from(bytes.len()).context("byte slice length does not fit u64")?,
+        stage,
+    )?;
+    work_budget.check_deadline(stage)?;
+    work_budget.check_deadline(stage)
+}
+
+fn conservative_parsed_receipt_retained_upper_bound(
+    bytes: &[u8],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<u64> {
+    // The strict receipt has six header strings, two strings per physical
+    // manifest object, and five strings per publication object. One
+    // next-power-of-two wire allowance per field family covers decoded string
+    // bytes plus geometric String growth. Each JSON array element consumes at
+    // least one wire byte, so the same rounded wire count bounds the logical
+    // capacity of both Vecs. This intentionally derives the pre-parse bound
+    // from the wire shape and concrete Rust record sizes instead of applying an
+    // unexplained scalar multiplier.
+    const HEADER_STRING_FIELD_FAMILIES: u64 = 6;
+    const PHYSICAL_OBJECT_STRING_FIELD_FAMILIES: u64 = 2;
+    const PUBLICATION_OBJECT_STRING_FIELD_FAMILIES: u64 = 5;
+
+    visit_bytes_cooperatively(bytes, work_budget, stage)?;
+    let wire_bytes = u64::try_from(bytes.len())
+        .context("catalog publication receipt wire length does not fit u64")?;
+    let rounded_wire_slots = wire_bytes
+        .max(1)
+        .checked_next_power_of_two()
+        .context("catalog publication receipt rounded wire-slot bound overflow")?;
+    let vector_slot_bytes = u64::try_from(
+        std::mem::size_of::<crate::run_manifest::CatalogProjectionManifestObject>()
+            .checked_add(std::mem::size_of::<CatalogProjectionPublicationObject>())
+            .context("catalog publication receipt vector slot size overflow")?,
+    )
+    .context("catalog publication receipt vector slot size does not fit u64")?;
+    let vector_storage = rounded_wire_slots
+        .checked_mul(vector_slot_bytes)
+        .context("catalog publication receipt vector storage bound overflow")?;
+    let string_field_families = HEADER_STRING_FIELD_FAMILIES
+        .checked_add(PHYSICAL_OBJECT_STRING_FIELD_FAMILIES)
+        .and_then(|value| value.checked_add(PUBLICATION_OBJECT_STRING_FIELD_FAMILIES))
+        .context("catalog publication receipt string-field family count overflow")?;
+    let string_storage = rounded_wire_slots
+        .checked_mul(string_field_families)
+        .context("catalog publication receipt string storage bound overflow")?;
+    u64::try_from(std::mem::size_of::<CatalogProjectionPublicationReceipt>())
+        .context("catalog publication receipt root size does not fit u64")?
+        .checked_add(vector_storage)
+        .and_then(|value| value.checked_add(string_storage))
+        .context("catalog publication receipt parsed-memory bound overflow")
+}
+
+fn clone_string_guarded(
+    value: &str,
+    allocation_label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<String> {
+    visit_bytes_cooperatively(value.as_bytes(), work_budget, stage)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(value.len())
+        .with_context(|| format!("reserve {allocation_label}"))?;
+    bytes.extend_from_slice(value.as_bytes());
+    work_budget.check_deadline(stage)?;
+    // SAFETY: every byte came, in order, from the already-valid UTF-8 `value`.
+    Ok(unsafe { String::from_utf8_unchecked(bytes) })
+}
+
+fn catalog_object_uri_guarded(
+    catalog_root_uri: &str,
+    relative_path: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<String> {
+    let root = catalog_root_uri.trim_end_matches('/');
+    visit_bytes_cooperatively(root.as_bytes(), work_budget, stage)?;
+    visit_bytes_cooperatively(relative_path.as_bytes(), work_budget, stage)?;
+    let uri_len = root
+        .len()
+        .checked_add(1)
+        .and_then(|value| value.checked_add(relative_path.len()))
+        .context("catalog object URI length overflow")?;
+    work_budget.verify_decoded_bytes(
+        u64::try_from(uri_len).context("catalog object URI length does not fit u64")?,
+        stage,
+    )?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(uri_len)
+        .context("reserve catalog object URI")?;
+    for part in [root.as_bytes(), b"/", relative_path.as_bytes()] {
+        work_budget.check_deadline(stage)?;
+        bytes.extend_from_slice(part);
+    }
+    work_budget.check_deadline(stage)?;
+    // SAFETY: the root and relative path are valid UTF-8 and the separator is
+    // ASCII, so their concatenation is valid UTF-8.
+    Ok(unsafe { String::from_utf8_unchecked(bytes) })
+}
+
+fn string_capacity_bytes(value: &String, allocation_label: &str) -> Result<u64> {
+    u64::try_from(value.capacity())
+        .with_context(|| format!("{allocation_label} string capacity does not fit u64"))
+}
+
+fn catalog_projection_manifest_retained_bytes(
+    manifest: &CatalogProjectionManifestDocument,
+) -> Result<u64> {
+    let mut retained = u64::try_from(std::mem::size_of::<CatalogProjectionManifestDocument>())
+        .context("catalog physical manifest root size does not fit u64")?;
+    retained = retained
+        .checked_add(string_capacity_bytes(
+            &manifest.schema_version,
+            "catalog physical manifest schema_version",
+        )?)
+        .context("catalog physical manifest retained byte total overflow")?;
+    retained = retained
+        .checked_add(
+            u64::try_from(
+                manifest
+                    .objects
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<
+                        crate::run_manifest::CatalogProjectionManifestObject,
+                    >())
+                    .context("catalog physical manifest vector capacity overflow")?,
+            )
+            .context("catalog physical manifest vector bytes do not fit u64")?,
+        )
+        .context("catalog physical manifest retained byte total overflow")?;
+    for object in &manifest.objects {
+        retained = retained
+            .checked_add(string_capacity_bytes(
+                &object.relative_path,
+                "catalog physical manifest relative_path",
+            )?)
+            .context("catalog physical manifest retained byte total overflow")?;
+        retained = retained
+            .checked_add(string_capacity_bytes(
+                &object.sha256,
+                "catalog physical manifest SHA-256",
+            )?)
+            .context("catalog physical manifest retained byte total overflow")?;
+    }
+    Ok(retained)
+}
+
+fn persisted_catalog_projection_objects_retained_bytes(
+    objects: &Vec<PersistedCatalogProjectionObject>,
+) -> Result<u64> {
+    let mut retained = u64::try_from(
+        objects
+            .capacity()
+            .checked_mul(std::mem::size_of::<PersistedCatalogProjectionObject>())
+            .context("persisted catalog object vector capacity overflow")?,
+    )
+    .context("persisted catalog object vector bytes do not fit u64")?;
+    for object in objects {
+        for (value, label) in [
+            (&object.relative_path, "persisted catalog relative_path"),
+            (&object.uri, "persisted catalog URI"),
+            (&object.sha256, "persisted catalog SHA-256"),
+            (&object.version_id, "persisted catalog version ID"),
+        ] {
+            retained = retained
+                .checked_add(string_capacity_bytes(value, label)?)
+                .context("persisted catalog object retained byte total overflow")?;
+        }
+        if let Some(e_tag) = &object.e_tag {
+            retained = retained
+                .checked_add(string_capacity_bytes(e_tag, "persisted catalog ETag")?)
+                .context("persisted catalog object retained byte total overflow")?;
+        }
+    }
+    Ok(retained)
+}
+
+fn catalog_publication_header_retained_bytes(
+    binding: &CatalogProjectionBinding,
+    catalog_root_uri: &String,
+    physical_manifest_sha256: &String,
+) -> Result<u64> {
+    let mut retained = u64::try_from(std::mem::size_of::<CatalogProjectionBinding>())
+        .context("catalog publication binding size does not fit u64")?;
+    for (value, label) in [
+        (
+            &binding.source_binding,
+            "catalog publication source binding",
+        ),
+        (
+            &binding.catalog_projection_id,
+            "catalog publication projection ID",
+        ),
+        (catalog_root_uri, "catalog publication root URI"),
+        (
+            physical_manifest_sha256,
+            "catalog publication physical manifest SHA-256",
+        ),
+    ] {
+        retained = retained
+            .checked_add(string_capacity_bytes(value, label)?)
+            .context("catalog publication header retained byte total overflow")?;
+    }
+    Ok(retained)
+}
+
+fn catalog_publication_retained_metadata_bytes(
+    expected_physical_manifest: &CatalogProjectionManifestDocument,
+    binding: &CatalogProjectionBinding,
+    catalog_root_uri: &String,
+    physical_manifest_sha256: &String,
+    objects: &Vec<PersistedCatalogProjectionObject>,
+) -> Result<u64> {
+    let retained = catalog_projection_manifest_retained_bytes(expected_physical_manifest)?
+        .checked_add(catalog_publication_header_retained_bytes(
+            binding,
+            catalog_root_uri,
+            physical_manifest_sha256,
+        )?)
+        .context("catalog publication retained metadata byte total overflow")?;
+    retained
+        .checked_add(persisted_catalog_projection_objects_retained_bytes(
+            objects,
+        )?)
+        .context("catalog publication retained metadata byte total overflow")
+}
+
+fn preflight_catalog_publication_retained_peak(
+    expected_physical_manifest: &CatalogProjectionManifestDocument,
+    binding: &CatalogProjectionBinding,
+    catalog_root_uri: &String,
+    physical_manifest_sha256: &String,
+    max_final_object_bytes: u64,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<u64> {
+    let manifest_retained = catalog_projection_manifest_retained_bytes(expected_physical_manifest)?;
+    let header_retained = catalog_publication_header_retained_bytes(
+        binding,
+        catalog_root_uri,
+        physical_manifest_sha256,
+    )?;
+    let mut planned_objects_retained = u64::try_from(
+        expected_physical_manifest
+            .objects
+            .len()
+            .checked_mul(std::mem::size_of::<PersistedCatalogProjectionObject>())
+            .context("planned persisted catalog object vector size overflow")?,
+    )
+    .context("planned persisted catalog object vector bytes do not fit u64")?;
+    let root_len = catalog_root_uri.trim_end_matches('/').len();
+    let mut maximum_payload_bytes = 0_u64;
+    for object in &expected_physical_manifest.objects {
+        work_budget.check_deadline(stage)?;
+        enforce_final_object_byte_cap(
+            "catalog projection physical-manifest object",
+            object.byte_len,
+            max_final_object_bytes,
+        )
+        .with_context(|| format!("validate catalog projection file {}", object.relative_path))?;
+        visit_bytes_cooperatively(object.relative_path.as_bytes(), work_budget, stage)?;
+        visit_bytes_cooperatively(object.sha256.as_bytes(), work_budget, stage)?;
+        let uri_len = root_len
+            .checked_add(1)
+            .and_then(|value| value.checked_add(object.relative_path.len()))
+            .context("planned catalog object URI length overflow")?;
+        let owned_string_bytes = object
+            .relative_path
+            .len()
+            .checked_add(object.sha256.len())
+            .and_then(|value| value.checked_add(uri_len))
+            .context("planned persisted catalog object string bytes overflow")?;
+        planned_objects_retained = planned_objects_retained
+            .checked_add(
+                u64::try_from(owned_string_bytes)
+                    .context("planned persisted catalog object strings do not fit u64")?,
+            )
+            .context("planned persisted catalog object retained byte total overflow")?;
+        maximum_payload_bytes = maximum_payload_bytes.max(object.byte_len);
+    }
+    let planned_peak = manifest_retained
+        .checked_add(header_retained)
+        .and_then(|value| value.checked_add(planned_objects_retained))
+        .and_then(|value| value.checked_add(maximum_payload_bytes))
+        .context("catalog publication planned retained peak overflow")?;
+    verify_cumulative_retained_bytes(
+        "catalog publication manifest, output metadata, and sequential single-PUT payload",
+        &[planned_peak],
+        work_budget,
+        stage,
+    )?;
+    Ok(planned_peak)
+}
+
+fn verify_retained_vec_capacity(
+    allocation_label: &str,
+    retained_capacity: usize,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let retained_bytes = u64::try_from(retained_capacity)
+        .with_context(|| format!("{allocation_label} retained capacity does not fit u64"))?;
+    work_budget
+        .verify_decoded_bytes(retained_bytes, stage)
+        .with_context(|| {
+            format!(
+                "{allocation_label} retained capacity {retained_bytes} exceeds the work-budget memory envelope"
+            )
+        })
+}
+
+fn verify_cumulative_retained_bytes(
+    allocation_label: &str,
+    retained_components: &[u64],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let mut retained_total = 0_u64;
+    for component in retained_components {
+        retained_total = retained_total
+            .checked_add(*component)
+            .with_context(|| format!("{allocation_label} retained byte total overflow"))?;
+    }
+    work_budget
+        .verify_decoded_bytes(retained_total, stage)
+        .with_context(|| {
+            format!(
+                "{allocation_label} cumulative retained memory {retained_total} exceeds the work-budget memory envelope"
+            )
+        })
+}
+
+fn verify_local_catalog_projection_exact_set_guarded(
+    local_catalog_root: &Path,
+    expected_physical_manifest: &CatalogProjectionManifestDocument,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let root_metadata = fs::symlink_metadata(local_catalog_root).with_context(|| {
+        format!(
+            "inspect local catalog projection root {}",
+            local_catalog_root.display()
+        )
+    })?;
+    ensure!(
+        root_metadata.file_type().is_dir(),
+        "local catalog projection root {} must remain a real directory",
+        local_catalog_root.display()
+    );
+
+    let mut expected_directories = BTreeSet::new();
+    for object in &expected_physical_manifest.objects {
+        work_budget.check_deadline(stage)?;
+        for (index, byte) in object.relative_path.bytes().enumerate() {
+            if byte == b'/' {
+                expected_directories.insert(&object.relative_path[..index]);
+            }
+        }
+    }
+
+    let stack_capacity = expected_directories
+        .len()
+        .checked_add(1)
+        .context("catalog exact-set directory count overflow")?;
+    let mut stack = Vec::new();
+    stack
+        .try_reserve_exact(stack_capacity)
+        .context("reserve catalog exact-set directory stack")?;
+    stack.push(local_catalog_root.to_path_buf());
+    let mut seen_objects = Vec::new();
+    seen_objects
+        .try_reserve_exact(expected_physical_manifest.objects.len())
+        .context("reserve catalog exact-set object bitmap")?;
+    seen_objects.resize(expected_physical_manifest.objects.len(), false);
+
+    while let Some(directory) = stack.pop() {
+        work_budget.check_deadline(stage)?;
+        let entries = fs::read_dir(&directory)
+            .with_context(|| format!("read catalog directory {}", directory.display()))?;
+        for entry in entries {
+            work_budget.check_deadline(stage)?;
+            let entry = entry.with_context(|| {
+                format!("read catalog directory entry under {}", directory.display())
+            })?;
+            let path = entry.path();
+            let relative_path = path.strip_prefix(local_catalog_root).with_context(|| {
+                format!(
+                    "derive catalog path relative to {}",
+                    local_catalog_root.display()
+                )
+            })?;
+            let relative_key = catalog_relative_path_key(relative_path)?;
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("inspect catalog entry {}", path.display()))?;
+            if metadata.file_type().is_dir() {
+                ensure!(
+                    expected_directories.contains(relative_key.as_str()),
+                    "local catalog projection contains unexpected directory {relative_key}"
+                );
+                stack.push(path);
+            } else if metadata.file_type().is_file() {
+                let object_index = expected_physical_manifest
+                    .objects
+                    .binary_search_by(|object| {
+                        object.relative_path.as_str().cmp(relative_key.as_str())
+                    })
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "local catalog projection contains unexpected object {relative_key}"
+                        )
+                    })?;
+                ensure!(
+                    !seen_objects[object_index],
+                    "local catalog projection contains duplicate object {relative_key}"
+                );
+                let expected_object = &expected_physical_manifest.objects[object_index];
+                ensure!(
+                    metadata.len() == expected_object.byte_len,
+                    "local catalog object {relative_key} byte length {} does not match producer-minted physical manifest {}",
+                    metadata.len(),
+                    expected_object.byte_len
+                );
+                seen_objects[object_index] = true;
+            } else {
+                bail!("local catalog projection contains non-regular entry {relative_key}");
+            }
+        }
+    }
+
+    if let Some((index, _)) = seen_objects.iter().enumerate().find(|(_, seen)| !**seen) {
+        bail!(
+            "local catalog projection is missing producer-authorized object {}",
+            expected_physical_manifest.objects[index].relative_path
+        );
+    }
+    work_budget.check_deadline(stage)
+}
+
+fn contained_catalog_object_path(
+    local_catalog_root: &Path,
+    relative_path: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<PathBuf> {
+    let root_metadata = fs::symlink_metadata(local_catalog_root).with_context(|| {
+        format!(
+            "inspect local catalog projection root {}",
+            local_catalog_root.display()
+        )
+    })?;
+    ensure!(
+        root_metadata.file_type().is_dir(),
+        "local catalog projection root {} must remain a real directory",
+        local_catalog_root.display()
+    );
+    let mut path = local_catalog_root.to_path_buf();
+    let mut components = relative_path.split('/').peekable();
+    while let Some(component) = components.next() {
+        work_budget.check_deadline(stage)?;
+        ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "catalog object path {relative_path:?} is not a normalized relative path"
+        );
+        path.push(component);
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("inspect catalog path component {}", path.display()))?;
+        if components.peek().is_some() {
+            ensure!(
+                metadata.file_type().is_dir(),
+                "catalog object path component {} must be a real directory",
+                path.display()
+            );
+        } else {
+            ensure!(
+                metadata.file_type().is_file(),
+                "catalog object {} must be a real regular file",
+                path.display()
+            );
+        }
+    }
+    let canonical_root = fs::canonicalize(local_catalog_root).with_context(|| {
+        format!(
+            "canonicalize local catalog projection root {}",
+            local_catalog_root.display()
+        )
+    })?;
+    let canonical_path = fs::canonicalize(&path)
+        .with_context(|| format!("canonicalize catalog object {}", path.display()))?;
+    ensure!(
+        canonical_path.starts_with(&canonical_root),
+        "catalog object {} resolves outside local catalog root {}",
+        path.display(),
+        local_catalog_root.display()
+    );
+    work_budget.check_deadline(stage)?;
+    Ok(path)
+}
+
+fn catalog_relative_path_key(path: &Path) -> Result<String> {
+    let mut key = String::new();
+    key.try_reserve(path.as_os_str().len())
+        .context("reserve catalog relative path key")?;
+    for component in path.components() {
+        let std::path::Component::Normal(component) = component else {
+            bail!("catalog object path must be relative: {}", path.display());
+        };
+        let component = component.to_str().with_context(|| {
+            format!("catalog object path is not valid UTF-8: {}", path.display())
+        })?;
+        if !key.is_empty() {
+            key.push('/');
+        }
+        key.push_str(component);
+    }
+    ensure!(
+        !key.is_empty(),
         "catalog object path must not be empty for {}",
         path.display()
     );
-    Ok(parts.join("/"))
+    Ok(key)
 }
 
 pub struct CreateOnlyArtifactWriter<'a> {
     store: &'a dyn ObjectStore,
+    artifact_root: ResolvedArtifactRoot,
 }
 
 impl<'a> CreateOnlyArtifactWriter<'a> {
     #[must_use]
-    pub fn new(store: &'a dyn ObjectStore) -> Self {
-        Self { store }
+    pub fn new(store: &'a dyn ObjectStore, artifact_root: &ResolvedArtifactRoot) -> Self {
+        Self {
+            store,
+            artifact_root: artifact_root.clone(),
+        }
+    }
+
+    fn ensure_bound_artifact_root(&self, artifact_root: &ResolvedArtifactRoot) -> Result<()> {
+        ensure!(
+            self.artifact_root == *artifact_root,
+            "create-only writer is not bound to the supplied artifact root or its terminal commit policy: writer root {:?}, supplied root {:?}",
+            self.artifact_root.artifact_root_uri(),
+            artifact_root.artifact_root_uri(),
+        );
+        Ok(())
+    }
+
+    fn enforce_payload_cap(&self, object_label: &str, payload: &[u8]) -> Result<()> {
+        let payload_bytes = u64::try_from(payload.len())
+            .with_context(|| format!("{object_label} byte length does not fit u64"))?;
+        enforce_final_object_byte_cap(
+            object_label,
+            payload_bytes,
+            self.artifact_root.max_final_object_bytes(),
+        )
+    }
+
+    /// Freeze a terminal create key and exact payload before commit authority
+    /// is consumed. No remote operation occurs here.
+    fn prepare_terminal_create(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        object_label: impl Into<String>,
+    ) -> Result<PreparedTerminalCreate> {
+        let object_label = object_label.into();
+        ensure!(
+            !object_label.trim().is_empty(),
+            "terminal create object label must not be empty"
+        );
+        self.enforce_payload_cap(&object_label, &payload)?;
+        let byte_len = u64::try_from(payload.len())
+            .with_context(|| format!("{object_label} byte length does not fit u64"))?;
+        Ok(PreparedTerminalCreate {
+            path: path.clone(),
+            payload: Bytes::from(payload),
+            byte_len,
+            object_label,
+        })
+    }
+
+    /// Bind one terminal key to the same resolved TOML root which constructed
+    /// this writer. This is the sole terminal-preparation entry point exposed
+    /// to other modules; raw object paths cannot bypass the root/URI check.
+    pub(crate) fn prepare_terminal_create_uri(
+        &self,
+        artifact_root: &ResolvedArtifactRoot,
+        uri: &str,
+        payload: Vec<u8>,
+        object_label: impl Into<String>,
+    ) -> Result<PreparedTerminalCreate> {
+        self.ensure_bound_artifact_root(artifact_root)?;
+        let path = artifact_root.object_path_for_uri(uri)?;
+        self.prepare_terminal_create(&path, payload, object_label)
+    }
+
+    /// Issue one create-only terminal mutation, then converge any lost or
+    /// failed acknowledgement through current-version discovery followed by
+    /// an exact-version, exact-payload read. Once `permit` is consumed this
+    /// function never converts an ambiguous provider outcome into an ordinary
+    /// non-commit error.
+    pub(crate) async fn create_or_confirm_terminal(
+        &self,
+        prepared: PreparedTerminalCreate,
+        permit: OperatorWorkBudgetCommitPermit,
+    ) -> Result<ConfirmedTerminalCreate> {
+        ensure!(
+            permit.stage() == OperatorWorkBudgetStage::Publish,
+            "terminal object create requires a publish-stage commit permit"
+        );
+        let configured_timeout =
+            std::time::Duration::from_secs(self.artifact_root.s3.terminal_commit_timeout_seconds);
+        let remaining_wall_time = permit
+            .remaining_wall_time_at_consumption()?
+            .map_or(configured_timeout, |remaining| {
+                remaining.min(configured_timeout)
+            });
+        match tokio::time::timeout(
+            remaining_wall_time,
+            self.create_or_confirm_terminal_inner(&prepared),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(TerminalCreateIndeterminate {
+                detail: format!(
+                    "{} at {}: exact commit/confirmation did not finish within the effective terminal timeout {remaining_wall_time:?}; the request may have committed",
+                    prepared.object_label, prepared.path
+                ),
+            }
+            .into()),
+        }
+    }
+
+    async fn create_or_confirm_terminal_inner(
+        &self,
+        prepared: &PreparedTerminalCreate,
+    ) -> Result<ConfirmedTerminalCreate> {
+        let (put_failure, acknowledged_with_unusable_version) = match self
+            .store
+            .put_opts(
+                &prepared.path,
+                prepared.payload.clone().into(),
+                PutMode::Create.into(),
+            )
+            .await
+        {
+            Ok(result) => {
+                let version: UpdateVersion = result.into();
+                match required_versioned_create_result(version, &prepared.object_label) {
+                    Ok((version_id, e_tag)) => {
+                        return Ok(ConfirmedTerminalCreate {
+                            version_id,
+                            e_tag,
+                            disposition: CreateOnlyWriteDisposition::Created,
+                        });
+                    }
+                    Err(error) => (
+                        error.context("terminal create acknowledged an unusable S3 version"),
+                        true,
+                    ),
+                }
+            }
+            Err(error) => (
+                anyhow::Error::new(error).context("terminal create request failed"),
+                false,
+            ),
+        };
+
+        match self.confirm_current_terminal_create(prepared).await {
+            Ok((version_id, e_tag)) => Ok(ConfirmedTerminalCreate {
+                version_id,
+                e_tag,
+                disposition: CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
+            }),
+            Err(TerminalCreateConfirmationFailure::Conflict(error))
+                if acknowledged_with_unusable_version => Err(TerminalCreateIndeterminate {
+                    detail: format!(
+                        "{} at {}: create succeeded with unusable immutable identity ({put_failure:#}); current exact-version reconciliation found a conflict and cannot prove the acknowledged version ({error:#})",
+                        prepared.object_label, prepared.path
+                    ),
+                }
+                .into()),
+            Err(TerminalCreateConfirmationFailure::Conflict(error)) => {
+                Err(error.context(format!(
+                    "{} conflicts with an occupied terminal key after create attempt failed: {put_failure:#}",
+                    prepared.object_label
+                )))
+            }
+            Err(TerminalCreateConfirmationFailure::Indeterminate(confirmation_error)) => {
+                Err(TerminalCreateIndeterminate {
+                    detail: format!(
+                        "{} at {}: create acknowledgement failed ({put_failure:#}); exact current-version confirmation failed ({confirmation_error:#})",
+                        prepared.object_label, prepared.path
+                    ),
+                }
+                .into())
+            }
+        }
+    }
+
+    async fn confirm_current_terminal_create(
+        &self,
+        prepared: &PreparedTerminalCreate,
+    ) -> std::result::Result<(String, Option<String>), TerminalCreateConfirmationFailure> {
+        let current = self.store.head(&prepared.path).await.map_err(|error| {
+            TerminalCreateConfirmationFailure::Indeterminate(
+                anyhow::Error::new(error).context("discover current terminal object"),
+            )
+        })?;
+        if current.location != prepared.path {
+            return Err(TerminalCreateConfirmationFailure::Indeterminate(
+                anyhow::anyhow!("current terminal object location mismatch"),
+            ));
+        }
+        if current.size != prepared.byte_len {
+            return Err(TerminalCreateConfirmationFailure::Conflict(
+                anyhow::anyhow!(
+                    "{} already exists with byte length {}, expected {}",
+                    prepared.object_label,
+                    current.size,
+                    prepared.byte_len
+                ),
+            ));
+        }
+        let version_id = current.version.clone().ok_or_else(|| {
+            TerminalCreateConfirmationFailure::Indeterminate(anyhow::anyhow!(
+                "current terminal object has no S3 version ID"
+            ))
+        })?;
+        ensure_immutable_s3_version_id("current terminal object S3 version ID", &version_id)
+            .map_err(TerminalCreateConfirmationFailure::Indeterminate)?;
+        let e_tag = current.e_tag.clone();
+        let options = GetOptions {
+            version: Some(version_id.clone()),
+            if_match: e_tag.clone(),
+            ..GetOptions::default()
+        };
+        let exact = self
+            .store
+            .get_opts(&prepared.path, options)
+            .await
+            .map_err(|error| {
+                TerminalCreateConfirmationFailure::Indeterminate(
+                    anyhow::Error::new(error).context("read exact terminal object version"),
+                )
+            })?;
+        if exact.meta.location != prepared.path
+            || exact.meta.size != prepared.byte_len
+            || exact.range.start != 0
+            || exact.range.end != prepared.byte_len
+            || exact.meta.version.as_deref() != Some(version_id.as_str())
+            || (e_tag.is_some() && exact.meta.e_tag != e_tag)
+        {
+            return Err(TerminalCreateConfirmationFailure::Indeterminate(
+                anyhow::anyhow!("exact terminal object response metadata mismatch"),
+            ));
+        }
+        let payload_matches = stream_matches_prepared_terminal_payload(
+            exact,
+            &prepared.payload,
+            &prepared.object_label,
+        )
+        .await
+        .map_err(TerminalCreateConfirmationFailure::Indeterminate)?;
+        if !payload_matches {
+            return Err(TerminalCreateConfirmationFailure::Conflict(
+                anyhow::anyhow!(
+                    "{} already exists with different payload",
+                    prepared.object_label
+                ),
+            ));
+        }
+        Ok((version_id, e_tag))
     }
 
     /// # Errors
     ///
     /// Returns an error if the object already exists or the object store rejects
     /// create-only semantics.
-    pub async fn put_create(&self, path: &ObjectPath, payload: Vec<u8>) -> Result<()> {
+    async fn put_create(&self, path: &ObjectPath, payload: Vec<u8>) -> Result<()> {
+        self.enforce_payload_cap(&format!("create-only object {path}"), &payload)?;
         self.store
             .put_opts(path, payload.into(), PutMode::Create.into())
             .await
@@ -1016,47 +3656,50 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the probe object cannot be created once or if the
-    /// store accepts a duplicate create to the same object.
-    pub async fn probe_create_only(
-        &self,
-        artifact_root: &ResolvedArtifactRoot,
-        probe_id: &str,
-    ) -> Result<CreateOnlyProbeTranscript> {
-        let work_budget = OperatorWorkBudgetGuard::unbounded();
-        self.probe_create_only_guarded(artifact_root, probe_id, &work_budget)
-            .await
-    }
-
     /// Execute the create-only capability probe under the shared operator
     /// deadline. Every remote create/copy/read is fenced independently.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::probe_create_only`] and fails when
-    /// the operator work budget expires.
+    /// Returns an error if the probe object cannot be created exactly once, a
+    /// duplicate create/copy is accepted, or the explicit budget expires.
     pub async fn probe_create_only_guarded(
         &self,
         artifact_root: &ResolvedArtifactRoot,
         probe_id: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<CreateOnlyProbeTranscript> {
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        ensure_path_token("create_only_probe_id", probe_id, PathTokenMode::AllowEquals)?;
-        let probe_uri = artifact_root.create_only_probe_uri(probe_id);
-        let path = artifact_root.object_path_for_uri(&probe_uri)?;
-        let payload = probe_id.as_bytes().to_vec();
+        self.ensure_bound_artifact_root(artifact_root)?;
+        let (probe_uri, path, payload) = guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            || -> Result<_> {
+                ensure_path_token("create_only_probe_id", probe_id, PathTokenMode::AllowEquals)?;
+                let probe_uri = artifact_root.create_only_probe_uri(probe_id);
+                let path = artifact_root.object_path_for_uri(&probe_uri)?;
+                Ok((probe_uri, path, probe_id.as_bytes().to_vec()))
+            },
+        )??;
         self.put_create_idempotent_guarded(&path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe setup write {probe_uri}"))?;
 
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        match self.put_create(&path, payload.clone()).await {
+        match guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            async { self.put_create(&path, payload.clone()).await },
+        )
+        .await?
+        {
             Ok(()) => bail!("create-only probe accepted duplicate write to {probe_uri}"),
             Err(err) if is_create_only_conflict(&err) => {
-                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                self.verify_existing_create_payload(
+                    &path,
+                    &payload,
+                    Some(work_budget),
+                    &format!("create-only probe object {probe_uri}"),
+                )
+                .await?;
             }
             Err(err) => {
                 return Err(err).with_context(|| {
@@ -1065,10 +3708,23 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             }
         }
 
-        let copy_source_uri = artifact_root.create_only_probe_copy_source_uri(probe_id);
-        let copy_dest_uri = artifact_root.create_only_probe_copy_dest_uri(probe_id);
-        let copy_source_path = artifact_root.object_path_for_uri(&copy_source_uri)?;
-        let copy_dest_path = artifact_root.object_path_for_uri(&copy_dest_uri)?;
+        let (copy_source_uri, copy_dest_uri, copy_source_path, copy_dest_path) =
+            guarded_operation_outcome(
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+                || -> Result<_> {
+                    let copy_source_uri = artifact_root.create_only_probe_copy_source_uri(probe_id);
+                    let copy_dest_uri = artifact_root.create_only_probe_copy_dest_uri(probe_id);
+                    let copy_source_path = artifact_root.object_path_for_uri(&copy_source_uri)?;
+                    let copy_dest_path = artifact_root.object_path_for_uri(&copy_dest_uri)?;
+                    Ok((
+                        copy_source_uri,
+                        copy_dest_uri,
+                        copy_source_path,
+                        copy_dest_path,
+                    ))
+                },
+            )??;
         self.put_create_idempotent_guarded(&copy_source_path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe copy source setup {copy_source_uri}"))?;
@@ -1082,15 +3738,23 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         )
         .await?;
 
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        match self
-            .store
-            .copy_if_not_exists(&copy_source_path, &copy_dest_path)
-            .await
+        match guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            self.store
+                .copy_if_not_exists(&copy_source_path, &copy_dest_path),
+        )
+        .await?
         {
             Ok(()) => bail!("create-only probe accepted duplicate copy to {copy_dest_uri}"),
             Err(err) if is_object_store_create_only_conflict(&err) => {
-                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
+                self.verify_existing_create_payload(
+                    &copy_dest_path,
+                    &payload,
+                    Some(work_budget),
+                    &format!("create-only probe copy destination {copy_dest_uri}"),
+                )
+                .await?;
                 Ok(CreateOnlyProbeTranscript {
                     probe_uri,
                     copy_source_uri,
@@ -1118,34 +3782,27 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         copy_dest_uri: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        match self
-            .store
-            .copy_if_not_exists(copy_source_path, copy_dest_path)
-            .await
+        self.enforce_payload_cap(
+            &format!("create-only copy destination {copy_dest_uri}"),
+            expected_payload,
+        )?;
+        match guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            self.store
+                .copy_if_not_exists(copy_source_path, copy_dest_path),
+        )
+        .await?
         {
-            Ok(()) => {
-                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(err) if is_object_store_create_only_conflict(&err) => {
-                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                let existing = self
-                    .store
-                    .get(copy_dest_path)
-                    .await
-                    .with_context(|| {
-                        format!("read existing create-only probe copy destination {copy_dest_uri}")
-                    })?;
-                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                let existing_bytes = existing.bytes().await.with_context(|| {
-                    format!("read existing create-only probe copy bytes {copy_dest_uri}")
-                })?;
-                work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                ensure!(
-                    existing_bytes.as_ref() == expected_payload,
-                    "create-only probe copy destination {copy_dest_uri} already exists with different payload"
-                );
+                self.verify_existing_create_payload(
+                    copy_dest_path,
+                    expected_payload,
+                    Some(work_budget),
+                    &format!("create-only probe copy destination {copy_dest_uri}"),
+                )
+                .await?;
                 Ok(())
             }
             Err(err) => Err(err).with_context(|| {
@@ -1160,7 +3817,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
     ///
     /// Returns an error if the object exists with different bytes or the object
     /// store rejects create-only semantics.
-    pub async fn put_create_idempotent(
+    async fn put_create_idempotent(
         &self,
         path: &ObjectPath,
         payload: Vec<u8>,
@@ -1175,7 +3832,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
     ///
     /// Returns an error if the object exists with different bytes or the object
     /// store rejects create-only semantics.
-    pub async fn put_create_idempotent_with_disposition(
+    async fn put_create_idempotent_with_disposition(
         &self,
         path: &ObjectPath,
         payload: Vec<u8>,
@@ -1196,7 +3853,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         Ok(version)
     }
 
-    pub(crate) async fn put_create_idempotent_with_disposition_guarded(
+    async fn put_create_idempotent_with_disposition_guarded(
         &self,
         path: &ObjectPath,
         payload: Vec<u8>,
@@ -1212,47 +3869,34 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         payload: Vec<u8>,
         work_budget: Option<&OperatorWorkBudgetGuard>,
     ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
-        if let Some(work_budget) = work_budget {
-            work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        }
-        match self
-            .store
-            .put_opts(path, payload.clone().into(), PutMode::Create.into())
-            .await
-        {
-            Ok(result) => {
-                if let Some(work_budget) = work_budget {
-                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                }
-                Ok((result.into(), CreateOnlyWriteDisposition::Created))
-            }
+        self.enforce_payload_cap(&format!("create-only object {path}"), &payload)?;
+        // Convert once before the remote operation. Cloning `Bytes` for the
+        // create attempt is O(1), including on the terminal manifest path
+        // where the one-use commit permit has already been consumed.
+        let payload = Bytes::from(payload);
+        let put_outcome = if let Some(work_budget) = work_budget {
+            guarded_async_operation_outcome(work_budget, OperatorWorkBudgetStage::Publish, async {
+                self.store
+                    .put_opts(path, payload.clone().into(), PutMode::Create.into())
+                    .await
+            })
+            .await?
+        } else {
+            self.store
+                .put_opts(path, payload.clone().into(), PutMode::Create.into())
+                .await
+        };
+        match put_outcome {
+            Ok(result) => Ok((result.into(), CreateOnlyWriteDisposition::Created)),
             Err(err) if is_object_store_create_only_conflict(&err) => {
-                if let Some(work_budget) = work_budget {
-                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                }
-                let existing = self
-                    .store
-                    .get(path)
-                    .await
-                    .with_context(|| format!("read existing create-only object {path}"))?;
-                if let Some(work_budget) = work_budget {
-                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                }
-                let version = UpdateVersion {
-                    e_tag: existing.meta.e_tag.clone(),
-                    version: existing.meta.version.clone(),
-                };
-                let existing_bytes = existing
-                    .bytes()
-                    .await
-                    .with_context(|| format!("read existing create-only bytes {path}"))?;
-                if let Some(work_budget) = work_budget {
-                    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-                }
-                ensure!(
-                    existing_bytes.as_ref() == payload.as_slice(),
-                    "create-only object {path} already exists with different payload"
-                );
+                let version = self
+                    .verify_existing_create_payload(
+                        path,
+                        payload.as_ref(),
+                        work_budget,
+                        &format!("create-only object {path}"),
+                    )
+                    .await?;
                 Ok((
                     version,
                     CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
@@ -1262,19 +3906,140 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `uri` is outside `artifact_root`, the object already
-    /// exists, or the object store rejects create-only semantics.
-    pub async fn put_create_uri(
+    async fn verify_existing_create_payload(
         &self,
-        artifact_root: &ResolvedArtifactRoot,
-        uri: &str,
-        payload: Vec<u8>,
-    ) -> Result<()> {
-        let path = artifact_root.object_path_for_uri(uri)?;
-        self.put_create(&path, payload).await
+        path: &ObjectPath,
+        expected_payload: &[u8],
+        work_budget: Option<&OperatorWorkBudgetGuard>,
+        object_label: &str,
+    ) -> Result<UpdateVersion> {
+        let existing = if let Some(work_budget) = work_budget {
+            let outcome = guarded_async_operation_outcome(
+                work_budget,
+                OperatorWorkBudgetStage::Publish,
+                self.store.get(path),
+            )
+            .await?;
+            outcome.with_context(|| format!("read existing {object_label}"))?
+        } else {
+            self.store
+                .get(path)
+                .await
+                .with_context(|| format!("read existing {object_label}"))?
+        };
+        verify_create_conflict_payload(existing, expected_payload, work_budget, object_label).await
     }
+}
+
+async fn stream_matches_prepared_terminal_payload(
+    existing: object_store::GetResult,
+    expected_payload: &Bytes,
+    object_label: &str,
+) -> Result<bool> {
+    let mut compared = 0_usize;
+    let mut stream = existing.into_stream();
+    while let Some(chunk) = stream
+        .next()
+        .await
+        .transpose()
+        .with_context(|| format!("stream exact-version {object_label} body"))?
+    {
+        let end = compared
+            .checked_add(chunk.len())
+            .with_context(|| format!("{object_label} streamed byte count overflow"))?;
+        ensure!(
+            end <= expected_payload.len(),
+            "{object_label} streamed more than its exact expected byte length"
+        );
+        if chunk.as_ref() != &expected_payload[compared..end] {
+            return Ok(false);
+        }
+        compared = end;
+    }
+    ensure!(
+        compared == expected_payload.len(),
+        "{object_label} streamed {compared} bytes, expected exactly {}",
+        expected_payload.len()
+    );
+    Ok(true)
+}
+
+async fn verify_create_conflict_payload(
+    existing: object_store::GetResult,
+    expected_payload: &[u8],
+    work_budget: Option<&OperatorWorkBudgetGuard>,
+    object_label: &str,
+) -> Result<UpdateVersion> {
+    let expected_bytes = u64::try_from(expected_payload.len())
+        .with_context(|| format!("{object_label} expected byte length does not fit u64"))?;
+    let (version, existing_bytes) =
+        read_exact_get_result_payload(existing, expected_bytes, work_budget, object_label).await?;
+    ensure!(
+        existing_bytes.as_slice() == expected_payload,
+        "{object_label} already exists with different payload"
+    );
+    Ok(version)
+}
+
+async fn read_exact_get_result_payload(
+    existing: object_store::GetResult,
+    expected_bytes: u64,
+    work_budget: Option<&OperatorWorkBudgetGuard>,
+    object_label: &str,
+) -> Result<(UpdateVersion, Vec<u8>)> {
+    ensure!(
+        existing.meta.size == expected_bytes,
+        "{object_label} Content-Length {} does not match exact expected {expected_bytes}",
+        existing.meta.size
+    );
+    ensure!(
+        existing.range.start == 0 && existing.range.end == expected_bytes,
+        "{object_label} response range {:?} does not cover exact expected bytes 0..{expected_bytes}",
+        existing.range
+    );
+    let version = UpdateVersion {
+        e_tag: existing.meta.e_tag.clone(),
+        version: existing.meta.version.clone(),
+    };
+    // A terminal create conflict can occur after its one-use commit permit is
+    // consumed, and standalone index reads have no execution-plan deadline.
+    // Those paths receive an unbounded guard only after response metadata and
+    // range pass the allocation-free size check.
+    let unbounded;
+    let work_budget = if let Some(work_budget) = work_budget {
+        work_budget
+    } else {
+        unbounded = OperatorWorkBudgetGuard::unbounded();
+        &unbounded
+    };
+    let mut existing_bytes = ExactSizedObjectBuffer::new(expected_bytes)?;
+    let mut stream = existing.into_stream();
+    loop {
+        let chunk =
+            guarded_async_operation_outcome(work_budget, OperatorWorkBudgetStage::Publish, async {
+                stream.next().await.transpose()
+            })
+            .await?
+            .with_context(|| format!("stream existing {object_label} body"))?;
+        let Some(chunk) = chunk else { break };
+        existing_bytes.push(&chunk, work_budget, OperatorWorkBudgetStage::Publish)?;
+    }
+    let existing_bytes = existing_bytes.finish(work_budget, OperatorWorkBudgetStage::Publish)?;
+    Ok((version, existing_bytes))
+}
+
+async fn read_capped_artifact_index_payload(
+    existing: object_store::GetResult,
+    artifact_root: &ResolvedArtifactRoot,
+    object_label: &str,
+) -> Result<(UpdateVersion, Vec<u8>)> {
+    let expected_bytes = existing.meta.size;
+    enforce_final_object_byte_cap(
+        object_label,
+        expected_bytes,
+        artifact_root.max_final_object_bytes(),
+    )?;
+    read_exact_get_result_payload(existing, expected_bytes, None, object_label).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1719,7 +4484,6 @@ impl ArtifactIndexWriteAuthority {
 
 pub struct ArtifactIndexWriter<'a> {
     store: &'a dyn ObjectStore,
-    create_only: CreateOnlyArtifactWriter<'a>,
     authority: Option<ArtifactIndexWriteAuthority>,
 }
 
@@ -1728,7 +4492,6 @@ impl<'a> ArtifactIndexWriter<'a> {
     pub fn new(store: &'a dyn ObjectStore) -> Self {
         Self {
             store,
-            create_only: CreateOnlyArtifactWriter::new(store),
             authority: None,
         }
     }
@@ -1740,7 +4503,6 @@ impl<'a> ArtifactIndexWriter<'a> {
     ) -> Self {
         Self {
             store,
-            create_only: CreateOnlyArtifactWriter::new(store),
             authority: Some(authority),
         }
     }
@@ -1758,7 +4520,9 @@ impl<'a> ArtifactIndexWriter<'a> {
         let uri = event.event_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
         let payload = serde_json::to_vec(event).context("serialize artifact index event")?;
-        self.create_only.put_create_idempotent(&path, payload).await
+        CreateOnlyArtifactWriter::new(self.store, artifact_root)
+            .put_create_idempotent(&path, payload)
+            .await
     }
 
     /// # Errors
@@ -1773,7 +4537,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         self.authorize_kind(snapshot.artifact_kind)?;
         let uri = snapshot.snapshot_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
-        self.create_only
+        CreateOnlyArtifactWriter::new(self.store, artifact_root)
             .put_create_idempotent(&path, snapshot.bytes()?)
             .await
     }
@@ -1887,7 +4651,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         self.authorize_kind(audit_epoch.artifact_kind)?;
         let uri = audit_epoch.audit_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
-        self.create_only
+        CreateOnlyArtifactWriter::new(self.store, artifact_root)
             .put_create_idempotent(&path, audit_epoch.bytes()?)
             .await?;
         Ok(uri)
@@ -1905,9 +4669,12 @@ impl<'a> ArtifactIndexWriter<'a> {
         self.authorize_kind(pointer.artifact_kind)?;
         pointer.validate(artifact_root)?;
         let path = latest_pointer_path(artifact_root, pointer.artifact_kind)?;
+        let payload = pointer.bytes()?;
+        CreateOnlyArtifactWriter::new(self.store, artifact_root)
+            .enforce_payload_cap(&format!("artifact index latest pointer {path}"), &payload)?;
         let result = self
             .store
-            .put_opts(&path, pointer.bytes()?.into(), PutMode::Create.into())
+            .put_opts(&path, payload.into(), PutMode::Create.into())
             .await
             .with_context(|| format!("create latest artifact index pointer {path}"))?;
         Ok(result.into())
@@ -1926,13 +4693,12 @@ impl<'a> ArtifactIndexWriter<'a> {
         self.authorize_kind(pointer.artifact_kind)?;
         pointer.validate(artifact_root)?;
         let path = latest_pointer_path(artifact_root, pointer.artifact_kind)?;
+        let payload = pointer.bytes()?;
+        CreateOnlyArtifactWriter::new(self.store, artifact_root)
+            .enforce_payload_cap(&format!("artifact index latest pointer {path}"), &payload)?;
         let result = self
             .store
-            .put_opts(
-                &path,
-                pointer.bytes()?.into(),
-                PutMode::Update(expected).into(),
-            )
+            .put_opts(&path, payload.into(), PutMode::Update(expected).into())
             .await
             .with_context(|| {
                 format!("conditional precondition update artifact index pointer {path}")
@@ -1956,14 +4722,12 @@ impl<'a> ArtifactIndexWriter<'a> {
                 return Err(err).with_context(|| format!("read artifact index pointer {path}"));
             }
         };
-        let version = UpdateVersion {
-            e_tag: object.meta.e_tag.clone(),
-            version: object.meta.version.clone(),
-        };
-        let bytes = object
-            .bytes()
-            .await
-            .with_context(|| format!("read artifact index pointer bytes {path}"))?;
+        let (version, bytes) = read_capped_artifact_index_payload(
+            object,
+            artifact_root,
+            &format!("artifact index pointer {path}"),
+        )
+        .await?;
         let pointer: ArtifactIndexPointer =
             serde_json::from_slice(bytes.as_ref()).context("decode artifact index pointer")?;
         ensure!(
@@ -1994,10 +4758,12 @@ impl<'a> ArtifactIndexWriter<'a> {
                 return Err(err).with_context(|| format!("read artifact index event {path}"));
             }
         };
-        let bytes = object
-            .bytes()
-            .await
-            .with_context(|| format!("read artifact index event bytes {path}"))?;
+        let (_version, bytes) = read_capped_artifact_index_payload(
+            object,
+            artifact_root,
+            &format!("artifact index event {path}"),
+        )
+        .await?;
         let event: ArtifactIndexEvent =
             serde_json::from_slice(bytes.as_ref()).context("decode artifact index event")?;
         ensure!(
@@ -2105,10 +4871,12 @@ impl<'a> ArtifactIndexWriter<'a> {
             .get(&path)
             .await
             .with_context(|| format!("read artifact index snapshot {path}"))?;
-        let bytes = object
-            .bytes()
-            .await
-            .with_context(|| format!("read artifact index snapshot bytes {path}"))?;
+        let (_version, bytes) = read_capped_artifact_index_payload(
+            object,
+            artifact_root,
+            &format!("artifact index snapshot {path}"),
+        )
+        .await?;
         let actual_hash = sha256_bytes(bytes.as_ref());
         ensure!(
             actual_hash == pointer.snapshot_sha256,
@@ -2372,5 +5140,248 @@ fn fixture_label(fixture: MarketStructureFixture) -> &'static str {
     match fixture {
         MarketStructureFixture::BinaryOption => "binary-option",
         MarketStructureFixture::PerpsSpot => "perps-spot",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        backfill_execution_plan::BackfillExecutionWorkBudget,
+        operator_work_budget::OperatorWorkBudget,
+        run_manifest::{
+            CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION, CatalogProjectionManifestObject,
+        },
+    };
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_projection_file_identity_rejects_a_swapped_open_handle() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let selected_path = temp.path().join("selected.parquet");
+        let foreign_path = temp.path().join("foreign.parquet");
+        fs::write(&selected_path, b"selected").expect("selected file");
+        fs::write(&foreign_path, b"foreign!").expect("foreign file");
+        let selected_metadata = fs::symlink_metadata(&selected_path).expect("selected lstat");
+        let foreign_file = fs::File::open(&foreign_path).expect("foreign open");
+        let foreign_metadata = foreign_file.metadata().expect("foreign fstat");
+
+        let error = validate_pinned_regular_file_identity(
+            &selected_path,
+            &selected_metadata,
+            &foreign_metadata,
+        )
+        .expect_err("path-to-handle identity swap must fail closed");
+
+        assert!(error.to_string().contains("device/inode"), "{error:#}");
+    }
+
+    #[test]
+    fn catalog_publication_rejects_missing_version_id() {
+        let error = required_versioned_create_result(
+            UpdateVersion {
+                e_tag: Some("etag".to_string()),
+                version: None,
+            },
+            "catalog object",
+        )
+        .expect_err("versioned publication requires a version ID");
+
+        assert!(error.to_string().contains("version ID"), "{error:#}");
+    }
+
+    #[test]
+    fn catalog_publication_rejects_null_version_id() {
+        let error = required_versioned_create_result(
+            UpdateVersion {
+                e_tag: Some("etag".to_string()),
+                version: Some("null".to_string()),
+            },
+            "catalog object",
+        )
+        .expect_err("S3's null version is not immutable authority");
+
+        assert!(error.to_string().contains("null"), "{error:#}");
+    }
+
+    #[test]
+    fn durable_preflight_rejects_suspended_or_absent_bucket_versioning() {
+        for status in [
+            None,
+            Some(&aws_sdk_s3::types::BucketVersioningStatus::Suspended),
+        ] {
+            let error = ensure_bucket_versioning_status_enabled(status)
+                .expect_err("only Enabled may mint the opaque capability");
+            assert!(error.to_string().contains("Enabled"), "{error:#}");
+        }
+        ensure_bucket_versioning_status_enabled(Some(
+            &aws_sdk_s3::types::BucketVersioningStatus::Enabled,
+        ))
+        .expect("Enabled versioning passes preflight");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hydration_path_budget_rejects_before_namespace_mutation() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let root = temp.path().join("private-catalog");
+        fs::create_dir(&root).expect("private catalog root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private root mode");
+        let root_lease = PrivateCatalogRootLease::open_empty(&root).expect("root lease");
+        let relative_path = format!("{}.parquet", "a".repeat(180));
+        let max_decoded_bytes = u64::try_from(relative_path.len() + 1).expect("path budget");
+        let guard = OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(
+            BackfillExecutionWorkBudget {
+                max_decoded_bytes,
+                max_source_rows: 1,
+                max_projected_row_groups: 1,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("path allocation guard");
+
+        let error = create_private_hydration_file(
+            &root_lease,
+            &relative_path,
+            &guard,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .expect_err("combined display/component allocation must fail before openat");
+
+        assert!(
+            format!("{error:#}").contains("cumulative retained memory"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read_dir(&root).expect("read private root").count(), 0);
+    }
+
+    #[test]
+    fn broad_catalog_preflight_rejects_cumulative_metadata_before_allocation() {
+        let mut manifest_objects = Vec::new();
+        for index in 0..64 {
+            manifest_objects.push(CatalogProjectionManifestObject {
+                relative_path: format!("data/trades/instrument={index:04}/part-000.parquet"),
+                byte_len: 1,
+                sha256: sha256_bytes(&[u8::try_from(index).expect("test index")]),
+            });
+        }
+        let physical_manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: manifest_objects,
+        };
+        let binding = CatalogProjectionBinding {
+            source_binding: "source".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "broad".to_string(),
+        };
+        let catalog_root_uri = "s3://catalog/projection=broad/".to_string();
+        let physical_manifest_sha256 = sha256_bytes(b"manifest");
+        let input_retained = catalog_projection_manifest_retained_bytes(&physical_manifest)
+            .expect("manifest retained")
+            .checked_add(
+                catalog_publication_header_retained_bytes(
+                    &binding,
+                    &catalog_root_uri,
+                    &physical_manifest_sha256,
+                )
+                .expect("header retained"),
+            )
+            .expect("input retained total");
+        let guard = OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(
+            BackfillExecutionWorkBudget {
+                max_decoded_bytes: input_retained,
+                max_source_rows: 1,
+                max_projected_row_groups: 64,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("broad publication guard");
+
+        let error = preflight_catalog_publication_retained_peak(
+            &physical_manifest,
+            &binding,
+            &catalog_root_uri,
+            &physical_manifest_sha256,
+            S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES - 1,
+            &guard,
+            OperatorWorkBudgetStage::Publish,
+        )
+        .expect_err("output metadata must not fit beside the retained broad manifest");
+
+        assert!(
+            format!("{error:#}").contains("cumulative retained memory"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn receipt_parse_rejects_cumulative_peak_when_each_live_component_fits() {
+        let unbounded = OperatorWorkBudgetGuard::unbounded();
+        let physical_manifest = CatalogProjectionManifestDocument {
+            schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION.to_string(),
+            objects: vec![CatalogProjectionManifestObject {
+                relative_path: "part-000.parquet".to_string(),
+                byte_len: 1,
+                sha256: sha256_bytes(b"x"),
+            }],
+        };
+        let physical_manifest_sha256 = physical_manifest
+            .manifest_sha256_guarded(&unbounded, OperatorWorkBudgetStage::Publish)
+            .expect("physical manifest hash");
+        let receipt = CatalogProjectionPublicationReceipt {
+            schema_version: CATALOG_PROJECTION_PUBLICATION_RECEIPT_SCHEMA_VERSION.to_string(),
+            catalog_root_uri: "s3://catalog/projection=test/".to_string(),
+            physical_manifest_sha256,
+            physical_manifest,
+            binding: CatalogProjectionBinding {
+                source_binding: "source".to_string(),
+                market_structure_fixture: MarketStructureFixture::BinaryOption,
+                catalog_projection_id: "test".to_string(),
+            },
+            objects: vec![CatalogProjectionPublicationObject {
+                relative_path: "part-000.parquet".to_string(),
+                uri: "s3://catalog/projection=test/part-000.parquet".to_string(),
+                sha256: sha256_bytes(b"x"),
+                byte_len: 1,
+                version_id: "version-1".to_string(),
+                e_tag: None,
+            }],
+        };
+        let bytes = receipt
+            .canonical_bytes_guarded(&unbounded, OperatorWorkBudgetStage::Publish)
+            .expect("canonical receipt");
+        let receipt_sha256 = receipt
+            .receipt_sha256_guarded(&unbounded, OperatorWorkBudgetStage::Publish)
+            .expect("receipt hash");
+        let wire_bytes = u64::try_from(bytes.len()).expect("wire bytes");
+        let retained_receipt_bytes = receipt.retained_memory_bytes().expect("retained receipt");
+        let individual_limit = wire_bytes.max(retained_receipt_bytes);
+        assert!(wire_bytes <= individual_limit);
+        assert!(retained_receipt_bytes <= individual_limit);
+        let guard = OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(
+            BackfillExecutionWorkBudget {
+                max_decoded_bytes: individual_limit,
+                max_source_rows: 1,
+                max_projected_row_groups: 4,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("cumulative memory guard");
+
+        let error = CatalogProjectionPublicationReceipt::parse_and_validate_guarded(
+            &bytes,
+            &receipt_sha256,
+            &guard,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .expect_err("combined live receipt memory must exceed the envelope");
+
+        assert!(
+            format!("{error:#}").contains("cumulative retained memory"),
+            "{error:#}"
+        );
     }
 }

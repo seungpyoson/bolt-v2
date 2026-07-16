@@ -69,7 +69,7 @@
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, mem::size_of};
 
 use anyhow::{Context, Result, bail, ensure};
 use arrow::{
@@ -78,7 +78,7 @@ use arrow::{
 };
 use bytes::Bytes;
 use nautilus_model::enums::RecordFlag;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{DEFAULT_BATCH_SIZE, ParquetRecordBatchReaderBuilder};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -93,9 +93,14 @@ use super::{
         CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, CsvTimestampUnit,
         DELTAS_TRANSFORM_IDENTITY, EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
         TAR_DELTAS_TRANSFORM_IDENTITY, TRADE_SOURCE_TYPE_NATIVE, TradeAggressorSide,
-        TradesPartition,
+        TradesPartition, verify_parquet_bytes_trailer_preflight,
+        verify_single_parquet_metadata_budget,
     },
-    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    operator_work_budget::{
+        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, cooperative_stable_sort_by_key,
+        deserialize_json_with_budget, for_each_nonempty_text_record_with_budget,
+        guarded_operation_outcome,
+    },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
     tar_reader::TarMember,
 };
@@ -567,7 +572,7 @@ pub fn normalize_parquet_event_stream_deltas(
     accepted: &AcceptedDataset,
     identities: &DeltaInstrumentIdentities,
     mapping: &DeltaMappingConfig,
-    parquet_bytes: &[u8],
+    parquet_bytes: Bytes,
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<(
@@ -589,7 +594,7 @@ pub(crate) fn normalize_parquet_event_stream_deltas_with_meter(
     accepted: &AcceptedDataset,
     identities: &DeltaInstrumentIdentities,
     mapping: &DeltaMappingConfig,
-    parquet_bytes: &[u8],
+    parquet_bytes: Bytes,
     capture_time_nanos: i64,
     ingest_run_id: &str,
     work_budget: &OperatorWorkBudgetGuard,
@@ -887,22 +892,44 @@ struct RawEventRow {
 /// time column only when declared.
 fn decode_event_stream_rows(
     fields: &EventStreamFields<'_>,
-    parquet_bytes: &[u8],
+    parquet_bytes: Bytes,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<RawEventRow>> {
-    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
-    let mut reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(parquet_bytes.to_vec()))
-        .context("construct event-stream parquet reader")?
-        .build()
-        .context("build event-stream record batch reader")?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+    verify_parquet_bytes_trailer_preflight(
+        &parquet_bytes,
+        work_budget,
+        OperatorWorkBudgetStage::Decode,
+    )?;
+    // The Parquet implementation owns metadata parsing and decompression, so
+    // these calls are indivisible opaque units. Fence each natural batch on
+    // both sides and inspect every decoded row before materializing it.
+    let mut reader = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::Decode,
+        || -> Result<_> {
+            let builder = ParquetRecordBatchReaderBuilder::try_new(parquet_bytes.clone())
+                .context("construct event-stream parquet reader")?;
+            verify_single_parquet_metadata_budget(
+                builder.metadata(),
+                work_budget,
+                OperatorWorkBudgetStage::Decode,
+            )?;
+            builder
+                .with_batch_size(DEFAULT_BATCH_SIZE)
+                .build()
+                .context("build event-stream record batch reader")
+        },
+    )??;
 
     let mut rows = Vec::new();
     let mut source_row_index: u64 = 0;
+    let mut materialized_bytes = 0_u64;
     loop {
-        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
-        let next_batch = reader.next();
-        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+        let next_batch = guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Decode,
+            || -> Result<_> { Ok(reader.next()) },
+        )??;
         let Some(batch) = next_batch else {
             break;
         };
@@ -912,6 +939,7 @@ fn decode_event_stream_rows(
             &batch,
             &mut rows,
             &mut source_row_index,
+            &mut materialized_bytes,
             work_budget,
         )?;
         work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
@@ -925,9 +953,23 @@ fn decode_event_stream_batch(
     batch: &RecordBatch,
     rows: &mut Vec<RawEventRow>,
     source_row_index: &mut u64,
+    materialized_bytes: &mut u64,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<()> {
     for row in 0..batch.num_rows() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+        *materialized_bytes = materialized_bytes
+            .checked_add(
+                u64::try_from(event_stream_row_materialized_bytes(fields, batch, row)?)
+                    .context("event-stream row materialized bytes do not fit u64")?,
+            )
+            .context("event-stream materialized byte total overflow")?;
+        work_budget.verify_decoded_bytes(*materialized_bytes, OperatorWorkBudgetStage::Decode)?;
+    }
+    rows.try_reserve_exact(batch.num_rows())
+        .context("reserve decoded event-stream rows")?;
+    for row in 0..batch.num_rows() {
+        work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
         work_budget.consume_source_row(OperatorWorkBudgetStage::Decode)?;
         let capture_raw = required_string_cell(batch, fields.capture_time_field, row)?;
         let capture_time = fields
@@ -984,6 +1026,56 @@ fn decode_event_stream_batch(
         work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
     }
     Ok(())
+}
+
+fn event_stream_row_materialized_bytes(
+    fields: &EventStreamFields<'_>,
+    batch: &RecordBatch,
+    row: usize,
+) -> Result<usize> {
+    let mut bytes = size_of::<RawEventRow>();
+    for column in [
+        fields.asset_key_field,
+        Some(fields.event_type_field),
+        Some(fields.capture_time_field),
+        fields.event_time_field,
+        Some(fields.bids_field),
+        Some(fields.asks_field),
+        Some(fields.price_field),
+        Some(fields.size_field),
+        Some(fields.side_field),
+        Some(fields.trade_price_field),
+        Some(fields.trade_size_field),
+        fields.trade_id_field,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        bytes = bytes
+            .checked_add(event_stream_cell_materialized_bytes(batch, column, row)?)
+            .context("event-stream materialized row byte size overflow")?;
+    }
+    Ok(bytes)
+}
+
+fn event_stream_cell_materialized_bytes(
+    batch: &RecordBatch,
+    column: &str,
+    row: usize,
+) -> Result<usize> {
+    let values = batch
+        .column_by_name(column)
+        .with_context(|| format!("event-stream parquet missing column {column:?}"))?;
+    if values.is_null(row) {
+        return Ok(0);
+    }
+    if let Some(strings) = values.as_any().downcast_ref::<StringArray>() {
+        return Ok(strings.value(row).len());
+    }
+    if values.as_any().downcast_ref::<Int64Array>().is_some() {
+        return Ok(size_of::<i64>() * 3);
+    }
+    bail!("event-stream column {column:?} is not Utf8 or Int64")
 }
 
 /// Read a required Utf8 cell, failing loud on a missing column, wrong type, or
@@ -1099,9 +1191,12 @@ fn expand_event_stream_into_tables(
             .remove(instrument_key)
             .context("internal: group order entry missing from groups map")?;
         // Capture-time replay order with the physical row-index tiebreak.
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-        group.sort_by_key(|raw| (raw.capture_time, raw.source_row_index));
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        cooperative_stable_sort_by_key(
+            &mut group,
+            |raw| (raw.capture_time, raw.source_row_index),
+            work_budget,
+            OperatorWorkBudgetStage::Normalize,
+        )?;
 
         let mut events: Vec<DeltaEvent> = Vec::new();
         let mut trade_rows: Vec<CanonicalTradeRow> = Vec::new();
@@ -1160,9 +1255,7 @@ fn expand_event_stream_into_tables(
                 payload_hash: accepted.object.sha256.clone(),
                 rows,
             };
-            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-            delta_table.validate()?;
-            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+            delta_table.validate_guarded(work_budget, OperatorWorkBudgetStage::Normalize)?;
             delta_tables.push(delta_table);
         }
 
@@ -1187,9 +1280,7 @@ fn expand_event_stream_into_tables(
                 payload_hash: accepted.object.sha256.clone(),
                 rows: trade_rows,
             };
-            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-            trade_table.validate()?;
-            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+            trade_table.validate_guarded(work_budget, OperatorWorkBudgetStage::Normalize)?;
             trade_tables.push(trade_table);
         }
         work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
@@ -1520,10 +1611,12 @@ fn parse_event_stream_levels(
 ) -> Result<Vec<ParsedLevel>> {
     let trimmed = raw.trim();
     ensure!(!trimmed.is_empty(), "{field}: empty levels cell");
-    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-    let parsed: Value = serde_json::from_str(trimmed)
-        .with_context(|| format!("{field}: invalid levels JSON {trimmed:?}"))?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+    let parsed: Value = deserialize_json_with_budget(
+        trimmed.as_bytes(),
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+    )
+    .with_context(|| format!("{field}: invalid levels JSON {trimmed:?}"))?;
     let array = parsed
         .as_array()
         .with_context(|| format!("{field}: expected a JSON array, got {trimmed:?}"))?;
@@ -1812,75 +1905,81 @@ fn parse_jsonl_into_groups(
     // Borrow the two fields separately so the `or_insert_with` closure pushes to
     // `order` while `groups.entry` holds its own disjoint mutable borrow.
     let PhotoGroups { order, groups } = accumulator;
-    for (index, line) in jsonl_text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
-        let value: Value = serde_json::from_str(line)
+    for_each_nonempty_text_record_with_budget(
+        jsonl_text,
+        work_budget,
+        OperatorWorkBudgetStage::Normalize,
+        |index, line| {
+            work_budget.consume_source_row(OperatorWorkBudgetStage::Normalize)?;
+            let value: Value = deserialize_json_with_budget(
+                line.as_bytes(),
+                work_budget,
+                OperatorWorkBudgetStage::Normalize,
+            )
             .with_context(|| format!("line {index}: malformed snapshot JSON"))?;
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
 
-        let instrument_key = match &mapping.instrument_key.key_field {
-            Some(key_field) => {
-                let raw = value
+            let instrument_key =
+                match &mapping.instrument_key.key_field {
+                    Some(key_field) => {
+                        let raw = value
                     .get(key_field)
                     .and_then(Value::as_str)
                     .with_context(|| {
                         format!("line {index}: missing string instrument key field {key_field:?}")
                     })?;
-                ensure!(!raw.trim().is_empty(), "line {index}: empty instrument key");
-                if let Some(filter) = &mapping.instrument_key.exclusion_filter
-                    && filter.excludes(raw)
-                {
-                    continue;
-                }
-                Some(raw.to_string())
-            }
-            None => None,
-        };
+                        ensure!(!raw.trim().is_empty(), "line {index}: empty instrument key");
+                        if let Some(filter) = &mapping.instrument_key.exclusion_filter
+                            && filter.excludes(raw)
+                        {
+                            continue;
+                        }
+                        Some(raw.to_string())
+                    }
+                    None => None,
+                };
 
-        let event_time_raw = value.get(fields.event_time_field).with_context(|| {
-            format!(
-                "line {index}: missing event time field {:?}",
-                fields.event_time_field
-            )
-        })?;
-        let event_time = parse_event_time(fields.event_time_unit, event_time_raw)
-            .with_context(|| format!("line {index}: invalid event time {event_time_raw}"))?;
-        ensure!(event_time > 0, "line {index}: non-positive event time");
+            let event_time_raw = value.get(fields.event_time_field).with_context(|| {
+                format!(
+                    "line {index}: missing event time field {:?}",
+                    fields.event_time_field
+                )
+            })?;
+            let event_time = parse_event_time(fields.event_time_unit, event_time_raw)
+                .with_context(|| format!("line {index}: invalid event time {event_time_raw}"))?;
+            ensure!(event_time > 0, "line {index}: non-positive event time");
 
-        let bids = parse_levels(
-            index,
-            &value,
-            fields.bids_field,
-            fields.level_price_field,
-            fields.level_size_field,
-            mapping.price_sign_policy,
-            work_budget,
-        )?;
-        let asks = parse_levels(
-            index,
-            &value,
-            fields.asks_field,
-            fields.level_price_field,
-            fields.level_size_field,
-            mapping.price_sign_policy,
-            work_budget,
-        )?;
+            let bids = parse_levels(
+                index,
+                &value,
+                fields.bids_field,
+                fields.level_price_field,
+                fields.level_size_field,
+                mapping.price_sign_policy,
+                work_budget,
+            )?;
+            let asks = parse_levels(
+                index,
+                &value,
+                fields.asks_field,
+                fields.level_price_field,
+                fields.level_size_field,
+                mapping.price_sign_policy,
+                work_budget,
+            )?;
 
-        let group = groups.entry(instrument_key.clone()).or_insert_with(|| {
-            order.push(instrument_key.clone());
-            Vec::new()
-        });
-        group.push(ParsedPhoto {
-            event_time,
-            availability_time: None,
-            bids,
-            asks,
-        });
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-    }
+            let group = groups.entry(instrument_key.clone()).or_insert_with(|| {
+                order.push(instrument_key.clone());
+                Vec::new()
+            });
+            group.push(ParsedPhoto {
+                event_time,
+                availability_time: None,
+                bids,
+                asks,
+            });
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 
@@ -1929,9 +2028,12 @@ fn expand_groups_into_tables(
             // timeline must be monotonic for expansion. A stable sort preserves
             // the in-member order of exact ties so the lone-CLEAR/adds-only
             // collapse is deterministic.
-            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-            photos.sort_by_key(|photo| photo.event_time);
-            work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+            cooperative_stable_sort_by_key(
+                &mut photos,
+                |photo| photo.event_time,
+                work_budget,
+                OperatorWorkBudgetStage::Normalize,
+            )?;
         }
 
         let provenance = RowProvenance {
@@ -1977,9 +2079,7 @@ fn expand_groups_into_tables(
             payload_hash: accepted.object.sha256.clone(),
             rows,
         };
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
-        table.validate()?;
-        work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
+        table.validate_guarded(work_budget, OperatorWorkBudgetStage::Normalize)?;
         tables.push(table);
         work_budget.check_deadline(OperatorWorkBudgetStage::Normalize)?;
     }
@@ -2190,6 +2290,7 @@ mod tests {
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 1,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 1,
                     require_object_selection_metadata: false,
@@ -2438,6 +2539,7 @@ table_families = ["order_book_snapshot_deltas"]
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 2,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 60,
                     require_object_selection_metadata: false,
@@ -2463,6 +2565,7 @@ table_families = ["order_book_snapshot_deltas"]
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 1,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 60,
                     require_object_selection_metadata: false,
@@ -2486,6 +2589,28 @@ table_families = ["order_book_snapshot_deltas"]
                 .contains("max_source_rows actual 2 exceeds limit 1"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn giant_single_jsonl_record_expires_during_bounded_record_scan() {
+        let jsonl = format!(
+            "{{\"time\":1700000000000,\"bids\":[],\"asks\":[],\"padding\":\"{}\"}}\n",
+            "x".repeat(1_048_576)
+        );
+        let guard = expiring_normalization_guard(8);
+
+        let error = normalize_jsonl_snapshot_deltas_with_meter(
+            &accepted_dataset(),
+            &single_identity(),
+            &single_mapping(),
+            &jsonl,
+            42,
+            "ingest-run-test",
+            &guard,
+        )
+        .expect_err("giant JSONL record must observe expiry during byte-bounded scanning");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
     }
 
     #[test]
@@ -3005,6 +3130,77 @@ table_families = ["order_book_snapshot_deltas"]
         mapping
     }
 
+    fn event_stream_parquet_envelope_with_footer(footer: &[u8]) -> Bytes {
+        let mut bytes = Vec::from(*b"PAR1");
+        bytes.extend_from_slice(footer);
+        bytes.extend_from_slice(
+            &u32::try_from(footer.len())
+                .expect("test footer length fits u32")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(b"PAR1");
+        Bytes::from(bytes)
+    }
+
+    fn event_stream_parquet_preflight_guard(
+        max_decoded_bytes: u64,
+        max_source_rows: u64,
+    ) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::new(crate::operator_work_budget::OperatorWorkBudget::Backfill(
+            crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                max_source_rows,
+                max_decoded_bytes,
+                max_projected_row_groups: u64::MAX,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("event-stream Parquet preflight guard")
+    }
+
+    #[test]
+    fn event_stream_rejects_tiny_footer_with_huge_list_before_builder() {
+        let footer = [0x19, 0xf3, 0xff, 0xff, 0xff, 0xff, 0x0f];
+        let error = normalize_parquet_event_stream_deltas_with_meter(
+            &accepted_dataset(),
+            &single_identity(),
+            &event_stream_mapping(None),
+            event_stream_parquet_envelope_with_footer(&footer),
+            42,
+            "ingest-run-test",
+            &event_stream_parquet_preflight_guard(1_024, 8),
+        )
+        .expect_err("list cardinality must fail before event-stream builder allocation");
+
+        assert!(
+            format!("{error:#}").contains(
+                "compact-Thrift collection cardinality 4294967295 exceeds max_source_rows 8"
+            ),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn event_stream_rejects_nested_binary_length_before_builder() {
+        let footer = [0x1c, 0x18, 0x81, 0x01, 0x00, 0x00];
+        let error = normalize_parquet_event_stream_deltas_with_meter(
+            &accepted_dataset(),
+            &single_identity(),
+            &event_stream_mapping(None),
+            event_stream_parquet_envelope_with_footer(&footer),
+            42,
+            "ingest-run-test",
+            &event_stream_parquet_preflight_guard(128, 8),
+        )
+        .expect_err("nested binary length must fail before event-stream builder allocation");
+
+        assert!(
+            format!("{error:#}")
+                .contains("compact-Thrift binary length 129 exceeds max_decoded_bytes 128"),
+            "{error:#}"
+        );
+    }
+
     /// Build an in-memory typed-event Parquet object whose `capture_time` and
     /// `exchange_time` columns are Int64 (the real prediction-market CLOB archive
     /// shape) rather than Utf8. Every other column stays Utf8 (nullable) so the
@@ -3154,6 +3350,7 @@ table_families = ["order_book_snapshot_deltas"]
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 4,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 60,
                     require_object_selection_metadata: false,
@@ -3165,7 +3362,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
             &guard,
@@ -3221,6 +3418,7 @@ table_families = ["order_book_snapshot_deltas"]
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 3,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 60,
                     require_object_selection_metadata: false,
@@ -3232,7 +3430,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet),
             42,
             "ingest-run-test",
             &exhausted,
@@ -3255,7 +3453,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3345,7 +3543,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3366,7 +3564,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3398,7 +3596,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3439,7 +3637,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3512,7 +3710,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &identities,
             &mapping,
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3541,7 +3739,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3568,7 +3766,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3576,6 +3774,29 @@ table_families = ["order_book_snapshot_deltas"]
         assert!(
             err.to_string().contains("unknown event-stream event_type"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn event_stream_rejects_bad_parquet_magic_before_reader_builder() {
+        let accepted = accepted_dataset();
+        let bytes = Bytes::from_static(b"NOPE\x01\x00\x00\x00PAR1");
+
+        let error = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            bytes,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("bad Parquet magic must fail in trailer preflight");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Parquet header magic is not PAR1"),
+            "{error:#}"
         );
     }
 
@@ -3617,7 +3838,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3643,7 +3864,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &mapping,
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3669,7 +3890,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &mapping,
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3757,7 +3978,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &single_mapping(),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -3955,7 +4176,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4018,7 +4239,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &identities,
             &mapping,
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4066,7 +4287,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping_with_trade_id(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4100,7 +4321,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping_with_trade_id(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4135,7 +4356,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4177,7 +4398,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4213,7 +4434,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4239,7 +4460,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &event_stream_mapping(None),
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )
@@ -4289,7 +4510,7 @@ table_families = ["order_book_snapshot_deltas"]
             &accepted,
             &single_identity(),
             &mapping,
-            &parquet,
+            Bytes::from(parquet.clone()),
             42,
             "ingest-run-test",
         )

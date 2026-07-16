@@ -350,8 +350,12 @@ fn mechanical_probe_produces_orders_and_positions_through_result_contract() {
         manifest: &manifest,
         contract_manifest_hash: &contract_manifest_hash,
         converter: &converter_config(),
+        conversion_control_artifact_path: "synthetic-control.toml",
+        conversion_control_artifact_sha256:
+            "0000000000000000000000000000000000000000000000000000000000000000",
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
+        authoritative_output_root: &catalog_root,
         selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {

@@ -526,8 +526,6 @@ fn dual_emission_run_spec(
         manifest,
         artifact_store: committed.artifact_store,
         catalog_dispatch: committed.catalog_dispatch,
-        create_only_probe_id: committed.create_only_probe_id,
-        nt_catalog_capability_proof: committed.nt_catalog_capability_proof,
         selector_provenance,
     };
     (spec, object_bytes)

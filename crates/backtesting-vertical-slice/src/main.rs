@@ -20,17 +20,17 @@ use clap::Parser;
 use bolt_v2::bolt_v3_config::BacktestConfigOverrideReport;
 
 use backtesting_vertical_slice::{
-    artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
     backfill_execution_plan::{BackfillExecutionPlan, validate_execution_plan_for_run_spec},
-    nt_catalog_capability::NtCatalogSsmCredentialResolver,
     operator::{
-        MultiTableRunArtifacts, OperatorRunArtifacts, PublishOptions, PublishedArtifact,
-        PublishedCatalogProof, RunArtifacts, RunSpec,
-        run_from_run_spec_and_publish_with_resolved_storage_options_guarded,
-        run_from_run_spec_with_artifact_store_guarded, run_operator_from_run_spec_guarded,
-        validate_run_spec_manifest_for_object_hash,
+        DurableCompletionLocator, DurableRunDispatcher, DurableRunOutcome, DurableRunRequest,
+        MultiTableRunArtifacts, OperatorRunArtifacts, RunArtifacts, RunSpec,
+        VerifiedSourceBindingRegistry, run_operator_from_run_spec_guarded,
+        validate_run_spec_manifest_for_object_hash_with_verified_registry,
     },
-    operator_work_budget::{OperatorWorkBudget, OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    operator_work_budget::{
+        OperatorWorkBudget, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+        deserialize_json_with_budget, read_exact_sized_file_guarded,
+    },
     result_contract::{BacktestFeedLabel, BacktestRunGuardReport},
 };
 
@@ -49,21 +49,21 @@ struct Cli {
     /// Output directory for produced artifacts.
     #[arg(long)]
     output_dir: PathBuf,
-    /// Publish produced artifacts to manifest.output_prefix after the local run succeeds.
+    /// Optional exact-version durable completion locator JSON. When supplied,
+    /// the RunSpec must select the durable path with top-level [artifact_store].
     #[arg(long)]
-    publish_output: bool,
-    /// After publishing, run BacktestNode against the published catalog and publish the proof.
-    #[arg(long, requires = "publish_output")]
-    prove_published_catalog: bool,
+    durable_completion_locator: Option<PathBuf>,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut object_reader =
-        |path: &Path, expected_bytes: u64| read_object_checked(path, expected_bytes);
+        |path: &Path, expected_bytes: u64, work_budget: &OperatorWorkBudgetGuard| {
+            read_object_checked(path, expected_bytes, work_budget)
+        };
     let (spec, run_spec_hash) = read_run_spec_with_hash(&cli.run_spec)?;
-    if cli.publish_output && cli.prove_published_catalog {
+    if durable_dispatch_selected(&cli, &spec)? {
         return run_cli_durable_catalog_with_spec_object_reader(
             &cli,
             spec,
@@ -72,27 +72,15 @@ async fn main() -> Result<()> {
         )
         .await;
     }
-    if cli.publish_output && spec.manifest.artifact_store.ssm_parameters.is_some() {
-        let mut resolver = ArtifactStoreSsmResolver::new()?;
-        run_cli_with_spec_object_reader_and_resolver(
-            &cli,
-            spec,
-            &run_spec_hash,
-            &mut object_reader,
-            &mut resolver,
-        )
-    } else {
-        let mut resolver = |_region: &str, _path: &str| {
-            Err::<String, String>("artifact-store SSM resolver was not configured".to_string())
-        };
-        run_cli_with_spec_object_reader_and_resolver(
-            &cli,
-            spec,
-            &run_spec_hash,
-            &mut object_reader,
-            &mut resolver,
-        )
-    }
+    run_cli_with_spec_object_reader(&cli, spec, &run_spec_hash, &mut object_reader)
+}
+
+fn durable_dispatch_selected(cli: &Cli, spec: &RunSpec) -> Result<bool> {
+    ensure!(
+        cli.durable_completion_locator.is_none() || spec.artifact_store.is_some(),
+        "--durable-completion-locator requires a run-spec with top-level [artifact_store]"
+    );
+    Ok(spec.artifact_store.is_some())
 }
 
 async fn run_cli_durable_catalog_with_spec_object_reader<F>(
@@ -102,147 +90,169 @@ async fn run_cli_durable_catalog_with_spec_object_reader<F>(
     object_reader: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(&Path, u64) -> Result<Vec<u8>>,
+    F: FnMut(&Path, u64, &OperatorWorkBudgetGuard) -> Result<Vec<u8>>,
 {
     let execution_plan = read_execution_plan(&cli.execution_plan)?;
     validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
         .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
     let work_budget =
         OperatorWorkBudgetGuard::new(OperatorWorkBudget::from_execution_plan(&execution_plan))?;
-    validate_run_spec_manifest_for_object_hash(
+    let source_binding_registry =
+        VerifiedSourceBindingRegistry::from_run_spec_guarded(&spec, &work_budget)?;
+    validate_run_spec_manifest_for_object_hash_with_verified_registry(
         &spec,
         &cli.output_dir,
         &spec.accepted_object.sha256,
+        &source_binding_registry,
     )
     .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
     backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
         &spec,
     )?;
+    // Establish every deterministic durable config/SSM/region/family gate,
+    // resolve the sole SSM credential source, and prove bucket versioning
+    // before a source payload can be read.
+    let dispatcher = DurableRunDispatcher::prepare_guarded(&spec, &work_budget).await?;
+    let completion = cli
+        .durable_completion_locator
+        .as_deref()
+        .map(|path| read_durable_completion_locator(path, &work_budget))
+        .transpose()?;
     work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
-    let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
+    let request = if let Some(completion) = completion {
+        DurableRunRequest::Resume(completion)
+    } else {
+        DurableRunRequest::Execute(object_reader(
+            &cli.object_path,
+            spec.accepted_object.bytes,
+            &work_budget,
+        )?)
+    };
     work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let artifact_store = spec.required_artifact_store()?;
-    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
-    let artifact_root = artifact_store.resolve()?;
-    let credential_resolver =
-        NtCatalogSsmCredentialResolver::from_region(artifact_root.s3_region()).await?;
-    let credentials = credential_resolver
-        .resolve(&nt_catalog_capability_proof.ssm_parameter_refs)
+    let outcome = dispatcher
+        .dispatch_guarded(
+            &spec,
+            request,
+            &cli.output_dir,
+            &source_binding_registry,
+            &work_budget,
+        )
         .await?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-    let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
-    let artifacts = run_from_run_spec_with_artifact_store_guarded(
-        &spec,
-        &object_bytes,
-        &cli.output_dir,
-        &store,
-        |_, _, create_only_probe, callback_work_budget| {
-            nt_catalog_capability_proof.runtime_evidence_guarded(
-                artifact_store,
-                &credentials,
-                create_only_probe,
-                callback_work_budget,
-            )
-        },
-        &work_budget,
-    )
-    .await?;
-    print_trade_run(&artifacts, None, None);
-    Ok(())
-}
-
-#[cfg(test)]
-fn run_cli_with_object_reader_and_resolver<F, R>(
-    cli: &Cli,
-    object_reader: &mut F,
-    resolver: &mut R,
-) -> Result<()>
-where
-    F: FnMut(&Path, u64) -> Result<Vec<u8>>,
-    R: ArtifactStoreSecretResolver,
-{
-    let (spec, run_spec_hash) = read_run_spec_with_hash(&cli.run_spec)?;
-    run_cli_with_spec_object_reader_and_resolver(cli, spec, &run_spec_hash, object_reader, resolver)
-}
-
-fn run_cli_with_spec_object_reader_and_resolver<F, R>(
-    cli: &Cli,
-    spec: RunSpec,
-    run_spec_hash: &str,
-    object_reader: &mut F,
-    resolver: &mut R,
-) -> Result<()>
-where
-    F: FnMut(&Path, u64) -> Result<Vec<u8>>,
-    R: ArtifactStoreSecretResolver,
-{
-    let execution_plan = read_execution_plan(&cli.execution_plan)?;
-    validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
-        .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
-    let work_budget =
-        OperatorWorkBudgetGuard::new(OperatorWorkBudget::from_execution_plan(&execution_plan))?;
-    let publish_options = PublishOptions {
-        prove_published_catalog: cli.prove_published_catalog,
-    };
-    let resolved_publish_storage_options = if cli.publish_output {
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        let mut resolve_secret = |region: &str, path: &str| resolver.resolve_secret(region, path);
-        let options = spec
-            .manifest
-            .artifact_store_storage_options_resolved(&mut resolve_secret)
-            .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?;
-        work_budget.check_deadline(OperatorWorkBudgetStage::Publish)?;
-        options
-    } else {
-        None
-    };
-    validate_run_spec_manifest_for_object_hash(
-        &spec,
-        &cli.output_dir,
-        &spec.accepted_object.sha256,
-    )
-    .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
-    backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
-        &spec,
-    )?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
-    let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
-
-    if cli.publish_output {
-        let published = run_from_run_spec_and_publish_with_resolved_storage_options_guarded(
-            &spec,
-            &object_bytes,
-            &cli.output_dir,
-            publish_options,
-            resolved_publish_storage_options.as_ref(),
-            &work_budget,
-        )?;
-        print_trade_run(
-            &published.run,
-            Some(published.published_artifacts),
-            published.published_catalog_proof,
-        );
-    } else {
-        match run_operator_from_run_spec_guarded(
-            &spec,
-            &object_bytes,
-            &cli.output_dir,
-            &work_budget,
-        )? {
-            OperatorRunArtifacts::Trade(artifacts) => print_trade_run(&artifacts, None, None),
-            OperatorRunArtifacts::MultiTable(artifacts) => print_multi_table_run(&artifacts),
+    match outcome {
+        DurableRunOutcome::Executed { artifacts, receipt } => {
+            println!(
+                "durable_completion_locator_json = {}",
+                serde_json::to_string(&receipt.completion)
+                    .context("serialize durable completion locator")?
+            );
+            println!(
+                "durable_completion_version = {}",
+                receipt.completion.object.version_id
+            );
+            print_trade_run(&artifacts);
+        }
+        DurableRunOutcome::Resumed(receipt) => {
+            println!("durable_resume = validated");
+            println!(
+                "durable_completion_locator_json = {}",
+                serde_json::to_string(&receipt.completion)
+                    .context("serialize durable completion locator")?
+            );
+            println!("run_id = {}", receipt.run_id);
+            println!("catalog_hash = {}", receipt.catalog_hash);
+            println!("canonical_rows = {}", receipt.canonical_rows);
+            println!("nt_catalog_rows = {}", receipt.nt_catalog_rows);
+            println!(
+                "durable_completion_version = {}",
+                receipt.completion.object.version_id
+            );
         }
     }
     Ok(())
 }
 
-fn print_trade_run(
-    artifacts: &RunArtifacts,
-    published_artifacts: Option<Vec<PublishedArtifact>>,
-    published_catalog_proof: Option<PublishedCatalogProof>,
-) {
+fn read_durable_completion_locator(
+    path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<DurableCompletionLocator> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("inspect durable completion locator {}", path.display()))?;
+    ensure!(
+        metadata.is_file(),
+        "durable completion locator must be a regular file: {}",
+        path.display()
+    );
+    let bytes = read_exact_sized_file_guarded(
+        path,
+        metadata.len(),
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+    )?;
+    deserialize_json_with_budget(
+        &bytes,
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+    )
+    .with_context(|| format!("parse durable completion locator {}", path.display()))
+}
+
+#[cfg(test)]
+fn run_cli_with_object_reader<F>(cli: &Cli, object_reader: &mut F) -> Result<()>
+where
+    F: FnMut(&Path, u64, &OperatorWorkBudgetGuard) -> Result<Vec<u8>>,
+{
+    let (spec, run_spec_hash) = read_run_spec_with_hash(&cli.run_spec)?;
+    run_cli_with_spec_object_reader(cli, spec, &run_spec_hash, object_reader)
+}
+
+fn run_cli_with_spec_object_reader<F>(
+    cli: &Cli,
+    spec: RunSpec,
+    run_spec_hash: &str,
+    object_reader: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&Path, u64, &OperatorWorkBudgetGuard) -> Result<Vec<u8>>,
+{
+    ensure!(
+        spec.artifact_store.is_none(),
+        "run-spec [artifact_store] must use the async durable dispatcher"
+    );
+    let execution_plan = read_execution_plan(&cli.execution_plan)?;
+    validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
+        .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
+    let work_budget =
+        OperatorWorkBudgetGuard::new(OperatorWorkBudget::from_execution_plan(&execution_plan))?;
+    let source_binding_registry =
+        VerifiedSourceBindingRegistry::from_run_spec_guarded(&spec, &work_budget)?;
+    validate_run_spec_manifest_for_object_hash_with_verified_registry(
+        &spec,
+        &cli.output_dir,
+        &spec.accepted_object.sha256,
+        &source_binding_registry,
+    )
+    .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
+    backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
+        &spec,
+    )?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
+    let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes, &work_budget)?;
+    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
+
+    match run_operator_from_run_spec_guarded(
+        &spec,
+        &object_bytes,
+        &cli.output_dir,
+        &source_binding_registry,
+        &work_budget,
+    )? {
+        OperatorRunArtifacts::Trade(artifacts) => print_trade_run(&artifacts),
+        OperatorRunArtifacts::MultiTable(artifacts) => print_multi_table_run(&artifacts),
+    }
+    Ok(())
+}
+
+fn print_trade_run(artifacts: &RunArtifacts) {
     let output = &artifacts.output;
     println!("accepted_object_sha256 = {}", artifacts.verified_sha256);
     println!(
@@ -295,26 +305,6 @@ fn print_trade_run(
     print_feed_labels(&output.contract.feed_labels);
     println!("result_contract = {}", artifacts.contract_path.display());
     println!("accepted_source_proof = {}", artifacts.proof_path.display());
-    if let Some(proof) = published_catalog_proof {
-        println!("published_catalog_proof = {}", proof.catalog_uri);
-        println!(
-            "published_catalog_direct_s3 = {}",
-            proof.direct_s3_catalog_access_proven
-        );
-        println!(
-            "published_catalog_iterations = {}/{}",
-            proof.nt_iterations, proof.expected_iterations
-        );
-    }
-    if let Some(published_artifacts) = published_artifacts {
-        println!("published_artifacts = {}", published_artifacts.len());
-        for artifact in published_artifacts {
-            println!(
-                "published_artifact = {} bytes={} sha256={}",
-                artifact.published_uri, artifact.bytes, artifact.sha256
-            );
-        }
-    }
 }
 
 fn print_multi_table_run(artifacts: &MultiTableRunArtifacts) {
@@ -472,14 +462,17 @@ fn read_execution_plan(path: &Path) -> Result<BackfillExecutionPlan> {
     serde_json::from_slice(&bytes).context("parse execution-plan JSON")
 }
 
-fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
-    let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
-    let actual_bytes = metadata.len();
-    ensure!(
-        actual_bytes == expected_bytes,
-        "object byte length {actual_bytes} does not match run-spec {expected_bytes}"
-    );
-    fs::read(path).with_context(|| format!("read object {}", path.display()))
+fn read_object_checked(
+    path: &Path,
+    expected_bytes: u64,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<u8>> {
+    read_exact_sized_file_guarded(
+        path,
+        expected_bytes,
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+    )
 }
 
 #[cfg(test)]
@@ -500,7 +493,7 @@ mod tests {
         let path = dir.join("execution-plan.json");
         let accepted_tranche_id = format!("{}-accepted-tranche", spec.manifest.run_id);
         let plan = serde_json::json!({
-            "schema_version": "backfill-execution-plan.v1",
+            "schema_version": BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             "plan_id": format!("{}-execution-plan", spec.manifest.run_id),
             "status": "ready",
             "accepted_tranche_id": accepted_tranche_id,
@@ -541,7 +534,10 @@ mod tests {
     fn run_spec_text_with_catalog_data_type(data_type: String) -> String {
         let mut value: toml::Value =
             toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec TOML parses as value");
-        let manifest = value
+        let root = value.as_table_mut().expect("run-spec root is a table");
+        root.remove("artifact_store");
+        root.remove("catalog_dispatch");
+        let manifest = root
             .get_mut("manifest")
             .and_then(toml::Value::as_table_mut)
             .expect("run-spec has manifest table");
@@ -555,6 +551,15 @@ mod tests {
         toml::to_string_pretty(&value).expect("mutated run-spec serializes")
     }
 
+    fn local_committed_run_spec_text() -> String {
+        let mut value: toml::Value =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec TOML parses as value");
+        let root = value.as_table_mut().expect("run-spec root is a table");
+        root.remove("artifact_store");
+        root.remove("catalog_dispatch");
+        toml::to_string_pretty(&value).expect("local run-spec serializes")
+    }
+
     fn run_spec_text_with_source_binding(
         source_bindings_path: &Path,
         source_binding: &str,
@@ -565,6 +570,8 @@ mod tests {
         let mut value: toml::Value =
             toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec TOML parses as value");
         let root = value.as_table_mut().expect("run-spec root is a table");
+        root.remove("artifact_store");
+        root.remove("catalog_dispatch");
         root.insert(
             "source_bindings_path".to_string(),
             toml::Value::String(source_bindings_path.display().to_string()),
@@ -601,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_publish_output_flag_is_explicit_opt_in() {
+    fn cli_has_no_runtime_publication_switch() {
         let base_args = [
             "backtesting-vertical-slice",
             "--run-spec",
@@ -615,70 +622,80 @@ mod tests {
         ];
 
         let default_cli = Cli::try_parse_from(base_args).expect("default cli parses");
-        assert!(
-            !default_cli.publish_output,
-            "publishing must default off to avoid implicit external writes"
-        );
+        assert!(default_cli.durable_completion_locator.is_none());
 
-        let publish_cli = Cli::try_parse_from(
+        let publish_error = Cli::try_parse_from(
             base_args
                 .into_iter()
                 .chain(["--publish-output"])
                 .collect::<Vec<_>>(),
         )
-        .expect("publish cli parses");
-        assert!(publish_cli.publish_output);
+        .expect_err("retired publication switch must not parse");
+        assert!(
+            publish_error.to_string().contains("unexpected argument"),
+            "{publish_error}"
+        );
+
+        let resume_cli = Cli::try_parse_from(
+            base_args
+                .into_iter()
+                .chain(["--durable-completion-locator", "completion.json"])
+                .collect::<Vec<_>>(),
+        )
+        .expect("durable resume cli parses");
+        assert_eq!(
+            resume_cli.durable_completion_locator,
+            Some(PathBuf::from("completion.json"))
+        );
     }
 
     #[test]
-    fn production_durable_callback_passes_the_shared_guard_to_runtime_evidence() {
+    fn local_run_spec_rejects_durable_locator() {
+        let spec: RunSpec =
+            toml::from_str(&local_committed_run_spec_text()).expect("local RunSpec parses");
+        let cli = Cli {
+            run_spec: PathBuf::from("run.toml"),
+            execution_plan: PathBuf::from("execution-plan.json"),
+            object_path: PathBuf::from("object.csv.gz"),
+            output_dir: PathBuf::from("out"),
+            durable_completion_locator: Some(PathBuf::from("completion.json")),
+        };
+
+        let error = durable_dispatch_selected(&cli, &spec)
+            .expect_err("a local/transient RunSpec cannot consume a durable locator");
+
+        assert!(error.to_string().contains("top-level [artifact_store]"));
+    }
+
+    #[test]
+    fn durable_completion_locator_file_round_trips_exact_object_identity() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("completion.json");
+        let expected = DurableCompletionLocator {
+            object: backtesting_vertical_slice::operator::DurableObjectVersionIdentity {
+                uri: "s3://bucket/backtests/v1/run=run/durable-completion-manifest.json"
+                    .to_string(),
+                sha256: "11".repeat(32),
+                byte_len: 17,
+                version_id: "exact-version".to_string(),
+                e_tag: Some("etag".to_string()),
+            },
+        };
+        fs::write(&path, serde_json::to_vec(&expected).unwrap()).unwrap();
+
+        let actual = read_durable_completion_locator(&path, &OperatorWorkBudgetGuard::unbounded())
+            .expect("read exact durable completion locator");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn durable_production_path_has_no_direct_s3_nt_capability_probe() {
         let source = include_str!("main.rs");
         assert!(
-            source.contains("|_, _, create_only_probe, callback_work_budget|"),
-            "durable production callback must receive the operator work-budget guard"
+            !source.contains("runtime_evidence_guarded("),
+            "durable production must not run the obsolete direct-S3 NT capability probe"
         );
-        assert!(
-            source.contains("nt_catalog_capability_proof.runtime_evidence_guarded("),
-            "production must call the guarded runtime-evidence core"
-        );
-        assert!(
-            source.contains("create_only_probe,\n                callback_work_budget,"),
-            "production must pass the callback guard into runtime evidence"
-        );
-    }
-
-    #[test]
-    fn cli_published_catalog_proof_requires_publish_output() {
-        let base_args = [
-            "backtesting-vertical-slice",
-            "--run-spec",
-            "run.toml",
-            "--execution-plan",
-            "execution-plan.json",
-            "--object",
-            "object.csv.gz",
-            "--output-dir",
-            "out",
-        ];
-
-        let err = Cli::try_parse_from(
-            base_args
-                .into_iter()
-                .chain(["--prove-published-catalog"])
-                .collect::<Vec<_>>(),
-        )
-        .expect_err("catalog proof must require publish-output");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-
-        let cli = Cli::try_parse_from(
-            base_args
-                .into_iter()
-                .chain(["--publish-output", "--prove-published-catalog"])
-                .collect::<Vec<_>>(),
-        )
-        .expect("publish plus catalog proof parses");
-        assert!(cli.publish_output);
-        assert!(cli.prove_published_catalog);
     }
 
     #[test]
@@ -687,44 +704,38 @@ mod tests {
         let object_path = dir.path().join("object.csv.gz");
         fs::write(&object_path, b"not-the-accepted-object").unwrap();
 
-        let err = read_object_checked(&object_path, 99).unwrap_err();
+        let err = read_object_checked(&object_path, 99, &OperatorWorkBudgetGuard::unbounded())
+            .unwrap_err();
 
         assert!(err.to_string().contains("object byte length 23"), "{err}");
-        assert!(err.to_string().contains("run-spec 99"), "{err}");
+        assert!(err.to_string().contains("pinned expected size 99"), "{err}");
     }
 
     #[test]
     fn cli_rejects_plan_object_above_payload_budget_before_reading_object() {
         let dir = tempfile::TempDir::new().unwrap();
         let run_spec_path = dir.path().join("run.toml");
-        fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
-        let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let run_spec_text = local_committed_run_spec_text();
+        fs::write(&run_spec_path, &run_spec_text).unwrap();
+        let mut spec: RunSpec = toml::from_str(&run_spec_text).expect("run-spec parses");
         spec.converter.raw_payload.max_object_bytes = spec.accepted_object.bytes - 1;
-        let run_spec_hash = sha256_hex(COMMITTED_RUN_SPEC.as_bytes());
+        let run_spec_hash = sha256_hex(run_spec_text.as_bytes());
         let execution_plan = write_matching_execution_plan(dir.path(), &spec, &run_spec_hash);
         let cli = Cli {
             run_spec: run_spec_path,
             execution_plan,
             object_path: dir.path().join("oversized-object.csv.gz"),
             output_dir: dir.path().join("out"),
-            publish_output: false,
-            prove_published_catalog: false,
+            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
-        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
-            object_reader_called = true;
-            anyhow::bail!("object reader must not run after configured payload max rejection")
-        };
-        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
-
-        let err = run_cli_with_spec_object_reader_and_resolver(
-            &cli,
-            spec,
-            &run_spec_hash,
-            &mut object_reader,
-            &mut resolver,
-        )
-        .expect_err("execution plan payload budget must reject before object read");
+        let mut object_reader =
+            |_path: &Path, _expected_bytes: u64, _work_budget: &OperatorWorkBudgetGuard| {
+                object_reader_called = true;
+                anyhow::bail!("object reader must not run after configured payload max rejection")
+            };
+        let err = run_cli_with_spec_object_reader(&cli, spec, &run_spec_hash, &mut object_reader)
+            .expect_err("execution plan payload budget must reject before object read");
 
         let error_chain = err
             .chain()
@@ -758,17 +769,15 @@ mod tests {
             execution_plan,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            publish_output: false,
-            prove_published_catalog: false,
+            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
-        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
-            object_reader_called = true;
-            anyhow::bail!("object reader must not run after manifest rejection")
-        };
-        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
-
-        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+        let mut object_reader =
+            |_path: &Path, _expected_bytes: u64, _work_budget: &OperatorWorkBudgetGuard| {
+                object_reader_called = true;
+                anyhow::bail!("object reader must not run after manifest rejection")
+            };
+        let err = run_cli_with_object_reader(&cli, &mut object_reader)
             .expect_err("unsupported catalog data type must reject before object read");
 
         let error_chain = err
@@ -824,17 +833,15 @@ table_families = ["trades"]
             execution_plan,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            publish_output: false,
-            prove_published_catalog: false,
+            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
-        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
-            object_reader_called = true;
-            anyhow::bail!("object reader reached after runtime registry preflight")
-        };
-        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
-
-        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+        let mut object_reader =
+            |_path: &Path, _expected_bytes: u64, _work_budget: &OperatorWorkBudgetGuard| {
+                object_reader_called = true;
+                anyhow::bail!("object reader reached after runtime registry preflight")
+            };
+        let err = run_cli_with_object_reader(&cli, &mut object_reader)
             .expect_err("object reader sentinel should stop after registry preflight");
 
         let error_chain = err
@@ -850,7 +857,7 @@ table_families = ["trades"]
     }
 
     #[test]
-    fn cli_publish_preflight_rejects_missing_s3_ssm_before_reading_object() {
+    fn synchronous_local_core_rejects_durable_run_spec_before_reading_object() {
         let dir = tempfile::TempDir::new().unwrap();
         let run_spec_path = dir.path().join("run.toml");
         fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
@@ -862,21 +869,20 @@ table_families = ["trades"]
             execution_plan,
             object_path: dir.path().join("missing-object.csv.gz"),
             output_dir: dir.path().join("out"),
-            publish_output: true,
-            prove_published_catalog: true,
+            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
-        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
-            object_reader_called = true;
-            anyhow::bail!("object reader should not run before publish preflight")
-        };
-        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
-
-        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
-            .expect_err("publish preflight must reject before object read");
+        let mut object_reader =
+            |_path: &Path, _expected_bytes: u64, _work_budget: &OperatorWorkBudgetGuard| {
+                object_reader_called = true;
+                anyhow::bail!("object reader should not run before publish preflight")
+            };
+        let err = run_cli_with_object_reader(&cli, &mut object_reader)
+            .expect_err("durable RunSpec must reject from the local-only test core");
 
         assert!(
-            err.to_string().contains("artifact_store.ssm_parameters"),
+            err.to_string()
+                .contains("must use the async durable dispatcher"),
             "{err}"
         );
         assert!(
@@ -907,11 +913,12 @@ table_families = ["trades"]
     fn cli_execution_plan_mismatch_rejects_before_reading_object() {
         let dir = tempfile::TempDir::new().unwrap();
         let run_spec_path = dir.path().join("run.toml");
-        fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
-        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let run_spec_text = local_committed_run_spec_text();
+        fs::write(&run_spec_path, &run_spec_text).unwrap();
+        let spec: RunSpec = toml::from_str(&run_spec_text).expect("run-spec parses");
         let execution_plan_path = dir.path().join("execution-plan.json");
         let execution_plan = serde_json::json!({
-            "schema_version": "backfill-execution-plan.v1",
+            "schema_version": BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
             "plan_id": "synthetic-plan",
             "status": "ready",
             "accepted_tranche_id": "synthetic-tranche",
@@ -951,17 +958,15 @@ table_families = ["trades"]
             execution_plan: execution_plan_path,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            publish_output: false,
-            prove_published_catalog: false,
+            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
-        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
-            object_reader_called = true;
-            anyhow::bail!("object reader must not run after execution-plan mismatch")
-        };
-        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
-
-        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+        let mut object_reader =
+            |_path: &Path, _expected_bytes: u64, _work_budget: &OperatorWorkBudgetGuard| {
+                object_reader_called = true;
+                anyhow::bail!("object reader must not run after execution-plan mismatch")
+            };
+        let err = run_cli_with_object_reader(&cli, &mut object_reader)
             .expect_err("execution-plan mismatch must reject before object read");
 
         assert!(err.to_string().contains("execution plan"), "{err}");
@@ -972,9 +977,10 @@ table_families = ["trades"]
     fn cli_execution_plan_table_family_mismatch_rejects_before_reading_object() {
         let dir = tempfile::TempDir::new().unwrap();
         let run_spec_path = dir.path().join("run.toml");
-        fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
-        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
-        let run_spec_hash = sha256_hex(COMMITTED_RUN_SPEC.as_bytes());
+        let run_spec_text = local_committed_run_spec_text();
+        fs::write(&run_spec_path, &run_spec_text).unwrap();
+        let spec: RunSpec = toml::from_str(&run_spec_text).expect("run-spec parses");
+        let run_spec_hash = sha256_hex(run_spec_text.as_bytes());
         let execution_plan_path = write_matching_execution_plan(dir.path(), &spec, &run_spec_hash);
         let mut execution_plan: serde_json::Value =
             serde_json::from_slice(&fs::read(&execution_plan_path).unwrap()).unwrap();
@@ -992,17 +998,17 @@ table_families = ["trades"]
             execution_plan: execution_plan_path,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            publish_output: false,
-            prove_published_catalog: false,
+            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
-        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
-            object_reader_called = true;
-            anyhow::bail!("object reader must not run after execution-plan table-family mismatch")
-        };
-        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
-
-        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+        let mut object_reader =
+            |_path: &Path, _expected_bytes: u64, _work_budget: &OperatorWorkBudgetGuard| {
+                object_reader_called = true;
+                anyhow::bail!(
+                    "object reader must not run after execution-plan table-family mismatch"
+                )
+            };
+        let err = run_cli_with_object_reader(&cli, &mut object_reader)
             .expect_err("execution-plan table-family mismatch must reject before object read");
 
         let error_chain = err

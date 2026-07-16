@@ -27,9 +27,9 @@ use backtesting_vertical_slice::{
     result_contract::ResultArtifactUris,
     run_manifest::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
-        ManifestArtifactStore, ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture,
-        RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_PARAM_BAR_TYPE,
-        STRATEGY_PARAM_TRADE_SIZE, StrategySource, StrategySourceKind,
+        CATALOG_RUN_VIEW_AUTHORITY_SCHEMA_VERSION, ManifestArtifactStore, ManifestCatalogInput,
+        ManifestVenueConfig, MarketStructureFixture, RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL,
+        STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE, StrategySource, StrategySourceKind,
     },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
     source_proof::{AcceptanceMode, SourceProofFidelityClass, SourceProofUsageScope},
@@ -600,7 +600,6 @@ fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_met
         normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
         output_catalog_uri: catalog_root.display().to_string(),
         execution_catalog_uri: catalog_root.display().to_string(),
-        direct_s3_catalog_access_proven: false,
         completed_at: "2026-06-08T00:00:00Z".to_string(),
     })
     .expect("write PMXT one-off conversion projection");
@@ -662,7 +661,6 @@ fn pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output() {
         normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
         output_catalog_uri: catalog_root.display().to_string(),
         execution_catalog_uri: catalog_root.display().to_string(),
-        direct_s3_catalog_access_proven: false,
         completed_at: "2026-06-08T00:00:00Z".to_string(),
     };
 
@@ -703,7 +701,6 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
         normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
         output_catalog_uri: catalog_root.display().to_string(),
         execution_catalog_uri: catalog_root.display().to_string(),
-        direct_s3_catalog_access_proven: false,
         completed_at: "2026-06-08T00:00:00Z".to_string(),
     })
     .expect("write PMXT one-off conversion projection");
@@ -733,6 +730,20 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
     assert_eq!(
         output.nt_result.iterations,
         projection.order_book_deltas.len()
+    );
+    assert_eq!(
+        output.catalog_run_view_authority.schema_version,
+        CATALOG_RUN_VIEW_AUTHORITY_SCHEMA_VERSION
+    );
+    assert_eq!(output.catalog_run_view_authority.run_id, manifest.run_id);
+    assert_eq!(
+        output.catalog_run_view_authority.submitted_manifest_hash,
+        manifest_hash
+    );
+    assert_eq!(output.catalog_run_view_authority.roots.len(), 1);
+    assert_eq!(
+        output.catalog_run_view_authority.roots[0].logical_catalog_hash,
+        completed.catalog_projection.catalog_hash
     );
     assert_eq!(
         output.contract.fidelity_class,
@@ -808,7 +819,6 @@ fn pmxt_one_off_l2_backtest_result_contract_rejects_duplicate_manifest_data_type
         normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
         output_catalog_uri: catalog_root.display().to_string(),
         execution_catalog_uri: catalog_root.display().to_string(),
-        direct_s3_catalog_access_proven: false,
         completed_at: "2026-06-08T00:00:00Z".to_string(),
     })
     .expect("write PMXT one-off conversion projection");
@@ -892,13 +902,15 @@ fn pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source
         },
         output_dir: output_dir.clone(),
         catalog_root: catalog_root.clone(),
-        fingerprint: pmxt_conversion_fingerprint_for_hash(&selected_source_sha256),
+        fingerprint: pmxt_artifact_root_conversion_fingerprint(
+            &selected_source_sha256,
+            &selected_report_path,
+        ),
         manifest,
         manifest_hash,
         normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
         output_catalog_uri: format!("file://{}", catalog_root.display()),
         execution_catalog_uri: catalog_root.display().to_string(),
-        direct_s3_catalog_access_proven: false,
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "source-proof-reviewer".to_string(),
         accepted_at: "2026-06-08T00:00:00Z".to_string(),
@@ -1021,13 +1033,15 @@ fn pmxt_one_off_l2_artifact_root_run_resolves_repo_relative_catalog_root_for_run
         },
         output_dir: output_dir.clone(),
         catalog_root: catalog_root.clone(),
-        fingerprint: pmxt_conversion_fingerprint_for_hash(&selected_source_sha256),
+        fingerprint: pmxt_artifact_root_conversion_fingerprint(
+            &selected_source_sha256,
+            &selected_report_path,
+        ),
         manifest,
         manifest_hash,
         normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
         output_catalog_uri: output_catalog_uri.clone(),
         execution_catalog_uri: expected_catalog_root.clone(),
-        direct_s3_catalog_access_proven: false,
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "source-proof-reviewer".to_string(),
         accepted_at: "2026-06-08T00:00:00Z".to_string(),
@@ -1068,8 +1082,8 @@ fn pmxt_one_off_l2_artifact_root_run_resolves_repo_relative_catalog_root_for_run
     assert_eq!(
         run.completed
             .conversion_catalog_metadata
-            .execution_catalog_uri,
-        expected_catalog_root
+            .local_catalog_uri(),
+        Some(expected_catalog_root.as_str())
     );
     assert_eq!(
         run.contract_output.contract.artifact_uris.nt_catalog_uri,
@@ -1090,7 +1104,7 @@ fn pmxt_one_off_l2_artifact_root_run_resolves_repo_relative_catalog_root_for_run
     )
     .expect("parse catalog metadata");
     assert_eq!(
-        catalog_metadata_json["execution_catalog_uri"],
+        catalog_metadata_json["catalog_consumption"]["catalog_uri"],
         expected_catalog_root
     );
     assert_eq!(
@@ -1226,18 +1240,20 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
             selected_source_parquet_path: selected_parquet_path,
-            selected_source_report_path: selected_report_path,
+            selected_source_report_path: selected_report_path.clone(),
             schema: pmxt_selected_source_schema_with_trades(),
         },
         output_dir: output_dir.clone(),
         catalog_root: catalog_root.clone(),
-        fingerprint: pmxt_conversion_fingerprint_for_hash(&selected_source_sha256),
+        fingerprint: pmxt_artifact_root_conversion_fingerprint(
+            &selected_source_sha256,
+            &selected_report_path,
+        ),
         manifest,
         manifest_hash,
         normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
         output_catalog_uri: format!("file://{}", catalog_root.display()),
         execution_catalog_uri: catalog_root.display().to_string(),
-        direct_s3_catalog_access_proven: false,
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "source-proof-reviewer".to_string(),
         accepted_at: "2026-06-08T00:00:00Z".to_string(),
@@ -1367,6 +1383,7 @@ fn pmxt_one_off_l2_artifact_root_cli_writes_result_contract_from_config_owned_sp
     )
     .expect("write manifest");
     let selected_source_sha256 = sha256_file(&selected_parquet_path);
+    let selected_report_sha256 = sha256_file(&selected_report_path);
     std::fs::write(
         &spec_path,
         format!(
@@ -1375,7 +1392,6 @@ output_dir = "{output_dir}"
 catalog_root = "{catalog_root}"
 manifest_path = "{manifest_path}"
 normalized_schema_version = "pmxt-selected-source-l2.v1"
-direct_s3_catalog_access_proven = false
 acceptance_mode = "manual"
 accepted_by = "source-proof-reviewer"
 accepted_at = "2026-06-08T00:00:00Z"
@@ -1419,6 +1435,8 @@ forbidden_ignored_event_types = ["tick_size_change"]
 source_proof_id = "source-proof-pmxt-one-off"
 source_proof_version = 1
 accepted_object_sha256 = "{selected_source_sha256}"
+control_artifact_path = "{selected_report_path}"
+control_artifact_sha256 = "{selected_report_sha256}"
 converter_identity = "pmxt-one-off-selected-source-l2-to-nt.v1"
 converter_version = "1"
 converter_config_hash = "7c5ff8475a73c3aaf3e64cc09d803ff34de9cbc51345978406125fcc5147879a"
@@ -1436,6 +1454,7 @@ result_contract_uri = "file://{output_dir}/backtest-result-contract.json"
             gamma_markets_path = gamma_markets_path.display(),
             selected_parquet_path = selected_parquet_path.display(),
             selected_report_path = selected_report_path.display(),
+            selected_report_sha256 = selected_report_sha256,
         ),
     )
     .expect("write PMXT one-off run spec");
@@ -1629,11 +1648,27 @@ fn pmxt_conversion_fingerprint_for_hash(accepted_object_sha256: &str) -> Convers
         source_proof_id: "source-proof-pmxt-one-off".to_string(),
         source_proof_version: 1,
         accepted_object_sha256: accepted_object_sha256.to_string(),
+        control_artifact_path: "pmxt-selected-source-report.json".to_string(),
+        control_artifact_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+            .to_string(),
         converter_identity: "pmxt-one-off-selected-source-l2-to-nt.v1".to_string(),
         converter_version: "1".to_string(),
         converter_config_hash: "7c5ff8475a73c3aaf3e64cc09d803ff34de9cbc51345978406125fcc5147879a"
             .to_string(),
     }
+}
+
+fn pmxt_artifact_root_conversion_fingerprint(
+    accepted_object_sha256: &str,
+    selected_source_report_path: &Path,
+) -> ConversionFingerprint {
+    let mut fingerprint = pmxt_conversion_fingerprint_for_hash(accepted_object_sha256);
+    fingerprint.control_artifact_path = selected_source_report_path
+        .to_str()
+        .expect("selected-source report path is UTF-8")
+        .to_string();
+    fingerprint.control_artifact_sha256 = sha256_file(selected_source_report_path);
+    fingerprint
 }
 
 fn pmxt_l2_manifest(

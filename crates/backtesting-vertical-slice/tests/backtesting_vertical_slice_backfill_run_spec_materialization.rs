@@ -60,6 +60,7 @@ fn materialized_run_spec_binds_accepted_tranche_before_payload_fetch() {
             artifact.content_hash.clone(),
             &binding,
             BackfillExecutionWorkBudget {
+                max_decoded_bytes: u64::MAX,
                 max_source_rows: 128,
                 max_projected_row_groups: 1,
                 max_wall_seconds: 30,

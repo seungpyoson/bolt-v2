@@ -13,21 +13,41 @@
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
 
-use std::{fs::File, path::Path, sync::Arc};
+use std::{
+    fs::File,
+    io::{Cursor, Read, Seek, SeekFrom},
+    mem::{size_of, size_of_val},
+    path::Path,
+    sync::Arc,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use arrow::{
-    array::{Array, Int64Array, StringArray},
+    array::{
+        Array, ArrayRef, Int64Array, Int64Builder, StringArray, StringBuilder, UInt8Builder,
+        UInt16Builder, UInt64Builder,
+    },
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+use bytes::Bytes;
+use parquet::{
+    arrow::{
+        ArrowWriter,
+        arrow_reader::{DEFAULT_BATCH_SIZE, ParquetRecordBatchReaderBuilder},
+    },
+    file::{metadata::ParquetMetaData, properties::WriterProperties},
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    operator_work_budget::{OperatorWorkBudgetGuard, OperatorWorkBudgetStage},
+    atomic_artifact_write::atomic_file_create_or_verify_guarded,
+    operator_work_budget::{
+        CooperativeDeadlineReader, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
+        guarded_operation_outcome,
+    },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
 
@@ -1202,7 +1222,11 @@ fn normalize_csv_native_trades_with_meter(
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(mapping.has_headers)
         .trim(csv::Trim::All)
-        .from_reader(csv_text.as_bytes());
+        .from_reader(CooperativeDeadlineReader::new(
+            Cursor::new(csv_text.as_bytes()),
+            work_budget,
+            OperatorWorkBudgetStage::Normalize,
+        ));
     let header_columns: Vec<String> = if mapping.has_headers {
         let header_columns = reader
             .headers()
@@ -1327,7 +1351,7 @@ fn normalize_csv_native_trades_with_meter(
         payload_hash: accepted.object.sha256.clone(),
         rows,
     };
-    table.validate()?;
+    table.validate_guarded(work_budget, OperatorWorkBudgetStage::Normalize)?;
     Ok(table)
 }
 
@@ -1890,7 +1914,7 @@ pub fn normalize_registered_event_stream_delta_converter(
     converter_config: &ConverterConfig,
     accepted: &AcceptedDataset,
     identities: &super::canonical_order_book_deltas::DeltaInstrumentIdentities,
-    parquet_bytes: &[u8],
+    parquet_bytes: Bytes,
     capture_time_nanos: i64,
     ingest_run_id: &str,
     work_budget: &OperatorWorkBudgetGuard,
@@ -2264,6 +2288,1075 @@ pub(crate) fn column_index(header_columns: &[String], column_name: &str) -> Resu
         .with_context(|| format!("configured converter column {column_name:?} missing from csv"))
 }
 
+pub(crate) fn estimated_arrow_row_bytes<'a>(
+    utf8_values: impl IntoIterator<Item = Option<&'a str>>,
+    fixed_value_bytes: impl IntoIterator<Item = usize>,
+) -> Result<usize> {
+    let fixed = fixed_value_bytes
+        .into_iter()
+        .try_fold(0_usize, |total, bytes| {
+            total
+                .checked_add(bytes)
+                .context("canonical Arrow fixed-width row size overflow")
+        })?;
+    utf8_values.into_iter().try_fold(fixed, |total, value| {
+        total
+            .checked_add(size_of::<i32>())
+            .and_then(|total| total.checked_add(size_of::<u8>()))
+            .and_then(|total| total.checked_add(size_of::<Option<&str>>()))
+            .and_then(|total| total.checked_add(value.map_or(0, str::len)))
+            .context("canonical Arrow UTF-8 row size overflow")
+    })
+}
+
+pub(crate) fn verify_canonical_rows_materialization<R>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    row_materialized_bytes: impl Fn(&R) -> Result<usize>,
+) -> Result<()> {
+    work_budget.check_deadline(stage)?;
+    let byte_limit = work_budget
+        .decoded_byte_limit()
+        .map_or(usize::MAX, |limit| {
+            usize::try_from(limit).unwrap_or(usize::MAX)
+        });
+    let mut materialized_bytes = 0_usize;
+    for (index, row) in rows.iter().enumerate() {
+        work_budget.check_deadline(stage)?;
+        materialized_bytes = materialized_bytes
+            .checked_add(row_materialized_bytes(row)?)
+            .context("canonical materialized row byte total overflow")?;
+        ensure!(
+            materialized_bytes <= byte_limit,
+            "canonical rows through index {index} require {materialized_bytes} materialized bytes, exceeding max_decoded_bytes {byte_limit}"
+        );
+        work_budget.check_deadline(stage)?;
+    }
+    work_budget.check_deadline(stage)
+}
+
+pub(crate) fn utf8_column_guarded<R, F>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    value: F,
+) -> Result<ArrayRef>
+where
+    F: for<'row> Fn(&'row R) -> &'row str,
+{
+    let mut value_bytes = 0_usize;
+    let value = &value;
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::CanonicalWrite,
+        |row| estimated_arrow_row_bytes([Some(value(row))], []),
+    )?;
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        value_bytes = value_bytes
+            .checked_add(value(row).len())
+            .context("canonical UTF-8 column byte size overflow")?;
+    }
+    ensure!(
+        i32::try_from(value_bytes).is_ok(),
+        "canonical UTF-8 column requires {value_bytes} value bytes, exceeding Arrow Utf8 offset capacity"
+    );
+    let mut builder = StringBuilder::with_capacity(rows.len(), value_bytes);
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        builder.append_value(value(row));
+    }
+    work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+    Ok(Arc::new(builder.finish()))
+}
+
+pub(crate) fn optional_utf8_column_guarded<R, F>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    value: F,
+) -> Result<ArrayRef>
+where
+    F: for<'row> Fn(&'row R) -> Option<&'row str>,
+{
+    let mut value_bytes = 0_usize;
+    let value = &value;
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::CanonicalWrite,
+        |row| estimated_arrow_row_bytes([value(row)], []),
+    )?;
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        value_bytes = value_bytes
+            .checked_add(value(row).map_or(0, str::len))
+            .context("canonical nullable UTF-8 column byte size overflow")?;
+    }
+    ensure!(
+        i32::try_from(value_bytes).is_ok(),
+        "canonical nullable UTF-8 column requires {value_bytes} value bytes, exceeding Arrow Utf8 offset capacity"
+    );
+    let mut builder = StringBuilder::with_capacity(rows.len(), value_bytes);
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        if let Some(value) = value(row) {
+            builder.append_value(value);
+        } else {
+            builder.append_null();
+        }
+    }
+    work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+    Ok(Arc::new(builder.finish()))
+}
+
+pub(crate) fn constant_utf8_column_guarded<R>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    value: &str,
+) -> Result<ArrayRef> {
+    let value_bytes = value
+        .len()
+        .checked_mul(rows.len())
+        .context("canonical constant UTF-8 column byte size overflow")?;
+    ensure!(
+        i32::try_from(value_bytes).is_ok(),
+        "canonical constant UTF-8 column requires {value_bytes} value bytes, exceeding Arrow Utf8 offset capacity"
+    );
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::CanonicalWrite,
+        |_row| estimated_arrow_row_bytes([Some(value)], []),
+    )?;
+    let mut builder = StringBuilder::with_capacity(rows.len(), value_bytes);
+    for _ in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        builder.append_value(value);
+    }
+    work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+    Ok(Arc::new(builder.finish()))
+}
+
+macro_rules! guarded_primitive_column {
+    ($name:ident, $builder:ty, $value:ty) => {
+        pub(crate) fn $name<R>(
+            rows: &[R],
+            work_budget: &OperatorWorkBudgetGuard,
+            value: impl Fn(&R) -> $value,
+        ) -> Result<ArrayRef> {
+            verify_canonical_rows_materialization(
+                rows,
+                work_budget,
+                OperatorWorkBudgetStage::CanonicalWrite,
+                |_row| Ok(size_of::<$value>()),
+            )?;
+            let mut builder = <$builder>::with_capacity(rows.len());
+            for row in rows {
+                work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+                builder.append_value(value(row));
+            }
+            work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+            Ok(Arc::new(builder.finish()))
+        }
+    };
+}
+
+guarded_primitive_column!(int64_column_guarded, Int64Builder, i64);
+guarded_primitive_column!(uint64_column_guarded, UInt64Builder, u64);
+guarded_primitive_column!(uint8_column_guarded, UInt8Builder, u8);
+
+pub(crate) fn optional_int64_column_guarded<R>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    value: impl Fn(&R) -> Option<i64>,
+) -> Result<ArrayRef> {
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::CanonicalWrite,
+        |_row| Ok(size_of::<i64>() + size_of::<u8>()),
+    )?;
+    let mut builder = Int64Builder::with_capacity(rows.len());
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        if let Some(value) = value(row) {
+            builder.append_value(value);
+        } else {
+            builder.append_null();
+        }
+    }
+    work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+    Ok(Arc::new(builder.finish()))
+}
+
+pub(crate) fn optional_uint16_column_guarded<R>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    value: impl Fn(&R) -> Option<u16>,
+) -> Result<ArrayRef> {
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::CanonicalWrite,
+        |_row| Ok(size_of::<u16>() + size_of::<u8>()),
+    )?;
+    let mut builder = UInt16Builder::with_capacity(rows.len());
+    for row in rows {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        if let Some(value) = value(row) {
+            builder.append_value(value);
+        } else {
+            builder.append_null();
+        }
+    }
+    work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+    Ok(Arc::new(builder.finish()))
+}
+
+pub(crate) fn canonical_trade_row_materialized_bytes(row: &CanonicalTradeRow) -> Result<usize> {
+    estimated_arrow_row_bytes(
+        [
+            Some(row.schema_version.as_str()),
+            Some(row.ingest_run_id.as_str()),
+            Some(row.source_binding.as_str()),
+            Some(row.venue.as_str()),
+            Some(row.product_family.as_str()),
+            Some(row.product_category.as_str()),
+            Some(row.instrument_id.as_str()),
+            Some(row.canonical_instrument_key.as_str()),
+            Some(row.venue_symbol.as_str()),
+            row.nt_instrument_id.as_deref(),
+            row.source_sequence.as_deref(),
+            Some(row.raw_payload_id.as_str()),
+            Some(row.source_proof_id.as_str()),
+            Some(row.payload_hash.as_str()),
+            Some(row.transform_hash.as_str()),
+            Some(row.trade_source_type.as_str()),
+            Some(row.trade_id.as_str()),
+            Some(row.aggressor_side.as_str()),
+            Some(row.price.as_str()),
+            Some(row.size.as_str()),
+            Some(row.notional.as_str()),
+        ],
+        [size_of::<i64>(), size_of::<i64>(), size_of::<i64>()],
+    )
+}
+
+const PARQUET_MAGIC: [u8; 4] = *b"PAR1";
+const PARQUET_HEADER_BYTES: u64 = 4;
+const PARQUET_TRAILER_BYTES: u64 = 8;
+
+const COMPACT_THRIFT_STOP: u8 = 0;
+const COMPACT_THRIFT_BOOLEAN_TRUE: u8 = 1;
+const COMPACT_THRIFT_BOOLEAN_FALSE: u8 = 2;
+const COMPACT_THRIFT_BYTE: u8 = 3;
+const COMPACT_THRIFT_I16: u8 = 4;
+const COMPACT_THRIFT_I32: u8 = 5;
+const COMPACT_THRIFT_I64: u8 = 6;
+const COMPACT_THRIFT_DOUBLE: u8 = 7;
+const COMPACT_THRIFT_BINARY: u8 = 8;
+const COMPACT_THRIFT_LIST: u8 = 9;
+const COMPACT_THRIFT_SET: u8 = 10;
+const COMPACT_THRIFT_MAP: u8 = 11;
+const COMPACT_THRIFT_STRUCT: u8 = 12;
+
+#[derive(Clone, Copy, Debug)]
+enum CompactThriftFrame {
+    Struct {
+        last_field_id: i16,
+        fields: u64,
+    },
+    Collection {
+        element_type: u8,
+        remaining: u64,
+    },
+    Map {
+        key_type: u8,
+        value_type: u8,
+        remaining_values: u64,
+        next_is_key: bool,
+    },
+}
+
+/// Allocation-preflight structural validation for the compact-Thrift payload in
+/// a Parquet footer. This deliberately runs before Arrow/Parquet metadata
+/// construction: declared container and binary lengths are inspected without
+/// allocating from them, and the only dynamic state is a fallibly-grown stack
+/// bounded by the execution plan's total decoded-byte and source-row limits.
+struct CompactThriftFooterScanner<'a, R> {
+    reader: R,
+    remaining: u64,
+    work_budget: &'a OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    max_binary_bytes: u64,
+    max_container_items: u64,
+    container_items_seen: u64,
+    max_stack_frames: usize,
+}
+
+impl<'a, R: Read> CompactThriftFooterScanner<'a, R> {
+    fn new(
+        reader: R,
+        footer_bytes: u64,
+        work_budget: &'a OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<Self> {
+        let decoded_bytes = work_budget.decoded_byte_limit().unwrap_or(u64::MAX);
+        let source_rows = work_budget.source_row_limit().unwrap_or(u64::MAX);
+        let frame_bytes = size_of::<CompactThriftFrame>().max(1);
+        let footer_frame_bound = usize::try_from(footer_bytes).unwrap_or(usize::MAX);
+        let max_stack_frames = footer_frame_bound
+            .min(usize::try_from(source_rows).unwrap_or(usize::MAX))
+            .min(usize::try_from(decoded_bytes).unwrap_or(usize::MAX) / frame_bytes);
+        ensure!(
+            max_stack_frames > 0,
+            "compact-Thrift footer scanner frame requires {frame_bytes} bytes, exceeding max_decoded_bytes {decoded_bytes}"
+        );
+        Ok(Self {
+            reader,
+            remaining: footer_bytes,
+            work_budget,
+            stage,
+            max_binary_bytes: decoded_bytes,
+            max_container_items: source_rows,
+            container_items_seen: 0,
+            max_stack_frames,
+        })
+    }
+
+    fn scan(mut self) -> Result<()> {
+        let mut frames = Vec::new();
+        self.push_frame(
+            &mut frames,
+            CompactThriftFrame::Struct {
+                last_field_id: 0,
+                fields: 0,
+            },
+        )?;
+        while let Some(frame) = frames.pop() {
+            self.work_budget.check_deadline(self.stage)?;
+            match frame {
+                CompactThriftFrame::Struct {
+                    last_field_id,
+                    fields,
+                } => self.scan_struct_field(last_field_id, fields, &mut frames)?,
+                CompactThriftFrame::Collection {
+                    element_type,
+                    remaining,
+                } => self.scan_collection_element(element_type, remaining, &mut frames)?,
+                CompactThriftFrame::Map {
+                    key_type,
+                    value_type,
+                    remaining_values,
+                    next_is_key,
+                } => self.scan_map_value(
+                    key_type,
+                    value_type,
+                    remaining_values,
+                    next_is_key,
+                    &mut frames,
+                )?,
+            }
+        }
+        ensure!(
+            self.remaining == 0,
+            "compact-Thrift footer root ended with {} trailing bytes",
+            self.remaining
+        );
+        self.work_budget.check_deadline(self.stage)
+    }
+
+    fn scan_struct_field(
+        &mut self,
+        last_field_id: i16,
+        fields: u64,
+        frames: &mut Vec<CompactThriftFrame>,
+    ) -> Result<()> {
+        let header = self.read_byte("struct field header")?;
+        let field_type = header & 0x0f;
+        if field_type == COMPACT_THRIFT_STOP {
+            ensure!(
+                header == COMPACT_THRIFT_STOP,
+                "compact-Thrift STOP field header carries a nonzero field delta"
+            );
+            return Ok(());
+        }
+        validate_compact_thrift_field_type(field_type)?;
+        let fields = fields
+            .checked_add(1)
+            .context("compact-Thrift struct field count overflow")?;
+        ensure!(
+            fields <= self.max_container_items,
+            "compact-Thrift struct field count {fields} exceeds max_source_rows {}",
+            self.max_container_items
+        );
+        let field_delta = header >> 4;
+        let field_id = if field_delta == 0 {
+            self.read_zig_zag_i16("struct field id")?
+        } else {
+            last_field_id
+                .checked_add(i16::from(field_delta))
+                .context("compact-Thrift struct field id delta overflow")?
+        };
+        self.push_frame(
+            frames,
+            CompactThriftFrame::Struct {
+                last_field_id: field_id,
+                fields,
+            },
+        )?;
+        self.scan_value(field_type, false, frames)
+    }
+
+    fn scan_collection_element(
+        &mut self,
+        element_type: u8,
+        remaining: u64,
+        frames: &mut Vec<CompactThriftFrame>,
+    ) -> Result<()> {
+        if remaining == 0 {
+            return Ok(());
+        }
+        self.push_frame(
+            frames,
+            CompactThriftFrame::Collection {
+                element_type,
+                remaining: remaining - 1,
+            },
+        )?;
+        self.scan_value(element_type, true, frames)
+    }
+
+    fn scan_map_value(
+        &mut self,
+        key_type: u8,
+        value_type: u8,
+        remaining_values: u64,
+        next_is_key: bool,
+        frames: &mut Vec<CompactThriftFrame>,
+    ) -> Result<()> {
+        if remaining_values == 0 {
+            return Ok(());
+        }
+        self.push_frame(
+            frames,
+            CompactThriftFrame::Map {
+                key_type,
+                value_type,
+                remaining_values: remaining_values - 1,
+                next_is_key: !next_is_key,
+            },
+        )?;
+        self.scan_value(
+            if next_is_key { key_type } else { value_type },
+            true,
+            frames,
+        )
+    }
+
+    fn scan_value(
+        &mut self,
+        value_type: u8,
+        collection_value: bool,
+        frames: &mut Vec<CompactThriftFrame>,
+    ) -> Result<()> {
+        match value_type {
+            COMPACT_THRIFT_BOOLEAN_TRUE | COMPACT_THRIFT_BOOLEAN_FALSE => {
+                if collection_value {
+                    let value = self.read_byte("boolean collection value")?;
+                    ensure!(
+                        matches!(
+                            value,
+                            0 | COMPACT_THRIFT_BOOLEAN_TRUE | COMPACT_THRIFT_BOOLEAN_FALSE
+                        ),
+                        "compact-Thrift boolean collection value {value} is invalid"
+                    );
+                }
+            }
+            COMPACT_THRIFT_BYTE => {
+                self.read_byte("byte value")?;
+            }
+            COMPACT_THRIFT_I16 => {
+                self.read_unsigned_varint(i16::BITS, "i16 value")?;
+            }
+            COMPACT_THRIFT_I32 => {
+                self.read_unsigned_varint(i32::BITS, "i32 value")?;
+            }
+            COMPACT_THRIFT_I64 => {
+                self.read_unsigned_varint(i64::BITS, "i64 value")?;
+            }
+            COMPACT_THRIFT_DOUBLE => {
+                self.discard_exact(
+                    u64::try_from(size_of::<f64>()).expect("f64 size fits u64"),
+                    "double value",
+                )?;
+            }
+            COMPACT_THRIFT_BINARY => {
+                let length = self.read_unsigned_varint(u32::BITS, "binary length")?;
+                ensure!(
+                    length <= self.max_binary_bytes,
+                    "compact-Thrift binary length {length} exceeds max_decoded_bytes {}",
+                    self.max_binary_bytes
+                );
+                self.discard_exact(length, "binary value")?;
+            }
+            COMPACT_THRIFT_LIST | COMPACT_THRIFT_SET => {
+                self.scan_list_or_set(frames)?;
+            }
+            COMPACT_THRIFT_MAP => {
+                self.scan_map(frames)?;
+            }
+            COMPACT_THRIFT_STRUCT => self.push_frame(
+                frames,
+                CompactThriftFrame::Struct {
+                    last_field_id: 0,
+                    fields: 0,
+                },
+            )?,
+            COMPACT_THRIFT_STOP => bail!("compact-Thrift STOP type is invalid for a value"),
+            other => bail!("compact-Thrift value type {other} is invalid"),
+        }
+        Ok(())
+    }
+
+    fn scan_list_or_set(&mut self, frames: &mut Vec<CompactThriftFrame>) -> Result<()> {
+        let header = self.read_byte("list/set header")?;
+        if header == 0 {
+            return Ok(());
+        }
+        let element_type = header & 0x0f;
+        validate_compact_thrift_collection_type(element_type)?;
+        let inline_cardinality = u64::from(header >> 4);
+        let cardinality = if inline_cardinality == 15 {
+            self.read_unsigned_varint(u32::BITS, "list/set cardinality")?
+        } else {
+            inline_cardinality
+        };
+        self.consume_container_cardinality(cardinality, "collection cardinality")?;
+        ensure!(
+            cardinality <= i32::MAX as u64,
+            "compact-Thrift collection cardinality {cardinality} exceeds i32::MAX"
+        );
+        ensure!(
+            cardinality <= self.remaining,
+            "compact-Thrift collection cardinality {cardinality} cannot fit in the {} footer bytes remaining",
+            self.remaining
+        );
+        if cardinality > 0 {
+            self.push_frame(
+                frames,
+                CompactThriftFrame::Collection {
+                    element_type,
+                    remaining: cardinality,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn scan_map(&mut self, frames: &mut Vec<CompactThriftFrame>) -> Result<()> {
+        let cardinality = self.read_unsigned_varint(u32::BITS, "map cardinality")?;
+        self.consume_container_cardinality(cardinality, "map cardinality")?;
+        ensure!(
+            cardinality <= i32::MAX as u64,
+            "compact-Thrift map cardinality {cardinality} exceeds i32::MAX"
+        );
+        if cardinality == 0 {
+            return Ok(());
+        }
+        let type_header = self.read_byte("map key/value type header")?;
+        let key_type = type_header >> 4;
+        let value_type = type_header & 0x0f;
+        validate_compact_thrift_collection_type(key_type)?;
+        validate_compact_thrift_collection_type(value_type)?;
+        let remaining_values = cardinality
+            .checked_mul(2)
+            .context("compact-Thrift map key/value count overflow")?;
+        ensure!(
+            remaining_values <= self.remaining,
+            "compact-Thrift map cardinality {cardinality} cannot fit key/value pairs in the {} footer bytes remaining",
+            self.remaining
+        );
+        self.push_frame(
+            frames,
+            CompactThriftFrame::Map {
+                key_type,
+                value_type,
+                remaining_values,
+                next_is_key: true,
+            },
+        )
+    }
+
+    fn consume_container_cardinality(&mut self, cardinality: u64, label: &str) -> Result<()> {
+        ensure!(
+            cardinality <= self.max_container_items,
+            "compact-Thrift {label} {cardinality} exceeds max_source_rows {}",
+            self.max_container_items
+        );
+        self.container_items_seen = self
+            .container_items_seen
+            .checked_add(cardinality)
+            .context("compact-Thrift aggregate container cardinality overflow")?;
+        ensure!(
+            self.container_items_seen <= self.max_container_items,
+            "compact-Thrift aggregate container cardinality {} exceeds max_source_rows {} after {label} {cardinality}",
+            self.container_items_seen,
+            self.max_container_items
+        );
+        Ok(())
+    }
+
+    fn push_frame(
+        &self,
+        frames: &mut Vec<CompactThriftFrame>,
+        frame: CompactThriftFrame,
+    ) -> Result<()> {
+        let next_depth = frames
+            .len()
+            .checked_add(1)
+            .context("compact-Thrift nesting depth overflow")?;
+        ensure!(
+            next_depth <= self.max_stack_frames,
+            "compact-Thrift nesting depth {next_depth} exceeds scanner depth {} derived from max_decoded_bytes and max_source_rows",
+            self.max_stack_frames
+        );
+        frames
+            .try_reserve_exact(1)
+            .context("reserve one compact-Thrift scanner frame")?;
+        frames.push(frame);
+        Ok(())
+    }
+
+    fn read_zig_zag_i16(&mut self, label: &str) -> Result<i16> {
+        let encoded = self.read_unsigned_varint(i16::BITS, label)?;
+        let decoded = ((encoded >> 1) as i64) ^ -((encoded & 1) as i64);
+        i16::try_from(decoded).with_context(|| format!("compact-Thrift {label} exceeds i16"))
+    }
+
+    fn read_unsigned_varint(&mut self, bit_width: u32, label: &str) -> Result<u64> {
+        let max_bytes = usize::try_from(bit_width.div_ceil(7))
+            .context("compact-Thrift varint byte bound does not fit usize")?;
+        let max_value = if bit_width == u64::BITS {
+            u64::MAX
+        } else {
+            (1_u64 << bit_width) - 1
+        };
+        let mut value = 0_u64;
+        for index in 0..max_bytes {
+            let byte = self.read_byte(label)?;
+            let shift = u32::try_from(index)
+                .context("compact-Thrift varint index does not fit u32")?
+                .checked_mul(7)
+                .context("compact-Thrift varint shift overflow")?;
+            let part = u64::from(byte & 0x7f);
+            ensure!(
+                part <= (max_value >> shift),
+                "compact-Thrift {label} exceeds its {bit_width}-bit representation"
+            );
+            value |= part << shift;
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+        }
+        bail!("compact-Thrift {label} exceeds its {bit_width}-bit varint byte bound")
+    }
+
+    fn read_byte(&mut self, label: &str) -> Result<u8> {
+        let mut byte = [0_u8; 1];
+        self.read_exact(&mut byte, label)?;
+        Ok(byte[0])
+    }
+
+    fn discard_exact(&mut self, bytes: u64, label: &str) -> Result<()> {
+        ensure!(
+            bytes <= self.remaining,
+            "compact-Thrift footer is truncated while reading {label}: declared {bytes} bytes with only {} remaining",
+            self.remaining
+        );
+        let mut remaining = bytes;
+        let mut scratch = [0_u8; size_of::<u64>()];
+        while remaining > 0 {
+            let chunk = usize::try_from(remaining)
+                .unwrap_or(usize::MAX)
+                .min(scratch.len());
+            self.read_exact(&mut scratch[..chunk], label)?;
+            remaining = remaining
+                .checked_sub(u64::try_from(chunk).expect("scratch chunk fits u64"))
+                .context("compact-Thrift discard length underflow")?;
+        }
+        Ok(())
+    }
+
+    fn read_exact(&mut self, buffer: &mut [u8], label: &str) -> Result<()> {
+        let requested =
+            u64::try_from(buffer.len()).context("compact-Thrift read length does not fit u64")?;
+        ensure!(
+            requested <= self.remaining,
+            "compact-Thrift footer is truncated while reading {label}: need {requested} bytes with only {} remaining",
+            self.remaining
+        );
+        let work_budget = self.work_budget;
+        let stage = self.stage;
+        guarded_operation_outcome(work_budget, stage, || {
+            self.reader
+                .read_exact(buffer)
+                .with_context(|| format!("read compact-Thrift {label}"))
+        })??;
+        self.remaining = self
+            .remaining
+            .checked_sub(requested)
+            .context("compact-Thrift remaining byte count underflow")?;
+        Ok(())
+    }
+}
+
+fn validate_compact_thrift_field_type(field_type: u8) -> Result<()> {
+    ensure!(
+        matches!(
+            field_type,
+            COMPACT_THRIFT_BOOLEAN_TRUE
+                | COMPACT_THRIFT_BOOLEAN_FALSE
+                | COMPACT_THRIFT_BYTE
+                | COMPACT_THRIFT_I16
+                | COMPACT_THRIFT_I32
+                | COMPACT_THRIFT_I64
+                | COMPACT_THRIFT_DOUBLE
+                | COMPACT_THRIFT_BINARY
+                | COMPACT_THRIFT_LIST
+                | COMPACT_THRIFT_SET
+                | COMPACT_THRIFT_MAP
+                | COMPACT_THRIFT_STRUCT
+        ),
+        "compact-Thrift field type {field_type} is invalid"
+    );
+    Ok(())
+}
+
+fn validate_compact_thrift_collection_type(element_type: u8) -> Result<()> {
+    validate_compact_thrift_field_type(element_type)
+        .with_context(|| format!("compact-Thrift collection element type {element_type}"))
+}
+
+fn verify_parquet_compact_thrift_footer<R: Read>(
+    reader: R,
+    footer_bytes: u64,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    CompactThriftFooterScanner::new(reader, footer_bytes, work_budget, stage)?.scan()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ParquetTrailerPreflight {
+    pub(crate) file_bytes: u64,
+    pub(crate) footer_metadata_bytes: u64,
+}
+
+fn validate_parquet_trailer_preflight(
+    file_bytes: u64,
+    header: [u8; 4],
+    trailer: [u8; 8],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<ParquetTrailerPreflight> {
+    work_budget.verify_decoded_bytes(file_bytes, stage)?;
+    let structural_bytes = PARQUET_HEADER_BYTES
+        .checked_add(PARQUET_TRAILER_BYTES)
+        .context("Parquet structural byte size overflow")?;
+    ensure!(
+        file_bytes >= structural_bytes,
+        "Parquet file is {file_bytes} bytes, shorter than the {structural_bytes}-byte header/trailer minimum"
+    );
+    ensure!(header == PARQUET_MAGIC, "Parquet header magic is not PAR1");
+    ensure!(
+        trailer[4..] == PARQUET_MAGIC[..],
+        "Parquet trailer magic is not PAR1"
+    );
+    let metadata_bytes = u64::from(u32::from_le_bytes(
+        trailer[..4]
+            .try_into()
+            .expect("four-byte Parquet metadata length slice"),
+    ));
+    ensure!(metadata_bytes > 0, "Parquet footer metadata length is zero");
+    let available_metadata_bytes = file_bytes
+        .checked_sub(structural_bytes)
+        .context("Parquet structural byte subtraction underflow")?;
+    ensure!(
+        metadata_bytes <= available_metadata_bytes,
+        "Parquet footer metadata length {metadata_bytes} exceeds the {available_metadata_bytes} bytes available before the trailer"
+    );
+    work_budget.verify_decoded_bytes(metadata_bytes, stage)?;
+    work_budget.check_deadline(stage)?;
+    Ok(ParquetTrailerPreflight {
+        file_bytes,
+        footer_metadata_bytes: metadata_bytes,
+    })
+}
+
+pub(crate) fn verify_parquet_bytes_trailer_preflight(
+    bytes: &Bytes,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<ParquetTrailerPreflight> {
+    let file_bytes = u64::try_from(bytes.len()).context("Parquet byte length does not fit u64")?;
+    let minimum = usize::try_from(PARQUET_HEADER_BYTES + PARQUET_TRAILER_BYTES)
+        .context("Parquet structural byte size does not fit usize")?;
+    ensure!(
+        bytes.len() >= minimum,
+        "Parquet file is {} bytes, shorter than the {minimum}-byte header/trailer minimum",
+        bytes.len()
+    );
+    let header: [u8; 4] = bytes[..4]
+        .try_into()
+        .expect("four-byte Parquet header slice");
+    let trailer: [u8; 8] = bytes[bytes.len() - 8..]
+        .try_into()
+        .expect("eight-byte Parquet trailer slice");
+    let preflight =
+        validate_parquet_trailer_preflight(file_bytes, header, trailer, work_budget, stage)?;
+    let footer_bytes = usize::try_from(preflight.footer_metadata_bytes)
+        .context("Parquet footer metadata length does not fit usize")?;
+    let footer_end = bytes
+        .len()
+        .checked_sub(usize::try_from(PARQUET_TRAILER_BYTES).expect("trailer size fits usize"))
+        .context("Parquet footer end underflow")?;
+    let footer_start = footer_end
+        .checked_sub(footer_bytes)
+        .context("Parquet footer start underflow")?;
+    verify_parquet_compact_thrift_footer(
+        Cursor::new(&bytes[footer_start..footer_end]),
+        preflight.footer_metadata_bytes,
+        work_budget,
+        stage,
+    )?;
+    Ok(preflight)
+}
+
+fn read_exact_parquet_bytes_guarded(
+    file: &mut File,
+    buffer: &mut [u8],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    guarded_operation_outcome(work_budget, stage, || {
+        file.read_exact(buffer)
+            .context("read Parquet preflight bytes")
+    })??;
+    Ok(())
+}
+
+pub(crate) fn verify_parquet_file_trailer_preflight(
+    file: &mut File,
+    path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<ParquetTrailerPreflight> {
+    let file_bytes = guarded_operation_outcome(work_budget, stage, || {
+        file.metadata()
+            .map(|metadata| metadata.len())
+            .with_context(|| format!("read Parquet file metadata {}", path.display()))
+    })??;
+    work_budget.verify_decoded_bytes(file_bytes, stage)?;
+    ensure!(
+        file_bytes >= PARQUET_HEADER_BYTES + PARQUET_TRAILER_BYTES,
+        "Parquet file {} is too short for header/trailer preflight",
+        path.display()
+    );
+    guarded_operation_outcome(work_budget, stage, || {
+        file.seek(SeekFrom::Start(0))
+            .context("seek to Parquet header")
+    })??;
+    let mut header = [0_u8; 4];
+    read_exact_parquet_bytes_guarded(file, &mut header, work_budget, stage)?;
+    guarded_operation_outcome(work_budget, stage, || {
+        file.seek(SeekFrom::End(-8))
+            .context("seek to Parquet trailer")
+    })??;
+    let mut trailer = [0_u8; 8];
+    read_exact_parquet_bytes_guarded(file, &mut trailer, work_budget, stage)?;
+    let preflight =
+        validate_parquet_trailer_preflight(file_bytes, header, trailer, work_budget, stage)?;
+    let footer_start = file_bytes
+        .checked_sub(PARQUET_TRAILER_BYTES)
+        .and_then(|offset| offset.checked_sub(preflight.footer_metadata_bytes))
+        .context("Parquet footer start underflow")?;
+    guarded_operation_outcome(work_budget, stage, || {
+        file.seek(SeekFrom::Start(footer_start))
+            .context("seek to compact-Thrift Parquet footer")
+    })??;
+    let footer_len = usize::try_from(preflight.footer_metadata_bytes)
+        .context("Parquet footer metadata length does not fit usize")?;
+    let mut footer = guarded_operation_outcome(work_budget, stage, || -> Result<Vec<u8>> {
+        let mut footer = Vec::new();
+        footer
+            .try_reserve_exact(footer_len)
+            .context("reserve bounded compact-Thrift Parquet footer")?;
+        footer.resize(footer_len, 0);
+        Ok(footer)
+    })??;
+    read_exact_parquet_bytes_guarded(file, &mut footer, work_budget, stage)?;
+    verify_parquet_compact_thrift_footer(
+        Cursor::new(footer.as_slice()),
+        preflight.footer_metadata_bytes,
+        work_budget,
+        stage,
+    )
+    .with_context(|| format!("preflight compact-Thrift footer for {}", path.display()))?;
+    drop(footer);
+    guarded_operation_outcome(work_budget, stage, || {
+        file.seek(SeekFrom::Start(0))
+            .context("rewind Parquet file after trailer preflight")
+    })??;
+    Ok(preflight)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ParquetMetadataBudgetFacts {
+    pub(crate) rows: u64,
+    pub(crate) row_groups: u64,
+    pub(crate) uncompressed_bytes: u64,
+}
+
+pub(crate) fn verify_single_parquet_metadata_budget(
+    metadata: &ParquetMetaData,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<ParquetMetadataBudgetFacts> {
+    let row_groups = u64::try_from(metadata.num_row_groups())
+        .context("Parquet row-group count does not fit u64")?;
+    let mut total_rows = 0_u64;
+    let mut total_uncompressed_bytes = 0_u64;
+    for row_group in metadata.row_groups() {
+        work_budget.check_deadline(stage)?;
+        let rows = u64::try_from(row_group.num_rows())
+            .context("Parquet row-group row count is negative")?;
+        let uncompressed_bytes = u64::try_from(row_group.total_byte_size())
+            .context("Parquet row-group uncompressed byte size is negative")?;
+        total_rows = total_rows
+            .checked_add(rows)
+            .context("Parquet total row count overflow")?;
+        total_uncompressed_bytes = total_uncompressed_bytes
+            .checked_add(uncompressed_bytes)
+            .context("Parquet total uncompressed byte size overflow")?;
+        work_budget.verify_decoded_bytes(uncompressed_bytes, stage)?;
+        work_budget.check_deadline(stage)?;
+    }
+    ensure!(
+        total_rows
+            == u64::try_from(metadata.file_metadata().num_rows())
+                .context("Parquet file row count is negative")?,
+        "Parquet footer total rows disagree with row-group rows"
+    );
+    work_budget.verify_source_rows(total_rows, stage)?;
+    work_budget.verify_decoded_bytes(total_uncompressed_bytes, stage)?;
+    work_budget.verify_actual_row_groups(row_groups, stage)?;
+    // Each invocation binds exactly one file before any Arrow record-batch
+    // reader is built. Multi-file catalog callers invoke this once per pinned
+    // file and enforce their aggregate totals separately.
+    work_budget.check_deadline(stage)?;
+    Ok(ParquetMetadataBudgetFacts {
+        rows: total_rows,
+        row_groups,
+        uncompressed_bytes: total_uncompressed_bytes,
+    })
+}
+
+pub(crate) fn write_canonical_parquet_guarded<R>(
+    rows: &[R],
+    schema: Arc<Schema>,
+    path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    row_materialized_bytes: impl Fn(&R) -> Result<usize>,
+    to_record_batch: impl Fn(&[R], &OperatorWorkBudgetGuard) -> Result<RecordBatch>,
+) -> Result<()> {
+    let nt_max_row_group_size =
+        usize::try_from(crate::catalog_projection::nt_catalog_max_row_group_size()?)
+            .context("NT catalog max_row_group_size does not fit usize")?;
+    ensure!(
+        nt_max_row_group_size > 0,
+        "NT catalog max_row_group_size must be positive"
+    );
+    let max_bytes_per_batch = work_budget
+        .decoded_byte_limit()
+        .map_or(usize::MAX, |limit| {
+            usize::try_from(limit).unwrap_or(usize::MAX)
+        });
+    let properties = WriterProperties::builder()
+        .set_max_row_group_size(nt_max_row_group_size)
+        .build();
+    verify_canonical_rows_materialization(
+        rows,
+        work_budget,
+        OperatorWorkBudgetStage::CanonicalWrite,
+        &row_materialized_bytes,
+    )?;
+
+    atomic_file_create_or_verify_guarded(
+        path,
+        work_budget,
+        OperatorWorkBudgetStage::CanonicalWrite,
+        |file| {
+            let mut writer = guarded_operation_outcome(
+                work_budget,
+                OperatorWorkBudgetStage::CanonicalWrite,
+                || ArrowWriter::try_new(file, schema, Some(properties)),
+            )?
+            .context("failed to construct parquet writer")?;
+
+            // Arrow arrays have fixed per-column allocations (notably the
+            // initial UTF-8 builder buffers) even for an empty batch. Measure
+            // that table-specific floor once so the pre-materialization byte
+            // bound cannot undercount a small or near-limit batch.
+            let empty_batch = guarded_operation_outcome(
+                work_budget,
+                OperatorWorkBudgetStage::CanonicalWrite,
+                || to_record_batch(&[], work_budget),
+            )??;
+            let fixed_batch_bytes = empty_batch.get_array_memory_size();
+            ensure!(
+                fixed_batch_bytes <= max_bytes_per_batch,
+                "canonical Arrow batch fixed allocation {fixed_batch_bytes} bytes exceeds max_decoded_bytes {max_bytes_per_batch}"
+            );
+            drop(empty_batch);
+
+            for (chunk_index, chunk) in rows.chunks(nt_max_row_group_size).enumerate() {
+                work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+                let start = chunk_index
+                    .checked_mul(nt_max_row_group_size)
+                    .context("canonical Arrow batch start overflow")?;
+                let batch = to_record_batch(chunk, work_budget)?;
+                let actual_bytes = batch.get_array_memory_size();
+                let end = start
+                    .checked_add(chunk.len())
+                    .context("canonical Arrow batch end overflow")?;
+                ensure!(
+                    actual_bytes <= max_bytes_per_batch,
+                    "canonical Arrow batch rows {start}..{end} materialized {actual_bytes} bytes exceeding max_decoded_bytes {max_bytes_per_batch}"
+                );
+                guarded_operation_outcome(
+                    work_budget,
+                    OperatorWorkBudgetStage::CanonicalWrite,
+                    || {
+                        writer
+                            .write(&batch)
+                            .context("failed to write canonical Arrow batch")
+                    },
+                )??;
+            }
+
+            guarded_operation_outcome(
+                work_budget,
+                OperatorWorkBudgetStage::CanonicalWrite,
+                || writer.close(),
+            )?
+            .context("failed to finalize canonical parquet")?;
+            Ok(())
+        },
+    )
+}
+
 impl CanonicalTradesTable {
     /// Validate required fields, timestamps, instrument ids, partition, and
     /// schema version.
@@ -2272,6 +3365,25 @@ impl CanonicalTradesTable {
     ///
     /// Returns an error describing the first contract violation.
     pub fn validate(&self) -> Result<()> {
+        self.validate_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::CanonicalWrite,
+        )
+    }
+
+    /// Validate through the shared cooperative work-budget core.
+    pub(crate) fn validate_guarded(
+        &self,
+        work_budget: &OperatorWorkBudgetGuard,
+        stage: OperatorWorkBudgetStage,
+    ) -> Result<()> {
+        work_budget.check_deadline(stage)?;
+        verify_canonical_rows_materialization(
+            &self.rows,
+            work_budget,
+            stage,
+            canonical_trade_row_materialized_bytes,
+        )?;
         ensure!(
             self.schema_version == NORMALIZED_SCHEMA_VERSION,
             "unexpected schema_version {:?}",
@@ -2301,6 +3413,7 @@ impl CanonicalTradesTable {
 
         let mut previous_event_time = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
+            work_budget.check_deadline(stage)?;
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
                 "row {index}: schema_version mismatch"
@@ -2349,7 +3462,9 @@ impl CanonicalTradesTable {
                     );
                 }
             }
+            work_budget.check_deadline(stage)?;
         }
+        work_budget.check_deadline(stage)?;
         Ok(())
     }
 
@@ -2388,57 +3503,53 @@ impl CanonicalTradesTable {
         ]))
     }
 
-    fn to_record_batch(&self) -> Result<RecordBatch> {
-        let utf8_col = |f: fn(&CanonicalTradeRow) -> &str| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as arrow::array::ArrayRef
-        };
-        let int64_col = |f: fn(&CanonicalTradeRow) -> i64| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as arrow::array::ArrayRef
-        };
+    fn to_record_batch_guarded(
+        rows: &[CanonicalTradeRow],
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<RecordBatch> {
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        let utf8_col =
+            |f: fn(&CanonicalTradeRow) -> &str| utf8_column_guarded(rows, work_budget, f);
+        let int64_col =
+            |f: fn(&CanonicalTradeRow) -> i64| int64_column_guarded(rows, work_budget, f);
         let opt_utf8_col = |f: fn(&CanonicalTradeRow) -> Option<&str>| {
-            Arc::new(StringArray::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as arrow::array::ArrayRef
+            optional_utf8_column_guarded(rows, work_budget, f)
         };
         let opt_int64_col = |f: fn(&CanonicalTradeRow) -> Option<i64>| {
-            Arc::new(Int64Array::from(
-                self.rows.iter().map(f).collect::<Vec<_>>(),
-            )) as arrow::array::ArrayRef
+            optional_int64_column_guarded(rows, work_budget, f)
         };
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Self::arrow_schema(),
             vec![
-                utf8_col(|r| r.schema_version.as_str()),
-                utf8_col(|r| r.ingest_run_id.as_str()),
-                utf8_col(|r| r.source_binding.as_str()),
-                utf8_col(|r| r.venue.as_str()),
-                utf8_col(|r| r.product_family.as_str()),
-                utf8_col(|r| r.product_category.as_str()),
-                utf8_col(|r| r.instrument_id.as_str()),
-                utf8_col(|r| r.canonical_instrument_key.as_str()),
-                utf8_col(|r| r.venue_symbol.as_str()),
-                opt_utf8_col(|r| r.nt_instrument_id.as_deref()),
-                int64_col(|r| r.event_time),
-                int64_col(|r| r.capture_time),
-                opt_int64_col(|r| r.availability_time),
-                opt_utf8_col(|r| r.source_sequence.as_deref()),
-                utf8_col(|r| r.raw_payload_id.as_str()),
-                utf8_col(|r| r.source_proof_id.as_str()),
-                utf8_col(|r| r.payload_hash.as_str()),
-                utf8_col(|r| r.transform_hash.as_str()),
-                utf8_col(|r| r.trade_source_type.as_str()),
-                utf8_col(|r| r.trade_id.as_str()),
-                utf8_col(|r| r.aggressor_side.as_str()),
-                utf8_col(|r| r.price.as_str()),
-                utf8_col(|r| r.size.as_str()),
-                utf8_col(|r| r.notional.as_str()),
+                utf8_col(|r| r.schema_version.as_str())?,
+                utf8_col(|r| r.ingest_run_id.as_str())?,
+                utf8_col(|r| r.source_binding.as_str())?,
+                utf8_col(|r| r.venue.as_str())?,
+                utf8_col(|r| r.product_family.as_str())?,
+                utf8_col(|r| r.product_category.as_str())?,
+                utf8_col(|r| r.instrument_id.as_str())?,
+                utf8_col(|r| r.canonical_instrument_key.as_str())?,
+                utf8_col(|r| r.venue_symbol.as_str())?,
+                opt_utf8_col(|r| r.nt_instrument_id.as_deref())?,
+                int64_col(|r| r.event_time)?,
+                int64_col(|r| r.capture_time)?,
+                opt_int64_col(|r| r.availability_time)?,
+                opt_utf8_col(|r| r.source_sequence.as_deref())?,
+                utf8_col(|r| r.raw_payload_id.as_str())?,
+                utf8_col(|r| r.source_proof_id.as_str())?,
+                utf8_col(|r| r.payload_hash.as_str())?,
+                utf8_col(|r| r.transform_hash.as_str())?,
+                utf8_col(|r| r.trade_source_type.as_str())?,
+                utf8_col(|r| r.trade_id.as_str())?,
+                utf8_col(|r| r.aggressor_side.as_str())?,
+                utf8_col(|r| r.price.as_str())?,
+                utf8_col(|r| r.size.as_str())?,
+                utf8_col(|r| r.notional.as_str())?,
             ],
         )
-        .context("failed to build canonical trades record batch")
+        .context("failed to build canonical trades record batch")?;
+        work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
+        Ok(batch)
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -2447,15 +3558,28 @@ impl CanonicalTradesTable {
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
     pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.validate()?;
-        let batch = self.to_record_batch()?;
-        let file = File::create(path)
-            .with_context(|| format!("failed to create canonical artifact {}", path.display()))?;
-        let mut writer = ArrowWriter::try_new(file, batch.schema(), None)
-            .context("failed to construct parquet writer")?;
-        writer.write(&batch).context("failed to write batch")?;
-        writer.close().context("failed to finalize parquet")?;
-        Ok(())
+        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Write through the shared cooperative, bounded, atomic Parquet core.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on validation, budget expiry, or Parquet I/O failure.
+    pub fn write_parquet_guarded(
+        &self,
+        path: &Path,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
+        write_canonical_parquet_guarded(
+            &self.rows,
+            Self::arrow_schema(),
+            path,
+            work_budget,
+            canonical_trade_row_materialized_bytes,
+            Self::to_record_batch_guarded,
+        )
     }
 
     /// Read a canonical normalized table from an existing Parquet artifact.
@@ -2465,15 +3589,60 @@ impl CanonicalTradesTable {
     /// Returns an error if the artifact does not match the canonical schema or
     /// does not bind to the accepted source proof/object.
     pub fn read_parquet(path: &Path, accepted: &AcceptedDataset) -> Result<Self> {
-        let file = File::open(path)
-            .with_context(|| format!("failed to open canonical artifact {}", path.display()))?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .context("failed to construct canonical parquet reader")?
-            .build()
-            .context("failed to build canonical parquet reader")?;
+        Self::read_parquet_guarded(path, accepted, &OperatorWorkBudgetGuard::unbounded())
+    }
+
+    /// Read a completed canonical artifact through the same cooperative guard
+    /// that owns reuse, projection, and replay.
+    pub(crate) fn read_parquet_guarded(
+        path: &Path,
+        accepted: &AcceptedDataset,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Self> {
+        let mut file =
+            guarded_operation_outcome(work_budget, OperatorWorkBudgetStage::Decode, || {
+                File::open(path).with_context(|| {
+                    format!("failed to open canonical artifact {}", path.display())
+                })
+            })??;
+        verify_parquet_file_trailer_preflight(
+            &mut file,
+            path,
+            work_budget,
+            OperatorWorkBudgetStage::Decode,
+        )?;
+        let batch_size = DEFAULT_BATCH_SIZE;
+        // Parquet metadata parsing and batch decompression are implementation-
+        // owned opaque calls. Fence them on both sides of each natural batch.
+        let mut reader = guarded_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Decode,
+            || -> Result<_> {
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                    .context("failed to construct canonical parquet reader")?;
+                verify_single_parquet_metadata_budget(
+                    builder.metadata(),
+                    work_budget,
+                    OperatorWorkBudgetStage::Decode,
+                )?;
+                builder
+                    .with_batch_size(batch_size)
+                    .build()
+                    .context("failed to build canonical parquet reader")
+            },
+        )??;
 
         let mut rows = Vec::new();
-        for batch in reader {
+        let mut loaded_materialized_bytes = 0_usize;
+        loop {
+            let next_batch = guarded_operation_outcome(
+                work_budget,
+                OperatorWorkBudgetStage::Decode,
+                || -> Result<_> { Ok(reader.next()) },
+            )??;
+            let Some(batch) = next_batch else {
+                break;
+            };
             let batch = batch.context("failed to read canonical parquet batch")?;
             let schema_version = string_column(&batch, "schema_version")?;
             let ingest_run_id = string_column(&batch, "ingest_run_id")?;
@@ -2501,6 +3670,48 @@ impl CanonicalTradesTable {
             let notional = string_column(&batch, "notional")?;
 
             for index in 0..batch.num_rows() {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
+                let row_bytes = estimated_arrow_row_bytes(
+                    [
+                        optional_string_ref(schema_version, index),
+                        optional_string_ref(ingest_run_id, index),
+                        optional_string_ref(source_binding, index),
+                        optional_string_ref(venue, index),
+                        optional_string_ref(product_family, index),
+                        optional_string_ref(product_category, index),
+                        optional_string_ref(instrument_id, index),
+                        optional_string_ref(canonical_instrument_key, index),
+                        optional_string_ref(venue_symbol, index),
+                        optional_string_ref(nt_instrument_id, index),
+                        optional_string_ref(source_sequence, index),
+                        optional_string_ref(raw_payload_id, index),
+                        optional_string_ref(source_proof_id, index),
+                        optional_string_ref(payload_hash, index),
+                        optional_string_ref(row_transform_hash, index),
+                        optional_string_ref(trade_source_type, index),
+                        optional_string_ref(trade_id, index),
+                        optional_string_ref(aggressor_side, index),
+                        optional_string_ref(price, index),
+                        optional_string_ref(size, index),
+                        optional_string_ref(notional, index),
+                    ],
+                    [size_of::<i64>(), size_of::<i64>(), size_of::<i64>()],
+                )?
+                .checked_add(size_of::<CanonicalTradeRow>())
+                .context("loaded canonical trade row byte size overflow")?;
+                loaded_materialized_bytes = loaded_materialized_bytes
+                    .checked_add(row_bytes)
+                    .context("loaded canonical trade materialized byte total overflow")?;
+                work_budget.verify_decoded_bytes(
+                    u64::try_from(loaded_materialized_bytes)
+                        .context("loaded canonical trade bytes do not fit u64")?,
+                    OperatorWorkBudgetStage::Decode,
+                )?;
+            }
+            rows.try_reserve_exact(batch.num_rows())
+                .context("reserve loaded canonical trade rows")?;
+            for index in 0..batch.num_rows() {
+                work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
                 rows.push(CanonicalTradeRow {
                     schema_version: required_string(schema_version, index, "schema_version")?,
                     ingest_run_id: required_string(ingest_run_id, index, "ingest_run_id")?,
@@ -2535,6 +3746,7 @@ impl CanonicalTradesTable {
                     size: required_string(size, index, "size")?,
                     notional: required_string(notional, index, "notional")?,
                 });
+                work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
             }
         }
 
@@ -2556,12 +3768,16 @@ impl CanonicalTradesTable {
             payload_hash: accepted.object.sha256.clone(),
             rows,
         };
-        table.validate()?;
-        table.validate_loaded_against_accepted(accepted)?;
+        table.validate_guarded(work_budget, OperatorWorkBudgetStage::Decode)?;
+        table.validate_loaded_against_accepted_guarded(accepted, work_budget)?;
         Ok(table)
     }
 
-    fn validate_loaded_against_accepted(&self, accepted: &AcceptedDataset) -> Result<()> {
+    fn validate_loaded_against_accepted_guarded(
+        &self,
+        accepted: &AcceptedDataset,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
         ensure!(
             self.partition.venue == accepted.venue,
             "canonical artifact venue mismatch: expected {:?}, got {:?}",
@@ -2592,7 +3808,14 @@ impl CanonicalTradesTable {
             self.payload_hash == accepted.object.sha256,
             "canonical artifact payload_hash mismatch"
         );
+        verify_canonical_rows_materialization(
+            &self.rows,
+            work_budget,
+            OperatorWorkBudgetStage::Decode,
+            canonical_trade_row_materialized_bytes,
+        )?;
         for (index, row) in self.rows.iter().enumerate() {
+            work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
             ensure!(
                 row.source_binding == accepted.source_binding,
                 "row {index}: source_binding mismatch"
@@ -2622,9 +3845,14 @@ impl CanonicalTradesTable {
                 row.transform_hash == self.transform_hash,
                 "row {index}: transform_hash mismatch"
             );
+            work_budget.check_deadline(OperatorWorkBudgetStage::Decode)?;
         }
         Ok(())
     }
+}
+
+fn optional_string_ref(column: &StringArray, row: usize) -> Option<&str> {
+    (!column.is_null(row)).then(|| column.value(row))
 }
 
 fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
@@ -2671,6 +3899,14 @@ fn optional_i64(column: &Int64Array, row: usize) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
+
     use super::*;
     use crate::catalog_projection::{
         NT_DATA_TYPE_BAR, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_TRADE_TICK,
@@ -2681,6 +3917,67 @@ mod tests {
         SourceCandidateClass, SourceProofClaimLimit, SourceProofReport, SourceProofStatus,
         SourceProofUsageScope, SourceSelectionStatus, TimeRange,
     };
+
+    #[derive(Default)]
+    struct IncrementingClock {
+        ticks: AtomicU64,
+    }
+
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for IncrementingClock {
+        fn now(&self) -> Duration {
+            Duration::from_secs(self.ticks.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
+    struct ExpireAfterObservationsClock {
+        observations: AtomicU64,
+        expires_after: u64,
+    }
+
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for ExpireAfterObservationsClock {
+        fn now(&self) -> Duration {
+            if self.observations.fetch_add(1, Ordering::SeqCst) >= self.expires_after {
+                Duration::from_secs(1)
+            } else {
+                Duration::ZERO
+            }
+        }
+    }
+
+    fn expiring_guard(expires_after: u64) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: u64::MAX,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 1,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            Arc::new(ExpireAfterObservationsClock {
+                observations: AtomicU64::new(0),
+                expires_after,
+            }),
+        )
+        .expect("expiring work budget")
+    }
+
+    fn guarded_test_budget(max_wall_seconds: u64) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::with_clock(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: u64::MAX,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds,
+                    require_object_selection_metadata: false,
+                },
+            ),
+            Arc::new(IncrementingClock::default()),
+        )
+        .expect("fake-clock work budget")
+    }
 
     #[test]
     fn source_adapter_registry_exposes_data_family_metadata() {
@@ -3694,6 +4991,7 @@ seller_side_values = ["Sell"]
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 1,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 60,
                     require_object_selection_metadata: false,
@@ -3722,6 +5020,39 @@ seller_side_values = ["Sell"]
     }
 
     #[test]
+    fn giant_single_csv_record_expires_during_bounded_reader_scan() {
+        let mapping = CsvTradeMappingConfig {
+            has_headers: true,
+            trade_id_column: "id".to_string(),
+            timestamp_column: "timestamp".to_string(),
+            timestamp_unit: CsvTimestampUnit::Milliseconds,
+            price_column: "price".to_string(),
+            size_column: "volume".to_string(),
+            side_column: "side".to_string(),
+            buyer_side_values: vec!["buy".to_string()],
+            seller_side_values: vec!["sell".to_string()],
+        };
+        let giant_trade_id = "x".repeat(32_768);
+        let csv = format!(
+            "id,timestamp,price,volume,side,rpi\n{giant_trade_id},1772323201665,617.2,0.3,buy,0\n"
+        );
+        let guard = expiring_guard(12);
+
+        let error = normalize_csv_native_trades_with_meter(
+            &accepted_dataset(),
+            &identity(),
+            &mapping,
+            &csv,
+            0,
+            "ingest-run-test",
+            &guard,
+        )
+        .expect_err("giant CSV record must observe the wall deadline during bounded reads");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+    }
+
+    #[test]
     fn delimiter_only_csv_record_is_metered_before_semantic_skip() {
         let mapping = CsvTradeMappingConfig {
             has_headers: true,
@@ -3741,6 +5072,7 @@ seller_side_values = ["Sell"]
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
                     max_source_rows: 1,
+                    max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: 1,
                     max_wall_seconds: 60,
                     require_object_selection_metadata: false,
@@ -3794,5 +5126,243 @@ seller_side_values = ["Sell"]
             total_rows += batch.expect("batch").num_rows();
         }
         assert_eq!(total_rows, table.rows.len());
+    }
+
+    #[test]
+    fn completed_parquet_read_observes_fake_clock_expiry() {
+        let accepted = accepted_dataset();
+        let table = normalize_sample_spot_tick_trades(
+            &accepted,
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("trades.parquet");
+        table.write_parquet(&path).expect("write parquet");
+        let guard = expiring_guard(8);
+
+        let error = CanonicalTradesTable::read_parquet_guarded(&path, &accepted, &guard)
+            .expect_err("completed-output reuse must remain deadline guarded");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
+    }
+
+    #[test]
+    fn completed_parquet_file_rejects_bytes_above_hard_limit_before_builder() {
+        let accepted = accepted_dataset();
+        let table = normalize_sample_spot_tick_trades(
+            &accepted,
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("trades.parquet");
+        table.write_parquet(&path).expect("write parquet");
+        let guard = OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: 1,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+
+        let error = CanonicalTradesTable::read_parquet_guarded(&path, &accepted, &guard)
+            .expect_err("file size must reject decoded bytes before Parquet builder allocation");
+
+        assert!(error.to_string().contains("max_decoded_bytes"), "{error:#}");
+    }
+
+    #[test]
+    fn completed_parquet_file_rejects_oversized_footer_before_builder() {
+        let accepted = accepted_dataset();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("oversized-footer.parquet");
+        let mut bytes = Vec::from(PARQUET_MAGIC);
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&PARQUET_MAGIC);
+        std::fs::write(&path, bytes).expect("write malformed Parquet envelope");
+
+        let error = CanonicalTradesTable::read_parquet_guarded(
+            &path,
+            &accepted,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect_err("footer length must fail before the Parquet builder sees the file");
+
+        assert!(
+            error
+                .to_string()
+                .contains("footer metadata length 4294967295 exceeds the 0 bytes available"),
+            "{error:#}"
+        );
+    }
+
+    fn parquet_envelope_with_footer(footer: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::from(PARQUET_MAGIC);
+        bytes.extend_from_slice(footer);
+        bytes.extend_from_slice(
+            &u32::try_from(footer.len())
+                .expect("test footer length fits u32")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(&PARQUET_MAGIC);
+        bytes
+    }
+
+    fn parquet_preflight_guard(
+        max_decoded_bytes: u64,
+        max_source_rows: u64,
+    ) -> OperatorWorkBudgetGuard {
+        OperatorWorkBudgetGuard::new(crate::operator_work_budget::OperatorWorkBudget::Backfill(
+            crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                max_source_rows,
+                max_decoded_bytes,
+                max_projected_row_groups: u64::MAX,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("Parquet preflight guard")
+    }
+
+    #[test]
+    fn completed_parquet_file_rejects_tiny_footer_with_huge_list_before_builder() {
+        // Root field 1 is a list of bytes. Its extended compact-Thrift list
+        // cardinality is u32::MAX, but the entire malicious footer is tiny.
+        let footer = [0x19, 0xf3, 0xff, 0xff, 0xff, 0xff, 0x0f];
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("huge-list.parquet");
+        std::fs::write(&path, parquet_envelope_with_footer(&footer))
+            .expect("write compact-Thrift list bomb");
+
+        let error = CanonicalTradesTable::read_parquet_guarded(
+            &path,
+            &accepted_dataset(),
+            &parquet_preflight_guard(1_024, 8),
+        )
+        .expect_err("list cardinality must fail before the Parquet builder");
+
+        assert!(
+            format!("{error:#}").contains(
+                "compact-Thrift collection cardinality 4294967295 exceeds max_source_rows 8"
+            ),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn completed_parquet_file_rejects_nested_binary_length_before_builder() {
+        // Root field 1 is a struct; nested field 1 is binary with declared
+        // length 129, larger than max_decoded_bytes despite the six-byte
+        // footer itself fitting easily.
+        let footer = [0x1c, 0x18, 0x81, 0x01, 0x00, 0x00];
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("nested-length.parquet");
+        std::fs::write(&path, parquet_envelope_with_footer(&footer))
+            .expect("write compact-Thrift nested binary bomb");
+
+        let error = CanonicalTradesTable::read_parquet_guarded(
+            &path,
+            &accepted_dataset(),
+            &parquet_preflight_guard(128, 8),
+        )
+        .expect_err("nested binary length must fail before the Parquet builder");
+
+        assert!(
+            format!("{error:#}")
+                .contains("compact-Thrift binary length 129 exceeds max_decoded_bytes 128"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn canonical_write_rejects_one_oversize_string_row_before_allocation() {
+        let mut table = normalize_sample_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        table.rows[0].raw_payload_id = "x".repeat(4_096);
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: 1_024,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("guard");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("trades.parquet");
+
+        let error = table
+            .write_parquet_guarded(&path, &guard)
+            .expect_err("one row above max_decoded_bytes must fail before Arrow allocation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("canonical rows through index 0 require"),
+            "{error:#}"
+        );
+        assert!(
+            error.to_string().contains("max_decoded_bytes 1024"),
+            "{error:#}"
+        );
+        assert!(!path.exists(), "rejected row must not publish an artifact");
+    }
+
+    #[test]
+    fn guarded_validation_expires_at_a_row_boundary() {
+        let table = normalize_sample_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let guard = guarded_test_budget(5);
+
+        let error = table
+            .validate_guarded(&guard, OperatorWorkBudgetStage::CanonicalWrite)
+            .expect_err("validation must observe expiry inside the row loop");
+
+        assert!(error.to_string().contains("canonical_write"), "{error:#}");
+    }
+
+    #[test]
+    fn guarded_record_batch_materialization_postchecks_deadline() {
+        let table = normalize_sample_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let guard = guarded_test_budget(2);
+
+        let error = CanonicalTradesTable::to_record_batch_guarded(&table.rows[..1], &guard)
+            .expect_err("materialization must observe deadline after Arrow work");
+
+        assert!(error.to_string().contains("canonical_write"), "{error:#}");
     }
 }

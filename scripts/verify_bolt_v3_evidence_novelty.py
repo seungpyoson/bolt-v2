@@ -295,15 +295,16 @@ def verification_findings(root: pathlib.Path) -> list[str]:
         body = blocked_match.group(0)
         try:
             mapping = body.index("blocked_strategy_input_canonical_state")
-            claim = body.index("blocked_strategy_input_novelty")
+            duplicate = body.index("blocked_strategy_input_novelty\n            .has_claimed")
+            claim = body.index("blocked_strategy_input_novelty", duplicate + 1)
             payload = body.index("blocked_entry_strategy_input_evidence_snapshot_at")
             append = body.index(".record_strategy_input_snapshot(&snapshot)")
         except ValueError:
             findings.append(f"{PRODUCER_PATH}: blocked snapshot novelty/payload/append seam incomplete")
         else:
-            if not mapping < claim < payload < append:
+            if not mapping < duplicate < payload < claim < append:
                 findings.append(
-                    f"{PRODUCER_PATH}: canonical blocked-snapshot mapping and duplicate claim must precede payload and append"
+                    f"{PRODUCER_PATH}: blocked-snapshot duplicate check must precede payload build, claim, and append"
                 )
 
     entry_decision_text = (root / ENTRY_DECISION_PATH).read_text(encoding="utf-8")

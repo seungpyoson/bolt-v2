@@ -6642,13 +6642,19 @@ impl BinaryOracleEdgeTaker {
             realized_volatility.gate_result,
             realized_volatility.receive_watermark_ms.is_some(),
         );
+        if self
+            .blocked_strategy_input_novelty
+            .has_claimed(&episode, state)?
+        {
+            return Ok(());
+        }
+        let snapshot = self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;
         if !self
             .blocked_strategy_input_novelty
             .claim_once(&episode, state)?
         {
             return Ok(());
         }
-        let snapshot = self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;
         self.context
             .decision_evidence()
             .record_strategy_input_snapshot(&snapshot)?;

@@ -791,3 +791,32 @@ fn same_market_transition_replaces_changed_selection_metadata() {
     );
     assert_eq!(active.interval_end_ms, Some(301_999));
 }
+
+#[test]
+fn same_boundary_refreshes_corrected_evidence_identity() {
+    let mut active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let original_identity = active.evidence_identity.clone();
+    let mut next_market = candidate_market("MKT-1", 1_000);
+    next_market.evidence_identity.question_id = "corrected-question".to_string();
+    next_market.source_identity.question_id = "corrected-question".to_string();
+    let corrected_identity = next_market.evidence_identity.clone();
+    let next = selection_snapshot(
+        1_000,
+        SelectionState::Active {
+            market: Box::new(next_market),
+        },
+    );
+
+    apply_selection_snapshot_to_active(&mut active, &next, 0);
+
+    assert_ne!(active.evidence_identity, original_identity);
+    assert_eq!(active.evidence_identity, Some(corrected_identity));
+    assert_eq!(
+        active
+            .source_identity
+            .as_ref()
+            .map(|identity| identity.question_id.as_str()),
+        Some("corrected-question")
+    );
+}

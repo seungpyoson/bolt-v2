@@ -5303,6 +5303,31 @@ fn blocked_snapshot_writer_failure_remains_seen_without_retry() {
 }
 
 #[test]
+fn blocked_snapshot_build_failure_does_not_consume_novelty() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
+    let decision = rv_clock_domain_amendment_blocked_decision();
+    let reference_timestamp = strategy.active.last_reference_ts_ms.take();
+
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_200, &decision)
+        .expect_err("missing snapshot input must fail before claiming novelty");
+    assert_eq!(evidence.strategy_input_attempts(), 0);
+
+    strategy.active.last_reference_ts_ms = reference_timestamp;
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
+        .expect("the same semantic state must emit after snapshot inputs recover");
+    assert_eq!(evidence.strategy_input_attempts(), 1);
+
+    strategy.active.last_reference_ts_ms = None;
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_202, &decision)
+        .expect("an already-claimed state must not rebuild an unavailable payload");
+    assert_eq!(evidence.strategy_input_attempts(), 1);
+}
+
+#[test]
 fn blocked_snapshot_failed_semantic_state_does_not_retry() {
     let evidence =
         Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));

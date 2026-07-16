@@ -142,6 +142,32 @@ impl EvidenceNoveltyGuard {
         episode: &EvidenceEpisodeId,
         state: EvidenceCanonicalState,
     ) -> Result<bool> {
+        let (word, mask) = self.state_bit(state)?;
+        let words = self
+            .seen_by_episode
+            .entry(episode.clone())
+            .or_insert_with(|| vec![0; EVIDENCE_NOVELTY_WORD_COUNT]);
+        if words[word] & mask != 0 {
+            return Ok(false);
+        }
+        words[word] |= mask;
+        Ok(true)
+    }
+
+    /// Check a registered state without creating or mutating an episode bitmap.
+    pub fn has_claimed(
+        &self,
+        episode: &EvidenceEpisodeId,
+        state: EvidenceCanonicalState,
+    ) -> Result<bool> {
+        let (word, mask) = self.state_bit(state)?;
+        Ok(self
+            .seen_by_episode
+            .get(episode)
+            .is_some_and(|words| words[word] & mask == mask))
+    }
+
+    fn state_bit(&self, state: EvidenceCanonicalState) -> Result<(usize, u64)> {
         let registration = canonical_state_registration(state);
         if registration.owner != self.owner {
             bail!(
@@ -154,17 +180,9 @@ impl EvidenceNoveltyGuard {
             bail!("evidence novelty state id exceeds the registered family capacity");
         }
         let word_bits = u64::BITS as usize;
-        let words = self
-            .seen_by_episode
-            .entry(episode.clone())
-            .or_insert_with(|| vec![0; EVIDENCE_NOVELTY_WORD_COUNT]);
         let word = registration.id / word_bits;
         let mask = 1_u64 << (registration.id % word_bits);
-        if words[word] & mask != 0 {
-            return Ok(false);
-        }
-        words[word] |= mask;
-        Ok(true)
+        Ok((word, mask))
     }
 
     #[must_use]

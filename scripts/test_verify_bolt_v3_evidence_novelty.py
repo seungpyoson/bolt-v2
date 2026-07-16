@@ -63,6 +63,44 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
             findings,
         )
 
+    def test_blocked_snapshot_payload_must_build_before_claim(self) -> None:
+        paths = (
+            VERIFIER.REGISTRY_PATH,
+            VERIFIER.GENERATED_PATH,
+            VERIFIER.PRODUCER_PATH,
+            VERIFIER.ENTRY_DECISION_PATH,
+            VERIFIER.NOVELTY_PATH,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for relative_path in paths:
+                destination = root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    (VERIFIER.REPO_ROOT / relative_path).read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            producer_path = root / VERIFIER.PRODUCER_PATH
+            producer = producer_path.read_text(encoding="utf-8")
+            payload = (
+                "        let snapshot = self."
+                "blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;\n"
+            )
+            function_start = producer.index(
+                "fn record_blocked_entry_strategy_input_snapshot_once("
+            )
+            function_end = producer.index("\n    fn ", function_start)
+            function = producer[function_start:function_end].replace(payload, "", 1)
+            append = "        self.context\n            .decision_evidence()"
+            function = function.replace(append, payload + append, 1)
+            producer = producer[:function_start] + function + producer[function_end:]
+            producer_path.write_text(producer, encoding="utf-8")
+            findings = VERIFIER.verification_findings(root)
+        self.assertTrue(
+            any("duplicate check must precede" in item for item in findings),
+            findings,
+        )
+
     def test_repository_registry_preserves_frozen_market_allocations(self) -> None:
         registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
         actual = tuple(

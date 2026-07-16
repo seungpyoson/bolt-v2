@@ -99,12 +99,16 @@ pub(super) fn apply_selection_snapshot_to_active(
         && active.market_id == next.market_id
         && active.instrument_id == next.instrument_id;
     if active.same_boundary(&next) {
+        active.source_identity = next.source_identity;
+        active.evidence_identity = next.evidence_identity;
         active.trade_flow = previous_trade_flow;
         return;
     }
     if same_market_transition(active, &next) {
         active.phase = next.phase;
         active.forced_flat = next.forced_flat;
+        active.source_identity = next.source_identity;
+        active.evidence_identity = next.evidence_identity;
         active.market_selection_outcome = next.market_selection_outcome;
         active.interval_end_ms = next.interval_end_ms;
         active.trade_flow = previous_trade_flow;

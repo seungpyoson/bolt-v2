@@ -21120,3 +21120,11 @@ literal = '''"complete_set_arbitrage"'''
 context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
 classification = "strategy_archetype_key"
 reason = "Stable complete-set discriminator used by the shared submit-mode contract's NT order-template validation."
+
+[[allowed]]
+path = "src/bolt_v3_application_resource_ledger.rs"
+kind = "string"
+literal = '''"bolt_v3_risk_closure_workspace.rs"'''
+context = '''#[path = "bolt_v3_risk_closure_workspace.rs"]'''
+classification = "application_resource_ledger_private_module_path"
+reason = "Compile-time Rust module path that makes the application ledger the parent of the private risk-closure workspace authority; it is not an operator runtime value or an alternate config source."

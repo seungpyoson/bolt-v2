@@ -2245,7 +2245,7 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
 }
 
 #[test]
-fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
+fn entry_skip_pricing_blockers_remain_payload_only_in_same_episode() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -2276,7 +2276,7 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
             None,
         )
-        .expect("distinct pricing blocker in same interval should record");
+        .expect("diagnostic churn in the same canonical state should be suppressed");
 
     let entry_skips = evidence
         .events()
@@ -2288,21 +2288,13 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
         .collect::<Vec<_>>();
     assert_eq!(
         entry_skips.len(),
-        2,
-        "same interval/category but different pricing blockers must not dedupe"
+        1,
+        "pricing diagnostics must not expand the canonical novelty state"
     );
     assert_eq!(entry_skips[0].market_id, strategy.active.market_id);
-    assert_eq!(entry_skips[1].market_id, strategy.active.market_id);
-    assert_eq!(entry_skips[0].market_id, entry_skips[1].market_id);
     assert_eq!(
         entry_skips[0].pricing_blocked_by,
         vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
-    );
-    assert_eq!(
-        entry_skips[1].pricing_blocked_by,
-        vec![BoltV3EntryPricingBlockReason::FeeUnavailable(
-            BoltV3OutcomeSide::Up
-        )]
     );
 }
 

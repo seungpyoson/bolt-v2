@@ -266,6 +266,8 @@ mod tests {
         operator::RunSpec, operator_work_budget::OperatorWorkBudgetGuard,
         source_universe_execution_pack::SourceUniverseExecutionPack,
     };
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    use crate::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
 
     #[derive(Debug)]
     struct ExactVersionReadStore {
@@ -502,17 +504,21 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     #[test]
     fn committed_tracers_plan_only_their_staged_s3_object() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for pack_root in [
-            "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack",
-            "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack",
-        ] {
-            let pack_root = repository_root.join(pack_root);
+        let committed_packs =
+            discover_committed_source_universe_execution_packs(&repository_root)
+                .expect("discover committed execution packs");
+        for committed_pack in committed_packs {
             let pack: SourceUniverseExecutionPack = serde_json::from_slice(
-                &fs::read(pack_root.join("source-universe-execution-pack.json"))
-                    .expect("read committed execution pack"),
+                &fs::read(&committed_pack.summary_path).unwrap_or_else(|error| {
+                    panic!(
+                        "read committed execution pack {}: {error}",
+                        committed_pack.summary_path.display()
+                    )
+                }),
             )
             .expect("parse committed execution pack");
             let mut record = pack.records.first().expect("one committed tracer").clone();

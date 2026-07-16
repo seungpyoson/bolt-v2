@@ -1,5 +1,8 @@
 use std::{fs, path::Path};
 
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+use std::collections::BTreeSet;
+
 use crate::backtesting_vertical_slice_test_support::{
     PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_PATH, materialize_evicted_pmxt_object_manifests,
     tempdir_in_repo_target,
@@ -10,6 +13,8 @@ use backtesting_vertical_slice::reference_fixture_index::{
 };
 use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
 use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+use backtesting_vertical_slice::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
 use backtesting_vertical_slice::source_universe_execution_acceptance::{
     SourceUniverseExecutionAcceptanceLedger, SourceUniverseExecutionAcceptanceLedgerSpec,
     SourceUniverseExecutionAcceptanceLedgerStatus, SourceUniverseExecutionAcceptanceUniverseStatus,
@@ -463,6 +468,93 @@ blocking_reasons = [
         pmxt.blocking_reasons
             .iter()
             .any(|reason| reason == "missing_source_universe_object_gates")
+    );
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn committed_execution_pack_registry_and_acceptance_ledger_are_an_exact_set() {
+    let repo_root = repo_root_from_manifest_dir()
+        .canonicalize()
+        .expect("repository root canonicalizes");
+    let registry_summary_paths = discover_committed_source_universe_execution_packs(&repo_root)
+        .expect("discover committed execution-pack registry")
+        .into_iter()
+        .map(|pack| pack.summary_path)
+        .collect::<BTreeSet<_>>();
+
+    let acceptance_ledgers_root = repo_root.join(
+        "specs/023-nt-research-analytics-platform/reference/source-universe-execution-acceptance-ledgers",
+    );
+    let mut ledger_spec_paths = fs::read_dir(&acceptance_ledgers_root)
+        .expect("read committed execution-acceptance ledger root")
+        .map(|entry| {
+            let entry = entry.expect("read committed execution-acceptance ledger entry");
+            assert!(
+                entry.file_type().expect("stat ledger entry").is_dir(),
+                "committed execution-acceptance ledger entry must be a directory: {}",
+                entry.path().display()
+            );
+            let spec_path = entry
+                .path()
+                .join("source-universe-execution-acceptance-ledger.toml");
+            assert!(
+                spec_path.is_file(),
+                "committed execution-acceptance ledger entry must contain {}",
+                spec_path.display()
+            );
+            spec_path
+        })
+        .collect::<Vec<_>>();
+    ledger_spec_paths.sort();
+    assert_eq!(
+        ledger_spec_paths.len(),
+        1,
+        "exactly one committed execution-acceptance ledger must be authoritative"
+    );
+    let ledger_spec: SourceUniverseExecutionAcceptanceLedgerSpec = toml::from_slice(
+        &fs::read(&ledger_spec_paths[0]).expect("read authoritative execution-acceptance ledger"),
+    )
+    .expect("parse authoritative execution-acceptance ledger");
+
+    let mut ledger_summary_paths = BTreeSet::new();
+    for summary_path in ledger_spec
+        .universes
+        .iter()
+        .filter_map(|universe| universe.source_universe_execution_pack_path.as_ref())
+    {
+        assert!(
+            !summary_path.is_absolute(),
+            "execution-acceptance ledger summary path must be repository-relative: {}",
+            summary_path.display()
+        );
+        let canonical_summary_path = repo_root
+            .join(summary_path)
+            .canonicalize()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "canonicalize execution-acceptance ledger summary {}: {error}",
+                    summary_path.display()
+                )
+            });
+        assert!(
+            ledger_summary_paths.insert(canonical_summary_path.clone()),
+            "duplicate execution-pack summary reference in acceptance ledger: {}",
+            canonical_summary_path.display()
+        );
+    }
+
+    let registry_only = registry_summary_paths
+        .difference(&ledger_summary_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    let ledger_only = ledger_summary_paths
+        .difference(&registry_summary_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        registry_only.is_empty() && ledger_only.is_empty(),
+        "committed execution-pack registry and acceptance ledger must cover each other exactly; registry_only={registry_only:?}, ledger_only={ledger_only:?}"
     );
 }
 

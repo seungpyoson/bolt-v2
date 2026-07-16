@@ -61,6 +61,66 @@ fn run_manifest_unit_tests_do_not_embed_accepted_sample_fixture_values() {
     );
 }
 
+#[test]
+fn committed_pack_completion_boundaries_are_registry_derived_not_venue_listed() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (relative_path, function_name) in [
+        (
+            "src/source_universe_batch_launch.rs",
+            "discover_committed_source_universe_execution_packs",
+        ),
+        (
+            "src/bin/source_universe_batch_execution.rs",
+            "committed_one_record_launch_profiles_select_exact_staged_s3_packs",
+        ),
+        (
+            "src/source_universe_object_transport.rs",
+            "committed_tracers_plan_only_their_staged_s3_object",
+        ),
+        (
+            "tests/backtesting_vertical_slice_source_universe_execution_acceptance.rs",
+            "committed_execution_pack_registry_and_acceptance_ledger_are_an_exact_set",
+        ),
+    ] {
+        let path = crate_root.join(relative_path);
+        let source = fs::read_to_string(&path).expect("read registry-derived boundary source");
+        let function = rust_function_region(&source, function_name);
+        let lower = function.to_ascii_lowercase();
+        for venue in ["binance", "bybit"] {
+            assert!(
+                !lower.contains(venue),
+                "generic committed-pack boundary {function_name} in {} must discover registry entries, not list venue {venue}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn rust_function_region<'a>(source: &'a str, function_name: &str) -> &'a str {
+    let signature = format!("fn {function_name}(");
+    let function_start = source
+        .find(&signature)
+        .unwrap_or_else(|| panic!("missing function {function_name}"));
+    let source = &source[function_start..];
+    let body_start = source
+        .find('{')
+        .unwrap_or_else(|| panic!("missing body for function {function_name}"));
+    let mut depth = 0_u64;
+    for (offset, character) in source[body_start..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1).expect("balanced function braces");
+                if depth == 0 {
+                    return &source[..body_start + offset + character.len_utf8()];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unterminated body for function {function_name}")
+}
+
 fn production_region(content: &str) -> &str {
     content
         .split("\n#[cfg(test)]\nmod tests")

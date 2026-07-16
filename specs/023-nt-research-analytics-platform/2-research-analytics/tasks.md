@@ -1,7 +1,7 @@
 # Tasks: Research Analytics
 
 - [ ] RA-001 Gate-0: route every accepted NT-native converted table family through the one manifest-bound, create-only S3 publication path and the sole exact-version-hydrated NT BacktestNode read binding; NT's catalog writer is not the publication authority.
-  - [x] RA-001a One-record tracer: CSV-native trades from the committed Binance and Bybit execution packs use the bounded process-isolated durable path.
+  - [x] RA-001a One-record tracer: every committed source-universe execution-pack registry entry uses the bounded process-isolated durable path for one CSV-native trade record; coverage is registry-derived rather than venue-listed.
   - [ ] RA-001b Fan-out: extend the same path to the remaining accepted NT-native table families and converter bindings; no alternate publisher or manual BacktestEngine path is permitted.
 - [x] RA-002 Define point-in-time feature join rules and leakage fixtures.
 - [x] RA-003 Implement leakage-check fixtures that fail closed on future-data access.

@@ -271,6 +271,10 @@ mod tests {
         SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionReportStatus,
         SourceUniverseCacheRunVerification,
     };
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    use backtesting_vertical_slice::source_universe_batch_launch::{
+        discover_committed_source_universe_execution_packs,
+    };
     use clap::Parser;
 
     #[test]
@@ -745,16 +749,15 @@ max_retained_control_input_bytes = 4096
         );
     }
 
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     #[test]
     fn committed_one_record_launch_profiles_select_exact_staged_s3_packs() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for relative_path in [
-            "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/source-universe-batch-launch.toml",
-            "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-batch-launch.toml",
-        ] {
-            let launch_path = repository_root.join(relative_path);
-            let spec = SourceUniverseBatchLaunchSpec::from_toml_file(&launch_path)
-                .unwrap_or_else(|error| panic!("parse {}: {error:#}", launch_path.display()));
+        let committed_packs =
+            discover_committed_source_universe_execution_packs(&repository_root)
+                .expect("discover committed execution packs");
+        for committed_pack in committed_packs {
+            let spec = &committed_pack.launch_spec;
             assert_eq!(spec.start_sequence, Some(0));
             assert_eq!(spec.record_limit, Some(1));
             assert_eq!(spec.max_concurrent_records, 1);
@@ -762,12 +765,13 @@ max_retained_control_input_bytes = 4096
             assert!(!spec.allow_partial);
             assert_eq!(spec.transport, SourceUniverseBatchTransportSpec::StagedS3);
 
-            let pack_path = launch_path
-                .parent()
-                .expect("launch profile parent")
-                .join(&spec.execution_pack.path);
-            let pack_bytes = fs::read(&pack_path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", pack_path.display()));
+            let pack_bytes = fs::read(&committed_pack.summary_path).unwrap_or_else(|error| {
+                panic!(
+                    "read {} discovered from {}: {error}",
+                    committed_pack.summary_path.display(),
+                    committed_pack.launch_path.display()
+                )
+            });
             assert_eq!(
                 u64::try_from(pack_bytes.len()).expect("pack size fits u64"),
                 spec.execution_pack.bytes

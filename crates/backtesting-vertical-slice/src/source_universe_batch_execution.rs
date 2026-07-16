@@ -6737,21 +6737,87 @@ mod tests {
 
     #[test]
     fn selected_control_envelope_is_exact_deduplicated_selected_and_overflow_safe() {
-        let pack_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .expect("repo root")
-            .join(
-                "specs/023-nt-research-analytics-platform/reference/\
-                 source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/\
-                 execution-pack/source-universe-execution-pack.json",
-            );
-        let mut pack: SourceUniverseExecutionPack =
-            serde_json::from_slice(&fs::read(&pack_path).expect("read committed execution pack"))
-                .expect("parse committed execution pack");
-        let pack_base_dir = pack_path.parent().expect("execution pack parent");
-        let first = pack.records.first().expect("committed pack has records");
-        let second = pack.records.get(1).expect("committed pack has two records");
+        let controls = tempfile::tempdir().expect("synthetic control root");
+        fs::write(controls.path().join("source-bindings.toml"), b"shared")
+            .expect("write shared source bindings");
+        for sequence in 0..2 {
+            fs::write(
+                controls.path().join(format!("run-spec-{sequence}.toml")),
+                b"run",
+            )
+            .expect("write run spec");
+            fs::write(
+                controls.path().join(format!("accepted-{sequence}.json")),
+                b"accepted",
+            )
+            .expect("write accepted tranche");
+            fs::write(
+                controls.path().join(format!("execution-{sequence}.json")),
+                b"execution",
+            )
+            .expect("write execution plan");
+        }
+        let record = |sequence: u64| SourceUniverseExecutionPackRecord {
+            sequence,
+            work_item_id: format!("work-{sequence}"),
+            operator_run_id: format!("operator-{sequence}"),
+            source_binding: "binding".to_string(),
+            category: "category".to_string(),
+            symbol: "SYMBOL".to_string(),
+            archive_date: "2026-01-01".to_string(),
+            source_uri: "s3://bucket/object".to_string(),
+            source_url: "https://example.invalid/object".to_string(),
+            selected_object_sha256: "a".repeat(64),
+            selected_object_bytes: 1,
+            source_proof_id: "proof".to_string(),
+            source_proof_version: 1,
+            accepted_tranche_id: "tranche".to_string(),
+            output_prefix: format!("output-{sequence}"),
+            source_bindings_path: PathBuf::from("source-bindings.toml"),
+            source_bindings_bytes: 6,
+            source_bindings_sha256: "b".repeat(64),
+            run_spec_path: PathBuf::from(format!("run-spec-{sequence}.toml")),
+            run_spec_bytes: 3,
+            run_spec_sha256: "c".repeat(64),
+            accepted_tranche_path: PathBuf::from(format!("accepted-{sequence}.json")),
+            accepted_tranche_bytes: 8,
+            accepted_tranche_sha256: "d".repeat(64),
+            execution_plan_path: PathBuf::from(format!("execution-{sequence}.json")),
+            execution_plan_bytes: 9,
+            execution_plan_sha256: "e".repeat(64),
+        };
+        let mut pack = SourceUniverseExecutionPack {
+            schema_version: SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION.to_string(),
+            pack_id: "synthetic-control-envelope".to_string(),
+            status: SourceUniverseExecutionPackStatus::Ready,
+            work_order_id: "work-order".to_string(),
+            input_id: "input".to_string(),
+            gate_id: "gate".to_string(),
+            conversion_run_plan_id: "conversion-plan".to_string(),
+            universe_id: "universe".to_string(),
+            venue: "venue".to_string(),
+            source: "source".to_string(),
+            family: "family".to_string(),
+            table_family: "trades".to_string(),
+            planned_object_count: 2,
+            executable_record_count: 2,
+            withheld_record_count: 0,
+            selected_record_count: 2,
+            materialized_record_count: 2,
+            skipped_executable_record_count: 0,
+            executable_source_bytes: 2,
+            materialized_source_bytes: 2,
+            artifact_refs: vec![crate::reference_artifact::ReferenceArtifactPin {
+                role: "source_bindings".to_string(),
+                path: PathBuf::from("source-bindings.toml"),
+                sha256: "b".repeat(64),
+            }],
+            records: vec![record(0), record(1)],
+            blocking_reasons: Vec::new(),
+        };
+        let pack_base_dir = controls.path();
+        let first = pack.records.first().expect("synthetic pack has records");
+        let second = pack.records.get(1).expect("synthetic pack has two records");
         assert_eq!(
             first.source_bindings_path, second.source_bindings_path,
             "fixture must exercise shared source-bindings deduplication"
@@ -6983,30 +7049,134 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     #[test]
     fn per_record_clock_expiry_isolated_and_continue_on_error_advances() {
-        let pack_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
-            .expect("repo root")
-            .join(
-                "specs/023-nt-research-analytics-platform/reference/\
-                 source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/\
-                 execution-pack/source-universe-execution-pack.json",
-            );
+            .expect("repo root");
+        let committed = crate::source_universe_batch_launch::discover_committed_source_universe_execution_packs(
+            repo_root,
+        )
+        .expect("discover committed execution packs");
+        let (seed_pack_path, mut pack) = committed
+            .iter()
+            .find_map(|committed_pack| {
+                let bytes = fs::read(&committed_pack.summary_path).ok()?;
+                let pack: SourceUniverseExecutionPack = serde_json::from_slice(&bytes).ok()?;
+                (pack.table_family == "trades" && !pack.records.is_empty())
+                    .then_some((committed_pack.summary_path.as_path(), pack))
+            })
+            .expect("committed registry contains a trade execution pack");
+        let seed_record = pack.records.first().expect("seed record").clone();
+        let seed_base_dir = seed_pack_path.parent().expect("seed pack parent");
+        let second_sequence = seed_record
+            .sequence
+            .checked_add(1)
+            .expect("synthetic sequence increment");
+        let second_operator_run_id = format!("{}-synthetic-second", seed_record.operator_run_id);
+        let synthetic_parent = repo_root.join("target");
+        fs::create_dir_all(&synthetic_parent).expect("create repository target directory");
+        let synthetic_pack_root =
+            tempfile::tempdir_in(&synthetic_parent).expect("synthetic execution-pack root");
+
+        let seed_run_spec_path = resolve_pack_control_path(
+            seed_base_dir,
+            &seed_record.run_spec_path,
+        )
+        .expect("resolve seed run spec");
+        let seed_execution_plan_path = resolve_pack_control_path(
+            seed_base_dir,
+            &seed_record.execution_plan_path,
+        )
+        .expect("resolve seed execution plan");
+        let synthetic_run_spec_bytes = fs::read_to_string(&seed_run_spec_path)
+            .expect("read seed run spec")
+            .replace(&seed_record.operator_run_id, &second_operator_run_id)
+            .into_bytes();
+        let mut synthetic_execution_plan: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&seed_execution_plan_path)
+            .expect("read seed execution plan")
+            .replace(&seed_record.operator_run_id, &second_operator_run_id),
+        )
+        .expect("parse synthetic execution plan");
+        synthetic_execution_plan["run_spec_hash"] =
+            serde_json::Value::String(crate::hashing::sha256_hex(&synthetic_run_spec_bytes));
+        let synthetic_execution_plan_bytes = serde_json::to_vec_pretty(&synthetic_execution_plan)
+            .expect("serialize synthetic execution plan");
+        let synthetic_run_spec_path = synthetic_pack_root.path().join("second-run-spec.toml");
+        let synthetic_execution_plan_path =
+            synthetic_pack_root.path().join("second-execution-plan.json");
+        fs::write(&synthetic_run_spec_path, &synthetic_run_spec_bytes)
+            .expect("write synthetic run spec");
+        fs::write(
+            &synthetic_execution_plan_path,
+            &synthetic_execution_plan_bytes,
+        )
+        .expect("write synthetic execution plan");
+
+        let mut second_record = seed_record.clone();
+        second_record.sequence = second_sequence;
+        second_record.work_item_id = format!("{}-synthetic-second", seed_record.work_item_id);
+        second_record.operator_run_id = second_operator_run_id;
+        second_record.run_spec_path = PathBuf::from("second-run-spec.toml");
+        second_record.run_spec_bytes =
+            u64::try_from(synthetic_run_spec_bytes.len()).expect("run-spec length fits u64");
+        second_record.run_spec_sha256 = crate::hashing::sha256_hex(&synthetic_run_spec_bytes);
+        second_record.execution_plan_path = PathBuf::from("second-execution-plan.json");
+        second_record.execution_plan_bytes = u64::try_from(synthetic_execution_plan_bytes.len())
+            .expect("execution-plan length fits u64");
+        second_record.execution_plan_sha256 =
+            crate::hashing::sha256_hex(&synthetic_execution_plan_bytes);
+
+        pack.pack_id = format!("{}-synthetic-two-record", pack.pack_id);
+        pack.status = SourceUniverseExecutionPackStatus::Ready;
+        pack.planned_object_count = 2;
+        pack.executable_record_count = 2;
+        pack.withheld_record_count = 0;
+        pack.selected_record_count = 2;
+        pack.materialized_record_count = 2;
+        pack.skipped_executable_record_count = 0;
+        pack.executable_source_bytes = seed_record
+            .selected_object_bytes
+            .checked_mul(2)
+            .expect("synthetic executable bytes");
+        pack.materialized_source_bytes = pack.executable_source_bytes;
+        pack.records = vec![seed_record.clone(), second_record];
+        pack.blocking_reasons.clear();
+        let pack_path = synthetic_pack_root
+            .path()
+            .join("source-universe-execution-pack.json");
+        let pack_bytes = serde_json::to_vec_pretty(&pack).expect("serialize synthetic pack");
+        fs::write(&pack_path, &pack_bytes).expect("write synthetic pack");
+
         let output = tempfile::tempdir().expect("batch output");
         let mut fetcher = RecordingErrorFetcher::default();
         let mut runner = NeverRunner;
-        let max_artifact_bytes = fs::metadata(&pack_path)
-            .expect("execution-pack metadata")
-            .len();
+        let max_artifact_bytes = u64::try_from(pack_bytes.len()).expect("pack length fits u64");
+        let control_lengths = pack
+            .records
+            .iter()
+            .flat_map(control_artifact_pins)
+            .map(|pin| pin.expected_bytes)
+            .collect::<Vec<_>>();
+        let max_control_artifact_bytes = *control_lengths
+            .iter()
+            .max()
+            .expect("synthetic pack has controls");
+        let max_retained_control_input_bytes = control_lengths
+            .iter()
+            .try_fold(0_u64, |total, bytes| total.checked_add(*bytes))
+            .and_then(|total| total.checked_mul(2))
+            .expect("synthetic retained-control cap");
         let launch_artifacts = SourceUniverseBatchLaunchArtifacts::try_new(
             SourceUniverseBatchArtifactPin::pin_current_path(&pack_path, max_artifact_bytes)
                 .expect("pin pack"),
             SourceUniverseBatchBootstrapLimits {
                 max_launch_artifact_bytes: max_artifact_bytes,
-                max_control_artifact_bytes: max_artifact_bytes,
-                max_retained_control_input_bytes: max_artifact_bytes,
+                max_control_artifact_bytes,
+                max_retained_control_input_bytes,
             },
         )
         .expect("construct bounded launch artifacts");
@@ -7027,10 +7197,10 @@ mod tests {
 
         assert_eq!(report.failed_record_count, 2);
         assert!(report.records.is_empty());
-        assert_eq!(fetcher.calls, vec![1]);
-        assert_eq!(report.failures[0].sequence, 0);
+        assert_eq!(fetcher.calls, vec![second_sequence]);
+        assert_eq!(report.failures[0].sequence, seed_record.sequence);
         assert!(report.failures[0].error.contains("max_wall_seconds"));
-        assert_eq!(report.failures[1].sequence, 1);
+        assert_eq!(report.failures[1].sequence, second_sequence);
         assert!(
             report.failures[1]
                 .error

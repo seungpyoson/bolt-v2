@@ -2381,6 +2381,59 @@ fn bootstrap_cap_failure_is_global_before_paths_outputs_or_factories() {
 }
 
 #[test]
+fn missing_durable_capability_is_global_before_output_or_factories() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let mut registry: toml::Table = toml::from_str(
+        &fs::read_to_string(&fixture.source_bindings_path)
+            .expect("read pack-local source-binding registry"),
+    )
+    .expect("parse pack-local source-binding registry");
+    registry
+        .remove("durable_operator")
+        .expect("valid fixture has durable operator capabilities");
+    fs::write(
+        &fixture.source_bindings_path,
+        toml::to_string(&registry).expect("serialize registry without durable capabilities"),
+    )
+    .expect("write registry without durable capabilities");
+    rewrite_control_triple_and_regenerate_execution_plan(&fixture, 0, |_, _| {});
+    let fetcher_factory_calls = AtomicUsize::new(0);
+    let runner_factory_calls = AtomicUsize::new(0);
+
+    let error = execute_source_universe_batch_with_factories(
+        "source-universe-batch-missing-durable-capability",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: true,
+            max_concurrent_records: Some(4),
+        },
+        || -> anyhow::Result<NeverFetcher> {
+            fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("missing capability must not construct a fetcher")
+        },
+        || -> anyhow::Result<RecordingRunner> {
+            runner_factory_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("missing capability must not construct a runner")
+        },
+    )
+    .expect_err("missing durable capability must abort the complete launch");
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("durable operator capability"),
+        "{message}"
+    );
+    assert!(message.contains("found 0"), "{message}");
+    assert!(!fixture.output_dir.exists());
+    assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn factory_entry_does_not_construct_dependencies_for_empty_selection() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());

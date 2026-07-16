@@ -4794,12 +4794,6 @@ fn verify_pack_control_artifacts(
             record.operator_run_id
         )
     })?;
-    validate_durable_run_spec_preflight(&validated.run_spec, &verified_registry).with_context(|| {
-        format!(
-            "validate deterministic durable operator config for pack record {} ({}) before source fetch",
-            record.sequence, record.operator_run_id
-        )
-    })?;
 
     Ok(SourceUniverseVerifiedControlArtifacts {
         #[cfg(test)]

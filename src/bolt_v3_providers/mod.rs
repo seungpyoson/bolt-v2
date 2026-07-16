@@ -46,7 +46,11 @@ pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
-use nautilus_model::{enums::TimeInForce, identifiers::Venue};
+use nautilus_model::{
+    enums::TimeInForce,
+    identifiers::{InstrumentId, Venue},
+    instruments::{Instrument, InstrumentAny},
+};
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -64,7 +68,6 @@ use crate::{
     bolt_v3_operator_health::{BoltV3InputHealthTransitionEmitter, BoltV3MissingInputSource},
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     bolt_v3_venue_truth::{VenueTruthOrderEventMapper, VenueTruthSnapshotSource},
-    strategies::registry::FeeProvider,
 };
 
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
@@ -273,6 +276,24 @@ impl<'a> ProviderRuntimeApprovals<'a> {
     pub const fn none() -> Self {
         Self { live_submit: None }
     }
+}
+
+pub trait FeeProvider: Send + Sync {
+    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal>;
+    fn entry_fee_bps(&self, instrument: &InstrumentAny, _entry_price: Decimal) -> Option<Decimal> {
+        self.fee_bps(instrument.id())
+    }
+    fn max_entry_fee_bps(
+        &self,
+        instrument: &InstrumentAny,
+        entry_price: Decimal,
+    ) -> Option<Decimal> {
+        self.entry_fee_bps(instrument, entry_price)
+    }
+    fn warm(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<()>>;
 }
 
 type FeeProviderBuilder = fn(

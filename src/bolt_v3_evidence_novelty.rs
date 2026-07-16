@@ -11,7 +11,10 @@ use anyhow::{Result, bail};
 
 use crate::bolt_v3_target_identity::stable_identity_field_is_canonical;
 
-include!("bolt_v3_evidence_novelty_generated.rs");
+#[rustfmt::skip]
+mod generated;
+
+pub use generated::*;
 
 /// The complete non-temporal input surface from which a market episode may be built.
 ///

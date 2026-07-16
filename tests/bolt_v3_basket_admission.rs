@@ -33,16 +33,19 @@ use bolt_v2::{
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
+    bolt_v3_outcome_group_proofs::{
+        NegRiskGroupingProof, PolymarketDiscoveryScopeEvidence, StructuredOutcomeGroupingProof,
+    },
     bolt_v3_outcome_group_scanner::{OutcomeGroupLegScanEvidence, OutcomeGroupScanEvidence},
     bolt_v3_outcome_groups::{
         AttestedLegRef, AttestedPayoutVector, CanonicalField, GroupingProof,
         NormalizedPriceScaleEvidence, OrderConstraintSource, OutcomeGroup, OutcomeGroupSourceKind,
-        OutcomeLeg, OutcomeLegOrderConstraints, OutcomeLegRole, PolymarketDiscoveryScopeEvidence,
-        PositiveSideBinding, PriceScaleAssertionSource, RoleBindingProof, SettlementRules,
-        SettlementSourceKind, TerminalPayoutDerivation, TerminalState, TerminalStateConvention,
-        TerminalStateKind, ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint,
-        derive_standard_payout_matrix, expected_metadata_fingerprint,
-        payout_vector_attestation_sha256, role_binding_attestation_sha256,
+        OutcomeLeg, OutcomeLegOrderConstraints, OutcomeLegRole, PositiveSideBinding,
+        PriceScaleAssertionSource, RoleBindingProof, SettlementRules, SettlementSourceKind,
+        TerminalPayoutDerivation, TerminalState, TerminalStateConvention, TerminalStateKind,
+        ValidatedOutcomeGroup, build_leg_map, canonical_fingerprint, derive_standard_payout_matrix,
+        expected_metadata_fingerprint, payout_vector_attestation_sha256,
+        role_binding_attestation_sha256,
     },
     bolt_v3_submit_admission::{
         BoltV3BasketSubmitSlotClaim, BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
@@ -361,12 +364,14 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
     );
 
     let mut mismatched_proof_scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
-    mismatched_proof_scan.grouping_proof = Some(GroupingProof::HyperliquidOutcome {
-        question: 42,
-        outcome_indices: vec![0, 1],
-        proof_fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .to_string(),
-    });
+    mismatched_proof_scan.grouping_proof = Some(GroupingProof::HyperliquidOutcome(
+        StructuredOutcomeGroupingProof {
+            question: 42,
+            outcome_indices: vec![0, 1],
+            proof_fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+        },
+    ));
     assert_basket_rejects(
         "scanner grouping proof must bind to requested group",
         basket_request(
@@ -1349,7 +1354,7 @@ fn fixture_group() -> OutcomeGroup {
         terminal_states,
         tradable_legs: legs,
         payout_matrix,
-        grouping_proof: Some(GroupingProof::PolymarketNegRisk {
+        grouping_proof: Some(GroupingProof::PolymarketNegRisk(NegRiskGroupingProof {
             neg_risk_market_id: "fixture-neg-risk".to_string(),
             discovery_scope: PolymarketDiscoveryScopeEvidence {
                 source_id: "fixture-source".to_string(),
@@ -1366,7 +1371,7 @@ fn fixture_group() -> OutcomeGroup {
                 ["grouping", "neg_risk_market_id"],
                 "fixture-neg-risk",
             )]),
-        }),
+        })),
         role_binding_proof: Some(RoleBindingProof::OperatorAttested {
             attestation_id: "fixture-source".to_string(),
             positive_side_bindings: bindings.clone(),

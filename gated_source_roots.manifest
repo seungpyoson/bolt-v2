@@ -23,8 +23,7 @@ src/strategies/complete_set_arbitrage
 # carries the NautilusTrader-managed venue-action knobs. It is the sole producer
 # of that table, so it belongs under the same tamper-evidence as the consumer
 # (config.rs) that validates them.
-src/bolt_v3_archetypes/binary_oracle_edge_taker.rs
-src/bolt_v3_archetypes/complete_set_arbitrage.rs
+src/bolt_v3_complete_set_contract.rs
 # The shared policy is the only approved Bolt-v3 strategy-originated NT
 # submit/cancel mutation boundary.
 src/bolt_v3_order_execution.rs
@@ -33,8 +32,13 @@ src/bolt_v3_binary_outcome_edge.rs
 src/bolt_v3_executable_cost.rs
 src/bolt_v3_sizing.rs
 src/bolt_v3_taker_updown_signal.rs
+src/bolt_v3_runtime_reconcile.rs
 [submit_admission]
 src/bolt_v3_submit_admission.rs
+src/bolt_v3_settlement_booking.rs
+# Reference-price health owns live-node/msgbus observation mechanics, so it is
+# integrity-gated with the runtime coordinator rather than strategy policy.
+src/bolt_v3_reference_price_health.rs
 # The live-node coordinator and its submodules are gated with submit/admission
 # sources but must stay outside [strategy], because they own runtime wiring that
 # strategy-source policy intentionally forbids.
@@ -44,6 +48,7 @@ src/bolt_v3_live_node
 [outcome_group]
 src/bolt_v3_atomic_io.rs
 src/bolt_v3_outcome_groups.rs
+src/bolt_v3_outcome_group_proofs.rs
 src/bolt_v3_outcome_group_sources.rs
 src/bolt_v3_outcome_group_polymarket.rs
 src/bolt_v3_outcome_group_hyperliquid.rs
@@ -51,7 +56,7 @@ src/bolt_v3_outcome_group_scanner.rs
 src/bolt_v3_basket_admission.rs
 src/bolt_v3_basket_execution.rs
 src/bolt_v3_basket_store.rs
-src/bolt_v3_archetypes/complete_set_arbitrage.rs
+src/bolt_v3_complete_set_contract.rs
 src/bolt_v3_market_families/outcome_group.rs
 src/strategy_bindings.rs
 src/strategies/complete_set_arbitrage

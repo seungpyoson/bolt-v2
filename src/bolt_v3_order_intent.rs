@@ -3,11 +3,59 @@ use nautilus_common::factories::OrderFactory;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::{ClientOrderId, InstrumentId},
+    identifiers::{ClientOrderId, InstrumentId, Venue},
+    instruments::{Instrument, InstrumentAny},
     orders::OrderAny,
     types::{Price, Quantity},
 };
-use rust_decimal::Decimal;
+use rust_decimal::{
+    Decimal,
+    prelude::{FromPrimitive, ToPrimitive},
+};
+
+use crate::bolt_v3_providers::{
+    market_quote_buy_min_notional_for_execution_venue,
+    normalize_base_order_quantity_for_execution_venue,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketQuoteBuyQuantityError {
+    MinimumUnmodeled,
+    BelowMinimum,
+    QuantityInvalid,
+}
+
+pub fn normalize_base_order_quantity(
+    venue: Venue,
+    instrument: &InstrumentAny,
+    quantity: Quantity,
+) -> Option<Quantity> {
+    let quantity = Decimal::from_f64(quantity.as_f64())?;
+    let normalized = normalize_base_order_quantity_for_execution_venue(venue, quantity)?;
+    instrument
+        .try_make_qty(normalized.to_f64()?, Some(true))
+        .ok()
+}
+
+pub fn make_market_quote_buy_quantity(
+    venue: Venue,
+    instrument: &InstrumentAny,
+    quote_notional: Decimal,
+) -> std::result::Result<Quantity, MarketQuoteBuyQuantityError> {
+    let minimum = market_quote_buy_min_notional_for_execution_venue(venue)
+        .ok_or(MarketQuoteBuyQuantityError::MinimumUnmodeled)?;
+    if quote_notional < minimum {
+        return Err(MarketQuoteBuyQuantityError::BelowMinimum);
+    }
+    instrument
+        .try_make_qty(
+            quote_notional
+                .to_f64()
+                .ok_or(MarketQuoteBuyQuantityError::QuantityInvalid)?,
+            Some(true),
+        )
+        .map_err(|_| MarketQuoteBuyQuantityError::QuantityInvalid)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NtOrderTemplate {

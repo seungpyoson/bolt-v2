@@ -1471,9 +1471,18 @@ fn submit_admission_test_helper_uses_explicit_execution_client_id() {
         &order,
     );
 
-    let admission =
-        submit_admission_request_from_order_for_client("hyperliquid_perps", &intent, &order)
-            .expect("entry intent should map into submit admission");
+    let admission = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "hyperliquid_perps",
+            intent: &intent,
+            order: &order,
+            valuation: OrderValuationContext::empty(),
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(Decimal::ZERO),
+    )
+    .expect("entry intent should map into submit admission");
 
     assert_eq!(admission.execution_client_id, "hyperliquid_perps");
 }
@@ -2068,15 +2077,22 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
         )
         .expect("StopLimit order with explicit trigger price should build");
 
-    let admission = submit_admission_request_from_order_for_client(
-        "polymarket_main",
-        &BoltV3OrderIntentEvidence::from_compiled_order(
-            strategy.config.strategy_id.clone(),
-            BoltV3OrderIntentKind::Entry,
-            price.to_string(),
-            &order,
-        ),
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        strategy.config.strategy_id.clone(),
+        BoltV3OrderIntentKind::Entry,
+        price.to_string(),
         &order,
+    );
+    let admission = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "polymarket_main",
+            intent: &intent,
+            order: &order,
+            valuation: OrderValuationContext::empty(),
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(Decimal::ZERO),
     )
     .expect("StopLimit admission should derive from the compiled NT order");
 
@@ -2155,15 +2171,22 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
         )
         .expect("LimitIfTouched entry order with explicit trigger price should build");
 
-    let admission = submit_admission_request_from_order_for_client(
-        "polymarket_main",
-        &BoltV3OrderIntentEvidence::from_compiled_order(
-            strategy.config.strategy_id.clone(),
-            BoltV3OrderIntentKind::Entry,
-            price.to_string(),
-            &order,
-        ),
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        strategy.config.strategy_id.clone(),
+        BoltV3OrderIntentKind::Entry,
+        price.to_string(),
         &order,
+    );
+    let admission = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "polymarket_main",
+            intent: &intent,
+            order: &order,
+            valuation: OrderValuationContext::empty(),
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(Decimal::ZERO),
     )
     .expect("LimitIfTouched admission should derive from the compiled NT order");
 

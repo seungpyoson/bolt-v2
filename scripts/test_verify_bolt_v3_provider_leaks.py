@@ -112,6 +112,7 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         "src/bolt_v3_providers/polymarket/fees.rs",
         "src/bolt_v3_market_families/updown.rs",
         "src/bolt_v3_outcome_group_polymarket.rs",
+        "src/bolt_v3_outcome_group_proofs.rs",
     ):
         assert rel not in core_files
 
@@ -201,40 +202,23 @@ def test_outcome_group_source_native_proof_labels_are_allowlisted() -> None:
                         Hyperliquid,
                     }
                     pub enum GroupingProof {
-                        PolymarketNegRisk {
-                            discovery_scope: PolymarketDiscoveryScopeEvidence,
-                        },
-                        HyperliquidOutcome {
-                            question: u32,
-                        },
+                        PolymarketNegRisk(NegRiskGroupingProof),
+                        HyperliquidOutcome(StructuredOutcomeGroupingProof),
                     }
                     impl GroupingProof {
-                        fn native_identity(&self) -> String {
+                        fn concrete_payload(&self) {
                             match self {
-                                Self::PolymarketNegRisk {
-                                    ..
-                                } => String::new(),
-                                Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),
+                                Self::PolymarketNegRisk(proof) => Some(ConcreteGroupingProofRef::NegRisk(proof)),
+                                Self::HyperliquidOutcome(proof) => {
+                                    Some(ConcreteGroupingProofRef::StructuredOutcome(proof))
+                                }
                             }
                         }
                     }
-                    pub struct PolymarketDiscoveryScopeEvidence {
-                        source_id: String,
-                    }
-                    fn labels(source_kind: OutcomeGroupSourceKind, proof: GroupingProof) -> &'static str {
+                    fn labels(source_kind: OutcomeGroupSourceKind) -> &'static str {
                         match source_kind {
                             OutcomeGroupSourceKind::Polymarket => "polymarket",
                             OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",
-                        }
-                    }
-                    fn metadata(proof: GroupingProof) {
-                        match proof {
-                            GroupingProof::PolymarketNegRisk {
-                                ..
-                            } => {}
-                            GroupingProof::HyperliquidOutcome {
-                                ..
-                            } => {}
                         }
                     }
                 """,
@@ -242,6 +226,28 @@ def test_outcome_group_source_native_proof_labels_are_allowlisted() -> None:
         )
 
         assert verifier.scan_root(root) == []
+
+
+def test_real_allowances_exactly_match_unallowed_findings() -> None:
+    verifier = load_verifier()
+    allowances = verifier.FINDING_ALLOWANCES
+    verifier.FINDING_ALLOWANCES = ()
+    try:
+        findings = verifier.scan_root(REPO_ROOT)
+    finally:
+        verifier.FINDING_ALLOWANCES = allowances
+
+    expected = {
+        (allowance.path, allowance.message, allowance.exact_excerpt)
+        for allowance in allowances
+    }
+    actual = {
+        (finding.path, finding.message, finding.excerpt) for finding in findings
+    }
+    assert actual == expected, (
+        f"provider-leak allowances must exactly match mechanical findings; "
+        f"missing={sorted(actual - expected)!r}, stale={sorted(expected - actual)!r}"
+    )
 
 
 def test_outcome_group_allowance_does_not_hide_other_provider_type_leaks() -> None:

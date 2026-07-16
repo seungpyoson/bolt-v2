@@ -9,9 +9,9 @@ use nautilus_model::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    bolt_v3_binary_settlement::BinarySettlementPayout,
     bolt_v3_config::LoadedStrategy,
     bolt_v3_instrument_filters::InstrumentFilterError,
-    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
@@ -457,8 +457,8 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
     super::binary_outcome::maker_quote_targets(inputs)
 }
 
-pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
-    super::binary_outcome::maker_settlement_payout(payout, leg)
+pub fn settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
+    super::binary_outcome::settlement_payout(payout, leg)
 }
 
 pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {

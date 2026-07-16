@@ -1421,7 +1421,7 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     clock.borrow_mut().set_time(UnixNanos::from(
         replay.evaluation_now_ms.saturating_mul(NANOS_PER_MILLI_U64),
     ));
-    strategy.refresh_current_reference_price_selection_at(replay.evaluation_now_ms);
+    strategy.apply_reference_price_selection_at(replay.evaluation_now_ms);
     assert_eq!(
         strategy.active.last_reference_ts_ms,
         Some(replay.reference.observed_ts_ms)

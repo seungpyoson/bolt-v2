@@ -1040,7 +1040,7 @@ fn fixture_settlement_identity() -> (String, Currency) {
         .expect("bolt-v3 fixture root should declare a capital pool for the fixture venue");
     (
         pool.account_id.to_string(),
-        crate::bolt_v3_archetypes::binary_oracle_edge_taker::settlement_currency_from_config_code(
+        crate::bolt_v3_strategy_registration::settlement_currency_from_config_code(
             pool.collateral_currency.as_str(),
         ),
     )

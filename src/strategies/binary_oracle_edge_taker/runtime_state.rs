@@ -8,9 +8,9 @@ use crate::{
         MarketSelectionOutcome, SelectedMarketEvidenceIdentity, SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{MILLIS_PER_SECOND_U64, is_positive_finite},
+    bolt_v3_providers::FeeProvider,
     bolt_v3_reference_price::ReferenceQuote,
     bolt_v3_trade_flow::SignedTradeFlow,
-    strategies::registry::FeeProvider,
 };
 
 use super::{

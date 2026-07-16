@@ -583,6 +583,20 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertIn("strategy-local execution policy construction", labels)
         self.assertIn("strategy-local execution policy type reference", labels)
 
+    def test_shared_strategy_context_may_retain_injected_execution_policy_type(self) -> None:
+        source = """
+        pub struct StrategyBuildContext {
+            order_execution_policy: BoltV3OrderExecutionPolicy,
+        }
+        """
+
+        self.assertEqual(
+            self.violations_for(source, path="src/bolt_v3_strategy_context.rs"),
+            [],
+            "the shared build context may retain the execution policy injected by registration",
+        )
+        self.assertIn("strategy-local execution policy type reference", self.labels_for(source))
+
     def test_mutation_fence_scans_all_production_src_files(self) -> None:
         scanned = {
             str(path.relative_to(VERIFIER.REPO_ROOT))

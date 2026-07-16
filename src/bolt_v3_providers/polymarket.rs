@@ -87,14 +87,13 @@ use crate::{
         GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind,
     },
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
+        FeeProvider, ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
         ProviderVenueTruthRuntimeSource, ProviderVenueTruthSourceContext, ResolvedClientSecrets,
         SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     bolt_v3_wire_boundary::TransportBackend,
-    strategies::registry::FeeProvider,
 };
 
 use self::fees::PolymarketClobFeeProvider;

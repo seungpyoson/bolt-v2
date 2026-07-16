@@ -2,15 +2,15 @@
 
 use super::*;
 use crate::{
+    bolt_v3_binary_settlement::{BinarySettlementLot, BinarySettlementResult},
+    bolt_v3_binary_settlement_runtime::{
+        BinaryRuntimeSettlementInput, settle_binary_runtime_reference_prices,
+    },
     bolt_v3_decision_evidence::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3OrderLifecycleOutcome,
         BoltV3OrderLifecycleTransition, BoltV3OutcomeSide, BoltV3SettlementEvidence,
     },
-    bolt_v3_maker_runtime_settlement::{
-        MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
-    },
-    bolt_v3_maker_settlement::{BinarySettlementLot, BinarySettlementResult},
     bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::QuoteSide,
@@ -2809,7 +2809,7 @@ fn expected_hold_to_resolution_settlement_for_quantity(
         quantity,
         entry_price,
     };
-    settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
+    settle_binary_runtime_reference_prices(BinaryRuntimeSettlementInput {
         family_key: crate::bolt_v3_market_families::updown::KEY,
         reference_close_price,
         strike_price: 3_100.0,

@@ -27,7 +27,7 @@ SCAN_GLOBS = (
     "src/**/*.rs",
 )
 GENERATED_CONFIG_AUTHORITIES = {
-    "src/bolt_v3_evidence_novelty_generated.rs": "config/evidence-novelty.toml",
+    "src/bolt_v3_evidence_novelty/generated.rs": "config/evidence-novelty.toml",
 }
 
 DIAGNOSTIC_WORDS = (

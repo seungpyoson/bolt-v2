@@ -50,13 +50,13 @@ use serde::{Deserialize, Serialize};
 use super::OutcomeSide;
 
 use crate::{
+    bolt_v3_binary_settlement::BinarySettlementPayout,
     bolt_v3_config::{
         GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GATE_ROLES, GATE_VALUE_KINDS,
         LoadedBoltV3Config, LoadedStrategy, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND,
         RESOLUTION_GATE_ROLE,
     },
     bolt_v3_instrument_filters::{InstrumentFilterError, format_target_prefix},
-    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_market_families::{
         FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
         MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
@@ -94,11 +94,11 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
     super::binary_outcome::maker_quote_targets(inputs)
 }
 
-pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
-    super::binary_outcome::maker_settlement_payout(payout, leg)
+pub fn settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
+    super::binary_outcome::settlement_payout(payout, leg)
 }
 
-pub fn maker_settlement_payout_from_reference_prices(
+pub fn settlement_payout_from_reference_prices(
     close_price: f64,
     strike_price: f64,
 ) -> Option<BinarySettlementPayout> {

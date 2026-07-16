@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REGISTRY_PATH = pathlib.Path("config/evidence-novelty.toml")
-GENERATED_PATH = pathlib.Path("src/bolt_v3_evidence_novelty_generated.rs")
+GENERATED_PATH = pathlib.Path("src/bolt_v3_evidence_novelty/generated.rs")
 NOVELTY_PATH = pathlib.Path("src/bolt_v3_evidence_novelty.rs")
 PRODUCER_PATH = pathlib.Path("src/strategies/binary_oracle_edge_taker/mod.rs")
 ENTRY_DECISION_PATH = pathlib.Path(

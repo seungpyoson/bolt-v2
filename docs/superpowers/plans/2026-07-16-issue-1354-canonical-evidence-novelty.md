@@ -25,7 +25,7 @@
 - Modify: `config/evidence-novelty.toml`
 - Modify: `scripts/verify_bolt_v3_evidence_novelty.py`
 - Modify: `scripts/test_verify_bolt_v3_evidence_novelty.py`
-- Regenerate: `src/bolt_v3_evidence_novelty_generated.rs`
+- Regenerate: `src/bolt_v3_evidence_novelty/generated.rs`
 
 **Interfaces:**
 - Consumes: frozen market allocations and the existing deterministic generator.
@@ -136,7 +136,7 @@ Expected: all commands pass and a second `--write` produces no diff.
 - [ ] **Step 6: Commit the registry slice**
 
 ```bash
-git add config/evidence-novelty.toml scripts/verify_bolt_v3_evidence_novelty.py scripts/test_verify_bolt_v3_evidence_novelty.py src/bolt_v3_evidence_novelty_generated.rs
+git add config/evidence-novelty.toml scripts/verify_bolt_v3_evidence_novelty.py scripts/test_verify_bolt_v3_evidence_novelty.py src/bolt_v3_evidence_novelty/generated.rs
 git commit -m "fix(evidence): assign canonical novelty ids"
 ```
 

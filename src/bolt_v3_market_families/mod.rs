@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    bolt_v3_binary_settlement::BinarySettlementPayout,
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::InstrumentFilterError,
-    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
@@ -109,9 +109,8 @@ pub struct MarketFamilyValidationBinding {
     /// `None` as "pricing unavailable").
     pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<Probability>,
     pub maker_quote_targets: fn(FamilyQuoteInputs) -> Option<QuoteTargets>,
-    pub maker_settlement_payout: fn(BinarySettlementPayout, Leg) -> Option<f64>,
-    pub maker_settlement_payout_from_reference_prices:
-        fn(f64, f64) -> Option<BinarySettlementPayout>,
+    pub settlement_payout: fn(BinarySettlementPayout, Leg) -> Option<f64>,
+    pub settlement_payout_from_reference_prices: fn(f64, f64) -> Option<BinarySettlementPayout>,
     pub maker_binary_fee_curve: fn(f64, f64) -> Option<f64>,
     /// Optional family-owned cadence→slug derivation. `Some(fn)` means the family
     /// defines a runtime-contract token fully determined by `cadence_secs`, so an
@@ -455,9 +454,8 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         selected_market_evidence_identity: updown::selected_market_evidence_identity,
         fair_probability_up: updown::fair_probability_up,
         maker_quote_targets: updown::maker_quote_targets,
-        maker_settlement_payout: updown::maker_settlement_payout,
-        maker_settlement_payout_from_reference_prices:
-            updown::maker_settlement_payout_from_reference_prices,
+        settlement_payout: updown::settlement_payout,
+        settlement_payout_from_reference_prices: updown::settlement_payout_from_reference_prices,
         maker_binary_fee_curve: updown::maker_binary_fee_curve,
         derive_cadence_slug_token: Some(updown::expected_cadence_slug_token),
     },
@@ -473,9 +471,9 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         selected_market_evidence_identity: unsupported_selected_market_evidence_identity,
         fair_probability_up: outcome_group::fair_probability_up,
         maker_quote_targets: unsupported_maker_quote_targets,
-        maker_settlement_payout: unsupported_maker_settlement_payout,
-        maker_settlement_payout_from_reference_prices:
-            unsupported_maker_settlement_payout_from_reference_prices,
+        settlement_payout: unsupported_settlement_payout,
+        settlement_payout_from_reference_prices:
+            unsupported_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
         derive_cadence_slug_token: None,
     },
@@ -491,9 +489,9 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         selected_market_evidence_identity: static_binary_event::selected_market_evidence_identity,
         fair_probability_up: static_binary_event::fair_probability_up,
         maker_quote_targets: static_binary_event::maker_quote_targets,
-        maker_settlement_payout: static_binary_event::maker_settlement_payout,
-        maker_settlement_payout_from_reference_prices:
-            unsupported_maker_settlement_payout_from_reference_prices,
+        settlement_payout: static_binary_event::settlement_payout,
+        settlement_payout_from_reference_prices:
+            unsupported_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: static_binary_event::maker_binary_fee_curve,
         derive_cadence_slug_token: None,
     },
@@ -510,9 +508,9 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         selected_market_evidence_identity: unsupported_selected_market_evidence_identity,
         fair_probability_up: hyperliquid_instrument::fair_probability_up,
         maker_quote_targets: unsupported_maker_quote_targets,
-        maker_settlement_payout: unsupported_maker_settlement_payout,
-        maker_settlement_payout_from_reference_prices:
-            unsupported_maker_settlement_payout_from_reference_prices,
+        settlement_payout: unsupported_settlement_payout,
+        settlement_payout_from_reference_prices:
+            unsupported_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
         derive_cadence_slug_token: None,
     },
@@ -593,11 +591,11 @@ pub(crate) fn validate_underlying_asset(
     errors
 }
 
-fn unsupported_maker_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
+fn unsupported_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
     None
 }
 
-fn unsupported_maker_settlement_payout_from_reference_prices(
+fn unsupported_settlement_payout_from_reference_prices(
     _close_price: f64,
     _strike_price: f64,
 ) -> Option<BinarySettlementPayout> {
@@ -886,15 +884,15 @@ pub fn maker_quote_targets_for_family_with_bindings(
         .and_then(|binding| (binding.maker_quote_targets)(inputs))
 }
 
-pub fn maker_settlement_payout_for_family(
+pub fn settlement_payout_for_family(
     family_key: &str,
     payout: BinarySettlementPayout,
     leg: Leg,
 ) -> Option<f64> {
-    maker_settlement_payout_for_family_with_bindings(family_key, payout, leg, validation_bindings())
+    settlement_payout_for_family_with_bindings(family_key, payout, leg, validation_bindings())
 }
 
-pub fn maker_settlement_payout_for_family_with_bindings(
+pub fn settlement_payout_for_family_with_bindings(
     family_key: &str,
     payout: BinarySettlementPayout,
     leg: Leg,
@@ -903,15 +901,15 @@ pub fn maker_settlement_payout_for_family_with_bindings(
     bindings
         .iter()
         .find(|binding| binding.key == family_key)
-        .and_then(|binding| (binding.maker_settlement_payout)(payout, leg))
+        .and_then(|binding| (binding.settlement_payout)(payout, leg))
 }
 
-pub fn maker_settlement_payout_from_reference_prices_for_family(
+pub fn settlement_payout_from_reference_prices_for_family(
     family_key: &str,
     close_price: f64,
     strike_price: f64,
 ) -> Option<BinarySettlementPayout> {
-    maker_settlement_payout_from_reference_prices_for_family_with_bindings(
+    settlement_payout_from_reference_prices_for_family_with_bindings(
         family_key,
         close_price,
         strike_price,
@@ -919,7 +917,7 @@ pub fn maker_settlement_payout_from_reference_prices_for_family(
     )
 }
 
-pub fn maker_settlement_payout_from_reference_prices_for_family_with_bindings(
+pub fn settlement_payout_from_reference_prices_for_family_with_bindings(
     family_key: &str,
     close_price: f64,
     strike_price: f64,
@@ -929,7 +927,7 @@ pub fn maker_settlement_payout_from_reference_prices_for_family_with_bindings(
         .iter()
         .find(|binding| binding.key == family_key)
         .and_then(|binding| {
-            (binding.maker_settlement_payout_from_reference_prices)(close_price, strike_price)
+            (binding.settlement_payout_from_reference_prices)(close_price, strike_price)
         })
 }
 
@@ -1393,9 +1391,8 @@ mod tests {
             selected_market_evidence_identity: fake_selected_market_evidence_identity,
             fair_probability_up: fake_fair_probability_up,
             maker_quote_targets: fake_maker_quote_targets,
-            maker_settlement_payout: fake_maker_settlement_payout,
-            maker_settlement_payout_from_reference_prices:
-                fake_maker_settlement_payout_from_reference_prices,
+            settlement_payout: fake_settlement_payout,
+            settlement_payout_from_reference_prices: fake_settlement_payout_from_reference_prices,
             maker_binary_fee_curve: fake_maker_binary_fee_curve,
             derive_cadence_slug_token: None,
         }];
@@ -1553,11 +1550,11 @@ mod tests {
         None
     }
 
-    fn fake_maker_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
+    fn fake_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
         None
     }
 
-    fn fake_maker_settlement_payout_from_reference_prices(
+    fn fake_settlement_payout_from_reference_prices(
         _close_price: f64,
         _strike_price: f64,
     ) -> Option<BinarySettlementPayout> {
@@ -2115,40 +2112,40 @@ mod tests {
     }
 
     #[test]
-    fn maker_settlement_and_fee_curve_route_through_canonical_updown_family_binding() {
+    fn settlement_and_fee_curve_route_through_canonical_updown_family_binding() {
         let up_payout = BinarySettlementPayout::new(1.0, 0.0).expect("terminal up payout");
         let down_payout = BinarySettlementPayout::new(0.0, 1.0).expect("terminal down payout");
 
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, up_payout, Leg::Yes),
+            settlement_payout_for_family(updown::KEY, up_payout, Leg::Yes),
             Some(1.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, up_payout, Leg::No),
+            settlement_payout_for_family(updown::KEY, up_payout, Leg::No),
             Some(0.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, down_payout, Leg::No),
+            settlement_payout_for_family(updown::KEY, down_payout, Leg::No),
             Some(1.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, down_payout, Leg::Yes),
+            settlement_payout_for_family(updown::KEY, down_payout, Leg::Yes),
             Some(0.0)
         );
         assert_eq!(
-            maker_settlement_payout_from_reference_prices_for_family(updown::KEY, 100.0, 100.0)
+            settlement_payout_from_reference_prices_for_family(updown::KEY, 100.0, 100.0)
                 .map(|payout| payout.leg_payout(Leg::Yes)),
             Some(1.0),
             "tie-at-strike resolves to the up/YES payout"
         );
         assert_eq!(
-            maker_settlement_payout_from_reference_prices_for_family(updown::KEY, 99.0, 100.0)
+            settlement_payout_from_reference_prices_for_family(updown::KEY, 99.0, 100.0)
                 .map(|payout| payout.leg_payout(Leg::No)),
             Some(1.0),
             "close below strike resolves to the down/NO payout"
         );
         assert!(
-            maker_settlement_payout_from_reference_prices_for_family(updown::KEY, f64::NAN, 100.0)
+            settlement_payout_from_reference_prices_for_family(updown::KEY, f64::NAN, 100.0)
                 .is_none(),
             "invalid reference prices fail closed"
         );
@@ -2165,9 +2162,9 @@ mod tests {
         let payout = BinarySettlementPayout::new(1.0, 0.0).expect("terminal payout");
 
         assert!(maker_quote_targets_for_family("missing_family", fixture_quote_inputs()).is_none());
-        assert!(maker_settlement_payout_for_family("missing_family", payout, Leg::Yes).is_none());
+        assert!(settlement_payout_for_family("missing_family", payout, Leg::Yes).is_none());
         assert!(
-            maker_settlement_payout_from_reference_prices_for_family("missing_family", 100.0, 99.0)
+            settlement_payout_from_reference_prices_for_family("missing_family", 100.0, 99.0)
                 .is_none()
         );
         assert!(maker_binary_fee_curve_for_family("missing_family", 0.02, 0.5).is_none());

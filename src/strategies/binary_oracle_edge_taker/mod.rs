@@ -12,10 +12,10 @@ use nautilus_core::UnixNanos;
 use nautilus_model::enums::PositionSide;
 use nautilus_model::{
     data::{CustomData, IndexPriceUpdate, QuoteTick, TradeTick},
-    enums::{OrderSide, OrderStatus, OrderType, TimeInForce},
+    enums::{OrderSide, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
-    orders::{Order, OrderAny},
+    orders::Order,
     types::{Currency, Price, Quantity},
 };
 use nautilus_system::trader::Trader;
@@ -26,6 +26,8 @@ use rust_decimal::{
 };
 use toml::Value;
 
+use crate::bolt_v3_strategy_context::StrategyBuildContext;
+
 use crate::{
     bolt_v3_binary_outcome_edge::{
         BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeInputs, BinaryOutcomeEdgeResult,
@@ -34,7 +36,6 @@ use crate::{
     bolt_v3_book_sizing::{
         OutcomeBookState, OutcomeBookSubscriptions, should_replace_book_subscriptions,
     },
-    bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
         BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
         BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
@@ -47,10 +48,7 @@ use crate::{
         BoltV3TerminalSettlementEvidence, number_evidence as evidence_number,
         option_number_evidence as option_evidence_number,
         option_probability_evidence as option_evidence_probability, probability_evidence,
-        read_settlement_booking_error_keys_for_recovery_scope,
-        read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
-        read_terminal_settlement_keys_for_recovery_scope, realized_vol_blocker_to_exit_evidence,
-        realized_volatility_aggregation_evidence_label,
+        realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
     },
@@ -64,10 +62,6 @@ use crate::{
     },
     bolt_v3_fair_value_pricing::{RealizedVolGateClassification, classify_rv_gate},
     bolt_v3_loss_protection::{PositionRealizedPnlObservation, RealizedPnlObservation},
-    bolt_v3_maker_runtime_settlement::{
-        MakerRuntimeSettlementInput, settle_maker_runtime_reference_prices,
-    },
-    bolt_v3_maker_settlement::BinarySettlementLot,
     bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, Probability,
@@ -78,26 +72,48 @@ use crate::{
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
+    bolt_v3_order_intent::{
+        MarketQuoteBuyQuantityError, make_market_quote_buy_quantity, normalize_base_order_quantity,
+    },
     bolt_v3_position_contract::{
         BoltV3PositionMarketLifecycle, expected_exit_order_side_for_position,
         expected_position_side_for_entry_order, is_observed_open_side,
     },
     bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
-    bolt_v3_providers::{
-        market_quote_buy_min_notional_for_execution_venue,
-        normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
-    },
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::QuoteSide,
     bolt_v3_reference_price::{
-        ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
-        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
+        ReferencePriceSelector, ReferencePriceSourceHealth, ReferencePriceSourceSpec,
+        ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
         reference_price_source_is_runtime_available, reference_price_source_is_unsupported,
+    },
+    bolt_v3_reference_price_health::{
+        ReferencePriceLiveWindow, ReferencePriceUpdateObservation, ReferencePriceUpdateRejection,
+        observe_reference_price_update as observe_reference_price_health_update,
+        select_current_reference_price as select_reference_price_from_health,
+    },
+    bolt_v3_runtime_reconcile::{
+        CachedPositionSnapshot, IssueVenueOrderQuery,
+        MaterializeCachedPosition as PositionMaterializationSpec, RuntimeReconcileOrder,
+        VenueOrderQueryDecision, VenueOrderQueryFailure,
+        materialize_cached_position as decide_cached_position_materialization,
+        query_order_for_reconcile as decide_order_query_for_reconcile,
+        reconcile_runtime_venue_state as project_runtime_venue_reconcile,
+        reconcile_transition_for_order_status,
+    },
+    bolt_v3_settlement_booking::{
+        ResolutionSettlementDecision, ResolutionSettlementInput, SettlementPositionKey,
+        SettlementPositionOrigin, SettlementRecoveryEntryDecision, SettlementTerminalKeyDelta,
+        TerminalSettlementEligibility,
+        bootstrap_recovery_from_cache as decide_bootstrap_recovery_from_cache,
+        enter_blind_settlement_recovery as decide_blind_settlement_recovery,
+        record_settlement_booking_error as decide_settlement_booking_error,
+        recover_settlement_bootstrap, try_book_resolution_settlement,
     },
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
-        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy, OrderValuationContext,
         build_submit_admission_request_from_order, limit_notional_exceeds_sized_notional,
     },
     bolt_v3_taker_pricing::{
@@ -108,10 +124,10 @@ use crate::{
         SideSelectionInputs, UncertaintyBandInputs, choose_entry_side, outcome_side_evidence_label,
         time_uncertainty_probability, uncertainty_band_probability,
     },
-    bolt_v3_timestamp_domain::{LocalReceiveMs, NtStrategyClockMs, VenueEventMs},
+    bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
-    strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
+    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
 };
 
 #[cfg(test)]
@@ -128,11 +144,13 @@ use crate::{
         MarketSelectionOutcome, SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
         SelectedMarketSourceIdentity,
     },
+    bolt_v3_providers::FeeProvider,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
-    strategies::registry::FeeProvider,
 };
+
+pub mod archetype;
 
 mod selection;
 
@@ -158,7 +176,7 @@ use self::exposure::{
     BlindRecoveryReason, BlindRecoveryState, ConfiguredPositionContract, EntryReconcileReason,
     ExitPendingState, ExposureOccupancy, ExposureState, ManagedPositionOrigin,
     ManagedPositionState, OpenPositionState, PendingEntryState, PendingExitState,
-    PositionMaterializationSpec, UnsupportedObservedReason, UnsupportedObservedState,
+    UnsupportedObservedReason, UnsupportedObservedState,
     infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
     supports_strategy_managed_position,
 };
@@ -280,16 +298,6 @@ struct PendingEntryTerminalEventInput {
     terminal_proves_zero_fill: bool,
 }
 
-#[derive(Debug, Clone)]
-struct RuntimeReconcileOrderQuery {
-    client_order_id: ClientOrderId,
-    submitted_at_ms: Option<u64>,
-    instrument_id: InstrumentId,
-    market_id: Option<String>,
-    position_id: Option<PositionId>,
-    failure_outcome: BoltV3OrderLifecycleOutcome,
-}
-
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RuntimeReconcileQueryEvent {
@@ -304,54 +312,10 @@ struct FlatTerminalEntryOverride {
     instrument_id: InstrumentId,
 }
 
-#[derive(Debug, Clone)]
-enum TerminalSettlementEligibility {
-    MarketExpired {
-        position: OpenPositionState,
-        settlement_key: String,
-        observed_at_ns: u64,
-    },
-    RecoveryUnknownInterval {
-        position: OpenPositionState,
-        settlement_key: String,
-        observed_at_ns: u64,
-    },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalEvidenceState {
     PersistCanonical,
     CanonicalAlreadyDurable,
-}
-
-impl TerminalSettlementEligibility {
-    fn position(&self) -> &OpenPositionState {
-        match self {
-            Self::MarketExpired { position, .. }
-            | Self::RecoveryUnknownInterval { position, .. } => position,
-        }
-    }
-
-    fn settlement_key(&self) -> &str {
-        match self {
-            Self::MarketExpired { settlement_key, .. }
-            | Self::RecoveryUnknownInterval { settlement_key, .. } => settlement_key,
-        }
-    }
-
-    fn observed_at_ns(&self) -> u64 {
-        match self {
-            Self::MarketExpired { observed_at_ns, .. }
-            | Self::RecoveryUnknownInterval { observed_at_ns, .. } => *observed_at_ns,
-        }
-    }
-
-    fn reason_label(&self) -> &'static str {
-        match self {
-            Self::MarketExpired { .. } => stringify!(market_expired),
-            Self::RecoveryUnknownInterval { .. } => stringify!(recovery_unknown_interval),
-        }
-    }
 }
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
@@ -361,19 +325,6 @@ fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTrade
     SignedTradeFlowConfig {
         window_secs: config.trade_flow_window_secs,
         max_samples: config.trade_flow_max_samples,
-    }
-}
-
-fn reconcile_transition_for_order_status(
-    status: OrderStatus,
-) -> Option<BoltV3OrderLifecycleTransition> {
-    match status {
-        OrderStatus::Denied => Some(BoltV3OrderLifecycleTransition::OrderDenied),
-        OrderStatus::Rejected => Some(BoltV3OrderLifecycleTransition::OrderRejected),
-        OrderStatus::Canceled => Some(BoltV3OrderLifecycleTransition::OrderCanceled),
-        OrderStatus::Expired => Some(BoltV3OrderLifecycleTransition::OrderExpired),
-        OrderStatus::Filled => Some(BoltV3OrderLifecycleTransition::OrderFilled),
-        _ => None,
     }
 }
 
@@ -440,14 +391,6 @@ fn reference_price_source_health_from_config(
             )
         })
         .collect()
-}
-
-fn reference_price_source_provider_identifier<'a>(
-    reference_price: &'a ReferencePriceBlock,
-    source_id: &str,
-) -> Option<&'a str> {
-    let source = reference_price.sources.get(source_id)?;
-    source.instrument_id.as_deref().or(source.symbol.as_deref())
 }
 
 fn order_price_for_side(
@@ -1083,7 +1026,7 @@ impl BinaryOracleEdgeTaker {
             self.trigger_fee_warm_for_market();
             self.refresh_fee_readiness();
         }
-        self.refresh_current_reference_price_selection_at(now_ms);
+        self.apply_reference_price_selection_at(now_ms);
         self.sync_exposure_context_from_active();
         self.reclassify_unreachable_pending_entry_at_selection_boundary(now_ms);
         self.prune_market_lifecycle(now_ms);
@@ -1229,104 +1172,63 @@ impl BinaryOracleEdgeTaker {
         let Some(position) = self.settlement_position_candidate() else {
             return Ok(());
         };
-        let resolution_ts_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        if position.lifecycle.interval_end_ms().is_none() {
-            self.record_missing_interval_end_settlement_booking_error(
-                &position,
-                update.ts_event.as_u64(),
-            )?;
-            return Ok(());
-        };
-        if !position
-            .lifecycle
-            .matches_resolution_tick_ms(resolution_ts_ms)
-        {
-            return Ok(());
-        }
         let settlement_key = settlement_key_for_position(&position)?;
-        if self.settled_position_keys.contains(&settlement_key)
-            || self.settlement_booking_error_keys.contains(&settlement_key)
-        {
-            return Ok(());
-        }
-        let Some(outcome_side) = position.lifecycle.outcome_side() else {
-            self.record_settlement_booking_error(
-                &position,
-                settlement_key,
-                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-                "settlement input missing outcome side".to_string(),
-                update.ts_event.as_u64(),
-            )?;
-            return Ok(());
-        };
-        let Some(strike_price) = position.lifecycle.settlement_strike() else {
-            self.record_settlement_booking_error(
-                &position,
-                settlement_key,
-                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-                "settlement input missing strike price".to_string(),
-                update.ts_event.as_u64(),
-            )?;
-            return Ok(());
-        };
-        let lot = BinarySettlementLot {
-            leg: settlement_leg_for_outcome(outcome_side),
-            side: QuoteSide::Buy,
-            quantity: position.quantity.as_f64(),
-            entry_price: position.avg_px_open,
-        };
-        let decision = settle_maker_runtime_reference_prices(MakerRuntimeSettlementInput {
-            family_key: self.config.rotating_market_family.as_str(),
-            reference_close_price: update.value.as_f64(),
-            strike_price,
-            lots: &[lot],
+        let position_key = settlement_position_key(&position, settlement_key);
+        let outcome_side = position.lifecycle.outcome_side();
+        let lot = outcome_side.map(|outcome_side| {
+            crate::bolt_v3_binary_settlement::BinarySettlementLot {
+                leg: settlement_leg_for_outcome(outcome_side),
+                side: QuoteSide::Buy,
+                quantity: position.quantity.as_f64(),
+                entry_price: position.avg_px_open,
+            }
         });
-        let Some(result) = decision.result else {
-            self.record_settlement_booking_error(
-                &position,
-                settlement_key,
-                BoltV3SettlementBookingErrorReason::SettlementBlocked,
-                format!("settlement blocked by {:?}", decision.blocked_by),
-                update.ts_event.as_u64(),
-            )?;
-            return Ok(());
+        let decision = try_book_resolution_settlement(
+            ResolutionSettlementInput {
+                position: &position_key,
+                resolution_ts_ns: update.ts_event.as_u64(),
+                family_key: self.config.rotating_market_family.as_str(),
+                reference_close_price: update.value.as_f64(),
+                strike_price: position.lifecycle.settlement_strike(),
+                lot,
+                market_id_present: position.lifecycle.market_id().is_some(),
+                capability: self.context.settlement_capability(),
+            },
+            &self.settled_position_keys,
+            &self.settlement_booking_error_keys,
+        );
+        let booking = match decision {
+            ResolutionSettlementDecision::Skip(_) => return Ok(()),
+            ResolutionSettlementDecision::BookingError { reason, detail } => {
+                self.record_settlement_booking_error(
+                    &position,
+                    position_key.settlement_key,
+                    reason,
+                    detail,
+                    update.ts_event.as_u64(),
+                )?;
+                return Ok(());
+            }
+            ResolutionSettlementDecision::Book(booking) => booking,
         };
-        let Some(payout) = decision.payout else {
-            self.record_settlement_booking_error(
-                &position,
-                settlement_key,
-                BoltV3SettlementBookingErrorReason::SettlementBlocked,
-                "settlement output missing payout".to_string(),
-                update.ts_event.as_u64(),
-            )?;
-            return Ok(());
-        };
-        let payout_per_share = payout.leg_payout(lot.leg);
-        let Some(settlement_currency) = self.context.settlement_currency() else {
-            self.record_settlement_booking_error(
-                &position,
-                settlement_key,
-                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-                "settlement input missing configured settlement currency".to_string(),
-                update.ts_event.as_u64(),
-            )?;
-            return Ok(());
-        };
-        let Some(market_id) = position.lifecycle.market_id_owned() else {
-            self.record_settlement_booking_error(
-                &position,
-                settlement_key,
-                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-                "settlement input missing market id".to_string(),
-                update.ts_event.as_u64(),
-            )?;
-            return Ok(());
-        };
+        let outcome_side = outcome_side.expect("shared booking requires an outcome-side lot");
+        let strike_price = position
+            .lifecycle
+            .settlement_strike()
+            .expect("shared booking requires a settlement strike");
+        let settlement_currency = self
+            .context
+            .settlement_currency()
+            .expect("shared booking validates settlement currency");
+        let market_id = position
+            .lifecycle
+            .market_id_owned()
+            .expect("shared booking validates market id");
         let product_id = settlement_product_id(position.instrument_id)?;
         let evidence = self.settlement_evidence(
             &position,
             SettlementEvidenceIds {
-                settlement_key: settlement_key.clone(),
+                settlement_key: booking.settlement_key.clone(),
                 market_id,
                 product_id,
             },
@@ -1335,22 +1237,16 @@ impl BinaryOracleEdgeTaker {
             SettlementEvidenceComputation {
                 outcome_side,
                 strike_price,
-                payout_per_share,
-                terminal_value: result.terminal_value,
-                realized_pnl: result.realized_pnl,
+                payout_per_share: booking.payout_per_share,
+                terminal_value: booking.result.terminal_value,
+                realized_pnl: booking.result.realized_pnl,
             },
         );
         if let Some(sink) = self.context.settlement_runtime_sink() {
-            let Some(account_id) = self.context.settlement_account_id() else {
-                self.record_settlement_booking_error(
-                    &position,
-                    settlement_key,
-                    BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-                    "settlement input missing configured settlement account id".to_string(),
-                    update.ts_event.as_u64(),
-                )?;
-                return Ok(());
-            };
+            let account_id = self
+                .context
+                .settlement_account_id()
+                .expect("shared booking validates settlement account id");
             sink.record_loss_governor_position_realized_pnl(
                 settlement_position_realized_pnl_observation(
                     account_id,
@@ -1362,9 +1258,12 @@ impl BinaryOracleEdgeTaker {
         self.context
             .decision_evidence()
             .record_settlement(&evidence)?;
-        self.settled_position_keys.insert(settlement_key);
-        self.settlement_close_fetch_attempts
-            .remove(&evidence.settlement_key);
+        self.settled_position_keys
+            .insert(booking.settlement_key.clone());
+        if booking.key_delta.remove_close_fetch_attempt {
+            self.settlement_close_fetch_attempts
+                .remove(&booking.key_delta.settlement_key);
+        }
         if let Some(sink) = self.context.settlement_runtime_sink() {
             let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence) {
                 Ok(explanation) => explanation,
@@ -1392,85 +1291,42 @@ impl BinaryOracleEdgeTaker {
         detail: String,
         observed_at_ns: u64,
     ) -> Result<()> {
-        if self.settlement_booking_error_keys.contains(&settlement_key) {
-            return Ok(());
-        }
-        let eligibility =
-            self.terminal_settlement_eligibility(position, settlement_key, observed_at_ns)?;
-        let evidence = self.settlement_booking_error_evidence(
-            position,
-            eligibility.settlement_key().to_string(),
+        let origin = if position.lifecycle.interval_end_ms().is_none()
+            && self.managed_position().is_some_and(|managed| {
+                managed.origin == ManagedPositionOrigin::RecoveryBootstrap
+                    && managed.position.position_id == position.position_id
+            }) {
+            SettlementPositionOrigin::RecoveryBootstrap
+        } else {
+            SettlementPositionOrigin::Live
+        };
+        let position_key = settlement_position_key(position, settlement_key);
+        let Some(transition) = decide_settlement_booking_error(
+            &position_key,
+            origin,
             reason,
             detail,
+            observed_at_ns,
+            &self.settlement_booking_error_keys,
+        )?
+        else {
+            return Ok(());
+        };
+        let evidence = self.settlement_booking_error_evidence(
+            position,
+            transition.eligibility.settlement_key.clone(),
+            transition.reason,
+            transition.detail,
             observed_at_ns,
         );
         let reason_detail = format!("reason={reason:?} detail={}", evidence.detail);
         self.apply_terminal_settlement_transition(
-            eligibility,
+            position,
+            transition.eligibility,
+            transition.key_delta,
             Some(evidence),
             reason_detail,
             TerminalEvidenceState::PersistCanonical,
-        )
-    }
-
-    fn terminal_settlement_eligibility(
-        &self,
-        position: &OpenPositionState,
-        settlement_key: String,
-        observed_at_ns: u64,
-    ) -> Result<TerminalSettlementEligibility> {
-        let observed_at_ms = observed_at_ns / NANOS_PER_MILLI_U64;
-        if position.lifecycle.interval_ended_at(observed_at_ms) {
-            return Ok(TerminalSettlementEligibility::MarketExpired {
-                position: position.clone(),
-                settlement_key,
-                observed_at_ns,
-            });
-        }
-        let recovery_unknown_interval = position.lifecycle.interval_end_ms().is_none()
-            && self.managed_position().is_some_and(|managed| {
-                managed.origin == ManagedPositionOrigin::RecoveryBootstrap
-                    && managed.position.position_id == position.position_id
-            });
-        if recovery_unknown_interval {
-            return Ok(TerminalSettlementEligibility::RecoveryUnknownInterval {
-                position: position.clone(),
-                settlement_key,
-                observed_at_ns,
-            });
-        }
-        anyhow::bail!(
-            "terminal settlement is ineligible for live-manageable or nonterminal position {}",
-            position.position_id
-        )
-    }
-
-    fn recovered_terminal_settlement_eligibility(
-        position: OpenPositionState,
-        origin: ManagedPositionOrigin,
-        settlement_key: String,
-        observed_at_ns: u64,
-    ) -> Result<TerminalSettlementEligibility> {
-        let observed_at_ms = observed_at_ns / NANOS_PER_MILLI_U64;
-        if position.lifecycle.interval_ended_at(observed_at_ms) {
-            return Ok(TerminalSettlementEligibility::MarketExpired {
-                position,
-                settlement_key,
-                observed_at_ns,
-            });
-        }
-        if origin == ManagedPositionOrigin::RecoveryBootstrap
-            && position.lifecycle.interval_end_ms().is_none()
-        {
-            return Ok(TerminalSettlementEligibility::RecoveryUnknownInterval {
-                position,
-                settlement_key,
-                observed_at_ns,
-            });
-        }
-        anyhow::bail!(
-            "recovered terminal settlement is ineligible before market expiry for position {}",
-            position.position_id
         )
     }
 
@@ -1481,13 +1337,14 @@ impl BinaryOracleEdgeTaker {
     /// the fallible operator-health mutation/report.
     fn apply_terminal_settlement_transition(
         &mut self,
+        position: &OpenPositionState,
         eligibility: TerminalSettlementEligibility,
+        key_delta: SettlementTerminalKeyDelta,
         booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
         reason_detail: String,
         evidence_state: TerminalEvidenceState,
     ) -> Result<()> {
-        let position = eligibility.position();
-        let settlement_key = eligibility.settlement_key().to_string();
+        let settlement_key = eligibility.settlement_key.clone();
         let health_emitter = self.context.settlement_health_transition_emitter().cloned();
         let lifecycle = self.order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
@@ -1500,12 +1357,12 @@ impl BinaryOracleEdgeTaker {
             prior_client_order_id: None,
             raw_reason_text: Some(format!(
                 "settlement_booking_terminal eligibility={} {reason_detail}",
-                eligibility.reason_label()
+                eligibility.reason.label()
             )),
             order_side: Some(position.entry_order_side),
             filled_quantity: None,
             residual_quantity: Some(position.quantity),
-            ts_event_ns: Some(eligibility.observed_at_ns()),
+            ts_event_ns: Some(eligibility.observed_at_ns),
         });
         let terminal_evidence = BoltV3TerminalSettlementEvidence {
             settlement_key: settlement_key.clone(),
@@ -1518,16 +1375,22 @@ impl BinaryOracleEdgeTaker {
                 .record_terminal_settlement(&terminal_evidence)
                 .context("failed to persist canonical terminal settlement evidence")?;
         }
-        self.terminal_settlement_keys.insert(settlement_key.clone());
-        self.settlement_booking_error_keys
-            .insert(settlement_key.clone());
-        self.settlement_close_fetch_attempts.remove(&settlement_key);
+        if key_delta.insert_terminal_key {
+            self.terminal_settlement_keys.insert(settlement_key.clone());
+        }
+        if key_delta.insert_booking_error_key {
+            self.settlement_booking_error_keys
+                .insert(settlement_key.clone());
+        }
+        if key_delta.remove_close_fetch_attempt {
+            self.settlement_close_fetch_attempts.remove(&settlement_key);
+        }
         log::error!(
             "binary_oracle_edge_taker settlement booking terminal: strategy_id={} position_id={} instrument_id={} eligibility={} {reason_detail}",
             self.config.strategy_id,
             position.position_id,
             position.instrument_id,
-            eligibility.reason_label(),
+            eligibility.reason.label(),
         );
         self.exposure = ExposureState::Flat;
         self.sync_exposure_context_from_active();
@@ -1535,7 +1398,7 @@ impl BinaryOracleEdgeTaker {
         let health_transition = BoltV3SettlementHealthTransition {
             settlement_key: settlement_key.clone(),
             position_id: position.position_id.to_string(),
-            reason: eligibility.reason_label().to_string(),
+            reason: eligibility.reason.label().to_string(),
         };
         let health_result = health_emitter
             .context("terminal settlement health emitter is not configured")
@@ -1882,198 +1745,90 @@ impl BinaryOracleEdgeTaker {
         self.apply_selection_snapshot(snapshot);
     }
 
-    fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
-        self.ensure_reference_price_runtime_state();
-        let quote = match update.to_reference_quote() {
-            Ok(quote) => quote,
-            Err(error) => {
-                self.mark_reference_price_source_status(
-                    update.source_id(),
-                    ReferencePriceSourceStatus::MalformedFrame,
-                    Some(update.observed_ts_ms()),
-                    Some(update.received_ts_ms()),
-                );
-                log::warn!(
-                    "binary_oracle_edge_taker malformed reference price update ignored: {error}; source_id={} strategy_id={}",
-                    update.source_id(),
-                    self.config.strategy_id,
-                );
-                return;
-            }
-        };
-        let Some(existing_health) = self.reference_price_source_health.get(quote.source_id())
-        else {
+    fn apply_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
+        self.initialize_reference_price_runtime_state();
+        let Some(reference_price) = self.config.reference_current_price.clone() else {
             return;
         };
-        if matches!(
-            existing_health.status(),
-            ReferencePriceSourceStatus::Disabled | ReferencePriceSourceStatus::UnsupportedSymbol
-        ) {
-            return;
-        }
-        if existing_health.provider() != quote.provider() {
-            let expected_provider = existing_health.provider().as_str().to_string();
-            self.mark_reference_price_source_status(
-                quote.source_id(),
-                ReferencePriceSourceStatus::MalformedFrame,
-                Some(quote.observed_ts_ms()),
-                Some(quote.received_ts_ms()),
-            );
-            log::warn!(
-                "binary_oracle_edge_taker reference current price provider mismatch ignored: source_id={} expected_provider={} actual_provider={} strategy_id={}",
-                quote.source_id(),
-                expected_provider,
-                quote.provider().as_str(),
-                self.config.strategy_id,
-            );
-            return;
-        }
-        if let Some(expected_provider_instrument) = self
-            .config
-            .reference_current_price
-            .as_ref()
-            .and_then(|reference_price| {
-                reference_price_source_provider_identifier(reference_price, quote.source_id())
-            })
-            .map(ToString::to_string)
-            && quote.provider_instrument() != expected_provider_instrument
-        {
-            self.mark_reference_price_source_status(
-                quote.source_id(),
-                ReferencePriceSourceStatus::MalformedFrame,
-                Some(quote.observed_ts_ms()),
-                Some(quote.received_ts_ms()),
-            );
-            log::warn!(
-                "binary_oracle_edge_taker reference current price provider instrument mismatch ignored: source_id={} expected_provider_instrument={} actual_provider_instrument={} strategy_id={}",
-                quote.source_id(),
-                expected_provider_instrument,
-                quote.provider_instrument(),
-                self.config.strategy_id,
-            );
-            return;
-        }
-
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
-        if let (Some(reference_price), Some(interval_start_ms), Some(interval_end_ms)) = (
-            self.config.reference_current_price.as_ref(),
-            self.active.interval_start_ms,
-            self.active.interval_end_ms,
-        ) && reference_quote_outside_live_window(
-            &quote,
-            VenueEventMs::new(interval_start_ms),
-            VenueEventMs::new(interval_end_ms),
-            NtStrategyClockMs::new(now_ms),
-            reference_price.max_source_age_ms,
-        ) {
-            let newer_than_accepted_quote = self
-                .reference_price_quotes
-                .get(quote.source_id())
-                .is_none_or(|existing| existing.observed_ts_ms() < quote.observed_ts_ms());
-            let newer_than_recorded_health = self
-                .reference_price_source_health
-                .get(quote.source_id())
-                .and_then(ReferencePriceSourceHealth::observed_ts_ms)
-                .is_none_or(|observed_ts_ms| observed_ts_ms < quote.observed_ts_ms());
-            if newer_than_accepted_quote && newer_than_recorded_health {
-                self.mark_reference_price_source_status(
-                    quote.source_id(),
-                    ReferencePriceSourceStatus::Stale,
-                    Some(quote.observed_ts_ms()),
-                    Some(quote.received_ts_ms()),
-                );
+        let window = self
+            .active
+            .interval_start_ms
+            .zip(self.active.interval_end_ms)
+            .map(
+                |(interval_start_ms, interval_end_ms)| ReferencePriceLiveWindow {
+                    interval_start_ms,
+                    interval_end_ms,
+                    evaluation_now_ms: now_ms,
+                },
+            );
+        let observation = observe_reference_price_health_update(
+            &reference_price,
+            update,
+            window,
+            &mut self.reference_price_selector,
+            &mut self.reference_price_source_health,
+            &mut self.reference_price_quotes,
+        );
+        self.log_reference_price_rejection(update, now_ms, observation.rejection.as_ref());
+        self.apply_reference_price_observation(observation);
+    }
+
+    fn log_reference_price_rejection(
+        &self,
+        update: &ReferencePriceUpdate,
+        now_ms: u64,
+        rejection: Option<&ReferencePriceUpdateRejection>,
+    ) {
+        match rejection {
+            Some(ReferencePriceUpdateRejection::MalformedFrame { detail }) => log::warn!(
+                "binary_oracle_edge_taker malformed reference price update ignored: {detail}; source_id={} strategy_id={}",
+                update.source_id(),
+                self.config.strategy_id,
+            ),
+            Some(ReferencePriceUpdateRejection::ProviderMismatch { expected, actual }) => {
+                log::warn!(
+                    "binary_oracle_edge_taker reference current price provider mismatch ignored: source_id={} expected_provider={} actual_provider={} strategy_id={}",
+                    update.source_id(),
+                    expected,
+                    actual,
+                    self.config.strategy_id,
+                )
             }
-            log::warn!(
+            Some(ReferencePriceUpdateRejection::ProviderInstrumentMismatch {
+                expected,
+                actual,
+            }) => log::warn!(
+                "binary_oracle_edge_taker reference current price provider instrument mismatch ignored: source_id={} expected_provider_instrument={} actual_provider_instrument={} strategy_id={}",
+                update.source_id(),
+                expected,
+                actual,
+                self.config.strategy_id,
+            ),
+            Some(ReferencePriceUpdateRejection::OutsideLiveWindow) => log::warn!(
                 "binary_oracle_edge_taker stale reference current price ignored: source_id={} observed_ts_ms={} now_ms={} strategy_id={}",
-                quote.source_id(),
-                quote.observed_ts_ms(),
+                update.source_id(),
+                update.observed_ts_ms(),
                 now_ms,
                 self.config.strategy_id,
-            );
-            self.observe_current_reference_price_selection(
-                interval_start_ms,
-                interval_end_ms,
-                now_ms,
-            );
-            return;
-        }
-
-        if self
-            .reference_price_quotes
-            .get(quote.source_id())
-            .is_some_and(|existing| existing.observed_ts_ms() >= quote.observed_ts_ms())
-        {
-            return;
-        }
-
-        match self
-            .reference_price_source_health
-            .get_mut(quote.source_id())
-        {
-            Some(health) => health.update(
-                ReferencePriceSourceStatus::Available,
-                Some(quote.observed_ts_ms()),
-                Some(quote.received_ts_ms()),
             ),
-            None => {
-                self.reference_price_source_health.insert(
-                    quote.source_id().to_string(),
-                    ReferencePriceSourceHealth::available(&quote),
-                );
-            }
+            _ => {}
         }
-        match self.reference_price_quotes.get_mut(quote.source_id()) {
-            Some(existing) => *existing = quote.clone(),
-            None => {
-                self.reference_price_quotes
-                    .insert(quote.source_id().to_string(), quote.clone());
-            }
-        }
-
-        let (Some(interval_start_ms), Some(interval_end_ms)) =
-            (self.active.interval_start_ms, self.active.interval_end_ms)
-        else {
-            return;
-        };
-        self.observe_current_reference_price_selection(interval_start_ms, interval_end_ms, now_ms);
     }
 
-    fn select_current_reference_price(
-        &mut self,
-        interval_start_ms: u64,
-        interval_end_ms: u64,
-        now_ms: u64,
-    ) -> Option<ReferencePriceSelection> {
-        let selector = self.reference_price_selector.as_mut()?;
-        let quotes = self
-            .reference_price_quotes
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let selection = selector.select(interval_start_ms, interval_end_ms, now_ms, &quotes);
-        self.refresh_reference_price_source_statuses(interval_start_ms, interval_end_ms, now_ms);
-        if selection.is_none() {
+    fn apply_reference_price_observation(&mut self, observation: ReferencePriceUpdateObservation) {
+        if !observation.selection_evaluated {
+            return;
+        }
+        let (Some(selection), Some(selected_quote)) =
+            (observation.selection, observation.selected_quote)
+        else {
             self.clear_reference_current_price_selection_state();
-        }
-        selection
-    }
-
-    fn observe_current_reference_price_selection(
-        &mut self,
-        interval_start_ms: u64,
-        interval_end_ms: u64,
-        now_ms: u64,
-    ) {
-        let Some(selection) =
-            self.select_current_reference_price(interval_start_ms, interval_end_ms, now_ms)
-        else {
             return;
         };
-        let selected_source_id = selection.source_id().to_string();
-        if let Some(selected_quote) = self.reference_price_quotes.get(&selected_source_id)
-            && self
-                .active
-                .observe_reference_price_quote(selected_quote, selection.failed_over())
+        if self
+            .active
+            .observe_reference_price_quote(&selected_quote, selection.failed_over())
         {
             self.latest_selected_reference_quote = Some(SelectedReferenceQuoteEvidence {
                 quote: selected_quote.clone(),
@@ -2091,11 +1846,34 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn refresh_current_reference_price_selection_at(&mut self, now_ms: u64) {
+    fn apply_current_reference_price_selection(
+        &mut self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) {
+        let Some(reference_price) = self.config.reference_current_price.clone() else {
+            return;
+        };
+        let observation = select_reference_price_from_health(
+            &reference_price,
+            &mut self.reference_price_selector,
+            &mut self.reference_price_source_health,
+            &self.reference_price_quotes,
+            ReferencePriceLiveWindow {
+                interval_start_ms,
+                interval_end_ms,
+                evaluation_now_ms: now_ms,
+            },
+        );
+        self.apply_reference_price_observation(observation);
+    }
+
+    fn apply_reference_price_selection_at(&mut self, now_ms: u64) {
         if let (Some(interval_start_ms), Some(interval_end_ms)) =
             (self.active.interval_start_ms, self.active.interval_end_ms)
         {
-            self.observe_current_reference_price_selection(
+            self.apply_current_reference_price_selection(
                 interval_start_ms,
                 interval_end_ms,
                 now_ms,
@@ -2103,126 +1881,7 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn refresh_reference_price_source_statuses(
-        &mut self,
-        interval_start_ms: u64,
-        interval_end_ms: u64,
-        now_ms: u64,
-    ) {
-        let Some(reference_price) = &self.config.reference_current_price else {
-            return;
-        };
-        let drift_exceeded = reference_price.drift_policy == ReferencePriceDriftPolicy::Block
-            && self
-                .reference_price_selector
-                .as_ref()
-                .and_then(ReferencePriceSelector::last_cross_source_drift_bps)
-                .is_some_and(|drift_bps| {
-                    drift_bps > f64::from(reference_price.max_source_drift_bps)
-                });
-        let updates = reference_price
-            .source_order
-            .iter()
-            .filter_map(|source_id| {
-                let source = reference_price.sources.get(source_id)?;
-                if !reference_price_source_is_runtime_available(reference_price, source) {
-                    return None;
-                }
-                let (status, observed_ts_ms, received_ts_ms) =
-                    match self.reference_price_quotes.get(source_id) {
-                        Some(quote)
-                            if reference_quote_outside_live_window(
-                                quote,
-                                VenueEventMs::new(interval_start_ms),
-                                VenueEventMs::new(interval_end_ms),
-                                NtStrategyClockMs::new(now_ms),
-                                reference_price.max_source_age_ms,
-                            ) =>
-                        {
-                            self.reference_price_source_health
-                                .get(source_id)
-                                .filter(|health| {
-                                    health.status() == ReferencePriceSourceStatus::Stale
-                                        && health.observed_ts_ms().is_some_and(|observed_ts_ms| {
-                                            observed_ts_ms > quote.observed_ts_ms()
-                                        })
-                                })
-                                .map(|health| {
-                                    (
-                                        health.status(),
-                                        health.observed_ts_ms(),
-                                        health.received_ts_ms(),
-                                    )
-                                })
-                                .unwrap_or((
-                                    ReferencePriceSourceStatus::Stale,
-                                    Some(quote.observed_ts_ms()),
-                                    Some(quote.received_ts_ms()),
-                                ))
-                        }
-                        Some(quote) if drift_exceeded => (
-                            ReferencePriceSourceStatus::DriftExceeded,
-                            Some(quote.observed_ts_ms()),
-                            Some(quote.received_ts_ms()),
-                        ),
-                        Some(quote)
-                            if self
-                                .reference_price_source_health
-                                .get(source_id)
-                                .is_some_and(|health| {
-                                    health.status() == ReferencePriceSourceStatus::Stale
-                                        && health.observed_ts_ms().is_some_and(|observed_ts_ms| {
-                                            observed_ts_ms > quote.observed_ts_ms()
-                                        })
-                                }) =>
-                        {
-                            let health = self
-                                .reference_price_source_health
-                                .get(source_id)
-                                .expect("reference price source health checked above");
-                            (
-                                health.status(),
-                                health.observed_ts_ms(),
-                                health.received_ts_ms(),
-                            )
-                        }
-                        Some(quote) => (
-                            ReferencePriceSourceStatus::Available,
-                            Some(quote.observed_ts_ms()),
-                            Some(quote.received_ts_ms()),
-                        ),
-                        None => self
-                            .reference_price_source_health
-                            .get(source_id)
-                            .map(|health| match health.status() {
-                                ReferencePriceSourceStatus::AuthRejected
-                                | ReferencePriceSourceStatus::SubscriptionRejected
-                                | ReferencePriceSourceStatus::Stale
-                                | ReferencePriceSourceStatus::MalformedFrame
-                                | ReferencePriceSourceStatus::Disconnected
-                                | ReferencePriceSourceStatus::DriftExceeded => (
-                                    health.status(),
-                                    health.observed_ts_ms(),
-                                    health.received_ts_ms(),
-                                ),
-                                _ => (ReferencePriceSourceStatus::Silent, None, None),
-                            })
-                            .unwrap_or((ReferencePriceSourceStatus::Silent, None, None)),
-                    };
-                Some((source_id.clone(), status, observed_ts_ms, received_ts_ms))
-            })
-            .collect::<Vec<_>>();
-        for (source_id, status, observed_ts_ms, received_ts_ms) in updates {
-            self.mark_reference_price_source_status(
-                &source_id,
-                status,
-                observed_ts_ms,
-                received_ts_ms,
-            );
-        }
-    }
-
-    fn ensure_reference_price_runtime_state(&mut self) {
+    fn initialize_reference_price_runtime_state(&mut self) {
         if self.config.reference_current_price.is_none() {
             return;
         }
@@ -2253,18 +1912,6 @@ impl BinaryOracleEdgeTaker {
             reference_price_source_health_from_config(&self.config);
         self.reference_price_selector = reference_price_selector_from_config(&self.config);
         self.reset_reference_current_price_selection_state();
-    }
-
-    fn mark_reference_price_source_status(
-        &mut self,
-        source_id: &str,
-        status: ReferencePriceSourceStatus,
-        observed_ts_ms: Option<u64>,
-        received_ts_ms: Option<u64>,
-    ) {
-        if let Some(health) = self.reference_price_source_health.get_mut(source_id) {
-            health.update(status, observed_ts_ms, received_ts_ms);
-        }
     }
 
     fn current_market_id(&self) -> Option<&str> {
@@ -2534,23 +2181,16 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn reconcile_runtime_venue_state(&mut self, now_ms: u64) {
-        if let Some(query) = self.runtime_reconcile_order_query()
-            && self.runtime_reconcile_order_query_due(&query, now_ms)
-        {
-            self.reconcile_runtime_order_query(query, now_ms);
+    fn apply_runtime_venue_reconcile(&mut self, now_ms: u64) {
+        let query = self.runtime_reconcile_order_query();
+        if let Some(action) = project_runtime_venue_reconcile(
+            query.as_ref(),
+            now_ms,
+            self.runtime_reconcile_min_age_ms(),
+        ) {
+            self.reconcile_runtime_order_query(action, now_ms);
         }
         self.reconcile_unsupported_observed_position_from_cache(now_ms);
-    }
-
-    fn runtime_reconcile_order_query_due(
-        &self,
-        query: &RuntimeReconcileOrderQuery,
-        now_ms: u64,
-    ) -> bool {
-        query.submitted_at_ms.is_none_or(|submitted_at_ms| {
-            now_ms.saturating_sub(submitted_at_ms) >= self.runtime_reconcile_min_age_ms()
-        })
     }
 
     fn runtime_reconcile_min_age_ms(&self) -> u64 {
@@ -2559,9 +2199,9 @@ impl BinaryOracleEdgeTaker {
             .saturating_mul(MILLIS_PER_SECOND_U64)
     }
 
-    fn runtime_reconcile_order_query(&self) -> Option<RuntimeReconcileOrderQuery> {
+    fn runtime_reconcile_order_query(&self) -> Option<RuntimeReconcileOrder> {
         match &self.exposure {
-            ExposureState::PendingEntry(pending) => Some(RuntimeReconcileOrderQuery {
+            ExposureState::PendingEntry(pending) => Some(RuntimeReconcileOrder {
                 client_order_id: pending.client_order_id,
                 submitted_at_ms: pending.submitted_at_ms,
                 instrument_id: pending.instrument_id,
@@ -2569,17 +2209,15 @@ impl BinaryOracleEdgeTaker {
                 position_id: None,
                 failure_outcome: BoltV3OrderLifecycleOutcome::PendingEntry,
             }),
-            ExposureState::EntryReconcilePending { pending, .. } => {
-                Some(RuntimeReconcileOrderQuery {
-                    client_order_id: pending.client_order_id,
-                    submitted_at_ms: pending.submitted_at_ms,
-                    instrument_id: pending.instrument_id,
-                    market_id: pending.lifecycle.market_id_owned(),
-                    position_id: None,
-                    failure_outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
-                })
-            }
-            ExposureState::ExitPending(exit) => Some(RuntimeReconcileOrderQuery {
+            ExposureState::EntryReconcilePending { pending, .. } => Some(RuntimeReconcileOrder {
+                client_order_id: pending.client_order_id,
+                submitted_at_ms: pending.submitted_at_ms,
+                instrument_id: pending.instrument_id,
+                market_id: pending.lifecycle.market_id_owned(),
+                position_id: None,
+                failure_outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+            }),
+            ExposureState::ExitPending(exit) => Some(RuntimeReconcileOrder {
                 client_order_id: exit.pending_exit.client_order_id,
                 submitted_at_ms: exit.pending_exit.submitted_at_ms,
                 instrument_id: exit.position.as_ref().map_or_else(
@@ -2602,7 +2240,7 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn reconcile_runtime_order_query(&mut self, query: RuntimeReconcileOrderQuery, now_ms: u64) {
+    fn reconcile_runtime_order_query(&mut self, query: IssueVenueOrderQuery, now_ms: u64) {
         let ts_event_ns = now_ms.saturating_mul(NANOS_PER_MILLI_U64);
         if query.failure_outcome == BoltV3OrderLifecycleOutcome::ExitPending
             && self.apply_cached_terminal_order_for_reconcile(&query, ts_event_ns)
@@ -2615,26 +2253,23 @@ impl BinaryOracleEdgeTaker {
         if self.apply_cached_terminal_order_for_reconcile(&query, ts_event_ns) {
             return;
         }
-        self.query_order_for_reconcile(query, ts_event_ns);
+        self.issue_order_query_for_reconcile(query, ts_event_ns);
     }
 
     fn materialize_cached_position_for_reconcile(
         &mut self,
-        query: &RuntimeReconcileOrderQuery,
+        query: &IssueVenueOrderQuery,
         ts_event_ns: u64,
     ) -> bool {
         if !self.is_registered() {
             return false;
         }
-        let spec = {
+        let snapshot = {
             let cache = self.cache();
             let Some(position) = cache.position_for_order(&query.client_order_id) else {
                 return false;
             };
-            if position.instrument_id != query.instrument_id {
-                return false;
-            }
-            PositionMaterializationSpec {
+            CachedPositionSnapshot {
                 instrument_id: position.instrument_id,
                 position_id: position.id,
                 entry_order_side: position.entry,
@@ -2643,16 +2278,20 @@ impl BinaryOracleEdgeTaker {
                 avg_px_open: position.avg_px_open,
             }
         };
-        if !self.cached_position_id_still_open(spec.instrument_id, spec.position_id) {
+        let position_is_open = snapshot.instrument_id == query.instrument_id
+            && self.cached_position_id_still_open(snapshot.instrument_id, snapshot.position_id);
+        let Some(spec) =
+            decide_cached_position_materialization(query, Some(snapshot), position_is_open)
+        else {
             return false;
-        }
+        };
         self.materialize_position_from_reconcile_pass(spec, ts_event_ns);
         true
     }
 
     fn apply_cached_terminal_order_for_reconcile(
         &mut self,
-        query: &RuntimeReconcileOrderQuery,
+        query: &IssueVenueOrderQuery,
         ts_event_ns: u64,
     ) -> bool {
         if !self.is_registered() {
@@ -2777,37 +2416,41 @@ impl BinaryOracleEdgeTaker {
         false
     }
 
-    fn query_order_for_reconcile(&mut self, query: RuntimeReconcileOrderQuery, ts_event_ns: u64) {
-        if !self.is_registered() {
-            self.record_reconcile_query_failure(
-                query,
-                "strategy is not registered for NT order query".to_string(),
-                ts_event_ns,
-            );
-            return;
-        }
-        let Some(order) = self.cache().order(&query.client_order_id) else {
-            self.record_reconcile_query_failure(
-                query,
-                "NT cache is missing order for reconcile query".to_string(),
-                ts_event_ns,
-            );
-            return;
-        };
-        self.record_runtime_reconcile_query_event(&query);
-        let client_id = ClientId::from(self.config.client_id.as_str());
-        if let Err(error) = self.query_order(&order, Some(client_id), None) {
-            self.record_reconcile_query_failure(
-                query,
-                format!("NT order query failed: {error:#}"),
-                ts_event_ns,
-            );
+    fn issue_order_query_for_reconcile(&mut self, query: IssueVenueOrderQuery, ts_event_ns: u64) {
+        let registered = self.is_registered();
+        let order = registered
+            .then(|| self.cache().order(&query.client_order_id))
+            .flatten();
+        match decide_order_query_for_reconcile(query, registered, order.is_some()) {
+            VenueOrderQueryDecision::FailClosed { action, failure } => {
+                let reason = match failure {
+                    VenueOrderQueryFailure::RuntimeNotRegistered => {
+                        "strategy is not registered for NT order query"
+                    }
+                    VenueOrderQueryFailure::CachedOrderMissing => {
+                        "NT cache is missing order for reconcile query"
+                    }
+                };
+                self.record_reconcile_query_failure(action, reason.to_string(), ts_event_ns);
+            }
+            VenueOrderQueryDecision::Issue(query) => {
+                let order = order.expect("query decision observed a cached order");
+                self.record_runtime_reconcile_query_event(&query);
+                let client_id = ClientId::from(self.config.client_id.as_str());
+                if let Err(error) = self.query_order(&order, Some(client_id), None) {
+                    self.record_reconcile_query_failure(
+                        query,
+                        format!("NT order query failed: {error:#}"),
+                        ts_event_ns,
+                    );
+                }
+            }
         }
     }
 
     fn record_reconcile_query_failure(
         &mut self,
-        query: RuntimeReconcileOrderQuery,
+        query: IssueVenueOrderQuery,
         raw_reason_text: String,
         ts_event_ns: u64,
     ) {
@@ -2911,7 +2554,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     #[cfg(test)]
-    fn record_runtime_reconcile_query_event(&mut self, query: &RuntimeReconcileOrderQuery) {
+    fn record_runtime_reconcile_query_event(&mut self, query: &IssueVenueOrderQuery) {
         self.runtime_reconcile_query_events
             .push(RuntimeReconcileQueryEvent {
                 client_order_id: query.client_order_id,
@@ -2920,7 +2563,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     #[cfg(not(test))]
-    fn record_runtime_reconcile_query_event(&mut self, _query: &RuntimeReconcileOrderQuery) {}
+    fn record_runtime_reconcile_query_event(&mut self, _query: &IssueVenueOrderQuery) {}
 
     fn set_unsupported_observed_exposure(
         &mut self,
@@ -2993,6 +2636,18 @@ impl BinaryOracleEdgeTaker {
         let (cached_positions, settlement_scope_positions) = match cached_recovery {
             Ok(cached_recovery) => cached_recovery,
             Err(_) => {
+                let cache_probe_decision = decide_bootstrap_recovery_from_cache(
+                    false,
+                    None,
+                    usize::default(),
+                    observed_at_ns,
+                    &self.settlement_booking_error_keys,
+                    &self.terminal_settlement_keys,
+                );
+                debug_assert!(matches!(
+                    cache_probe_decision,
+                    SettlementRecoveryEntryDecision::EnterBlindCacheProbe
+                ));
                 self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
                     reason: BlindRecoveryReason::CacheProbeFailed,
                 });
@@ -3008,21 +2663,36 @@ impl BinaryOracleEdgeTaker {
             return;
         }
 
-        if cached_positions.is_empty() {
+        let open_position_count = cached_positions.len();
+        if let SettlementRecoveryEntryDecision::Flat = decide_bootstrap_recovery_from_cache(
+            true,
+            None,
+            open_position_count,
+            observed_at_ns,
+            &self.settlement_booking_error_keys,
+            &self.terminal_settlement_keys,
+        ) {
             self.exposure = ExposureState::Flat;
             return;
         }
 
-        if cached_positions.len() > 1 {
+        if let SettlementRecoveryEntryDecision::EnterBlindMultipleOpenPositions { count } =
+            decide_bootstrap_recovery_from_cache(
+                true,
+                None,
+                open_position_count,
+                observed_at_ns,
+                &self.settlement_booking_error_keys,
+                &self.terminal_settlement_keys,
+            )
+        {
             self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::MultipleOpenPositions {
-                    count: cached_positions.len(),
-                },
+                reason: BlindRecoveryReason::MultipleOpenPositions { count },
             });
             log::error!(
                 "binary_oracle_edge_taker recovery bootstrap found multiple open positions: strategy_id={} position_count={} leaving recovery mode blind to position bootstrap",
                 self.config.strategy_id,
-                cached_positions.len(),
+                count,
             );
             return;
         }
@@ -3034,28 +2704,48 @@ impl BinaryOracleEdgeTaker {
         // Mirror live terminal booking-error: recovered open positions whose
         // settlement key already has a booking-error record release exposure
         // rather than parking Managed forever.
-        if let Ok(settlement_key) = settlement_key_for_position(&open_position)
-            && self.settlement_booking_error_keys.contains(&settlement_key)
-        {
-            let eligibility = match Self::recovered_terminal_settlement_eligibility(
-                open_position.clone(),
-                ManagedPositionOrigin::RecoveryBootstrap,
-                settlement_key.clone(),
+        if let Ok(settlement_key) = settlement_key_for_position(&open_position) {
+            let position_key = settlement_position_key(&open_position, settlement_key.clone());
+            let decision = decide_bootstrap_recovery_from_cache(
+                true,
+                Some(&position_key),
+                open_position_count,
                 observed_at_ns,
-            ) {
-                Ok(eligibility) => eligibility,
-                Err(error) => {
-                    self.enter_blind_settlement_recovery(error);
+                &self.settlement_booking_error_keys,
+                &self.terminal_settlement_keys,
+            );
+            let SettlementRecoveryEntryDecision::ApplyPriorBookingError {
+                eligibility,
+                canonical_evidence_already_durable,
+            } = decision
+            else {
+                if let SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
+                    detail,
+                    ..
+                } = decision
+                {
+                    self.enter_blind_settlement_recovery(anyhow::anyhow!(detail));
                     return;
                 }
+                let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
+                self.exposure = exposure;
+                self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
+                return;
             };
-            let evidence_state = if self.terminal_settlement_keys.contains(&settlement_key) {
+            let evidence_state = if canonical_evidence_already_durable {
                 TerminalEvidenceState::CanonicalAlreadyDurable
             } else {
                 TerminalEvidenceState::PersistCanonical
             };
             if let Err(error) = self.apply_terminal_settlement_transition(
+                &open_position,
                 eligibility,
+                SettlementTerminalKeyDelta {
+                    settlement_key: settlement_key.clone(),
+                    insert_booking_error_key: true,
+                    insert_terminal_key: true,
+                    remove_close_fetch_attempt: true,
+                },
                 None,
                 format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
                 evidence_state,
@@ -3073,9 +2763,9 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         settlement_scope_positions: &[OpenPositionState],
     ) -> bool {
-        let Some(recovery) = self.context.settlement_recovery().cloned() else {
+        if self.context.settlement_recovery().is_none() {
             return true;
-        };
+        }
         let recovery_scope_settlement_keys = settlement_scope_positions
             .iter()
             .map(settlement_key_for_position)
@@ -3091,47 +2781,11 @@ impl BinaryOracleEdgeTaker {
             return true;
         }
 
-        let recovered_settled_keys = match read_settlement_keys_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
+        let recovery_delta = match recover_settlement_bootstrap(
+            self.context.settlement_capability(),
             &recovery_scope_settlement_keys,
         ) {
-            Ok(keys) => keys,
-            Err(error) => {
-                self.enter_blind_settlement_recovery(error);
-                return false;
-            }
-        };
-        let recovered_booking_error_keys =
-            match read_settlement_booking_error_keys_for_recovery_scope(
-                &recovery.path,
-                recovery.max_bytes,
-                &recovery_scope_settlement_keys,
-            ) {
-                Ok(keys) => keys,
-                Err(error) => {
-                    self.enter_blind_settlement_recovery(error);
-                    return false;
-                }
-            };
-        let recovered_terminal_settlement_keys =
-            match read_terminal_settlement_keys_for_recovery_scope(
-                &recovery.path,
-                recovery.max_bytes,
-                &recovery_scope_settlement_keys,
-            ) {
-                Ok(keys) => keys,
-                Err(error) => {
-                    self.enter_blind_settlement_recovery(error);
-                    return false;
-                }
-            };
-        let recovered_settlement_evidence = match read_settlement_evidence_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            &recovery_scope_settlement_keys,
-        ) {
-            Ok(evidence) => evidence,
+            Ok(delta) => delta,
             Err(error) => {
                 self.enter_blind_settlement_recovery(error);
                 return false;
@@ -3139,7 +2793,7 @@ impl BinaryOracleEdgeTaker {
         };
 
         if let Some(sink) = self.context.settlement_runtime_sink() {
-            for evidence in recovered_settlement_evidence {
+            for evidence in recovery_delta.settled_evidence {
                 let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence)
                 {
                     Ok(explanation) => explanation,
@@ -3155,22 +2809,32 @@ impl BinaryOracleEdgeTaker {
             }
         }
 
-        self.settled_position_keys.extend(recovered_settled_keys);
+        self.settled_position_keys
+            .extend(recovery_delta.settled_position_keys);
         self.settlement_booking_error_keys
-            .extend(recovered_booking_error_keys);
+            .extend(recovery_delta.booking_error_keys);
         self.terminal_settlement_keys
-            .extend(recovered_terminal_settlement_keys);
+            .extend(recovery_delta.terminal_settlement_keys);
         true
     }
 
     fn enter_blind_settlement_recovery(&mut self, error: anyhow::Error) {
+        let decision = decide_blind_settlement_recovery(&error);
+        let SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
+            transition,
+            outcome,
+            ..
+        } = decision
+        else {
+            return;
+        };
         let position = self.settlement_position_candidate();
         self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
             reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
         });
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
-            outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+            transition,
+            outcome,
             source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY,
             market_id: position
                 .as_ref()
@@ -4821,21 +4485,6 @@ impl BinaryOracleEdgeTaker {
         cache.instrument(&instrument_id)
     }
 
-    fn normalize_base_order_quantity_for_execution_venue(
-        &self,
-        instrument: &InstrumentAny,
-        quantity: Quantity,
-    ) -> Option<Quantity> {
-        let quantity_decimal = Decimal::from_f64(quantity.as_f64())?;
-        let normalized = provider_normalize_base_order_quantity(
-            self.context.execution_venue(),
-            quantity_decimal,
-        )?;
-        instrument
-            .try_make_qty(normalized.to_f64()?, Some(true))
-            .ok()
-    }
-
     fn pending_entry_context_for(&self, instrument_id: InstrumentId) -> Option<PendingEntryState> {
         let pending = self.pending_entry()?.clone();
         if pending.instrument_id != instrument_id {
@@ -6207,21 +5856,15 @@ impl BinaryOracleEdgeTaker {
         } else {
             None
         };
-        let quote_quantity_uses_submitted_notional = is_quote_quantity
-            && matches!(order, OrderAny::Market(_))
-            && order.order_side() == OrderSide::Buy;
-        let quote_quantity_last_price =
-            if is_quote_quantity && !quote_quantity_uses_submitted_notional {
-                self.quote_quantity_last_price_for_order(order)
-            } else {
-                None
-            };
-        let quote_quantity_reference_price =
-            if is_quote_quantity && !quote_quantity_uses_submitted_notional {
-                self.quote_quantity_reference_price_for_order(order)
-            } else {
-                None
-            };
+        let (last_quote, last_trade) = if is_quote_quantity {
+            let cache = self.cache();
+            (
+                cache.quote(&order.instrument_id()),
+                cache.trade(&order.instrument_id()),
+            )
+        } else {
+            (None, None)
+        };
         let risk_reducing_exit_position_context = if matches!(
             intent.intent_kind,
             BoltV3OrderIntentKind::Exit
@@ -6264,65 +5907,16 @@ impl BinaryOracleEdgeTaker {
                 execution_client_id: &self.config.client_id,
                 intent,
                 order,
-                instrument: instrument.as_ref(),
-                quote_quantity_last_price,
-                quote_quantity_reference_price,
+                valuation: OrderValuationContext {
+                    last_quote,
+                    last_trade,
+                    instrument: instrument.as_ref(),
+                },
                 lifecycle_policy: self.submit_lifecycle_policy(),
                 risk_reducing_exit_position,
             },
             |price| self.max_entry_fee_bps_for_admission(order.instrument_id(), price),
         )
-    }
-
-    fn quote_quantity_last_price_for_order(
-        &self,
-        order: &nautilus_model::orders::OrderAny,
-    ) -> Option<Price> {
-        match order {
-            OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
-                self.market_order_cache_price_for_order(order)
-            }
-            OrderAny::StopMarket(_) | OrderAny::MarketIfTouched(_) => order.trigger_price(),
-            OrderAny::TrailingStopMarket(_) | OrderAny::TrailingStopLimit(_) => {
-                order.trigger_price()
-            }
-            _ => order.price(),
-        }
-    }
-
-    fn market_order_cache_price_for_order(
-        &self,
-        order: &nautilus_model::orders::OrderAny,
-    ) -> Option<Price> {
-        let cache = self.cache();
-        if let Some(last_quote) = cache.quote(&order.instrument_id()) {
-            return match order.order_side() {
-                OrderSide::Buy => Some(last_quote.ask_price),
-                OrderSide::Sell => Some(last_quote.bid_price),
-                _ => None,
-            };
-        }
-        cache
-            .trade(&order.instrument_id())
-            .map(|last_trade| last_trade.price)
-    }
-
-    /// Side-appropriate top-of-book price (best ask for a BUY, best bid for a
-    /// SELL) used by [`admission_base_notional_from_order`] to pick a
-    /// conservative effective price for a quote-quantity order's quote→base
-    /// conversion. `None` when no current quote tick is cached, which the shared
-    /// helper treats as "no top-of-book" and falls back to the last price.
-    fn quote_quantity_reference_price_for_order(
-        &self,
-        order: &nautilus_model::orders::OrderAny,
-    ) -> Option<Price> {
-        let cache = self.cache();
-        let quote_tick = cache.quote(&order.instrument_id())?;
-        match order.order_side() {
-            OrderSide::Buy => Some(quote_tick.ask_price),
-            OrderSide::Sell => Some(quote_tick.bid_price),
-            _ => None,
-        }
     }
 
     #[cfg(test)]
@@ -6943,7 +6537,7 @@ impl BinaryOracleEdgeTaker {
         trigger_context: ExitEvaluationTriggerContext,
     ) -> Result<(Option<ClientOrderId>, ExitSubmissionDecision)> {
         self.refresh_realized_volatility_snapshot_at(now_ms);
-        self.refresh_current_reference_price_selection_at(now_ms);
+        self.apply_reference_price_selection_at(now_ms);
         if let Some(position) = self.settlement_position_candidate()
             && position.lifecycle.interval_end_ms().is_none()
         {
@@ -6981,7 +6575,7 @@ impl BinaryOracleEdgeTaker {
             .current_instrument(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("exit instrument missing from cache"))?;
         let Some(normalized_quantity) =
-            self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
+            normalize_base_order_quantity(self.context.execution_venue(), &instrument, quantity)
         else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE);
             self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
@@ -7303,23 +6897,31 @@ impl BinaryOracleEdgeTaker {
         };
         let price = submission_vwap.limit_price;
         let quantity_value = if self.config.entry_order.is_quote_quantity {
-            let Some(min_notional) =
-                market_quote_buy_min_notional_for_execution_venue(self.context.execution_venue())
-            else {
-                decision.blocked_reason =
-                    Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED);
-                return decision;
-            };
             let Some(sized_notional_decimal) = Decimal::from_f64(sized_notional) else {
                 decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
                 return decision;
             };
-            if sized_notional_decimal < min_notional {
-                decision.blocked_reason =
-                    Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM);
-                return decision;
+            match make_market_quote_buy_quantity(
+                self.context.execution_venue(),
+                &instrument,
+                sized_notional_decimal,
+            ) {
+                Ok(quantity) => quantity.as_f64(),
+                Err(MarketQuoteBuyQuantityError::MinimumUnmodeled) => {
+                    decision.blocked_reason =
+                        Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED);
+                    return decision;
+                }
+                Err(MarketQuoteBuyQuantityError::BelowMinimum) => {
+                    decision.blocked_reason =
+                        Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM);
+                    return decision;
+                }
+                Err(MarketQuoteBuyQuantityError::QuantityInvalid) => {
+                    decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                    return decision;
+                }
             }
-            sized_notional
         } else {
             let max_quantity_at_limit = sized_notional / price;
             if !is_positive_finite(max_quantity_at_limit) {
@@ -7331,9 +6933,11 @@ impl BinaryOracleEdgeTaker {
                 decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
                 return decision;
             };
-            let Some(quantity) =
-                self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
-            else {
+            let Some(quantity) = normalize_base_order_quantity(
+                self.context.execution_venue(),
+                &instrument,
+                quantity,
+            ) else {
                 decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
                 return decision;
             };
@@ -7969,7 +7573,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         if event.name.as_str() == self.selection_retry_timer_name() {
             self.refresh_selection_from_cache(now_ms);
             self.retry_missing_live_input_subscriptions_at(now_ms);
-            self.reconcile_runtime_venue_state(now_ms);
+            self.apply_runtime_venue_reconcile(now_ms);
         }
         self.check_resolution_feed_outage_at_market_end(now_ms)?;
         Ok(())
@@ -8019,7 +7623,7 @@ impl DataActor for BinaryOracleEdgeTaker {
 
     fn on_data(&mut self, data: &CustomData) -> anyhow::Result<()> {
         if let Some(update) = ReferencePriceUpdate::from_custom_data(data) {
-            self.observe_reference_price_update(update);
+            self.apply_reference_price_update(update);
             self.sync_exposure_context_from_active();
         }
         Ok(())
@@ -8878,6 +8482,17 @@ fn settlement_key_for_position(position: &OpenPositionState) -> Result<String> {
     Ok(key)
 }
 
+fn settlement_position_key(
+    position: &OpenPositionState,
+    settlement_key: String,
+) -> SettlementPositionKey {
+    SettlementPositionKey {
+        settlement_key,
+        position_id: position.position_id.to_string(),
+        interval_end_ms: position.lifecycle.interval_end_ms(),
+    }
+}
+
 fn settlement_product_id(instrument_id: InstrumentId) -> Result<String> {
     prediction_market_product_id_from_instrument_id(&instrument_id).ok_or_else(|| {
         anyhow::anyhow!(
@@ -8968,44 +8583,6 @@ fn reason_has_ascii_token(reason: &str, token: &str) -> bool {
     reason
         .split(|ch: char| !ch.is_ascii_alphanumeric())
         .any(|part| part == token)
-}
-
-#[cfg(test)]
-fn submit_admission_request_from_order_for_client(
-    execution_client_id: &str,
-    intent: &BoltV3OrderIntentEvidence,
-    order: &nautilus_model::orders::OrderAny,
-) -> Result<BoltV3SubmitAdmissionRequest> {
-    // Base-only test helper: it has no strategy cache/instrument context, so it
-    // cannot size quote-quantity orders (that requires the full
-    // `admission_base_notional_from_order` path with an instrument) and it cannot
-    // value a market-style order — ENTRY OR EXIT (production values any price-less
-    // base-quantity order at the instrument's structural price ceiling via the
-    // strategy method). It is NOT a divergent copy of the notional
-    // math — for the shapes it DOES accept (base-quantity firm-limit orders) it
-    // reuses the shared base-quantity definition so the order is sized
-    // identically here and in the production strategy.
-    anyhow::ensure!(
-        !order.is_quote_quantity(),
-        "test submit admission helper requires strategy cache context for quote-quantity orders"
-    );
-    anyhow::ensure!(
-        order.price().is_some(),
-        "test submit admission helper cannot value a market-style order (no firm limit price): production values it at the instrument price ceiling — use `strategy.submit_admission_request_from_order` with a cache-seeded instrument"
-    );
-    build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id,
-            intent,
-            order,
-            instrument: None,
-            quote_quantity_last_price: None,
-            quote_quantity_reference_price: None,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
-        },
-        |_| Ok(Decimal::ZERO),
-    )
 }
 
 #[cfg(test)]

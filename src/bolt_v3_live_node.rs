@@ -721,8 +721,10 @@ fn configured_reference_current_price_source_count(
 
 fn settlement_health_from_loaded(loaded: &LoadedBoltV3Config) -> BoltV3SettlementHealth {
     if loaded.strategies.iter().any(|strategy| {
-        strategy.config.strategy_archetype.as_str()
-            == crate::strategies::binary_oracle_edge_taker::KEY
+        crate::strategy_bindings::production_runtime_bindings()
+            .iter()
+            .find(|binding| binding.key == strategy.config.strategy_archetype.as_str())
+            .is_some_and(|binding| binding.capabilities.settlement)
     }) {
         BoltV3SettlementHealth::nominal()
     } else {

@@ -357,7 +357,7 @@ fn new_risk_market_data_client_available(
     let Some(client) = loaded.root.clients.get(client_key) else {
         return Ok(true);
     };
-    providers::new_risk_market_data_available(client_key, client).map_err(|reason| {
+    bolt_v3_providers::new_risk_market_data_available(client_key, client).map_err(|reason| {
         BoltV3LiveNodeError::LiveTransportScope {
             reason: format!(
                 "client `{client_key}` new-risk market-data capability could not be resolved: {reason}"

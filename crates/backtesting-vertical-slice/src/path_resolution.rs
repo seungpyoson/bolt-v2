@@ -16,7 +16,11 @@
 //! 4. otherwise the working-directory-relative or `base_dir`-relative
 //!    candidate wins.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    ffi::OsString,
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -189,6 +193,96 @@ pub fn resolve_contained_output_component(output_root: &Path, component: &str) -
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
         Err(error) => {
             Err(error).with_context(|| format!("inspect operator output {}", candidate.display()))
+        }
+    }
+}
+
+/// Resolve the canonical prospective path of a write target which may not
+/// exist yet. Existing ancestors are canonicalized (including symlink
+/// resolution), while a missing tail is appended only after its nearest
+/// existing ancestor is proven to be a directory.
+/// Missing components must be ASCII so callers can compare prospective paths
+/// with portable ASCII-case folding before creating them on filesystems whose
+/// case-sensitivity differs.
+///
+/// # Errors
+///
+/// Returns an error when the path has no existing ancestor, a dangling
+/// symlink is encountered, the nearest existing ancestor cannot contain the
+/// missing tail, or a missing component is not one normal path component.
+pub fn resolve_planned_write_path(path: &Path) -> Result<PathBuf> {
+    ensure!(
+        !path.as_os_str().is_empty(),
+        "planned write path must not be empty"
+    );
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("resolve current directory for planned write path")?
+            .join(path)
+    };
+    let mut cursor = absolute_path.as_path();
+    let mut missing_tail = Vec::<OsString>::new();
+    loop {
+        match fs::symlink_metadata(cursor) {
+            Ok(_) => {
+                let mut canonical = cursor.canonicalize().with_context(|| {
+                    format!(
+                        "canonicalize existing planned write ancestor {}",
+                        cursor.display()
+                    )
+                })?;
+                if !missing_tail.is_empty() {
+                    let metadata = fs::metadata(&canonical).with_context(|| {
+                        format!(
+                            "stat canonical planned write ancestor {}",
+                            canonical.display()
+                        )
+                    })?;
+                    ensure!(
+                        metadata.is_dir(),
+                        "nearest existing planned write ancestor is not a directory: {}",
+                        canonical.display()
+                    );
+                }
+                for component in missing_tail.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = cursor.file_name().with_context(|| {
+                    format!(
+                        "planned write path {} has no existing ancestor",
+                        absolute_path.display()
+                    )
+                })?;
+                let mut components = Path::new(component).components();
+                ensure!(
+                    matches!(components.next(), Some(Component::Normal(_)))
+                        && components.next().is_none(),
+                    "planned write path missing tail must contain only normal components: {}",
+                    absolute_path.display()
+                );
+                ensure!(
+                    component.as_encoded_bytes().is_ascii(),
+                    "planned write path missing components must use portable ASCII: {}",
+                    absolute_path.display()
+                );
+                missing_tail.push(component.to_os_string());
+                cursor = cursor.parent().with_context(|| {
+                    format!(
+                        "planned write path {} has no parent while resolving its identity",
+                        absolute_path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("inspect planned write path ancestor {}", cursor.display())
+                });
+            }
         }
     }
 }
@@ -468,6 +562,62 @@ mod tests {
         let error = resolve_pack_control_path(temp_dir.path(), Path::new("missing-control.json"))
             .expect_err("missing pack control must fail closed");
         assert!(error.to_string().contains("canonicalize pack control path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planned_write_paths_freeze_aliases_with_missing_tails() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let real_root = temp_dir.path().join("real-root");
+        fs::create_dir(&real_root).expect("create real root");
+        let left_alias = temp_dir.path().join("left-alias");
+        let right_alias = temp_dir.path().join("right-alias");
+        std::os::unix::fs::symlink(&real_root, &left_alias).expect("create left alias");
+        std::os::unix::fs::symlink(&real_root, &right_alias).expect("create right alias");
+
+        let left = resolve_planned_write_path(&left_alias.join("nested/result.json"))
+            .expect("resolve left planned target");
+        let right = resolve_planned_write_path(&right_alias.join("nested/result.json"))
+            .expect("resolve right planned target");
+
+        assert_eq!(left, right);
+        assert_eq!(
+            left,
+            real_root
+                .canonicalize()
+                .expect("canonical real root")
+                .join("nested/result.json")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planned_write_path_rejects_dangling_symlink_ancestor() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let dangling = temp_dir.path().join("dangling");
+        std::os::unix::fs::symlink(temp_dir.path().join("missing"), &dangling)
+            .expect("create dangling symlink");
+
+        let error = resolve_planned_write_path(&dangling.join("result.json"))
+            .expect_err("dangling planned target ancestor must fail closed");
+
+        assert!(
+            format!("{error:#}").contains("canonicalize existing planned write ancestor"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn planned_write_path_rejects_non_ascii_missing_components() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let error = resolve_planned_write_path(&temp_dir.path().join("résultat.json"))
+            .expect_err("portable planned targets must reject non-ASCII missing components");
+
+        assert!(
+            error.to_string().contains("must use portable ASCII"),
+            "{error:#}"
+        );
     }
 
     #[test]

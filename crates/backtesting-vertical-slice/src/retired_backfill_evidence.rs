@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     hashing::{is_lowercase_sha256_hex, sha256_hex},
-    path_resolution::resolve_existing_path,
+    path_resolution::{resolve_existing_path, resolve_planned_write_path},
     source_catalog_mapping_readiness::SourceCatalogMappingStatusEntry,
     source_proof::{SourceProofReport, SourceProofStatus, SourceProofUsageScope},
 };
@@ -651,47 +651,9 @@ pub(crate) fn active_backfill_runtime_output_path(
             .context("resolve current directory for backfill output retirement guard")?
             .join(&output_path)
     };
-    let canonical_output_path = canonicalize_with_missing_tail(&absolute_output_path)?;
+    let canonical_output_path = resolve_planned_write_path(&absolute_output_path)?;
     ensure_active_backfill_runtime_path(&canonical_output_path)?;
     Ok(output_path)
-}
-
-fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf> {
-    let mut cursor = path;
-    let mut missing_tail = Vec::new();
-    loop {
-        match cursor.canonicalize() {
-            Ok(mut canonical) => {
-                for component in missing_tail.iter().rev() {
-                    canonical.push(component);
-                }
-                return Ok(canonical);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let component = cursor.file_name().with_context(|| {
-                    format!(
-                        "backfill output path {} has no existing canonical ancestor",
-                        path.display()
-                    )
-                })?;
-                missing_tail.push(component.to_os_string());
-                cursor = cursor.parent().with_context(|| {
-                    format!(
-                        "backfill output path {} has no parent while resolving canonical identity",
-                        path.display()
-                    )
-                })?;
-            }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "canonicalize backfill output path identity {}",
-                        cursor.display()
-                    )
-                });
-            }
-        }
-    }
 }
 
 fn is_retired_daily_run_spec_path(path: &Path) -> bool {

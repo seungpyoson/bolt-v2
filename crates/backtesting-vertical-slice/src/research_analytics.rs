@@ -26,6 +26,7 @@ use crate::{
         RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec,
         validate_local_run_spec_authority,
     },
+    path_resolution::resolve_planned_write_path,
     pinned_regular_file::{open_pinned_regular_file, read_exact_pinned_file},
     reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
     result_contract::BacktestResultContract,
@@ -342,7 +343,11 @@ where
     F: FnMut(&RunSpec, &[u8], &Path) -> Result<()>,
 {
     validate_run_pointer_artifact_root(&plan.artifact_root)?;
-    let loaded_runs = load_backtest_sweep_source_pairs(plan)?;
+    let LoadedBacktestSweepPublication {
+        runs: loaded_runs,
+        index_path,
+        materialization_targets,
+    } = load_backtest_sweep_source_pairs(plan)?;
     let (runs, loaded_sources): (Vec<_>, Vec<_>) = loaded_runs
         .into_iter()
         .map(|loaded| (loaded.run, loaded.source))
@@ -352,7 +357,8 @@ where
         run_output_dir: plan.run_output_dir.clone(),
         runs,
     };
-    let sweep_report = run_backtest_sweep_with_executor(&sweep_plan, executor)?;
+    let sweep_report =
+        run_backtest_sweep_with_resolved_targets(&sweep_plan, &materialization_targets, executor)?;
     let records = run_pointer_records_from_sweep(&sweep_report, &loaded_sources)?;
     let catalog_run_ids = sweep_report
         .runs
@@ -361,8 +367,9 @@ where
         .collect::<Vec<_>>();
     let index =
         build_run_pointer_index_from_catalog_list(catalog_run_ids, &plan.artifact_root, records)?;
+    ensure_planned_target_absent("index path", &index_path)?;
     let index_artifact_write = write_reference_artifact_with_len(
-        &plan.index_path,
+        &index_path,
         RUN_POINTER_INDEX_REFERENCE_ARTIFACT_ROLE,
         &index,
         ReferenceArtifactRewrite::FailOnDirty,
@@ -397,10 +404,6 @@ fn validate_backtest_sweep_runs(
     runs: &[BacktestSweepRunPreflight<'_>],
 ) -> Result<Vec<BacktestSweepMaterializationTargets>> {
     ensure!(!runs.is_empty(), "sweep must include at least one run");
-    ensure!(
-        run_spec_dir.is_absolute() == run_output_dir.is_absolute(),
-        "run-spec and output target roots must use the same absolute or relative anchoring"
-    );
 
     // Prove the authority boundary for the complete plan before inspecting
     // any materialization target owned by the caller.
@@ -412,6 +415,13 @@ fn validate_backtest_sweep_runs(
             )
         })?;
     }
+
+    // Freeze each caller-selected root exactly once. Every leaf below is
+    // derived from these resolved roots, so one sweep cannot split across
+    // different filesystem identities if an alias changes during preflight.
+    let resolved_run_spec_dir = resolve_planned_target_path("run-spec target root", run_spec_dir)?;
+    let resolved_run_output_dir =
+        resolve_planned_target_path("output target root", run_output_dir)?;
 
     let mut seen_run_spec_file_names = BTreeSet::new();
     let mut seen_output_dir_names = BTreeSet::new();
@@ -441,10 +451,8 @@ fn validate_backtest_sweep_runs(
             run.output_dir_name
         );
 
-        let run_spec_path = run_spec_dir.join(run.run_spec_file_name);
-        let output_dir = run_output_dir.join(run.output_dir_name);
-        validate_planned_target_path("run-spec target", &run_spec_path)?;
-        validate_planned_target_path("output target", &output_dir)?;
+        let run_spec_path = resolved_run_spec_dir.join(run.run_spec_file_name);
+        let output_dir = resolved_run_output_dir.join(run.output_dir_name);
         materialization_targets.push(BacktestSweepMaterializationTargets {
             run_spec_path,
             output_dir,
@@ -454,7 +462,7 @@ fn validate_backtest_sweep_runs(
     Ok(materialization_targets)
 }
 
-fn validate_planned_target_path(label: &'static str, path: &Path) -> Result<()> {
+fn resolve_planned_target_path(label: &'static str, path: &Path) -> Result<PathBuf> {
     ensure!(!path.as_os_str().is_empty(), "{label} must not be empty");
     ensure!(
         path.components().all(|component| matches!(
@@ -464,11 +472,29 @@ fn validate_planned_target_path(label: &'static str, path: &Path) -> Result<()> 
         "{label} must be lexically normalized without current or parent components: {}",
         path.display()
     );
-    Ok(())
+    resolve_planned_write_path(path)
+        .with_context(|| format!("resolve {label} identity {}", path.display()))
 }
 
 fn planned_paths_overlap(left: &Path, right: &Path) -> bool {
-    left == right || left.starts_with(right) || right.starts_with(left)
+    planned_path_starts_with(left, right) || planned_path_starts_with(right, left)
+}
+
+fn planned_path_starts_with(path: &Path, prefix: &Path) -> bool {
+    let mut path_components = path.components();
+    for prefix_component in prefix.components() {
+        let Some(path_component) = path_components.next() else {
+            return false;
+        };
+        if !path_component
+            .as_os_str()
+            .as_encoded_bytes()
+            .eq_ignore_ascii_case(prefix_component.as_os_str().as_encoded_bytes())
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn ensure_materialization_targets_disjoint(
@@ -499,58 +525,83 @@ fn ensure_materialization_targets_disjoint(
 fn ensure_index_target_disjoint_and_absent(
     index_path: &Path,
     targets: &[BacktestSweepMaterializationTargets],
-) -> Result<()> {
-    validate_planned_target_path("index target", index_path)?;
-    if let Some(first_target) = targets.first() {
-        ensure!(
-            index_path.is_absolute() == first_target.run_spec_path.is_absolute(),
-            "index and materialization targets must use the same absolute or relative anchoring"
-        );
-    }
+) -> Result<PathBuf> {
+    let index_path = resolve_planned_target_path("index target", index_path)?;
     for target in targets {
         for (label, path) in [
             ("run-spec target", target.run_spec_path.as_path()),
             ("output target", target.output_dir.as_path()),
         ] {
             ensure!(
-                !planned_paths_overlap(index_path, path),
+                !planned_paths_overlap(&index_path, path),
                 "planned filesystem targets overlap: index target {} and {label} {}",
                 index_path.display(),
                 path.display()
             );
         }
     }
-    ensure!(
-        !index_path
-            .try_exists()
-            .with_context(|| format!("check index path {}", index_path.display()))?,
-        "index path already exists: {}",
-        index_path.display()
-    );
-    Ok(())
+    ensure_planned_target_absent("index path", &index_path)?;
+    Ok(index_path)
 }
 
 fn ensure_backtest_sweep_targets_absent(
     targets: &[BacktestSweepMaterializationTargets],
 ) -> Result<()> {
     for target in targets {
-        ensure!(
-            !target.run_spec_path.try_exists().with_context(|| {
-                format!("check run-spec path {}", target.run_spec_path.display())
-            })?,
-            "run-spec path already exists: {}",
-            target.run_spec_path.display()
-        );
-        ensure!(
-            !target
-                .output_dir
-                .try_exists()
-                .with_context(|| format!("check output_dir {}", target.output_dir.display()))?,
-            "output_dir already exists: {}",
-            target.output_dir.display()
-        );
+        ensure_planned_target_absent("run-spec path", &target.run_spec_path)?;
+        ensure_planned_target_absent("output_dir", &target.output_dir)?;
     }
     Ok(())
+}
+
+fn resolved_materialization_roots(
+    targets: &[BacktestSweepMaterializationTargets],
+) -> Result<(PathBuf, PathBuf)> {
+    let first_target = targets
+        .first()
+        .context("validated sweep unexpectedly has no materialization targets")?;
+    let resolved_run_spec_dir = first_target
+        .run_spec_path
+        .parent()
+        .context("resolved run-spec target has no parent")?
+        .to_path_buf();
+    let resolved_run_output_dir = first_target
+        .output_dir
+        .parent()
+        .context("resolved output target has no parent")?
+        .to_path_buf();
+    for target in targets.iter().skip(1) {
+        ensure!(
+            target.run_spec_path.parent() == Some(resolved_run_spec_dir.as_path()),
+            "resolved run-spec targets do not share one frozen root"
+        );
+        ensure!(
+            target.output_dir.parent() == Some(resolved_run_output_dir.as_path()),
+            "resolved output targets do not share one frozen root"
+        );
+    }
+    Ok((resolved_run_spec_dir, resolved_run_output_dir))
+}
+
+fn ensure_planned_target_identity(path: &Path) -> Result<()> {
+    let resolved_now = resolve_planned_write_path(path)
+        .with_context(|| format!("re-resolve planned target identity {}", path.display()))?;
+    ensure!(
+        resolved_now == path,
+        "planned target identity changed from {} to {}",
+        path.display(),
+        resolved_now.display()
+    );
+    Ok(())
+}
+
+fn ensure_planned_target_absent(label: &'static str, path: &Path) -> Result<()> {
+    ensure_planned_target_identity(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(_) => anyhow::bail!("{label} already exists: {}", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspect {label} {}", path.display())),
+    }
 }
 
 fn validate_backtest_sweep_payloads(runs: &[BacktestSweepRun]) -> Result<()> {
@@ -585,7 +636,7 @@ fn validate_backtest_sweep_payloads(runs: &[BacktestSweepRun]) -> Result<()> {
 /// executor fails, or the persisted result contract is missing/invalid.
 pub fn run_backtest_sweep_with_executor<F>(
     plan: &BacktestSweepPlan,
-    mut executor: F,
+    executor: F,
 ) -> Result<BacktestSweepReport>
 where
     F: FnMut(&RunSpec, &[u8], &Path) -> Result<()>,
@@ -601,36 +652,71 @@ where
         .collect::<Vec<_>>();
     let materialization_targets =
         validate_backtest_sweep_runs(&plan.run_spec_dir, &plan.run_output_dir, &preflight_runs)?;
-    ensure_backtest_sweep_targets_absent(&materialization_targets)?;
+    run_backtest_sweep_with_resolved_targets(plan, &materialization_targets, executor)
+}
+
+fn run_backtest_sweep_with_resolved_targets<F>(
+    plan: &BacktestSweepPlan,
+    materialization_targets: &[BacktestSweepMaterializationTargets],
+    mut executor: F,
+) -> Result<BacktestSweepReport>
+where
+    F: FnMut(&RunSpec, &[u8], &Path) -> Result<()>,
+{
+    ensure!(
+        plan.runs.len() == materialization_targets.len(),
+        "resolved materialization target count {} does not match sweep run count {}",
+        materialization_targets.len(),
+        plan.runs.len()
+    );
+    let (resolved_run_spec_dir, resolved_run_output_dir) =
+        resolved_materialization_roots(materialization_targets)?;
+    ensure_backtest_sweep_targets_absent(materialization_targets)?;
     validate_backtest_sweep_payloads(&plan.runs)?;
 
-    fs::create_dir_all(&plan.run_spec_dir)
-        .with_context(|| format!("create run-spec dir {}", plan.run_spec_dir.display()))?;
-    fs::create_dir_all(&plan.run_output_dir)
-        .with_context(|| format!("create run-output dir {}", plan.run_output_dir.display()))?;
+    ensure_backtest_sweep_targets_absent(materialization_targets)?;
+    fs::create_dir_all(&resolved_run_spec_dir)
+        .with_context(|| format!("create run-spec dir {}", resolved_run_spec_dir.display()))?;
+    fs::create_dir_all(&resolved_run_output_dir).with_context(|| {
+        format!(
+            "create run-output dir {}",
+            resolved_run_output_dir.display()
+        )
+    })?;
+    ensure_backtest_sweep_targets_absent(materialization_targets)?;
 
     let mut reports = Vec::with_capacity(plan.runs.len());
-    for run in &plan.runs {
-        let run_spec_path = plan.run_spec_dir.join(&run.run_spec_file_name);
-        let output_dir = plan.run_output_dir.join(&run.output_dir_name);
-        fs::create_dir(&output_dir)
-            .with_context(|| format!("create run output dir {}", output_dir.display()))?;
+    for (run, target) in plan.runs.iter().zip(materialization_targets) {
+        ensure_planned_target_absent("run-spec path", &target.run_spec_path)?;
+        ensure_planned_target_absent("output_dir", &target.output_dir)?;
+        fs::create_dir(&target.output_dir)
+            .with_context(|| format!("create run output dir {}", target.output_dir.display()))?;
+        ensure_planned_target_identity(&target.output_dir)?;
+        ensure_planned_target_absent("run-spec path", &target.run_spec_path)?;
 
         let run_spec_toml =
             toml::to_string_pretty(&run.run_spec).context("serialize typed run-spec TOML")?;
         let mut run_spec_file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&run_spec_path)
-            .with_context(|| format!("create run-spec {}", run_spec_path.display()))?;
+            .open(&target.run_spec_path)
+            .with_context(|| format!("create run-spec {}", target.run_spec_path.display()))?;
         run_spec_file
             .write_all(run_spec_toml.as_bytes())
-            .with_context(|| format!("write run-spec {}", run_spec_path.display()))?;
+            .with_context(|| format!("write run-spec {}", target.run_spec_path.display()))?;
+        ensure_planned_target_identity(&target.run_spec_path)?;
+        ensure_planned_target_identity(&target.output_dir)?;
 
-        executor(&run.run_spec, &run.accepted_object_bytes, &output_dir)
-            .with_context(|| format!("execute BTE run {}", run.run_spec.manifest.run_id))?;
+        executor(
+            &run.run_spec,
+            &run.accepted_object_bytes,
+            &target.output_dir,
+        )
+        .with_context(|| format!("execute BTE run {}", run.run_spec.manifest.run_id))?;
 
-        let result_contract_path = output_dir.join(RESULT_CONTRACT_FILE);
+        ensure_planned_target_identity(&target.run_spec_path)?;
+        ensure_planned_target_identity(&target.output_dir)?;
+        let result_contract_path = target.output_dir.join(RESULT_CONTRACT_FILE);
         let contract = read_result_contract(&result_contract_path)?;
         contract
             .validate()
@@ -645,8 +731,8 @@ where
 
         reports.push(BacktestSweepRunReport {
             run_id: run.run_spec.manifest.run_id.clone(),
-            run_spec_path,
-            output_dir,
+            run_spec_path: target.run_spec_path.clone(),
+            output_dir: target.output_dir.clone(),
             result_contract_path,
             contract,
         });
@@ -659,6 +745,13 @@ where
 struct LoadedBacktestSweepRun {
     run: BacktestSweepRun,
     source: LoadedBacktestSweepSource,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedBacktestSweepPublication {
+    runs: Vec<LoadedBacktestSweepRun>,
+    index_path: PathBuf,
+    materialization_targets: Vec<BacktestSweepMaterializationTargets>,
 }
 
 #[derive(Debug, Clone)]
@@ -772,7 +865,7 @@ pub fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()>
 
 fn load_backtest_sweep_source_pairs(
     plan: &BacktestSweepPublicationPlan,
-) -> Result<Vec<LoadedBacktestSweepRun>> {
+) -> Result<LoadedBacktestSweepPublication> {
     ensure_publication_input_dir(&plan.input_dir)?;
     let mut input_entries = fs::read_dir(&plan.input_dir)
         .with_context(|| format!("read input_dir {}", plan.input_dir.display()))?;
@@ -845,7 +938,8 @@ fn load_backtest_sweep_source_pairs(
             "duplicate manifest.output_prefix {output_prefix:?}"
         );
     }
-    ensure_index_target_disjoint_and_absent(&plan.index_path, &materialization_targets)?;
+    let index_path =
+        ensure_index_target_disjoint_and_absent(&plan.index_path, &materialization_targets)?;
     ensure_backtest_sweep_targets_absent(&materialization_targets)?;
 
     // Resolve and stat every object before reading any payload. A later
@@ -891,7 +985,11 @@ fn load_backtest_sweep_source_pairs(
             },
         });
     }
-    Ok(loaded_runs)
+    Ok(LoadedBacktestSweepPublication {
+        runs: loaded_runs,
+        index_path,
+        materialization_targets,
+    })
 }
 
 fn ensure_publication_input_dir(input_dir: &Path) -> Result<()> {
@@ -1259,6 +1357,10 @@ fn validate_run_spec_file_name(value: &str) -> Result<()> {
 
 fn validate_leaf_path(field: &'static str, value: &str) -> Result<()> {
     ensure!(!value.trim().is_empty(), "{field} must not be empty");
+    ensure!(
+        value.is_ascii(),
+        "{field} must use portable ASCII for filesystem identity"
+    );
     let path = Path::new(value);
     ensure!(!path.is_absolute(), "{field} must be relative");
     let mut components = path.components();
@@ -2243,6 +2345,229 @@ mod tests {
         assert!(!plan.index_path.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sweep_rejects_symlink_alias_collision_before_mutating_target_namespace() {
+        let temp = TempDir::new().expect("temp dir");
+        let target_root = temp.path().join("target-root");
+        fs::create_dir(&target_root).expect("create target root");
+        let run_spec_alias = temp.path().join("run-spec-alias");
+        let output_alias = temp.path().join("output-alias");
+        std::os::unix::fs::symlink(&target_root, &run_spec_alias).expect("create run-spec alias");
+        std::os::unix::fs::symlink(&target_root, &output_alias).expect("create output alias");
+        let accepted_object_bytes = b"accepted".to_vec();
+        let plan = BacktestSweepPlan {
+            run_spec_dir: run_spec_alias,
+            run_output_dir: output_alias,
+            runs: vec![BacktestSweepRun {
+                run_spec_file_name: "shared.toml".to_string(),
+                output_dir_name: "shared.toml".to_string(),
+                run_spec: test_run_spec("ra-run-a", &accepted_object_bytes),
+                accepted_object_bytes,
+            }],
+        };
+
+        let error = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+            panic!("resolved target collision must reject before execution")
+        })
+        .expect_err("symlink aliases must not hide one shared target");
+
+        assert!(
+            format!("{error:#}").contains("planned filesystem targets overlap"),
+            "{error:#}"
+        );
+        assert!(
+            fs::read_dir(&target_root)
+                .expect("read untouched target root")
+                .next()
+                .is_none(),
+            "target namespace must remain untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_rejects_inconsistent_frozen_roots_before_payloads_or_mutation() {
+        let temp = TempDir::new().expect("temp dir");
+        let first_bytes = b"first".to_vec();
+        let second_bytes = b"second".to_vec();
+        let plan = BacktestSweepPlan {
+            run_spec_dir: temp.path().join("unused-run-spec-root"),
+            run_output_dir: temp.path().join("unused-output-root"),
+            runs: vec![
+                BacktestSweepRun {
+                    run_spec_file_name: "first.toml".to_string(),
+                    output_dir_name: "ra-first".to_string(),
+                    run_spec: test_run_spec("ra-first", &first_bytes),
+                    accepted_object_bytes: first_bytes,
+                },
+                BacktestSweepRun {
+                    run_spec_file_name: "second.toml".to_string(),
+                    output_dir_name: "ra-second".to_string(),
+                    run_spec: test_run_spec("ra-second", &second_bytes),
+                    accepted_object_bytes: second_bytes,
+                },
+            ],
+        };
+        let first_run_spec_root = temp.path().join("first-run-spec-root");
+        let first_output_root = temp.path().join("first-output-root");
+        let second_run_spec_root = temp.path().join("second-run-spec-root");
+        let second_output_root = temp.path().join("second-output-root");
+        let targets = vec![
+            BacktestSweepMaterializationTargets {
+                run_spec_path: first_run_spec_root.join("first.toml"),
+                output_dir: first_output_root.join("ra-first"),
+            },
+            BacktestSweepMaterializationTargets {
+                run_spec_path: second_run_spec_root.join("second.toml"),
+                output_dir: second_output_root.join("ra-second"),
+            },
+        ];
+
+        let error = run_backtest_sweep_with_resolved_targets(&plan, &targets, |_, _, _| {
+            panic!("inconsistent frozen roots must reject before execution")
+        })
+        .expect_err("one sweep must use one frozen root per target role");
+
+        assert!(
+            format!("{error:#}").contains("do not share one frozen root"),
+            "{error:#}"
+        );
+        for root in [
+            first_run_spec_root,
+            first_output_root,
+            second_run_spec_root,
+            second_output_root,
+        ] {
+            assert!(!root.exists(), "{} must remain absent", root.display());
+        }
+    }
+
+    #[test]
+    fn sweep_rejects_ascii_case_variant_targets_before_mutation() {
+        let temp = TempDir::new().expect("temp dir");
+        let target_root = temp.path().join("target-root");
+        let accepted_object_bytes = b"accepted".to_vec();
+        let plan = BacktestSweepPlan {
+            run_spec_dir: target_root.clone(),
+            run_output_dir: target_root.clone(),
+            runs: vec![BacktestSweepRun {
+                run_spec_file_name: "Shared.toml".to_string(),
+                output_dir_name: "shared.toml".to_string(),
+                run_spec: test_run_spec("ra-run-a", &accepted_object_bytes),
+                accepted_object_bytes,
+            }],
+        };
+
+        let error = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+            panic!("case-variant target collision must reject before execution")
+        })
+        .expect_err("portable target identity must fold ASCII case");
+
+        assert!(
+            format!("{error:#}").contains("planned filesystem targets overlap"),
+            "{error:#}"
+        );
+        assert!(!target_root.exists(), "target root must remain absent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_rejects_symlink_aliased_index_before_hashing_or_mutation() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"expected",
+        );
+        fs::write(input_dir.join(&source.object_path), b"tampered")
+            .expect("replace object with same-length corrupt bytes");
+
+        let target_root = temp.path().join("target-root");
+        fs::create_dir(&target_root).expect("create target root");
+        let run_spec_alias = temp.path().join("run-spec-alias");
+        let index_alias = temp.path().join("index-alias");
+        std::os::unix::fs::symlink(&target_root, &run_spec_alias).expect("create run-spec alias");
+        std::os::unix::fs::symlink(&target_root, &index_alias).expect("create index alias");
+
+        let mut plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        plan.run_spec_dir = run_spec_alias;
+        plan.index_path = index_alias.join("first.toml");
+
+        let error = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("resolved index collision must reject before hashing or execution")
+        })
+        .expect_err("symlink aliases must not hide index/run-spec overlap");
+        let error_chain = format!("{error:#}");
+
+        assert!(
+            error_chain.contains("planned filesystem targets overlap"),
+            "{error:#}"
+        );
+        assert!(!error_chain.contains("SHA-256"), "{error:#}");
+        assert!(!plan.run_output_dir.exists());
+        assert!(
+            fs::read_dir(&target_root)
+                .expect("read untouched target root")
+                .next()
+                .is_none(),
+            "target namespace must remain untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_uses_frozen_canonical_targets_behind_symlinked_roots() {
+        let temp = TempDir::new().expect("temp dir");
+        let real_run_spec_dir = temp.path().join("real-run-specs");
+        let real_output_dir = temp.path().join("real-outputs");
+        fs::create_dir(&real_run_spec_dir).expect("create real run-spec root");
+        fs::create_dir(&real_output_dir).expect("create real output root");
+        let run_spec_alias = temp.path().join("run-spec-alias");
+        let output_alias = temp.path().join("output-alias");
+        std::os::unix::fs::symlink(&real_run_spec_dir, &run_spec_alias)
+            .expect("create run-spec alias");
+        std::os::unix::fs::symlink(&real_output_dir, &output_alias).expect("create output alias");
+
+        let accepted_object_bytes = b"accepted".to_vec();
+        let artifact_root = TEST_ARTIFACT_ROOT;
+        let plan = BacktestSweepPlan {
+            run_spec_dir: run_spec_alias,
+            run_output_dir: output_alias,
+            runs: vec![BacktestSweepRun {
+                run_spec_file_name: "run.toml".to_string(),
+                output_dir_name: "ra-run-a".to_string(),
+                run_spec: test_run_spec("ra-run-a", &accepted_object_bytes),
+                accepted_object_bytes,
+            }],
+        };
+
+        let report =
+            run_backtest_sweep_with_executor(&plan, |spec, object_bytes, resolved_output_dir| {
+                write_test_contract(resolved_output_dir, spec, object_bytes, artifact_root);
+                Ok(())
+            })
+            .expect("sweep succeeds through frozen targets");
+
+        assert_eq!(
+            report.runs[0].run_spec_path,
+            real_run_spec_dir
+                .canonicalize()
+                .expect("canonical run-spec root")
+                .join("run.toml")
+        );
+        assert_eq!(
+            report.runs[0].output_dir,
+            real_output_dir
+                .canonicalize()
+                .expect("canonical output root")
+                .join("ra-run-a")
+        );
+    }
+
     #[test]
     fn publication_rejects_index_inside_output_target_before_hashing_payload() {
         let temp = TempDir::new().expect("temp dir");
@@ -3054,6 +3379,21 @@ mod tests {
                 error
                     .to_string()
                     .contains("must be a single relative path segment"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaf_paths_reject_non_ascii_filesystem_identity() {
+        for error in [
+            validate_leaf_path("output_dir_name", "résultat")
+                .expect_err("non-ASCII output name must fail"),
+            validate_run_spec_file_name("résultat.toml")
+                .expect_err("non-ASCII run-spec name must fail"),
+        ] {
+            assert!(
+                error.to_string().contains("must use portable ASCII"),
                 "{error:#}"
             );
         }

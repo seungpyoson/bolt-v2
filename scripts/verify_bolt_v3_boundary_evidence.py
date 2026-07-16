@@ -721,20 +721,6 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
                 findings.append(f"src/bolt_v3_reference_price_health.rs: loopback harness uses shortcut {shortcut}")
 
 
-def remote_fixture_context(root: Path, findings: list[str]) -> tuple[str, str, str | None] | None:
-    if root.resolve() != REPO_ROOT.resolve() or os.environ.get("GITHUB_ACTIONS") != "true":
-        return None
-
-    token = os.environ.get("GITHUB_TOKEN")
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    if not token or not repo:
-        findings.append(
-            f"{FIXTURE_DIR}: GitHub Actions fixture-origin check requires GITHUB_TOKEN and GITHUB_REPOSITORY"
-        )
-        return None
-    return repo, token, os.environ.get("GITHUB_RUN_ID")
-
-
 def capture_workflow_digest(root: Path, config: ci_provenance.ProvenanceConfig, record: dict[str, object]) -> str | None:
     tested_sha = record.get("tested_sha")
     if not isinstance(tested_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", tested_sha):
@@ -757,7 +743,6 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
         findings.append(f"{FIXTURE_DIR}: missing Chainlink fixture sidecar")
         return
 
-    remote_context = remote_fixture_context(root, findings)
     config_path = root / CAPTURE_PROVENANCE_CONFIG
     config = ci_provenance.load_config(
         config_path, require_workflows=False, require_deploy_window=False
@@ -811,20 +796,18 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
             )
             workflow_digest = capture_workflow_digest(root, config, record)
             if workflow_digest is None:
-                if remote_context is None:
-                    findings.append(
-                        f"{rel}: invalid capture artifact provenance: workflow {config.workflow_path} "
-                        f"is not resolvable at tested_sha {record.get('tested_sha')}"
-                    )
-                    continue
-            else:
-                ci_provenance.validate_exact_sha_record(
-                    record,
-                    sidecar_config,
-                    requested_sha=str(data["capture_head_sha"]),
-                    config_path=config_path,
-                    expected_workflow_digest=workflow_digest,
+                findings.append(
+                    f"{rel}: invalid capture artifact provenance: workflow {config.workflow_path} "
+                    f"is not resolvable at tested_sha {record.get('tested_sha')}"
                 )
+                continue
+            ci_provenance.validate_exact_sha_record(
+                record,
+                sidecar_config,
+                requested_sha=str(data["capture_head_sha"]),
+                config_path=config_path,
+                expected_workflow_digest=workflow_digest,
+            )
         except ci_provenance.ProvenanceError as exc:
             findings.append(f"{rel}: invalid capture artifact provenance: {exc}")
             continue
@@ -854,31 +837,6 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
             findings.append(f"{rel}: capture artifact frame_kind does not match sidecar")
         if capture.get("signature_verified") is not False:
             findings.append(f"{rel}: capture artifact must not claim signature verification")
-        if remote_context is not None:
-            repo, token, current_run_id = remote_context
-            try:
-                resolved = ci_provenance.resolve_exact_sha_evidence(
-                    repo=repo,
-                    token=token,
-                    requested_sha=str(data["capture_head_sha"]),
-                    config=sidecar_config,
-                    config_path=config_path,
-                    current_run_id=current_run_id,
-                    allow_incomplete_run_with_successful_jobs=True,
-                )
-            except ci_provenance.ProvenanceError as exc:
-                findings.append(f"{rel}: GitHub capture provenance resolution failed: {exc}")
-                continue
-            if resolved.record != record:
-                findings.append(f"{rel}: committed capture artifact record does not match GitHub artifact")
-            remote_capture = resolved.record.get("capture")
-            if not isinstance(remote_capture, dict):
-                findings.append(f"{rel}: GitHub capture artifact is missing capture object")
-                continue
-            if remote_capture.get("fixture_sha256") != fixture_digest:
-                findings.append(f"{rel}: GitHub capture artifact digest does not match fixture")
-            if remote_capture.get("frame_kind") != data["frame_kind"]:
-                findings.append(f"{rel}: GitHub capture artifact frame_kind does not match sidecar")
 
 
 def scan_static_wiring(root: Path, findings: list[str]) -> None:

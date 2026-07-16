@@ -15,6 +15,8 @@ import tempfile
 import tomllib
 import zipfile
 from pathlib import Path
+from unittest import mock
+
 from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 
@@ -666,6 +668,13 @@ def scan_temp(mutator=None, today: dt.date = dt.date(2026, 6, 26)) -> list[str]:
 def assert_finding(findings: list[str], needle: str) -> None:
     if not any(needle in finding for finding in findings):
         raise AssertionError(f"missing finding containing {needle!r}: {findings}")
+
+
+def assert_capture_record_mutation_fails(mutator, needle: str) -> None:
+    def mutate(root: Path) -> None:
+        mutate_capture_record(root, mutator)
+
+    assert_finding(scan_temp(mutate), needle)
 
 
 def test_capture_config_without_workflows_passes_boundary_scan() -> None:
@@ -2682,6 +2691,66 @@ def test_unbound_invented_fixture_fails() -> None:
     assert_finding(scan_temp(mutate), "fixture_sha256 does not match")
 
 
+def test_missing_capture_artifact_fails_closed() -> None:
+    def mutate(root: Path) -> None:
+        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
+        artifact.unlink()
+
+    assert_finding(scan_temp(mutate), "capture_artifact is missing")
+
+
+def test_malformed_capture_artifact_fails_closed() -> None:
+    def mutate(root: Path) -> None:
+        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
+        artifact.write_bytes(b"not a ZIP archive")
+
+    assert_finding(scan_temp(mutate), "provenance artifact archive is malformed")
+
+
+def test_capture_record_identity_mismatches_fail_closed() -> None:
+    cases = (
+        (
+            lambda record: record.update({"head_sha": "2" * 40}),
+            "record head_sha and tested_sha must match requested exact SHA",
+        ),
+        (
+            lambda record: record.update({"head_branch": "wrong-branch"}),
+            "record head_branch must be seed-branch",
+        ),
+        (
+            lambda record: record.update(
+                {"workflow_path": ".github/workflows/wrong.yml"}
+            ),
+            "record workflow_path does not match config",
+        ),
+    )
+    for mutator, finding in cases:
+        assert_capture_record_mutation_fails(mutator, finding)
+
+
+def test_capture_record_payload_mutations_fail_closed() -> None:
+    cases = (
+        (
+            lambda record: record.pop("capture"),
+            "capture record is missing capture object",
+        ),
+        (
+            lambda record: record["capture"].update({"fixture_sha256": "0" * 64}),
+            "capture artifact digest does not match fixture",
+        ),
+        (
+            lambda record: record["capture"].update({"frame_kind": "text"}),
+            "capture artifact frame_kind does not match sidecar",
+        ),
+        (
+            lambda record: record["capture"].update({"signature_verified": True}),
+            "capture artifact must not claim signature verification",
+        ),
+    )
+    for mutator, finding in cases:
+        assert_capture_record_mutation_fails(mutator, finding)
+
+
 def test_capture_artifact_uses_tested_sha_workflow_digest_after_workflow_changes() -> None:
     def mutate(root: Path) -> None:
         path = root / ".github/workflows/ci.yml"
@@ -2706,51 +2775,32 @@ def test_unresolvable_capture_workflow_sha_fails_closed() -> None:
     assert_finding(scan_temp(mutate), "is not resolvable at tested_sha")
 
 
-def test_unresolvable_capture_workflow_sha_defers_to_remote_resolver_in_ci() -> None:
+def test_fixture_origin_validation_does_not_resolve_remote_evidence_in_github_actions() -> None:
     verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        clean_files(root)
-        mutate_capture_record(
-            root,
-            lambda record: record.update(
-                {"head_sha": UNRESOLVABLE_SHA, "tested_sha": UNRESOLVABLE_SHA}
-            ),
-        )
-        replace_capture_head_sha(root, UNRESOLVABLE_SHA)
-        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
 
-        calls: list[tuple[str, str]] = []
-        original_remote_context = verifier.remote_fixture_context
-        original_resolve = verifier.ci_provenance.resolve_exact_sha_evidence
+    def unexpected_remote_resolution(**_kwargs):
+        raise AssertionError("fixture-origin validation must not resolve remote evidence")
 
-        def fake_remote_context(scan_root: Path, findings: list[str]):
-            if scan_root != root:
-                raise AssertionError(f"unexpected scan root {scan_root}")
-            return ("seungpyoson/bolt-v2", "token", "999")
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_TOKEN": "test-token",
+                "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+            },
+        ),
+        mock.patch.object(
+            verifier.ci_provenance,
+            "resolve_exact_sha_evidence",
+            side_effect=unexpected_remote_resolution,
+        ),
+    ):
+        findings: list[str] = []
+        verifier.scan_fixture_origin(REPO_ROOT, findings)
 
-        def fake_resolve_exact_sha_evidence(**kwargs):
-            calls.append((str(kwargs["requested_sha"]), kwargs["config"].deploy_source_branch))
-            with zipfile.ZipFile(artifact) as archive:
-                record = json.loads(archive.read("ci-provenance.json").decode("utf-8"))
-            return verifier.ci_provenance.ResolvedEvidence(
-                run={},
-                artifact={},
-                record=record,
-            )
-
-        try:
-            verifier.remote_fixture_context = fake_remote_context
-            verifier.ci_provenance.resolve_exact_sha_evidence = fake_resolve_exact_sha_evidence
-            findings = verifier.scan_root(root, today=dt.date(2026, 6, 26))
-        finally:
-            verifier.remote_fixture_context = original_remote_context
-            verifier.ci_provenance.resolve_exact_sha_evidence = original_resolve
-
-        if findings:
-            raise AssertionError(f"expected remote resolver to validate unresolvable local SHA: {findings}")
-        if calls != [(UNRESOLVABLE_SHA, "seed-branch")]:
-            raise AssertionError(f"unexpected resolver calls {calls}")
+    if findings:
+        raise AssertionError(f"expected local fixture-origin validation to pass: {findings}")
 
 
 def test_capture_workflow_must_not_use_run_id_as_check_suite_id() -> None:

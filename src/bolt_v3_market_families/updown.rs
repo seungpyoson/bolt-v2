@@ -52,6 +52,7 @@ use crate::{
         LoadedBoltV3Config, LoadedStrategy, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND,
         RESOLUTION_GATE_ROLE,
     },
+    bolt_v3_evidence_novelty::stable_identity_field_is_canonical,
     bolt_v3_instrument_filters::{InstrumentFilterError, format_target_prefix},
     bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_market_families::{
@@ -1494,20 +1495,39 @@ fn updown_outcome_instrument(
         "Down" => OutcomeSide::Down,
         _ => return None,
     };
+    let market_id = info.get_str(METADATA_MARKET_ID_FIELD)?;
+    let condition_id = info.get_str(METADATA_CONDITION_ID_FIELD)?;
+    let market_slug = info.get_str(METADATA_MARKET_SLUG_FIELD)?;
+    let question_id = info.get_str(METADATA_QUESTION_ID_FIELD)?;
+    let normalized_outcome = binary
+        .outcome
+        .as_ref()?
+        .as_str()
+        .trim()
+        .to_ascii_lowercase();
+    let clob_token_id = binary.raw_symbol.as_str();
+    if [
+        market_id,
+        condition_id,
+        market_slug,
+        question_id,
+        normalized_outcome.as_str(),
+        clob_token_id,
+    ]
+    .into_iter()
+    .any(|value| !stable_identity_field_is_canonical(value))
+    {
+        return None;
+    }
     Some(UpdownOutcomeInstrument {
         side,
-        market_id: info.get_str("market_id")?.to_string(),
-        condition_id: info.get_str("condition_id")?.to_string(),
-        market_slug: info.get_str("market_slug")?.to_string(),
-        question_id: info.get_str("question_id")?.to_string(),
+        market_id: market_id.to_string(),
+        condition_id: condition_id.to_string(),
+        market_slug: market_slug.to_string(),
+        question_id: question_id.to_string(),
         negative_risk: info.get_bool("neg_risk")?,
-        normalized_outcome: binary
-            .outcome
-            .as_ref()?
-            .as_str()
-            .trim()
-            .to_ascii_lowercase(),
-        clob_token_id: binary.raw_symbol.as_str().to_string(),
+        normalized_outcome,
+        clob_token_id: clob_token_id.to_string(),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
@@ -1868,6 +1888,47 @@ mod tests {
         .expect("configured current updown market should select");
 
         assert_eq!(selected.start_timestamp_milliseconds, 600_000);
+    }
+
+    #[test]
+    fn rejects_updown_market_with_whitespace_padded_stable_identity() {
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        let instruments = vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1 ",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Up",
+                100_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1 ",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Down",
+                100_000,
+                900_000,
+            ),
+        ];
+
+        assert!(
+            select_market_from_instruments(
+                UpdownSelectionTarget {
+                    underlying_asset: TEST_UNDERLYING_ASSET,
+                    cadence_secs: 300,
+                    cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+                },
+                &instruments,
+                600_001,
+            )
+            .is_none(),
+            "whitespace-padded stable identity must fail closed before market selection"
+        );
     }
 
     #[test]

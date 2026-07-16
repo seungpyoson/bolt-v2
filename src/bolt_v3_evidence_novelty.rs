@@ -11,6 +11,10 @@ use anyhow::{Result, bail};
 
 include!("bolt_v3_evidence_novelty_generated.rs");
 
+pub(crate) fn stable_identity_field_is_canonical(value: &str) -> bool {
+    !value.is_empty() && value.trim() == value
+}
+
 /// The complete non-temporal input surface from which a market episode may be built.
 ///
 /// Prices, timestamps, ages, counters, feed flags, slugs, and diagnostics are
@@ -76,8 +80,11 @@ impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
                 parts.outcomes[1].clob_token_id.as_str(),
             ),
         ];
-        if let Some((field, _)) = required.iter().find(|(_, value)| value.is_empty()) {
-            bail!("evidence episode requires non-empty stable field `{field}`");
+        if let Some((field, _)) = required
+            .iter()
+            .find(|(_, value)| !stable_identity_field_is_canonical(value))
+        {
+            bail!("evidence episode requires non-empty, unpadded stable field `{field}`");
         }
         if parts.outcomes[0].index == parts.outcomes[1].index {
             bail!("evidence episode requires distinct ordered outcome indices");

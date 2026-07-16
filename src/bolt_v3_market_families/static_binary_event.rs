@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_config::LoadedStrategy,
+    bolt_v3_evidence_novelty::stable_identity_field_is_canonical,
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_numeric::Probability,
@@ -650,15 +651,34 @@ fn static_outcome_instrument(
     } else {
         return None;
     };
+    let market_id = info.get_str(METADATA_MARKET_ID_FIELD)?;
+    let condition_id = info.get_str(METADATA_CONDITION_ID_FIELD)?;
+    let market_slug = info.get_str(METADATA_MARKET_SLUG_FIELD)?;
+    let question_id = info.get_str(METADATA_QUESTION_ID_FIELD)?;
+    let normalized_outcome = outcome_label.trim().to_ascii_lowercase();
+    let clob_token_id = binary.raw_symbol.as_str();
+    if [
+        market_id,
+        condition_id,
+        market_slug,
+        question_id,
+        normalized_outcome.as_str(),
+        clob_token_id,
+    ]
+    .into_iter()
+    .any(|value| !stable_identity_field_is_canonical(value))
+    {
+        return None;
+    }
     Some(StaticOutcomeInstrument {
         side,
-        market_id: info.get_str(METADATA_MARKET_ID_FIELD)?.to_string(),
-        condition_id: info.get_str(METADATA_CONDITION_ID_FIELD)?.to_string(),
-        market_slug: info.get_str(METADATA_MARKET_SLUG_FIELD)?.to_string(),
-        question_id: info.get_str(METADATA_QUESTION_ID_FIELD)?.to_string(),
+        market_id: market_id.to_string(),
+        condition_id: condition_id.to_string(),
+        market_slug: market_slug.to_string(),
+        question_id: question_id.to_string(),
         negative_risk: info.get_bool("neg_risk")?,
-        normalized_outcome: outcome_label.trim().to_ascii_lowercase(),
-        clob_token_id: binary.raw_symbol.as_str().to_string(),
+        normalized_outcome,
+        clob_token_id: clob_token_id.to_string(),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
@@ -1040,6 +1060,37 @@ mod tests {
             select_binary_option_market(target_without_condition, &question_id_mismatch, 10_000)
                 .is_none(),
             "yes/no instruments with different question IDs must not be paired"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_with_whitespace_padded_stable_identity() {
+        let instruments = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                " question-sample-event",
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                " question-sample-event",
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "whitespace-padded stable identity must fail closed before market selection"
         );
     }
 

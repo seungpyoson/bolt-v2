@@ -132,6 +132,21 @@ fn invalid_ordered_outcome_identity_is_rejected() {
 }
 
 #[test]
+fn blank_or_whitespace_padded_stable_identity_fields_are_rejected() {
+    let mut blank_market = episode_parts("market-a");
+    blank_market.gamma_market_id = "   ".to_string();
+    assert!(EvidenceEpisodeId::try_from(blank_market).is_err());
+
+    let mut padded_condition = episode_parts("market-a");
+    padded_condition.condition_id = " condition-market-a".to_string();
+    assert!(EvidenceEpisodeId::try_from(padded_condition).is_err());
+
+    let mut padded_token = episode_parts("market-a");
+    padded_token.outcomes[0].clob_token_id = "up-market-a ".to_string();
+    assert!(EvidenceEpisodeId::try_from(padded_token).is_err());
+}
+
+#[test]
 fn one_hundred_thousand_semantic_a_b_a_oscillations_reach_a_fixed_ceiling() -> Result<()> {
     let episode = episode("market-a");
     let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip)?;

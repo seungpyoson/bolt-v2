@@ -29,6 +29,7 @@ FROZEN_MARKET_ALLOCATIONS = (
     ("dependency_health", 208, 240),
     ("terminal_closed_window_skip", 240, 256),
 )
+FROZEN_MARKET_FAMILY_CAPACITY = FROZEN_MARKET_ALLOCATIONS[-1][2]
 OWNER_BY_PRODUCER = {
     "entry_skip": "EntrySkip",
     "strategy_input_snapshot": "BlockedStrategyInputSnapshot",
@@ -78,8 +79,14 @@ def load_registry(path: pathlib.Path) -> Registry:
     family_capacity = family["capacity"]
     if not isinstance(family_name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", family_name):
         raise ValueError("family.name must be snake_case")
-    if type(family_capacity) is not int or family_capacity <= 0:
-        raise ValueError("family.capacity must be a positive integer")
+    if (
+        type(family_capacity) is not int
+        or family_capacity != FROZEN_MARKET_FAMILY_CAPACITY
+    ):
+        raise ValueError(
+            "family.capacity must match frozen market-family capacity "
+            f"{FROZEN_MARKET_FAMILY_CAPACITY}"
+        )
 
     raw_allocations = document["allocation"]
     if not isinstance(raw_allocations, list) or not raw_allocations:

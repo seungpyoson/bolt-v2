@@ -119,6 +119,11 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
             ),
         )
 
+    def test_registry_capacity_is_frozen(self) -> None:
+        text = self.registry_text().replace("capacity = 256", "capacity = 512", 1)
+        with self.assertRaisesRegex(ValueError, "family.capacity must match frozen"):
+            self.load_text(text)
+
     def test_repository_registry_assigns_permanent_canonical_ids(self) -> None:
         registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
         ids = tuple(getattr(row, "id", None) for row in registry.states)

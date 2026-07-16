@@ -275,7 +275,7 @@ Map the six `BoltV3RvGateResult` variants and watermark boolean to the twelve ge
 
 - [ ] **Step 4: Strengthen the static verifier**
 
-Require each producer claim to use a generated canonical mapping, require the claim to precede payload construction/append, and keep the direct submit-linked snapshot assertion. Reject references to removed semantic-state structs.
+Require each producer claim to use a generated canonical mapping. Entry-skip claims precede payload construction and append; blocked-snapshot producers check for a duplicate, build the payload successfully, then claim before append so transient payload failures remain retryable. Keep the direct submit-linked snapshot assertion and reject references to removed semantic-state structs.
 
 - [ ] **Step 5: Publish and verify GREEN with the second probe**
 

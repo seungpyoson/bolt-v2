@@ -1359,42 +1359,10 @@ reason = "The updown market-family module owns the NautilusTrader BinaryOption o
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
-literal = '''"market_id"'''
-context = '''market_id: info.get_str("market_id")?.to_string(),'''
-classification = "nt_binary_option_metadata_key"
-reason = "The updown market-family module owns the NautilusTrader BinaryOption metadata key used to join both outcome instruments into one selected market."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
 literal = '''"market_slug"'''
 context = '''if info.get_str("market_slug")? != expected_market_slug {'''
 classification = "nt_binary_option_metadata_key"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption metadata key used to match the TOML-derived market slug; strategy code must not read this key directly."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = '''"market_slug"'''
-context = '''market_slug: info.get_str("market_slug")?.to_string(),'''
-classification = "nt_binary_option_metadata_key"
-reason = "The updown market-family module owns the NautilusTrader BinaryOption metadata key copied into source-bound market-selection identity evidence; strategy/operator code must not read this key directly."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = '''"condition_id"'''
-context = '''condition_id: info.get_str("condition_id")?.to_string(),'''
-classification = "nt_binary_option_metadata_key"
-reason = "The updown market-family module owns this NautilusTrader BinaryOption metadata key for source-bound market-selection identity evidence; strategy/operator code must not read this key directly."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = '''"question_id"'''
-context = '''question_id: info.get_str("question_id")?.to_string(),'''
-classification = "nt_binary_option_metadata_key"
-reason = "The updown market-family module owns this NautilusTrader BinaryOption metadata key for source-bound market-selection identity evidence; strategy/operator code must not read this key directly."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"

@@ -35,6 +35,8 @@ slot_bytes = 16
         self.assertEqual(config.capacity, 10)
         rendered = generator.render_rust(config, source.name)
         self.assertIn("capacity: 10", rendered)
+        self.assertIn("const RISK_CLOSURE_WORKSPACE_CONFIG", rendered)
+        self.assertNotIn("pub const RISK_CLOSURE_WORKSPACE_CONFIG", rendered)
         self.assertNotIn("owner_slots", rendered)
 
     def test_rejects_non_integral_slot_geometry(self) -> None:

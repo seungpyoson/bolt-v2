@@ -28,7 +28,7 @@ slot_bytes = 16777216
             encoding="utf-8",
         )
         (self.root / "src" / "bolt_v3_risk_closure_workspace_generated.rs").write_text(
-            "// generated fixture\n",
+            "const RISK_CLOSURE_WORKSPACE_CONFIG: RiskClosureWorkspaceConfig = fixture();\n",
             encoding="utf-8",
         )
         (self.root / "src" / "bolt_v3_risk_closure_workspace.rs").write_text(
@@ -38,6 +38,36 @@ slot_bytes = 16777216
 
     def test_accepts_one_toml_authority_and_derived_rust_field(self) -> None:
         self.assertEqual(verifier.authority_errors(self.root), [])
+
+    def test_rejects_public_workspace_configuration_type(self) -> None:
+        (self.root / "src" / "bolt_v3_risk_closure_workspace.rs").write_text(
+            "pub struct RiskClosureWorkspaceConfig { slot_bytes: usize }\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("configuration type must remain private" in error for error in errors))
+
+    def test_rejects_public_generated_workspace_configuration(self) -> None:
+        (self.root / "src" / "bolt_v3_risk_closure_workspace_generated.rs").write_text(
+            "pub const RISK_CLOSURE_WORKSPACE_CONFIG: RiskClosureWorkspaceConfig = fixture();\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("generated workspace configuration must remain private" in error for error in errors))
+
+    def test_rejects_workspace_configuration_reference_outside_owner(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "use crate::bolt_v3_risk_closure_workspace::RISK_CLOSURE_WORKSPACE_CONFIG;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("private workspace configuration referenced" in error for error in errors))
 
     def test_rejects_a_second_toml_slot_size_authority(self) -> None:
         (self.root / "config" / "duplicate.toml").write_text(

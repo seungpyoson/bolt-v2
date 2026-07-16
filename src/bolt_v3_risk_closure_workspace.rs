@@ -8,7 +8,7 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RiskClosureWorkspaceConfig {
+struct RiskClosureWorkspaceConfig {
     arena_bytes: usize,
     slot_bytes: usize,
     capacity: usize,
@@ -16,19 +16,19 @@ pub struct RiskClosureWorkspaceConfig {
 }
 
 impl RiskClosureWorkspaceConfig {
-    pub const fn arena_bytes(self) -> usize {
+    const fn arena_bytes(self) -> usize {
         self.arena_bytes
     }
 
-    pub const fn slot_bytes(self) -> usize {
+    const fn slot_bytes(self) -> usize {
         self.slot_bytes
     }
 
-    pub const fn capacity(self) -> usize {
+    const fn capacity(self) -> usize {
         self.capacity
     }
 
-    pub const fn production_activation_enabled(self) -> bool {
+    const fn production_activation_enabled(self) -> bool {
         self.production_activation_enabled
     }
 }

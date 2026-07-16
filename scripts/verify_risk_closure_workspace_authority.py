@@ -13,6 +13,7 @@ import tomllib
 
 SOURCE = pathlib.Path("config/risk-closure-workspaces.toml")
 GENERATED = pathlib.Path("src/bolt_v3_risk_closure_workspace_generated.rs")
+OWNER = pathlib.Path("src/bolt_v3_risk_closure_workspace.rs")
 RUST_INTEGER = (
     r"(?:0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|[0-9][0-9_]*)"
     r"(?:usize|isize|u(?:8|16|32|64|128)|i(?:8|16|32|64|128))?"
@@ -153,6 +154,19 @@ def authority_errors(root: pathlib.Path) -> list[str]:
     if authoritative_slot_bytes is None:
         return errors
 
+    try:
+        owner_text = (root / OWNER).read_text(encoding="utf-8")
+        generated_text = (root / GENERATED).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"cannot inspect private workspace authority surface: {error}")
+        return errors
+    if re.search(r"\bpub\s+(?:\([^)]*\)\s+)?struct\s+RiskClosureWorkspaceConfig\b", owner_text):
+        errors.append(f"workspace configuration type must remain private to {OWNER}")
+    if re.search(r"\bpub\s+(?:\([^)]*\)\s+)?const\s+RISK_CLOSURE_WORKSPACE_CONFIG\b", generated_text):
+        errors.append(f"generated workspace configuration must remain private to {OWNER}")
+    if "const RISK_CLOSURE_WORKSPACE_CONFIG" not in generated_text:
+        errors.append(f"generated workspace configuration is missing from {GENERATED}")
+
     for path in _production_rust_sources(root):
         relative = path.relative_to(root)
         if relative == GENERATED:
@@ -162,6 +176,10 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         except (OSError, UnicodeDecodeError) as error:
             errors.append(f"cannot inspect {relative}: {error}")
             continue
+        if relative != OWNER and re.search(
+            r"\b(?:RiskClosureWorkspaceConfig|RISK_CLOSURE_WORKSPACE_CONFIG)\b", text
+        ):
+            errors.append(f"private workspace configuration referenced outside {OWNER}: {relative}")
         if any(
             _integer_value(match.group()) == authoritative_slot_bytes
             for match in INTEGER_LITERAL.finditer(text)

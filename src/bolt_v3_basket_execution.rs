@@ -420,9 +420,16 @@ impl BoltV3BasketExecutionState {
                 self.mark_stuck_exposure();
                 return Ok(());
             };
+            // Cumulative restart reports obey a sign-consistency contract: a leg is either
+            // unfilled (quantity and cost both zero) or filled (both positive). Any negative value,
+            // or exactly one of quantity/cost positive, is anomalous and fails closed. This is the
+            // cumulative-report mirror of the live incremental LegFill guard (see apply_event): there
+            // a zero *incremental* quantity is itself anomalous, whereas here a zero *cumulative*
+            // quantity is a legitimate not-yet-filled leg, so both-zero must stay reconcilable.
             if !matched_leg_indexes.insert(index)
                 || report.filled_quantity < Decimal::ZERO
                 || report.filled_cost < Decimal::ZERO
+                || (report.filled_quantity > Decimal::ZERO) != (report.filled_cost > Decimal::ZERO)
             {
                 self.mark_stuck_exposure();
                 return Ok(());

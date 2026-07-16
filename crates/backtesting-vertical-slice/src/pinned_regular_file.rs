@@ -342,6 +342,29 @@ impl PinnedRegularFileIdentity {
         }
     }
 
+    /// Bind this file capability to one previously authorized parent
+    /// directory identity before any bytes are consumed.
+    pub(crate) fn revalidate_expected_parent(
+        &self,
+        expected_path: &Path,
+        expected_metadata: &fs::Metadata,
+    ) -> Result<()> {
+        ensure!(
+            expected_metadata.file_type().is_dir(),
+            "authorized pinned-file parent is not a directory: {}",
+            expected_path.display()
+        );
+        ensure!(
+            expected_path.is_absolute()
+                && expected_path == self.parent.canonical_path
+                && expected_metadata.dev() == self.parent.device
+                && expected_metadata.ino() == self.parent.inode,
+            "pinned regular-file parent does not match authorized canonical directory identity: {}",
+            expected_path.display()
+        );
+        self.parent.revalidate()
+    }
+
     pub(crate) fn revalidate_path(&self, path: &Path) -> Result<()> {
         let (component, _) = final_component(path)?;
         ensure!(
@@ -402,6 +425,17 @@ impl PinnedRegularFileIdentity {
         PinnedRegularFileFingerprint {
             byte_len: self.byte_len,
         }
+    }
+
+    pub(crate) fn revalidate_expected_parent(
+        &self,
+        expected_path: &Path,
+        _expected_metadata: &fs::Metadata,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "pinned regular-file parent capabilities are unsupported on this platform for {}",
+            expected_path.display()
+        )
     }
 
     pub(crate) fn revalidate_path(&self, path: &Path) -> Result<()> {
@@ -605,6 +639,34 @@ mod tests {
             .expect("revalidate pinned object");
 
         assert_eq!(bytes, b"payload");
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn replacement_parent_does_not_satisfy_prior_authorization() {
+        let root = tempfile::tempdir().expect("temp root");
+        let authorized_parent = root.path().join("authorized");
+        let displaced_parent = root.path().join("displaced");
+        fs::create_dir(&authorized_parent).expect("create authorized parent");
+        fs::write(authorized_parent.join("object"), b"authorized").expect("write object");
+        let authorized_metadata =
+            fs::symlink_metadata(&authorized_parent).expect("snapshot authorized parent");
+        fs::rename(&authorized_parent, &displaced_parent).expect("displace authorized parent");
+        fs::create_dir(&authorized_parent).expect("create replacement parent");
+        let replacement_path = authorized_parent.join("object");
+        fs::write(&replacement_path, b"replacement").expect("write replacement object");
+
+        let (_file, identity) =
+            open_pinned_regular_file(&replacement_path).expect("pin replacement object");
+        let error = identity
+            .revalidate_expected_parent(&authorized_parent, &authorized_metadata)
+            .expect_err("replacement parent must not inherit prior authorization");
+
+        assert!(
+            error
+                .to_string()
+                .contains("authorized canonical directory identity")
+        );
     }
 
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]

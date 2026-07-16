@@ -3951,7 +3951,7 @@ impl BatchOutputChildClaim {
     }
 }
 
-fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Result<()> {
+pub(crate) fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Result<()> {
     ensure!(
         pack.schema_version == SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
         "execution pack schema_version mismatch: expected {}, got {}",

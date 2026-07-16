@@ -519,6 +519,29 @@ mod tests {
     }
 
     #[test]
+    fn reservations_leases_and_terminal_permits_are_one_use_types() {
+        trait AmbiguousIfClone<A> {
+            fn check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Clone> AmbiguousIfClone<Invalid> for T {}
+
+        let _ = <RiskClosureWorkspaceReservation as AmbiguousIfClone<_>>::check;
+        let _ = <RiskClosureWorkspaceLease as AmbiguousIfClone<_>>::check;
+        let _ = <TerminalReleasePermit as AmbiguousIfClone<_>>::check;
+
+        let _: fn(
+            RiskClosureWorkspaceReservation,
+            ClosureIdentity,
+        ) -> Result<(), RiskClosureWorkspaceError> = RiskClosureWorkspaceReservation::commit;
+        let _: fn(
+            RiskClosureWorkspaceLease,
+            TerminalReleasePermit,
+        ) -> Result<(), RiskClosureWorkspaceError> = RiskClosureWorkspaceLease::release_terminal;
+    }
+
+    #[test]
     fn capacity_accepts_limit_minus_one_and_limit_then_rejects_limit_plus_one() {
         let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
         let mut reservations = Vec::new();

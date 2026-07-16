@@ -393,7 +393,7 @@ fn normalized() -> (
         &accepted,
         &identities(),
         &mapping(),
-        &parquet,
+        parquet.into(),
         42,
         "ingest-run-test",
     )

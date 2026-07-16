@@ -236,7 +236,7 @@ impl DisplaySortScratch {
 }
 
 fn cooperative_stable_sort_by_display_guarded<T>(
-    values: &mut Vec<T>,
+    values: &mut [T],
     mut measure_keys: impl FnMut(&T, &mut DisplayLengthMeasure) -> Result<()>,
     mut compare: impl FnMut(&T, &T, &mut DisplaySortScratch) -> Ordering,
     key_label: &str,

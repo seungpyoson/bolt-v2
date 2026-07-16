@@ -523,8 +523,8 @@ crypto_future = "MARGIN"
     assert_eq!(pack.records.len(), 1);
 
     let record = &pack.records[0];
-    let run_spec_text =
-        fs::read_to_string(resolve_repo_relative(&record.run_spec_path)).expect("read run spec");
+    let run_spec_path = resolve_repo_relative(&record.run_spec_path);
+    let run_spec_text = fs::read_to_string(&run_spec_path).expect("read run spec");
     let run_spec: RunSpec = toml::from_str(&run_spec_text).expect("run spec parses");
     assert_eq!(run_spec.manifest.run_id, record.operator_run_id);
     assert_eq!(

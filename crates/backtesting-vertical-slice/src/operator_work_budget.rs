@@ -1376,7 +1376,7 @@ where
 /// metadata buffer. Call [`cooperative_stable_sort_by`] directly when ordering
 /// is based on borrowed strings or other dynamic data.
 pub fn cooperative_stable_sort_by_key<T, K, F>(
-    values: &mut Vec<T>,
+    values: &mut [T],
     mut key_of: F,
     work_budget: &OperatorWorkBudgetGuard,
     stage: OperatorWorkBudgetStage,

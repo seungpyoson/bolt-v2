@@ -4346,7 +4346,7 @@ pub(crate) fn run_from_run_spec_with_verified_registry(
 
 enum TradeRunPreparation {
     Completed(Box<RunArtifacts>),
-    Prepared(PreparedTradeRunArtifacts),
+    Prepared(Box<PreparedTradeRunArtifacts>),
 }
 
 struct PreparedTradeRunArtifacts {
@@ -4389,7 +4389,7 @@ fn run_from_run_spec_inner(
             let runtime_manifest = prepared.local_manifest.clone();
             finalize_prepared_trade_run(
                 spec,
-                prepared,
+                *prepared,
                 runtime_manifest,
                 output_dir,
                 true,
@@ -4598,25 +4598,27 @@ fn prepare_run_from_run_spec_inner(
         work_budget,
     };
     let backtest = prepare_backtest(&backtest_inputs, submitted_identity)?;
-    Ok(TradeRunPreparation::Prepared(PreparedTradeRunArtifacts {
-        verified_sha256,
-        accepted_source_proof: accepted_proof,
-        accepted,
-        conversion_fingerprint,
-        canonical_artifact_path: canonical_path,
-        catalog_root,
-        proof_path,
-        contract_path,
-        run_manifest_path,
-        conversion_manifest_path,
-        conversion_checkpoint_path,
-        catalog_metadata_path,
-        local_manifest: manifest,
-        contract_manifest_hash,
-        artifact_uris,
-        backtest,
-        transient_catalog_root_lease,
-    }))
+    Ok(TradeRunPreparation::Prepared(Box::new(
+        PreparedTradeRunArtifacts {
+            verified_sha256,
+            accepted_source_proof: accepted_proof,
+            accepted,
+            conversion_fingerprint,
+            canonical_artifact_path: canonical_path,
+            catalog_root,
+            proof_path,
+            contract_path,
+            run_manifest_path,
+            conversion_manifest_path,
+            conversion_checkpoint_path,
+            catalog_metadata_path,
+            local_manifest: manifest,
+            contract_manifest_hash,
+            artifact_uris,
+            backtest,
+            transient_catalog_root_lease,
+        },
+    )))
 }
 
 fn finalize_prepared_trade_run(
@@ -4997,7 +4999,7 @@ async fn run_from_run_spec_with_verified_registry_guarded(
             &source_binding_registry,
             &base_work_budget,
         )? {
-            TradeRunPreparation::Prepared(prepared) => Ok(prepared),
+            TradeRunPreparation::Prepared(prepared) => Ok(*prepared),
             TradeRunPreparation::Completed(_) => {
                 bail!("durable preparation unexpectedly reused local completed output")
             }

@@ -49,7 +49,13 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_polymarket::http::models::GammaMarket;
 use parquet::arrow::ArrowWriter;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs::File, path::PathBuf, process::Command, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 use ustr::Ustr;
 
 const PMXT_TEST_EVENT_COUNT_LEDGER_HASH: &str =
@@ -1765,8 +1771,7 @@ fn pmxt_l2_manifest(
         }],
         reconstructed_reference_current_price: Vec::new(),
         instrument_settlements: Vec::new(),
-        catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
+        nt_streaming_chunk_size: 128,
         execution_model: "nt_backtest_node".to_string(),
         artifact_root: format!("file://{}", output_dir.display()),
         output_prefix: format!("file://{}", output_dir.display()),

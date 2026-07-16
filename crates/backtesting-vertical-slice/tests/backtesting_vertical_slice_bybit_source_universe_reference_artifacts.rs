@@ -90,7 +90,10 @@ fn bybit_source_universe_plan_metadata_and_manifest_remain_exactly_aligned() {
         universe_categories.keys().copied().collect::<Vec<_>>(),
         vec!["inverse", "linear", "spot"]
     );
-    assert_eq!(universe_categories.keys(), plan_categories.keys());
+    assert_eq!(
+        universe_categories.keys().copied().collect::<Vec<_>>(),
+        plan_categories.keys().copied().collect::<Vec<_>>()
+    );
     for (category, universe_category) in &universe_categories {
         let plan_category = plan_categories
             .get(category)

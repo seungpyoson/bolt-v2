@@ -306,8 +306,7 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
         catalog_inputs,
         reconstructed_reference_current_price: Vec::new(),
         instrument_settlements: Vec::new(),
-        catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
+        nt_streaming_chunk_size: 128,
         execution_model: "nt_backtest_node".to_string(),
         artifact_root: "s3://synthetic-artifacts/nt-research-analytics".to_string(),
         output_prefix: format!("s3://synthetic-artifacts/nt-research-analytics/backtests/{run_id}"),
@@ -701,7 +700,8 @@ fn stray_parquet_in_one_multi_table_subroot_fails_loud_on_reuse() {
     fs::write(&stray, b"not part of the committed exact set").expect("plant stray parquet");
 
     let error = run_operator_from_run_spec(&spec, object_bytes, &output_dir)
-        .expect_err("multi-table reuse must reject a stray catalog file");
+        .err()
+        .expect("multi-table reuse must reject a stray catalog file");
 
     assert!(
         error.to_string().contains("unexpected file") || error.to_string().contains("exactly one"),

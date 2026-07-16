@@ -306,8 +306,7 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
         catalog_inputs,
         reconstructed_reference_current_price: Vec::new(),
         instrument_settlements: Vec::new(),
-        catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
+        nt_streaming_chunk_size: 128,
         execution_model: "nt_backtest_node".to_string(),
         artifact_root: "s3://synthetic-artifacts/nt-research-analytics".to_string(),
         output_prefix: format!("s3://synthetic-artifacts/nt-research-analytics/backtests/{run_id}"),

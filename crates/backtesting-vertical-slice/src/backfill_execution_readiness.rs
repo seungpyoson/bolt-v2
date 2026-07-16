@@ -19,6 +19,9 @@ use crate::{
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
     backfill_accepted_tranche::{BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
     run_manifest::ArtifactSubpath,
     source_catalog_mapping_readiness::{
         SourceCatalogMappingReadinessReport, SourceCatalogMappingReadinessStatus,
@@ -626,11 +629,18 @@ pub fn write_backfill_execution_readiness_report(
     output_dir: &Path,
     report: &BackfillExecutionReadinessReport,
 ) -> Result<BackfillExecutionReadinessArtifact, BackfillExecutionReadinessError> {
+    let path = active_backfill_runtime_output_path(
+        output_dir,
+        BACKFILL_EXECUTION_READINESS_REPORT_FILE,
+    )
+    .map_err(|error| BackfillExecutionReadinessError::CreateDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillExecutionReadinessError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let path = output_dir.join(BACKFILL_EXECUTION_READINESS_REPORT_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_EXECUTION_READINESS_REPORT_FILE,
@@ -658,13 +668,19 @@ pub fn write_backfill_execution_readiness_report(
 pub fn write_backfill_execution_readiness_report_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillExecutionReadinessArtifact, BackfillExecutionReadinessError> {
-    let spec_text = fs::read_to_string(spec_path).map_err(|error| {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
         BackfillExecutionReadinessError::ReadSpec {
             path: spec_path.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    let spec: BackfillExecutionReadinessSpec = toml::from_str(&spec_text).map_err(|error| {
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillExecutionReadinessError::ReadSpec {
+            path: spec_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: BackfillExecutionReadinessSpec = toml::from_str(spec_text).map_err(|error| {
         BackfillExecutionReadinessError::ParseSpecToml {
             path: spec_path.display().to_string(),
             error: error.to_string(),
@@ -736,7 +752,7 @@ pub fn write_backfill_execution_readiness_report_from_spec_file(
 fn read_accepted_tranche_manifest(
     path: &Path,
 ) -> Result<(BackfillAcceptedTrancheManifest, String), BackfillExecutionReadinessError> {
-    let bytes = fs::read(path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
         BackfillExecutionReadinessError::ReadAcceptedTrancheManifest {
             path: path.display().to_string(),
             error: error.to_string(),
@@ -755,11 +771,12 @@ fn read_accepted_tranche_manifest(
 fn read_execution_plan(
     path: &Path,
 ) -> Result<(BackfillExecutionPlan, String), BackfillExecutionReadinessError> {
-    let bytes =
-        fs::read(path).map_err(|error| BackfillExecutionReadinessError::ReadExecutionPlan {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
+        BackfillExecutionReadinessError::ReadExecutionPlan {
             path: path.display().to_string(),
             error: error.to_string(),
-        })?;
+        }
+    })?;
     let hash = sha256_hex(&bytes);
     let plan = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseExecutionPlanJson {
@@ -773,7 +790,7 @@ fn read_execution_plan(
 fn read_artifact_index_commit_proof_report(
     path: &Path,
 ) -> Result<(ArtifactIndexCommitProofReport, String), BackfillExecutionReadinessError> {
-    let bytes = fs::read(path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
         BackfillExecutionReadinessError::ReadArtifactIndexCommitProofReport {
             path: path.display().to_string(),
             error: error.to_string(),
@@ -792,7 +809,7 @@ fn read_artifact_index_commit_proof_report(
 fn read_source_selection_readiness_report(
     path: &Path,
 ) -> Result<(SourceSelectionReadinessReport, String), BackfillExecutionReadinessError> {
-    let bytes = fs::read(path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
         BackfillExecutionReadinessError::ReadSourceSelectionReadinessReport {
             path: path.display().to_string(),
             error: error.to_string(),
@@ -811,7 +828,7 @@ fn read_source_selection_readiness_report(
 fn read_source_catalog_mapping_readiness_report(
     path: &Path,
 ) -> Result<(SourceCatalogMappingReadinessReport, String), BackfillExecutionReadinessError> {
-    let bytes = fs::read(path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
         BackfillExecutionReadinessError::ReadSourceCatalogMappingReadinessReport {
             path: path.display().to_string(),
             error: error.to_string(),

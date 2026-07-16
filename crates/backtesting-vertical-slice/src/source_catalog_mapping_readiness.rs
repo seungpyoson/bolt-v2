@@ -15,7 +15,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::{
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
+};
 use crate::source_proof::SourceProofUsageScope;
 
 pub const SOURCE_CATALOG_MAPPING_READINESS_SCHEMA_VERSION: &str =
@@ -421,13 +426,19 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
     spec_path: &Path,
 ) -> Result<SourceCatalogMappingReadinessArtifact, SourceCatalogMappingReadinessError> {
     let spec_path_display = spec_path.display().to_string();
-    let spec_text = fs::read_to_string(spec_path).map_err(|error| {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
         SourceCatalogMappingReadinessError::ReadSpec {
             path: spec_path_display.clone(),
             error: error.to_string(),
         }
     })?;
-    let spec: SourceCatalogMappingReadinessSpec = toml::from_str(&spec_text).map_err(|error| {
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        SourceCatalogMappingReadinessError::ReadSpec {
+            path: spec_path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: SourceCatalogMappingReadinessSpec = toml::from_str(spec_text).map_err(|error| {
         SourceCatalogMappingReadinessError::ParseSpecToml {
             path: spec_path_display,
             error: error.to_string(),
@@ -435,9 +446,11 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
     })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let evaluation_path = spec.catalog_mapping_evaluation_path.display().to_string();
-    let resolved_evaluation_path =
-        resolve_existing_path(base_dir, &spec.catalog_mapping_evaluation_path);
-    let evaluation_bytes = fs::read(&resolved_evaluation_path).map_err(|error| {
+    let evaluation_bytes = read_active_backfill_runtime_input(
+        Some(base_dir),
+        &spec.catalog_mapping_evaluation_path,
+    )
+    .map_err(|error| {
         SourceCatalogMappingReadinessError::ReadCatalogMappingEvaluation {
             path: evaluation_path.clone(),
             error: error.to_string(),
@@ -474,13 +487,20 @@ pub fn write_source_catalog_mapping_readiness_report(
     output_dir: &Path,
     report: &SourceCatalogMappingReadinessReport,
 ) -> Result<SourceCatalogMappingReadinessArtifact, SourceCatalogMappingReadinessError> {
+    let path = active_backfill_runtime_output_path(
+        output_dir,
+        SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE,
+    )
+    .map_err(|error| SourceCatalogMappingReadinessError::CreateDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
     fs::create_dir_all(output_dir).map_err(|error| {
         SourceCatalogMappingReadinessError::CreateDir {
             path: output_dir.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    let path = output_dir.join(SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE,

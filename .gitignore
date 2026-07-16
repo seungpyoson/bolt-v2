@@ -88,7 +88,7 @@ specs/023-nt-research-analytics-platform/reference/source-universe-execution-pac
 
 # Issue #704 Phase 2 Tier 1: generated source-universe reference JSON artifacts
 # are evicted to the same content-addressed index. Keep hand-authored TOML specs
-# plus the bybit source-universe JSON read by backfill-gate reference tests.
+# plus the bybit source-universe JSON read by source-universe reference tests.
 specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/*/work-order/*.json
 specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/**/*.json
 specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/*.json
@@ -96,14 +96,6 @@ specs/023-nt-research-analytics-platform/reference/source-universe-conversion-ru
 specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/*-source-universe.json
 specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/*/ledger/*.json
 specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/*.json
-
-# Issue #704 Phase 3: generated venue conversion batch plans are regenerated
-# from committed TOML specs in tests and fingerprinted in the eviction index.
-specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/*/plan/backfill-conversion-batch-plan.json
-
-# Issue #704: generated backfill conversion completion ledgers are regenerated
-# from committed TOML specs in tests and fingerprinted in the eviction index.
-specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/*/ledger/backfill-conversion-completion-ledger.json
 
 # Issue #704 Phase 2: generated PMXT source-universe object manifests are
 # regenerated from the committed source-archive-index TOML spec in tests and

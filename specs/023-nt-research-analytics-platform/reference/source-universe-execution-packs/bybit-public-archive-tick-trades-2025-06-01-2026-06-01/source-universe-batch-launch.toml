@@ -1,0 +1,24 @@
+schema_version = "source-universe-batch-launch-spec.v2"
+batch_id = "bybit-public-archive-tick-trades-2025-06-01-one-record-tracer"
+output_dir = "../../../../../target/source-universe-batch-output/bybit-public-archive-tick-trades-2025-06-01-one-record-tracer"
+start_sequence = 0
+record_limit = 1
+continue_on_error = false
+fetch_timeout_seconds = 300
+worker_termination_grace_seconds = 30
+max_concurrent_records = 1
+object_cache_dir = "../../../../../target/source-universe-object-cache"
+allow_partial = false
+
+[transport]
+kind = "staged_s3"
+
+[execution_pack]
+path = "execution-pack/source-universe-execution-pack.json"
+bytes = 6284
+sha256 = "edbe41648fb702ef5b9bdf443044b780f9f42537ac82877aa85d2460ed59bc05"
+
+[bootstrap_limits]
+max_launch_artifact_bytes = 65536
+max_control_artifact_bytes = 65536
+max_retained_control_input_bytes = 262144

@@ -714,6 +714,23 @@ fn stray_parquet_in_one_multi_table_subroot_fails_loud_on_reuse() {
 }
 
 #[test]
+fn source_universe_durable_preflight_rejects_stale_nt_revision_without_output() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let (mut spec, _) = two_interval_run_spec(temp.path(), "source-universe-durable-stale-nt");
+    let output = temp.path().join("must-not-exist");
+    spec.manifest.resolved_nt_version = "stale-nt-revision".to_string();
+
+    let error = validate_durable_run_spec_preflight(&spec)
+        .expect_err("stale NT revision must fail before durable source bytes or output");
+
+    assert!(
+        error.to_string().contains("NautilusTrader revision mismatch"),
+        "{error:#}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
 fn source_universe_durable_preflight_rejects_non_trade_family_without_output() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let (spec, _) = two_interval_run_spec(temp.path(), "source-universe-durable-bars");

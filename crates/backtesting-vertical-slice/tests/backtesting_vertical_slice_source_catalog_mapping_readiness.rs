@@ -1,14 +1,66 @@
 use std::collections::BTreeMap;
 
 use backtesting_vertical_slice::{
+    hashing::sha256_hex,
     source_catalog_mapping_readiness::{
         SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE, SourceCatalogMappingReadinessBlocker,
-        SourceCatalogMappingReadinessInput, SourceCatalogMappingReadinessStatus,
-        SourceCatalogMappingStatusEntry, evaluate_source_catalog_mapping_readiness,
+        SourceCatalogMappingReadinessInput, SourceCatalogMappingReadinessReport,
+        SourceCatalogMappingReadinessStatus, SourceCatalogMappingStatusEntry,
+        evaluate_source_catalog_mapping_readiness,
         write_source_catalog_mapping_readiness_report_from_spec_file,
     },
     source_proof::SourceProofUsageScope,
 };
+use serde::Deserialize;
+
+const BLOCKED_CATALOG_MAPPING_EVALUATION: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
+);
+const BLOCKED_CATALOG_MAPPING_EVALUATION_BYTES: &[u8] = include_bytes!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
+);
+const BLOCKED_SOURCE_CATALOG_MAPPING_READINESS_REPORT: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-catalog-mapping-readiness/polymarket-parquet-archive-index-canonical/source-catalog-mapping-readiness-report.json"
+);
+
+#[derive(Debug, Deserialize)]
+struct SourceCatalogMappingEvaluation {
+    source_sample_mapping_status: Vec<SourceCatalogMappingStatusEntry>,
+}
+
+#[test]
+fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_evaluator() {
+    let mapping_evaluation: SourceCatalogMappingEvaluation =
+        serde_json::from_str(BLOCKED_CATALOG_MAPPING_EVALUATION)
+            .expect("mapping evaluation parses");
+    let expected: SourceCatalogMappingReadinessReport =
+        serde_json::from_str(BLOCKED_SOURCE_CATALOG_MAPPING_READINESS_REPORT)
+            .expect("blocked source catalog-mapping readiness parses");
+
+    let actual = evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
+        readiness_id: &expected.readiness_id,
+        catalog_mapping_evaluation_hash: &sha256_hex(BLOCKED_CATALOG_MAPPING_EVALUATION_BYTES),
+        source_sample_mapping_status: &mapping_evaluation.source_sample_mapping_status,
+        source_proof_id: &expected.source_proof_id,
+        source_proof_version: expected.source_proof_version,
+        source_binding: &expected.source_binding,
+        required_table_family: &expected.required_table_family,
+        required_nt_data_types: expected.required_nt_data_types.clone(),
+        required_claim_evidence_refs: expected.required_claim_evidence_refs.clone(),
+        allowed_current_bte_statuses: expected.allowed_current_bte_statuses.clone(),
+        allowed_parquet_catalog_statuses: expected.allowed_parquet_catalog_statuses.clone(),
+        allowed_usage_scopes: expected.allowed_usage_scopes.clone(),
+    });
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual.status, SourceCatalogMappingReadinessStatus::Blocked);
+    assert!(
+        actual
+            .blockers
+            .contains(&SourceCatalogMappingReadinessBlocker::RequiredClaimEvidenceMissing)
+    );
+    assert!(!actual.blockers.is_empty());
+}
 
 #[test]
 fn source_catalog_mapping_readiness_accepts_configured_nt_catalog_statuses() {

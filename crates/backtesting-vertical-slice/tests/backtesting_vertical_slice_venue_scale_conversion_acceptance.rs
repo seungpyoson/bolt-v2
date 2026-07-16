@@ -1,11 +1,7 @@
 use std::{fs, path::Path};
 
 use crate::backtesting_vertical_slice_test_support::{
-    BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
-    BACKFILL_CONVERSION_COMPLETION_BYBIT_LEDGER_PATH,
-    PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-    PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH, assert_generated_fixture_bytes_match_index,
-    assert_generated_fixture_matches_index, generate_evicted_completion_ledger,
+    assert_generated_fixture_bytes_match_index, assert_generated_fixture_matches_index,
     generate_evicted_pmxt_object_manifests, rewrite_assignment, tempdir_in_repo_target,
 };
 use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
@@ -25,24 +21,6 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
     let spec_path = temp_dir
         .path()
         .join("venue-scale-conversion-acceptance-ledger.toml");
-    let binance_completion_ledger_dir = temp_dir.path().join("binance-completion-ledger");
-    let bybit_completion_ledger_dir = temp_dir.path().join("bybit-completion-ledger");
-    fs::create_dir_all(&binance_completion_ledger_dir).expect("create binance ledger temp dir");
-    fs::create_dir_all(&bybit_completion_ledger_dir).expect("create bybit ledger temp dir");
-    let binance_completion_ledger = generate_evicted_completion_ledger(
-        &reference_root,
-        "binance-bnbusdc-2026-03-01-2026-05-31",
-        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-        BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
-        &binance_completion_ledger_dir,
-    );
-    let bybit_completion_ledger = generate_evicted_completion_ledger(
-        &reference_root,
-        "bybit-bnbusdc-2026-03-01-2026-06-01",
-        PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-        BACKFILL_CONVERSION_COMPLETION_BYBIT_LEDGER_PATH,
-        &bybit_completion_ledger_dir,
-    );
     let binance_archive_seed = temp_dir.path().join("binance-archive-discovery-seed.json");
     let bybit_conversion_run_plan = temp_dir.path().join("bybit-conversion-run-plan.json");
     let pmxt_archive_seed = temp_dir.path().join("pmxt-archive-discovery-seed.json");
@@ -203,13 +181,6 @@ venue_id = "binance-current-reference"
 venue = "binance"
 
 [[venue.universe]]
-universe_id = "binance-bnbusdc-spot-2026-03-01-2026-05-31"
-scope_label = "BNBUSDC spot daily trades"
-status = "converted"
-completion_ledger_path = "{binance_completion_ledger}"
-completion_ledger_artifact_path = "specs/test-generated/venue-scale/binance-completion-ledger.json"
-
-[[venue.universe]]
 universe_id = "binance-data-vision-trades-2026-03-01-all-instruments"
 scope_label = "Binance Data Vision daily trades all instruments 2026-03-01"
 status = "source_only"
@@ -233,13 +204,6 @@ blocking_issues = [
 [[venue]]
 venue_id = "bybit-current-reference"
 venue = "bybit"
-
-[[venue.universe]]
-universe_id = "bybit-bnbusdc-spot-2026-03-01-2026-06-01"
-scope_label = "BNBUSDC spot tick trades"
-status = "converted"
-completion_ledger_path = "{bybit_completion_ledger}"
-completion_ledger_artifact_path = "specs/test-generated/venue-scale/bybit-completion-ledger.json"
 
 [[venue.universe]]
 universe_id = "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
@@ -292,7 +256,6 @@ blocking_issues = [
             pmxt_source_manifest = pmxt_source_manifest.display(),
             pmxt_conversion_queue = pmxt_conversion_queue.display(),
             pmxt_source_proof_set = pmxt_source_proof_set.display(),
-            binance_completion_ledger = binance_completion_ledger.display(),
             binance_source_manifest = reference_root
                 .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json")
                 .display(),
@@ -305,7 +268,6 @@ blocking_issues = [
             binance_conversion_run_plan = reference_root
                 .join("source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json")
                 .display(),
-            bybit_completion_ledger = bybit_completion_ledger.display(),
             bybit_source_manifest = reference_root
                 .join("backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json")
                 .display(),
@@ -337,12 +299,12 @@ blocking_issues = [
     );
     assert_eq!(ledger.status, VenueScaleConversionAcceptanceStatus::Blocked);
     assert_eq!(ledger.venue_count, 3);
-    assert_eq!(ledger.universe_count, 7);
-    assert_eq!(ledger.converted_universes, 3);
+    assert_eq!(ledger.universe_count, 5);
+    assert_eq!(ledger.converted_universes, 1);
     assert_eq!(ledger.source_only_universes, 2);
     assert_eq!(ledger.blocked_universes, 2);
-    assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
-    assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
+    assert_eq!(ledger.total_converted_canonical_rows, 103);
+    assert_eq!(ledger.total_converted_nt_catalog_rows, 104);
     assert_eq!(ledger.total_source_only_objects, 7_908);
     assert_eq!(ledger.total_source_only_object_gates, 7_908);
     assert_eq!(ledger.total_source_only_accepted_bytes, 22_057_801_068);
@@ -356,10 +318,10 @@ blocking_issues = [
         binance.status,
         VenueScaleConversionAcceptanceStatus::Blocked
     );
-    assert_eq!(binance.converted_universes, 1);
+    assert_eq!(binance.converted_universes, 0);
     assert_eq!(binance.source_only_universes, 1);
     assert_eq!(binance.blocked_universes, 1);
-    assert_eq!(binance.total_converted_canonical_rows, 4_470_719);
+    assert_eq!(binance.total_converted_canonical_rows, 0);
     assert_eq!(binance.total_source_only_objects, 2_051);
     assert_eq!(binance.total_source_only_object_gates, 2_051);
     assert_eq!(binance.total_source_only_accepted_bytes, 1_748_721_970);
@@ -491,7 +453,7 @@ blocking_issues = [
         .expect("bybit venue");
     assert_eq!(
         bybit.status,
-        VenueScaleConversionAcceptanceStatus::PartiallyConverted
+        VenueScaleConversionAcceptanceStatus::SourceOnly
     );
     assert_eq!(bybit.source_only_universes, 1);
     assert_eq!(bybit.total_source_only_objects, 5_857);
@@ -702,24 +664,6 @@ fn venue_scale_ledger_uses_stable_manifest_identity_across_materialization_roots
         let temp_dir = tempdir_in_repo_target();
         let materialization_root = temp_dir.path().join(root_name);
         fs::create_dir_all(&materialization_root).expect("create materialization root");
-        let binance_completion_root = materialization_root.join("binance-completion");
-        let bybit_completion_root = materialization_root.join("bybit-completion");
-        fs::create_dir_all(&binance_completion_root).expect("create binance completion root");
-        fs::create_dir_all(&bybit_completion_root).expect("create bybit completion root");
-        let binance_completion_ledger = generate_evicted_completion_ledger(
-            &reference_root,
-            "binance-bnbusdc-2026-03-01-2026-05-31",
-            PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-            BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
-            &binance_completion_root,
-        );
-        let bybit_completion_ledger = generate_evicted_completion_ledger(
-            &reference_root,
-            "bybit-bnbusdc-2026-03-01-2026-06-01",
-            PHASE3_BYBIT_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
-            BACKFILL_CONVERSION_COMPLETION_BYBIT_LEDGER_PATH,
-            &bybit_completion_root,
-        );
         let manifest_root = materialization_root.join("object-manifests");
         fs::create_dir_all(&manifest_root).expect("create object-manifest root");
         let (manifest_path, category_manifest_path) =
@@ -783,14 +727,6 @@ fn venue_scale_ledger_uses_stable_manifest_identity_across_materialization_roots
         let mut rewritten_venue =
             rewrite_assignment(&venue_spec, "output_dir", &venue_root.join("output"));
         for (committed_materialization, actual_materialization) in [
-            (
-                "target/reference-regen/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json",
-                binance_completion_ledger.as_path(),
-            ),
-            (
-                "target/reference-regen/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json",
-                bybit_completion_ledger.as_path(),
-            ),
             (
                 "target/reference-regen/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
                 manifest_path.as_path(),

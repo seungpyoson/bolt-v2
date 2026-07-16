@@ -19,7 +19,10 @@ use crate::{
         BackfillConversionBatchPlan, BackfillConversionBatchRecord, BackfillConversionBatchStatus,
     },
     backfill_execution_plan::BackfillExecutionPlan,
-    path_resolution::{resolve_existing_path, resolve_output_dir},
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
     source_catalog_mapping_readiness::SourceCatalogMappingStatusEntry,
     source_proof::SourceProofUsageScope,
     source_universe_batch_execution::{
@@ -460,23 +463,29 @@ pub fn evaluate_backfill_conversion_completion_ledger(
 pub fn write_backfill_conversion_completion_ledger_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillConversionCompletionLedgerArtifact, BackfillConversionCompletionLedgerError> {
-    let spec_text = fs::read_to_string(spec_path).map_err(|error| {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillConversionCompletionLedgerError::ReadSpec {
+            path: spec_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadSpec {
             path: spec_path.display().to_string(),
             error: error.to_string(),
         }
     })?;
     let spec: BackfillConversionCompletionLedgerSpec =
-        toml::from_str(&spec_text).map_err(|error| {
+        toml::from_str(spec_text).map_err(|error| {
             BackfillConversionCompletionLedgerError::ParseSpecToml {
                 path: spec_path.display().to_string(),
                 error: error.to_string(),
             }
         })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
-    let batch_plan_path = resolve_existing_path(base_dir, &spec.batch_plan_path);
     let batch_path = spec.batch_plan_path.display().to_string();
-    let batch_bytes = fs::read(&batch_plan_path).map_err(|error| {
+    let batch_bytes = read_active_backfill_runtime_input(Some(base_dir), &spec.batch_plan_path)
+        .map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadBatchPlan {
             path: batch_path.clone(),
             error: error.to_string(),
@@ -502,8 +511,8 @@ pub fn write_backfill_conversion_completion_ledger_from_spec_file(
     let batch_execution_report = match &spec.batch_execution_report_path {
         Some(report_path) => {
             let report_display = report_path.display().to_string();
-            let resolved_report_path = resolve_existing_path(base_dir, report_path);
-            let report_bytes = fs::read(&resolved_report_path).map_err(|error| {
+            let report_bytes = read_active_backfill_runtime_input(Some(base_dir), report_path)
+                .map_err(|error| {
                 BackfillConversionCompletionLedgerError::ReadBatchExecutionReport {
                     path: report_display.clone(),
                     error: error.to_string(),
@@ -535,13 +544,22 @@ pub fn write_backfill_conversion_completion_ledger(
     output_dir: &Path,
     ledger: &BackfillConversionCompletionLedger,
 ) -> Result<BackfillConversionCompletionLedgerArtifact, BackfillConversionCompletionLedgerError> {
+    let path = active_backfill_runtime_output_path(
+        output_dir,
+        BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE,
+    )
+    .map_err(
+        |error| BackfillConversionCompletionLedgerError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        },
+    )?;
     fs::create_dir_all(output_dir).map_err(|error| {
         BackfillConversionCompletionLedgerError::CreateDir {
             path: output_dir.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    let path = output_dir.join(BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE,
@@ -575,9 +593,9 @@ fn read_input(
     base_dir: &Path,
 ) -> Result<BackfillConversionCompletionInput, BackfillConversionCompletionLedgerError> {
     let publication_path = spec.publication_evidence_path.display().to_string();
-    let resolved_publication_path =
-        resolve_existing_path(base_dir, &spec.publication_evidence_path);
-    let publication_bytes = fs::read(&resolved_publication_path).map_err(|error| {
+    let publication_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.publication_evidence_path)
+            .map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadPublicationEvidence {
             path: publication_path.clone(),
             error: error.to_string(),
@@ -593,9 +611,11 @@ fn read_input(
         })?;
 
     let mapping_path = spec.catalog_mapping_evaluation_path.display().to_string();
-    let resolved_mapping_path =
-        resolve_existing_path(base_dir, &spec.catalog_mapping_evaluation_path);
-    let mapping_bytes = fs::read(&resolved_mapping_path).map_err(|error| {
+    let mapping_bytes = read_active_backfill_runtime_input(
+        Some(base_dir),
+        &spec.catalog_mapping_evaluation_path,
+    )
+    .map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadCatalogMappingEvaluation {
             path: mapping_path.clone(),
             error: error.to_string(),
@@ -614,8 +634,8 @@ fn read_input(
         .map(|record| record.execution_plan_path.clone())
         .unwrap_or_default();
     let execution_plan_path_display = execution_plan_path.display().to_string();
-    let resolved_execution_plan_path = resolve_existing_path(base_dir, &execution_plan_path);
-    let execution_plan_bytes = fs::read(&resolved_execution_plan_path).map_err(|error| {
+    let execution_plan_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &execution_plan_path).map_err(|error| {
         BackfillConversionCompletionLedgerError::ReadExecutionPlan {
             path: execution_plan_path_display.clone(),
             error: error.to_string(),

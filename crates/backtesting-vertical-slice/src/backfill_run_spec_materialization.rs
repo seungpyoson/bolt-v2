@@ -22,6 +22,9 @@ use crate::{
         BackfillAcceptedTrancheStatus,
     },
     operator::RunSpec,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
 };
 
 pub const BACKFILL_RUN_SPEC_MATERIALIZED_FILE: &str = "backfill-run-spec.toml";
@@ -153,13 +156,19 @@ impl Error for BackfillRunSpecMaterializationError {}
 pub fn write_backfill_run_spec_from_materialization_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillRunSpecMaterializationArtifact, BackfillRunSpecMaterializationError> {
-    let spec_text = fs::read_to_string(spec_path).map_err(|error| {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
         BackfillRunSpecMaterializationError::ReadSpec {
             path: spec_path.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    let spec: BackfillRunSpecMaterializationSpec = toml::from_str(&spec_text).map_err(|error| {
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillRunSpecMaterializationError::ReadSpec {
+            path: spec_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: BackfillRunSpecMaterializationSpec = toml::from_str(spec_text).map_err(|error| {
         BackfillRunSpecMaterializationError::ParseSpecToml {
             path: spec_path.display().to_string(),
             error: error.to_string(),
@@ -197,7 +206,7 @@ fn validate_materialization_spec(
 fn read_accepted_tranche_manifest(
     path: &Path,
 ) -> Result<BackfillAcceptedTrancheManifest, BackfillRunSpecMaterializationError> {
-    let bytes = fs::read(path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
         BackfillRunSpecMaterializationError::ReadAcceptedTrancheManifest {
             path: path.display().to_string(),
             error: error.to_string(),
@@ -212,13 +221,19 @@ fn read_accepted_tranche_manifest(
 }
 
 fn read_run_spec_template(path: &Path) -> Result<Value, BackfillRunSpecMaterializationError> {
-    let text = fs::read_to_string(path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
         BackfillRunSpecMaterializationError::ReadRunSpecTemplate {
             path: path.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    toml::from_str(&text).map_err(|error| {
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        BackfillRunSpecMaterializationError::ReadRunSpecTemplate {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    toml::from_str(text).map_err(|error| {
         BackfillRunSpecMaterializationError::ParseRunSpecTemplateToml {
             path: path.display().to_string(),
             error: error.to_string(),
@@ -387,13 +402,20 @@ fn write_materialized_run_spec(
     output_dir: &Path,
     bytes: &[u8],
 ) -> Result<BackfillRunSpecMaterializationArtifact, BackfillRunSpecMaterializationError> {
+    let path = active_backfill_runtime_output_path(
+        output_dir,
+        BACKFILL_RUN_SPEC_MATERIALIZED_FILE,
+    )
+    .map_err(|error| BackfillRunSpecMaterializationError::CreateDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
     fs::create_dir_all(output_dir).map_err(|error| {
         BackfillRunSpecMaterializationError::CreateDir {
             path: output_dir.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    let path = output_dir.join(BACKFILL_RUN_SPEC_MATERIALIZED_FILE);
     if path.exists() {
         let existing =
             fs::read(&path).map_err(|error| BackfillRunSpecMaterializationError::ReadExisting {

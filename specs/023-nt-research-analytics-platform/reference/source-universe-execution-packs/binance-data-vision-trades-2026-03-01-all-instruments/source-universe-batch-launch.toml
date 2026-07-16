@@ -1,0 +1,24 @@
+schema_version = "source-universe-batch-launch-spec.v2"
+batch_id = "binance-data-vision-trades-2026-03-01-one-record-tracer"
+output_dir = "../../../../../target/source-universe-batch-output/binance-data-vision-trades-2026-03-01-one-record-tracer"
+start_sequence = 0
+record_limit = 1
+continue_on_error = false
+fetch_timeout_seconds = 300
+worker_termination_grace_seconds = 30
+max_concurrent_records = 1
+object_cache_dir = "../../../../../target/source-universe-object-cache"
+allow_partial = false
+
+[transport]
+kind = "staged_s3"
+
+[execution_pack]
+path = "execution-pack/source-universe-execution-pack.json"
+bytes = 6409
+sha256 = "2576afb9b3d9c2b57ff8976afe144ddc1dd1c17d01ff18af6ef9fc67d719d4fd"
+
+[bootstrap_limits]
+max_launch_artifact_bytes = 65536
+max_control_artifact_bytes = 65536
+max_retained_control_input_bytes = 262144

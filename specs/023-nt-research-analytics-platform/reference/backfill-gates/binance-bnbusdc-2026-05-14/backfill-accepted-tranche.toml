@@ -1,3 +1,0 @@
-tranche_id = "backfill-accepted-tranche-binance-bnbusdc-2026-05-14"
-source_proof_scope_report_path = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-05-14/source-proof-scope/backfill-source-proof-scope-report.json"
-output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-05-14/accepted-tranche"

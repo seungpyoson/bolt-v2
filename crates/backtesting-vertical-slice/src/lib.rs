@@ -63,6 +63,7 @@ pub mod polymarket_metadata_gate;
 pub mod polymarket_nt_surface_proof;
 pub mod reference_artifact;
 pub mod reference_fixture_index;
+pub mod retired_backfill_evidence;
 pub mod research_analytics;
 pub mod research_reader;
 pub mod result_contract;
@@ -82,6 +83,7 @@ pub mod source_proof_migration_preflight;
 pub mod source_proof_shortlist;
 pub mod source_selection_readiness;
 pub mod source_universe_batch_execution;
+pub mod source_universe_object_transport;
 pub mod source_universe_conversion_queue;
 pub mod source_universe_conversion_run_plan;
 pub mod source_universe_conversion_work_order;
@@ -93,3 +95,7 @@ pub mod source_universe_source_proofs;
 pub mod tar_reader;
 pub mod venue_scale_conversion_acceptance;
 pub mod zip_reader;
+
+#[cfg(test)]
+#[path = "../tests/artifact_store_contract.rs"]
+mod artifact_store_contract_tests;

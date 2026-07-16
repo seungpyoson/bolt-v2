@@ -6,13 +6,6 @@ venue_id = "binance-current-reference"
 venue = "binance"
 
 [[venue.universe]]
-universe_id = "binance-bnbusdc-spot-2026-03-01-2026-05-31"
-scope_label = "BNBUSDC spot daily trades"
-status = "converted"
-completion_ledger_path = "target/reference-regen/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json"
-completion_ledger_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json"
-
-[[venue.universe]]
 universe_id = "binance-data-vision-trades-2026-03-01-all-instruments"
 scope_label = "Binance Data Vision daily trades all instruments 2026-03-01"
 status = "source_only"
@@ -35,13 +28,6 @@ blocking_issues = [
 [[venue]]
 venue_id = "bybit-current-reference"
 venue = "bybit"
-
-[[venue.universe]]
-universe_id = "bybit-bnbusdc-spot-2026-03-01-2026-06-01"
-scope_label = "BNBUSDC spot tick trades"
-status = "converted"
-completion_ledger_path = "target/reference-regen/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json"
-completion_ledger_artifact_path = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json"
 
 [[venue.universe]]
 universe_id = "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"

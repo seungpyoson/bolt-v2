@@ -15,7 +15,12 @@ use sha2::{Digest, Sha256};
 use crate::backfill_source_proof_scope::{
     BackfillSourceProofScopeReport, BackfillSourceProofScopeStatus,
 };
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::{
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
+};
 use crate::source_proof::SourceProofUsageScope;
 
 pub const BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION: &str = "backfill-accepted-tranche-manifest.v1";
@@ -167,12 +172,19 @@ pub fn write_backfill_accepted_tranche_manifest_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillAcceptedTrancheArtifact, BackfillAcceptedTrancheError> {
     let spec_path_display = spec_path.display().to_string();
-    let spec_text =
-        fs::read_to_string(spec_path).map_err(|error| BackfillAcceptedTrancheError::ReadSpec {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillAcceptedTrancheError::ReadSpec {
             path: spec_path_display.clone(),
             error: error.to_string(),
-        })?;
-    let spec: BackfillAcceptedTrancheSpec = toml::from_str(&spec_text).map_err(|error| {
+        }
+    })?;
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillAcceptedTrancheError::ReadSpec {
+            path: spec_path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: BackfillAcceptedTrancheSpec = toml::from_str(spec_text).map_err(|error| {
         BackfillAcceptedTrancheError::ParseSpecToml {
             path: spec_path_display,
             error: error.to_string(),
@@ -180,9 +192,11 @@ pub fn write_backfill_accepted_tranche_manifest_from_spec_file(
     })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let report_path = spec.source_proof_scope_report_path.display().to_string();
-    let resolved_report_path =
-        resolve_existing_path(base_dir, &spec.source_proof_scope_report_path);
-    let report_bytes = fs::read(&resolved_report_path).map_err(|error| {
+    let report_bytes = read_active_backfill_runtime_input(
+        Some(base_dir),
+        &spec.source_proof_scope_report_path,
+    )
+    .map_err(|error| {
         BackfillAcceptedTrancheError::ReadSourceProofScopeReport {
             path: report_path.clone(),
             error: error.to_string(),
@@ -205,11 +219,18 @@ pub fn write_backfill_accepted_tranche_manifest(
     output_dir: &Path,
     manifest: &BackfillAcceptedTrancheManifest,
 ) -> Result<BackfillAcceptedTrancheArtifact, BackfillAcceptedTrancheError> {
+    let path = active_backfill_runtime_output_path(
+        output_dir,
+        BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE,
+    )
+    .map_err(|error| BackfillAcceptedTrancheError::CreateDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillAcceptedTrancheError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let path = output_dir.join(BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE,

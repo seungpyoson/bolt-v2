@@ -22,14 +22,13 @@ use bolt_v2::bolt_v3_config::BacktestConfigOverrideReport;
 use backtesting_vertical_slice::{
     backfill_execution_plan::{BackfillExecutionPlan, validate_execution_plan_for_run_spec},
     operator::{
-        DurableCompletionLocator, DurableRunDispatcher, DurableRunOutcome, DurableRunRequest,
         MultiTableRunArtifacts, OperatorRunArtifacts, RunArtifacts, RunSpec,
         VerifiedSourceBindingRegistry, run_operator_from_run_spec_guarded,
         validate_run_spec_manifest_for_object_hash_with_verified_registry,
     },
     operator_work_budget::{
         OperatorWorkBudget, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
-        deserialize_json_with_budget, read_exact_sized_file_guarded,
+        read_exact_sized_file_guarded,
     },
     result_contract::{BacktestFeedLabel, BacktestRunGuardReport},
 };
@@ -49,151 +48,16 @@ struct Cli {
     /// Output directory for produced artifacts.
     #[arg(long)]
     output_dir: PathBuf,
-    /// Optional exact-version durable completion locator JSON. When supplied,
-    /// the RunSpec must select the durable path with top-level [artifact_store].
-    #[arg(long)]
-    durable_completion_locator: Option<PathBuf>,
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut object_reader =
         |path: &Path, expected_bytes: u64, work_budget: &OperatorWorkBudgetGuard| {
             read_object_checked(path, expected_bytes, work_budget)
         };
     let (spec, run_spec_hash) = read_run_spec_with_hash(&cli.run_spec)?;
-    if durable_dispatch_selected(&cli, &spec)? {
-        return run_cli_durable_catalog_with_spec_object_reader(
-            &cli,
-            spec,
-            &run_spec_hash,
-            &mut object_reader,
-        )
-        .await;
-    }
     run_cli_with_spec_object_reader(&cli, spec, &run_spec_hash, &mut object_reader)
-}
-
-fn durable_dispatch_selected(cli: &Cli, spec: &RunSpec) -> Result<bool> {
-    ensure!(
-        cli.durable_completion_locator.is_none() || spec.artifact_store.is_some(),
-        "--durable-completion-locator requires a run-spec with top-level [artifact_store]"
-    );
-    Ok(spec.artifact_store.is_some())
-}
-
-async fn run_cli_durable_catalog_with_spec_object_reader<F>(
-    cli: &Cli,
-    spec: RunSpec,
-    run_spec_hash: &str,
-    object_reader: &mut F,
-) -> Result<()>
-where
-    F: FnMut(&Path, u64, &OperatorWorkBudgetGuard) -> Result<Vec<u8>>,
-{
-    let execution_plan = read_execution_plan(&cli.execution_plan)?;
-    validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
-        .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
-    let work_budget =
-        OperatorWorkBudgetGuard::new(OperatorWorkBudget::from_execution_plan(&execution_plan))?;
-    let source_binding_registry =
-        VerifiedSourceBindingRegistry::from_run_spec_guarded(&spec, &work_budget)?;
-    validate_run_spec_manifest_for_object_hash_with_verified_registry(
-        &spec,
-        &cli.output_dir,
-        &spec.accepted_object.sha256,
-        &source_binding_registry,
-    )
-    .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
-    backtesting_vertical_slice::research_analytics::ensure_object_read_within_raw_payload_limit(
-        &spec,
-    )?;
-    // Establish every deterministic durable config/SSM/region/family gate,
-    // resolve the sole SSM credential source, and prove bucket versioning
-    // before a source payload can be read.
-    let dispatcher = DurableRunDispatcher::prepare_guarded(&spec, &work_budget).await?;
-    let completion = cli
-        .durable_completion_locator
-        .as_deref()
-        .map(|path| read_durable_completion_locator(path, &work_budget))
-        .transpose()?;
-    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
-    let request = if let Some(completion) = completion {
-        DurableRunRequest::Resume(completion)
-    } else {
-        DurableRunRequest::Execute(object_reader(
-            &cli.object_path,
-            spec.accepted_object.bytes,
-            &work_budget,
-        )?)
-    };
-    work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
-    let outcome = dispatcher
-        .dispatch_guarded(
-            &spec,
-            request,
-            &cli.output_dir,
-            &source_binding_registry,
-            &work_budget,
-        )
-        .await?;
-    match outcome {
-        DurableRunOutcome::Executed { artifacts, receipt } => {
-            println!(
-                "durable_completion_locator_json = {}",
-                serde_json::to_string(&receipt.completion)
-                    .context("serialize durable completion locator")?
-            );
-            println!(
-                "durable_completion_version = {}",
-                receipt.completion.object.version_id
-            );
-            print_trade_run(&artifacts);
-        }
-        DurableRunOutcome::Resumed(receipt) => {
-            println!("durable_resume = validated");
-            println!(
-                "durable_completion_locator_json = {}",
-                serde_json::to_string(&receipt.completion)
-                    .context("serialize durable completion locator")?
-            );
-            println!("run_id = {}", receipt.run_id);
-            println!("catalog_hash = {}", receipt.catalog_hash);
-            println!("canonical_rows = {}", receipt.canonical_rows);
-            println!("nt_catalog_rows = {}", receipt.nt_catalog_rows);
-            println!(
-                "durable_completion_version = {}",
-                receipt.completion.object.version_id
-            );
-        }
-    }
-    Ok(())
-}
-
-fn read_durable_completion_locator(
-    path: &Path,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<DurableCompletionLocator> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("inspect durable completion locator {}", path.display()))?;
-    ensure!(
-        metadata.is_file(),
-        "durable completion locator must be a regular file: {}",
-        path.display()
-    );
-    let bytes = read_exact_sized_file_guarded(
-        path,
-        metadata.len(),
-        work_budget,
-        OperatorWorkBudgetStage::ObjectVerification,
-    )?;
-    deserialize_json_with_budget(
-        &bytes,
-        work_budget,
-        OperatorWorkBudgetStage::ObjectVerification,
-    )
-    .with_context(|| format!("parse durable completion locator {}", path.display()))
 }
 
 #[cfg(test)]
@@ -216,7 +80,7 @@ where
 {
     ensure!(
         spec.artifact_store.is_none(),
-        "run-spec [artifact_store] must use the async durable dispatcher"
+        "run-spec [artifact_store] must use source_universe_batch_execution; the direct binary is local-only"
     );
     let execution_plan = read_execution_plan(&cli.execution_plan)?;
     validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
@@ -621,8 +485,7 @@ mod tests {
             "out",
         ];
 
-        let default_cli = Cli::try_parse_from(base_args).expect("default cli parses");
-        assert!(default_cli.durable_completion_locator.is_none());
+        Cli::try_parse_from(base_args).expect("default cli parses");
 
         let publish_error = Cli::try_parse_from(
             base_args
@@ -636,66 +499,30 @@ mod tests {
             "{publish_error}"
         );
 
-        let resume_cli = Cli::try_parse_from(
+        let durable_error = Cli::try_parse_from(
             base_args
                 .into_iter()
                 .chain(["--durable-completion-locator", "completion.json"])
                 .collect::<Vec<_>>(),
         )
-        .expect("durable resume cli parses");
-        assert_eq!(
-            resume_cli.durable_completion_locator,
-            Some(PathBuf::from("completion.json"))
-        );
-    }
-
-    #[test]
-    fn local_run_spec_rejects_durable_locator() {
-        let spec: RunSpec =
-            toml::from_str(&local_committed_run_spec_text()).expect("local RunSpec parses");
-        let cli = Cli {
-            run_spec: PathBuf::from("run.toml"),
-            execution_plan: PathBuf::from("execution-plan.json"),
-            object_path: PathBuf::from("object.csv.gz"),
-            output_dir: PathBuf::from("out"),
-            durable_completion_locator: Some(PathBuf::from("completion.json")),
-        };
-
-        let error = durable_dispatch_selected(&cli, &spec)
-            .expect_err("a local/transient RunSpec cannot consume a durable locator");
-
-        assert!(error.to_string().contains("top-level [artifact_store]"));
-    }
-
-    #[test]
-    fn durable_completion_locator_file_round_trips_exact_object_identity() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("completion.json");
-        let expected = DurableCompletionLocator {
-            object: backtesting_vertical_slice::operator::DurableObjectVersionIdentity {
-                uri: "s3://bucket/backtests/v1/run=run/durable-completion-manifest.json"
-                    .to_string(),
-                sha256: "11".repeat(32),
-                byte_len: 17,
-                version_id: "exact-version".to_string(),
-                e_tag: Some("etag".to_string()),
-            },
-        };
-        fs::write(&path, serde_json::to_vec(&expected).unwrap()).unwrap();
-
-        let actual = read_durable_completion_locator(&path, &OperatorWorkBudgetGuard::unbounded())
-            .expect("read exact durable completion locator");
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn durable_production_path_has_no_direct_s3_nt_capability_probe() {
-        let source = include_str!("main.rs");
+        .expect_err("direct binary must not expose a durable resume path");
         assert!(
-            !source.contains("runtime_evidence_guarded("),
-            "durable production must not run the obsolete direct-S3 NT capability probe"
+            durable_error.to_string().contains("unexpected argument"),
+            "{durable_error}"
         );
+    }
+
+    #[test]
+    fn direct_binary_has_no_durable_dispatch_path() {
+        let source = include_str!("main.rs");
+        for forbidden in [
+            concat!("DurableRun", "Dispatcher"),
+            concat!("DurableRun", "Request"),
+            concat!("DurableCompletion", "Locator"),
+            "runtime_evidence_guarded(",
+        ] {
+            assert!(!source.contains(forbidden), "forbidden direct path {forbidden}");
+        }
     }
 
     #[test]
@@ -726,7 +553,6 @@ mod tests {
             execution_plan,
             object_path: dir.path().join("oversized-object.csv.gz"),
             output_dir: dir.path().join("out"),
-            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
         let mut object_reader =
@@ -769,7 +595,6 @@ mod tests {
             execution_plan,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
         let mut object_reader =
@@ -833,7 +658,6 @@ table_families = ["trades"]
             execution_plan,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
         let mut object_reader =
@@ -869,7 +693,6 @@ table_families = ["trades"]
             execution_plan,
             object_path: dir.path().join("missing-object.csv.gz"),
             output_dir: dir.path().join("out"),
-            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
         let mut object_reader =
@@ -880,11 +703,7 @@ table_families = ["trades"]
         let err = run_cli_with_object_reader(&cli, &mut object_reader)
             .expect_err("durable RunSpec must reject from the local-only test core");
 
-        assert!(
-            err.to_string()
-                .contains("must use the async durable dispatcher"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("source_universe_batch_execution"), "{err}");
         assert!(
             !object_reader_called,
             "publish preflight must run before local object read"
@@ -958,7 +777,6 @@ table_families = ["trades"]
             execution_plan: execution_plan_path,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
         let mut object_reader =
@@ -998,7 +816,6 @@ table_families = ["trades"]
             execution_plan: execution_plan_path,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
-            durable_completion_locator: None,
         };
         let mut object_reader_called = false;
         let mut object_reader =

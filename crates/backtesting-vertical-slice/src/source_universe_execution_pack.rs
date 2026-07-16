@@ -30,12 +30,17 @@ use crate::{
         BackfillAcceptedTrancheStatus,
     },
     backfill_execution_plan::{
-        BackfillExecutionPlanStatus, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
-        evaluate_backfill_execution_plan, write_backfill_execution_plan_with_overwrite,
+        BACKFILL_EXECUTION_PLAN_FILE, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
+        BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
+        write_backfill_execution_plan_with_overwrite,
     },
     canonical_trades::{CanonicalInstrumentIdentity, ConverterConfig, RawPayloadConfig},
     catalog_projection::CatalogInstrumentSpec,
-    operator::RunSpec,
+    operator::{
+        RunSpec, VerifiedSourceBindingRegistry, validate_durable_run_spec_preflight,
+        validate_run_spec_manifest_for_object_hash_with_verified_registry,
+    },
+    retired_backfill_evidence::resolve_active_backfill_runtime_input,
     run_manifest::MarketStructureFixture,
     source_proof::{AcceptanceScope, SourceProofReport, SourceProofStatus},
     source_universe_conversion_work_order::{
@@ -301,7 +306,9 @@ pub fn write_source_universe_execution_pack(
         "source_universe_object_gates",
     )?;
 
-    let template_path = resolve_existing_path(base_dir, &spec.run_spec_template_path);
+    let template_path =
+        resolve_active_backfill_runtime_input(Some(base_dir), &spec.run_spec_template_path)
+            .context("execution-pack run-spec template retirement guard")?;
     let template_text = fs::read_to_string(&template_path)
         .with_context(|| format!("read run-spec template {}", template_path.display()))?;
     let template_hash = sha256_hex(template_text.as_bytes());
@@ -313,12 +320,6 @@ pub fn write_source_universe_execution_pack(
             template_path.display()
         )
     })?;
-    let template_artifact_store = template_run_spec
-        .required_artifact_store()
-        .context("source-universe execution-pack profile requires durable artifact_store")?;
-    template_run_spec
-        .validate_artifact_store_publish_config(template_artifact_store)
-        .context("source-universe execution-pack profile manifest/store mismatch")?;
     let template_catalog_dispatch = template_run_spec
         .required_catalog_dispatch()
         .context("source-universe execution-pack profile requires catalog dispatch")?;
@@ -326,8 +327,11 @@ pub fn write_source_universe_execution_pack(
         template_catalog_dispatch.bindings.len() == 1,
         "source-universe execution-pack profile must declare exactly one catalog-dispatch binding"
     );
-    let source_bindings_path =
-        resolve_existing_path(base_dir, &template_run_spec.source_bindings_path);
+    let source_bindings_path = resolve_active_backfill_runtime_input(
+        Some(base_dir),
+        &template_run_spec.source_bindings_path,
+    )
+    .context("execution-pack source-bindings retirement guard")?;
     let source_bindings_bytes = fs::read(&source_bindings_path).with_context(|| {
         format!(
             "read run-spec source-bindings registry {}",
@@ -335,19 +339,35 @@ pub fn write_source_universe_execution_pack(
         )
     })?;
     let source_bindings_sha256 = sha256_hex(&source_bindings_bytes);
+    let verified_registry = VerifiedSourceBindingRegistry::from_frozen_pack_bytes(
+        &template_run_spec,
+        source_bindings_path.clone(),
+        std::sync::Arc::from(source_bindings_bytes.clone()),
+        &source_bindings_sha256,
+    )?;
     let source_bindings_portable_path = portable_artifact_path_for_spec(
         &source_bindings_path,
         &template_run_spec.source_bindings_path,
     )?;
+
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    validate_run_spec_manifest_for_object_hash_with_verified_registry(
+        &template_run_spec,
+        &output_dir,
+        &template_run_spec.accepted_object.sha256,
+        &verified_registry,
+    )
+    .context("source-universe execution-pack profile fails ordinary operator preflight")?;
+    validate_durable_run_spec_preflight(&template_run_spec)
+        .context("source-universe execution-pack profile fails durable operator preflight")?;
 
     let proofs = source_proofs_by_id(base_dir, &object_gates)?;
     let inputs_by_work_item = operator_inputs_by_work_item(&operator_inputs)?;
     let instruments_by_key = instruments_by_key(&operator_inputs)?;
     let gates_by_work_item = gates_by_work_item(&object_gates)?;
 
-    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
-
     let selected_records = selected_records(&work_order, spec.record_limit);
+    validate_existing_run_directory_set(&output_dir, &selected_records)?;
     let mut materialized_records = Vec::with_capacity(selected_records.len());
     let mut materialized_source_bytes = 0_u64;
     let mut used_source_proof_ids = BTreeSet::new();
@@ -393,11 +413,9 @@ pub fn write_source_universe_execution_pack(
         );
         used_source_proof_ids.insert(record.source_proof_id.clone());
 
-        let run_dir = output_dir.join("runs").join(format!(
-            "{:05}-{}",
-            record.sequence,
-            slug(&record.operator_run_id)
-        ));
+        let run_dir = output_dir
+            .join("runs")
+            .join(run_directory_name(record));
         let run_spec_text = materialize_run_spec(
             &template,
             record,
@@ -408,6 +426,26 @@ pub fn write_source_universe_execution_pack(
             &spec.venue_policy,
             template_run_spec.manifest.market_structure_fixture,
         )?;
+        let run_spec: RunSpec = toml::from_str(&run_spec_text)
+            .context("materialized source-universe run spec does not deserialize")?;
+        validate_run_spec_manifest_for_object_hash_with_verified_registry(
+            &run_spec,
+            &run_dir,
+            &record.selected_object_sha256,
+            &verified_registry,
+        )
+        .with_context(|| {
+            format!(
+                "materialized source-universe run spec fails ordinary operator preflight for {}",
+                record.work_item_id
+            )
+        })?;
+        validate_durable_run_spec_preflight(&run_spec).with_context(|| {
+            format!(
+                "materialized source-universe run spec fails durable operator preflight for {}",
+                record.work_item_id
+            )
+        })?;
         fs::create_dir_all(&run_dir).with_context(|| {
             format!(
                 "create source-universe execution run dir {}",
@@ -422,12 +460,6 @@ pub fn write_source_universe_execution_pack(
             run_spec_bytes,
             spec.overwrite_existing_artifacts,
         )?;
-        let run_spec: RunSpec = toml::from_str(&run_spec_text).with_context(|| {
-            format!(
-                "materialized run spec does not deserialize {}",
-                run_spec_path.display()
-            )
-        })?;
         ensure!(
             run_spec.source_bindings_path == template_run_spec.source_bindings_path,
             "materialized run spec source-bindings path drift for {}",
@@ -809,12 +841,6 @@ fn materialize_run_spec(
         toml::to_string_pretty(&value).context("serialize materialized run spec TOML")?;
     let materialized_run_spec: RunSpec = toml::from_str(&materialized)
         .context("materialized source-universe run spec does not deserialize")?;
-    let artifact_store = materialized_run_spec
-        .required_artifact_store()
-        .context("materialized source-universe run spec requires durable artifact_store")?;
-    materialized_run_spec
-        .validate_artifact_store_publish_config(artifact_store)
-        .context("materialized source-universe run spec manifest/store mismatch")?;
     let catalog_dispatch = materialized_run_spec
         .required_catalog_dispatch()
         .context("materialized source-universe run spec requires catalog dispatch")?;
@@ -823,6 +849,110 @@ fn materialize_run_spec(
         "materialized source-universe run spec must contain exactly one catalog-dispatch binding"
     );
     Ok(materialized)
+}
+
+fn validate_existing_run_directory_set(
+    output_dir: &Path,
+    selected_records: &[&SourceUniverseConversionWorkOrderRecord],
+) -> Result<()> {
+    let output_entries = match fs::read_dir(output_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("inventory execution-pack output {}", output_dir.display())
+            });
+        }
+    };
+    for entry in output_entries {
+        let entry = entry.with_context(|| {
+            format!("read execution-pack output entry in {}", output_dir.display())
+        })?;
+        let file_type = entry.file_type().with_context(|| {
+            format!(
+                "read execution-pack output entry type {}",
+                entry.path().display()
+            )
+        })?;
+        let valid = if entry.file_name() == std::ffi::OsStr::new("runs") {
+            file_type.is_dir()
+        } else if entry.file_name() == std::ffi::OsStr::new(SOURCE_UNIVERSE_EXECUTION_PACK_FILE) {
+            file_type.is_file()
+        } else {
+            false
+        };
+        ensure!(
+            valid,
+            "execution-pack output directory contains stale or unexpected entry {}; remove it explicitly before regenerating the exact artifact set",
+            entry.path().display()
+        );
+    }
+
+    let runs_dir = output_dir.join("runs");
+    let entries = match fs::read_dir(&runs_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inventory execution-pack runs {}", runs_dir.display()));
+        }
+    };
+    let expected = selected_records
+        .iter()
+        .map(|record| std::ffi::OsString::from(run_directory_name(record)))
+        .collect::<BTreeSet<_>>();
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!("read execution-pack run entry in {}", runs_dir.display())
+        })?;
+        let file_type = entry.file_type().with_context(|| {
+            format!(
+                "read execution-pack run entry type {}",
+                entry.path().display()
+            )
+        })?;
+        ensure!(
+            file_type.is_dir() && expected.contains(&entry.file_name()),
+            "execution-pack runs directory contains stale or unexpected entry {}; remove it explicitly before regenerating the exact selected run set",
+            entry.path().display()
+        );
+        validate_existing_run_directory_contents(&entry.path())?;
+    }
+    Ok(())
+}
+
+fn validate_existing_run_directory_contents(run_dir: &Path) -> Result<()> {
+    let expected = [
+        SOURCE_UNIVERSE_EXECUTION_PACK_RUN_SPEC_FILE,
+        BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE,
+        BACKFILL_EXECUTION_PLAN_FILE,
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .collect::<BTreeSet<_>>();
+    for entry in fs::read_dir(run_dir)
+        .with_context(|| format!("inventory execution-pack run {}", run_dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("read execution-pack run entry in {}", run_dir.display()))?;
+        let file_type = entry.file_type().with_context(|| {
+            format!(
+                "read execution-pack run entry type {}",
+                entry.path().display()
+            )
+        })?;
+        ensure!(
+            file_type.is_file() && expected.contains(&entry.file_name()),
+            "execution-pack run directory contains stale or unexpected entry {}; remove it explicitly before regenerating the exact control set",
+            entry.path().display()
+        );
+    }
+    Ok(())
+}
+
+fn run_directory_name(record: &SourceUniverseConversionWorkOrderRecord) -> String {
+    format!("{:05}-{}", record.sequence, slug(&record.operator_run_id))
 }
 
 fn accepted_object_value(
@@ -1179,7 +1309,8 @@ fn read_json_artifact<T>(
 where
     T: for<'de> Deserialize<'de>,
 {
-    let resolved = resolve_existing_path(base_dir, path);
+    let resolved = resolve_active_backfill_runtime_input(Some(base_dir), path)
+        .with_context(|| format!("resolve active {role} artifact {}", path.display()))?;
     let bytes = fs::read(&resolved)
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
     let actual_sha256 = sha256_hex(&bytes);

@@ -24,6 +24,9 @@ use crate::{
     hashing::{is_lowercase_sha256_hex, sha256_hex},
     operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
     reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
+    retired_backfill_evidence::{
+        read_active_backfill_runtime_input, resolve_active_backfill_runtime_input,
+    },
     result_contract::BacktestResultContract,
     source_proof::SourceProofFidelityClass,
 };
@@ -490,7 +493,7 @@ struct LoadedBacktestSweepSource {
 ///
 /// Returns an error if the run-spec TOML cannot be read or parsed.
 pub fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
-    let bytes = fs::read(path).with_context(|| format!("read run-spec {}", path.display()))?;
+    let bytes = read_active_backfill_runtime_input(None, path)?;
     let hash = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes).context("run-spec TOML is not UTF-8")?;
     let mut spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
@@ -511,14 +514,17 @@ pub fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
 /// SHA-256.
 pub fn read_accepted_object_for_run_spec(path: &Path, spec: &RunSpec) -> Result<Vec<u8>> {
     ensure_object_read_within_raw_payload_limit(spec)?;
-    let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
+    let resolved_path = resolve_active_backfill_runtime_input(None, path)?;
+    let metadata = fs::metadata(&resolved_path)
+        .with_context(|| format!("stat object {}", path.display()))?;
     let actual_bytes = metadata.len();
     ensure!(
         actual_bytes == spec.accepted_object.bytes,
         "object byte length {actual_bytes} does not match run-spec {}",
         spec.accepted_object.bytes
     );
-    let bytes = fs::read(path).with_context(|| format!("read object {}", path.display()))?;
+    let bytes =
+        fs::read(&resolved_path).with_context(|| format!("read object {}", path.display()))?;
     let actual_sha256 = sha256_hex(&bytes);
     ensure!(
         actual_sha256 == spec.accepted_object.sha256,

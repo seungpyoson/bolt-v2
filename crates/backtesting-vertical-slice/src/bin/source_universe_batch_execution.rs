@@ -16,11 +16,12 @@ use backtesting_vertical_slice::source_universe_batch_execution::{
     SourceUniverseObjectFetcher, execute_source_universe_batch_process_isolated,
     execute_source_universe_operator_worker, write_source_universe_batch_execution_report,
 };
+use backtesting_vertical_slice::source_universe_object_transport::StagedS3SourceUniverseObjectFetcher;
 use clap::Parser;
 use serde::Deserialize;
 
 const SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION: &str =
-    "source-universe-batch-launch-spec.v1";
+    "source-universe-batch-launch-spec.v2";
 
 /// Process exit code when the batch completed but at least one record failed
 /// (`continue_on_error` produced a `CompletedWithFailures`/`Failed` report)
@@ -55,12 +56,19 @@ struct SourceUniverseBatchLaunchSpec {
     record_limit: Option<u64>,
     continue_on_error: bool,
     fetch_timeout_seconds: u64,
-    http_user_agent: String,
+    worker_termination_grace_seconds: u64,
     max_concurrent_records: u64,
+    transport: SourceUniverseBatchTransportSpec,
     object_cache_dir: Option<PathBuf>,
-    resume_report: Option<SourceUniverseBatchLaunchArtifactSpec>,
     allow_partial: bool,
     bootstrap_limits: SourceUniverseBatchBootstrapLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum SourceUniverseBatchTransportSpec {
+    StagedS3,
+    Https { http_user_agent: String },
 }
 
 impl SourceUniverseBatchLaunchSpec {
@@ -79,9 +87,22 @@ impl SourceUniverseBatchLaunchSpec {
             spec.fetch_timeout_seconds > 0,
             "batch launch spec fetch_timeout_seconds must be positive"
         );
-        validate_http_user_agent(&spec.http_user_agent)?;
+        ensure!(
+            spec.worker_termination_grace_seconds > 0,
+            "batch launch spec worker_termination_grace_seconds must be positive"
+        );
+        spec.transport.validate()?;
         spec.bootstrap_limits.validate()?;
         Ok(spec)
+    }
+}
+
+impl SourceUniverseBatchTransportSpec {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::StagedS3 => Ok(()),
+            Self::Https { http_user_agent } => validate_http_user_agent(http_user_agent),
+        }
     }
 }
 
@@ -111,19 +132,71 @@ struct WorkerCli {
 /// wrapped in the content-addressed cache when `object_cache_dir` is set.
 /// One concrete type keeps the factory signature monomorphic across both modes.
 enum BatchWorkerFetcher {
-    Direct(HttpSourceUniverseObjectFetcher),
-    Cached(CachingSourceUniverseObjectFetcher<HttpSourceUniverseObjectFetcher>),
+    DirectHttp(HttpSourceUniverseObjectFetcher),
+    CachedHttp(CachingSourceUniverseObjectFetcher<HttpSourceUniverseObjectFetcher>),
+    DirectStagedS3(StagedS3SourceUniverseObjectFetcher),
+    CachedStagedS3(CachingSourceUniverseObjectFetcher<StagedS3SourceUniverseObjectFetcher>),
 }
 
 impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
     fn fetch(
         &mut self,
         record: &backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord,
+        run_spec: &backtesting_vertical_slice::operator::RunSpec,
         work_budget: &backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard,
     ) -> Result<Vec<u8>> {
         match self {
-            BatchWorkerFetcher::Direct(fetcher) => fetcher.fetch(record, work_budget),
-            BatchWorkerFetcher::Cached(fetcher) => fetcher.fetch(record, work_budget),
+            BatchWorkerFetcher::DirectHttp(fetcher) => {
+                fetcher.fetch(record, run_spec, work_budget)
+            }
+            BatchWorkerFetcher::CachedHttp(fetcher) => {
+                fetcher.fetch(record, run_spec, work_budget)
+            }
+            BatchWorkerFetcher::DirectStagedS3(fetcher) => {
+                fetcher.fetch(record, run_spec, work_budget)
+            }
+            BatchWorkerFetcher::CachedStagedS3(fetcher) => {
+                fetcher.fetch(record, run_spec, work_budget)
+            }
+        }
+    }
+}
+
+fn build_batch_worker_fetcher(
+    transport: &SourceUniverseBatchTransportSpec,
+    fetch_timeout_seconds: u64,
+    object_cache_dir: Option<&Path>,
+    cache_run_verification: SourceUniverseCacheRunVerification,
+) -> Result<BatchWorkerFetcher> {
+    match transport {
+        SourceUniverseBatchTransportSpec::Https { http_user_agent } => {
+            let fetcher = HttpSourceUniverseObjectFetcher::new(
+                Some(fetch_timeout_seconds),
+                Some(http_user_agent.as_str()),
+            )?;
+            match object_cache_dir {
+                Some(cache_dir) => Ok(BatchWorkerFetcher::CachedHttp(
+                    CachingSourceUniverseObjectFetcher::for_run(
+                        fetcher,
+                        cache_dir,
+                        cache_run_verification,
+                    ),
+                )),
+                None => Ok(BatchWorkerFetcher::DirectHttp(fetcher)),
+            }
+        }
+        SourceUniverseBatchTransportSpec::StagedS3 => {
+            let fetcher = StagedS3SourceUniverseObjectFetcher::new(Some(fetch_timeout_seconds))?;
+            match object_cache_dir {
+                Some(cache_dir) => Ok(BatchWorkerFetcher::CachedStagedS3(
+                    CachingSourceUniverseObjectFetcher::for_run(
+                        fetcher,
+                        cache_dir,
+                        cache_run_verification,
+                    ),
+                )),
+                None => Ok(BatchWorkerFetcher::DirectStagedS3(fetcher)),
+            }
         }
     }
 }
@@ -156,15 +229,22 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
         record_limit,
         continue_on_error,
         fetch_timeout_seconds,
-        http_user_agent,
+        worker_termination_grace_seconds,
         max_concurrent_records,
+        transport,
         object_cache_dir: declared_object_cache_dir,
-        resume_report,
         allow_partial,
         bootstrap_limits,
     } = spec;
-    validate_http_user_agent(&http_user_agent)?;
-    let process_max_concurrent_records = max_concurrent_records;
+    ensure!(
+        fetch_timeout_seconds > 0,
+        "batch launch spec fetch_timeout_seconds must be positive"
+    );
+    ensure!(
+        worker_termination_grace_seconds > 0,
+        "batch launch spec worker_termination_grace_seconds must be positive"
+    );
+    transport.validate()?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let execution_pack_path = resolve_existing_path(base_dir, &execution_pack.path);
     let output_dir = resolve_output_dir(base_dir, &declared_output_dir);
@@ -174,20 +254,12 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
     let cache_run_verification = SourceUniverseCacheRunVerification::default();
 
     let fetcher_factory = move || -> Result<BatchWorkerFetcher> {
-        let http_fetcher = HttpSourceUniverseObjectFetcher::new(
-            Some(fetch_timeout_seconds),
-            Some(http_user_agent.as_str()),
-        )?;
-        match &object_cache_dir {
-            Some(cache_dir) => Ok(BatchWorkerFetcher::Cached(
-                CachingSourceUniverseObjectFetcher::for_run(
-                    http_fetcher,
-                    cache_dir,
-                    cache_run_verification.clone(),
-                ),
-            )),
-            None => Ok(BatchWorkerFetcher::Direct(http_fetcher)),
-        }
+        build_batch_worker_fetcher(
+            &transport,
+            fetch_timeout_seconds,
+            object_cache_dir.as_deref(),
+            cache_run_verification.clone(),
+        )
     };
     let absolute_output_dir = if output_dir.is_absolute() {
         output_dir.clone()
@@ -202,20 +274,8 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
         execution_pack.bytes,
         execution_pack.sha256,
     )?;
-    let resume_report = resume_report
-        .map(|pin| {
-            SourceUniverseBatchArtifactPin::try_new(
-                resolve_existing_path(base_dir, &pin.path),
-                pin.bytes,
-                pin.sha256,
-            )
-        })
-        .transpose()?;
-    let launch_artifacts = SourceUniverseBatchLaunchArtifacts::try_new(
-        execution_pack,
-        resume_report,
-        bootstrap_limits,
-    )?;
+    let launch_artifacts =
+        SourceUniverseBatchLaunchArtifacts::try_new(execution_pack, bootstrap_limits)?;
 
     let report = execute_source_universe_batch_process_isolated(
         &batch_id,
@@ -229,6 +289,7 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
         },
         fetcher_factory,
         request_root,
+        worker_termination_grace_seconds,
     )?;
     let artifact = write_source_universe_batch_execution_report(&output_dir, &report)?;
     println!(
@@ -286,12 +347,15 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::{
-        Cli, EXIT_PARTIAL_FAILURE, SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION,
+        BatchWorkerFetcher, Cli, EXIT_PARTIAL_FAILURE,
+        SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION,
         SourceUniverseBatchLaunchArtifactSpec, SourceUniverseBatchLaunchSpec,
-        partial_failure_exit_code, run_batch,
+        SourceUniverseBatchTransportSpec, build_batch_worker_fetcher, partial_failure_exit_code,
+        run_batch,
     };
     use backtesting_vertical_slice::source_universe_batch_execution::{
         SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionReportStatus,
+        SourceUniverseCacheRunVerification,
     };
     use clap::Parser;
 
@@ -376,10 +440,10 @@ mod tests {
                 record_limit: None,
                 continue_on_error: true,
                 fetch_timeout_seconds: 1,
-                http_user_agent: "test-agent".to_string(),
+                worker_termination_grace_seconds: 1,
                 max_concurrent_records: 2,
+                transport: SourceUniverseBatchTransportSpec::StagedS3,
                 object_cache_dir: None,
-                resume_report: None,
                 allow_partial: true,
                 bootstrap_limits: SourceUniverseBatchBootstrapLimits {
                     max_launch_artifact_bytes: 1,
@@ -403,6 +467,52 @@ mod tests {
     }
 
     #[test]
+    fn zero_worker_termination_grace_fails_before_pack_or_output_access() {
+        let temp = tempfile::tempdir().expect("temporary output parent");
+        let spec_path = temp.path().join("launch.toml");
+        let output_dir = temp.path().join("must-not-be-created");
+        let error = run_batch(
+            &spec_path,
+            SourceUniverseBatchLaunchSpec {
+                schema_version: SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION.to_string(),
+                batch_id: "zero-worker-termination-grace".to_string(),
+                execution_pack: SourceUniverseBatchLaunchArtifactSpec {
+                    path: PathBuf::from("nonexistent-pack-must-not-be-read.json"),
+                    bytes: 1,
+                    sha256: "0".repeat(64),
+                },
+                output_dir: output_dir.clone(),
+                start_sequence: None,
+                record_limit: Some(1),
+                continue_on_error: false,
+                fetch_timeout_seconds: 1,
+                worker_termination_grace_seconds: 0,
+                max_concurrent_records: 1,
+                transport: SourceUniverseBatchTransportSpec::StagedS3,
+                object_cache_dir: None,
+                allow_partial: false,
+                bootstrap_limits: SourceUniverseBatchBootstrapLimits {
+                    max_launch_artifact_bytes: 1,
+                    max_control_artifact_bytes: 1,
+                    max_retained_control_input_bytes: 1,
+                },
+            },
+        )
+        .expect_err("zero worker termination grace must fail before artifact access");
+
+        assert!(
+            error
+                .to_string()
+                .contains("worker_termination_grace_seconds must be positive"),
+            "{error:#}"
+        );
+        assert!(
+            !output_dir.exists(),
+            "termination-grace rejection must precede batch output creation"
+        );
+    }
+
+    #[test]
     fn invalid_http_user_agent_fails_before_pack_or_output_creation() {
         let temp = tempfile::tempdir().expect("temporary output parent");
         let spec_path = temp.path().join("launch.toml");
@@ -422,10 +532,12 @@ mod tests {
                 record_limit: None,
                 continue_on_error: false,
                 fetch_timeout_seconds: 1,
-                http_user_agent: "invalid\r\nuser-agent".to_string(),
+                worker_termination_grace_seconds: 1,
                 max_concurrent_records: 1,
+                transport: SourceUniverseBatchTransportSpec::Https {
+                    http_user_agent: "invalid\r\nuser-agent".to_string(),
+                },
                 object_cache_dir: None,
-                resume_report: None,
                 allow_partial: false,
                 bootstrap_limits: SourceUniverseBatchBootstrapLimits {
                     max_launch_artifact_bytes: 1,
@@ -455,9 +567,13 @@ batch_id = "test-batch"
 output_dir = "output"
 continue_on_error = true
 fetch_timeout_seconds = 30
-http_user_agent = "test-agent"
+worker_termination_grace_seconds = 5
 max_concurrent_records = 1
 allow_partial = false
+
+[transport]
+kind = "https"
+http_user_agent = "test-agent"
 
 [execution_pack]
 path = "pack.json"
@@ -493,10 +609,14 @@ batch_id = "test-batch"
 output_dir = "output"
 continue_on_error = true
 fetch_timeout_seconds = 30
-http_user_agent = "test-agent"
+worker_termination_grace_seconds = 5
 max_concurrent_records = 1
 allow_partial = false
 untracked_runtime_switch = true
+
+[transport]
+kind = "https"
+http_user_agent = "test-agent"
 
 [execution_pack]
 path = "pack.json"
@@ -515,6 +635,51 @@ max_retained_control_input_bytes = 4096
 
         let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
             .expect_err("unknown runtime field must fail closed");
+        assert!(
+            error.to_string().contains("parse batch launch spec"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn launch_spec_rejects_retired_resume_report_input() {
+        let temp = tempfile::tempdir().expect("temporary launch spec parent");
+        let spec_path = temp.path().join("launch.toml");
+        fs::write(
+            &spec_path,
+            format!(
+                r#"schema_version = "{SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION}"
+batch_id = "test-batch"
+output_dir = "output"
+continue_on_error = true
+fetch_timeout_seconds = 30
+worker_termination_grace_seconds = 5
+max_concurrent_records = 1
+allow_partial = false
+resume_report = {{ path = "prior-report.json", bytes = 1, sha256 = "{}" }}
+
+[transport]
+kind = "https"
+http_user_agent = "test-agent"
+
+[execution_pack]
+path = "pack.json"
+bytes = 1
+sha256 = "{}"
+
+[bootstrap_limits]
+max_launch_artifact_bytes = 1024
+max_control_artifact_bytes = 1024
+max_retained_control_input_bytes = 4096
+"#,
+                "1".repeat(64),
+                "0".repeat(64)
+            ),
+        )
+        .expect("write launch spec with retired resume input");
+
+        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+            .expect_err("retired resume_report input must fail closed");
         assert!(
             error.to_string().contains("parse batch launch spec"),
             "{error:#}"
@@ -551,9 +716,13 @@ batch_id = "test-batch"
 output_dir = "output"
 continue_on_error = true
 fetch_timeout_seconds = 30
-http_user_agent = "test-agent"
+worker_termination_grace_seconds = 5
 max_concurrent_records = 1
 allow_partial = false
+
+[transport]
+kind = "https"
+http_user_agent = "test-agent"
 
 [execution_pack]
 path = "pack.json"
@@ -619,10 +788,14 @@ start_sequence = 7
 record_limit = 3
 continue_on_error = true
 fetch_timeout_seconds = 30
-http_user_agent = "test-agent"
+worker_termination_grace_seconds = 5
 max_concurrent_records = 1
 object_cache_dir = "cache"
 allow_partial = false
+
+[transport]
+kind = "https"
+http_user_agent = "test-agent"
 
 [execution_pack]
 path = "pack.json"
@@ -656,5 +829,147 @@ max_retained_control_input_bytes = 4096
             error.to_string().contains("parse batch launch spec"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn committed_one_record_launch_profiles_select_exact_staged_s3_packs() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for relative_path in [
+            "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/source-universe-batch-launch.toml",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-batch-launch.toml",
+        ] {
+            let launch_path = repository_root.join(relative_path);
+            let spec = SourceUniverseBatchLaunchSpec::from_toml_file(&launch_path)
+                .unwrap_or_else(|error| panic!("parse {}: {error:#}", launch_path.display()));
+            assert_eq!(spec.start_sequence, Some(0));
+            assert_eq!(spec.record_limit, Some(1));
+            assert_eq!(spec.max_concurrent_records, 1);
+            assert!(!spec.continue_on_error);
+            assert!(!spec.allow_partial);
+            assert_eq!(spec.transport, SourceUniverseBatchTransportSpec::StagedS3);
+
+            let pack_path = launch_path
+                .parent()
+                .expect("launch profile parent")
+                .join(&spec.execution_pack.path);
+            let pack_bytes = fs::read(&pack_path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", pack_path.display()));
+            assert_eq!(
+                u64::try_from(pack_bytes.len()).expect("pack size fits u64"),
+                spec.execution_pack.bytes
+            );
+            assert_eq!(
+                backtesting_vertical_slice::hashing::sha256_hex(&pack_bytes),
+                spec.execution_pack.sha256
+            );
+        }
+    }
+
+    #[test]
+    fn staged_s3_transport_rejects_https_only_configuration() {
+        let temp = tempfile::tempdir().expect("temporary launch spec parent");
+        let spec_path = temp.path().join("launch.toml");
+        fs::write(
+            &spec_path,
+            format!(
+                r#"schema_version = "{SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION}"
+batch_id = "test-batch"
+output_dir = "output"
+record_limit = 1
+continue_on_error = false
+fetch_timeout_seconds = 30
+worker_termination_grace_seconds = 5
+max_concurrent_records = 1
+allow_partial = false
+
+[transport]
+kind = "staged_s3"
+http_user_agent = "must-not-be-accepted"
+
+[execution_pack]
+path = "pack.json"
+bytes = 1
+sha256 = "{}"
+
+[bootstrap_limits]
+max_launch_artifact_bytes = 1024
+max_control_artifact_bytes = 1024
+max_retained_control_input_bytes = 4096
+"#,
+                "0".repeat(64)
+            ),
+        )
+        .expect("write conflicting launch spec");
+
+        SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+            .expect_err("staged S3 transport must not accept HTTPS-only configuration");
+    }
+
+    #[test]
+    fn launch_spec_rejects_zero_worker_termination_grace() {
+        let temp = tempfile::tempdir().expect("temporary launch spec parent");
+        let spec_path = temp.path().join("launch.toml");
+        fs::write(
+            &spec_path,
+            format!(
+                r#"schema_version = "{SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION}"
+batch_id = "test-batch"
+output_dir = "output"
+record_limit = 1
+continue_on_error = false
+fetch_timeout_seconds = 30
+worker_termination_grace_seconds = 0
+max_concurrent_records = 1
+allow_partial = false
+
+[transport]
+kind = "staged_s3"
+
+[execution_pack]
+path = "pack.json"
+bytes = 1
+sha256 = "{}"
+
+[bootstrap_limits]
+max_launch_artifact_bytes = 1024
+max_control_artifact_bytes = 1024
+max_retained_control_input_bytes = 4096
+"#,
+                "0".repeat(64)
+            ),
+        )
+        .expect("write zero-grace launch spec");
+
+        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+            .expect_err("zero termination grace must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("worker_termination_grace_seconds must be positive"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn transport_selection_constructs_only_the_requested_implementation() {
+        let staged = build_batch_worker_fetcher(
+            &SourceUniverseBatchTransportSpec::StagedS3,
+            1,
+            None,
+            SourceUniverseCacheRunVerification::default(),
+        )
+        .expect("construct staged-S3 transport");
+        assert!(matches!(staged, BatchWorkerFetcher::DirectStagedS3(_)));
+
+        let https = build_batch_worker_fetcher(
+            &SourceUniverseBatchTransportSpec::Https {
+                http_user_agent: "transport-selection-test".to_string(),
+            },
+            1,
+            None,
+            SourceUniverseCacheRunVerification::default(),
+        )
+        .expect("construct HTTPS transport");
+        assert!(matches!(https, BatchWorkerFetcher::DirectHttp(_)));
     }
 }

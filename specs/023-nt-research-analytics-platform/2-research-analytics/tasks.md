@@ -1,6 +1,8 @@
 # Tasks: Research Analytics
 
-- [x] RA-001 Gate-0: provide a config-selected durable S3 path for operator runs that opt into artifact-store publication. Durability/immutability is WE-BUILD via manifest-bound, create-only publication and exact-version hydration; NT's catalog writer is not the publication authority. Backtest reads stay NT through the sole hydrated local-catalog binding.
+- [ ] RA-001 Gate-0: route every accepted NT-native converted table family through the one manifest-bound, create-only S3 publication path and the sole exact-version-hydrated NT BacktestNode read binding; NT's catalog writer is not the publication authority.
+  - [x] RA-001a One-record tracer: CSV-native trades from the committed Binance and Bybit execution packs use the bounded process-isolated durable path.
+  - [ ] RA-001b Fan-out: extend the same path to the remaining accepted NT-native table families and converter bindings; no alternate publisher or manual BacktestEngine path is permitted.
 - [x] RA-002 Define point-in-time feature join rules and leakage fixtures.
 - [x] RA-003 Implement leakage-check fixtures that fail closed on future-data access.
 - [x] RA-004 Implement a thin reader helper (~dozens LOC) over NT typed query<T> (instrument + time + SQL where pushdown) and DataBackendSession (DataFusion SQL -> Arrow) to expose catalog data to research notebooks without duplicating NT's query surface.

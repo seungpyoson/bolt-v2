@@ -1,5 +1,0 @@
-report_id = "backfill-source-proof-scope-bybit-bnbusdc-2026-04-01"
-source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
-source_proof_path = "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bybit-bnbusdc-2026-04-01.json"
-manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-04-01/object-staging/backfill-object-staging-manifest.json"
-output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-04-01/source-proof-scope"

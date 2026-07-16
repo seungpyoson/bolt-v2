@@ -1,7 +1,0 @@
-plan_id = "backfill-execution-plan-bybit-bnbusdc-2026-05-14"
-accepted_tranche_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-05-14/accepted-tranche/backfill-accepted-tranche-manifest.json"
-run_spec_path = "specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-05-14/materialized-run-spec/backfill-run-spec.toml"
-max_source_rows = 100000
-max_projected_row_groups = 1
-max_wall_seconds = 300
-output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-05-14/execution-plan"

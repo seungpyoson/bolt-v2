@@ -6,7 +6,11 @@ use backtesting_vertical_slice::{
     backfill_accepted_tranche::BackfillAcceptedTrancheManifest,
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
     catalog_projection::CatalogInstrumentSpec,
-    operator::RunSpec,
+    operator::{
+        RunSpec, VerifiedSourceBindingRegistry, validate_durable_run_spec_preflight,
+        validate_run_spec_manifest_for_object_hash_with_verified_registry,
+    },
+    operator_work_budget::OperatorWorkBudgetGuard,
     source_universe_conversion_work_order::SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION,
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackStatus,
@@ -458,6 +462,56 @@ crypto_future = "MARGIN"
     )
     .expect("write overwrite spec");
 
+    let prior_pack_bytes = fs::read(&artifact.path).expect("read pack before stale-set probe");
+    let stale_top_level = output_dir.join("stale-top-level-control.json");
+    fs::write(&stale_top_level, b"{}").expect("plant stale top-level pack control");
+    let error = write_source_universe_execution_pack_from_spec_file(&spec_path)
+        .expect_err("pilot regeneration must reject a stale top-level output");
+    assert!(
+        error.to_string().contains("stale or unexpected entry"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read(&artifact.path).expect("read pack after top-level exact-set rejection"),
+        prior_pack_bytes,
+        "top-level exact-set rejection must precede output mutation"
+    );
+    fs::remove_file(&stale_top_level).expect("remove planted top-level output");
+
+    let stale_run_dir = output_dir.join("runs/00001-stale-full-pack-record");
+    fs::create_dir(&stale_run_dir).expect("plant stale run from a prior wider pack");
+    let error = write_source_universe_execution_pack_from_spec_file(&spec_path)
+        .expect_err("pilot regeneration must reject a stale non-selected run directory");
+    assert!(
+        error.to_string().contains("stale or unexpected entry"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read(&artifact.path).expect("read pack after stale-set rejection"),
+        prior_pack_bytes,
+        "exact-set rejection must precede output mutation"
+    );
+    fs::remove_dir(&stale_run_dir).expect("remove planted stale run directory");
+
+    let retained_run_dir = resolve_repo_relative(&initial_record.run_spec_path)
+        .parent()
+        .expect("retained run spec has parent")
+        .to_path_buf();
+    let stale_control = retained_run_dir.join("stale-control.json");
+    fs::write(&stale_control, b"{}").expect("plant stale control in retained run");
+    let error = write_source_universe_execution_pack_from_spec_file(&spec_path)
+        .expect_err("pilot regeneration must reject a stale control in a selected run");
+    assert!(
+        error.to_string().contains("stale or unexpected entry"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read(&artifact.path).expect("read pack after stale-control rejection"),
+        prior_pack_bytes,
+        "selected-run exact-set rejection must precede output mutation"
+    );
+    fs::remove_file(&stale_control).expect("remove planted stale control");
+
     let artifact = write_source_universe_execution_pack_from_spec_file(&spec_path)
         .expect("execution pack overwrite succeeds");
     let pack: SourceUniverseExecutionPack =
@@ -509,12 +563,10 @@ crypto_future = "MARGIN"
     ));
     assert_eq!(run_spec.manifest.venue.account_type, "MARGIN");
     assert_eq!(run_spec.manifest.venue.starting_balances, ["250000 BTC"]);
-    let artifact_store = run_spec
-        .required_artifact_store()
-        .expect("materialized run spec retains durable artifact-store config");
-    run_spec
-        .validate_artifact_store_publish_config(artifact_store)
-        .expect("materialized manifest and durable artifact store agree");
+    assert_composed_operator_preflight(
+        &run_spec,
+        run_spec_path.parent().expect("materialized run spec has parent"),
+    );
     let catalog_dispatch = run_spec
         .required_catalog_dispatch()
         .expect("materialized run spec retains catalog dispatch");
@@ -697,6 +749,24 @@ fn committed_bybit_and_binance_source_universe_execution_packs_track_materialize
 }
 
 fn assert_declared_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
+    let profile_refs = pack
+        .artifact_refs
+        .iter()
+        .filter(|artifact| artifact.role == "run_spec_template")
+        .collect::<Vec<_>>();
+    assert_eq!(profile_refs.len(), 1, "pack retains one active profile");
+    let profile_path = resolve_repo_relative(&profile_refs[0].path);
+    let profile_bytes = fs::read(&profile_path).expect("read active pack profile");
+    assert_eq!(sha256_bytes(&profile_bytes), profile_refs[0].sha256);
+    let profile: RunSpec = toml::from_str(
+        std::str::from_utf8(&profile_bytes).expect("active pack profile is UTF-8"),
+    )
+    .expect("active pack profile parses as the current RunSpec schema");
+    assert_composed_operator_preflight(
+        &profile,
+        profile_path.parent().expect("active profile has parent"),
+    );
+
     let source_bindings_refs = pack
         .artifact_refs
         .iter()
@@ -737,12 +807,10 @@ fn assert_declared_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
             run_spec.accepted_object.sha256,
             record.selected_object_sha256
         );
-        let artifact_store = run_spec
-            .required_artifact_store()
-            .expect("declared pilot has durable artifact-store config");
-        run_spec
-            .validate_artifact_store_publish_config(artifact_store)
-            .expect("declared pilot manifest/store config agrees");
+        assert_composed_operator_preflight(
+            &run_spec,
+            run_spec_path.parent().expect("declared run spec has parent"),
+        );
         let catalog_dispatch = run_spec
             .required_catalog_dispatch()
             .expect("declared pilot has catalog dispatch");
@@ -826,6 +894,23 @@ fn assert_declared_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
             record.selected_object_sha256
         );
     }
+}
+
+fn assert_composed_operator_preflight(spec: &RunSpec, output_dir: &Path) {
+    let registry = VerifiedSourceBindingRegistry::from_run_spec_guarded(
+        spec,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .expect("active RunSpec resolves its sole source-binding registry");
+    validate_run_spec_manifest_for_object_hash_with_verified_registry(
+        spec,
+        output_dir,
+        &spec.accepted_object.sha256,
+        &registry,
+    )
+    .expect("active RunSpec passes ordinary manifest/source-binding preflight");
+    validate_durable_run_spec_preflight(spec)
+        .expect("active RunSpec passes durable-only operator preflight");
 }
 
 fn assert_profile_ref(pack: &SourceUniverseExecutionPack, expected_path: &str) {
@@ -1182,7 +1267,7 @@ source_binding = "binance-spot-native-trades"
 venue = "binance"
 product_family = "spot"
 product_category = "spot"
-table_family = "native_trades"
+table_family = "trades"
 evidence_state = "owner_archive_backfillable"
 source_candidate_class = "official_free"
 source_selection_status = "ACCEPTED_LOWER_FIDELITY"
@@ -1305,7 +1390,7 @@ buyer_side_values = ["buy"]
 seller_side_values = ["sell"]
 
 [manifest]
-manifest_schema_version = "backtesting-run-manifest.v1"
+manifest_schema_version = "backtesting-run-manifest.v2"
 run_id = "stale-run"
 target_bolt_v2_branch = "main"
 target_bolt_v2_ref = "refs/heads/main"
@@ -1317,7 +1402,7 @@ source_proof_id = "source-proof-binance-spot-native-trades"
 source_proof_version = 1
 pins_non_latest_proof = false
 strategy_config_hash = "a99e8a42bfa6df1f790ccc1a3a2c0a5ea7dd122e3ffab73e685be4132bbef396"
-catalog_hash = "530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f"
+nt_streaming_chunk_size = 128
 execution_model = "nt_backtest_node"
 artifact_root = "s3://synthetic-artifacts"
 output_prefix = "s3://synthetic-artifacts/backtests/stale-run"
@@ -1325,6 +1410,11 @@ output_prefix = "s3://synthetic-artifacts/backtests/stale-run"
 [manifest.artifact_store]
 storage_options = {}
 rust_storage_options = { region = "us-east-1", conditional_put = "etag" }
+
+[manifest.artifact_store.ssm_parameters]
+region = "us-east-1"
+access_key_id = "/synthetic/artifact-store/s3/access-key-id"
+secret_access_key = "/synthetic/artifact-store/s3/secret-access-key"
 
 [[manifest.catalog_inputs]]
 catalog_path = "overridden-by-binary-at-runtime"
@@ -1412,7 +1502,7 @@ latest_pointer_storage_profile = "active"
 current_snapshot_storage_profile = "active"
 
 [[catalog_dispatch.bindings]]
-source_binding = "stale-profile-source-binding"
+source_binding = "binance-spot-native-trades"
 market_structure_fixture = "perps-spot"
 catalog_projection_id = "stale-profile-catalog-projection"
 "#

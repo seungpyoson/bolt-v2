@@ -1457,7 +1457,7 @@ where
 ///
 /// This helper guarantees quiescence, not a hard upper bound on thread work.
 /// Hard boundedness is process-owned because threads cannot be safely killed.
-pub async fn guarded_blocking_join_outcome<T>(
+pub(crate) async fn guarded_blocking_join_outcome<T>(
     work_budget: &OperatorWorkBudgetGuard,
     stage: OperatorWorkBudgetStage,
     mut task: tokio::task::JoinHandle<T>,
@@ -2037,43 +2037,71 @@ mod tests {
     #[test]
     fn production_cli_and_batch_entrypoints_cannot_select_unbounded_work() {
         const MAIN_SOURCE: &str = include_str!("main.rs");
+        const OPERATOR_SOURCE: &str = include_str!("operator.rs");
         const BATCH_SOURCE: &str = include_str!("source_universe_batch_execution.rs");
         const BATCH_CLI_SOURCE: &str = include_str!("bin/source_universe_batch_execution.rs");
 
         let main_production = MAIN_SOURCE
-            .split("#[cfg(test)]")
-            .next()
-            .expect("main production source");
+            .rsplit_once("#[cfg(test)]\nmod tests")
+            .map(|(source, _tests)| source)
+            .expect("main production source before the test module");
         assert_eq!(
             main_production
                 .matches("OperatorWorkBudget::from_execution_plan(&execution_plan)")
                 .count(),
-            2,
-            "both direct CLI branches must derive the guard from the validated plan"
+            1,
+            "the local-only direct CLI must derive its sole guard from the validated plan"
         );
         assert!(!main_production.contains("OperatorWorkBudget::Unbounded"));
         assert!(!main_production.contains("OperatorWorkBudgetGuard::unbounded"));
+        for forbidden in [
+            concat!("DurableRun", "Dispatcher"),
+            concat!("DurableRun", "Request"),
+            concat!("DurableCompletion", "Locator"),
+        ] {
+            assert!(
+                !main_production.contains(forbidden),
+                "the direct CLI must not expose durable execution through {forbidden}"
+            );
+        }
+        assert!(!OPERATOR_SOURCE.contains("pub struct DurableRunDispatcher"));
+        assert!(!OPERATOR_SOURCE.contains(
+            "pub async fn run_from_run_spec_with_artifact_store_guarded"
+        ));
+        assert!(!OPERATOR_SOURCE.contains(
+            "pub async fn run_from_run_spec_with_verified_registry_guarded"
+        ));
 
-        let batch_production = BATCH_SOURCE
-            .split("#[cfg(test)]")
-            .next()
-            .expect("batch production source");
+        let resolve_work_item = BATCH_SOURCE
+            .split("fn resolve_work_item")
+            .nth(1)
+            .and_then(|source| source.split("fn process_fresh_work_item").next())
+            .expect("resolve_work_item production source");
         assert_eq!(
-            batch_production
+            resolve_work_item
                 .matches("OperatorWorkBudgetGuard::from_execution_plan_with_clock(")
                 .count(),
             1,
             "every selected record must construct exactly one plan-derived guard"
         );
-        assert!(!batch_production.contains("OperatorWorkBudget::Unbounded"));
-        assert!(!batch_production.contains("OperatorWorkBudgetGuard::unbounded"));
+        assert!(!resolve_work_item.contains("OperatorWorkBudget::Unbounded"));
+        assert!(!resolve_work_item.contains("OperatorWorkBudgetGuard::unbounded"));
+        let durable_worker = BATCH_SOURCE
+            .split("fn execute_source_universe_operator_worker_from_archive")
+            .nth(1)
+            .and_then(|source| {
+                source
+                    .split("fn verify_canonical_worker_request_manifest_bytes")
+                    .next()
+            })
+            .expect("durable hidden-worker production source");
         assert!(
-            !batch_production.contains("pub trait SourceUniverseWorkBudgetClockFactory")
-                && !batch_production
+            !BATCH_SOURCE.contains("pub trait SourceUniverseWorkBudgetClockFactory")
+                && !BATCH_SOURCE
                     .contains("pub fn execute_source_universe_batch_with_clock_factory"),
             "batch clock injection must remain private to tests"
         );
-        let clock_trait = batch_production
+        let clock_trait = BATCH_SOURCE
             .split("trait SourceUniverseWorkBudgetClockFactory")
             .nth(1)
             .and_then(|source| source.split('}').next())
@@ -2083,10 +2111,42 @@ mod tests {
             !clock_trait.contains("OperatorWorkBudgetGuard") && !clock_trait.contains("budget:"),
             "clock injection may supply time only, never a caller-selected budget or guard"
         );
+        assert_eq!(
+            durable_worker
+                .matches("DurableRunDispatcher::prepare_guarded(")
+                .count(),
+            1,
+            "only the hidden supervised worker may prepare durable dispatch"
+        );
+        assert_eq!(
+            BATCH_SOURCE
+                .matches("DurableRunDispatcher::prepare_guarded(")
+                .count(),
+            1,
+            "batch production and tests must not assemble a second durable dispatcher path"
+        );
 
         assert!(BATCH_CLI_SOURCE.contains("execute_source_universe_batch_process_isolated("));
         assert!(!BATCH_CLI_SOURCE.contains("LocalSourceUniverseOperatorRunner"));
         assert!(!BATCH_CLI_SOURCE.contains("SourceUniverseOperatorRunOutcome::NonTerminal"));
+        assert!(
+            BATCH_SOURCE.contains(".redirect(reqwest::redirect::Policy::none())"),
+            "the exact HTTPS source transport must not follow redirects to a different URI"
+        );
+        let isolated_runner = BATCH_SOURCE
+            .split("impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunner")
+            .nth(1)
+            .and_then(|source| source.split("struct PinnedWorkerDirectoryLease").next())
+            .expect("process-isolated runner implementation source");
+        assert_eq!(
+            isolated_runner.matches("self.worker_termination_grace").count(),
+            2,
+            "execute and deterministic discovery must share the one configured termination grace"
+        );
+        assert!(
+            !isolated_runner.contains("execution_plan.max_wall_seconds"),
+            "the execution wall budget must not be reused as a second termination grace"
+        );
     }
 
     #[test]

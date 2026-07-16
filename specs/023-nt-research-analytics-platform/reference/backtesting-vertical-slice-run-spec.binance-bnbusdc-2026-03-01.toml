@@ -194,11 +194,11 @@ buyer_side_values = ["False"]
 seller_side_values = ["True"]
 
 [manifest]
-manifest_schema_version = "backtesting-run-manifest.v1"
+manifest_schema_version = "backtesting-run-manifest.v2"
 run_id = "backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted"
 target_bolt_v2_branch = "main"
 target_bolt_v2_ref = "refs/heads/main"
-resolved_nt_version = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+resolved_nt_version = "d636f17604cdbddc28ad40e0e15720e2d19bf860"
 market_structure_fixture = "perps-spot"
 venue_binding_key = "binance-spot-native-trades"
 run_purpose = "normal"
@@ -206,7 +206,7 @@ source_proof_id = "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01"
 source_proof_version = 1
 pins_non_latest_proof = false
 strategy_config_hash = "31aff2fb41be2576afbace153b27362ce53aadf7efe6ef245233fae2a4797851"
-catalog_hash = "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362"
+nt_streaming_chunk_size = 128
 execution_model = "nt_backtest_node"
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
 output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted"

@@ -20,7 +20,10 @@ use crate::{
     },
     hashing::{is_lowercase_sha256_hex, sha256_hex},
     operator::RunSpec,
-    path_resolution::{resolve_existing_path, resolve_output_dir},
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
     source_proof::SourceProofUsageScope,
 };
 
@@ -725,25 +728,29 @@ pub fn evaluate_backfill_execution_plan(
 pub fn write_backfill_execution_plan_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillExecutionPlanArtifact, BackfillExecutionPlanError> {
-    let spec_text =
-        fs::read_to_string(spec_path).map_err(|error| BackfillExecutionPlanError::ReadSpec {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillExecutionPlanError::ReadSpec {
             path: spec_path.display().to_string(),
             error: error.to_string(),
-        })?;
+        }
+    })?;
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillExecutionPlanError::ReadSpec {
+            path: spec_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
     let spec: BackfillExecutionPlanSpec =
-        toml::from_str(&spec_text).map_err(|error| BackfillExecutionPlanError::ParseSpecToml {
+        toml::from_str(spec_text).map_err(|error| BackfillExecutionPlanError::ParseSpecToml {
             path: spec_path.display().to_string(),
             error: error.to_string(),
         })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
-    let resolved_accepted_tranche_manifest_path =
-        resolve_existing_path(base_dir, &spec.accepted_tranche_manifest_path);
     let (tranche, accepted_tranche_manifest_hash) = read_accepted_tranche_manifest(
-        &resolved_accepted_tranche_manifest_path,
+        base_dir,
         &spec.accepted_tranche_manifest_path,
     )?;
-    let resolved_run_spec_path = resolve_existing_path(base_dir, &spec.run_spec_path);
-    let (run_spec, run_spec_hash) = read_run_spec(&resolved_run_spec_path, &spec.run_spec_path)?;
+    let (run_spec, run_spec_hash) = read_run_spec(base_dir, &spec.run_spec_path)?;
     let run_binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
     let work_budget = BackfillExecutionWorkBudget {
         max_decoded_bytes: run_binding.max_decoded_bytes,
@@ -776,11 +783,15 @@ pub fn write_backfill_execution_plan_with_overwrite(
     plan: &BackfillExecutionPlan,
     overwrite_existing: bool,
 ) -> Result<BackfillExecutionPlanArtifact, BackfillExecutionPlanError> {
+    let path = active_backfill_runtime_output_path(output_dir, BACKFILL_EXECUTION_PLAN_FILE)
+        .map_err(|error| BackfillExecutionPlanError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillExecutionPlanError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let path = output_dir.join(BACKFILL_EXECUTION_PLAN_FILE);
     let rewrite = if overwrite_existing {
         crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
@@ -810,10 +821,10 @@ pub fn write_backfill_execution_plan_with_overwrite(
 }
 
 fn read_accepted_tranche_manifest(
-    path: &Path,
+    base_dir: &Path,
     display_path: &Path,
 ) -> Result<(BackfillAcceptedTrancheManifest, String), BackfillExecutionPlanError> {
-    let bytes = fs::read(path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(Some(base_dir), display_path).map_err(|error| {
         BackfillExecutionPlanError::ReadAcceptedTrancheManifest {
             path: display_path.display().to_string(),
             error: error.to_string(),
@@ -830,12 +841,14 @@ fn read_accepted_tranche_manifest(
 }
 
 fn read_run_spec(
-    path: &Path,
+    base_dir: &Path,
     display_path: &Path,
 ) -> Result<(RunSpec, String), BackfillExecutionPlanError> {
-    let bytes = fs::read(path).map_err(|error| BackfillExecutionPlanError::ReadRunSpec {
-        path: display_path.display().to_string(),
-        error: error.to_string(),
+    let bytes = read_active_backfill_runtime_input(Some(base_dir), display_path).map_err(|error| {
+        BackfillExecutionPlanError::ReadRunSpec {
+            path: display_path.display().to_string(),
+            error: error.to_string(),
+        }
     })?;
     let hash = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes).map_err(|error| {

@@ -59,14 +59,14 @@ use crate::path_resolution::{
 };
 use crate::pinned_regular_file::PinnedRegularFileFingerprint;
 use crate::reference_artifact::ReferenceArtifactPin;
+use crate::retired_backfill_evidence::ensure_active_backfill_runtime_path;
 use crate::{
     operator::{
-        DurableCompletionLocator, DurableRunDispatcher, DurableRunOutcome, DurableRunReceipt,
-        DurableRunRequest, OperatorRunSummary, OperatorTerminalSealProbe, RunSpec,
-        VerifiedSourceBindingRegistry, probe_operator_terminal_seal_summary_capped,
+        DurableCompletionLocator, DurableOutputCandidateSealProbe, DurableRunDispatcher,
+        DurableRunReceipt, OperatorRunSummary, RunSpec,
+        VerifiedSourceBindingRegistry, probe_durable_output_candidate_seal_summary_capped,
         validate_durable_run_spec_preflight,
         validate_run_spec_manifest_for_object_hash_with_verified_registry,
-        verify_completed_operator_output,
     },
     source_universe_execution_pack::{
         SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION, SourceUniverseExecutionPack,
@@ -84,7 +84,7 @@ pub const SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT: &str =
     ".source-universe-operator-worker-requests";
 #[cfg(target_os = "linux")]
 const SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_SCHEMA_VERSION: &str =
-    "source-universe-operator-worker-request.v4";
+    "source-universe-operator-worker-request.v5";
 #[cfg(target_os = "linux")]
 const WORKER_REQUEST_ROLE_ACCEPTED_TRANCHE: &str = "accepted_tranche";
 #[cfg(target_os = "linux")]
@@ -157,7 +157,6 @@ impl SourceUniverseBatchArtifactPin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceUniverseBatchLaunchArtifacts {
     execution_pack: SourceUniverseBatchArtifactPin,
-    resume_report: Option<SourceUniverseBatchArtifactPin>,
     bootstrap_limits: SourceUniverseBatchBootstrapLimits,
 }
 
@@ -200,28 +199,22 @@ impl SourceUniverseBatchBootstrapLimits {
 
 impl SourceUniverseBatchLaunchArtifacts {
     /// Construct the production launch boundary from operator-selected exact
-    /// identities plus one independent ceiling applied to every launch
-    /// artifact before filesystem access or allocation.
+    /// execution-pack identity plus an independent ceiling applied before
+    /// filesystem access or allocation.
     pub fn try_new(
         execution_pack: SourceUniverseBatchArtifactPin,
-        resume_report: Option<SourceUniverseBatchArtifactPin>,
         bootstrap_limits: SourceUniverseBatchBootstrapLimits,
     ) -> Result<Self> {
         let bootstrap_limits = bootstrap_limits.validate()?;
-        for (role, pin) in std::iter::once(("execution pack", &execution_pack))
-            .chain(resume_report.as_ref().map(|pin| ("resume report", pin)))
-        {
-            ensure!(
-                pin.bytes <= bootstrap_limits.max_launch_artifact_bytes,
-                "{role} {} declared byte length {} exceeds configured maximum {}",
-                pin.path.display(),
-                pin.bytes,
-                bootstrap_limits.max_launch_artifact_bytes
-            );
-        }
+        ensure!(
+            execution_pack.bytes <= bootstrap_limits.max_launch_artifact_bytes,
+            "execution pack {} declared byte length {} exceeds configured maximum {}",
+            execution_pack.path.display(),
+            execution_pack.bytes,
+            bootstrap_limits.max_launch_artifact_bytes
+        );
         Ok(Self {
             execution_pack,
-            resume_report,
             bootstrap_limits,
         })
     }
@@ -311,8 +304,35 @@ pub trait SourceUniverseObjectFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
+        run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<Vec<u8>>;
+}
+
+struct LazySourceUniverseObjectFetcher<'a, F, C> {
+    inner: &'a mut Option<F>,
+    factory: &'a C,
+}
+
+impl<F, C> SourceUniverseObjectFetcher for LazySourceUniverseObjectFetcher<'_, F, C>
+where
+    F: SourceUniverseObjectFetcher,
+    C: Fn() -> Result<F>,
+{
+    fn fetch(
+        &mut self,
+        record: &SourceUniverseExecutionPackRecord,
+        run_spec: &RunSpec,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Vec<u8>> {
+        if self.inner.is_none() {
+            *self.inner = Some((self.factory)().context("construct batch worker fetcher")?);
+        }
+        self.inner
+            .as_mut()
+            .expect("lazy fetcher initialized")
+            .fetch(record, run_spec, work_budget)
+    }
 }
 
 trait SourceUniverseOperatorRunner {
@@ -329,19 +349,18 @@ trait SourceUniverseOperatorRunner {
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<SourceUniverseOperatorRunOutcome>;
 
-    /// Validate one prior exact durable completion without accepting or
-    /// retaining source bytes. Production implements this only through the
-    /// pinned same-binary worker and `DurableRunRequest::Resume`.
-    fn resume(
+    /// Probe the deterministic current durable terminal before source fetch.
+    /// `Ok(None)` is reserved for a genuine remote NotFound; a returned receipt
+    /// was pinned to a non-null current version and fully exact-version
+    /// validated by the runner.
+    fn discover_current_completion(
         &mut self,
         _record: &SourceUniverseExecutionPackRecord,
-        _durable_completion: &DurableCompletionLocator,
         _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
-        _sealed_summary: &OperatorRunSummary,
         _work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<DurableRunReceipt> {
-        bail!("source-universe runner does not implement durable resume validation")
+    ) -> Result<Option<DurableRunReceipt>> {
+        Ok(None)
     }
 }
 
@@ -429,8 +448,8 @@ impl SourceUniverseBatchExecutionRunOutput {
     }
 }
 
-/// Opaque committed result. Production constructs it only after a valid
-/// terminal seal establishes durable commit ownership.
+/// Opaque committed result. Production constructs it only after a successful
+/// quiesced child, canonical local candidate, and exact durable receipt agree.
 #[derive(Debug)]
 struct SourceUniverseCommittedRunReceipt {
     output: SourceUniverseBatchExecutionRunOutput,
@@ -498,21 +517,46 @@ fn validate_worker_durable_receipt(
         !bytes.is_empty(),
         "source-universe worker did not return a durable completion receipt"
     );
-    let receipt: DurableRunReceipt =
-        serde_json::from_slice(bytes).context("parse source-universe worker durable receipt")?;
+    let response: SourceUniverseOperatorWorkerResponse =
+        serde_json::from_slice(bytes).context("parse source-universe worker durable response")?;
     ensure!(
-        crate::reference_artifact::canonical_json_bytes(&receipt)? == bytes,
-        "source-universe worker durable receipt bytes are not canonical"
+        crate::reference_artifact::canonical_json_bytes(&response)? == bytes,
+        "source-universe worker durable response bytes are not canonical"
     );
+    let SourceUniverseOperatorWorkerResponse::Completed { receipt } = response else {
+        bail!("source-universe execute worker returned no current completion")
+    };
     validate_durable_receipt(&receipt, spec, summary)?;
     Ok(receipt)
 }
 
-fn validate_durable_receipt(
+fn validate_worker_completion_discovery(
+    bytes: &[u8],
+    spec: &RunSpec,
+) -> Result<Option<(DurableRunReceipt, OperatorRunSummary)>> {
+    ensure!(
+        !bytes.is_empty(),
+        "source-universe discovery worker did not return a response"
+    );
+    let response: SourceUniverseOperatorWorkerResponse =
+        serde_json::from_slice(bytes).context("parse source-universe discovery response")?;
+    ensure!(
+        crate::reference_artifact::canonical_json_bytes(&response)? == bytes,
+        "source-universe discovery response bytes are not canonical"
+    );
+    match response {
+        SourceUniverseOperatorWorkerResponse::NoCurrentCompletion => Ok(None),
+        SourceUniverseOperatorWorkerResponse::Completed { receipt } => {
+            let summary = durable_receipt_summary(&receipt, spec)?;
+            Ok(Some((receipt, summary)))
+        }
+    }
+}
+
+fn durable_receipt_summary(
     receipt: &DurableRunReceipt,
     spec: &RunSpec,
-    summary: &OperatorRunSummary,
-) -> Result<()> {
+) -> Result<OperatorRunSummary> {
     receipt.completion.validate()?;
     ensure!(
         receipt.run_id == spec.manifest.run_id
@@ -520,45 +564,82 @@ fn validate_durable_receipt(
         "source-universe worker durable receipt submitted-run identity mismatch"
     );
     ensure!(
-        receipt.canonical_rows == summary.canonical_rows
-            && receipt.nt_catalog_rows == summary.nt_catalog_rows
-            && receipt.catalog_hash == summary.catalog_hash,
-        "source-universe worker durable receipt disagrees with the committed local terminal seal"
+        receipt.canonical_rows > 0 && receipt.nt_catalog_rows == receipt.canonical_rows,
+        "source-universe worker durable receipt row summary is invalid"
+    );
+    validate_sha256_hex(&receipt.catalog_hash)
+        .context("validate source-universe worker durable receipt catalog_hash")?;
+    Ok(OperatorRunSummary {
+        canonical_rows: receipt.canonical_rows,
+        nt_catalog_rows: receipt.nt_catalog_rows,
+        catalog_hash: receipt.catalog_hash.clone(),
+    })
+}
+
+fn validate_durable_receipt(
+    receipt: &DurableRunReceipt,
+    spec: &RunSpec,
+    summary: &OperatorRunSummary,
+) -> Result<()> {
+    let receipt_summary = durable_receipt_summary(receipt, spec)?;
+    ensure!(
+        receipt_summary == *summary,
+        "source-universe worker durable receipt disagrees with the durable local output candidate"
     );
     Ok(())
 }
 
-fn classify_terminated_worker_terminal_state(
-    worker_result: &Result<WorkerExitEvidence>,
-    terminal_probe: Result<OperatorTerminalSealProbe>,
-) -> Result<OperatorRunSummary> {
-    match terminal_probe {
-        Ok(OperatorTerminalSealProbe::Committed(summary)) => Ok(summary),
-        Ok(OperatorTerminalSealProbe::Absent) => {
-            let worker_detail = match worker_result {
-                Ok(evidence) if evidence.status.success() => {
-                    "worker exited successfully".to_string()
-                }
-                Ok(evidence) => format!(
-                    "worker exited unsuccessfully with status {}",
-                    evidence.status
-                ),
-                Err(error) => format!("worker wait failed after start: {error:#}"),
-            };
-            Err(committed_indeterminate_worker_error(format!(
-                "{worker_detail}, but its terminal seal is absent; remote publication side effects cannot be excluded"
-            )))
+fn accept_quiesced_durable_worker(
+    worker_result: Result<WorkerExitEvidence>,
+    candidate_probe: Result<DurableOutputCandidateSealProbe>,
+    validate_receipt: impl FnOnce(&[u8], &OperatorRunSummary) -> Result<DurableRunReceipt>,
+    validate_final_local_state: impl FnOnce() -> Result<()>,
+) -> Result<SourceUniverseOperatorRunOutcome> {
+    let worker_evidence = match worker_result {
+        Ok(evidence) if evidence.status.success() => evidence,
+        Ok(evidence) => {
+            return Err(committed_indeterminate_worker_error(format!(
+                "source-universe worker exited unsuccessfully with status {}; a local candidate cannot prove remote terminal publication",
+                evidence.status
+            )));
         }
-        Err(probe_error) => {
-            let worker_detail = match &worker_result {
-                Ok(evidence) => format!("worker exit status {}", evidence.status),
-                Err(error) => format!("worker wait result {error:#}"),
-            };
-            Err(committed_indeterminate_worker_error(format!(
-                "terminal-seal probe failed after {worker_detail}: {probe_error:#}"
-            )))
+        Err(error) => {
+            return Err(committed_indeterminate_worker_error(format!(
+                "source-universe worker wait failed after start ({error:#}); remote terminal publication cannot be excluded"
+            )));
         }
-    }
+    };
+    let summary = match candidate_probe {
+        Ok(DurableOutputCandidateSealProbe::Candidate(summary)) => summary,
+        Ok(DurableOutputCandidateSealProbe::Absent) => {
+            return Err(committed_indeterminate_worker_error(
+                "worker exited successfully but its durable local output candidate seal is absent; remote publication side effects cannot be excluded",
+            ));
+        }
+        Err(error) => {
+            return Err(committed_indeterminate_worker_error(format!(
+                "durable local output candidate-seal probe failed after successful child exit: {error:#}"
+            )));
+        }
+    };
+    let durable_receipt = validate_receipt(&worker_evidence.receipt_bytes, &summary).map_err(
+        |error| {
+            committed_indeterminate_worker_error(format!(
+                "durable local output candidate exists but the returned exact durable receipt is invalid: {error:#}"
+            ))
+        },
+    )?;
+    validate_final_local_state().map_err(|error| {
+        committed_indeterminate_worker_error(format!(
+            "output lease changed while accepting durable candidate and receipt: {error:#}"
+        ))
+    })?;
+    Ok(SourceUniverseOperatorRunOutcome::Committed(
+        SourceUniverseCommittedRunReceipt {
+            output: SourceUniverseBatchExecutionRunOutput::from_summary(summary),
+            durable_completion: durable_receipt.completion,
+        },
+    ))
 }
 
 fn require_quiesced_worker_lifecycle(
@@ -579,12 +660,10 @@ fn require_quiesced_worker_lifecycle(
 ///
 /// Every field beyond the original three is opt-in: the default
 /// `max_concurrent_records: None` reproduces the original serial behavior.
-/// The optional exact resume artifact belongs solely to
-/// [`SourceUniverseBatchLaunchArtifacts`]. Object caching is
-/// deliberately NOT a config field: the one way to enable it is wrapping the
-/// fetcher in [`CachingSourceUniverseObjectFetcher`] (the CLI does this for
-/// the TOML-owned `object_cache_dir`), so a cache can never be requested without taking
-/// effect.
+/// Object caching is deliberately NOT a config field: the one way to enable it
+/// is wrapping the fetcher in [`CachingSourceUniverseObjectFetcher`] (the CLI
+/// does this for the TOML-owned `object_cache_dir`), so a cache can never be
+/// requested without taking effect.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceUniverseBatchExecutionConfig {
     /// Lowest pack sequence to execute (inclusive). `None` starts at the first.
@@ -683,8 +762,8 @@ pub struct SourceUniverseBatchExecutionReportArtifact {
 }
 
 /// Validate a batch report as evidence rather than trusting its aggregate
-/// counters. This is the single consume boundary used by report publication,
-/// resume loading, and conversion-completion reconciliation.
+/// counters. This is the single consume boundary used by report publication
+/// and conversion-completion reconciliation.
 pub fn validate_source_universe_batch_execution_report(
     report: &SourceUniverseBatchExecutionReport,
 ) -> Result<()> {
@@ -910,7 +989,8 @@ pub struct HttpSourceUniverseObjectFetcher {
 
 impl HttpSourceUniverseObjectFetcher {
     pub fn new(fetch_timeout_seconds: Option<u64>, http_user_agent: Option<&str>) -> Result<Self> {
-        let mut client_builder = reqwest::Client::builder();
+        let mut client_builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none());
         let fetch_timeout = fetch_timeout_seconds.map(Duration::from_secs);
         if let Some(fetch_timeout_seconds) = fetch_timeout_seconds {
             ensure!(
@@ -965,6 +1045,7 @@ impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<Vec<u8>> {
         let source_url = validated_http_source_url(&record.source_url)?;
@@ -1228,6 +1309,7 @@ impl<F: SourceUniverseObjectFetcher> SourceUniverseObjectFetcher
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
+        run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<Vec<u8>> {
         work_budget.check_deadline(OperatorWorkBudgetStage::Fetch)?;
@@ -1237,7 +1319,7 @@ impl<F: SourceUniverseObjectFetcher> SourceUniverseObjectFetcher
         }
         let object_bytes =
             guarded_operation_outcome(work_budget, OperatorWorkBudgetStage::Fetch, || {
-                self.inner.fetch(record, work_budget)
+                self.inner.fetch(record, run_spec, work_budget)
             })??;
         verify_object_guarded(record, &object_bytes, work_budget).with_context(|| {
             format!(
@@ -1273,33 +1355,20 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
             &control_artifacts.source_bindings,
             work_budget,
         )?;
+        let summary = match artifacts {
+            crate::operator::OperatorRunArtifacts::Trade(artifacts) => artifacts.batch_summary,
+            crate::operator::OperatorRunArtifacts::MultiTable(artifacts) => artifacts.batch_summary,
+        };
+        crate::operator::convert_test_terminal_output_to_durable_candidate(
+            &control_artifacts.run_spec,
+            output_dir,
+            &control_artifacts.source_bindings,
+            &summary,
+            work_budget,
+        )?;
         Ok(SourceUniverseOperatorRunOutcome::NonTerminal(
-            SourceUniverseBatchExecutionRunOutput::from_summary(match artifacts {
-                crate::operator::OperatorRunArtifacts::Trade(artifacts) => artifacts.batch_summary,
-                crate::operator::OperatorRunArtifacts::MultiTable(artifacts) => {
-                    artifacts.batch_summary
-                }
-            }),
+            SourceUniverseBatchExecutionRunOutput::from_summary(summary),
         ))
-    }
-
-    fn resume(
-        &mut self,
-        _record: &SourceUniverseExecutionPackRecord,
-        durable_completion: &DurableCompletionLocator,
-        control_artifacts: &SourceUniverseVerifiedControlArtifacts,
-        _output_dir: &Path,
-        sealed_summary: &OperatorRunSummary,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<DurableRunReceipt> {
-        Ok(DurableRunReceipt {
-            completion: durable_completion.clone(),
-            run_id: control_artifacts.run_spec.manifest.run_id.clone(),
-            submitted_manifest_hash: control_artifacts.run_spec.manifest.manifest_hash(),
-            canonical_rows: sealed_summary.canonical_rows,
-            nt_catalog_rows: sealed_summary.nt_catalog_rows,
-            catalog_hash: sealed_summary.catalog_hash.clone(),
-        })
     }
 }
 
@@ -1317,7 +1386,7 @@ struct SourceUniverseOperatorWorkerRequestPayload {
 #[serde(rename_all = "snake_case")]
 enum SourceUniverseOperatorWorkerRequestKind {
     Execute,
-    Resume,
+    Discover,
 }
 
 #[cfg(target_os = "linux")]
@@ -1326,7 +1395,6 @@ enum SourceUniverseOperatorWorkerRequestKind {
 struct SourceUniverseOperatorWorkerRequestManifest {
     schema_version: String,
     request_kind: SourceUniverseOperatorWorkerRequestKind,
-    durable_completion: Option<DurableCompletionLocator>,
     record: SourceUniverseExecutionPackRecord,
     output_dir: PathBuf,
     source_bindings_path: PathBuf,
@@ -1336,7 +1404,14 @@ struct SourceUniverseOperatorWorkerRequestManifest {
 
 enum SourceUniverseOperatorWorkerRequest {
     Execute(Vec<u8>),
-    Resume(DurableCompletionLocator),
+    Discover,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+enum SourceUniverseOperatorWorkerResponse {
+    NoCurrentCompletion,
+    Completed { receipt: DurableRunReceipt },
 }
 
 #[cfg(target_os = "linux")]
@@ -1361,9 +1436,10 @@ struct CommittedWorkerRequestArchive {
 #[derive(Debug)]
 struct CommittedWorkerRequestArchive;
 
-/// Process-lifetime evidence is separate from the terminal-seal commit
-/// authority. A seal may be trusted only after every possible writer in the
-/// child process group is quiesced and the leader is reaped.
+/// Process-lifetime evidence is separate from local candidate integrity and
+/// remote durable commit authority. Candidate/receipt agreement is considered
+/// only after every possible writer in the child process group is quiesced and
+/// the leader is reaped.
 #[derive(Debug)]
 enum WorkerLifecycleOutcome {
     NotStarted(anyhow::Error),
@@ -1539,6 +1615,7 @@ struct ProcessIsolatedSourceUniverseOperatorRunner {
     #[cfg(test)]
     executable_hash_traversals: usize,
     request_root: PathBuf,
+    worker_termination_grace: Duration,
 }
 
 /// Reject process-level record parallelism until the execution plan carries a
@@ -1554,8 +1631,16 @@ fn validate_process_isolated_max_concurrent_records(max_concurrent_records: u64)
 }
 
 impl ProcessIsolatedSourceUniverseOperatorRunner {
-    fn new(request_root: PathBuf, max_concurrent_records: u64) -> Result<Self> {
+    fn new(
+        request_root: PathBuf,
+        max_concurrent_records: u64,
+        worker_termination_grace: Duration,
+    ) -> Result<Self> {
         validate_process_isolated_max_concurrent_records(max_concurrent_records)?;
+        ensure!(
+            !worker_termination_grace.is_zero(),
+            "worker termination grace must be positive"
+        );
         ensure!(
             request_root.is_absolute(),
             "worker request root must be absolute: {}",
@@ -1584,6 +1669,7 @@ impl ProcessIsolatedSourceUniverseOperatorRunner {
             #[cfg(test)]
             executable_hash_traversals: 0,
             request_root,
+            worker_termination_grace,
         })
     }
 
@@ -1753,82 +1839,51 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
             &self.executable,
             request_archive,
             work_budget,
-            // The execution plan's one TOML-owned wall budget also bounds the
-            // post-deadline process-group termination and reap interval.
-            Duration::from_secs(control_artifacts.execution_plan.max_wall_seconds),
+            self.worker_termination_grace,
         );
         let worker_result = require_quiesced_worker_lifecycle(worker_lifecycle)?;
 
-        // Child status and the request archive are deliberately not commit
-        // authorities. Only the `Quiesced` state reaches this point; once the
-        // process group is terminated and the leader is reaped, the canonical
-        // terminal seal is the sole durable answer. This
+        // Child status, request archive, and local candidate are deliberately
+        // not durable commit authorities. Only the `Quiesced` state reaches
+        // this point. Acceptance requires all three independent facts: a
+        // successful child exit, one canonical local candidate, and an exact
+        // durable receipt returned after remote terminal publication. The
         // probe is byte-capped and does not sample the now-expired work budget.
         if let Err(error) = output_lease.revalidate() {
             return Err(committed_indeterminate_worker_error(format!(
-                "output lease changed before terminal-seal probe: {error:#}"
+                "output lease changed before durable candidate-seal probe: {error:#}"
             )));
         }
-        let terminal_probe = probe_operator_terminal_seal_summary_capped(
+        let candidate_probe = probe_durable_output_candidate_seal_summary_capped(
             &control_artifacts.run_spec,
             output_dir,
             &control_artifacts.source_bindings,
             control_artifacts.execution_plan.max_decoded_bytes,
         );
-        let summary = classify_terminated_worker_terminal_state(&worker_result, terminal_probe)?;
-        let worker_evidence = worker_result.map_err(|error| {
-            committed_indeterminate_worker_error(format!(
-                "committed local terminal seal exists but durable worker receipt is unavailable: {error:#}"
-            ))
-        })?;
-        if !worker_evidence.status.success() {
-            return Err(committed_indeterminate_worker_error(format!(
-                "source-universe worker returned a durable receipt but exited with status {}",
-                worker_evidence.status
-            )));
-        }
-        let durable_receipt = validate_worker_durable_receipt(
-            &worker_evidence.receipt_bytes,
-            &control_artifacts.run_spec,
-            &summary,
-        )
-        .map_err(|error| {
-            committed_indeterminate_worker_error(format!(
-                "committed local terminal seal exists but its durable receipt is invalid: {error:#}"
-            ))
-        })?;
-        output_lease.revalidate().map_err(|error| {
-            committed_indeterminate_worker_error(format!(
-                "output lease changed while reading committed terminal seal: {error:#}"
-            ))
-        })?;
-        Ok(SourceUniverseOperatorRunOutcome::Committed(
-            SourceUniverseCommittedRunReceipt {
-                output: SourceUniverseBatchExecutionRunOutput::from_summary(summary),
-                durable_completion: durable_receipt.completion,
+        accept_quiesced_durable_worker(
+            worker_result,
+            candidate_probe,
+            |bytes, summary| {
+                validate_worker_durable_receipt(bytes, &control_artifacts.run_spec, summary)
             },
-        ))
+            || output_lease.revalidate(),
+        )
     }
 
-    fn resume(
+    fn discover_current_completion(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
-        durable_completion: &DurableCompletionLocator,
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
-        sealed_summary: &OperatorRunSummary,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<DurableRunReceipt> {
+    ) -> Result<Option<DurableRunReceipt>> {
         self.seal_executable_once(work_budget)?;
-        durable_completion
-            .validate()
-            .context("validate exact durable completion before resume worker launch")?;
         let output_lease = PinnedWorkerDirectoryLease::capture(output_dir)?;
         reverify_parent_held_controls(record, control_artifacts, work_budget)?;
         let request_archive = commit_worker_request_archive(
             &self.request_root,
             record,
-            SourceUniverseOperatorWorkerRequest::Resume(durable_completion.clone()),
+            SourceUniverseOperatorWorkerRequest::Discover,
             control_artifacts,
             output_dir,
             work_budget,
@@ -1837,48 +1892,28 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
             &self.executable,
             request_archive,
             work_budget,
-            Duration::from_secs(control_artifacts.execution_plan.max_wall_seconds),
+            self.worker_termination_grace,
         );
         let worker_result = require_quiesced_worker_lifecycle(worker_lifecycle)?;
-        let worker_evidence = worker_result.context("wait for exact durable resume worker")?;
+        let worker_evidence = worker_result.map_err(|error| {
+            committed_indeterminate_worker_error(format!(
+                "deterministic current-terminal discovery failed after worker start: {error:#}"
+            ))
+        })?;
         ensure!(
             worker_evidence.status.success(),
-            "exact durable resume worker exited with status {}",
+            "current-terminal discovery worker exited with status {}",
             worker_evidence.status
         );
-        let durable_receipt = validate_worker_durable_receipt(
+        let discovered = validate_worker_completion_discovery(
             &worker_evidence.receipt_bytes,
             &control_artifacts.run_spec,
-            sealed_summary,
-        )?;
-        ensure!(
-            durable_receipt.completion == *durable_completion,
-            "exact durable resume receipt does not match the prior durable completion locator"
-        );
-        let post_resume_probe = probe_operator_terminal_seal_summary_capped(
-            &control_artifacts.run_spec,
-            output_dir,
-            &control_artifacts.source_bindings,
-            control_artifacts.execution_plan.max_decoded_bytes,
-        );
-        match post_resume_probe {
-            Ok(OperatorTerminalSealProbe::Committed(observed)) => ensure!(
-                observed == *sealed_summary,
-                "local terminal seal changed during exact durable resume validation"
-            ),
-            Ok(OperatorTerminalSealProbe::Absent) => {
-                bail!("local terminal seal disappeared during exact durable resume validation")
-            }
-            Err(error) => {
-                return Err(error).context(
-                    "local terminal seal became invalid during exact durable resume validation",
-                );
-            }
-        }
+        )?
+        .map(|(receipt, _summary)| receipt);
         output_lease
             .revalidate()
-            .context("local output lease changed during exact durable resume validation")?;
-        Ok(durable_receipt)
+            .context("fresh discovery scratch lease changed during current-terminal validation")?;
+        Ok(discovered)
     }
 }
 
@@ -2154,17 +2189,14 @@ fn commit_worker_request_archive(
         work_budget_deadline
             .validate_for_max_wall_seconds(controls.execution_plan.max_wall_seconds)?;
 
-        let (request_kind, durable_completion, selected_object) = match request {
+        let (request_kind, selected_object) = match request {
             SourceUniverseOperatorWorkerRequest::Execute(object_bytes) => (
                 SourceUniverseOperatorWorkerRequestKind::Execute,
-                None,
                 Some(object_bytes),
             ),
-            SourceUniverseOperatorWorkerRequest::Resume(durable_completion) => (
-                SourceUniverseOperatorWorkerRequestKind::Resume,
-                Some(durable_completion),
-                None,
-            ),
+            SourceUniverseOperatorWorkerRequest::Discover => {
+                (SourceUniverseOperatorWorkerRequestKind::Discover, None)
+            }
         };
         let mut payload_bytes: Vec<(&str, &[u8])> = Vec::new();
         payload_bytes
@@ -2210,7 +2242,6 @@ fn commit_worker_request_archive(
         let manifest = SourceUniverseOperatorWorkerRequestManifest {
             schema_version: SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_SCHEMA_VERSION.to_string(),
             request_kind,
-            durable_completion,
             record: record.clone(),
             output_dir,
             source_bindings_path: controls.source_bindings_path.clone(),
@@ -2322,24 +2353,13 @@ fn validate_worker_request_manifest(
             manifest.record.run_spec_sha256.as_str(),
         ),
     ];
-    let selected_object = match (manifest.request_kind, manifest.durable_completion.as_ref()) {
-        (SourceUniverseOperatorWorkerRequestKind::Execute, None) => Some((
+    let selected_object = match manifest.request_kind {
+        SourceUniverseOperatorWorkerRequestKind::Execute => Some((
             WORKER_REQUEST_ROLE_SELECTED_OBJECT,
             manifest.record.selected_object_bytes,
             manifest.record.selected_object_sha256.as_str(),
         )),
-        (SourceUniverseOperatorWorkerRequestKind::Resume, Some(completion)) => {
-            completion
-                .validate()
-                .context("validate worker durable resume locator")?;
-            None
-        }
-        (SourceUniverseOperatorWorkerRequestKind::Execute, Some(_)) => {
-            bail!("execute worker request must not carry a durable completion locator")
-        }
-        (SourceUniverseOperatorWorkerRequestKind::Resume, None) => {
-            bail!("resume worker request requires a durable completion locator")
-        }
+        SourceUniverseOperatorWorkerRequestKind::Discover => None,
     };
     let source_bindings = [(
         WORKER_REQUEST_ROLE_SOURCE_BINDINGS,
@@ -2793,10 +2813,39 @@ fn wait_for_pidfd(pidfd: &OwnedFd, timeout: Duration) -> Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy)]
+struct WorkerTerminationDeadline {
+    expires_at: Instant,
+    configured_grace: Duration,
+}
+
+#[cfg(target_os = "linux")]
+impl WorkerTerminationDeadline {
+    fn new(configured_grace: Duration) -> Result<Self> {
+        ensure!(
+            !configured_grace.is_zero(),
+            "worker termination grace must be positive"
+        );
+        let expires_at = Instant::now()
+            .checked_add(configured_grace)
+            .context("worker termination grace overflows monotonic clock")?;
+        Ok(Self {
+            expires_at,
+            configured_grace,
+        })
+    }
+
+    fn remaining(self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn terminate_and_reap_worker_without_pidfd(
     child: Child,
     termination_timeout: Duration,
 ) -> Result<()> {
+    let termination_deadline = WorkerTerminationDeadline::new(termination_timeout)?;
     if let Err(kill_error) = kill_unreaped_worker_process_group(&child) {
         let detach_result = detach_worker_reaper(child);
         return Err(anyhow::anyhow!(
@@ -2804,7 +2853,7 @@ fn terminate_and_reap_worker_without_pidfd(
             lifecycle_result_detail(&detach_result)
         ));
     }
-    reap_killed_child_without_pidfd_with_timeout(child, termination_timeout)
+    reap_killed_child_without_pidfd_with_timeout(child, termination_deadline.remaining())
 }
 
 #[cfg(target_os = "linux")]
@@ -2813,6 +2862,7 @@ fn terminate_and_reap_worker_with_pidfd(
     pidfd: &OwnedFd,
     termination_timeout: Duration,
 ) -> Result<()> {
+    let termination_deadline = WorkerTerminationDeadline::new(termination_timeout)?;
     if let Err(kill_error) = kill_unreaped_worker_process_group(&child) {
         let detach_result = detach_worker_reaper(child);
         return Err(anyhow::anyhow!(
@@ -2820,21 +2870,29 @@ fn terminate_and_reap_worker_with_pidfd(
             lifecycle_result_detail(&detach_result)
         ));
     }
-    match wait_for_pidfd(pidfd, termination_timeout) {
+    match wait_for_pidfd(pidfd, termination_deadline.remaining()) {
         Ok(true) => {
             let _ = child.wait().context("reap worker after hard termination")?;
             return Ok(());
         }
         Ok(false) => {}
-        Err(_wait_error) => {
-            reap_killed_child_without_pidfd_with_timeout(child, termination_timeout)?;
+        Err(wait_error) => {
+            reap_killed_child_without_pidfd_with_timeout(
+                child,
+                termination_deadline.remaining(),
+            )
+            .with_context(|| {
+                format!(
+                    "pidfd wait failed ({wait_error:#}) and fallback reap did not complete within the same termination grace"
+                )
+            })?;
             return Ok(());
         }
     }
     detach_worker_reaper(child)?;
     bail!(
         "source-universe operator worker did not terminate within configured termination timeout {:?}",
-        termination_timeout
+        termination_deadline.configured_grace
     )
 }
 
@@ -2925,28 +2983,29 @@ pub fn execute_source_universe_operator_worker(
         }
         // SAFETY: successful fcntl returned one new owned descriptor.
         let file = unsafe { fs::File::from_raw_fd(fd) };
-        let receipt = execute_source_universe_operator_worker_from_archive(
+        let response = execute_source_universe_operator_worker_from_archive(
             &file,
             archive_bytes,
             manifest_bytes,
             manifest_sha256,
             bootstrap_max_bytes,
         )?;
-        let receipt_bytes = crate::reference_artifact::canonical_json_bytes(&receipt)
-            .context("serialize canonical source-universe durable worker receipt")?;
+        let response_bytes = crate::reference_artifact::canonical_json_bytes(&response)
+            .context("serialize canonical source-universe durable worker response")?;
         ensure!(
-            u64::try_from(receipt_bytes.len()).context("worker receipt length does not fit u64")?
+            u64::try_from(response_bytes.len())
+                .context("worker response length does not fit u64")?
                 <= bootstrap_max_bytes,
-            "source-universe durable worker receipt exceeds configured bootstrap cap"
+            "source-universe durable worker response exceeds configured bootstrap cap"
         );
         let stdout = std::io::stdout();
         let mut stdout = stdout.lock();
         stdout
-            .write_all(&receipt_bytes)
-            .context("write source-universe durable worker receipt")?;
+            .write_all(&response_bytes)
+            .context("write source-universe durable worker response")?;
         stdout
             .flush()
-            .context("flush source-universe durable worker receipt")
+            .context("flush source-universe durable worker response")
     }
 }
 
@@ -2957,7 +3016,7 @@ fn execute_source_universe_operator_worker_from_archive(
     manifest_bytes: u64,
     manifest_sha256: &str,
     bootstrap_max_bytes: u64,
-) -> Result<DurableRunReceipt> {
+) -> Result<SourceUniverseOperatorWorkerResponse> {
     ensure!(
         bootstrap_max_bytes > 0,
         "worker bootstrap byte cap must be positive"
@@ -3108,7 +3167,8 @@ fn execute_source_universe_operator_worker_from_archive(
         &validated.run_spec,
         &work_budget,
     ))?;
-    let durable_request = match manifest.request_kind {
+    output_lease.revalidate()?;
+    let response = match manifest.request_kind {
         SourceUniverseOperatorWorkerRequestKind::Execute => {
             let object_bytes = read_worker_request_payload_guarded(
                 archive,
@@ -3117,39 +3177,30 @@ fn execute_source_universe_operator_worker_from_archive(
                 worker_request_payload(&manifest, WORKER_REQUEST_ROLE_SELECTED_OBJECT)?,
                 &work_budget,
             )?;
-            DurableRunRequest::Execute(object_bytes)
+            let outcome = runtime.block_on(dispatcher.dispatch_guarded(
+                &validated.run_spec,
+                object_bytes,
+                &manifest.output_dir,
+                &registry,
+                &work_budget,
+            ))?;
+            let receipt = outcome.into_receipt();
+            SourceUniverseOperatorWorkerResponse::Completed { receipt }
         }
-        SourceUniverseOperatorWorkerRequestKind::Resume => DurableRunRequest::Resume(
-            manifest
-                .durable_completion
-                .clone()
-                .context("validated resume worker request lost its durable locator")?,
-        ),
-    };
-    output_lease.revalidate()?;
-    let outcome = runtime.block_on(dispatcher.dispatch_guarded(
-        &validated.run_spec,
-        durable_request,
-        &manifest.output_dir,
-        &registry,
-        &work_budget,
-    ))?;
-    let receipt = match (manifest.request_kind, outcome) {
-        (
-            SourceUniverseOperatorWorkerRequestKind::Execute,
-            DurableRunOutcome::Executed { receipt, .. },
-        )
-        | (SourceUniverseOperatorWorkerRequestKind::Resume, DurableRunOutcome::Resumed(receipt)) => {
-            receipt
-        }
-        (SourceUniverseOperatorWorkerRequestKind::Execute, DurableRunOutcome::Resumed(_)) => {
-            bail!("fresh source-universe worker unexpectedly returned a durable resume")
-        }
-        (SourceUniverseOperatorWorkerRequestKind::Resume, DurableRunOutcome::Executed { .. }) => {
-            bail!("resume source-universe worker unexpectedly executed source bytes")
+        SourceUniverseOperatorWorkerRequestKind::Discover => {
+            let discovered = runtime.block_on(dispatcher.discover_current_completion_guarded(
+                &validated.run_spec,
+                &registry,
+                &work_budget,
+            ))?;
+            output_lease.revalidate()?;
+            match discovered {
+                Some(receipt) => SourceUniverseOperatorWorkerResponse::Completed { receipt },
+                None => SourceUniverseOperatorWorkerResponse::NoCurrentCompletion,
+            }
         }
     };
-    Ok(receipt)
+    Ok(response)
 }
 
 #[cfg(target_os = "linux")]
@@ -3474,34 +3525,6 @@ where
                         &clock_factory,
                     ) {
                         ResolvedBatchWorkItem::Terminal(slot) => slot,
-                        ResolvedBatchWorkItem::Resume(resume) => {
-                            let record = resume.record;
-                            let execution_record_sha256 = resume.execution_record_sha256;
-                            match (|| -> Result<RecordSlot> {
-                                if runner.is_none() {
-                                    runner = Some(
-                                        runner_factory()
-                                            .context("construct batch worker resume runner")?,
-                                    );
-                                }
-                                Ok(process_resume_work_item(
-                                    resume,
-                                    config,
-                                    runner.as_mut().expect("resume runner initialized"),
-                                ))
-                            })() {
-                                Ok(slot) => slot,
-                                Err(error) => record_error_slot(
-                                    record,
-                                    execution_record_sha256,
-                                    "construct_worker_dependencies",
-                                    committed_indeterminate_worker_error(format!(
-                                        "committed local terminal seal exists but exact durable resume worker construction failed: {error:#}"
-                                    )),
-                                    config,
-                                ),
-                            }
-                        }
                         ResolvedBatchWorkItem::Fresh(fresh) => {
                             let record = fresh.record;
                             let execution_record_sha256 = fresh.execution_record_sha256;
@@ -3512,17 +3535,15 @@ where
                                             .context("construct batch worker runner")?,
                                     );
                                 }
-                                if fetcher.is_none() {
-                                    fetcher = Some(
-                                        fetcher_factory()
-                                            .context("construct batch worker fetcher")?,
-                                    );
-                                }
+                                let mut lazy_fetcher = LazySourceUniverseObjectFetcher {
+                                    inner: &mut fetcher,
+                                    factory: fetcher_factory,
+                                };
                                 Ok(process_fresh_work_item(
                                     fresh,
                                     output_root_lease,
                                     config,
-                                    fetcher.as_mut().expect("batch fetcher initialized"),
+                                    &mut lazy_fetcher,
                                     runner.as_mut().expect("batch runner initialized"),
                                 ))
                             })() {
@@ -3574,12 +3595,18 @@ pub fn execute_source_universe_batch_process_isolated<F>(
     config: SourceUniverseBatchExecutionConfig,
     fetcher_factory: impl Fn() -> Result<F> + Sync,
     request_root: PathBuf,
+    worker_termination_grace_seconds: u64,
 ) -> Result<SourceUniverseBatchExecutionReport>
 where
     F: SourceUniverseObjectFetcher,
 {
     let max_concurrent_records = config.max_concurrent_records.unwrap_or(1);
     validate_process_isolated_max_concurrent_records(max_concurrent_records)?;
+    ensure!(
+        worker_termination_grace_seconds > 0,
+        "worker_termination_grace_seconds must be positive"
+    );
+    let worker_termination_grace = Duration::from_secs(worker_termination_grace_seconds);
     execute_source_universe_batch_with_pinned_artifacts_factories(
         batch_id,
         launch_artifacts,
@@ -3590,26 +3617,20 @@ where
             ProcessIsolatedSourceUniverseOperatorRunner::new(
                 request_root.clone(),
                 max_concurrent_records,
+                worker_termination_grace,
             )
         },
     )
 }
 
-/// A single unit of batch work after selection and resume filtering: a control
-/// artifact preflight failure collected under `continue_on_error`, a resume
-/// candidate that is revalidated at consumption time, or a pack record that
-/// still needs to be fetched, verified, and executed.
+/// A single unit of batch work after selection: either a control-artifact
+/// preflight failure collected under `continue_on_error` or a pack record that
+/// requires exact-current completion discovery before fetch and execution.
 enum BatchWorkItem<'pack> {
     PreflightFailed {
         record: &'pack SourceUniverseExecutionPackRecord,
         error: &'pack str,
         execution_record_sha256: &'pack str,
-    },
-    ResumeCandidate {
-        record: &'pack SourceUniverseExecutionPackRecord,
-        control_artifacts: &'pack SourceUniverseVerifiedControlArtifacts,
-        execution_record_sha256: &'pack str,
-        prior: &'pack SourceUniverseBatchExecutionRecord,
     },
     NeedsWork {
         record: &'pack SourceUniverseExecutionPackRecord,
@@ -3625,18 +3646,8 @@ struct FreshBatchWorkItem<'pack> {
     work_budget: OperatorWorkBudgetGuard,
 }
 
-struct ResumeBatchWorkItem<'pack> {
-    record: &'pack SourceUniverseExecutionPackRecord,
-    control_artifacts: &'pack SourceUniverseVerifiedControlArtifacts,
-    execution_record_sha256: &'pack str,
-    prior: &'pack SourceUniverseBatchExecutionRecord,
-    sealed_summary: OperatorRunSummary,
-    work_budget: OperatorWorkBudgetGuard,
-}
-
 enum ResolvedBatchWorkItem<'pack> {
     Terminal(RecordSlot),
-    Resume(ResumeBatchWorkItem<'pack>),
     Fresh(FreshBatchWorkItem<'pack>),
 }
 
@@ -3644,7 +3655,7 @@ enum ResolvedBatchWorkItem<'pack> {
 /// assembled report is independent of completion order.
 enum RecordSlot {
     Completed(SourceUniverseBatchExecutionRecord),
-    Carried(SourceUniverseBatchExecutionRecord),
+    Discovered(SourceUniverseBatchExecutionRecord),
     Failed(SourceUniverseBatchExecutionFailureRecord),
     Stopped(StoppedRecord),
 }
@@ -4298,32 +4309,6 @@ fn prepare_batch(
             .join(output_dir)
     };
 
-    // Resuming into the dir holding the resume report itself would only fail
-    // later, at the clean-write report guard (which refuses to overwrite the
-    // prior report). Reject the contract violation up front, before any fetch.
-    if let Some(resume_report) = launch_artifacts
-        .resume_report
-        .as_ref()
-        .map(|pin| pin.path.as_path())
-    {
-        let output_report_path = output_dir.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
-        let same_target = match (
-            resume_report.canonicalize(),
-            output_report_path.canonicalize(),
-        ) {
-            (Ok(resume), Ok(output)) => resume == output,
-            _ => resume_report == output_report_path.as_path(),
-        };
-        ensure!(
-            !same_target,
-            "resume requires a fresh output dir: resume report {} is the report path of output dir {}; \
-             the clean-write report guard preserves the prior report as evidence, so a resumed run \
-             must write into a new output dir",
-            resume_report.display(),
-            output_dir.display()
-        );
-    }
-
     // Validate every record's sha256 field before any fetch or cache activity.
     // A pack record whose selected_object_sha256 is not exactly 64 lowercase-hex
     // characters would be used verbatim as a filesystem path component by the
@@ -4342,8 +4327,8 @@ fn prepare_batch(
     }
 
     // Bind the selected records to the exact control bytes pinned by the pack
-    // before resume processing, cache access, source fetches, or worker
-    // construction. Selection is intentional: committed campaign packs retain
+    // before cache access, source fetches, or worker construction. Selection is
+    // intentional: committed campaign packs retain
     // only a bounded golden subset of generated run artifacts, and record_limit
     // is the operator's explicit execution window. Each unique resolved file is
     // read once, while every selected record's expected digest is still checked.
@@ -4409,18 +4394,11 @@ fn prepare_batch(
         .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
     let output_root_lease = BatchOutputRootLease::acquire(output_dir)?;
 
-    let resume_records = load_resume_records(
-        launch_artifacts.resume_report.as_ref(),
-        launch_artifacts.bootstrap_limits.max_launch_artifact_bytes,
-        &pack,
-    )?;
-
     Ok(OwnedBatchPlan {
         pack,
         execution_record_sha256s,
         verified_control_artifacts,
         control_artifact_failures,
-        resume_records,
         start_sequence: config.start_sequence,
         record_limit,
         output_root_lease,
@@ -4573,8 +4551,11 @@ fn validate_selected_control_input_envelope(
 
     for record in selected_records() {
         for pin in control_artifact_pins(record) {
+            let retirement_guard = ensure_active_backfill_runtime_path(pin.declared_path);
             let (identity, planned_path) =
-                match resolve_pack_control_path(pack_base_dir, pin.declared_path) {
+                match retirement_guard.and_then(|()| {
+                    resolve_pack_control_path(pack_base_dir, pin.declared_path)
+                }) {
                     Ok(path) => (
                         ControlEnvelopeIdentity::Resolved(path.clone()),
                         PlannedControlPath::Resolved(path),
@@ -4758,6 +4739,12 @@ fn verify_pack_control_artifacts(
             record.operator_run_id
         )
     })?;
+    validate_durable_run_spec_preflight(&validated.run_spec).with_context(|| {
+        format!(
+            "validate deterministic durable operator config for pack record {} ({}) before source fetch",
+            record.sequence, record.operator_run_id
+        )
+    })?;
 
     Ok(SourceUniverseVerifiedControlArtifacts {
         run_spec_path,
@@ -4894,14 +4881,13 @@ fn verify_pack_control_artifact(
     Ok((resolved_path, verified.bytes))
 }
 
-/// Owns the parsed pack and resume map so the `'pack`-lifetime [`BatchPlan`]
-/// work items can borrow from it without an extra clone of every pack record.
+/// Owns the parsed pack and verified controls so the `'pack`-lifetime
+/// [`BatchPlan`] work items can borrow from them without cloning every record.
 struct OwnedBatchPlan {
     pack: SourceUniverseExecutionPack,
     execution_record_sha256s: BTreeMap<u64, String>,
     verified_control_artifacts: BTreeMap<u64, SourceUniverseVerifiedControlArtifacts>,
     control_artifact_failures: BTreeMap<u64, String>,
-    resume_records: BTreeMap<u64, SourceUniverseBatchExecutionRecord>,
     start_sequence: Option<u64>,
     record_limit: usize,
     output_root_lease: BatchOutputRootLease,
@@ -4935,18 +4921,10 @@ impl OwnedBatchPlan {
                     .verified_control_artifacts
                     .get(&record.sequence)
                     .expect("selected record control artifacts were verified");
-                match self.resume_records.get(&record.sequence) {
-                    Some(prior) => BatchWorkItem::ResumeCandidate {
-                        record,
-                        control_artifacts,
-                        execution_record_sha256,
-                        prior,
-                    },
-                    None => BatchWorkItem::NeedsWork {
-                        record,
-                        control_artifacts,
-                        execution_record_sha256,
-                    },
+                BatchWorkItem::NeedsWork {
+                    record,
+                    control_artifacts,
+                    execution_record_sha256,
                 }
             })
             .collect();
@@ -4954,21 +4932,7 @@ impl OwnedBatchPlan {
     }
 }
 
-fn carried_record_inputs_match_pack(
-    prior: &SourceUniverseBatchExecutionRecord,
-    record: &SourceUniverseExecutionPackRecord,
-    control_artifacts: &SourceUniverseVerifiedControlArtifacts,
-    execution_record_sha256: &str,
-) -> bool {
-    prior.execution_record_sha256 == execution_record_sha256
-        && prior.source_bindings_sha256 == control_artifacts.source_bindings_sha256
-        && prior.selected_object_sha256 == record.selected_object_sha256
-        && prior.run_spec_sha256 == record.run_spec_sha256
-        && prior.accepted_tranche_sha256 == record.accepted_tranche_sha256
-        && prior.execution_plan_sha256 == record.execution_plan_sha256
-}
-
-fn reconstructed_carried_record(
+fn reconstructed_discovered_record(
     output_dir: &Path,
     durable_completion: DurableCompletionLocator,
     sealed_summary: OperatorRunSummary,
@@ -4998,46 +4962,6 @@ fn reconstructed_carried_record(
     }
 }
 
-fn load_resume_records(
-    resume_report: Option<&SourceUniverseBatchArtifactPin>,
-    max_artifact_bytes: u64,
-    pack: &SourceUniverseExecutionPack,
-) -> Result<BTreeMap<u64, SourceUniverseBatchExecutionRecord>> {
-    let Some(resume_report) = resume_report else {
-        return Ok(BTreeMap::new());
-    };
-    let prior_bytes = read_launch_artifact(resume_report, max_artifact_bytes)
-        .with_context(|| format!("read pinned resume report {}", resume_report.path.display()))?;
-    let prior: SourceUniverseBatchExecutionReport = serde_json::from_slice(&prior_bytes)
-        .with_context(|| format!("parse resume report {}", resume_report.path.display()))?;
-    validate_source_universe_batch_execution_report(&prior)
-        .with_context(|| format!("validate resume report {}", resume_report.path.display()))?;
-    for (name, expected, actual) in [
-        ("pack_id", pack.pack_id.as_str(), prior.pack_id.as_str()),
-        (
-            "universe_id",
-            pack.universe_id.as_str(),
-            prior.universe_id.as_str(),
-        ),
-        ("venue", pack.venue.as_str(), prior.venue.as_str()),
-    ] {
-        ensure!(
-            expected == actual,
-            "resume report {} {name} mismatch: expected {:?}, got {:?}",
-            resume_report.path.display(),
-            expected,
-            actual
-        );
-    }
-    // Only prior successful records (entries of `records`) carry forward; prior
-    // failures are reprocessed.
-    let mut resume_records = BTreeMap::new();
-    for record in prior.records {
-        resume_records.insert(record.sequence, record);
-    }
-    Ok(resume_records)
-}
-
 fn process_work_item<F, R, G>(
     work_item: &BatchWorkItem<'_>,
     output_root_lease: &BatchOutputRootLease,
@@ -5053,7 +4977,6 @@ where
 {
     match resolve_work_item(work_item, output_root_lease, config, clock_factory) {
         ResolvedBatchWorkItem::Terminal(slot) => slot,
-        ResolvedBatchWorkItem::Resume(resume) => process_resume_work_item(resume, config, runner),
         ResolvedBatchWorkItem::Fresh(fresh) => {
             process_fresh_work_item(fresh, output_root_lease, config, fetcher, runner)
         }
@@ -5069,7 +4992,7 @@ fn resolve_work_item<'pack, G>(
 where
     G: SourceUniverseWorkBudgetClockFactory,
 {
-    let (record, control_artifacts, execution_record_sha256, prior) = match work_item {
+    let (record, control_artifacts, execution_record_sha256) = match work_item {
         BatchWorkItem::PreflightFailed {
             record,
             error,
@@ -5083,27 +5006,15 @@ where
                 config,
             ));
         }
-        BatchWorkItem::ResumeCandidate {
-            record,
-            control_artifacts,
-            execution_record_sha256,
-            prior,
-        } => (
-            *record,
-            *control_artifacts,
-            *execution_record_sha256,
-            Some(*prior),
-        ),
         BatchWorkItem::NeedsWork {
             record,
             control_artifacts,
             execution_record_sha256,
-        } => (*record, *control_artifacts, *execution_record_sha256, None),
+        } => (*record, *control_artifacts, *execution_record_sha256),
     };
 
-    // One plan-derived guard owns the entire selected-record lifecycle. Resume
-    // verification therefore consumes the same wall budget as a fresh fallback
-    // and cannot reset its deadline by starting a second clock.
+    // One plan-derived guard owns exact-current completion discovery plus any
+    // subsequent fetch and execution, so the record cannot reset its deadline.
     let work_budget = match OperatorWorkBudgetGuard::from_execution_plan_with_clock(
         &control_artifacts.execution_plan,
         clock_factory.create_clock(),
@@ -5120,128 +5031,12 @@ where
         }
     };
 
-    if let Some(prior) = prior.filter(|prior| {
-        carried_record_inputs_match_pack(prior, record, control_artifacts, execution_record_sha256)
-    }) {
-        match verify_completed_operator_output(
-            &control_artifacts.run_spec,
-            &prior.output_dir,
-            &control_artifacts.source_bindings,
-            &work_budget,
-        ) {
-            Ok(sealed_summary) => {
-                return ResolvedBatchWorkItem::Resume(ResumeBatchWorkItem {
-                    record,
-                    control_artifacts,
-                    execution_record_sha256,
-                    prior,
-                    sealed_summary,
-                    work_budget,
-                });
-            }
-            Err(local_validation_error) => {
-                let terminal_probe = probe_operator_terminal_seal_summary_capped(
-                    &control_artifacts.run_spec,
-                    &prior.output_dir,
-                    &control_artifacts.source_bindings,
-                    control_artifacts.execution_plan.max_decoded_bytes,
-                );
-                match terminal_probe {
-                    Ok(OperatorTerminalSealProbe::Absent) => {}
-                    Ok(OperatorTerminalSealProbe::Committed(_)) => {
-                        return ResolvedBatchWorkItem::Terminal(record_error_slot(
-                            record,
-                            execution_record_sha256,
-                            "validate_resume",
-                            committed_indeterminate_worker_error(format!(
-                                "prior local terminal seal is committed but full local output validation failed: {local_validation_error:#}"
-                            )),
-                            config,
-                        ));
-                    }
-                    Err(probe_error) => {
-                        return ResolvedBatchWorkItem::Terminal(record_error_slot(
-                            record,
-                            execution_record_sha256,
-                            "validate_resume",
-                            committed_indeterminate_worker_error(format!(
-                                "prior local terminal ownership cannot be disproved after full validation failed ({local_validation_error:#}): {probe_error:#}"
-                            )),
-                            config,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
     ResolvedBatchWorkItem::Fresh(FreshBatchWorkItem {
         record,
         control_artifacts,
         execution_record_sha256,
         work_budget,
     })
-}
-
-fn process_resume_work_item<R>(
-    resume: ResumeBatchWorkItem<'_>,
-    config: &SourceUniverseBatchExecutionConfig,
-    runner: &mut R,
-) -> RecordSlot
-where
-    R: SourceUniverseOperatorRunner,
-{
-    let ResumeBatchWorkItem {
-        record,
-        control_artifacts,
-        execution_record_sha256,
-        prior,
-        sealed_summary,
-        work_budget,
-    } = resume;
-    let durable_completion = prior
-        .durable_completion
-        .as_ref()
-        .expect("validated prior report carries durable completion");
-    let receipt = runner
-        .resume(
-            record,
-            durable_completion,
-            control_artifacts,
-            &prior.output_dir,
-            &sealed_summary,
-            &work_budget,
-        )
-        .and_then(|receipt| {
-            validate_durable_receipt(&receipt, &control_artifacts.run_spec, &sealed_summary)?;
-            ensure!(
-                receipt.completion == *durable_completion,
-                "exact durable resume receipt does not match the prior durable completion locator"
-            );
-            Ok(receipt)
-        });
-    let receipt = match receipt {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            return record_error_slot(
-                record,
-                execution_record_sha256,
-                "validate_durable_resume",
-                committed_indeterminate_worker_error(format!(
-                    "committed local terminal seal exists but exact remote durable resume validation failed: {error:#}"
-                )),
-                config,
-            );
-        }
-    };
-    RecordSlot::Carried(reconstructed_carried_record(
-        &prior.output_dir,
-        receipt.completion,
-        sealed_summary,
-        record,
-        control_artifacts,
-        execution_record_sha256,
-    ))
 }
 
 fn process_fresh_work_item<F, R>(
@@ -5264,7 +5059,7 @@ where
 
     if let Err(error) = output_root_lease.revalidate().with_context(|| {
         format!(
-            "revalidate output root before fetch for {}",
+            "revalidate output root before deterministic terminal discovery for {}",
             record.operator_run_id
         )
     }) {
@@ -5272,30 +5067,6 @@ where
             record,
             execution_record_sha256,
             "validate_output",
-            error,
-            config,
-        );
-    }
-
-    let object_bytes =
-        match guarded_operation_outcome(&work_budget, OperatorWorkBudgetStage::Fetch, || {
-            fetcher.fetch(record, &work_budget)
-        })
-        .and_then(std::convert::identity)
-        .with_context(|| format!("fetch source object for {}", record.operator_run_id))
-        {
-            Ok(object_bytes) => object_bytes,
-            Err(error) => {
-                return record_error_slot(record, execution_record_sha256, "fetch", error, config);
-            }
-        };
-    if let Err(error) = verify_object_guarded(record, &object_bytes, &work_budget)
-        .with_context(|| format!("verify source object for {}", record.operator_run_id))
-    {
-        return record_error_slot(
-            record,
-            execution_record_sha256,
-            "verify_object",
             error,
             config,
         );
@@ -5335,6 +5106,94 @@ where
         }
     };
 
+    let record_output_dir = match guarded_operation_outcome(
+        &work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+        || output_claim.revalidate(output_root_lease),
+    )
+    .and_then(std::convert::identity)
+    .context("revalidate freshly claimed discovery scratch")
+    {
+        Ok(record_output_dir) => record_output_dir,
+        Err(error) => {
+            return record_error_slot_with_attempt(
+                record,
+                execution_record_sha256,
+                "validate_output",
+                error,
+                output_claim.attempt_identity(),
+                config,
+            );
+        }
+    };
+    let discovery = runner
+        .discover_current_completion(record, control_artifacts, &record_output_dir, &work_budget)
+        .and_then(|discovered| {
+            discovered
+                .map(|receipt| {
+                    let summary = durable_receipt_summary(&receipt, &control_artifacts.run_spec)?;
+                    Ok((receipt, summary))
+                })
+                .transpose()
+        });
+    match discovery {
+        Ok(Some((receipt, summary))) => {
+            return RecordSlot::Discovered(reconstructed_discovered_record(
+                &record_output_dir,
+                receipt.completion,
+                summary,
+                record,
+                control_artifacts,
+                execution_record_sha256,
+            ));
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return record_error_slot_with_attempt(
+                record,
+                execution_record_sha256,
+                "discover_durable_completion",
+                committed_indeterminate_worker_error(format!(
+                    "deterministic current-terminal state is not proven absent: {error:#}"
+                )),
+                output_claim.attempt_identity(),
+                config,
+            );
+        }
+    }
+
+    let object_bytes =
+        match guarded_operation_outcome(&work_budget, OperatorWorkBudgetStage::Fetch, || {
+            fetcher.fetch(record, control_artifacts.run_spec.as_ref(), &work_budget)
+        })
+        .and_then(std::convert::identity)
+        .with_context(|| format!("fetch source object for {}", record.operator_run_id))
+        {
+            Ok(object_bytes) => object_bytes,
+            Err(error) => {
+                return record_error_slot_with_attempt(
+                    record,
+                    execution_record_sha256,
+                    "fetch",
+                    error,
+                    output_claim.attempt_identity(),
+                    config,
+                );
+            }
+        };
+    if let Err(error) = verify_object_guarded(record, &object_bytes, &work_budget)
+        .with_context(|| format!("verify source object for {}", record.operator_run_id))
+    {
+        return record_error_slot_with_attempt(
+            record,
+            execution_record_sha256,
+            "verify_object",
+            error,
+            output_claim.attempt_identity(),
+            config,
+        );
+    }
+
     // Threat boundary: this detects replacement during the potentially long
     // fetch, but it is not an openat-style capability. `SourceUniverseOperatorRunner::run`
     // and the NT catalog APIs accept `&Path` and reopen descendants by pathname,
@@ -5343,7 +5202,7 @@ where
     // post-fetch atomic child claim plus held root/child identities reject
     // every drift observable at the available boundary
     // without pretending otherwise.
-    let record_output_dir = match guarded_operation_outcome(
+    let post_fetch_output_dir = match guarded_operation_outcome(
         &work_budget,
         OperatorWorkBudgetStage::ObjectVerification,
         || output_claim.revalidate(output_root_lease),
@@ -5367,6 +5226,16 @@ where
             );
         }
     };
+    if post_fetch_output_dir != record_output_dir {
+        return record_error_slot_with_attempt(
+            record,
+            execution_record_sha256,
+            "validate_output",
+            anyhow::anyhow!("fresh discovery scratch path changed before execution"),
+            output_claim.attempt_identity(),
+            config,
+        );
+    }
 
     // Allocate and bind every report field before entering the only operation
     // that may consume an operator completion permit. The success tail merely
@@ -5392,9 +5261,10 @@ where
         output_dir: record_output_dir,
     };
 
-    // The selected operator owns its terminal-seal commit permit. Its success
-    // path must not be postchecked, while an error is still nonterminal and
-    // must observe deadline expiry before it is classified.
+    // The selected operator owns its exact durable completion. Its success
+    // path has already passed child/candidate/receipt agreement and must not
+    // be postchecked, while an ordinary pre-terminal error still observes
+    // deadline expiry before classification.
     let run_result = run_operator_with_terminal_ownership(&work_budget, || {
         runner.run(
             record,
@@ -5582,7 +5452,7 @@ fn assemble_report(
 
     for (slot_index, slot) in slots.into_iter().enumerate() {
         match slot {
-            Some(RecordSlot::Completed(record) | RecordSlot::Carried(record)) => {
+            Some(RecordSlot::Completed(record) | RecordSlot::Discovered(record)) => {
                 total_canonical_rows = total_canonical_rows
                     .checked_add(record.canonical_rows)
                     .context("batch total_canonical_rows overflow")?;
@@ -5802,6 +5672,7 @@ mod tests {
         fn fetch(
             &mut self,
             record: &SourceUniverseExecutionPackRecord,
+            _run_spec: &RunSpec,
             _work_budget: &OperatorWorkBudgetGuard,
         ) -> Result<Vec<u8>> {
             self.calls.push(record.sequence);
@@ -5885,6 +5756,7 @@ mod tests {
         let error = ProcessIsolatedSourceUniverseOperatorRunner::new(
             PathBuf::from("relative-path-must-not-be-inspected"),
             2,
+            Duration::from_secs(1),
         )
         .expect_err("parallel process workers need an explicit aggregate-memory budget");
 
@@ -5905,8 +5777,12 @@ mod tests {
             .canonicalize()
             .expect("canonical request parent")
             .join(SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT);
-        let mut runner = ProcessIsolatedSourceUniverseOperatorRunner::new(request_root, 1)
-            .expect("construct process runner");
+        let mut runner = ProcessIsolatedSourceUniverseOperatorRunner::new(
+            request_root,
+            1,
+            Duration::from_secs(1),
+        )
+        .expect("construct process runner");
         let work_budget = OperatorWorkBudgetGuard::unbounded();
 
         runner
@@ -6115,6 +5991,21 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn worker_termination_grace_is_one_monotonic_deadline() {
+        let deadline = WorkerTerminationDeadline::new(Duration::from_millis(200))
+            .expect("termination deadline");
+        let first_remaining = deadline.remaining();
+        std::thread::sleep(Duration::from_millis(10));
+        let second_remaining = deadline.remaining();
+        assert!(
+            second_remaining < first_remaining,
+            "termination fallback must consume the original grace instead of resetting it"
+        );
+        assert!(second_remaining <= deadline.configured_grace);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn successful_worker_leader_cannot_orphan_a_descendant() {
         let temp = tempfile::tempdir().expect("worker orphan tempdir");
         let descendant_pid_path = temp.path().join("descendant.pid");
@@ -6275,7 +6166,6 @@ mod tests {
         let manifest = SourceUniverseOperatorWorkerRequestManifest {
             schema_version: SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_SCHEMA_VERSION.to_string(),
             request_kind: SourceUniverseOperatorWorkerRequestKind::Execute,
-            durable_completion: None,
             record,
             output_dir: output_dir.canonicalize().expect("canonical output dir"),
             source_bindings_path: temp_root.join("source-bindings-provenance.toml"),
@@ -6368,27 +6258,26 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn durable_resume_worker_request_contains_no_selected_object_payload() {
-        let temp = tempfile::tempdir().expect("resume worker request tempdir");
+    fn durable_discovery_worker_request_contains_no_selected_object_payload() {
+        let temp = tempfile::tempdir().expect("discovery worker request tempdir");
         let (mut manifest, _) = synthetic_worker_manifest(&temp);
-        manifest.request_kind = SourceUniverseOperatorWorkerRequestKind::Resume;
-        manifest.durable_completion = Some(synthetic_test_durable_completion());
+        manifest.request_kind = SourceUniverseOperatorWorkerRequestKind::Discover;
         manifest
             .payloads
             .retain(|payload| payload.role != WORKER_REQUEST_ROLE_SELECTED_OBJECT);
 
         validate_worker_request_manifest(&manifest)
-            .expect("resume request with controls and exact locator validates");
+            .expect("discovery request with controls and no source payload validates");
         assert!(
             worker_request_payload(&manifest, WORKER_REQUEST_ROLE_SELECTED_OBJECT).is_err(),
-            "resume request must have no selected-object byte range"
+            "discovery request must have no selected-object byte range"
         );
         let manifest_bytes = u64::try_from(
             serde_json::to_vec(&manifest)
-                .expect("serialize resume manifest")
+                .expect("serialize discovery manifest")
                 .len(),
         )
-        .expect("resume manifest length");
+        .expect("discovery manifest length");
         let expected_archive_bytes = u64::try_from(std::mem::size_of::<u64>())
             .expect("header width")
             .checked_add(manifest_bytes)
@@ -6398,10 +6287,10 @@ mod tests {
                     .iter()
                     .try_fold(total, |total, payload| total.checked_add(payload.bytes))
             })
-            .expect("resume archive byte total");
+            .expect("discovery archive byte total");
         assert_eq!(
             worker_request_archive_expected_bytes(manifest_bytes, &manifest)
-                .expect("resume archive size"),
+                .expect("discovery archive size"),
             expected_archive_bytes
         );
     }
@@ -6724,13 +6613,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_artifact_constructor_caps_pack_and_resume_before_path_access() {
-        let small = SourceUniverseBatchArtifactPin::try_new(
-            PathBuf::from("missing-small-launch-artifact"),
-            1,
-            "0".repeat(64),
-        )
-        .expect("small synthetic launch pin");
+    fn launch_artifact_constructor_caps_pack_before_path_access() {
         let oversized = SourceUniverseBatchArtifactPin::try_new(
             PathBuf::from("missing-oversized-launch-artifact"),
             2,
@@ -6743,9 +6626,8 @@ mod tests {
             max_retained_control_input_bytes: 1,
         };
 
-        let pack_error =
-            SourceUniverseBatchLaunchArtifacts::try_new(oversized.clone(), None, limits)
-                .expect_err("oversized execution pack must fail from its declared pin");
+        let pack_error = SourceUniverseBatchLaunchArtifacts::try_new(oversized, limits)
+            .expect_err("oversized execution pack must fail from its declared pin");
         assert!(
             pack_error.to_string().contains("execution pack")
                 && pack_error
@@ -6754,16 +6636,6 @@ mod tests {
             "{pack_error:#}"
         );
 
-        let resume_error =
-            SourceUniverseBatchLaunchArtifacts::try_new(small, Some(oversized), limits)
-                .expect_err("oversized resume report must fail from its declared pin");
-        assert!(
-            resume_error.to_string().contains("resume report")
-                && resume_error
-                    .to_string()
-                    .contains("exceeds configured maximum"),
-            "{resume_error:#}"
-        );
     }
 
     #[test]
@@ -6810,7 +6682,7 @@ mod tests {
         assert_eq!(
             execution_pack_context_sha256(&pack).expect("hash borrowed context"),
             legacy_digest,
-            "removing the full-pack clone must not invalidate resume fingerprints"
+            "removing the full-pack clone must not invalidate execution-record fingerprints"
         );
     }
 
@@ -7082,7 +6954,6 @@ mod tests {
         let launch_artifacts = SourceUniverseBatchLaunchArtifacts::try_new(
             SourceUniverseBatchArtifactPin::pin_current_path(&pack_path, max_artifact_bytes)
                 .expect("pin pack"),
-            None,
             SourceUniverseBatchBootstrapLimits {
                 max_launch_artifact_bytes: max_artifact_bytes,
                 max_control_artifact_bytes: max_artifact_bytes,
@@ -7195,29 +7066,93 @@ mod tests {
         assert_eq!(result.output.canonical_rows(), 7);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn valid_terminal_seal_is_the_commit_authority_after_worker_wait_failure() {
+    fn successful_quiesced_child_candidate_and_exact_receipt_become_committed() {
+        use std::os::unix::process::ExitStatusExt;
+
         let summary = OperatorRunSummary {
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash: crate::hashing::sha256_hex(b"catalog"),
         };
+        let receipt = DurableRunReceipt {
+            completion: synthetic_test_durable_completion(),
+            run_id: "synthetic-run".to_string(),
+            submitted_manifest_hash: crate::hashing::sha256_hex(b"synthetic manifest"),
+            canonical_rows: summary.canonical_rows,
+            nt_catalog_rows: summary.nt_catalog_rows,
+            catalog_hash: summary.catalog_hash.clone(),
+        };
+        let receipt_bytes = crate::reference_artifact::canonical_json_bytes(&receipt)
+            .expect("canonical synthetic durable receipt");
+        let expected_receipt_bytes = receipt_bytes.clone();
 
-        let classified = classify_terminated_worker_terminal_state(
-            &Err(anyhow::anyhow!("synthetic post-child wait failure")),
-            Ok(OperatorTerminalSealProbe::Committed(summary.clone())),
+        let outcome = accept_quiesced_durable_worker(
+            Ok(WorkerExitEvidence {
+                status: ExitStatus::from_raw(0),
+                receipt_bytes,
+            }),
+            Ok(DurableOutputCandidateSealProbe::Candidate(summary.clone())),
+            move |observed_bytes, observed_summary| {
+                ensure!(
+                    observed_bytes == expected_receipt_bytes,
+                    "returned durable receipt bytes changed"
+                );
+                ensure!(
+                    observed_summary == &summary,
+                    "candidate summary changed before exact receipt validation"
+                );
+                Ok(receipt)
+            },
+            || Ok(()),
         )
-        .expect("a valid terminal seal must outrank process status and wait errors");
+        .expect("all three independent success requirements commit the worker outcome");
 
-        assert_eq!(classified, summary);
+        let SourceUniverseOperatorRunOutcome::Committed(committed) = outcome else {
+            panic!("production durable acceptance must return a committed outcome");
+        };
+        assert_eq!(committed.output.canonical_rows(), 7);
+        assert_eq!(
+            committed.durable_completion,
+            synthetic_test_durable_completion()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crash_after_local_candidate_before_remote_terminal_is_indeterminate() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let summary = OperatorRunSummary {
+            canonical_rows: 7,
+            nt_catalog_rows: 7,
+            catalog_hash: crate::hashing::sha256_hex(b"catalog"),
+        };
+        let error = accept_quiesced_durable_worker(
+            Ok(WorkerExitEvidence {
+                status: ExitStatus::from_raw(1 << 8),
+                receipt_bytes: Vec::new(),
+            }),
+            Ok(DurableOutputCandidateSealProbe::Candidate(summary)),
+            |_, _| panic!("a crashed child must never reach receipt validation"),
+            || panic!("a crashed child must never reach final local validation"),
+        )
+        .expect_err("a local candidate never proves that remote terminal publication committed");
+
+        assert!(is_committed_indeterminate_worker_error(&error));
+        assert!(
+            error.to_string().contains("exited unsuccessfully"),
+            "{error:#}"
+        );
     }
 
     #[test]
-    fn indeterminate_process_lifecycle_cannot_reach_terminal_seal_classification() {
+    fn indeterminate_process_lifecycle_cannot_reach_candidate_receipt_acceptance() {
         let error = require_quiesced_worker_lifecycle(WorkerLifecycleOutcome::Indeterminate(
             anyhow::anyhow!("synthetic reap uncertainty"),
         ))
-        .expect_err("unproven process quiescence must hard-stop before any seal is accepted");
+        .expect_err("unproven process quiescence must hard-stop before candidate acceptance");
 
         assert!(is_committed_indeterminate_worker_error(&error));
         assert!(
@@ -7231,7 +7166,7 @@ mod tests {
         let error = require_quiesced_worker_lifecycle(WorkerLifecycleOutcome::NotStarted(
             anyhow::anyhow!("synthetic spawn refusal"),
         ))
-        .expect_err("prelaunch failure must fail without probing a terminal seal");
+        .expect_err("prelaunch failure must fail without probing a local candidate");
 
         assert!(!is_committed_indeterminate_worker_error(&error));
         assert!(error.to_string().contains("was not started"), "{error:#}");
@@ -7239,44 +7174,30 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn zero_exit_without_terminal_seal_is_committed_indeterminate() {
+    fn zero_exit_without_candidate_is_committed_indeterminate() {
         use std::os::unix::process::ExitStatusExt;
 
-        let error = classify_terminated_worker_terminal_state(
-            &Ok(WorkerExitEvidence {
+        let error = accept_quiesced_durable_worker(
+            Ok(WorkerExitEvidence {
                 status: ExitStatus::from_raw(0),
                 receipt_bytes: Vec::new(),
             }),
-            Ok(OperatorTerminalSealProbe::Absent),
+            Ok(DurableOutputCandidateSealProbe::Absent),
+            |_, _| panic!("an absent candidate must stop before receipt validation"),
+            || panic!("an absent candidate must stop before final local validation"),
         )
-        .expect_err("zero exit without the sole commit authority cannot be retried");
+        .expect_err("zero exit without its local candidate cannot be retried");
 
         assert!(is_committed_indeterminate_worker_error(&error));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn nonzero_exit_without_terminal_seal_is_committed_indeterminate() {
-        use std::os::unix::process::ExitStatusExt;
-
-        let error = classify_terminated_worker_terminal_state(
-            &Ok(WorkerExitEvidence {
-                status: ExitStatus::from_raw(1 << 8),
-                receipt_bytes: Vec::new(),
-            }),
-            Ok(OperatorTerminalSealProbe::Absent),
-        )
-        .expect_err("a started worker can have remote side effects before nonzero exit");
-
-        assert!(is_committed_indeterminate_worker_error(&error));
-        assert!(error.to_string().contains("unsuccessfully"), "{error:#}");
-    }
-
-    #[test]
-    fn wait_error_without_terminal_seal_is_committed_indeterminate() {
-        let error = classify_terminated_worker_terminal_state(
-            &Err(anyhow::anyhow!("synthetic post-start wait failure")),
-            Ok(OperatorTerminalSealProbe::Absent),
+    fn wait_error_before_candidate_acceptance_is_committed_indeterminate() {
+        let error = accept_quiesced_durable_worker(
+            Err(anyhow::anyhow!("synthetic post-start wait failure")),
+            Ok(DurableOutputCandidateSealProbe::Absent),
+            |_, _| panic!("a wait error must stop before receipt validation"),
+            || panic!("a wait error must stop before final local validation"),
         )
         .expect_err("a started worker can have remote side effects before wait failure");
 
@@ -7287,17 +7208,25 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn occupied_invalid_terminal_seal_is_committed_indeterminate() {
-        let error = classify_terminated_worker_terminal_state(
-            &Err(anyhow::anyhow!("synthetic worker timeout")),
-            Err(anyhow::anyhow!("synthetic occupied invalid seal")),
+    fn occupied_invalid_candidate_is_committed_indeterminate() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let error = accept_quiesced_durable_worker(
+            Ok(WorkerExitEvidence {
+                status: ExitStatus::from_raw(0),
+                receipt_bytes: Vec::new(),
+            }),
+            Err(anyhow::anyhow!("synthetic occupied invalid candidate")),
+            |_, _| panic!("an invalid candidate must stop before receipt validation"),
+            || panic!("an invalid candidate must stop before final local validation"),
         )
-        .expect_err("an occupied invalid terminal seal must stop automatic retry");
+        .expect_err("an occupied invalid candidate must stop automatic retry");
 
         assert!(is_committed_indeterminate_worker_error(&error));
         assert!(
-            error.to_string().contains("occupied invalid seal"),
+            error.to_string().contains("occupied invalid candidate"),
             "{error:#}"
         );
     }
@@ -7470,6 +7399,7 @@ mod tests {
         fn fetch(
             &mut self,
             _record: &SourceUniverseExecutionPackRecord,
+            _run_spec: &RunSpec,
             _work_budget: &OperatorWorkBudgetGuard,
         ) -> Result<Vec<u8>> {
             panic!("inner fetcher must not be called")
@@ -7779,13 +7709,13 @@ mod tests {
         );
     }
 
-    fn carried_record_with_output(
+    fn discovered_record_with_output(
         output_dir: PathBuf,
         catalog_hash: String,
     ) -> SourceUniverseBatchExecutionRecord {
         SourceUniverseBatchExecutionRecord {
             sequence: 0,
-            operator_run_id: "operator-run-carried".to_string(),
+            operator_run_id: "operator-run-discovered".to_string(),
             source_binding: "binding".to_string(),
             category: "spot".to_string(),
             symbol: "SYMBOL".to_string(),
@@ -7805,38 +7735,37 @@ mod tests {
         }
     }
 
-    /// Build an [`OwnedBatchPlan`] with a single pack record whose sha matches
-    /// the carried `prior`, so the carry-forward decision turns purely on the
-    /// new output re-verification gate.
-    fn owned_plan_with_carry(prior: &SourceUniverseBatchExecutionRecord) -> OwnedBatchPlan {
+    /// Build an [`OwnedBatchPlan`] with one verified pack record for report and
+    /// exact-current completion-discovery tests.
+    fn owned_plan_for_record(record: &SourceUniverseBatchExecutionRecord) -> OwnedBatchPlan {
         let pack_record = SourceUniverseExecutionPackRecord {
-            sequence: prior.sequence,
+            sequence: record.sequence,
             work_item_id: "work-item".to_string(),
-            operator_run_id: prior.operator_run_id.clone(),
-            source_binding: prior.source_binding.clone(),
-            category: prior.category.clone(),
-            symbol: prior.symbol.clone(),
-            archive_date: prior.archive_date.clone(),
+            operator_run_id: record.operator_run_id.clone(),
+            source_binding: record.source_binding.clone(),
+            category: record.category.clone(),
+            symbol: record.symbol.clone(),
+            archive_date: record.archive_date.clone(),
             source_uri: "s3://bucket/object.csv.gz".to_string(),
             source_url: "https://example/object.csv.gz".to_string(),
-            selected_object_sha256: prior.selected_object_sha256.clone(),
-            selected_object_bytes: prior.selected_object_bytes,
+            selected_object_sha256: record.selected_object_sha256.clone(),
+            selected_object_bytes: record.selected_object_bytes,
             source_proof_id: "proof".to_string(),
             source_proof_version: 1,
             accepted_tranche_id: "tranche".to_string(),
             output_prefix: "s3://bucket/out".to_string(),
             source_bindings_path: PathBuf::from("source-bindings.toml"),
             source_bindings_bytes: 0,
-            source_bindings_sha256: prior.source_bindings_sha256.clone(),
+            source_bindings_sha256: record.source_bindings_sha256.clone(),
             run_spec_path: PathBuf::from("run-spec.toml"),
             run_spec_bytes: 0,
-            run_spec_sha256: prior.run_spec_sha256.clone(),
+            run_spec_sha256: record.run_spec_sha256.clone(),
             accepted_tranche_path: PathBuf::from("tranche.json"),
             accepted_tranche_bytes: 0,
-            accepted_tranche_sha256: prior.accepted_tranche_sha256.clone(),
+            accepted_tranche_sha256: record.accepted_tranche_sha256.clone(),
             execution_plan_path: PathBuf::from("execution-plan.json"),
             execution_plan_bytes: 0,
-            execution_plan_sha256: prior.execution_plan_sha256.clone(),
+            execution_plan_sha256: record.execution_plan_sha256.clone(),
         };
         let mut pack = SourceUniverseExecutionPack {
             schema_version: SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION.to_string(),
@@ -7862,7 +7791,7 @@ mod tests {
             artifact_refs: vec![crate::reference_artifact::ReferenceArtifactPin {
                 role: "source_bindings".to_string(),
                 path: PathBuf::from("source-bindings.toml"),
-                sha256: prior.source_bindings_sha256.clone(),
+                sha256: record.source_bindings_sha256.clone(),
             }],
             records: vec![pack_record],
             blocking_reasons: Vec::new(),
@@ -7955,19 +7884,11 @@ mod tests {
             },
         );
         let execution_record_sha256s = execution_record_digests(&pack).expect("fingerprint pack");
-        let mut carried = prior.clone();
-        carried.execution_record_sha256 = execution_record_sha256s
-            .get(&prior.sequence)
-            .expect("record digest")
-            .clone();
-        carried.source_bindings_sha256 = source_bindings_sha256;
-        let mut resume_records = BTreeMap::new();
-        resume_records.insert(prior.sequence, carried);
         static NEXT_OUTPUT_ROOT: AtomicUsize = AtomicUsize::new(0);
-        let fresh_output_root = prior
+        let fresh_output_root = record
             .output_dir
             .parent()
-            .expect("prior output has parent")
+            .expect("record output has parent")
             .join(format!(
                 "fresh-output-{}",
                 NEXT_OUTPUT_ROOT.fetch_add(1, Ordering::SeqCst)
@@ -7980,7 +7901,6 @@ mod tests {
             execution_record_sha256s,
             verified_control_artifacts,
             control_artifact_failures: BTreeMap::new(),
-            resume_records,
             start_sequence: None,
             record_limit: usize::MAX,
             output_root_lease,
@@ -7988,12 +7908,12 @@ mod tests {
     }
 
     #[test]
-    fn reconstructed_resume_record_uses_only_the_sealed_summary() {
+    fn reconstructed_discovered_record_uses_only_the_sealed_summary() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
+        let output_dir = temp_dir.path().join("operator-run-discovered");
         fs::create_dir_all(&output_dir).expect("create output dir");
-        let forged_prior = carried_record_with_output(output_dir.clone(), "f".repeat(64));
-        let owned_plan = owned_plan_with_carry(&forged_prior);
+        let untrusted_record = discovered_record_with_output(output_dir.clone(), "f".repeat(64));
+        let owned_plan = owned_plan_for_record(&untrusted_record);
         let record = &owned_plan.pack.records[0];
         let controls = owned_plan
             .verified_control_artifacts
@@ -8005,12 +7925,12 @@ mod tests {
             .expect("record fingerprint");
         let sealed_hash = crate::hashing::sha256_hex(b"sealed catalog");
 
-        let reconstructed = reconstructed_carried_record(
+        let reconstructed = reconstructed_discovered_record(
             &output_dir,
-            forged_prior
+            untrusted_record
                 .durable_completion
                 .clone()
-                .expect("forged prior has durable completion"),
+                .expect("record has durable completion"),
             OperatorRunSummary {
                 canonical_rows: 3,
                 nt_catalog_rows: 3,
@@ -8024,74 +7944,17 @@ mod tests {
         assert_eq!(reconstructed.canonical_rows, 3);
         assert_eq!(reconstructed.nt_catalog_rows, 3);
         assert_eq!(reconstructed.catalog_hash, sealed_hash);
-        assert_ne!(reconstructed.canonical_rows, forged_prior.canonical_rows);
-        assert_ne!(reconstructed.catalog_hash, forged_prior.catalog_hash);
+        assert_ne!(reconstructed.canonical_rows, untrusted_record.canonical_rows);
+        assert_ne!(reconstructed.catalog_hash, untrusted_record.catalog_hash);
     }
 
     #[test]
-    fn plan_reexecutes_carried_record_when_prior_output_is_missing() {
-        // End-to-end through the carry-forward decision: a sha-matching prior
-        // record whose output catalog is gone is downgraded to NeedsWork (fresh
-        // fetch + verify + run), never carried forward as Completed from the
-        // stale resume marker.
+    fn final_assembly_consumes_a_sealed_discovery_summary_without_more_io() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
-        fs::create_dir_all(&output_dir).expect("create empty output dir");
-        let record = carried_record_with_output(output_dir, "f".repeat(64));
-        let owned_plan = owned_plan_with_carry(&record);
-        let plan = owned_plan.plan();
-        assert!(
-            matches!(
-                resolve_work_item(
-                    &plan.work_items[0],
-                    &owned_plan.output_root_lease,
-                    &SourceUniverseBatchExecutionConfig::default(),
-                    &SystemSourceUniverseWorkBudgetClockFactory,
-                ),
-                ResolvedBatchWorkItem::Fresh(_)
-            ),
-            "a carried record with a missing prior catalog must re-execute, not carry forward"
-        );
-    }
-
-    #[test]
-    fn expired_resume_verification_cannot_reset_the_fresh_fallback_clock() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
+        let output_dir = temp_dir.path().join("operator-run-discovered");
         fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = carried_record_with_output(output_dir, "f".repeat(64));
-        let owned_plan = owned_plan_with_carry(&record);
-        let plan = owned_plan.plan();
-        let mut fetcher = RecordingErrorFetcher::default();
-        let mut runner = NeverRunner;
-        let clock_factory = FirstRecordExpiresClockFactory::default();
-        let slot = process_work_item(
-            &plan.work_items[0],
-            &owned_plan.output_root_lease,
-            &SourceUniverseBatchExecutionConfig {
-                continue_on_error: true,
-                ..SourceUniverseBatchExecutionConfig::default()
-            },
-            &mut fetcher,
-            &mut runner,
-            &clock_factory,
-        );
-
-        let RecordSlot::Failed(failure) = slot else {
-            panic!("expired resume verification must fail its fresh fallback")
-        };
-        assert!(failure.error.contains("max_wall_seconds"), "{failure:?}");
-        assert!(fetcher.calls.is_empty(), "expired fallback must not fetch");
-        assert_eq!(clock_factory.created.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn final_assembly_consumes_a_sealed_carried_summary_without_more_io() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = carried_record_with_output(output_dir.clone(), "f".repeat(64));
-        let owned_plan = owned_plan_with_carry(&record);
+        let record = discovered_record_with_output(output_dir.clone(), "f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record);
         let pack_record = &owned_plan.pack.records[0];
         let controls = owned_plan
             .verified_control_artifacts
@@ -8101,12 +7964,12 @@ mod tests {
             .execution_record_sha256s
             .get(&pack_record.sequence)
             .expect("record fingerprint");
-        let slot = RecordSlot::Carried(reconstructed_carried_record(
+        let slot = RecordSlot::Discovered(reconstructed_discovered_record(
             &output_dir,
             record
                 .durable_completion
                 .clone()
-                .expect("carried record has durable completion"),
+                .expect("discovered record has durable completion"),
             OperatorRunSummary {
                 canonical_rows: 3,
                 nt_catalog_rows: 3,
@@ -8140,10 +8003,10 @@ mod tests {
     #[test]
     fn final_assembly_rejects_a_missing_slot_even_with_continue_on_error() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
+        let output_dir = temp_dir.path().join("operator-run-discovered");
         fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = carried_record_with_output(output_dir, "f".repeat(64));
-        let owned_plan = owned_plan_with_carry(&record);
+        let record = discovered_record_with_output(output_dir, "f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record);
         let error = assemble_report(
             "batch",
             &owned_plan,
@@ -8160,10 +8023,10 @@ mod tests {
     #[test]
     fn final_assembly_rejects_slot_vector_cardinality_drift() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
+        let output_dir = temp_dir.path().join("operator-run-discovered");
         fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = carried_record_with_output(output_dir, "f".repeat(64));
-        let owned_plan = owned_plan_with_carry(&record);
+        let record = discovered_record_with_output(output_dir, "f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record);
         let error = assemble_report(
             "batch",
             &owned_plan,
@@ -8177,71 +8040,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn plan_reexecutes_carried_record_when_any_control_artifact_hash_changes() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = carried_record_with_output(output_dir, "f".repeat(64));
-        for field in [
-            "source_bindings",
-            "run_spec",
-            "accepted_tranche",
-            "execution_plan",
-        ] {
-            let mut owned_plan = owned_plan_with_carry(&record);
-            match field {
-                "source_bindings" => {
-                    owned_plan.pack.records[0].source_bindings_sha256 = "e".repeat(64);
-                }
-                "run_spec" => owned_plan.pack.records[0].run_spec_sha256 = "e".repeat(64),
-                "accepted_tranche" => {
-                    owned_plan.pack.records[0].accepted_tranche_sha256 = "e".repeat(64);
-                }
-                "execution_plan" => {
-                    owned_plan.pack.records[0].execution_plan_sha256 = "e".repeat(64);
-                }
-                _ => unreachable!("test enumerates every control artifact"),
-            }
-
-            let plan = owned_plan.plan();
-
-            assert!(
-                matches!(
-                    resolve_work_item(
-                        &plan.work_items[0],
-                        &owned_plan.output_root_lease,
-                        &SourceUniverseBatchExecutionConfig::default(),
-                        &SystemSourceUniverseWorkBudgetClockFactory,
-                    ),
-                    ResolvedBatchWorkItem::Fresh(_)
-                ),
-                "a changed {field} hash must re-execute even when source and output still match"
-            );
-        }
-    }
-
-    #[test]
-    fn control_preflight_failure_takes_precedence_over_resume_carry() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-carried");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = carried_record_with_output(output_dir, "f".repeat(64));
-        let mut owned_plan = owned_plan_with_carry(&record);
-        owned_plan
-            .control_artifact_failures
-            .insert(record.sequence, "pinned run spec is missing".to_string());
-
-        let plan = owned_plan.plan();
-
-        assert!(
-            matches!(
-                plan.work_items.as_slice(),
-                [BatchWorkItem::PreflightFailed { .. }]
-            ),
-            "an invalid current control artifact must fail its record instead of carrying prior output"
-        );
-    }
 }
 
 fn validated_http_source_url(source_url: &str) -> Result<reqwest::Url> {

@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -18,7 +18,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use backtesting_vertical_slice::{
+use crate::{
     artifact_store::{
         ArtifactIndexAuditEpoch, ArtifactIndexCommitPlan, ArtifactIndexCommitState,
         ArtifactIndexEvent, ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow,
@@ -41,10 +41,11 @@ use backtesting_vertical_slice::{
         SYNTHETIC_SOURCE_PROOF_ID,
     },
     operator::{
-        CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableRunOutcome, DurableRunRequest,
-        RunArtifacts, RunSpec, VerifiedSourceBindingRegistry, run_from_run_spec,
+        CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableRunOutcome,
+        OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE, RunArtifacts, RunSpec,
+        VerifiedSourceBindingRegistry, discover_current_durable_completion_with_artifact_store_guarded,
+        run_from_run_spec,
         run_from_run_spec_with_artifact_store_guarded,
-        run_from_run_spec_with_artifact_store_resume_guarded,
     },
     operator_work_budget::{
         OperatorWorkBudget, OperatorWorkBudgetClock, OperatorWorkBudgetGuard,
@@ -196,10 +197,7 @@ fn gzip(text: &str) -> Vec<u8> {
 }
 
 fn executed_durable_artifacts(outcome: DurableRunOutcome) -> Box<RunArtifacts> {
-    match outcome {
-        DurableRunOutcome::Executed { artifacts, .. } => artifacts,
-        DurableRunOutcome::Resumed(_) => panic!("test expected a newly executed durable run"),
-    }
+    outcome.into_artifacts()
 }
 
 async fn assert_store_uri_matches_file(
@@ -871,6 +869,13 @@ impl VersionedCatalogStore {
             .expect("failed exact-version GET lock")
             .push(path);
         self
+    }
+
+    fn fail_exact_version_get(&self, path: ObjectPath) {
+        self.fail_exact_version_get_for
+            .lock()
+            .expect("failed exact-version GET lock")
+            .push(path);
     }
 
     fn with_current_overwrite_after_head(self, path: ObjectPath, bytes: Vec<u8>) -> Self {
@@ -3696,7 +3701,24 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let completion_path = artifact_root
         .object_path_for_uri(&completion_uri)
         .expect("durable completion path");
-    let store = VersionedCatalogStore::new().with_lost_put_ack(completion_path.clone());
+    let candidate_path = output_dir
+        .path()
+        .join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
+    let terminal_put_observed_candidate = Arc::new(AtomicBool::new(false));
+    let terminal_put_observed_candidate_for_hook = Arc::clone(&terminal_put_observed_candidate);
+    let completion_path_for_hook = completion_path.clone();
+    let candidate_path_for_hook = candidate_path.clone();
+    let store = VersionedCatalogStore::new()
+        .with_lost_put_ack(completion_path.clone())
+        .with_after_successful_put(Arc::new(move |path, _| {
+            if path == &completion_path_for_hook {
+                assert!(
+                    candidate_path_for_hook.is_file(),
+                    "local output candidate seal must precede the remote terminal PUT"
+                );
+                terminal_put_observed_candidate_for_hook.store(true, Ordering::SeqCst);
+            }
+        }));
     let expected_catalog_root = catalog_dispatch
         .catalog_root_for(
             &spec.source_proof.source_binding,
@@ -3718,6 +3740,10 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     .await
     .expect("operator artifact-store run");
     let completion_locator = outcome.receipt().completion.clone();
+    assert!(
+        terminal_put_observed_candidate.load(Ordering::SeqCst),
+        "remote terminal publication must observe the pre-terminal local candidate seal"
+    );
     assert_eq!(completion_locator.object.uri, completion_uri);
     assert_eq!(
         store
@@ -3937,49 +3963,21 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         persisted_projection.physical_manifest_sha256
     );
 
-    let put_count_before_resume = store.put_attempts().len();
-    let resumed_output = tempfile::TempDir::new().expect("resumed output dir");
+    let put_count_before_discovery = store.put_attempts().len();
     let source_bindings = VerifiedSourceBindingRegistry::from_run_spec(&spec)
-        .expect("snapshot source bindings for durable resume");
-    let resumed = run_from_run_spec_with_artifact_store_resume_guarded(
+        .expect("snapshot source bindings for durable discovery");
+    let discovered = discover_current_durable_completion_with_artifact_store_guarded(
         &spec,
-        DurableRunRequest::Resume(completion_locator.clone()),
-        resumed_output.path(),
         &store,
         &versioning,
         &source_bindings,
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("exact terminal locator resumes without execution");
-    assert!(matches!(resumed, DurableRunOutcome::Resumed(_)));
-    assert_eq!(store.put_attempts().len(), put_count_before_resume);
-    assert!(
-        fs::read_dir(resumed_output.path())
-            .expect("read resumed output")
-            .next()
-            .is_none(),
-        "validated terminal resume must not materialize local output"
-    );
-
-    let mut wrong_terminal_version = completion_locator.clone();
-    wrong_terminal_version.object.version_id = "wrong-terminal-version".to_string();
-    let error = match run_from_run_spec_with_artifact_store_resume_guarded(
-        &spec,
-        DurableRunRequest::Resume(wrong_terminal_version),
-        resumed_output.path(),
-        &store,
-        &versioning,
-        &source_bindings,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    {
-        Ok(_) => panic!("wrong terminal version must fail closed without current-key fallback"),
-        Err(error) => error,
-    };
-    assert!(format!("{error:#}").contains("version"), "{error:#}");
-    assert_eq!(store.put_attempts().len(), put_count_before_resume);
+    .expect("discover exact current terminal")
+    .expect("current terminal exists");
+    assert_eq!(discovered.completion, completion_locator);
+    assert_eq!(store.put_attempts().len(), put_count_before_discovery);
 
     let second_spec = spec.clone();
     let work_budget = OperatorWorkBudgetGuard::unbounded();
@@ -4038,6 +4036,26 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .nt_catalog_manifest_uri
             .as_deref(),
         Some(persisted_projection.receipt_uri.as_str())
+    );
+
+    let put_count_before_failed_discovery = store.put_attempts().len();
+    store.fail_exact_version_get(completion_path);
+    let error = discover_current_durable_completion_with_artifact_store_guarded(
+        &spec,
+        &store,
+        &versioning,
+        &source_bindings,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("exact-current discovery must fail closed when its pinned version is unreadable");
+    assert!(
+        format!("{error:#}").contains("exact-version GET failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        store.put_attempts().len(),
+        put_count_before_failed_discovery
     );
 }
 

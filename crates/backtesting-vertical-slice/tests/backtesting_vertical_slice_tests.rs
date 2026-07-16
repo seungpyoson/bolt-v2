@@ -1,7 +1,5 @@
 #![recursion_limit = "256"]
 
-#[path = "artifact_store_contract.rs"]
-mod artifact_store_contract;
 #[path = "backtesting_vertical_slice_artifact_index.rs"]
 mod backtesting_vertical_slice_artifact_index;
 #[path = "backtesting_vertical_slice_artifact_index_commit_proof.rs"]
@@ -16,8 +14,6 @@ mod backtesting_vertical_slice_backfill_accepted_tranche;
 mod backtesting_vertical_slice_backfill_binding_coverage;
 #[path = "backtesting_vertical_slice_backfill_conversion_batch.rs"]
 mod backtesting_vertical_slice_backfill_conversion_batch;
-#[path = "backtesting_vertical_slice_backfill_conversion_completion.rs"]
-mod backtesting_vertical_slice_backfill_conversion_completion;
 #[path = "backtesting_vertical_slice_backfill_coverage.rs"]
 mod backtesting_vertical_slice_backfill_coverage;
 #[path = "backtesting_vertical_slice_backfill_coverage_cli.rs"]
@@ -26,8 +22,10 @@ mod backtesting_vertical_slice_backfill_coverage_cli;
 mod backtesting_vertical_slice_backfill_execution_plan;
 #[path = "backtesting_vertical_slice_backfill_execution_readiness.rs"]
 mod backtesting_vertical_slice_backfill_execution_readiness;
-#[path = "backtesting_vertical_slice_backfill_gate_reference_artifacts.rs"]
-mod backtesting_vertical_slice_backfill_gate_reference_artifacts;
+#[path = "backtesting_vertical_slice_retired_backfill_evidence.rs"]
+mod backtesting_vertical_slice_retired_backfill_evidence;
+#[path = "backtesting_vertical_slice_bybit_source_universe_reference_artifacts.rs"]
+mod backtesting_vertical_slice_bybit_source_universe_reference_artifacts;
 #[path = "backtesting_vertical_slice_backfill_object_staging.rs"]
 mod backtesting_vertical_slice_backfill_object_staging;
 #[path = "backtesting_vertical_slice_backfill_preflight.rs"]

@@ -696,6 +696,33 @@ impl ResolvedArtifactRoot {
         Ok(ObjectPath::from(object_path))
     }
 
+    /// Resolve an S3 object path anywhere in the configured artifact bucket.
+    ///
+    /// This is intentionally broader than [`Self::object_path_for_uri`] only
+    /// in prefix, not in store ownership: staged raw inputs can live beside
+    /// the canonical artifact root, but a different bucket is rejected before
+    /// credentials or network access are attempted.
+    pub(crate) fn object_path_for_same_bucket_uri(&self, uri: &str) -> Result<ObjectPath> {
+        let trimmed = uri.trim();
+        ensure!(
+            uri == trimmed,
+            "artifact-bucket URI must not contain surrounding whitespace"
+        );
+        let uri = trimmed;
+        let without_scheme = uri
+            .strip_prefix("s3://")
+            .context("artifact-bucket URI must be an s3:// URI")?;
+        let Some((bucket, object_path)) = without_scheme.split_once('/') else {
+            bail!("artifact-bucket URI must include an S3 bucket and object path");
+        };
+        ensure!(
+            bucket == artifact_bucket_name(&self.artifact_root)?,
+            "artifact-bucket URI bucket {bucket:?} differs from the configured artifact bucket"
+        );
+        ensure_path_token("artifact_bucket_uri", object_path, PathTokenMode::AllowEquals)?;
+        Ok(ObjectPath::from(object_path))
+    }
+
     fn subpath(&self, kind: ArtifactKind) -> &str {
         match kind {
             ArtifactKind::Raw => &self.subpaths.raw,

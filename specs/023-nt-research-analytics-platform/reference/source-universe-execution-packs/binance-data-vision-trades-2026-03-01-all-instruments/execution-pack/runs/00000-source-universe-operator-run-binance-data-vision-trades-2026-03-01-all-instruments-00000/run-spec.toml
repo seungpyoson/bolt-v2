@@ -108,13 +108,13 @@ size_increment = "0.01000000"
 
 [manifest]
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
-catalog_hash = "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362"
 execution_model = "nt_backtest_node"
-manifest_schema_version = "backtesting-run-manifest.v1"
+manifest_schema_version = "backtesting-run-manifest.v2"
 market_structure_fixture = "perps-spot"
+nt_streaming_chunk_size = 128
 output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=0GTRY/dt=2026-03-01/object=054fa3d832a2e262855e93f46f636e66b1bac17b29caf4cd6e4a597b494422e4"
 pins_non_latest_proof = false
-resolved_nt_version = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+resolved_nt_version = "d636f17604cdbddc28ad40e0e15720e2d19bf860"
 run_id = "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00000"
 run_purpose = "normal"
 source_proof_id = "source-proof-binance-spot-native-trades-2026-03-01-all-instruments"

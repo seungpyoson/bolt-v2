@@ -1,6 +1,0 @@
-materialization_id = "backfill-run-spec-materialization-binance-bnbusdc-2026-05-10"
-accepted_tranche_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-05-10/accepted-tranche/backfill-accepted-tranche-manifest.json"
-run_spec_template_path = "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-05-10.toml"
-output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-05-10/materialized-run-spec"
-run_id = "backtesting-vertical-slice-binance-bnbusdc-2026-05-10-accepted"
-output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-05-10-accepted"

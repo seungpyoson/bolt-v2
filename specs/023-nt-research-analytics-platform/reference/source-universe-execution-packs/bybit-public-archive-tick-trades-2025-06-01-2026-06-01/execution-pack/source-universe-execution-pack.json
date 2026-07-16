@@ -38,7 +38,7 @@
     {
       "role": "run_spec_template",
       "path": "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml",
-      "sha256": "5ac58605395572fcd2155905f52815786bd3b949703a6448d785036f3b7e0d40"
+      "sha256": "1ba3efe0f304df4fb2058878dce128ac4d0ffdbb2ab3010eafa02cb101f9ac00"
     },
     {
       "role": "source_bindings",
@@ -72,14 +72,14 @@
       "source_bindings_bytes": 15887,
       "source_bindings_sha256": "e007d32e254097d5d0aee81a7fa71fb307347e1df90030f53612fa937fb44256",
       "run_spec_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/runs/00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/run-spec.toml",
-      "run_spec_bytes": 11646,
-      "run_spec_sha256": "9ff22d84de33866052c3fae5c679074cba06ad7833273be87f2d2abe28f7a12b",
+      "run_spec_bytes": 11777,
+      "run_spec_sha256": "e4dd79d1e293a6407992e4a2f5a53c29210af3ed8d77e019178ac5153aa1532f",
       "accepted_tranche_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/runs/00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/backfill-accepted-tranche-manifest.json",
       "accepted_tranche_bytes": 1639,
       "accepted_tranche_sha256": "1d300ad208a5ce6447c132e8795d222f6394f4529fb1dcb35d9f1af957dcd084",
       "execution_plan_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/runs/00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/backfill-execution-plan.json",
-      "execution_plan_bytes": 1969,
-      "execution_plan_sha256": "b4907f3dfad528633755f5585548f20c154c8c45b85950091873271b962b66cd"
+      "execution_plan_bytes": 1970,
+      "execution_plan_sha256": "e8454e30d0e1b8505a0ff79c306a082d28fae9e90e2bfe7555d672a8b49d9d66"
     }
   ],
   "blocking_reasons": [

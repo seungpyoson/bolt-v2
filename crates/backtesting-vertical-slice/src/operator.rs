@@ -98,11 +98,13 @@ use crate::{
         OperatorWorkBudgetGuard, OperatorWorkBudgetStage, cooperative_stable_sort_by,
         deserialize_json_with_budget, guarded_async_operation_outcome,
         guarded_blocking_join_outcome, guarded_operation_outcome, read_file_with_budget,
-        sha256_exact_sized_open_file_guarded, sha256_hex_with_budget,
+        serialize_json_to_vec_guarded, sha256_exact_sized_open_file_guarded,
+        sha256_hex_with_budget,
     },
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
+    retired_backfill_evidence::resolve_active_backfill_runtime_input,
     run_manifest::{
         BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION, BacktestRunManifestArtifact,
         BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, CATALOG_RUN_VIEW_AUTHORITY_FILE,
@@ -139,6 +141,13 @@ pub const BACKTEST_RUN_MANIFEST_FILE: &str = "backtest-run-manifest.json";
 pub const ACCEPTED_SOURCE_PROOF_FILE: &str = "accepted-source-proof.json";
 /// Final local completion commit binding the exact operator output file set.
 pub const OPERATOR_TERMINAL_SEAL_FILE: &str = "operator-terminal-seal.json";
+/// Pre-terminal local output-integrity candidate for durable runs.
+///
+/// This file is deliberately distinct from both the local terminal seal and
+/// the remote durable completion manifest. It can prove which local bytes a
+/// child finalized, but it never grants durable commit authority by itself.
+pub const OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE: &str =
+    "operator-durable-output-candidate-seal.json";
 /// Published-catalog `BacktestNode` proof artifact filename.
 pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
 /// Sole remote completion authority for a durable catalog run.
@@ -461,10 +470,10 @@ impl DurableObjectVersionIdentity {
     }
 }
 
-/// Caller-retained, exact-version locator for the remote terminal manifest.
-/// It is returned by the commit path and must be supplied explicitly for a
-/// fast resume; the operator never discovers completion through a mutable
-/// current-key read.
+/// Exact-version locator for the remote terminal manifest. Fresh completion
+/// returns it directly; crash recovery may derive it only by pinning a
+/// non-null version from the deterministic current key and then fully
+/// validating that exact version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableCompletionLocator {
@@ -483,16 +492,7 @@ impl DurableCompletionLocator {
     }
 }
 
-/// Exactly one durable invocation authority. Execution consumes the accepted
-/// source bytes; resume consumes only an exact terminal locator and cannot
-/// accidentally retain or inspect a second source payload.
-pub enum DurableRunRequest {
-    Execute(Vec<u8>),
-    Resume(DurableCompletionLocator),
-}
-
-/// Scalar result of a fully validated durable fast resume. It deliberately
-/// does not fabricate [`RunArtifacts`] or rematerialize the canonical dataset.
+/// Scalar receipt for a fully committed or discovered durable run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableRunReceipt {
@@ -504,30 +504,27 @@ pub struct DurableRunReceipt {
     pub catalog_hash: String,
 }
 
-/// One production durable lane with two honest outcomes: newly executed
-/// artifacts, or a validated remote terminal receipt.
-pub enum DurableRunOutcome {
-    Executed {
-        artifacts: Box<RunArtifacts>,
-        receipt: DurableRunReceipt,
-    },
-    Resumed(DurableRunReceipt),
+/// Result of the sole durable execution lane. Exact-current terminal discovery
+/// is a separate read-only operation and never enters this write path.
+pub(crate) struct DurableRunOutcome {
+    artifacts: Box<RunArtifacts>,
+    receipt: DurableRunReceipt,
 }
 
 impl DurableRunOutcome {
     #[must_use]
-    pub fn receipt(&self) -> &DurableRunReceipt {
-        match self {
-            Self::Executed { receipt, .. } | Self::Resumed(receipt) => receipt,
-        }
+    pub(crate) fn receipt(&self) -> &DurableRunReceipt {
+        &self.receipt
     }
 
     #[must_use]
-    pub fn executed_artifacts(&self) -> Option<&RunArtifacts> {
-        match self {
-            Self::Executed { artifacts, .. } => Some(artifacts),
-            Self::Resumed(_) => None,
-        }
+    pub(crate) fn into_artifacts(self) -> Box<RunArtifacts> {
+        self.artifacts
+    }
+
+    #[must_use]
+    pub(crate) fn into_receipt(self) -> DurableRunReceipt {
+        self.receipt
     }
 }
 
@@ -645,6 +642,108 @@ impl DurableCompletionManifest {
     }
 }
 
+/// Bind the durable result contract to the exact submitted run, accepted
+/// conversion fingerprint, and terminal manifest. This is the single
+/// cross-artifact contract check used both before a fresh terminal create and
+/// while validating an exact remote terminal during recovery.
+fn validate_durable_result_contract_cross_claims(
+    contract: &BacktestResultContract,
+    spec: &RunSpec,
+    fingerprint: &ConversionFingerprint,
+    terminal: &DurableCompletionManifest,
+) -> Result<()> {
+    terminal.validate_for(spec, fingerprint)?;
+    contract
+        .validate()
+        .map_err(|error| anyhow::anyhow!("validate durable result contract: {error}"))?;
+    let acceptance_mode = spec
+        .source_proof
+        .acceptance_mode
+        .context("accepted source proof is missing acceptance_mode")?;
+    let accepted_by = spec
+        .source_proof
+        .accepted_by
+        .as_deref()
+        .context("accepted source proof is missing accepted_by")?;
+    let accepted_at = spec
+        .source_proof
+        .accepted_at
+        .as_deref()
+        .context("accepted source proof is missing accepted_at")?;
+    ensure!(
+        contract.run_id == spec.manifest.run_id
+            && contract.manifest_hash == spec.manifest.manifest_hash()
+            && contract.nt_version == spec.manifest.resolved_nt_version
+            && contract.created_at == spec.created_at_utc,
+        "durable result contract submitted-run identity does not match RunSpec"
+    );
+    ensure!(
+        contract.source_proof_id == fingerprint.source_proof_id
+            && contract.source_proof_version == fingerprint.source_proof_version
+            && contract.accepted_object_sha256 == fingerprint.accepted_object_sha256
+            && contract.converter_identity == fingerprint.converter_identity
+            && contract.converter_version == fingerprint.converter_version
+            && contract.converter_config_hash == fingerprint.converter_config_hash,
+        "durable result contract source/conversion identity does not match the terminal fingerprint"
+    );
+    ensure!(
+        contract.acceptance_mode == acceptance_mode
+            && contract.accepted_by == spec.accepted_by
+            && contract.accepted_by == accepted_by
+            && contract.accepted_at == spec.accepted_at_utc
+            && contract.accepted_at == accepted_at,
+        "durable result contract acceptance identity does not match RunSpec"
+    );
+    let expected_catalog_data_types = spec
+        .manifest
+        .catalog_inputs
+        .iter()
+        .map(|input| input.data_type.clone())
+        .collect::<Vec<_>>();
+    ensure!(
+        contract.strategy_config_hash == spec.manifest.strategy_config_hash
+            && contract.execution_model == spec.manifest.execution_model
+            && contract.venue_queue_position == Some(spec.manifest.venue.queue_position)
+            && contract.catalog_data_types == expected_catalog_data_types
+            && contract.run_purpose == run_purpose_label(&spec.manifest)
+            && contract.market_structure_fixture == market_structure_label(&spec.manifest)
+            && contract.fidelity_class == spec.source_proof.fidelity_class,
+        "durable result contract execution claims do not match RunSpec"
+    );
+    let expected_selector_hashes = spec
+        .selector_provenance
+        .as_ref()
+        .map(|selector| {
+            (
+                Some(selector.event_count_ledger_hash.as_str()),
+                Some(selector.selected_asset_ids_hash.as_str()),
+            )
+        })
+        .unwrap_or((None, None));
+    ensure!(
+        contract.event_count_ledger_hash.as_deref() == expected_selector_hashes.0
+            && contract.selected_asset_ids_hash.as_deref() == expected_selector_hashes.1,
+        "durable result contract selector provenance does not match RunSpec"
+    );
+    ensure!(
+        contract.catalog_hash == terminal.catalog_hash
+            && contract.nt_result.iterations == terminal.nt_catalog_rows,
+        "durable result contract catalog/row claims do not match terminal summary"
+    );
+    ensure!(
+        contract.artifact_uris.source_proof_uri
+            == portable_artifact_uri(&spec.manifest.output_prefix, ACCEPTED_SOURCE_PROOF_FILE)
+            && contract.artifact_uris.canonical_table_uri
+                == portable_artifact_uri(&spec.manifest.output_prefix, CANONICAL_ARTIFACT_FILE)
+            && contract.artifact_uris.catalog_metadata_uri == terminal.catalog_metadata.uri
+            && contract.artifact_uris.result_contract_uri == terminal.result_contract.uri
+            && contract.artifact_uris.nt_catalog_manifest_uri.as_deref()
+                == Some(terminal.publication_receipt.uri.as_str()),
+        "durable result contract artifact URIs do not match RunSpec and terminal manifest"
+    );
+    Ok(())
+}
+
 struct DurableCompletionArtifacts {
     result_contract: DurableObjectVersionIdentity,
     catalog_metadata: DurableObjectVersionIdentity,
@@ -663,6 +762,10 @@ pub(crate) struct OperatorRunSummary {
 }
 
 const OPERATOR_TERMINAL_SEAL_VERSION: &str = "operator-terminal-seal.v1";
+const OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_VERSION: &str =
+    "operator-durable-output-candidate-seal.v1";
+const OPERATOR_DURABLE_OUTPUT_CANDIDATE_AUTHORITY_SCOPE: &str =
+    "local-output-integrity-only-not-durable-completion";
 
 /// One exact regular file committed by an operator run. The terminal seal is
 /// deliberately excluded from this list so it can be written last without a
@@ -677,7 +780,8 @@ struct OperatorTerminalSealFile {
 
 /// Sole local operator-completion authority. A conversion checkpoint can
 /// prove that projection finished, but only this final create-only artifact
-/// binds the complete backtest output and permits batch carry-forward.
+/// binds the complete local backtest output. It is never batch recovery
+/// authority; durable recovery uses exact-current remote terminal discovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OperatorTerminalSeal {
@@ -690,6 +794,108 @@ struct OperatorTerminalSeal {
     catalog_hash: String,
     files: Vec<OperatorTerminalSealFile>,
     committed_at: String,
+}
+
+/// Immutable local byte-set evidence created immediately before the remote
+/// terminal publication attempt. The explicit authority scope makes this
+/// structurally incapable of masquerading as either local or remote terminal
+/// completion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperatorDurableOutputCandidateSeal {
+    seal_version: String,
+    authority_scope: String,
+    run_id: String,
+    submitted_manifest_hash: String,
+    fingerprint: ConversionFingerprint,
+    canonical_rows: u64,
+    nt_catalog_rows: u64,
+    catalog_hash: String,
+    files: Vec<OperatorTerminalSealFile>,
+    sealed_at: String,
+}
+
+struct OperatorOutputSealContents<'a> {
+    role: &'static str,
+    run_id: &'a str,
+    submitted_manifest_hash: &'a str,
+    fingerprint: &'a ConversionFingerprint,
+    canonical_rows: u64,
+    nt_catalog_rows: u64,
+    catalog_hash: &'a str,
+    files: &'a [OperatorTerminalSealFile],
+    timestamp: &'a str,
+    timestamp_field: &'static str,
+}
+
+fn validate_operator_output_seal_contents(
+    contents: OperatorOutputSealContents<'_>,
+    spec: &RunSpec,
+    fingerprint: &ConversionFingerprint,
+) -> Result<()> {
+    ensure!(
+        contents.run_id == spec.manifest.run_id,
+        "{} run_id mismatch",
+        contents.role
+    );
+    ensure!(
+        contents.submitted_manifest_hash == spec.manifest.manifest_hash(),
+        "{} submitted manifest hash mismatch",
+        contents.role
+    );
+    contents.fingerprint.validate_against(fingerprint)?;
+    ensure!(
+        contents.canonical_rows > 0 && contents.nt_catalog_rows == contents.canonical_rows,
+        "{} summary row counts are invalid",
+        contents.role
+    );
+    ensure!(
+        is_lowercase_sha256_hex(contents.catalog_hash),
+        "{} catalog_hash must be lowercase SHA-256",
+        contents.role
+    );
+    ensure!(
+        !contents.timestamp.trim().is_empty() && contents.timestamp == spec.created_at_utc,
+        "{} {} mismatch",
+        contents.role,
+        contents.timestamp_field
+    );
+    ensure!(
+        !contents.files.is_empty(),
+        "{} exact file set must not be empty",
+        contents.role
+    );
+    let mut previous: Option<&str> = None;
+    for file in contents.files {
+        ensure_safe_terminal_seal_relative_path(&file.relative_path)?;
+        ensure!(
+            file.relative_path != OPERATOR_TERMINAL_SEAL_FILE
+                && file.relative_path != OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE,
+            "{} must exclude every reserved output-seal path from the exact file set",
+            contents.role
+        );
+        ensure!(
+            is_lowercase_sha256_hex(&file.sha256),
+            "{} file {} has invalid SHA-256",
+            contents.role,
+            file.relative_path
+        );
+        ensure!(
+            file.bytes > 0,
+            "{} file {} must have a positive byte length",
+            contents.role,
+            file.relative_path
+        );
+        if let Some(previous) = previous {
+            ensure!(
+                previous < file.relative_path.as_str(),
+                "{} files must be strictly sorted and unique",
+                contents.role
+            );
+        }
+        previous = Some(&file.relative_path);
+    }
+    Ok(())
 }
 
 impl OperatorTerminalSeal {
@@ -718,53 +924,80 @@ impl OperatorTerminalSeal {
             "unexpected operator terminal seal version: expected {OPERATOR_TERMINAL_SEAL_VERSION:?}, got {:?}",
             self.seal_version
         );
-        ensure!(
-            self.run_id == spec.manifest.run_id,
-            "operator terminal seal run_id mismatch"
-        );
-        ensure!(
-            self.submitted_manifest_hash == spec.manifest.manifest_hash(),
-            "operator terminal seal submitted manifest hash mismatch"
-        );
-        self.fingerprint.validate_against(fingerprint)?;
-        ensure!(
-            is_lowercase_sha256_hex(&self.catalog_hash),
-            "operator terminal seal catalog_hash must be lowercase SHA-256"
-        );
-        ensure!(
-            !self.committed_at.trim().is_empty() && self.committed_at == spec.created_at_utc,
-            "operator terminal seal committed_at mismatch"
-        );
-        ensure!(
-            !self.files.is_empty(),
-            "operator terminal seal exact file set must not be empty"
-        );
-        let mut previous: Option<&str> = None;
-        for file in &self.files {
-            ensure_safe_terminal_seal_relative_path(&file.relative_path)?;
-            ensure!(
-                file.relative_path != OPERATOR_TERMINAL_SEAL_FILE,
-                "operator terminal seal must exclude itself from the exact file set"
-            );
-            ensure!(
-                is_lowercase_sha256_hex(&file.sha256),
-                "operator terminal seal file {} has invalid SHA-256",
-                file.relative_path
-            );
-            ensure!(
-                file.bytes > 0,
-                "operator terminal seal file {} must have a positive byte length",
-                file.relative_path
-            );
-            if let Some(previous) = previous {
-                ensure!(
-                    previous < file.relative_path.as_str(),
-                    "operator terminal seal files must be strictly sorted and unique"
-                );
-            }
-            previous = Some(&file.relative_path);
+        validate_operator_output_seal_contents(
+            OperatorOutputSealContents {
+                role: "operator terminal seal",
+                run_id: &self.run_id,
+                submitted_manifest_hash: &self.submitted_manifest_hash,
+                fingerprint: &self.fingerprint,
+                canonical_rows: self.canonical_rows,
+                nt_catalog_rows: self.nt_catalog_rows,
+                catalog_hash: &self.catalog_hash,
+                files: &self.files,
+                timestamp: &self.committed_at,
+                timestamp_field: "committed_at",
+            },
+            spec,
+            fingerprint,
+        )
+    }
+
+    fn summary(&self) -> OperatorRunSummary {
+        OperatorRunSummary {
+            canonical_rows: self.canonical_rows,
+            nt_catalog_rows: self.nt_catalog_rows,
+            catalog_hash: self.catalog_hash.clone(),
         }
-        Ok(())
+    }
+}
+
+impl OperatorDurableOutputCandidateSeal {
+    fn new(
+        spec: &RunSpec,
+        fingerprint: ConversionFingerprint,
+        summary: &OperatorRunSummary,
+        files: Vec<OperatorTerminalSealFile>,
+    ) -> Self {
+        Self {
+            seal_version: OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_VERSION.to_string(),
+            authority_scope: OPERATOR_DURABLE_OUTPUT_CANDIDATE_AUTHORITY_SCOPE.to_string(),
+            run_id: spec.manifest.run_id.clone(),
+            submitted_manifest_hash: spec.manifest.manifest_hash(),
+            fingerprint,
+            canonical_rows: summary.canonical_rows,
+            nt_catalog_rows: summary.nt_catalog_rows,
+            catalog_hash: summary.catalog_hash.clone(),
+            files,
+            sealed_at: spec.created_at_utc.clone(),
+        }
+    }
+
+    fn validate_for(&self, spec: &RunSpec, fingerprint: &ConversionFingerprint) -> Result<()> {
+        ensure!(
+            self.seal_version == OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_VERSION,
+            "unexpected durable output candidate seal version: expected {OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_VERSION:?}, got {:?}",
+            self.seal_version
+        );
+        ensure!(
+            self.authority_scope == OPERATOR_DURABLE_OUTPUT_CANDIDATE_AUTHORITY_SCOPE,
+            "durable output candidate seal authority_scope mismatch"
+        );
+        validate_operator_output_seal_contents(
+            OperatorOutputSealContents {
+                role: "durable output candidate seal",
+                run_id: &self.run_id,
+                submitted_manifest_hash: &self.submitted_manifest_hash,
+                fingerprint: &self.fingerprint,
+                canonical_rows: self.canonical_rows,
+                nt_catalog_rows: self.nt_catalog_rows,
+                catalog_hash: &self.catalog_hash,
+                files: &self.files,
+                timestamp: &self.sealed_at,
+                timestamp_field: "sealed_at",
+            },
+            spec,
+            fingerprint,
+        )
     }
 
     fn summary(&self) -> OperatorRunSummary {
@@ -1204,10 +1437,16 @@ fn account_terminal_seal_inventory_bytes(
 /// Enumerate and stream-hash the exact regular-file set under one output root.
 /// Symlinks, special files, unbounded path inventories, and file growth or
 /// truncation are rejected before the resulting set can authorize resume.
-fn collect_operator_terminal_seal_files(
+fn collect_operator_output_seal_files(
     output_dir: &Path,
+    excluded_seal_file: &str,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<OperatorTerminalSealFile>> {
+    ensure!(
+        excluded_seal_file == OPERATOR_TERMINAL_SEAL_FILE
+            || excluded_seal_file == OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE,
+        "unrecognized operator output seal path {excluded_seal_file:?}"
+    );
     work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
     let root_metadata = fs::symlink_metadata(output_dir)
         .with_context(|| format!("inspect operator output root {}", output_dir.display()))?;
@@ -1246,13 +1485,18 @@ fn collect_operator_terminal_seal_files(
                 path.display()
             );
 
-            if relative == OPERATOR_TERMINAL_SEAL_FILE {
+            if relative == excluded_seal_file {
                 ensure!(
                     file_type.is_file(),
-                    "reserved operator terminal seal path is not a regular file"
+                    "reserved operator output seal path is not a regular file"
                 );
                 continue;
             }
+            ensure!(
+                relative != OPERATOR_TERMINAL_SEAL_FILE
+                    && relative != OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE,
+                "operator output contains conflicting reserved seal path {relative}"
+            );
             if file_type.is_dir() {
                 account_terminal_seal_inventory_bytes(
                     &mut inventory_bytes,
@@ -1316,6 +1560,24 @@ fn collect_operator_terminal_seal_files(
     )?;
     work_budget.check_deadline(OperatorWorkBudgetStage::Finalize)?;
     Ok(files)
+}
+
+fn collect_operator_terminal_seal_files(
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<OperatorTerminalSealFile>> {
+    collect_operator_output_seal_files(output_dir, OPERATOR_TERMINAL_SEAL_FILE, work_budget)
+}
+
+fn collect_durable_output_candidate_seal_files(
+    output_dir: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<OperatorTerminalSealFile>> {
+    collect_operator_output_seal_files(
+        output_dir,
+        OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE,
+        work_budget,
+    )
 }
 
 fn preflight_completed_canonical_parquet(
@@ -1899,6 +2161,106 @@ fn commit_operator_terminal_seal(
     )
 }
 
+/// Seal the exact final local byte set immediately before a durable run
+/// attempts its sole remote terminal create. This candidate is local
+/// integrity evidence only: neither this function nor its artifact can mint a
+/// [`DurableCompletionLocator`].
+fn commit_durable_operator_output_candidate(
+    spec: &RunSpec,
+    fingerprint: &ConversionFingerprint,
+    output_dir: &Path,
+    expected_summary: &OperatorRunSummary,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    let candidate_path = output_dir.join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
+    let files = collect_durable_output_candidate_seal_files(output_dir, work_budget)?;
+    let candidate =
+        OperatorDurableOutputCandidateSeal::new(spec, fingerprint.clone(), expected_summary, files);
+    candidate.validate_for(spec, fingerprint)?;
+    ensure!(
+        candidate.summary() == *expected_summary,
+        "durable output candidate summary changed during precommit validation"
+    );
+    let post_validation_files =
+        collect_durable_output_candidate_seal_files(output_dir, work_budget)?;
+    ensure!(
+        post_validation_files.as_slice() == candidate.files.as_slice(),
+        "operator output changed after durable candidate validation"
+    );
+    let candidate_bytes =
+        serialize_json_to_vec_guarded(&candidate, work_budget, OperatorWorkBudgetStage::Finalize)
+            .context("serialize canonical durable output candidate seal")?;
+    work_budget.verify_decoded_bytes(
+        u64::try_from(candidate_bytes.len())
+            .context("durable output candidate seal bytes do not fit u64")?,
+        OperatorWorkBudgetStage::Finalize,
+    )?;
+    persist_immutable_local_bytes_guarded(
+        &candidate_path,
+        &candidate_bytes,
+        "durable output candidate seal",
+        work_budget,
+        OperatorWorkBudgetStage::Finalize,
+    )
+}
+
+/// Re-hash and validate a durable run's exact local candidate byte set.
+///
+/// This does not validate or imply remote completion; callers must separately
+/// validate the exact-version [`DurableCompletionLocator`].
+pub(crate) fn verify_durable_operator_output_candidate(
+    spec: &RunSpec,
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<OperatorRunSummary> {
+    let fingerprint = validated_operator_output_seal_fingerprint(spec, registry)?;
+    let path = output_dir.join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
+    let bytes = read_file_with_budget(&path, work_budget, OperatorWorkBudgetStage::Finalize)?;
+    let candidate: OperatorDurableOutputCandidateSeal =
+        deserialize_json_with_budget(&bytes, work_budget, OperatorWorkBudgetStage::Finalize)
+            .with_context(|| format!("parse {}", path.display()))?;
+    ensure!(
+        serialize_json_to_vec_guarded(&candidate, work_budget, OperatorWorkBudgetStage::Finalize,)?
+            == bytes,
+        "durable output candidate seal bytes are not canonical"
+    );
+    candidate.validate_for(spec, &fingerprint)?;
+    let current_files = collect_durable_output_candidate_seal_files(output_dir, work_budget)?;
+    ensure!(
+        candidate.files.as_slice() == current_files.as_slice(),
+        "durable output candidate seal exact file set or content hash mismatch"
+    );
+    Ok(candidate.summary())
+}
+
+/// Make the in-process test runner model production's durable local boundary
+/// without introducing a second production execution path.
+#[cfg(test)]
+pub(crate) fn convert_test_terminal_output_to_durable_candidate(
+    spec: &RunSpec,
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    expected_summary: &OperatorRunSummary,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<()> {
+    let observed = verify_completed_operator_output(spec, output_dir, registry, work_budget)?;
+    ensure!(
+        observed == *expected_summary,
+        "test runner terminal summary changed before durable candidate conversion"
+    );
+    fs::remove_file(output_dir.join(OPERATOR_TERMINAL_SEAL_FILE))
+        .context("remove test-only local terminal seal before candidate conversion")?;
+    let fingerprint = validated_operator_output_seal_fingerprint(spec, registry)?;
+    commit_durable_operator_output_candidate(
+        spec,
+        &fingerprint,
+        output_dir,
+        expected_summary,
+        work_budget,
+    )
+}
+
 /// Verify a committed operator output against current frozen controls and
 /// derive its report summary exclusively from sealed completion/catalog bytes.
 pub(crate) fn verify_completed_operator_output(
@@ -1943,64 +2305,86 @@ pub(crate) enum OperatorTerminalSealProbe {
     Committed(OperatorRunSummary),
 }
 
-pub(crate) fn probe_operator_terminal_seal_summary_capped(
-    spec: &RunSpec,
-    output_dir: &Path,
-    registry: &VerifiedSourceBindingRegistry,
+/// Deadline-free observation of pre-terminal durable local evidence. A
+/// `Candidate` variant never means the remote completion manifest exists.
+pub(crate) enum DurableOutputCandidateSealProbe {
+    Absent,
+    Candidate(OperatorRunSummary),
+}
+
+fn read_canonical_operator_output_seal_capped<T>(
+    seal_path: &Path,
     max_seal_bytes: u64,
-) -> Result<OperatorTerminalSealProbe> {
-    ensure!(
-        max_seal_bytes > 0,
-        "terminal seal byte cap must be positive"
-    );
-    let seal_path = output_dir.join(OPERATOR_TERMINAL_SEAL_FILE);
-    match fs::symlink_metadata(&seal_path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(OperatorTerminalSealProbe::Absent);
-        }
+    role: &str,
+    format: OperatorOutputSealJsonFormat,
+) -> Result<Option<T>>
+where
+    T: DeserializeOwned + Serialize,
+{
+    ensure!(max_seal_bytes > 0, "{role} byte cap must be positive");
+    match fs::symlink_metadata(seal_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("inspect terminal seal {}", seal_path.display()));
+            return Err(error).with_context(|| format!("inspect {role} {}", seal_path.display()));
         }
         Ok(metadata) => ensure!(
             metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
-            "occupied terminal seal path is not a regular file"
+            "occupied {role} path is not a regular file"
         ),
     }
-    let (mut file, identity) = open_pinned_regular_file(&seal_path)?;
+    let (mut file, identity) = open_pinned_regular_file(seal_path)?;
     ensure!(
         identity.byte_len > 0 && identity.byte_len <= max_seal_bytes,
-        "terminal seal byte length {} exceeds explicit cap {max_seal_bytes}",
+        "{role} byte length {} exceeds explicit cap {max_seal_bytes}",
         identity.byte_len
     );
     let capacity = usize::try_from(identity.byte_len)
-        .context("terminal seal byte length does not fit usize")?;
+        .with_context(|| format!("{role} byte length does not fit usize"))?;
     let bounded_capacity = capacity
         .checked_add(1)
-        .context("terminal seal capped read length overflow")?;
+        .with_context(|| format!("{role} capped read length overflow"))?;
     let bounded_read_len = identity
         .byte_len
         .checked_add(1)
-        .context("terminal seal capped read length overflow")?;
+        .with_context(|| format!("{role} capped read length overflow"))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(bounded_capacity)
-        .context("reserve capped terminal seal payload")?;
+        .with_context(|| format!("reserve capped {role} payload"))?;
     (&mut file)
         .take(bounded_read_len)
         .read_to_end(&mut bytes)
-        .with_context(|| format!("read pinned terminal seal {}", seal_path.display()))?;
+        .with_context(|| format!("read pinned {role} {}", seal_path.display()))?;
     ensure!(
         bytes.len() == capacity,
-        "terminal seal changed length while reading"
+        "{role} changed length while reading"
     );
-    identity.revalidate(&seal_path, &file)?;
-    let seal: OperatorTerminalSeal = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse terminal seal {}", seal_path.display()))?;
-    let canonical = crate::reference_artifact::canonical_json_bytes(&seal)
-        .context("serialize canonical terminal seal")?;
-    ensure!(canonical == bytes, "terminal seal bytes are not canonical");
+    identity.revalidate(seal_path, &file)?;
+    let seal: T = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse {role} {}", seal_path.display()))?;
+    let canonical = match format {
+        OperatorOutputSealJsonFormat::Pretty => {
+            crate::reference_artifact::canonical_json_bytes(&seal)
+        }
+        OperatorOutputSealJsonFormat::Compact => {
+            serde_json::to_vec(&seal).map_err(anyhow::Error::from)
+        }
+    }
+    .with_context(|| format!("serialize canonical {role}"))?;
+    ensure!(canonical == bytes, "{role} bytes are not canonical");
+    Ok(Some(seal))
+}
 
+#[derive(Debug, Clone, Copy)]
+enum OperatorOutputSealJsonFormat {
+    Pretty,
+    Compact,
+}
+
+fn validated_operator_output_seal_fingerprint(
+    spec: &RunSpec,
+    registry: &VerifiedSourceBindingRegistry,
+) -> Result<ConversionFingerprint> {
     registry.reassert_for(spec)?;
     validate_converter_config(&spec.converter)?;
     let (_expected_source_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
@@ -2009,13 +2393,52 @@ pub(crate) fn probe_operator_terminal_seal_summary_capped(
         registry.registry(),
     )?;
     validate_converter_table_family(&spec.converter, &accepted.table_family)?;
-    let fingerprint = conversion_fingerprint_for(spec, &accepted, registry)?;
+    conversion_fingerprint_for(spec, &accepted, registry)
+}
+
+pub(crate) fn probe_operator_terminal_seal_summary_capped(
+    spec: &RunSpec,
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    max_seal_bytes: u64,
+) -> Result<OperatorTerminalSealProbe> {
+    let seal_path = output_dir.join(OPERATOR_TERMINAL_SEAL_FILE);
+    let Some(seal): Option<OperatorTerminalSeal> = read_canonical_operator_output_seal_capped(
+        &seal_path,
+        max_seal_bytes,
+        "terminal seal",
+        OperatorOutputSealJsonFormat::Pretty,
+    )?
+    else {
+        return Ok(OperatorTerminalSealProbe::Absent);
+    };
+    let fingerprint = validated_operator_output_seal_fingerprint(spec, registry)?;
     seal.validate_for(spec, &fingerprint)?;
-    ensure!(
-        seal.canonical_rows > 0 && seal.nt_catalog_rows == seal.canonical_rows,
-        "terminal seal summary row counts are invalid"
-    );
     Ok(OperatorTerminalSealProbe::Committed(seal.summary()))
+}
+
+pub(crate) fn probe_durable_output_candidate_seal_summary_capped(
+    spec: &RunSpec,
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    max_seal_bytes: u64,
+) -> Result<DurableOutputCandidateSealProbe> {
+    let candidate_path = output_dir.join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
+    let Some(candidate): Option<OperatorDurableOutputCandidateSeal> =
+        read_canonical_operator_output_seal_capped(
+            &candidate_path,
+            max_seal_bytes,
+            "durable output candidate seal",
+            OperatorOutputSealJsonFormat::Compact,
+        )?
+    else {
+        return Ok(DurableOutputCandidateSealProbe::Absent);
+    };
+    let fingerprint = validated_operator_output_seal_fingerprint(spec, registry)?;
+    candidate.validate_for(spec, &fingerprint)?;
+    Ok(DurableOutputCandidateSealProbe::Candidate(
+        candidate.summary(),
+    ))
 }
 
 fn preflight_completed_output_before_inspection(
@@ -2553,22 +2976,18 @@ async fn persist_durable_contract_artifacts(
     })
 }
 
-async fn read_exact_durable_object_guarded(
+async fn read_pinned_durable_object_guarded(
     store: &dyn ObjectStore,
-    artifact_root: &ResolvedArtifactRoot,
-    identity: &DurableObjectVersionIdentity,
+    path: &object_store::path::Path,
+    byte_len: u64,
+    version_id: &str,
+    e_tag: Option<&str>,
     label: &str,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<u8>> {
-    identity.validate(label)?;
-    ensure!(
-        identity.byte_len <= artifact_root.max_final_object_bytes(),
-        "{label} exceeds artifact_store.max_final_object_bytes"
-    );
-    let path = artifact_root.object_path_for_uri(&identity.uri)?;
     let options = object_store::GetOptions {
-        version: Some(identity.version_id.clone()),
-        if_match: identity.e_tag.clone(),
+        version: Some(version_id.to_string()),
+        if_match: e_tag.map(str::to_string),
         ..object_store::GetOptions::default()
     };
     let result = guarded_async_operation_outcome(
@@ -2577,27 +2996,22 @@ async fn read_exact_durable_object_guarded(
         store.get_opts(&path, options),
     )
     .await?
-    .with_context(|| {
-        format!(
-            "get exact version {} of {label} at {}",
-            identity.version_id, identity.uri
-        )
-    })?;
+    .with_context(|| format!("get exact version {} of {label} at {}", version_id, path))?;
     ensure!(
-        result.meta.location == path
-            && result.meta.size == identity.byte_len
+        result.meta.location == *path
+            && result.meta.size == byte_len
             && result.range.start == 0
-            && result.range.end == identity.byte_len
-            && result.meta.version.as_deref() == Some(identity.version_id.as_str()),
+            && result.range.end == byte_len
+            && result.meta.version.as_deref() == Some(version_id),
         "{label} exact-version response metadata mismatch"
     );
-    if let Some(e_tag) = &identity.e_tag {
+    if let Some(e_tag) = e_tag {
         ensure!(
-            result.meta.e_tag.as_deref() == Some(e_tag.as_str()),
+            result.meta.e_tag.as_deref() == Some(e_tag),
             "{label} exact-version ETag mismatch"
         );
     }
-    let mut output = ExactSizedObjectBuffer::new(identity.byte_len)?;
+    let mut output = ExactSizedObjectBuffer::new(byte_len)?;
     let mut stream = result.into_stream();
     loop {
         let chunk = guarded_async_operation_outcome(
@@ -2614,7 +3028,32 @@ async fn read_exact_durable_object_guarded(
             OperatorWorkBudgetStage::ObjectVerification,
         )?;
     }
-    let bytes = output.finish(work_budget, OperatorWorkBudgetStage::ObjectVerification)?;
+    output.finish(work_budget, OperatorWorkBudgetStage::ObjectVerification)
+}
+
+async fn read_exact_durable_object_guarded(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    identity: &DurableObjectVersionIdentity,
+    label: &str,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Vec<u8>> {
+    identity.validate(label)?;
+    ensure!(
+        identity.byte_len <= artifact_root.max_final_object_bytes(),
+        "{label} exceeds artifact_store.max_final_object_bytes"
+    );
+    let path = artifact_root.object_path_for_uri(&identity.uri)?;
+    let bytes = read_pinned_durable_object_guarded(
+        store,
+        &path,
+        identity.byte_len,
+        &identity.version_id,
+        identity.e_tag.as_deref(),
+        label,
+        work_budget,
+    )
+    .await?;
     let actual_sha256 = sha256_hex_with_budget(
         &bytes,
         work_budget,
@@ -2627,13 +3066,90 @@ async fn read_exact_durable_object_guarded(
     Ok(bytes)
 }
 
-async fn validate_durable_completion_resume_guarded(
+/// Probe only the deterministic completion key. A genuine object-store
+/// `NotFound` is the sole permission to execute source bytes. Any other HEAD
+/// failure, missing/null version, or exact-version disagreement fails closed.
+async fn discover_current_durable_completion_guarded(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    spec: &RunSpec,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Option<(DurableCompletionLocator, Vec<u8>)>> {
+    let uri = portable_artifact_uri(
+        &spec.manifest.output_prefix,
+        DURABLE_COMPLETION_MANIFEST_FILE,
+    );
+    let path = artifact_root.object_path_for_uri(&uri)?;
+    let current = match guarded_async_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+        store.head(&path),
+    )
+    .await?
+    {
+        Ok(current) => current,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(format!(
+                "discover deterministic durable completion key {uri}"
+            )));
+        }
+    };
+    ensure!(
+        current.location == path,
+        "current durable completion location mismatch"
+    );
+    ensure!(
+        current.size > 0 && current.size <= artifact_root.max_final_object_bytes(),
+        "current durable completion byte length is invalid"
+    );
+    let version_id = current
+        .version
+        .as_deref()
+        .context("current durable completion has no S3 version ID")?;
+    ensure_immutable_s3_version_id("current durable completion S3 version ID", version_id)?;
+    if let Some(e_tag) = current.e_tag.as_deref() {
+        ensure!(
+            !e_tag.is_empty(),
+            "current durable completion ETag is empty"
+        );
+    }
+    let bytes = read_pinned_durable_object_guarded(
+        store,
+        &path,
+        current.size,
+        version_id,
+        current.e_tag.as_deref(),
+        "current durable completion manifest",
+        work_budget,
+    )
+    .await?;
+    let sha256 = sha256_hex_with_budget(
+        &bytes,
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+    )?;
+    let locator = DurableCompletionLocator {
+        object: DurableObjectVersionIdentity {
+            uri,
+            sha256,
+            byte_len: current.size,
+            version_id: version_id.to_string(),
+            e_tag: current.e_tag,
+        },
+    };
+    locator.validate()?;
+    Ok(Some((locator, bytes)))
+}
+
+async fn validate_durable_completion_manifest_bytes_guarded(
     spec: &RunSpec,
     fingerprint: &ConversionFingerprint,
     artifact_root: &ResolvedArtifactRoot,
     catalog_dispatch: &CatalogDispatchConfig,
     store: &dyn ObjectStore,
     locator: &DurableCompletionLocator,
+    manifest_bytes: Vec<u8>,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<DurableRunReceipt> {
     locator.object.validate("durable completion manifest")?;
@@ -2646,14 +3162,6 @@ async fn validate_durable_completion_resume_guarded(
         "durable completion locator URI does not match the submitted run"
     );
     let manifest: DurableCompletionManifest = {
-        let manifest_bytes = read_exact_durable_object_guarded(
-            store,
-            artifact_root,
-            &locator.object,
-            "durable completion manifest",
-            work_budget,
-        )
-        .await?;
         let manifest: DurableCompletionManifest = deserialize_json_with_budget(
             &manifest_bytes,
             work_budget,
@@ -2669,7 +3177,6 @@ async fn validate_durable_completion_resume_guarded(
         );
         manifest
     };
-    manifest.validate_for(spec, fingerprint)?;
 
     // Fetch sequentially so the retry path retains at most one exact small
     // artifact payload at a time before parsing it into its typed form.
@@ -2705,9 +3212,8 @@ async fn validate_durable_completion_resume_guarded(
         )
         .context("parse exact-version result contract")?
     };
-    contract
-        .validate()
-        .map_err(|error| anyhow::anyhow!("validate exact-version result contract: {error}"))?;
+    validate_durable_result_contract_cross_claims(&contract, spec, fingerprint, &manifest)
+        .context("cross-validate exact-version result contract")?;
     let metadata: ConversionCatalogMetadata = {
         let bytes = read_exact_durable_object_guarded(
             store,
@@ -3036,15 +3542,20 @@ impl VerifiedSourceBindingRegistry {
     ) -> Result<Self> {
         // Direct invocation trusts the exact bytes visible at this boundary;
         // immutable run evidence binds the digest computed from this snapshot.
-        let resolved =
-            crate::source_proof::resolve_source_bindings_path(&spec.source_bindings_path)
-                .canonicalize()
-                .with_context(|| {
-                    format!(
-                        "resolve source-bindings registry {}",
-                        spec.source_bindings_path.display()
-                    )
-                })?;
+        let resolved = resolve_active_backfill_runtime_input(None, &spec.source_bindings_path)
+            .with_context(|| {
+                format!(
+                    "guard source-bindings registry {}",
+                    spec.source_bindings_path.display()
+                )
+            })?
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "resolve source-bindings registry {}",
+                    spec.source_bindings_path.display()
+                )
+            })?;
         let bytes = read_file_with_budget(
             &resolved,
             work_budget,
@@ -4185,6 +4696,15 @@ struct DurableRunSpecPreflight {
 }
 
 fn durable_run_spec_preflight(spec: &RunSpec) -> Result<DurableRunSpecPreflight> {
+    let resolved_nt_version =
+        crate::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+            .context("resolve the workspace NautilusTrader revision for durable publication")?;
+    ensure!(
+        spec.manifest.resolved_nt_version == resolved_nt_version,
+        "durable RunSpec NautilusTrader revision mismatch: configured {:?}, workspace {:?}",
+        spec.manifest.resolved_nt_version,
+        resolved_nt_version
+    );
     ensure!(
         spec.source_proof.table_family == TRADE_TABLE_FAMILY,
         "durable operator currently supports only the proven {TRADE_TABLE_FAMILY:?} table family; got {:?}",
@@ -4240,10 +4760,34 @@ pub fn validate_durable_run_spec_preflight(spec: &RunSpec) -> Result<()> {
     durable_run_spec_preflight(spec).map(|_| ())
 }
 
+fn durable_run_validation_context<'a>(
+    spec: &'a RunSpec,
+    versioning_enabled: &BucketVersioningEnabled,
+    registry: &VerifiedSourceBindingRegistry,
+) -> Result<(
+    &'a CatalogDispatchConfig,
+    ResolvedArtifactRoot,
+    ConversionFingerprint,
+)> {
+    let artifact_store = spec.required_artifact_store()?;
+    spec.validate_artifact_store_publish_config(artifact_store)?;
+    let catalog_dispatch = spec.required_catalog_dispatch()?;
+    let artifact_root = artifact_store.resolve()?;
+    artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
+    registry.reassert_for(spec)?;
+    let (_expected_source_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
+        spec,
+        &spec.accepted_object.sha256,
+        registry.registry(),
+    )?;
+    let fingerprint = conversion_fingerprint_for(spec, &accepted, registry)?;
+    Ok((catalog_dispatch, artifact_root, fingerprint))
+}
+
 /// Prepared, budget-guarded durable dispatcher shared by every production
 /// caller. Fields are private so an SSM credential or versioning proof cannot
 /// be separated from the exact store it prepared.
-pub struct DurableRunDispatcher {
+pub(crate) struct DurableRunDispatcher {
     store: AmazonS3,
     versioning_enabled: BucketVersioningEnabled,
 }
@@ -4251,7 +4795,7 @@ pub struct DurableRunDispatcher {
 impl DurableRunDispatcher {
     /// Resolve the sole SSM credential source and establish the configured
     /// bucket-versioning capability after deterministic RunSpec preflight.
-    pub async fn prepare_guarded(
+    pub(crate) async fn prepare_guarded(
         spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<Self> {
@@ -4285,20 +4829,38 @@ impl DurableRunDispatcher {
         })
     }
 
-    /// Execute or exactly resume the sole durable operator under the caller's
+    /// Execute the sole durable operator under the caller's
     /// execution-plan-derived budget.
-    pub async fn dispatch_guarded(
+    pub(crate) async fn dispatch_guarded(
         &self,
         spec: &RunSpec,
-        request: DurableRunRequest,
+        object_bytes: Vec<u8>,
         output_dir: &Path,
         registry: &VerifiedSourceBindingRegistry,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<DurableRunOutcome> {
-        run_from_run_spec_with_artifact_store_resume_guarded(
+        run_from_run_spec_with_verified_registry_guarded(
             spec,
-            request,
+            object_bytes,
             output_dir,
+            &self.store,
+            &self.versioning_enabled,
+            registry,
+            work_budget,
+        )
+        .await
+    }
+
+    /// Discover and fully validate the deterministic current terminal without
+    /// consuming source bytes or entering any publication/BacktestNode path.
+    pub(crate) async fn discover_current_completion_guarded(
+        &self,
+        spec: &RunSpec,
+        registry: &VerifiedSourceBindingRegistry,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Option<DurableRunReceipt>> {
+        discover_current_durable_completion_with_artifact_store_guarded(
+            spec,
             &self.store,
             &self.versioning_enabled,
             registry,
@@ -4308,8 +4870,42 @@ impl DurableRunDispatcher {
     }
 }
 
-/// Guarded durable-catalog operator path used by validated backfill callers.
-pub async fn run_from_run_spec_with_artifact_store_guarded(
+pub(crate) async fn discover_current_durable_completion_with_artifact_store_guarded(
+    spec: &RunSpec,
+    store: &dyn ObjectStore,
+    versioning_enabled: &BucketVersioningEnabled,
+    registry: &VerifiedSourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<Option<DurableRunReceipt>> {
+    let (catalog_dispatch, artifact_root, fingerprint) = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+        || durable_run_validation_context(spec, versioning_enabled, registry),
+    )??;
+    let Some((locator, manifest_bytes)) =
+        discover_current_durable_completion_guarded(store, &artifact_root, spec, work_budget)
+            .await?
+    else {
+        return Ok(None);
+    };
+    let receipt = validate_durable_completion_manifest_bytes_guarded(
+        spec,
+        &fingerprint,
+        &artifact_root,
+        catalog_dispatch,
+        store,
+        &locator,
+        manifest_bytes,
+        work_budget,
+    )
+    .await?;
+    Ok(Some(receipt))
+}
+
+/// Test seam for exercising the durable write path without constructing the
+/// production dispatcher. It is not compiled into the runtime library.
+#[cfg(test)]
+pub(crate) async fn run_from_run_spec_with_artifact_store_guarded(
     spec: &RunSpec,
     object_bytes: Vec<u8>,
     output_dir: &Path,
@@ -4318,9 +4914,9 @@ pub async fn run_from_run_spec_with_artifact_store_guarded(
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<DurableRunOutcome> {
     let registry = VerifiedSourceBindingRegistry::from_run_spec_guarded(spec, work_budget)?;
-    run_from_run_spec_with_artifact_store_resume_guarded(
+    run_from_run_spec_with_verified_registry_guarded(
         spec,
-        DurableRunRequest::Execute(object_bytes),
+        object_bytes,
         output_dir,
         store,
         versioning_enabled,
@@ -4330,62 +4926,24 @@ pub async fn run_from_run_spec_with_artifact_store_guarded(
     .await
 }
 
-/// Guarded durable-catalog operator with an optional exact terminal locator.
-/// A supplied locator is validated before source bytes are copied or any local
-/// projection, hydration, BacktestNode execution, or remote PUT is attempted.
-pub async fn run_from_run_spec_with_artifact_store_resume_guarded(
+/// Guarded durable-catalog execution using a registry already pinned by the
+/// caller. Exact-current terminal discovery is intentionally not selectable
+/// through this write path.
+async fn run_from_run_spec_with_verified_registry_guarded(
     spec: &RunSpec,
-    request: DurableRunRequest,
+    object_bytes: Vec<u8>,
     output_dir: &Path,
     store: &dyn ObjectStore,
     versioning_enabled: &BucketVersioningEnabled,
     registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<DurableRunOutcome> {
-    let (catalog_dispatch, artifact_root, source_binding_registry, fingerprint) =
-        guarded_operation_outcome(
-            work_budget,
-            OperatorWorkBudgetStage::ObjectVerification,
-            || -> Result<_> {
-                let artifact_store = spec.required_artifact_store()?;
-                spec.validate_artifact_store_publish_config(artifact_store)?;
-                let catalog_dispatch = spec.required_catalog_dispatch()?;
-                let artifact_root = artifact_store.resolve()?;
-                artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
-                registry.reassert_for(spec)?;
-                let source_binding_registry = registry.clone();
-                let (_expected_source_proof, accepted) =
-                    accepted_dataset_for_run_spec_hash_with_registry(
-                        spec,
-                        &spec.accepted_object.sha256,
-                        source_binding_registry.registry(),
-                    )?;
-                let fingerprint =
-                    conversion_fingerprint_for(spec, &accepted, &source_binding_registry)?;
-                Ok((
-                    catalog_dispatch,
-                    artifact_root,
-                    source_binding_registry,
-                    fingerprint,
-                ))
-            },
-        )??;
-    let object_bytes = match request {
-        DurableRunRequest::Resume(completion) => {
-            let receipt = validate_durable_completion_resume_guarded(
-                spec,
-                &fingerprint,
-                &artifact_root,
-                catalog_dispatch,
-                store,
-                &completion,
-                work_budget,
-            )
-            .await?;
-            return Ok(DurableRunOutcome::Resumed(receipt));
-        }
-        DurableRunRequest::Execute(object_bytes) => object_bytes,
-    };
+    let (catalog_dispatch, artifact_root, fingerprint) = guarded_operation_outcome(
+        work_budget,
+        OperatorWorkBudgetStage::ObjectVerification,
+        || durable_run_validation_context(spec, versioning_enabled, registry),
+    )??;
+    let source_binding_registry = registry.clone();
 
     let (base_spec, base_output_dir, base_work_budget) = guarded_operation_outcome(
         work_budget,
@@ -4619,7 +5177,13 @@ pub async fn run_from_run_spec_with_artifact_store_resume_guarded(
         publication_receipt,
         durable_artifacts,
     );
-    completion_manifest.validate_for(spec, &fingerprint)?;
+    validate_durable_result_contract_cross_claims(
+        &artifacts.output.contract,
+        spec,
+        &fingerprint,
+        &completion_manifest,
+    )
+    .context("cross-validate fresh durable result contract before terminal create")?;
     let completion_payload = crate::reference_artifact::canonical_json_bytes(&completion_manifest)
         .context("serialize durable completion manifest")?;
     let completion_sha256 = sha256_hex_with_budget(
@@ -4653,6 +5217,16 @@ pub async fn run_from_run_spec_with_artifact_store_resume_guarded(
         .take()
         .context("durable operator is missing its transient catalog-root ownership lease")?;
     transient_catalog_root_lease.finish_retained(work_budget)?;
+    // Every local byte and retained directory is final at this boundary. The
+    // create-only candidate is intentionally written before the remote
+    // terminal attempt, and is never itself a completion authority.
+    commit_durable_operator_output_candidate(
+        spec,
+        &fingerprint,
+        output_dir,
+        &artifacts.batch_summary,
+        work_budget,
+    )?;
     let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
     let confirmed_completion = writer
         .create_or_confirm_terminal(prepared_completion, permit)
@@ -4676,7 +5250,7 @@ pub async fn run_from_run_spec_with_artifact_store_resume_guarded(
     };
     // The remote terminal manifest is the only durable completion authority.
     // No I/O or fallible cleanup follows its create-only PUT.
-    Ok(DurableRunOutcome::Executed {
+    Ok(DurableRunOutcome {
         artifacts: Box::new(artifacts),
         receipt,
     })
@@ -7300,6 +7874,24 @@ mod tests {
     }
 
     #[test]
+    fn verified_registry_rejects_retired_path_before_filesystem_access() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&object_bytes);
+        spec.source_bindings_path = PathBuf::from(
+            "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/materialized-run-spec/backfill-run-spec.toml",
+        );
+
+        let error = VerifiedSourceBindingRegistry::from_run_spec(&spec)
+            .expect_err("retired source-bindings path must reject before absence");
+
+        assert!(error.to_string().contains("retired backfill"), "{error:#}");
+        assert!(
+            !error.to_string().contains("No such file"),
+            "retirement policy must reject before absence happens to reject: {error:#}"
+        );
+    }
+
+    #[test]
     fn verified_registry_executes_from_frozen_bytes_without_reopening_path() {
         let object_bytes = gzip(SAMPLE_CSV);
         let mut spec = run_spec_for(&object_bytes);
@@ -8619,6 +9211,107 @@ mod tests {
             spec.converter
                 .content_hash()
                 .expect("converter config hash")
+        );
+    }
+
+    #[test]
+    fn durable_cross_claim_validation_rejects_a_valid_contract_swapped_from_another_run() {
+        let gz = gzip(SAMPLE_CSV);
+        let first_spec = run_spec_for(&gz);
+        let first_output = tempfile::tempdir().expect("first output dir");
+        let first =
+            run_from_run_spec(&first_spec, &gz, first_output.path()).expect("first operator run");
+        let first_registry = VerifiedSourceBindingRegistry::from_run_spec(&first_spec)
+            .expect("first source bindings");
+        let (_, first_accepted) = accepted_dataset_for_run_spec_hash_with_registry(
+            &first_spec,
+            &first_spec.accepted_object.sha256,
+            first_registry.registry(),
+        )
+        .expect("first accepted dataset");
+        let first_fingerprint =
+            conversion_fingerprint_for(&first_spec, &first_accepted, &first_registry)
+                .expect("first conversion fingerprint");
+
+        let versioned_object = |uri: String, role: &str| DurableObjectVersionIdentity {
+            uri,
+            sha256: sha256_hex(role.as_bytes()),
+            byte_len: 1,
+            version_id: format!("version-{role}"),
+            e_tag: None,
+        };
+        let publication_receipt = versioned_object(
+            portable_artifact_uri(&first_spec.manifest.output_prefix, "catalog-receipt.json"),
+            "publication-receipt",
+        );
+        let terminal = DurableCompletionManifest::new(
+            &first_spec,
+            first_fingerprint.clone(),
+            &first.batch_summary,
+            publication_receipt.clone(),
+            DurableCompletionArtifacts {
+                result_contract: versioned_object(
+                    portable_artifact_uri(&first_spec.manifest.output_prefix, RESULT_CONTRACT_FILE),
+                    "result-contract",
+                ),
+                catalog_metadata: versioned_object(
+                    portable_artifact_uri(
+                        &first_spec.manifest.output_prefix,
+                        CATALOG_METADATA_FILE,
+                    ),
+                    "catalog-metadata",
+                ),
+                published_catalog_proof: versioned_object(
+                    portable_artifact_uri(
+                        &first_spec.manifest.output_prefix,
+                        PUBLISHED_CATALOG_PROOF_FILE,
+                    ),
+                    "published-catalog-proof",
+                ),
+                catalog_run_view_authority: versioned_object(
+                    portable_artifact_uri(
+                        &first_spec.manifest.output_prefix,
+                        CATALOG_RUN_VIEW_AUTHORITY_FILE,
+                    ),
+                    "catalog-run-view-authority",
+                ),
+            },
+        );
+        let mut first_contract = first.output.contract.clone();
+        first_contract.artifact_uris.nt_catalog_manifest_uri =
+            Some(publication_receipt.uri.clone());
+        validate_durable_result_contract_cross_claims(
+            &first_contract,
+            &first_spec,
+            &first_fingerprint,
+            &terminal,
+        )
+        .expect("matching durable cross-claims validate");
+
+        let mut second_spec = first_spec.clone();
+        second_spec.manifest.run_id = format!("{}-other", first_spec.manifest.run_id);
+        second_spec.manifest.output_prefix = format!(
+            "{}-other",
+            first_spec.manifest.output_prefix.trim_end_matches('/')
+        );
+        let second_output = tempfile::tempdir().expect("second output dir");
+        let second = run_from_run_spec(&second_spec, &gz, second_output.path())
+            .expect("second operator run");
+        let mut swapped_contract = second.output.contract.clone();
+        swapped_contract.artifact_uris.nt_catalog_manifest_uri =
+            Some(publication_receipt.uri.clone());
+
+        let error = validate_durable_result_contract_cross_claims(
+            &swapped_contract,
+            &first_spec,
+            &first_fingerprint,
+            &terminal,
+        )
+        .expect_err("a valid contract from another run must fail terminal cross-claims");
+
+        assert!(
+            error.to_string().contains("submitted-run identity"),
+            "{error:#}"
         );
     }
 

@@ -54,13 +54,6 @@ const TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX: &str = "specs/023-nt-research-analyt
 const TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/";
 const TIER1_PMXT_SOURCE_PROOFS_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/";
-const PHASE3_CONVERSION_BATCHES_PREFIX: &str =
-    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/";
-const PHASE3_CONVERSION_BATCH_PLAN_SUFFIX: &str = "/plan/backfill-conversion-batch-plan.json";
-const BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX: &str =
-    "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/";
-const BACKFILL_CONVERSION_COMPLETION_LEDGER_SUFFIX: &str =
-    "/ledger/backfill-conversion-completion-ledger.json";
 const PMXT_OBJECT_MANIFESTS_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-";
 const PMXT_AGGREGATE_OBJECT_MANIFEST_SUFFIX: &str =
     "/manifest/source-universe-object-manifest.json";
@@ -78,7 +71,7 @@ pub const TIER1_EVICTED_SUBTREE_PREFIXES: &[&str] = &[
 ];
 
 /// Tier-1 fixtures deliberately kept on disk: hand-authored `.toml` specs plus
-/// the bybit source-universe JSON read by the backfill-gate reference tests.
+/// the bybit source-universe JSON read by source-universe reference tests.
 pub const TIER1_KEPT_REFERENCE_PATHS: &[&str] = &[
     "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/binance-data-vision-trades-2026-03-01-all-instruments/source-universe-conversion-work-order.toml",
     "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-conversion-work-order.toml",
@@ -260,31 +253,7 @@ impl EvictedFixtureIndex {
 pub fn is_evicted_reference_fixture_path(path: &str) -> bool {
     is_evicted_execution_pack_record_path(path)
         || is_tier1_evicted_reference_fixture_path(path)
-        || is_phase3_conversion_batch_plan_path(path)
-        || is_backfill_conversion_completion_ledger_path(path)
         || is_pmxt_source_universe_object_manifest_path(path)
-}
-
-/// `true` iff `path` is a Phase-3 generated conversion batch plan.
-pub fn is_phase3_conversion_batch_plan_path(path: &str) -> bool {
-    let Some(scope) = path.strip_prefix(PHASE3_CONVERSION_BATCHES_PREFIX) else {
-        return false;
-    };
-    let Some(scope) = scope.strip_suffix(PHASE3_CONVERSION_BATCH_PLAN_SUFFIX) else {
-        return false;
-    };
-    !scope.is_empty() && !scope.contains('/')
-}
-
-/// `true` iff `path` is a generated backfill conversion-completion ledger.
-pub fn is_backfill_conversion_completion_ledger_path(path: &str) -> bool {
-    let Some(scope) = path.strip_prefix(BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX) else {
-        return false;
-    };
-    let Some(scope) = scope.strip_suffix(BACKFILL_CONVERSION_COMPLETION_LEDGER_SUFFIX) else {
-        return false;
-    };
-    !scope.is_empty() && !scope.contains('/')
 }
 
 /// `true` iff `path` is a generated PMXT source-universe object manifest.
@@ -548,32 +517,6 @@ mod tests {
             &rejected_direct_json
         ));
         assert!(!is_tier1_evicted_reference_fixture_path(&rejected_nested));
-    }
-
-    #[test]
-    fn backfill_conversion_completion_ledger_scope_is_single_scope_generated_json() {
-        let accepted = format!(
-            "{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/ledger/backfill-conversion-completion-ledger.json"
-        );
-        let rejected_toml = format!(
-            "{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/backfill-conversion-completion-ledger.toml"
-        );
-        let rejected_nested = format!(
-            "{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/nested/ledger/backfill-conversion-completion-ledger.json"
-        );
-        let rejected_other_json =
-            format!("{BACKFILL_CONVERSION_COMPLETION_LEDGERS_PREFIX}example/ledger/metadata.json");
-
-        assert!(is_backfill_conversion_completion_ledger_path(&accepted));
-        assert!(!is_backfill_conversion_completion_ledger_path(
-            &rejected_toml
-        ));
-        assert!(!is_backfill_conversion_completion_ledger_path(
-            &rejected_nested
-        ));
-        assert!(!is_backfill_conversion_completion_ledger_path(
-            &rejected_other_json
-        ));
     }
 
     #[test]

@@ -22,7 +22,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    path_resolution::{resolve_existing_path, resolve_output_dir},
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+        resolve_active_backfill_runtime_input,
+    },
     run_manifest::{ManifestArtifactStore, ManifestError, artifact_store_storage_options_for_uri},
     source_proof::IngestManifestObjectRecord,
 };
@@ -228,13 +232,20 @@ where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
     let spec_path_display = spec_path.display().to_string();
-    let spec_text =
-        fs::read_to_string(spec_path).map_err(|error| BackfillObjectStagingError::ReadSpec {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillObjectStagingError::ReadSpec {
             path: spec_path_display.clone(),
             error: error.to_string(),
-        })?;
+        }
+    })?;
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillObjectStagingError::ReadSpec {
+            path: spec_path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
     let spec: BackfillObjectStagingSpec =
-        toml::from_str(&spec_text).map_err(|error| BackfillObjectStagingError::ParseSpecToml {
+        toml::from_str(spec_text).map_err(|error| BackfillObjectStagingError::ParseSpecToml {
             path: spec_path_display,
             error: error.to_string(),
         })?;
@@ -260,8 +271,23 @@ fn stage_backfill_object_with_resolver_and_base<F>(
 where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    let manifest_path = active_backfill_runtime_output_path(
+        &output_dir,
+        BACKFILL_OBJECT_STAGING_MANIFEST_FILE,
+    )
+    .map_err(|error| BackfillObjectStagingError::CreateOutputDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
     validate_spec(spec)?;
-    let local_object_path = resolve_existing_path(base_dir, &spec.local_object_path);
+    let local_object_path =
+        resolve_active_backfill_runtime_input(Some(base_dir), &spec.local_object_path).map_err(
+            |error| BackfillObjectStagingError::ReadLocalObject {
+                path: spec.local_object_path.display().to_string(),
+                error: error.to_string(),
+            },
+        )?;
     let actual_bytes = fs::metadata(&local_object_path)
         .map_err(|error| BackfillObjectStagingError::ReadLocalObject {
             path: spec.local_object_path.display().to_string(),
@@ -322,8 +348,7 @@ where
             schema_columns: spec.schema_columns.clone(),
         }],
     };
-    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
-    write_manifest(&output_dir, &manifest).map(|(manifest_path, manifest_hash, manifest_bytes)| {
+    write_manifest(&manifest_path, &manifest).map(|(manifest_path, manifest_hash, manifest_bytes)| {
         BackfillObjectStagingArtifact {
             manifest_path,
             manifest_hash,
@@ -464,18 +489,18 @@ fn ensure_local_parent_exists(output_object_uri: &str) -> Result<(), BackfillObj
 }
 
 fn write_manifest(
-    output_dir: &Path,
+    path: &Path,
     manifest: &BackfillObjectStagingManifest,
 ) -> Result<(PathBuf, String, u64), BackfillObjectStagingError> {
+    let output_dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(output_dir).map_err(|error| {
         BackfillObjectStagingError::CreateOutputDir {
             path: output_dir.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    let path = output_dir.join(BACKFILL_OBJECT_STAGING_MANIFEST_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
-        &path,
+        path,
         BACKFILL_OBJECT_STAGING_MANIFEST_FILE,
         manifest,
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
@@ -489,7 +514,7 @@ fn write_manifest(
             write_error: |path, error| BackfillObjectStagingError::WriteManifest { path, error },
         },
     )?;
-    Ok((path, written.pin.sha256, written.bytes))
+    Ok((path.to_path_buf(), written.pin.sha256, written.bytes))
 }
 
 impl From<ManifestError> for BackfillObjectStagingError {

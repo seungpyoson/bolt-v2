@@ -12,10 +12,15 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::{
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
+};
 use crate::source_proof::{
     AcceptanceScope, SourceBindingRegistry, SourceProofReport, SourceProofStatus,
-    SourceProofUsageScope, read_source_binding_registry_from_path,
+    SourceProofUsageScope,
 };
 
 pub const BACKFILL_SOURCE_PROOF_SCOPE_SCHEMA_VERSION: &str =
@@ -226,12 +231,19 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillSourceProofScopeArtifact, BackfillSourceProofScopeError> {
     let spec_path_display = spec_path.display().to_string();
-    let spec_text =
-        fs::read_to_string(spec_path).map_err(|error| BackfillSourceProofScopeError::ReadSpec {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillSourceProofScopeError::ReadSpec {
             path: spec_path_display.clone(),
             error: error.to_string(),
-        })?;
-    let spec: BackfillSourceProofScopeSpec = toml::from_str(&spec_text).map_err(|error| {
+        }
+    })?;
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillSourceProofScopeError::ReadSpec {
+            path: spec_path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: BackfillSourceProofScopeSpec = toml::from_str(spec_text).map_err(|error| {
         BackfillSourceProofScopeError::ParseSpecToml {
             path: spec_path_display,
             error: error.to_string(),
@@ -239,37 +251,59 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
     })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
-    let source_bindings_registry = read_source_binding_registry_from_path(
-        &resolved_source_bindings_path,
-    )
-    .map_err(|error| BackfillSourceProofScopeError::ReadSourceBindings {
-        path: source_bindings_path,
-        error: error.to_string(),
+    let source_bindings_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.source_bindings_path).map_err(
+            |error| BackfillSourceProofScopeError::ReadSourceBindings {
+                path: source_bindings_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
+    let source_bindings_text = std::str::from_utf8(&source_bindings_bytes).map_err(|error| {
+        BackfillSourceProofScopeError::ReadSourceBindings {
+            path: source_bindings_path.clone(),
+            error: error.to_string(),
+        }
     })?;
+    let source_bindings_registry = SourceBindingRegistry::from_toml_str(source_bindings_text)
+        .map_err(|error| BackfillSourceProofScopeError::ReadSourceBindings {
+            path: source_bindings_path,
+            error: error.to_string(),
+        })?;
     let source_proof_path = spec.source_proof_path.display().to_string();
-    let resolved_source_proof_path = resolve_existing_path(base_dir, &spec.source_proof_path);
-    let source_proof_text = fs::read_to_string(&resolved_source_proof_path).map_err(|error| {
+    let source_proof_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.source_proof_path).map_err(
+            |error| BackfillSourceProofScopeError::ReadSourceProof {
+                path: source_proof_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
+    let source_proof_text = std::str::from_utf8(&source_proof_bytes).map_err(|error| {
         BackfillSourceProofScopeError::ReadSourceProof {
             path: source_proof_path.clone(),
             error: error.to_string(),
         }
     })?;
-    let proof: SourceProofReport = serde_json::from_str(&source_proof_text).map_err(|error| {
+    let proof: SourceProofReport = serde_json::from_str(source_proof_text).map_err(|error| {
         BackfillSourceProofScopeError::ParseSourceProofJson {
             path: source_proof_path,
             error: error.to_string(),
         }
     })?;
     let manifest_path = spec.manifest_path.display().to_string();
-    let resolved_manifest_path = resolve_existing_path(base_dir, &spec.manifest_path);
-    let manifest_text = fs::read_to_string(&resolved_manifest_path).map_err(|error| {
+    let manifest_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.manifest_path).map_err(|error| {
         BackfillSourceProofScopeError::ReadManifest {
             path: manifest_path.clone(),
             error: error.to_string(),
         }
     })?;
-    let manifest: Value = serde_json::from_str(&manifest_text).map_err(|error| {
+    let manifest_text = std::str::from_utf8(&manifest_bytes).map_err(|error| {
+        BackfillSourceProofScopeError::ReadManifest {
+            path: manifest_path.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let manifest: Value = serde_json::from_str(manifest_text).map_err(|error| {
         BackfillSourceProofScopeError::ParseManifestJson {
             path: manifest_path,
             error: error.to_string(),
@@ -290,11 +324,18 @@ pub fn write_backfill_source_proof_scope_report(
     output_dir: &Path,
     report: &BackfillSourceProofScopeReport,
 ) -> Result<BackfillSourceProofScopeArtifact, BackfillSourceProofScopeError> {
+    let path = active_backfill_runtime_output_path(
+        output_dir,
+        BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE,
+    )
+    .map_err(|error| BackfillSourceProofScopeError::CreateDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillSourceProofScopeError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let path = output_dir.join(BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE,

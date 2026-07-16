@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    path_resolution::{resolve_existing_path, resolve_output_dir},
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
     source_proof::{SourceBindingRegistry, SourceProofReport, SourceProofStatus},
 };
 
@@ -640,12 +643,15 @@ pub fn write_coverage_ledger_artifact(
     output_dir: &Path,
     ledger: &BackfillCoverageLedger,
 ) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageWriteError> {
+    let path = active_backfill_runtime_output_path(output_dir, BACKFILL_COVERAGE_LEDGER_FILE)
+        .map_err(|error| BackfillCoverageWriteError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillCoverageWriteError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-
-    let path = output_dir.join(BACKFILL_COVERAGE_LEDGER_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_COVERAGE_LEDGER_FILE,
@@ -711,8 +717,7 @@ fn write_coverage_ledger_artifact_from_manifest_files_with_base(
                 canonical_s3_write,
             } = input;
             let path_display = path.display().to_string();
-            let resolved_path = resolve_existing_path(base_dir, &path);
-            let bytes = fs::read(&resolved_path).map_err(|error| {
+            let bytes = read_active_backfill_runtime_input(Some(base_dir), &path).map_err(|error| {
                 BackfillCoverageManifestFileError::ReadManifest {
                     manifest_uri: manifest_uri.clone(),
                     path: path_display.clone(),
@@ -843,28 +848,44 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageManifestFileError> {
     let path_display = spec_path.display().to_string();
-    let spec_text = fs::read_to_string(spec_path).map_err(|error| {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
         BackfillCoverageManifestFileError::ReadSpec {
             path: path_display.clone(),
             error: error.to_string(),
         }
     })?;
-    let spec: BackfillCoverageLedgerSpec = toml::from_str(&spec_text).map_err(|error| {
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillCoverageManifestFileError::ReadSpec {
+            path: path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: BackfillCoverageLedgerSpec = toml::from_str(spec_text).map_err(|error| {
         BackfillCoverageManifestFileError::ParseSpecToml {
             path: path_display,
             error: error.to_string(),
         }
     })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
-    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
-    let registry =
-        crate::source_proof::read_source_binding_registry_from_path(&resolved_source_bindings_path)
-            .map_err(
-                |error| BackfillCoverageManifestFileError::ReadSourceBindings {
-                    path: spec.source_bindings_path.display().to_string(),
-                    error: error.to_string(),
-                },
-            )?;
+    let source_bindings_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.source_bindings_path).map_err(
+            |error| BackfillCoverageManifestFileError::ReadSourceBindings {
+                path: spec.source_bindings_path.display().to_string(),
+                error: error.to_string(),
+            },
+        )?;
+    let source_bindings_text = std::str::from_utf8(&source_bindings_bytes).map_err(|error| {
+        BackfillCoverageManifestFileError::ReadSourceBindings {
+            path: spec.source_bindings_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let registry = SourceBindingRegistry::from_toml_str(source_bindings_text).map_err(|error| {
+        BackfillCoverageManifestFileError::ReadSourceBindings {
+            path: spec.source_bindings_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
     let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
     write_coverage_ledger_artifact_from_manifest_files_with_base(
         &output_dir,
@@ -883,8 +904,7 @@ fn read_source_proof_metadata(
     base_dir: &Path,
 ) -> Result<SourceProofReport, BackfillCoverageManifestFileError> {
     let path_display = path.display().to_string();
-    let resolved_path = resolve_existing_path(base_dir, path);
-    let bytes = fs::read(&resolved_path).map_err(|error| {
+    let bytes = read_active_backfill_runtime_input(Some(base_dir), path).map_err(|error| {
         BackfillCoverageManifestFileError::ReadSourceProof {
             manifest_uri: manifest_uri.to_string(),
             path: path_display.clone(),

@@ -16,10 +16,7 @@ use backtesting_vertical_slice::{
         BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
         BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
     },
-    operator::{
-        DurableCompletionLocator, DurableObjectVersionIdentity, DurableRunReceipt,
-        OperatorRunSummary, RunSpec,
-    },
+    operator::{DurableRunReceipt, OperatorRunSummary, RunSpec},
     operator_work_budget::OperatorWorkBudgetGuard,
     source_proof::SourceBindingRegistry,
     source_universe_batch_execution::{
@@ -34,6 +31,7 @@ use backtesting_vertical_slice::{
         SourceUniverseVerifiedControlArtifacts,
         execute_source_universe_batch_with_pinned_artifacts,
         execute_source_universe_batch_with_pinned_artifacts_factories,
+        validate_source_universe_batch_execution_report,
         write_source_universe_batch_execution_report,
     },
     source_universe_execution_pack::{
@@ -51,10 +49,7 @@ const TEST_BOOTSTRAP_LIMITS: SourceUniverseBatchBootstrapLimits =
         max_retained_control_input_bytes: TEST_MAX_LAUNCH_ARTIFACT_BYTES,
     };
 
-fn pinned_launch_artifacts(
-    execution_pack_path: &Path,
-    resume_report: Option<&Path>,
-) -> SourceUniverseBatchLaunchArtifacts {
+fn pinned_launch_artifacts(execution_pack_path: &Path) -> SourceUniverseBatchLaunchArtifacts {
     let pin = |path: &Path| {
         let bytes = fs::read(path).expect("read batch launch fixture");
         SourceUniverseBatchArtifactPin::try_new(
@@ -64,12 +59,8 @@ fn pinned_launch_artifacts(
         )
         .expect("pin batch launch fixture")
     };
-    SourceUniverseBatchLaunchArtifacts::try_new(
-        pin(execution_pack_path),
-        resume_report.map(pin),
-        TEST_BOOTSTRAP_LIMITS,
-    )
-    .expect("construct pinned batch launch fixtures")
+    SourceUniverseBatchLaunchArtifacts::try_new(pin(execution_pack_path), TEST_BOOTSTRAP_LIMITS)
+        .expect("construct pinned batch launch fixtures")
 }
 
 fn execute_source_universe_batch<F, R>(
@@ -109,31 +100,7 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
-    execute_source_universe_batch_with_config_and_resume(
-        batch_id,
-        execution_pack_path,
-        output_dir,
-        config,
-        None,
-        fetcher,
-        runner,
-    )
-}
-
-fn execute_source_universe_batch_with_config_and_resume<F, R>(
-    batch_id: &str,
-    execution_pack_path: &Path,
-    output_dir: &Path,
-    config: SourceUniverseBatchExecutionConfig,
-    resume_report: Option<PathBuf>,
-    fetcher: &mut F,
-    runner: &mut R,
-) -> anyhow::Result<SourceUniverseBatchExecutionReport>
-where
-    F: SourceUniverseObjectFetcher,
-    R: SourceUniverseOperatorRunner,
-{
-    let launch_artifacts = pinned_launch_artifacts(execution_pack_path, resume_report.as_deref());
+    let launch_artifacts = pinned_launch_artifacts(execution_pack_path);
     execute_source_universe_batch_with_pinned_artifacts(
         batch_id,
         &launch_artifacts,
@@ -156,31 +123,7 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
-    execute_source_universe_batch_with_factories_and_resume(
-        batch_id,
-        execution_pack_path,
-        output_dir,
-        config,
-        None,
-        fetcher_factory,
-        runner_factory,
-    )
-}
-
-fn execute_source_universe_batch_with_factories_and_resume<F, R>(
-    batch_id: &str,
-    execution_pack_path: &Path,
-    output_dir: &Path,
-    config: SourceUniverseBatchExecutionConfig,
-    resume_report: Option<PathBuf>,
-    fetcher_factory: impl Fn() -> anyhow::Result<F> + Sync,
-    runner_factory: impl Fn() -> anyhow::Result<R> + Sync,
-) -> anyhow::Result<SourceUniverseBatchExecutionReport>
-where
-    F: SourceUniverseObjectFetcher,
-    R: SourceUniverseOperatorRunner,
-{
-    let launch_artifacts = pinned_launch_artifacts(execution_pack_path, resume_report.as_deref());
+    let launch_artifacts = pinned_launch_artifacts(execution_pack_path);
     execute_source_universe_batch_with_pinned_artifacts_factories(
         batch_id,
         &launch_artifacts,
@@ -291,6 +234,29 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     assert_eq!(written["batch_id"], "source-universe-batch-synthetic");
     assert_eq!(written["completed_record_count"], 1);
     assert_eq!(artifact.completed_record_count, 1);
+}
+
+#[test]
+fn batch_execution_report_validator_rejects_wrong_schema() {
+    let report = SourceUniverseBatchExecutionReport {
+        schema_version: "retired-batch-report-schema".to_string(),
+        batch_id: "schema-rejection".to_string(),
+        status: SourceUniverseBatchExecutionReportStatus::Completed,
+        pack_id: "pack".to_string(),
+        universe_id: "universe".to_string(),
+        venue: "venue".to_string(),
+        selected_record_count: 0,
+        completed_record_count: 0,
+        failed_record_count: 0,
+        total_canonical_rows: 0,
+        total_nt_catalog_rows: 0,
+        records: Vec::new(),
+        failures: Vec::new(),
+    };
+
+    let error = validate_source_universe_batch_execution_report(&report)
+        .expect_err("wrong report schema must fail closed");
+    assert!(error.to_string().contains("schema_version mismatch"), "{error:#}");
 }
 
 #[test]
@@ -604,7 +570,11 @@ fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
 
     let work_budget = OperatorWorkBudgetGuard::unbounded();
     let first = fetcher
-        .fetch(&record, &work_budget)
+        .fetch(
+            &record,
+            &committed_record_zero_controls().run_spec,
+            &work_budget,
+        )
         .expect("first fetch populates cache");
     assert_eq!(first, object_bytes);
     assert_eq!(
@@ -627,7 +597,11 @@ fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
     assert!(!stray_temp, "no temp files left behind after atomic rename");
 
     let second = fetcher
-        .fetch(&record, &work_budget)
+        .fetch(
+            &record,
+            &committed_record_zero_controls().run_spec,
+            &work_budget,
+        )
         .expect("second fetch hits cache");
     assert_eq!(second, object_bytes);
     assert_eq!(
@@ -654,7 +628,11 @@ fn caching_fetcher_corrupt_occupied_entry_fails_closed_and_is_retained() {
     let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
     let error = fetcher
-        .fetch(&record, &OperatorWorkBudgetGuard::unbounded())
+        .fetch(
+            &record,
+            &committed_record_zero_controls().run_spec,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
         .expect_err("an occupied corrupt content-addressed name must fail closed");
     assert!(
         error
@@ -685,7 +663,11 @@ fn caching_fetcher_unverified_inner_bytes_never_enter_cache() {
     let inner = CountingFetcher::new(vec![(0, b"wrong inner bytes".to_vec())]);
     let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
-    let result = fetcher.fetch(&record, &OperatorWorkBudgetGuard::unbounded());
+    let result = fetcher.fetch(
+        &record,
+        &committed_record_zero_controls().run_spec,
+        &OperatorWorkBudgetGuard::unbounded(),
+    );
     assert!(result.is_err(), "unverified inner bytes fail the fetch");
     let cache_path = cache_dir.join(&record.selected_object_sha256);
     assert!(
@@ -695,24 +677,20 @@ fn caching_fetcher_unverified_inner_bytes_never_enter_cache() {
 }
 
 #[test]
-fn resume_carries_forward_prior_clean_record_without_refetch() {
+fn current_terminal_discovery_skips_fetch_and_execution() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let valid_object = valid_bybit_trade_object();
-    let objects = vec![(0u64, valid_object.clone()), (1u64, valid_object)];
+    let objects = vec![(0u64, valid_object)];
     let fixture = write_valid_pack(temp_dir.path(), &objects);
-
-    // First run covers ONLY sequence 0 (record_limit = 1), so the prior report
-    // we resume from is a genuine partial: sequence 0 succeeded, sequence 1 was
-    // never reached. This is what makes the resume meaningful — on the second
-    // run sequence 0 carries forward (sha matches) while sequence 1, absent from
-    // the prior report, must still be fetched and run.
-    let first_output = temp_dir.path().join("batch-output-first");
+    let output = temp_dir.path().join("report-absent-recovery-output");
     let mut fetcher = SequencedFetcher::from_objects(&objects);
-    let mut runner = LocalSourceUniverseOperatorRunner;
-    let first_report = execute_source_universe_batch_with_config(
-        "source-universe-batch-synthetic",
+    let fetch_calls = fetcher.calls();
+    let mut runner = CurrentCompletionValidationRunner::exact();
+
+    let report = execute_source_universe_batch_with_config(
+        "source-universe-report-absent-recovery",
         &fixture.pack_path,
-        &first_output,
+        &output,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
             record_limit: Some(1),
@@ -722,105 +700,101 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         &mut fetcher,
         &mut runner,
     )
-    .expect("first run completes");
-    assert_eq!(
-        first_report.completed_record_count, 1,
-        "prior report is a partial: only sequence 0 was processed"
+    .expect("the deterministic current terminal is sufficient");
+
+    assert_eq!(report.completed_record_count, 1);
+    assert!(
+        fetch_calls.lock().expect("fetch log").is_empty(),
+        "current-terminal discovery must precede and suppress source fetch"
     );
+    assert_eq!(runner.discovery_calls, vec![0]);
+    assert!(
+        runner.run_calls.is_empty(),
+        "current-terminal discovery must not invoke BacktestNode execution"
+    );
+    assert!(
+        report.records[0].output_dir.starts_with(&output),
+        "recovered record must own fresh protocol scratch"
+    );
+}
 
-    // The production runner writes the final operator terminal seal. Resume is
-    // allowed only by revalidating that exact file set and all semantic links;
-    // a synthetic summary/catalog is intentionally insufficient.
+#[test]
+fn current_terminal_discovery_falls_through_to_fresh_work_per_record() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let valid_object = valid_bybit_trade_object();
+    let objects = vec![(0_u64, valid_object.clone()), (1_u64, valid_object)];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let output = temp_dir.path().join("mixed-discovery-output");
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = CurrentCompletionValidationRunner::exact();
 
-    let resume_report_path = first_output.join("prior-report.json");
-    fs::write(
-        &resume_report_path,
-        serde_json::to_vec_pretty(&first_report).expect("serialize prior report"),
-    )
-    .expect("write prior report");
-
-    // Second run resumes; sequence 0 carried forward, only sequence 1 fetched.
-    let second_output = temp_dir.path().join("batch-output-second");
-    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
-    let resume_calls = resume_fetcher.calls();
-    let mut resume_runner = ResumeValidationRunner::exact();
-    let resume_report = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic",
+    let report = execute_source_universe_batch_with_config(
+        "source-universe-mixed-discovery",
         &fixture.pack_path,
-        &second_output,
+        &output,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: false,
             max_concurrent_records: None,
         },
-        Some(resume_report_path.clone()),
-        &mut resume_fetcher,
-        &mut resume_runner,
+        &mut fetcher,
+        &mut runner,
     )
-    .expect("resume run completes");
+    .expect("discovered and fresh records complete through one recovery lane");
 
+    assert_eq!(report.completed_record_count, 2);
+    assert_eq!(report.total_canonical_rows, 2);
+    assert_eq!(report.total_nt_catalog_rows, 2);
     assert_eq!(
-        resume_report.completed_record_count, 2,
-        "carried + reprocessed both succeed"
+        report
+            .records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        vec![0, 1],
+        "mixed completion paths must preserve pack order"
+    );
+    assert_eq!(runner.discovery_calls, vec![0, 1]);
+    assert_eq!(
+        fetch_calls.lock().expect("fetch log").as_slice(),
+        &[1],
+        "only the record without a current terminal may fetch"
     );
     assert_eq!(
-        resume_report.total_canonical_rows, 2,
-        "totals include carried rows"
-    );
-    assert_eq!(resume_report.total_nt_catalog_rows, 2);
-    assert_eq!(
-        resume_report.records[0].sequence, 0,
-        "carried record stays in order"
-    );
-    assert_eq!(resume_report.records[1].sequence, 1);
-    assert_eq!(
-        resume_report.records[0].output_dir, first_report.records[0].output_dir,
-        "carried record keeps prior provenance verbatim"
-    );
-    assert_eq!(
-        resume_calls.lock().expect("fetch log").as_slice(),
-        &[1u64],
-        "only the non-carried sequence was fetched"
-    );
-    assert_eq!(
-        resume_runner.resume_calls,
-        vec![0],
-        "the carried record must perform one remote durable resume validation"
-    );
-    assert_eq!(
-        resume_runner.run_calls,
+        runner.run_calls,
         vec![1],
-        "only the record absent from the prior report may execute"
+        "only the record without a current terminal may execute"
     );
 }
 
 #[test]
-fn resume_missing_exact_remote_version_is_committed_indeterminate_without_refetch() {
-    assert_remote_resume_failure_stops_without_refetch(
-        ResumeValidationBehavior::MissingExactVersion,
+fn current_terminal_missing_exact_remote_version_is_committed_indeterminate_without_refetch() {
+    assert_current_terminal_failure_stops_without_refetch(
+        CurrentCompletionValidationBehavior::MissingExactVersion,
         "missing exact remote version",
     );
 }
 
 #[test]
-fn resume_foreign_exact_remote_version_is_committed_indeterminate_without_refetch() {
-    assert_remote_resume_failure_stops_without_refetch(
-        ResumeValidationBehavior::ForeignExactVersion,
-        "does not match the prior durable completion locator",
+fn current_terminal_foreign_exact_remote_version_is_committed_indeterminate_without_refetch() {
+    assert_current_terminal_failure_stops_without_refetch(
+        CurrentCompletionValidationBehavior::ForeignExactVersion,
+        "current durable completion does not match submitted run",
     );
 }
 
 #[test]
-fn resume_corrupt_exact_remote_version_is_committed_indeterminate_without_refetch() {
-    assert_remote_resume_failure_stops_without_refetch(
-        ResumeValidationBehavior::CorruptExactVersion,
+fn current_terminal_corrupt_exact_remote_version_is_committed_indeterminate_without_refetch() {
+    assert_current_terminal_failure_stops_without_refetch(
+        CurrentCompletionValidationBehavior::CorruptExactVersion,
         "exact-version SHA-256 mismatch",
     );
 }
 
-fn assert_remote_resume_failure_stops_without_refetch(
-    behavior: ResumeValidationBehavior,
+fn assert_current_terminal_failure_stops_without_refetch(
+    behavior: CurrentCompletionValidationBehavior,
     expected_detail: &str,
 ) {
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -828,44 +802,23 @@ fn assert_remote_resume_failure_stops_without_refetch(
     let objects = vec![(0u64, valid_object)];
     let fixture = write_valid_pack(temp_dir.path(), &objects);
 
-    let prior_output = temp_dir.path().join("prior-output");
-    let mut prior_fetcher = SequencedFetcher::from_objects(&objects);
-    let mut prior_runner = LocalSourceUniverseOperatorRunner;
-    let prior_report = execute_source_universe_batch_with_config(
-        "source-universe-batch-prior",
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let fetch_calls = fetcher.calls();
+    let mut runner = CurrentCompletionValidationRunner::new(behavior);
+    let error = execute_source_universe_batch_with_config(
+        "source-universe-batch-current-terminal",
         &fixture.pack_path,
-        &prior_output,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        &mut prior_fetcher,
-        &mut prior_runner,
-    )
-    .expect("create locally committed prior record");
-    let prior_artifact = write_source_universe_batch_execution_report(&prior_output, &prior_report)
-        .expect("write prior report");
-
-    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
-    let resume_calls = resume_fetcher.calls();
-    let mut resume_runner = ResumeValidationRunner::new(behavior);
-    let error = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-resume",
-        &fixture.pack_path,
-        &temp_dir.path().join("resume-output"),
+        &temp_dir.path().join("current-terminal-output"),
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: true,
             max_concurrent_records: None,
         },
-        Some(prior_artifact.path),
-        &mut resume_fetcher,
-        &mut resume_runner,
+        &mut fetcher,
+        &mut runner,
     )
-    .expect_err("a locally committed record with invalid remote authority must hard-stop");
+    .expect_err("invalid current remote authority must hard-stop");
 
     assert!(
         error.to_string().contains("committed-indeterminate"),
@@ -873,323 +826,14 @@ fn assert_remote_resume_failure_stops_without_refetch(
     );
     assert!(format!("{error:#}").contains(expected_detail), "{error:#}");
     assert!(
-        resume_calls.lock().expect("resume fetch log").is_empty(),
-        "remote resume validation must happen before and instead of source refetch"
+        fetch_calls.lock().expect("fetch log").is_empty(),
+        "current-terminal validation must happen before and instead of source refetch"
     );
-    assert_eq!(resume_runner.resume_calls, vec![0]);
+    assert_eq!(runner.discovery_calls, vec![0]);
     assert!(
-        resume_runner.run_calls.is_empty(),
-        "failed durable resume authority must never execute a fresh operator"
+        runner.run_calls.is_empty(),
+        "failed durable current authority must never execute a fresh operator"
     );
-}
-
-#[test]
-fn resume_refetches_when_prior_runner_emitted_no_terminal_seal() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let objects = vec![(0u64, b"synthetic object zero".to_vec())];
-    let fixture = write_valid_pack(temp_dir.path(), &objects);
-    let prior_output = temp_dir.path().join("prior-output");
-    let mut prior_fetcher = SequencedFetcher::from_objects(&objects);
-    let mut prior_runner = RecordingRunner::default();
-    let prior_report = execute_source_universe_batch_with_config(
-        "source-universe-batch-prior-unsealed",
-        &fixture.pack_path,
-        &prior_output,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        &mut prior_fetcher,
-        &mut prior_runner,
-    )
-    .expect("synthetic prior run completes without a production seal");
-    let prior_artifact = write_source_universe_batch_execution_report(&prior_output, &prior_report)
-        .expect("write unsealed prior report");
-
-    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
-    let resume_calls = resume_fetcher.calls();
-    let mut resume_runner = RecordingRunner::default();
-    execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-resume-unsealed",
-        &fixture.pack_path,
-        &temp_dir.path().join("resume-output"),
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(prior_artifact.path),
-        &mut resume_fetcher,
-        &mut resume_runner,
-    )
-    .expect("unsealed prior record falls through to fresh work");
-
-    assert_eq!(
-        resume_calls.lock().expect("resume fetch log").as_slice(),
-        &[0u64],
-        "a runner summary without the operator terminal seal is never carried"
-    );
-    assert_eq!(resume_runner.calls.len(), 1);
-}
-
-#[test]
-fn resume_sha_mismatch_reprocesses_the_record() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-
-    let objects = vec![(0u64, b"synthetic object zero".to_vec())];
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
-
-    // Prior report claims a different sha for sequence 0 (pack regenerated).
-    let prior_report = SourceUniverseBatchExecutionReport {
-        schema_version:
-            backtesting_vertical_slice::source_universe_batch_execution::SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION
-                .to_string(),
-        batch_id: "source-universe-batch-synthetic".to_string(),
-        status: SourceUniverseBatchExecutionReportStatus::Completed,
-        pack_id: "source-universe-execution-pack-synthetic".to_string(),
-        universe_id: "backfill-source-universe-synthetic".to_string(),
-        venue: "synthetic-venue".to_string(),
-        selected_record_count: 1,
-        completed_record_count: 1,
-        failed_record_count: 0,
-        total_canonical_rows: 7,
-        total_nt_catalog_rows: 7,
-        records: vec![carried_record_fixture(0, &"f".repeat(64))],
-        failures: vec![],
-    };
-    let resume_report_path = temp_dir.path().join("prior-report.json");
-    fs::write(
-        &resume_report_path,
-        serde_json::to_vec_pretty(&prior_report).expect("serialize prior report"),
-    )
-    .expect("write prior report");
-
-    let output_dir = temp_dir.path().join("batch-output");
-    let mut fetcher = SequencedFetcher::from_objects(&objects);
-    let fetch_calls = fetcher.calls();
-    let mut runner = RecordingRunner::default();
-    let report = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic",
-        &pack_path,
-        &output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(resume_report_path),
-        &mut fetcher,
-        &mut runner,
-    )
-    .expect("sha mismatch reprocesses");
-
-    assert_eq!(report.completed_record_count, 1);
-    assert_eq!(
-        fetch_calls.lock().expect("fetch log").as_slice(),
-        &[0u64],
-        "sha mismatch forces a refetch"
-    );
-    assert_eq!(runner.calls.len(), 1, "sha mismatch forces a rerun");
-}
-
-#[test]
-fn resume_pack_id_mismatch_fails_loud() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-
-    let objects = vec![(0u64, b"synthetic object zero".to_vec())];
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
-
-    let prior_report = SourceUniverseBatchExecutionReport {
-        schema_version:
-            backtesting_vertical_slice::source_universe_batch_execution::SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION
-                .to_string(),
-        batch_id: "source-universe-batch-synthetic".to_string(),
-        status: SourceUniverseBatchExecutionReportStatus::Completed,
-        pack_id: "different-pack-id".to_string(),
-        universe_id: "backfill-source-universe-synthetic".to_string(),
-        venue: "synthetic-venue".to_string(),
-        selected_record_count: 1,
-        completed_record_count: 1,
-        failed_record_count: 0,
-        total_canonical_rows: 7,
-        total_nt_catalog_rows: 7,
-        records: vec![carried_record_fixture(0, &sha256_hex(b"synthetic object zero"))],
-        failures: vec![],
-    };
-    let resume_report_path = temp_dir.path().join("prior-report.json");
-    fs::write(
-        &resume_report_path,
-        serde_json::to_vec_pretty(&prior_report).expect("serialize prior report"),
-    )
-    .expect("write prior report");
-
-    let output_dir = temp_dir.path().join("batch-output");
-    let mut fetcher = SequencedFetcher::from_objects(&objects);
-    let mut runner = RecordingRunner::default();
-    let result = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic",
-        &pack_path,
-        &output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(resume_report_path),
-        &mut fetcher,
-        &mut runner,
-    );
-    let err = result.expect_err("pack_id mismatch must fail loud");
-    assert!(
-        err.to_string().contains("pack_id") || format!("{err:#}").contains("pack_id"),
-        "error names the pack_id mismatch: {err:#}"
-    );
-}
-
-#[test]
-fn resume_does_not_carry_forward_prior_failure_entries() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-
-    let objects = vec![(0u64, b"synthetic object zero".to_vec())];
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
-
-    // Prior report has sequence 0 ONLY as a failure entry, not a success.
-    let prior_report = SourceUniverseBatchExecutionReport {
-        schema_version:
-            backtesting_vertical_slice::source_universe_batch_execution::SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION
-                .to_string(),
-        batch_id: "source-universe-batch-synthetic".to_string(),
-        status: SourceUniverseBatchExecutionReportStatus::Failed,
-        pack_id: "source-universe-execution-pack-synthetic".to_string(),
-        universe_id: "backfill-source-universe-synthetic".to_string(),
-        venue: "synthetic-venue".to_string(),
-        selected_record_count: 1,
-        completed_record_count: 0,
-        failed_record_count: 1,
-        total_canonical_rows: 0,
-        total_nt_catalog_rows: 0,
-        records: vec![],
-        failures: vec![failure_record_fixture(0, &sha256_hex(b"synthetic object zero"))],
-    };
-    let resume_report_path = temp_dir.path().join("prior-report.json");
-    fs::write(
-        &resume_report_path,
-        serde_json::to_vec_pretty(&prior_report).expect("serialize prior report"),
-    )
-    .expect("write prior report");
-
-    let output_dir = temp_dir.path().join("batch-output");
-    let mut fetcher = SequencedFetcher::from_objects(&objects);
-    let fetch_calls = fetcher.calls();
-    let mut runner = RecordingRunner::default();
-    let report = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic",
-        &pack_path,
-        &output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(resume_report_path),
-        &mut fetcher,
-        &mut runner,
-    )
-    .expect("prior failure is reprocessed");
-
-    assert_eq!(
-        report.completed_record_count, 1,
-        "failure entry was reprocessed"
-    );
-    assert_eq!(
-        fetch_calls.lock().expect("fetch log").as_slice(),
-        &[0u64],
-        "prior failure entry is not carried forward"
-    );
-}
-
-#[test]
-fn resume_rechecks_carried_catalog_after_an_earlier_record_mutates_it() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let valid_object = valid_bybit_trade_object();
-    let objects = vec![(0, valid_object.clone()), (1, valid_object)];
-    let fixture = write_valid_pack(temp_dir.path(), &objects);
-    let prior_output = temp_dir.path().join("prior-output");
-    let mut prior_fetcher = SequencedFetcher::from_objects(&[(1, objects[1].1.clone())]);
-    let mut prior_runner = LocalSourceUniverseOperatorRunner;
-    let prior_report = execute_source_universe_batch_with_config(
-        "source-universe-batch-prior",
-        &fixture.pack_path,
-        &prior_output,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: Some(1),
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        &mut prior_fetcher,
-        &mut prior_runner,
-    )
-    .expect("create prior sequence-one report");
-    let carried_output_dir = prior_report.records[0].output_dir.clone();
-    let carried_catalog_dir = carried_output_dir.join("nt-catalog");
-    let prior_artifact = write_source_universe_batch_execution_report(&prior_output, &prior_report)
-        .expect("write prior sequence-one report");
-    let catalog_file_to_mutate = first_regular_file(&carried_catalog_dir.join("data"));
-
-    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
-    let resume_calls = resume_fetcher.calls();
-    let mut resume_runner = CatalogMutatingRunner {
-        catalog_file_to_mutate,
-        calls: Vec::new(),
-    };
-    let error = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-resume",
-        &fixture.pack_path,
-        &temp_dir.path().join("resume-output"),
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(2),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(prior_artifact.path),
-        &mut resume_fetcher,
-        &mut resume_runner,
-    )
-    .expect_err("a drifted output with a committed terminal seal cannot be retried");
-
-    assert!(
-        error.to_string().contains("committed-indeterminate"),
-        "{error:#}"
-    );
-    assert_eq!(
-        resume_calls.lock().expect("resume fetch calls").as_slice(),
-        &[0],
-        "the locally committed carried record must not be refetched after catalog drift"
-    );
-    assert_eq!(resume_runner.calls, vec![0]);
 }
 
 #[test]
@@ -1493,75 +1137,6 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
         "corrupt shared entry repaired with verified bytes"
     );
 }
-
-#[test]
-fn resume_into_same_output_dir_fails_loud_before_any_fetch() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-
-    let objects = vec![
-        (0u64, b"synthetic object zero".to_vec()),
-        (1u64, b"synthetic object one".to_vec()),
-    ];
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
-
-    // Prior partial run writes its report into output_dir.
-    let output_dir = temp_dir.path().join("batch-output");
-    let mut fetcher = SequencedFetcher::from_objects(&objects);
-    let mut runner = RecordingRunner::default();
-    let first_report = execute_source_universe_batch_with_config(
-        "source-universe-batch-synthetic",
-        &pack_path,
-        &output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        &mut fetcher,
-        &mut runner,
-    )
-    .expect("first partial run completes");
-    let artifact = write_source_universe_batch_execution_report(&output_dir, &first_report)
-        .expect("write prior report");
-
-    // Resuming INTO the same output dir would collide with the clean-write
-    // report guard at the end of the run; the contract is rejected up front,
-    // before any fetch happens.
-    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
-    let resume_calls = resume_fetcher.calls();
-    let mut resume_runner = RecordingRunner::default();
-    let err = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic",
-        &pack_path,
-        &output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(2),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(artifact.path.clone()),
-        &mut resume_fetcher,
-        &mut resume_runner,
-    )
-    .expect_err("in-place resume must be rejected");
-    assert!(
-        format!("{err:#}").contains("resume requires a fresh output dir"),
-        "explicit contract error expected, got: {err:#}"
-    );
-    assert!(
-        resume_calls.lock().expect("resume fetch log").is_empty(),
-        "rejection happens before any fetch"
-    );
-}
-
-// ── Pack-pinned control artifacts fail closed before external work ──
 
 #[test]
 fn prepare_batch_rejects_tampered_run_spec_before_external_work() {
@@ -2033,6 +1608,35 @@ fn prepare_batch_rejects_symlink_control_path_escape_before_fetch() {
 }
 
 #[test]
+fn deterministic_durable_preflight_rejects_missing_ssm_before_fetch() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    rewrite_control_triple_and_regenerate_execution_plan(&fixture, 0, |run_spec, _| {
+        run_spec.manifest.artifact_store.ssm_parameters = None;
+    });
+
+    let error = pack_preflight_error_before_external_work(&fixture);
+
+    assert!(
+        error.contains("manifest SSM credential parameters"),
+        "{error}"
+    );
+}
+
+#[test]
+fn deterministic_durable_preflight_rejects_stale_nt_before_fetch() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    rewrite_control_triple_and_regenerate_execution_plan(&fixture, 0, |run_spec, _| {
+        run_spec.manifest.resolved_nt_version = "stale-nt-revision".to_string();
+    });
+
+    let error = pack_preflight_error_before_external_work(&fixture);
+
+    assert!(error.contains("NautilusTrader revision mismatch"), "{error}");
+}
+
+#[test]
 fn prepare_batch_rejects_escaping_operator_run_ids_before_fetch() {
     for operator_run_id in [
         "/tmp/absolute-operator-run".to_string(),
@@ -2262,11 +1866,11 @@ fn foreign_deterministic_symlink_does_not_reduce_multi_record_progress() {
 }
 
 #[test]
-fn output_attempt_is_not_created_until_fetch_finishes() {
+fn fresh_discovery_scratch_is_the_only_output_during_fetch() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let object_bytes = b"accepted object bytes".to_vec();
     let fixture = write_valid_single_record_pack(temp_dir.path());
-    let mut fetcher = NoOutputAttemptDuringFetchFetcher {
+    let mut fetcher = FreshDiscoveryScratchDuringFetchFetcher {
         object_bytes,
         output_root: fixture.output_dir.clone(),
     };
@@ -2280,7 +1884,7 @@ fn output_attempt_is_not_created_until_fetch_finishes() {
         &mut fetcher,
         &mut runner,
     )
-    .expect("fetch completes before the output attempt is claimed");
+    .expect("fetch completes inside the already claimed discovery scratch");
 
     assert_eq!(report.completed_record_count, 1);
     assert_eq!(report.failed_record_count, 0);
@@ -2487,69 +2091,6 @@ fn prepare_batch_rejects_short_hex_sha256() {
 // ── Fix 2: missing negative test for schema_version validation ──
 
 #[test]
-fn resume_schema_version_mismatch_fails_loud() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-
-    let objects = vec![(0u64, b"synthetic object zero".to_vec())];
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
-
-    let prior_report = SourceUniverseBatchExecutionReport {
-        schema_version: "wrong-schema-version.v0".to_string(),
-        batch_id: "source-universe-batch-synthetic".to_string(),
-        status: SourceUniverseBatchExecutionReportStatus::Completed,
-        pack_id: "source-universe-execution-pack-synthetic".to_string(),
-        universe_id: "backfill-source-universe-synthetic".to_string(),
-        venue: "synthetic-venue".to_string(),
-        selected_record_count: 1,
-        completed_record_count: 1,
-        failed_record_count: 0,
-        total_canonical_rows: 7,
-        total_nt_catalog_rows: 7,
-        records: vec![carried_record_fixture(
-            0,
-            &sha256_hex(b"synthetic object zero"),
-        )],
-        failures: vec![],
-    };
-    let resume_report_path = temp_dir.path().join("prior-report.json");
-    fs::write(
-        &resume_report_path,
-        serde_json::to_vec_pretty(&prior_report).expect("serialize prior report"),
-    )
-    .expect("write prior report");
-
-    let output_dir = temp_dir.path().join("batch-output");
-    let mut fetcher = SequencedFetcher::from_objects(&objects);
-    let mut runner = RecordingRunner::default();
-    let result = execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic",
-        &pack_path,
-        &output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(resume_report_path),
-        &mut fetcher,
-        &mut runner,
-    );
-    let err = result.expect_err("schema_version mismatch must fail loud");
-    assert!(
-        err.to_string().contains("schema_version") || format!("{err:#}").contains("schema_version"),
-        "error names the schema_version mismatch: {err:#}"
-    );
-}
-
-// ── Fix 3: missing negative test for max_concurrent_records == 0 ──
-
-#[test]
 fn prepare_batch_rejects_zero_max_concurrent_records() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let run_spec_path = temp_dir.path().join("run-spec.toml");
@@ -2706,112 +2247,6 @@ fn prepare_batch_allows_strict_sequence_gaps() {
 }
 
 #[test]
-fn resume_reprocesses_when_an_unreported_pack_record_field_drifts() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let objects = vec![(0, valid_bybit_trade_object())];
-    let fixture = write_valid_pack(temp_dir.path(), &objects);
-    let mut initial_fetcher = SequencedFetcher::from_objects(&objects);
-    let mut initial_runner = LocalSourceUniverseOperatorRunner;
-    let prior_report = execute_source_universe_batch(
-        "source-universe-batch-synthetic",
-        &fixture.pack_path,
-        &fixture.output_dir,
-        Some(1),
-        &mut initial_fetcher,
-        &mut initial_runner,
-    )
-    .expect("initial record completes");
-    let prior_report_artifact =
-        write_source_universe_batch_execution_report(&fixture.output_dir, &prior_report)
-            .expect("write prior report");
-
-    rewrite_pack_record_field(
-        &fixture.pack_path,
-        0,
-        "work_item_id",
-        serde_json::Value::String("drifted-work-item-id".to_string()),
-    );
-
-    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
-    let resume_calls = resume_fetcher.calls();
-    let mut resume_runner = RecordingRunner::default();
-    execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic-resume",
-        &fixture.pack_path,
-        &temp_dir.path().join("resume-output"),
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(prior_report_artifact.path),
-        &mut resume_fetcher,
-        &mut resume_runner,
-    )
-    .expect("record drift triggers fresh execution");
-
-    assert_eq!(
-        resume_calls.lock().expect("resume fetch calls").as_slice(),
-        &[0],
-        "a complete-record fingerprint must prevent carrying drifted pack metadata"
-    );
-    assert_eq!(resume_runner.calls.len(), 1);
-}
-
-#[test]
-fn resume_does_not_carry_when_fingerprint_only_pack_metadata_drifts() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let objects = vec![(0, valid_bybit_trade_object())];
-    let fixture = write_valid_pack(temp_dir.path(), &objects);
-    let mut initial_fetcher = SequencedFetcher::from_objects(&objects);
-    let mut initial_runner = LocalSourceUniverseOperatorRunner;
-    let prior_report = execute_source_universe_batch(
-        "source-universe-batch-synthetic",
-        &fixture.pack_path,
-        &fixture.output_dir,
-        Some(1),
-        &mut initial_fetcher,
-        &mut initial_runner,
-    )
-    .expect("initial record completes");
-    let prior_report_artifact =
-        write_source_universe_batch_execution_report(&fixture.output_dir, &prior_report)
-            .expect("write prior report");
-    rewrite_pack_field(
-        &fixture.pack_path,
-        "work_order_id",
-        serde_json::Value::String("drifted-work-order".to_string()),
-    );
-
-    let mut resume_fetcher = SequencedFetcher::from_objects(&objects);
-    let resume_calls = resume_fetcher.calls();
-    let mut resume_runner = RecordingRunner::default();
-    execute_source_universe_batch_with_config_and_resume(
-        "source-universe-batch-synthetic-resume",
-        &fixture.pack_path,
-        &temp_dir.path().join("resume-output"),
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        Some(prior_report_artifact.path),
-        &mut resume_fetcher,
-        &mut resume_runner,
-    )
-    .expect("fingerprint-only pack drift reexecutes");
-
-    assert_eq!(
-        resume_calls.lock().expect("resume fetch calls").as_slice(),
-        &[0],
-        "fingerprint-only pack metadata drift must reprocess, never carry"
-    );
-    assert_eq!(resume_runner.calls.len(), 1);
-}
-
-#[test]
 fn factory_entry_does_not_construct_dependencies_for_only_preflight_failures() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
@@ -2946,52 +2381,36 @@ fn factory_entry_does_not_construct_dependencies_for_empty_selection() {
 }
 
 #[test]
-fn factory_entry_constructs_one_resume_runner_but_no_fetcher_for_valid_carry() {
+fn factory_entry_constructs_one_discovery_runner_but_no_fetcher_for_current_terminal() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let objects = vec![(0, valid_bybit_trade_object())];
     let fixture = write_valid_pack(temp_dir.path(), &objects);
-    let mut initial_fetcher = SequencedFetcher::from_objects(&objects);
-    let mut initial_runner = LocalSourceUniverseOperatorRunner;
-    let prior_report = execute_source_universe_batch(
-        "source-universe-batch-prior",
-        &fixture.pack_path,
-        &fixture.output_dir,
-        Some(1),
-        &mut initial_fetcher,
-        &mut initial_runner,
-    )
-    .expect("initial record completes");
-    let prior_record_output = prior_report.records[0].output_dir.clone();
-    let prior_artifact =
-        write_source_universe_batch_execution_report(&fixture.output_dir, &prior_report)
-            .expect("write prior report");
     let fetcher_factory_calls = AtomicUsize::new(0);
     let runner_factory_calls = AtomicUsize::new(0);
 
-    let report = execute_source_universe_batch_with_factories_and_resume(
-        "source-universe-batch-valid-carry",
+    let report = execute_source_universe_batch_with_factories(
+        "source-universe-batch-current-terminal",
         &fixture.pack_path,
-        &temp_dir.path().join("resume-output"),
+        &fixture.output_dir,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: Some(4),
+            max_concurrent_records: Some(1),
         },
-        Some(prior_artifact.path),
         || -> anyhow::Result<NeverFetcher> {
             fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
-            anyhow::bail!("valid carry must not construct a fetcher")
+            anyhow::bail!("current terminal must not construct a fetcher")
         },
-        || -> anyhow::Result<ResumeValidationRunner> {
+        || -> anyhow::Result<CurrentCompletionValidationRunner> {
             runner_factory_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ResumeValidationRunner::exact())
+            Ok(CurrentCompletionValidationRunner::exact())
         },
     )
-    .expect("valid carry performs exact durable resume validation");
+    .expect("current terminal performs exact durable discovery");
 
     assert_eq!(report.completed_record_count, 1);
-    assert_eq!(report.records[0].output_dir, prior_record_output);
+    assert!(report.records[0].output_dir.starts_with(&fixture.output_dir));
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 1);
 }
@@ -3059,7 +2478,13 @@ fn process_runner_parallelism_rejection_precedes_fetch_and_spawn() {
             fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
             anyhow::bail!("fetcher must not be constructed")
         },
-        || ProcessIsolatedSourceUniverseOperatorRunner::new(request_root.clone(), 2),
+        || {
+            ProcessIsolatedSourceUniverseOperatorRunner::new(
+                request_root.clone(),
+                2,
+                Duration::from_secs(1),
+            )
+        },
     )
     .expect("parallel process-runner rejection is a record failure");
 
@@ -3129,6 +2554,7 @@ impl SourceUniverseObjectFetcher for MutatingControlArtifactFetcher {
     fn fetch(
         &mut self,
         _record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<Vec<u8>> {
         fs::write(&self.artifact_path, &self.replacement_bytes)
@@ -3137,23 +2563,35 @@ impl SourceUniverseObjectFetcher for MutatingControlArtifactFetcher {
     }
 }
 
-struct NoOutputAttemptDuringFetchFetcher {
+struct FreshDiscoveryScratchDuringFetchFetcher {
     object_bytes: Vec<u8>,
     output_root: PathBuf,
 }
 
-impl SourceUniverseObjectFetcher for NoOutputAttemptDuringFetchFetcher {
+impl SourceUniverseObjectFetcher for FreshDiscoveryScratchDuringFetchFetcher {
     fn fetch(
         &mut self,
         _record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<Vec<u8>> {
+        let entries = fs::read_dir(&self.output_root)
+            .expect("read output root")
+            .collect::<std::io::Result<Vec<_>>>()
+            .expect("collect output-root entries during fetch");
         assert_eq!(
-            fs::read_dir(&self.output_root)
-                .expect("read output root")
+            entries.len(),
+            1,
+            "one fresh discovery scratch must be claimed before fetch"
+        );
+        let scratch = entries[0].path();
+        assert!(scratch.is_dir(), "the fresh discovery scratch must be a directory");
+        assert_eq!(
+            fs::read_dir(&scratch)
+                .expect("read fresh discovery scratch")
                 .count(),
             0,
-            "fetch and exact-object verification must precede output-attempt creation"
+            "no candidate or terminal artifact may exist before fetch completes"
         );
         Ok(self.object_bytes.clone())
     }
@@ -3171,6 +2609,7 @@ impl SourceUniverseObjectFetcher for OutputRootSwapFetcher {
     fn fetch(
         &mut self,
         _record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<Vec<u8>> {
         fs::rename(&self.output_root, &self.displaced_root)
@@ -3184,6 +2623,7 @@ impl SourceUniverseObjectFetcher for StaticFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<Vec<u8>> {
         assert_eq!(record.source_url, self.expected_source_url);
@@ -3231,6 +2671,7 @@ impl SourceUniverseObjectFetcher for SequencedFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<Vec<u8>> {
         self.calls
@@ -3270,34 +2711,34 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
     }
 }
 
-enum ResumeValidationBehavior {
+enum CurrentCompletionValidationBehavior {
     Exact,
     MissingExactVersion,
     ForeignExactVersion,
     CorruptExactVersion,
 }
 
-struct ResumeValidationRunner {
-    behavior: ResumeValidationBehavior,
-    resume_calls: Vec<u64>,
+struct CurrentCompletionValidationRunner {
+    behavior: CurrentCompletionValidationBehavior,
+    discovery_calls: Vec<u64>,
     run_calls: Vec<u64>,
 }
 
-impl ResumeValidationRunner {
+impl CurrentCompletionValidationRunner {
     fn exact() -> Self {
-        Self::new(ResumeValidationBehavior::Exact)
+        Self::new(CurrentCompletionValidationBehavior::Exact)
     }
 
-    fn new(behavior: ResumeValidationBehavior) -> Self {
+    fn new(behavior: CurrentCompletionValidationBehavior) -> Self {
         Self {
             behavior,
-            resume_calls: Vec::new(),
+            discovery_calls: Vec::new(),
             run_calls: Vec::new(),
         }
     }
 }
 
-impl SourceUniverseOperatorRunner for ResumeValidationRunner {
+impl SourceUniverseOperatorRunner for CurrentCompletionValidationRunner {
     fn run(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
@@ -3316,40 +2757,37 @@ impl SourceUniverseOperatorRunner for ResumeValidationRunner {
         ))
     }
 
-    fn resume(
+    fn discover_current_completion(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
-        durable_completion: &DurableCompletionLocator,
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
-        sealed_summary: &OperatorRunSummary,
         _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<DurableRunReceipt> {
-        self.resume_calls.push(record.sequence);
+    ) -> anyhow::Result<Option<DurableRunReceipt>> {
+        self.discovery_calls.push(record.sequence);
+        if record.sequence != 0 {
+            return Ok(None);
+        }
         match self.behavior {
-            ResumeValidationBehavior::MissingExactVersion => {
+            CurrentCompletionValidationBehavior::MissingExactVersion => {
                 anyhow::bail!("missing exact remote version")
             }
-            ResumeValidationBehavior::CorruptExactVersion => {
+            CurrentCompletionValidationBehavior::CorruptExactVersion => {
                 anyhow::bail!("durable completion manifest exact-version SHA-256 mismatch")
             }
-            ResumeValidationBehavior::Exact | ResumeValidationBehavior::ForeignExactVersion => {}
+            CurrentCompletionValidationBehavior::ForeignExactVersion => {
+                anyhow::bail!("current durable completion does not match submitted run")
+            }
+            CurrentCompletionValidationBehavior::Exact => {}
         }
-        let mut completion = durable_completion.clone();
-        if matches!(
-            self.behavior,
-            ResumeValidationBehavior::ForeignExactVersion
-        ) {
-            completion.object.version_id = "foreign-exact-version".to_string();
-        }
-        Ok(DurableRunReceipt {
-            completion,
+        Ok(Some(DurableRunReceipt {
+            completion: synthetic_test_durable_completion(),
             run_id: control_artifacts.run_spec.manifest.run_id.clone(),
             submitted_manifest_hash: control_artifacts.run_spec.manifest.manifest_hash(),
-            canonical_rows: sealed_summary.canonical_rows,
-            nt_catalog_rows: sealed_summary.nt_catalog_rows,
-            catalog_hash: sealed_summary.catalog_hash.clone(),
-        })
+            canonical_rows: 1,
+            nt_catalog_rows: 1,
+            catalog_hash: sha256_hex(format!("remote-catalog-{}", record.sequence).as_bytes()),
+        }))
     }
 }
 
@@ -3377,38 +2815,6 @@ impl SourceUniverseOperatorRunner for MalformedFirstCatalogHashRunner {
                 } else {
                     sha256_hex(b"catalog-hash")
                 },
-            )?,
-        ))
-    }
-}
-
-struct CatalogMutatingRunner {
-    catalog_file_to_mutate: PathBuf,
-    calls: Vec<u64>,
-}
-
-impl SourceUniverseOperatorRunner for CatalogMutatingRunner {
-    fn run(
-        &mut self,
-        record: &SourceUniverseExecutionPackRecord,
-        _object_bytes: Vec<u8>,
-        _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
-        _output_dir: &Path,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<SourceUniverseOperatorRunOutcome> {
-        self.calls.push(record.sequence);
-        if record.sequence == 0 {
-            fs::write(
-                &self.catalog_file_to_mutate,
-                b"mutated carried catalog bytes",
-            )
-            .expect("mutate later carried catalog");
-        }
-        Ok(SourceUniverseOperatorRunOutcome::NonTerminal(
-            SourceUniverseBatchExecutionRunOutput::try_new(
-                7,
-                7,
-                sha256_hex(format!("catalog-hash-{}", record.sequence).as_bytes()),
             )?,
         ))
     }
@@ -3708,8 +3114,11 @@ fn rewrite_control_triple_and_regenerate_execution_plan(
     fs::write(&execution_plan_path, &execution_plan_bytes)
         .expect("write regenerated execution plan");
     record.run_spec_sha256 = sha256_hex(&run_spec_bytes);
+    record.run_spec_bytes = run_spec_bytes.len() as u64;
     record.accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
+    record.accepted_tranche_bytes = accepted_tranche_bytes.len() as u64;
     record.execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
+    record.execution_plan_bytes = execution_plan_bytes.len() as u64;
     let source_bindings_path = record.source_bindings_path.clone();
     let source_bindings_sha256 = record.source_bindings_sha256.clone();
     let mut shared_refs = pack
@@ -3782,30 +3191,6 @@ fn assert_control_artifact_mismatch(
         error.contains(actual_sha256),
         "error names actual digest: {error}"
     );
-}
-
-fn first_regular_file(root: &Path) -> PathBuf {
-    let mut pending = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(dir) = pending.pop() {
-        let mut entries = fs::read_dir(&dir)
-            .expect("read catalog data dir")
-            .map(|entry| entry.expect("catalog data entry"))
-            .collect::<Vec<_>>();
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            if entry.file_type().expect("catalog data file type").is_dir() {
-                pending.push(entry.path());
-            } else {
-                files.push(entry.path());
-            }
-        }
-    }
-    files.sort();
-    files
-        .into_iter()
-        .next()
-        .expect("committed catalog contains a regular data file")
 }
 
 fn write_two_record_pack(
@@ -4053,66 +3438,6 @@ fn synthetic_record(
     }
 }
 
-/// A prior successful report record for the resume tests, with a chosen sha so
-/// the pack-regeneration guard can be exercised both ways.
-fn carried_record_fixture(
-    sequence: u64,
-    selected_object_sha256: &str,
-) -> backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionRecord
-{
-    backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionRecord {
-        sequence,
-        operator_run_id: format!("source-universe-operator-run-synthetic-{sequence:05}"),
-        source_binding: "synthetic-spot-tick-trades".to_string(),
-        category: "spot".to_string(),
-        symbol: synthetic_symbol(sequence),
-        archive_date: "2026-03-01".to_string(),
-        selected_object_sha256: selected_object_sha256.to_string(),
-        run_spec_sha256: sha256_hex(b"run_id = \"synthetic-run\"\n"),
-        accepted_tranche_sha256: sha256_hex(b"{}\n"),
-        execution_plan_sha256: sha256_hex(b"{}\n"),
-        execution_record_sha256: sha256_hex(b"synthetic execution record"),
-        source_bindings_sha256: sha256_hex(b"synthetic source bindings"),
-        selected_object_bytes: 0,
-        canonical_rows: 7,
-        nt_catalog_rows: 7,
-        catalog_hash: sha256_hex(b"carried catalog"),
-        durable_completion: Some(DurableCompletionLocator {
-            object: DurableObjectVersionIdentity {
-                uri: format!(
-                    "s3://synthetic-bucket/backtests/{sequence}/durable-completion-manifest.json"
-                ),
-                sha256: sha256_hex(b"synthetic durable completion"),
-                byte_len: 1,
-                version_id: format!("synthetic-version-{sequence}"),
-                e_tag: None,
-            },
-        }),
-        output_dir: std::path::PathBuf::from("prior-output-dir"),
-    }
-}
-
-/// A prior failure entry for the resume tests, which must NOT be carried.
-fn failure_record_fixture(
-    sequence: u64,
-    selected_object_sha256: &str,
-) -> backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionFailureRecord{
-    backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionFailureRecord {
-        sequence,
-        operator_run_id: format!("source-universe-operator-run-synthetic-{sequence:05}"),
-        source_binding: "synthetic-spot-tick-trades".to_string(),
-        category: "spot".to_string(),
-        symbol: synthetic_symbol(sequence),
-        archive_date: "2026-03-01".to_string(),
-        selected_object_sha256: selected_object_sha256.to_string(),
-        execution_record_sha256: sha256_hex(b"failed synthetic execution record"),
-        selected_object_bytes: 0,
-        attempt_output: None,
-        failure_stage: "run_operator".to_string(),
-        error: "synthetic prior failure".to_string(),
-    }
-}
-
 /// Inner fetcher for the caching tests: serves pinned bytes by sequence and
 /// counts how many times it was actually invoked.
 struct CountingFetcher {
@@ -4137,6 +3462,7 @@ impl SourceUniverseObjectFetcher for CountingFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<Vec<u8>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -4230,6 +3556,7 @@ impl SourceUniverseObjectFetcher for NeverFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
+        _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<Vec<u8>> {
         panic!(

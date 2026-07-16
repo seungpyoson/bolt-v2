@@ -1,0 +1,31 @@
+schema_version = 1
+
+[adapter_abi]
+repository = "https://github.com/Polymarket/ctf-exchange-v2"
+revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
+deployment_source_path = "README.md"
+deployment_source_sha256 = "41def0727a8adbaccefb3c25bce4e50166915f98ea3e9588323304c2851fac7c"
+standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
+standard_source_sha256 = "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90"
+negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
+negative_risk_source_sha256 = "2461eb793fa5571a6902a52c5276f02a8621814fdc026cf3a7814879b1b3db76"
+function_signature = "redeemPositions(address,bytes32,bytes32,uint256[])"
+function_selector = "0x01b7037c"
+
+[safe_request]
+repository = "https://github.com/Polymarket/builder-relayer-client"
+revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"
+builder_source_path = "src/builder/safe.ts"
+builder_source_sha256 = "1142cb7fe786128361586d6fc9313a3e120e1633bdfc064169bfa78951d66cc5"
+types_source_path = "src/types.ts"
+types_source_sha256 = "059c02b19a23d57e7b354df8c01d706cf508c27460067c1d57dad96cf5455ad3"
+signature_pack_source_path = "src/utils/index.ts"
+signature_pack_source_sha256 = "0a1b6036fb7e3f7d1629002a491a448974a69c7556741f449c441cb3e3af2941"
+operation = 0
+value = "0"
+safe_tx_gas = "0"
+base_gas = "0"
+gas_price = "0"
+gas_token = "0x0000000000000000000000000000000000000000"
+refund_receiver = "0x0000000000000000000000000000000000000000"
+metadata = ""

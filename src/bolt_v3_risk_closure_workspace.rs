@@ -614,6 +614,29 @@ impl TerminalReleasePermit {
 }
 
 #[cfg(test)]
+pub(crate) fn test_recovery_lease(
+    workspace_bytes: usize,
+    identity: &str,
+) -> RiskClosureWorkspaceLease {
+    let authority = RiskClosureWorkspaceAuthority::with_config(RiskClosureWorkspaceConfig {
+        arena_bytes: workspace_bytes,
+        slot_bytes: workspace_bytes,
+        capacity: usize::from(true),
+        production_activation_enabled: false,
+    })
+    .expect("test workspace must allocate");
+    let closure_identity = ClosureIdentity::new(identity).expect("test identity must be valid");
+    authority
+        .checkout_new_risk()
+        .expect("test workspace must reserve")
+        .commit(closure_identity.clone())
+        .expect("test workspace must retain");
+    authority
+        .checkout_recovery(&closure_identity)
+        .expect("test workspace must check out for recovery")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

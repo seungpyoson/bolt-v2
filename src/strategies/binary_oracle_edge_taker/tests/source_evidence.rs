@@ -5195,10 +5195,16 @@ fn admitted_and_unblocked_paths_do_not_clear_episode_novelty() {
 
 #[test]
 fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        Arc::new(FailingDecisionEvidenceWriter),
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
+            RecordingDecisionEvidenceWriter,
+        )),
     );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        Arc::new(FailingDecisionEvidenceWriter),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
     let decision = minimal_entry_submission_decision();
     assert!(
         strategy

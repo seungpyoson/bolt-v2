@@ -23,6 +23,7 @@ use crate::path_resolution::{
 };
 use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
+    artifact_store::{CatalogDispatchConfig, CatalogProjectionBinding},
     backfill_accepted_tranche::{
         BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE, BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
         BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheObject,
@@ -35,20 +36,23 @@ use crate::{
     canonical_trades::{CanonicalInstrumentIdentity, ConverterConfig, RawPayloadConfig},
     catalog_projection::CatalogInstrumentSpec,
     operator::RunSpec,
+    run_manifest::MarketStructureFixture,
     source_proof::{AcceptanceScope, SourceProofReport, SourceProofStatus},
     source_universe_conversion_work_order::{
-        SourceUniverseConversionWorkOrder, SourceUniverseConversionWorkOrderRecord,
+        SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION, SourceUniverseConversionWorkOrder,
+        SourceUniverseConversionWorkOrderRecord,
     },
     source_universe_object_gates::{
         SourceUniverseObjectGateMaterialization, SourceUniverseObjectGateRecord,
     },
     source_universe_operator_inputs::{
-        SourceUniverseOperatorInputRecord, SourceUniverseOperatorInputRecordStatus,
-        SourceUniverseOperatorInputs, SourceUniverseOperatorInstrumentSpecRecord,
+        SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION, SourceUniverseOperatorInputRecord,
+        SourceUniverseOperatorInputRecordStatus, SourceUniverseOperatorInputs,
+        SourceUniverseOperatorInstrumentSpecRecord,
     },
 };
 
-pub const SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION: &str = "source-universe-execution-pack.v1";
+pub const SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION: &str = "source-universe-execution-pack.v4";
 pub const SOURCE_UNIVERSE_EXECUTION_PACK_FILE: &str = "source-universe-execution-pack.json";
 pub const SOURCE_UNIVERSE_EXECUTION_PACK_RUN_SPEC_FILE: &str = "run-spec.toml";
 
@@ -59,7 +63,7 @@ pub struct SourceUniverseExecutionPackSpec {
     pub source_universe_conversion_work_order_path: PathBuf,
     pub run_spec_template_path: PathBuf,
     pub output_dir: PathBuf,
-    pub venue_account_types: SourceUniverseExecutionPackVenueAccountTypes,
+    pub venue_policy: SourceUniverseExecutionPackVenuePolicy,
     #[serde(default)]
     pub overwrite_existing_artifacts: bool,
     #[serde(default)]
@@ -68,13 +72,14 @@ pub struct SourceUniverseExecutionPackSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceUniverseExecutionPackVenueAccountTypes {
+pub struct SourceUniverseExecutionPackVenuePolicy {
+    pub starting_balance_amount: String,
     pub spot: String,
     pub crypto_perpetual: String,
     pub crypto_future: String,
 }
 
-impl SourceUniverseExecutionPackVenueAccountTypes {
+impl SourceUniverseExecutionPackVenuePolicy {
     fn account_type_for(&self, instrument_spec: &CatalogInstrumentSpec) -> Result<&str> {
         let value = match instrument_spec {
             CatalogInstrumentSpec::Spot(_) => &self.spot,
@@ -96,6 +101,35 @@ impl SourceUniverseExecutionPackVenueAccountTypes {
         );
         Ok(value)
     }
+
+    fn starting_balance_for(&self, instrument_spec: &CatalogInstrumentSpec) -> Result<String> {
+        let amount = self.starting_balance_amount.trim();
+        ensure!(
+            !amount.is_empty()
+                && amount == self.starting_balance_amount
+                && !amount.chars().any(char::is_whitespace),
+            "source-universe execution-pack starting_balance_amount must be one non-empty token without surrounding whitespace"
+        );
+        let currency = funding_currency_for(instrument_spec)?;
+        Ok(format!("{amount} {currency}"))
+    }
+}
+
+fn funding_currency_for(instrument_spec: &CatalogInstrumentSpec) -> Result<&str> {
+    let currency = match instrument_spec {
+        CatalogInstrumentSpec::Spot(spec) => &spec.quote_currency,
+        CatalogInstrumentSpec::CryptoPerpetual(spec) => &spec.settlement_currency,
+        CatalogInstrumentSpec::CryptoFuture(spec) => &spec.settlement_currency,
+        CatalogInstrumentSpec::BinaryOption(_) => {
+            bail!("source-universe execution pack does not support binary-option instrument specs")
+        }
+    };
+    let currency = currency.trim();
+    ensure!(
+        !currency.is_empty() && !currency.chars().any(char::is_whitespace),
+        "source-universe execution-pack funding currency must be one non-empty token"
+    );
+    Ok(currency)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,20 +158,25 @@ pub struct SourceUniverseExecutionPackRecord {
     pub source_proof_version: u32,
     pub accepted_tranche_id: String,
     pub output_prefix: String,
+    pub source_bindings_path: PathBuf,
+    pub source_bindings_bytes: u64,
+    pub source_bindings_sha256: String,
     pub run_spec_path: PathBuf,
+    pub run_spec_bytes: u64,
     pub run_spec_sha256: String,
     pub accepted_tranche_path: PathBuf,
+    pub accepted_tranche_bytes: u64,
     pub accepted_tranche_sha256: String,
     pub execution_plan_path: PathBuf,
+    pub execution_plan_bytes: u64,
     pub execution_plan_sha256: String,
 }
 
 impl SourceUniverseExecutionPackRecord {
-    /// The on-disk artifact paths this record advertises: its run spec, accepted
-    /// tranche manifest, and execution plan. Single source of truth for which
-    /// files a record points at, so eviction/restore tooling and the eviction
-    /// guard test enumerate the full set rather than a hand-picked subset. Add
-    /// any new artifact-path field here so every consumer stays exhaustive.
+    /// Per-record generated artifacts eligible for fixture eviction. The
+    /// source-bindings registry is intentionally excluded: every record pins
+    /// it directly, while the pack retains it once in `artifact_refs` as shared
+    /// source-control authority.
     pub fn artifact_paths(&self) -> [&Path; 3] {
         [
             &self.run_spec_path,
@@ -225,6 +264,12 @@ pub fn write_source_universe_execution_pack(
         None,
         "source_universe_conversion_work_order",
     )?;
+    ensure!(
+        work_order.schema_version == SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION,
+        "source-universe conversion work-order schema_version mismatch: expected {}, got {}",
+        SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION,
+        work_order.schema_version
+    );
     let operator_inputs_ref =
         work_order_artifact_ref(&work_order, "source_universe_operator_inputs")?;
     let (operator_inputs_path, operator_inputs_hash, operator_inputs): (
@@ -237,6 +282,12 @@ pub fn write_source_universe_execution_pack(
         Some(operator_inputs_ref.sha256.as_str()),
         "source_universe_operator_inputs",
     )?;
+    ensure!(
+        operator_inputs.schema_version == SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
+        "source-universe operator inputs schema_version mismatch: expected {}, got {}",
+        SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
+        operator_inputs.schema_version
+    );
     let object_gates_ref =
         operator_inputs_artifact_ref(&operator_inputs, "source_universe_object_gates")?;
     let (object_gates_path, object_gates_hash, object_gates): (
@@ -256,12 +307,38 @@ pub fn write_source_universe_execution_pack(
     let template_hash = sha256_hex(template_text.as_bytes());
     let template: Value = toml::from_str(&template_text)
         .with_context(|| format!("parse run-spec template TOML {}", template_path.display()))?;
-    let _: RunSpec = toml::from_str(&template_text).with_context(|| {
+    let template_run_spec: RunSpec = toml::from_str(&template_text).with_context(|| {
         format!(
             "run-spec template does not deserialize {}",
             template_path.display()
         )
     })?;
+    let template_artifact_store = template_run_spec
+        .required_artifact_store()
+        .context("source-universe execution-pack profile requires durable artifact_store")?;
+    template_run_spec
+        .validate_artifact_store_publish_config(template_artifact_store)
+        .context("source-universe execution-pack profile manifest/store mismatch")?;
+    let template_catalog_dispatch = template_run_spec
+        .required_catalog_dispatch()
+        .context("source-universe execution-pack profile requires catalog dispatch")?;
+    ensure!(
+        template_catalog_dispatch.bindings.len() == 1,
+        "source-universe execution-pack profile must declare exactly one catalog-dispatch binding"
+    );
+    let source_bindings_path =
+        resolve_existing_path(base_dir, &template_run_spec.source_bindings_path);
+    let source_bindings_bytes = fs::read(&source_bindings_path).with_context(|| {
+        format!(
+            "read run-spec source-bindings registry {}",
+            source_bindings_path.display()
+        )
+    })?;
+    let source_bindings_sha256 = sha256_hex(&source_bindings_bytes);
+    let source_bindings_portable_path = portable_artifact_path_for_spec(
+        &source_bindings_path,
+        &template_run_spec.source_bindings_path,
+    )?;
 
     let proofs = source_proofs_by_id(base_dir, &object_gates)?;
     let inputs_by_work_item = operator_inputs_by_work_item(&operator_inputs)?;
@@ -269,12 +346,6 @@ pub fn write_source_universe_execution_pack(
     let gates_by_work_item = gates_by_work_item(&object_gates)?;
 
     let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
-    fs::create_dir_all(&output_dir).with_context(|| {
-        format!(
-            "create source-universe execution-pack output directory {}",
-            output_dir.display()
-        )
-    })?;
 
     let selected_records = selected_records(&work_order, spec.record_limit);
     let mut materialized_records = Vec::with_capacity(selected_records.len());
@@ -327,13 +398,6 @@ pub fn write_source_universe_execution_pack(
             record.sequence,
             slug(&record.operator_run_id)
         ));
-        fs::create_dir_all(&run_dir).with_context(|| {
-            format!(
-                "create source-universe execution run dir {}",
-                run_dir.display()
-            )
-        })?;
-
         let run_spec_text = materialize_run_spec(
             &template,
             record,
@@ -341,8 +405,15 @@ pub fn write_source_universe_execution_pack(
             instrument,
             proof,
             &operator_inputs,
-            &spec.venue_account_types,
+            &spec.venue_policy,
+            template_run_spec.manifest.market_structure_fixture,
         )?;
+        fs::create_dir_all(&run_dir).with_context(|| {
+            format!(
+                "create source-universe execution run dir {}",
+                run_dir.display()
+            )
+        })?;
         let run_spec_bytes = run_spec_text.as_bytes();
         let run_spec_hash = sha256_hex(run_spec_bytes);
         let run_spec_path = run_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_RUN_SPEC_FILE);
@@ -357,6 +428,11 @@ pub fn write_source_universe_execution_pack(
                 run_spec_path.display()
             )
         })?;
+        ensure!(
+            run_spec.source_bindings_path == template_run_spec.source_bindings_path,
+            "materialized run spec source-bindings path drift for {}",
+            record.work_item_id
+        );
 
         let gate = gates_by_work_item.get(&record.work_item_id).copied();
         let accepted_tranche =
@@ -389,6 +465,7 @@ pub fn write_source_universe_execution_pack(
             run_spec_hash.clone(),
             &BackfillExecutionRunBinding::from_run_spec(&run_spec),
             BackfillExecutionWorkBudget {
+                max_decoded_bytes: record.max_decoded_bytes,
                 max_source_rows: record.max_source_rows,
                 max_projected_row_groups: record.max_projected_row_groups,
                 max_wall_seconds: record.max_wall_seconds,
@@ -425,17 +502,25 @@ pub fn write_source_universe_execution_pack(
             source_proof_version: record.source_proof_version,
             accepted_tranche_id: record.accepted_tranche_id.clone(),
             output_prefix: run_spec.manifest.output_prefix.clone(),
+            source_bindings_path: source_bindings_portable_path.clone(),
+            source_bindings_bytes: u64::try_from(source_bindings_bytes.len())
+                .context("source-bindings byte length does not fit u64")?,
+            source_bindings_sha256: source_bindings_sha256.clone(),
             run_spec_path: portable_artifact_path_for_spec(&run_spec_path, &spec.output_dir)?,
+            run_spec_bytes: u64::try_from(run_spec_bytes.len())
+                .context("run-spec byte length does not fit u64")?,
             run_spec_sha256: run_spec_hash,
             accepted_tranche_path: portable_artifact_path_for_spec(
                 &accepted_tranche_path,
                 &spec.output_dir,
             )?,
+            accepted_tranche_bytes: accepted_tranche_artifact.bytes,
             accepted_tranche_sha256: accepted_tranche_hash,
             execution_plan_path: portable_artifact_path_for_spec(
                 &execution_plan_artifact.path,
                 &spec.output_dir,
             )?,
+            execution_plan_bytes: execution_plan_artifact.bytes,
             execution_plan_sha256: execution_plan_artifact.content_hash,
         });
     }
@@ -489,6 +574,11 @@ pub fn write_source_universe_execution_pack(
             path: portable_artifact_path_for_spec(&template_path, &spec.run_spec_template_path)?,
             sha256: template_hash,
         },
+        ReferenceArtifactPin {
+            role: "source_bindings".to_string(),
+            path: source_bindings_portable_path,
+            sha256: source_bindings_sha256,
+        },
     ];
     for proof_id in used_source_proof_ids {
         // Reuse the artifact ref `source_proofs_by_id` already read, sha-verified,
@@ -536,6 +626,12 @@ pub fn write_source_universe_execution_pack(
     };
 
     let pack_path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
+    fs::create_dir_all(&output_dir).with_context(|| {
+        format!(
+            "create source-universe execution-pack output directory {}",
+            output_dir.display()
+        )
+    })?;
     let rewrite = if spec.overwrite_existing_artifacts {
         crate::reference_artifact::ReferenceArtifactRewrite::OverwriteIfChanged
     } else {
@@ -578,7 +674,8 @@ fn materialize_run_spec(
     instrument: &SourceUniverseOperatorInstrumentSpecRecord,
     proof: &SourceProofReport,
     operator_inputs: &SourceUniverseOperatorInputs,
-    venue_account_types: &SourceUniverseExecutionPackVenueAccountTypes,
+    venue_policy: &SourceUniverseExecutionPackVenuePolicy,
+    market_structure_fixture: MarketStructureFixture,
 ) -> Result<String> {
     let mut value = template.clone();
     set_table_value(
@@ -698,14 +795,33 @@ fn materialize_run_spec(
             Value::String(operator_inputs.nt_venue.clone()),
         );
     }
-    patch_venue_account_type(manifest, &instrument.instrument_spec, venue_account_types)?;
+    patch_venue_policy(manifest, &instrument.instrument_spec, venue_policy)?;
     patch_catalog_inputs(manifest, &instrument.nt_instrument_id)?;
     patch_strategy_bar_type(manifest, &instrument.nt_instrument_id)?;
+    patch_catalog_dispatch(
+        &mut value,
+        &record.source_binding,
+        market_structure_fixture,
+        &record.operator_run_id,
+    )?;
 
     let materialized =
         toml::to_string_pretty(&value).context("serialize materialized run spec TOML")?;
-    let _: RunSpec = toml::from_str(&materialized)
+    let materialized_run_spec: RunSpec = toml::from_str(&materialized)
         .context("materialized source-universe run spec does not deserialize")?;
+    let artifact_store = materialized_run_spec
+        .required_artifact_store()
+        .context("materialized source-universe run spec requires durable artifact_store")?;
+    materialized_run_spec
+        .validate_artifact_store_publish_config(artifact_store)
+        .context("materialized source-universe run spec manifest/store mismatch")?;
+    let catalog_dispatch = materialized_run_spec
+        .required_catalog_dispatch()
+        .context("materialized source-universe run spec requires catalog dispatch")?;
+    ensure!(
+        catalog_dispatch.bindings.len() == 1,
+        "materialized source-universe run spec must contain exactly one catalog-dispatch binding"
+    );
     Ok(materialized)
 }
 
@@ -805,12 +921,13 @@ fn patch_strategy_bar_type(manifest: &mut toml::Table, nt_instrument_id: &str) -
     Ok(())
 }
 
-fn patch_venue_account_type(
+fn patch_venue_policy(
     manifest: &mut toml::Table,
     instrument_spec: &CatalogInstrumentSpec,
-    venue_account_types: &SourceUniverseExecutionPackVenueAccountTypes,
+    venue_policy: &SourceUniverseExecutionPackVenuePolicy,
 ) -> Result<()> {
-    let account_type = venue_account_types.account_type_for(instrument_spec)?;
+    let account_type = venue_policy.account_type_for(instrument_spec)?;
+    let starting_balance = venue_policy.starting_balance_for(instrument_spec)?;
     let venue = manifest
         .get_mut("venue")
         .and_then(Value::as_table_mut)
@@ -819,7 +936,39 @@ fn patch_venue_account_type(
         "account_type".to_string(),
         Value::String(account_type.to_owned()),
     );
+    venue.insert(
+        "starting_balances".to_string(),
+        Value::Array(vec![Value::String(starting_balance)]),
+    );
     Ok(())
+}
+
+fn patch_catalog_dispatch(
+    value: &mut Value,
+    source_binding: &str,
+    market_structure_fixture: MarketStructureFixture,
+    catalog_projection_id: &str,
+) -> Result<()> {
+    ensure!(
+        !source_binding.trim().is_empty(),
+        "source-universe execution-pack catalog-dispatch source_binding must not be empty"
+    );
+    ensure!(
+        !catalog_projection_id.trim().is_empty(),
+        "source-universe execution-pack catalog-dispatch catalog_projection_id must not be empty"
+    );
+    set_table_value(
+        value,
+        "catalog_dispatch",
+        Value::try_from(CatalogDispatchConfig {
+            bindings: vec![CatalogProjectionBinding {
+                source_binding: source_binding.to_string(),
+                market_structure_fixture,
+                catalog_projection_id: catalog_projection_id.to_string(),
+            }],
+        })
+        .context("serialize source-universe catalog dispatch to TOML")?,
+    )
 }
 
 fn resolved_output_prefix(manifest: &toml::Table, output_prefix: &str) -> Result<String> {

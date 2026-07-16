@@ -21,8 +21,8 @@ use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
     canonical_trades::RawPayloadContainer,
     source_universe_operator_inputs::{
-        SourceUniverseOperatorInputRecord, SourceUniverseOperatorInputRecordStatus,
-        SourceUniverseOperatorInputs,
+        SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION, SourceUniverseOperatorInputRecord,
+        SourceUniverseOperatorInputRecordStatus, SourceUniverseOperatorInputs,
     },
 };
 
@@ -228,6 +228,12 @@ pub fn evaluate_source_universe_conversion_work_order(
                 inputs_path.display()
             )
         })?;
+    ensure!(
+        inputs.schema_version == SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
+        "source-universe operator inputs schema_version mismatch: expected {}, got {}",
+        SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
+        inputs.schema_version
+    );
     validate_operator_input_counts(&inputs)?;
 
     let mut records = Vec::new();

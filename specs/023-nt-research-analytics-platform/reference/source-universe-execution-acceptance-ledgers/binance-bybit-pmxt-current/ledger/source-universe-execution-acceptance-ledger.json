@@ -4,15 +4,15 @@
   "status": "incomplete",
   "universe_count": 3,
   "converted_universes": 0,
-  "ready_for_conversion_universes": 1,
-  "partially_ready_for_conversion_universes": 1,
-  "blocked_universes": 1,
+  "ready_for_conversion_universes": 0,
+  "partially_ready_for_conversion_universes": 0,
+  "blocked_universes": 3,
   "total_planned_conversion_objects": 9259,
   "total_planned_source_bytes": 579873706038,
   "total_required_single_object_operator_runs": 9259,
-  "total_executable_single_object_operator_runs": 7892,
-  "total_materialized_single_object_operator_runs": 7892,
-  "total_withheld_conversion_objects": 1367,
+  "total_executable_single_object_operator_runs": 0,
+  "total_materialized_single_object_operator_runs": 2,
+  "total_withheld_conversion_objects": 9259,
   "total_completed_conversion_records": 0,
   "total_completed_canonical_rows": 0,
   "total_completed_nt_catalog_rows": 0,
@@ -24,7 +24,7 @@
       "source": "data_vision",
       "family": "native_trades",
       "table_family": "trades",
-      "status": "partially_ready_for_conversion_execution",
+      "status": "blocked",
       "source_gate_count": 2051,
       "source_conversion_batch_count": 8,
       "operator_input_count": 2051,
@@ -33,9 +33,9 @@
       "planned_conversion_objects": 2051,
       "planned_source_bytes": 1748721970,
       "required_single_object_operator_runs": 2051,
-      "executable_single_object_operator_runs": 2035,
-      "materialized_single_object_operator_runs": 2035,
-      "withheld_conversion_objects": 16,
+      "executable_single_object_operator_runs": 0,
+      "materialized_single_object_operator_runs": 1,
+      "withheld_conversion_objects": 2051,
       "completed_conversion_records": 0,
       "completed_canonical_rows": 0,
       "completed_nt_catalog_rows": 0,
@@ -59,12 +59,13 @@
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json",
-          "sha256": "1a9c00458088bfbab952845b723c78453fa36747d8c42a4c296053fdef8780e0"
+          "sha256": "952cbd85fb51cd5e2d0dd26dfb49e03ddcf3602bfaebf4684ff60ebff57c2e0e"
         }
       ],
       "blocking_reasons": [
         "blocked_source_universe_operator_input_records",
-        "missing_instrument_metadata"
+        "missing_instrument_metadata",
+        "source_universe_execution_pack_skipped_executable_records"
       ]
     },
     {
@@ -73,7 +74,7 @@
       "source": "public_archive",
       "family": "tick_trades",
       "table_family": "trades",
-      "status": "ready_for_conversion_execution",
+      "status": "blocked",
       "source_gate_count": 5857,
       "source_conversion_batch_count": 19,
       "operator_input_count": 5857,
@@ -82,9 +83,9 @@
       "planned_conversion_objects": 5857,
       "planned_source_bytes": 20309079098,
       "required_single_object_operator_runs": 5857,
-      "executable_single_object_operator_runs": 5857,
-      "materialized_single_object_operator_runs": 5857,
-      "withheld_conversion_objects": 0,
+      "executable_single_object_operator_runs": 0,
+      "materialized_single_object_operator_runs": 1,
+      "withheld_conversion_objects": 5857,
       "completed_conversion_records": 0,
       "completed_canonical_rows": 0,
       "completed_nt_catalog_rows": 0,
@@ -108,10 +109,12 @@
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/source-universe-execution-pack.json",
-          "sha256": "2a812905f461e362fd06e281e62f43784e879baeeb9f3b66a06ee3113ad9fbea"
+          "sha256": "61a7d523cadb0b49cd4031dfe9ebca57f6bac474e74bd439af41d62121e0220d"
         }
       ],
-      "blocking_reasons": []
+      "blocking_reasons": [
+        "source_universe_execution_pack_skipped_executable_records"
+      ]
     },
     {
       "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",

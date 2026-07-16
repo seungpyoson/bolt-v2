@@ -24,6 +24,54 @@ schema_columns = [
 sha256 = "0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516"
 source_url = "https://public.bybit.com/trading/AAVEUSD/AAVEUSD2025-06-01.csv.gz"
 
+[artifact_store]
+artifact_root = "s3://bolt-parquet/nt-research-analytics"
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
+max_final_object_bytes = 1048576
+
+[artifact_store.create_only_probe]
+copy_dest_object_name = "copy-dest"
+copy_source_object_name = "copy-source"
+object_name = "sentinel"
+prefix = ".writer-probe"
+
+[artifact_store.lifecycle]
+default_delete_expiration = "disabled"
+retention = "forever"
+storage_profiles = ["active", "archive", "deep_archive"]
+
+[artifact_store.lifecycle.hot_index]
+current_snapshot_storage_profile = "active"
+latest_pointer_storage_profile = "active"
+
+[artifact_store.lifecycle.quiet_window_seconds]
+artifact_index = 0
+backtests = 3600
+nt_catalog = 7200
+raw = 7200
+research_analytics = 7200
+source_proofs = 7200
+
+[artifact_store.s3]
+conditional_put = "etag"
+copy_if_not_exists = "multipart"
+region = "us-east-1"
+terminal_commit_timeout_seconds = 60
+
+[artifact_store.subpaths]
+artifact_index = "artifact-index"
+backtests = "backtests"
+nt_catalog = "nt-catalog"
+nt_catalog_synthetic_proof = "nt-catalog-synthetic-proof"
+raw = "raw"
+research_analytics = "research-analytics"
+source_proofs = "source-proofs"
+
+[[catalog_dispatch.bindings]]
+catalog_projection_id = "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000"
+market_structure_fixture = "perps-spot"
+source_binding = "bybit-inverse-tick-trades"
+
 [converter]
 identity = "csv-native-trades-to-canonical-trades.v1"
 version = "1"
@@ -72,7 +120,7 @@ taker_fee = "0"
 
 [manifest]
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
-catalog_hash = "8ffeeb9f0c379fe5aff10f6353b82551378def991bf6e5a64737c41e29d1de36"
+catalog_hash = "530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f"
 execution_model = "nt_backtest_node"
 manifest_schema_version = "backtesting-run-manifest.v1"
 market_structure_fixture = "perps-spot"
@@ -91,11 +139,6 @@ venue_binding_key = "bybit-inverse-tick-trades"
 [manifest.artifact_store.rust_storage_options]
 conditional_put = "etag"
 region = "us-east-1"
-
-[manifest.artifact_store.ssm_parameters]
-access_key_id = "/bolt/artifact-store/s3/access-key-id"
-region = "us-east-1"
-secret_access_key = "/bolt/artifact-store/s3/secret-access-key"
 
 [manifest.artifact_store.storage_options]
 
@@ -134,7 +177,7 @@ price_protection_points = 0
 queue_position = false
 reject_stop_orders = true
 routing = false
-starting_balances = ["1_000_000 USDC"]
+starting_balances = ["1_000_000 AAVE"]
 support_contingent_orders = true
 support_gtd_orders = true
 trade_execution = true

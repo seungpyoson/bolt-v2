@@ -20,6 +20,54 @@ schema_columns = [
 sha256 = "054fa3d832a2e262855e93f46f636e66b1bac17b29caf4cd6e4a597b494422e4"
 source_url = "https://data.binance.vision/data/spot/daily/trades/0GTRY/0GTRY-trades-2026-03-01.zip"
 
+[artifact_store]
+artifact_root = "s3://bolt-parquet/nt-research-analytics"
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
+max_final_object_bytes = 4194304
+
+[artifact_store.create_only_probe]
+copy_dest_object_name = "copy-dest"
+copy_source_object_name = "copy-source"
+object_name = "sentinel"
+prefix = ".writer-probe"
+
+[artifact_store.lifecycle]
+default_delete_expiration = "disabled"
+retention = "forever"
+storage_profiles = ["active", "archive", "deep_archive"]
+
+[artifact_store.lifecycle.hot_index]
+current_snapshot_storage_profile = "active"
+latest_pointer_storage_profile = "active"
+
+[artifact_store.lifecycle.quiet_window_seconds]
+artifact_index = 0
+backtests = 3600
+nt_catalog = 7200
+raw = 7200
+research_analytics = 7200
+source_proofs = 7200
+
+[artifact_store.s3]
+conditional_put = "etag"
+copy_if_not_exists = "multipart"
+region = "us-east-1"
+terminal_commit_timeout_seconds = 60
+
+[artifact_store.subpaths]
+artifact_index = "artifact-index"
+backtests = "backtests"
+nt_catalog = "nt-catalog"
+nt_catalog_synthetic_proof = "nt-catalog-synthetic-proof"
+raw = "raw"
+research_analytics = "research-analytics"
+source_proofs = "source-proofs"
+
+[[catalog_dispatch.bindings]]
+catalog_projection_id = "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00000"
+market_structure_fixture = "perps-spot"
+source_binding = "binance-spot-native-trades"
+
 [converter]
 identity = "csv-native-trades-to-canonical-trades.v1"
 version = "1"
@@ -122,7 +170,7 @@ price_protection_points = 0
 queue_position = false
 reject_stop_orders = true
 routing = false
-starting_balances = ["1_000_000 USDC"]
+starting_balances = ["1_000_000 TRY"]
 support_contingent_orders = true
 support_gtd_orders = true
 trade_execution = true

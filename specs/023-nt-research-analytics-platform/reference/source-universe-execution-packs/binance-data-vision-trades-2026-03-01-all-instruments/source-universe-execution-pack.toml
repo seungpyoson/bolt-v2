@@ -1,10 +1,12 @@
 pack_id = "source-universe-execution-pack-binance-data-vision-trades-2026-03-01-all-instruments"
 source_universe_conversion_work_order_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/binance-data-vision-trades-2026-03-01-all-instruments/work-order/source-universe-conversion-work-order.json"
-run_spec_template_path = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml"
+run_spec_template_path = "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml"
 output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack"
 overwrite_existing_artifacts = true
+record_limit = 1
 
-[venue_account_types]
+[venue_policy]
+starting_balance_amount = "1_000_000"
 spot = "CASH"
 crypto_perpetual = "MARGIN"
 crypto_future = "MARGIN"

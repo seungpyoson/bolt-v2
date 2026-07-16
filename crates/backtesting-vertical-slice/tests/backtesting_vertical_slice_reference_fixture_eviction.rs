@@ -8,10 +8,10 @@
 //!   * the index drifts outside the declared phase-1 scope,
 //!   * a new per-record run dir is (re-)committed (regrowth),
 //!   * a committed pack's golden record-`00000` is missing or wrongly evicted, or
-//!   * the summaries' advertised non-golden paths and the eviction index do not
-//!     match exactly (an unindexed advertised path, or an orphaned index entry).
+//!   * the eviction index does not retain exactly three controls for every
+//!     executable record skipped by a pilot-sized pack summary.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -227,19 +227,17 @@ fn kept_execution_pack_summaries_are_present() {
     }
 }
 
-/// The keep/evict boundary, verified against every committed pack summary: each
-/// pack's golden record-`00000` (the only record the execution-pack acceptance
-/// test dereferences) is kept on disk and absent from the eviction index, while
-/// every non-golden record the summary still advertises is absent on disk. The
-/// set of advertised non-golden paths must equal the eviction index *exactly* (a
-/// bijection, both directions), so the corpus cannot drift into either a summary
-/// that points at a record neither present nor evicted, or an orphaned index
-/// entry no summary advertises.
+/// The keep/evict boundary, verified against every committed pilot pack. Each
+/// summary advertises only its materialized golden record-`00000`; those three
+/// controls stay on disk and stay out of the eviction index. The index remains
+/// authoritative for the skipped executable corpus and must contain exactly
+/// three conventionally named controls for every skipped run owned by the same
+/// venue/pack scope.
 #[test]
 fn committed_packs_keep_golden_record_and_evict_the_rest() {
     let repo_root = repo_root_from_manifest_dir();
     let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
-    let evicted: HashSet<&str> = index
+    let evicted: BTreeSet<&str> = index
         .entries
         .iter()
         .map(|e| e.path.as_str())
@@ -253,19 +251,70 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
     );
 
     let mut checked_packs = 0usize;
-    let mut advertised_evicted: HashSet<String> = HashSet::new();
+    let mut validated_evicted = BTreeSet::new();
     for scope in scopes {
+        let scope_name = scope
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("execution-pack scope name is UTF-8");
         let summary_path = scope.join("execution-pack/source-universe-execution-pack.json");
         let bytes = fs::read(&summary_path)
             .unwrap_or_else(|e| panic!("read pack summary {}: {e}", summary_path.display()));
         let pack: SourceUniverseExecutionPack = serde_json::from_slice(&bytes)
             .unwrap_or_else(|e| panic!("parse pack summary {}: {e}", summary_path.display()));
         checked_packs += 1;
+        assert_eq!(
+            pack.pack_id,
+            format!("source-universe-execution-pack-{scope_name}"),
+            "execution-pack summary must be owned by its containing scope"
+        );
+        assert!(
+            scope_name.starts_with(&format!("{}-", pack.venue.to_ascii_lowercase())),
+            "execution-pack scope {scope_name} must be owned by venue {}",
+            pack.venue
+        );
+        assert_eq!(pack.selected_record_count, 1, "committed packs are pilots");
+        assert_eq!(
+            pack.materialized_record_count, 1,
+            "committed packs materialize one golden pilot"
+        );
+        assert_eq!(
+            pack.records.len(),
+            1,
+            "pilot summary must not advertise the independently indexed skipped corpus"
+        );
 
         let golden = pack
             .records
             .first()
             .unwrap_or_else(|| panic!("pack {} has no records", summary_path.display()));
+        assert_eq!(golden.sequence, 0, "pilot record must be sequence zero");
+        let golden_operator_run_id = format!("source-universe-operator-run-{scope_name}-00000");
+        assert_eq!(golden.operator_run_id, golden_operator_run_id);
+        let golden_run_prefix = format!(
+            "{EXECUTION_PACKS_REL}/{scope_name}/execution-pack/runs/00000-{golden_operator_run_id}/"
+        );
+        let golden_paths: BTreeSet<String> = golden
+            .artifact_paths()
+            .iter()
+            .map(|path| {
+                path.to_str()
+                    .expect("golden record path is UTF-8")
+                    .to_string()
+            })
+            .collect();
+        let expected_golden_paths = [
+            "run-spec.toml",
+            "backfill-accepted-tranche-manifest.json",
+            "backfill-execution-plan.json",
+        ]
+        .map(|file| format!("{golden_run_prefix}{file}"))
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        assert_eq!(
+            golden_paths, expected_golden_paths,
+            "golden controls must obey their venue/pack/run ownership path"
+        );
         for path in golden.artifact_paths() {
             let key = path.to_str().expect("golden record path is UTF-8");
             assert!(
@@ -279,43 +328,97 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
             );
         }
 
-        for record in pack.records.iter().skip(1) {
-            for path in record.artifact_paths() {
-                let key = path.to_str().expect("record path is UTF-8");
-                assert!(
-                    evicted.contains(key),
-                    "non-golden record artifact {key} the summary advertises must be \
-                     covered by the eviction index"
-                );
-                assert!(
-                    !repo_root.join(path).exists(),
-                    "non-golden record artifact {key} must be evicted from the working tree"
-                );
-                assert!(
-                    advertised_evicted.insert(key.to_string()),
-                    "summary advertises non-golden artifact {key} more than once; a \
-                     duplicated path silently orphans the path it replaced in the index"
-                );
-            }
+        let pack_run_prefix = format!("{EXECUTION_PACKS_REL}/{scope_name}/execution-pack/runs/");
+        let owned_evicted: BTreeSet<&str> = evicted
+            .iter()
+            .copied()
+            .filter(|path| path.starts_with(&pack_run_prefix))
+            .collect();
+        assert_eq!(
+            owned_evicted.len() as u64,
+            pack.skipped_executable_record_count * 3,
+            "eviction index must retain exactly three controls per skipped executable run for {scope_name}"
+        );
+
+        let expected_control_files = [
+            "backfill-accepted-tranche-manifest.json",
+            "backfill-execution-plan.json",
+            "run-spec.toml",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let operator_run_prefix = format!("source-universe-operator-run-{scope_name}-");
+        let mut controls_by_run = BTreeMap::<&str, BTreeSet<&str>>::new();
+        for path in owned_evicted {
+            let relative = path
+                .strip_prefix(&pack_run_prefix)
+                .expect("owned eviction path has the pack prefix");
+            let (run_dir, control_file) = relative
+                .split_once('/')
+                .expect("evicted execution control has a run directory");
+            assert!(
+                !control_file.contains('/'),
+                "evicted control {path} must be directly inside its run directory"
+            );
+            let (work_order_sequence, operator_run_id) = run_dir
+                .split_once('-')
+                .expect("evicted run directory has a sequence prefix");
+            assert!(
+                work_order_sequence.len() == 5
+                    && work_order_sequence.chars().all(|ch| ch.is_ascii_digit())
+                    && work_order_sequence != "00000",
+                "evicted control {path} must belong to a non-golden five-digit work-order sequence"
+            );
+            let operator_sequence = operator_run_id
+                .strip_prefix(&operator_run_prefix)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "evicted control {path} must be owned by operator-run prefix {operator_run_prefix}"
+                    )
+                });
+            assert!(
+                operator_sequence.len() == 5
+                    && operator_sequence.chars().all(|ch| ch.is_ascii_digit())
+                    && operator_sequence != "00000",
+                "evicted control {path} must belong to a non-golden five-digit operator sequence"
+            );
+            assert!(
+                expected_control_files.contains(control_file),
+                "evicted run {run_dir} contains unexpected control {control_file}"
+            );
+            assert!(
+                controls_by_run
+                    .entry(run_dir)
+                    .or_default()
+                    .insert(control_file),
+                "evicted run {run_dir} repeats control {control_file}"
+            );
+            assert!(
+                !repo_root.join(path).exists(),
+                "skipped execution control {path} must remain evicted from the working tree"
+            );
+            assert!(validated_evicted.insert(path.to_string()));
+        }
+        assert_eq!(
+            controls_by_run.len() as u64,
+            pack.skipped_executable_record_count,
+            "eviction index must own one run directory per skipped executable record for {scope_name}"
+        );
+        for (run_dir, control_files) in controls_by_run {
+            assert_eq!(
+                control_files, expected_control_files,
+                "evicted run {run_dir} must retain exactly the three generator controls"
+            );
         }
     }
 
-    // Full bijection, not just advertised ⊆ index: every advertised non-golden
-    // path must be indexed AND every index entry must be advertised by some
-    // committed summary. This catches the reverse drift the subset check misses —
-    // an orphaned index entry (a stale fingerprint nobody points at), or a summary
-    // path mutated to duplicate another. It also proves non-vacuity: the index is
-    // non-empty (validate_structure), so equality means real evicted paths were
-    // exercised, and `checked_packs` confirms a golden record was checked too.
-    let advertised: HashSet<&str> = advertised_evicted.iter().map(|s| s.as_str()).collect();
+    let evicted = evicted
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
     assert_eq!(
-        advertised,
-        evicted,
-        "advertised non-golden paths must equal the eviction index exactly; \
-         orphan index entries (indexed, not advertised): {:?}; \
-         advertised but unindexed: {:?}",
-        evicted.difference(&advertised).collect::<Vec<_>>(),
-        advertised.difference(&evicted).collect::<Vec<_>>(),
+        evicted, validated_evicted,
+        "every execution-pack eviction entry must validate under one committed pilot pack's ownership rules"
     );
     assert!(
         checked_packs >= 1,

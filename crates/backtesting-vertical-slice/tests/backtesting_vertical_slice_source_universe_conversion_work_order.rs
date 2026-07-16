@@ -6,6 +6,8 @@ use backtesting_vertical_slice::source_universe_conversion_work_order::{
     SourceUniverseConversionWorkOrder, SourceUniverseConversionWorkOrderStatus,
     write_source_universe_conversion_work_order_from_spec_file,
 };
+use backtesting_vertical_slice::source_universe_operator_inputs::SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION;
+use serde_json::json;
 
 fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
     let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
@@ -26,6 +28,87 @@ fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir:
     fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
 }
 
+fn empty_operator_inputs(schema_version: &str) -> serde_json::Value {
+    json!({
+        "schema_version": schema_version,
+        "input_id": "source-universe-operator-inputs-binance-test",
+        "status": "ready",
+        "gate_id": "source-universe-object-gates-binance-test",
+        "conversion_run_plan_id": "source-universe-conversion-run-plan-binance-test",
+        "universe_id": "backfill-source-universe-binance-test",
+        "venue": "binance",
+        "source": "data_vision",
+        "family": "trades",
+        "table_family": "trades",
+        "operator_run_id_prefix": "source-universe-operator-run-binance-test",
+        "nt_venue": "BINANCE",
+        "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+        "converter_version": "1",
+        "raw_payload_container": "csv_gzip",
+        "max_decoded_bytes": 268435456,
+        "max_source_rows": 1000000,
+        "max_projected_row_groups": 128,
+        "max_wall_seconds": 1800,
+        "planned_object_count": 0,
+        "planned_source_bytes": 0,
+        "conversion_run_count": 0,
+        "instrument_spec_count": 0,
+        "converter_mapping_count": 0,
+        "ready_input_count": 0,
+        "blocked_input_count": 0,
+        "artifact_refs": [],
+        "converter_mappings": [],
+        "instrument_specs": [],
+        "records": [],
+        "blocking_reasons": []
+    })
+}
+
+#[test]
+fn source_universe_conversion_work_order_rejects_unsupported_operator_input_schema() {
+    let temp_dir = tempdir_in_repo_target();
+    let operator_inputs_path = temp_dir.path().join("source-universe-operator-inputs.json");
+    let output_dir = temp_dir.path().join("work-order");
+    let spec_path = temp_dir
+        .path()
+        .join("source-universe-conversion-work-order.toml");
+    let unsupported_schema_version =
+        format!("{SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION}.unsupported");
+
+    fs::write(
+        &operator_inputs_path,
+        serde_json::to_vec_pretty(&empty_operator_inputs(&unsupported_schema_version))
+            .expect("serialize operator inputs with unsupported schema"),
+    )
+    .expect("write operator inputs with unsupported schema");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"work_order_id = "source-universe-conversion-work-order-binance-test"
+source_universe_operator_inputs_path = "{}"
+output_dir = "{}"
+"#,
+            operator_inputs_path.display(),
+            output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let error = write_source_universe_conversion_work_order_from_spec_file(&spec_path)
+        .expect_err("an unsupported operator-input schema must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-universe operator inputs schema_version mismatch"),
+        "{error:#}"
+    );
+    assert!(
+        !output_dir.exists(),
+        "schema rejection precedes publication"
+    );
+}
+
 #[test]
 fn source_universe_conversion_work_order_lists_only_executable_operator_inputs() {
     let temp_dir = tempdir_in_repo_target();
@@ -37,8 +120,11 @@ fn source_universe_conversion_work_order_lists_only_executable_operator_inputs()
 
     fs::write(
         &operator_inputs_path,
-        r#"{
-  "schema_version": "source-universe-operator-inputs.v1",
+        format!(
+            "{}{}{}",
+            "{\n  \"schema_version\": \"",
+            SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
+            r#"",
   "input_id": "source-universe-operator-inputs-binance-test",
   "status": "blocked",
   "gate_id": "source-universe-object-gates-binance-test",
@@ -129,6 +215,7 @@ fn source_universe_conversion_work_order_lists_only_executable_operator_inputs()
   ],
   "blocking_reasons": ["blocked_operator_input_records"]
 }"#,
+        ),
     )
     .expect("write operator inputs");
     fs::write(
@@ -186,8 +273,11 @@ fn source_universe_conversion_work_order_overwrites_existing_artifact_only_when_
 
     fs::write(
         &operator_inputs_path,
-        r#"{
-  "schema_version": "source-universe-operator-inputs.v1",
+        format!(
+            "{}{}{}",
+            "{\n  \"schema_version\": \"",
+            SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
+            r#"",
   "input_id": "source-universe-operator-inputs-binance-test",
   "status": "ready",
   "gate_id": "source-universe-object-gates-binance-test",
@@ -219,6 +309,7 @@ fn source_universe_conversion_work_order_overwrites_existing_artifact_only_when_
   "records": [],
   "blocking_reasons": []
 }"#,
+        ),
     )
     .expect("write operator inputs");
     fs::create_dir_all(&output_dir).expect("create output dir");

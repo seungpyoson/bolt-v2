@@ -16,6 +16,7 @@ use backtesting_vertical_slice::source_universe_execution_acceptance::{
     evaluate_source_universe_execution_acceptance_ledger,
     write_source_universe_execution_acceptance_ledger_from_spec_file,
 };
+use backtesting_vertical_slice::source_universe_operator_inputs::SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION;
 
 fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
     let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
@@ -216,8 +217,11 @@ fn source_universe_execution_acceptance_reports_ready_and_blocked_universes_with
     .expect("write run plan");
     fs::write(
         &operator_inputs_path,
-        r#"{
-  "schema_version": "source-universe-operator-inputs.v1",
+        format!(
+            "{}{}{}",
+            "{\n  \"schema_version\": \"",
+            SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
+            r#"",
   "input_id": "source-universe-operator-inputs-binance-test",
   "status": "blocked",
   "gate_id": "source-universe-object-gates-binance-test",
@@ -308,6 +312,7 @@ fn source_universe_execution_acceptance_reports_ready_and_blocked_universes_with
   ],
   "blocking_reasons": ["blocked_operator_input_records"]
 }"#,
+        ),
     )
     .expect("write operator inputs");
     fs::write(&manifest_path, b"{}").expect("write pmxt manifest");
@@ -481,14 +486,14 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     );
     assert_eq!(ledger.universe_count, 3);
     assert_eq!(ledger.converted_universes, 0);
-    assert_eq!(ledger.ready_for_conversion_universes, 1);
-    assert_eq!(ledger.partially_ready_for_conversion_universes, 1);
-    assert_eq!(ledger.blocked_universes, 1);
+    assert_eq!(ledger.ready_for_conversion_universes, 0);
+    assert_eq!(ledger.partially_ready_for_conversion_universes, 0);
+    assert_eq!(ledger.blocked_universes, 3);
     assert_eq!(ledger.total_planned_conversion_objects, 9_259);
     assert_eq!(ledger.total_required_single_object_operator_runs, 9_259);
-    assert_eq!(ledger.total_executable_single_object_operator_runs, 7_892);
-    assert_eq!(ledger.total_materialized_single_object_operator_runs, 7_892);
-    assert_eq!(ledger.total_withheld_conversion_objects, 1_367);
+    assert_eq!(ledger.total_executable_single_object_operator_runs, 0);
+    assert_eq!(ledger.total_materialized_single_object_operator_runs, 2);
+    assert_eq!(ledger.total_withheld_conversion_objects, 9_259);
     assert_eq!(ledger.total_remaining_conversion_objects, 9_259);
 
     let binance = record(
@@ -497,7 +502,7 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     );
     assert_eq!(
         binance.status,
-        SourceUniverseExecutionAcceptanceUniverseStatus::PartiallyReadyForConversionExecution
+        SourceUniverseExecutionAcceptanceUniverseStatus::Blocked
     );
     assert_eq!(binance.source_gate_count, 2_051);
     assert_eq!(binance.source_conversion_batch_count, 8);
@@ -505,14 +510,20 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(binance.ready_operator_input_count, 2_035);
     assert_eq!(binance.blocked_operator_input_count, 16);
     assert_eq!(binance.required_single_object_operator_runs, 2_051);
-    assert_eq!(binance.executable_single_object_operator_runs, 2_035);
-    assert_eq!(binance.materialized_single_object_operator_runs, 2_035);
-    assert_eq!(binance.withheld_conversion_objects, 16);
+    assert_eq!(binance.executable_single_object_operator_runs, 0);
+    assert_eq!(binance.materialized_single_object_operator_runs, 1);
+    assert_eq!(binance.withheld_conversion_objects, 2_051);
     assert!(
         binance
             .blocking_reasons
             .iter()
             .any(|reason| reason == "missing_instrument_metadata")
+    );
+    assert!(
+        binance
+            .blocking_reasons
+            .iter()
+            .any(|reason| reason == "source_universe_execution_pack_skipped_executable_records")
     );
 
     let bybit = record(
@@ -521,7 +532,7 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     );
     assert_eq!(
         bybit.status,
-        SourceUniverseExecutionAcceptanceUniverseStatus::ReadyForConversionExecution
+        SourceUniverseExecutionAcceptanceUniverseStatus::Blocked
     );
     assert_eq!(bybit.source_gate_count, 5_857);
     assert_eq!(bybit.source_conversion_batch_count, 19);
@@ -529,10 +540,13 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(bybit.ready_operator_input_count, 5_857);
     assert_eq!(bybit.blocked_operator_input_count, 0);
     assert_eq!(bybit.required_single_object_operator_runs, 5_857);
-    assert_eq!(bybit.executable_single_object_operator_runs, 5_857);
-    assert_eq!(bybit.materialized_single_object_operator_runs, 5_857);
-    assert_eq!(bybit.withheld_conversion_objects, 0);
-    assert!(bybit.blocking_reasons.is_empty());
+    assert_eq!(bybit.executable_single_object_operator_runs, 0);
+    assert_eq!(bybit.materialized_single_object_operator_runs, 1);
+    assert_eq!(bybit.withheld_conversion_objects, 5_857);
+    assert_eq!(
+        bybit.blocking_reasons,
+        ["source_universe_execution_pack_skipped_executable_records"]
+    );
 
     let pmxt = record(
         &ledger,

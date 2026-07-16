@@ -511,6 +511,29 @@ mod tests {
     }
 
     #[test]
+    fn entry_for_file_migration_recomputes_hash_and_byte_length_together() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rel = "sub/dir/versioned-fixture.json";
+        let abs = dir.path().join(rel);
+        std::fs::create_dir_all(abs.parent().expect("fixture has a parent dir"))
+            .expect("create parent dir");
+        let v1 = br#"{"schema_version":"fixture.v1"}"#;
+        std::fs::write(&abs, v1).expect("write v1 fixture");
+        let v1_fingerprint =
+            EvictedFixtureIndex::entry_for_file(dir.path(), rel).expect("fingerprint v1 fixture");
+
+        let v2 = br#"{"schema_version":"fixture.v2","new_required_field":1}"#;
+        std::fs::write(&abs, v2).expect("write v2 fixture");
+        let v2_fingerprint =
+            EvictedFixtureIndex::entry_for_file(dir.path(), rel).expect("fingerprint v2 fixture");
+
+        assert_ne!(v2_fingerprint.sha256, v1_fingerprint.sha256);
+        assert_ne!(v2_fingerprint.bytes, v1_fingerprint.bytes);
+        assert_eq!(v2_fingerprint.sha256, sha256_hex(v2));
+        assert_eq!(v2_fingerprint.bytes, v2.len() as u64);
+    }
+
+    #[test]
     fn tier1_binance_source_universe_scope_matches_gitignore_glob() {
         let accepted = format!(
             "{TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX}binance-data-vision-trades-source-universe.json"

@@ -3,15 +3,189 @@ use std::{fs, path::Path};
 use crate::backtesting_vertical_slice_test_support::tempdir_in_repo_target;
 
 use backtesting_vertical_slice::{
+    backfill_accepted_tranche::BackfillAcceptedTrancheManifest,
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
     catalog_projection::CatalogInstrumentSpec,
     operator::RunSpec,
+    source_universe_conversion_work_order::SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION,
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackStatus,
         write_source_universe_execution_pack_from_spec_file,
     },
+    source_universe_operator_inputs::SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
 };
 use serde_json::json;
+
+fn empty_operator_inputs(schema_version: &str) -> serde_json::Value {
+    json!({
+        "schema_version": schema_version,
+        "input_id": "source-universe-operator-inputs-binance-test",
+        "status": "ready",
+        "gate_id": "source-universe-object-gates-binance-test",
+        "conversion_run_plan_id": "source-universe-conversion-run-plan-binance-test",
+        "universe_id": "backfill-source-universe-binance-test",
+        "venue": "binance",
+        "source": "data_vision",
+        "family": "trades",
+        "table_family": "trades",
+        "operator_run_id_prefix": "source-universe-operator-run-binance-test",
+        "nt_venue": "BINANCE",
+        "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+        "converter_version": "1",
+        "raw_payload_container": "csv_gzip",
+        "max_decoded_bytes": 268435456,
+        "max_source_rows": 1000000,
+        "max_projected_row_groups": 128,
+        "max_wall_seconds": 1800,
+        "planned_object_count": 0,
+        "planned_source_bytes": 0,
+        "conversion_run_count": 0,
+        "instrument_spec_count": 0,
+        "converter_mapping_count": 0,
+        "ready_input_count": 0,
+        "blocked_input_count": 0,
+        "artifact_refs": [],
+        "converter_mappings": [],
+        "instrument_specs": [],
+        "records": [],
+        "blocking_reasons": []
+    })
+}
+
+fn empty_work_order(schema_version: &str, artifact_refs: serde_json::Value) -> serde_json::Value {
+    json!({
+        "schema_version": schema_version,
+        "work_order_id": "source-universe-conversion-work-order-binance-test",
+        "status": "ready",
+        "input_id": "source-universe-operator-inputs-binance-test",
+        "gate_id": "source-universe-object-gates-binance-test",
+        "conversion_run_plan_id": "source-universe-conversion-run-plan-binance-test",
+        "universe_id": "backfill-source-universe-binance-test",
+        "venue": "binance",
+        "source": "data_vision",
+        "family": "trades",
+        "table_family": "trades",
+        "operator_run_id_prefix": "source-universe-operator-run-binance-test",
+        "planned_object_count": 0,
+        "planned_source_bytes": 0,
+        "operator_input_count": 0,
+        "ready_input_count": 0,
+        "blocked_input_count": 0,
+        "conversion_run_count": 0,
+        "executable_record_count": 0,
+        "withheld_record_count": 0,
+        "executable_source_bytes": 0,
+        "withheld_source_bytes": 0,
+        "artifact_refs": artifact_refs,
+        "records": [],
+        "withheld_records": [],
+        "blocking_reasons": []
+    })
+}
+
+fn write_schema_probe_spec(spec_path: &Path, work_order_path: &Path, output_dir: &Path) {
+    fs::write(
+        spec_path,
+        format!(
+            r#"pack_id = "source-universe-execution-pack-schema-probe"
+source_universe_conversion_work_order_path = "{}"
+run_spec_template_path = "unused-for-schema-rejection.toml"
+output_dir = "{}"
+
+[venue_policy]
+starting_balance_amount = "100000"
+spot = "CASH"
+crypto_perpetual = "MARGIN"
+crypto_future = "MARGIN"
+"#,
+            work_order_path.display(),
+            output_dir.display(),
+        ),
+    )
+    .expect("write schema probe spec");
+}
+
+#[test]
+fn source_universe_execution_pack_rejects_unsupported_work_order_schema() {
+    let temp_dir = tempdir_in_repo_target();
+    let work_order_path = temp_dir
+        .path()
+        .join("source-universe-conversion-work-order.json");
+    let output_dir = temp_dir.path().join("execution-pack");
+    let spec_path = temp_dir.path().join("source-universe-execution-pack.toml");
+    let unsupported_schema_version =
+        format!("{SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION}.unsupported");
+
+    fs::write(
+        &work_order_path,
+        serde_json::to_vec_pretty(&empty_work_order(&unsupported_schema_version, json!([])))
+            .expect("serialize work order with unsupported schema"),
+    )
+    .expect("write work order with unsupported schema");
+    write_schema_probe_spec(&spec_path, &work_order_path, &output_dir);
+
+    let error = write_source_universe_execution_pack_from_spec_file(&spec_path)
+        .expect_err("an unsupported work-order schema must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-universe conversion work-order schema_version mismatch"),
+        "{error:#}"
+    );
+    assert!(
+        !output_dir.exists(),
+        "schema rejection precedes publication"
+    );
+}
+
+#[test]
+fn source_universe_execution_pack_rejects_unsupported_operator_input_schema() {
+    let temp_dir = tempdir_in_repo_target();
+    let operator_inputs_path = temp_dir.path().join("source-universe-operator-inputs.json");
+    let work_order_path = temp_dir
+        .path()
+        .join("source-universe-conversion-work-order.json");
+    let output_dir = temp_dir.path().join("execution-pack");
+    let spec_path = temp_dir.path().join("source-universe-execution-pack.toml");
+    let unsupported_schema_version =
+        format!("{SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION}.unsupported");
+
+    fs::write(
+        &operator_inputs_path,
+        serde_json::to_vec_pretty(&empty_operator_inputs(&unsupported_schema_version))
+            .expect("serialize operator inputs with unsupported schema"),
+    )
+    .expect("write operator inputs with unsupported schema");
+    fs::write(
+        &work_order_path,
+        serde_json::to_vec_pretty(&empty_work_order(
+            SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION,
+            json!([{
+                "role": "source_universe_operator_inputs",
+                "path": operator_inputs_path.display().to_string(),
+                "sha256": sha256_file(&operator_inputs_path)
+            }]),
+        ))
+        .expect("serialize work order"),
+    )
+    .expect("write work order");
+    write_schema_probe_spec(&spec_path, &work_order_path, &output_dir);
+
+    let error = write_source_universe_execution_pack_from_spec_file(&spec_path)
+        .expect_err("an unsupported operator-input schema must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-universe operator inputs schema_version mismatch"),
+        "{error:#}"
+    );
+    assert!(
+        !output_dir.exists(),
+        "schema rejection precedes publication"
+    );
+}
 
 #[test]
 fn source_universe_execution_pack_materializes_operator_ready_record_inputs() {
@@ -74,7 +248,7 @@ fn source_universe_execution_pack_materializes_operator_ready_record_inputs() {
     fs::write(
         &operator_inputs_path,
         serde_json::to_vec_pretty(&json!({
-            "schema_version": "source-universe-operator-inputs.v1",
+            "schema_version": SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
             "input_id": "source-universe-operator-inputs-binance-test",
             "status": "ready",
             "gate_id": "source-universe-object-gates-binance-test",
@@ -158,7 +332,7 @@ fn source_universe_execution_pack_materializes_operator_ready_record_inputs() {
     fs::write(
         &work_order_path,
         serde_json::to_vec_pretty(&json!({
-            "schema_version": "source-universe-conversion-work-order.v1",
+            "schema_version": SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION,
             "work_order_id": "source-universe-conversion-work-order-binance-test",
             "status": "ready",
             "input_id": "source-universe-operator-inputs-binance-test",
@@ -230,7 +404,8 @@ run_spec_template_path = "{}"
 output_dir = "{}"
 record_limit = 1
 
-[venue_account_types]
+[venue_policy]
+starting_balance_amount = "250000"
 spot = "CASH"
 crypto_perpetual = "CASH"
 crypto_future = "MARGIN"
@@ -270,7 +445,8 @@ output_dir = "{}"
 record_limit = 1
 overwrite_existing_artifacts = true
 
-[venue_account_types]
+[venue_policy]
+starting_balance_amount = "250000"
 spot = "CASH"
 crypto_perpetual = "MARGIN"
 crypto_future = "MARGIN"
@@ -332,6 +508,29 @@ crypto_future = "MARGIN"
         CatalogInstrumentSpec::CryptoPerpetual(_)
     ));
     assert_eq!(run_spec.manifest.venue.account_type, "MARGIN");
+    assert_eq!(run_spec.manifest.venue.starting_balances, ["250000 BTC"]);
+    let artifact_store = run_spec
+        .required_artifact_store()
+        .expect("materialized run spec retains durable artifact-store config");
+    run_spec
+        .validate_artifact_store_publish_config(artifact_store)
+        .expect("materialized manifest and durable artifact store agree");
+    let catalog_dispatch = run_spec
+        .required_catalog_dispatch()
+        .expect("materialized run spec retains catalog dispatch");
+    assert_eq!(catalog_dispatch.bindings.len(), 1);
+    assert_eq!(
+        catalog_dispatch.bindings[0].source_binding,
+        record.source_binding
+    );
+    assert_eq!(
+        catalog_dispatch.bindings[0].market_structure_fixture,
+        run_spec.manifest.market_structure_fixture
+    );
+    assert_eq!(
+        catalog_dispatch.bindings[0].catalog_projection_id,
+        record.operator_run_id
+    );
 
     let execution_plan: BackfillExecutionPlan = serde_json::from_slice(
         &fs::read(resolve_repo_relative(&record.execution_plan_path)).expect("read plan"),
@@ -345,6 +544,51 @@ crypto_future = "MARGIN"
     assert_eq!(execution_plan.operator_run_id, record.operator_run_id);
     assert_eq!(execution_plan.objects.len(), 1);
     assert_eq!(execution_plan.objects[0].sha256, "object-sha");
+
+    let mismatched_template_path = temp_dir.path().join("mismatched-run-spec-profile.toml");
+    let mismatched_output_dir = temp_dir.path().join("mismatched-execution-pack");
+    let mismatched_spec_path = temp_dir
+        .path()
+        .join("mismatched-source-universe-execution-pack.toml");
+    let mismatched_template = template.replacen(
+        "[artifact_store]\nartifact_root = \"s3://synthetic-artifacts\"",
+        "[artifact_store]\nartifact_root = \"s3://different-artifacts\"",
+        1,
+    );
+    fs::write(&mismatched_template_path, mismatched_template)
+        .expect("write mismatched durable profile");
+    fs::write(
+        &mismatched_spec_path,
+        format!(
+            r#"pack_id = "source-universe-execution-pack-store-mismatch"
+source_universe_conversion_work_order_path = "{}"
+run_spec_template_path = "{}"
+output_dir = "{}"
+record_limit = 1
+
+[venue_policy]
+starting_balance_amount = "250000"
+spot = "CASH"
+crypto_perpetual = "MARGIN"
+crypto_future = "MARGIN"
+"#,
+            work_order_path.display(),
+            mismatched_template_path.display(),
+            mismatched_output_dir.display(),
+        ),
+    )
+    .expect("write mismatched execution-pack spec");
+
+    let error = write_source_universe_execution_pack_from_spec_file(&mismatched_spec_path)
+        .expect_err("artifact-store/profile mismatch fails closed");
+    assert!(
+        format!("{error:#}").contains("run spec artifact-store root mismatch"),
+        "{error:#}"
+    );
+    assert!(
+        !mismatched_output_dir.exists(),
+        "durable profile validation precedes execution-pack output"
+    );
 }
 
 #[test]
@@ -358,14 +602,36 @@ fn committed_bybit_and_binance_source_universe_execution_packs_track_materialize
     let bybit: SourceUniverseExecutionPack =
         serde_json::from_slice(&fs::read(&bybit_pack_path).expect("read Bybit execution pack"))
             .expect("Bybit execution pack parses");
-    assert_eq!(bybit.status, SourceUniverseExecutionPackStatus::Ready);
+    assert_eq!(
+        bybit.status,
+        SourceUniverseExecutionPackStatus::PartiallyReady
+    );
     assert_eq!(bybit.planned_object_count, 5_857);
     assert_eq!(bybit.executable_record_count, 5_857);
     assert_eq!(bybit.withheld_record_count, 0);
-    assert_eq!(bybit.materialized_record_count, 5_857);
-    assert_eq!(bybit.skipped_executable_record_count, 0);
-    assert_eq!(bybit.materialized_source_bytes, 20_309_079_098);
-    assert_first_record_artifacts_parse(&bybit);
+    assert_eq!(bybit.selected_record_count, 1);
+    assert_eq!(bybit.materialized_record_count, 1);
+    assert_eq!(bybit.skipped_executable_record_count, 5_856);
+    assert_eq!(bybit.materialized_source_bytes, 124_717);
+    assert_eq!(bybit.records.len(), 1);
+    assert_eq!(
+        bybit.blocking_reasons,
+        ["record_limit_skipped_executable_records"]
+    );
+    assert_eq!(
+        bybit.records[0].accepted_tranche_sha256,
+        "1d300ad208a5ce6447c132e8795d222f6394f4529fb1dcb35d9f1af957dcd084"
+    );
+    assert_profile_ref(
+        &bybit,
+        "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml",
+    );
+    assert_declared_record_artifacts_parse(&bybit);
+    let bybit_run_spec = read_declared_run_spec(&bybit.records[0]);
+    assert_eq!(
+        bybit_run_spec.manifest.venue.starting_balances,
+        ["1_000_000 AAVE"]
+    );
 
     let binance_pack_path = reference_root
         .join(
@@ -382,52 +648,203 @@ fn committed_bybit_and_binance_source_universe_execution_packs_track_materialize
     assert_eq!(binance.planned_object_count, 2_051);
     assert_eq!(binance.executable_record_count, 2_035);
     assert_eq!(binance.withheld_record_count, 16);
-    assert_eq!(binance.materialized_record_count, 2_035);
-    assert_eq!(binance.skipped_executable_record_count, 0);
-    assert_eq!(binance.materialized_source_bytes, 1_746_585_151);
-    assert!(
-        binance
-            .records
-            .first()
-            .expect("first Binance record")
+    assert_eq!(binance.selected_record_count, 1);
+    assert_eq!(binance.materialized_record_count, 1);
+    assert_eq!(binance.skipped_executable_record_count, 2_034);
+    assert_eq!(binance.materialized_source_bytes, 32_220);
+    assert_eq!(binance.records.len(), 1);
+    assert_eq!(
+        binance.blocking_reasons,
+        [
+            "blocked_operator_input_records",
+            "missing_instrument_metadata",
+            "ready_operator_inputs_do_not_cover_all_object_gates",
+            "record_limit_skipped_executable_records",
+        ]
+    );
+    assert!(binance.records.iter().all(|record| {
+        record
             .output_prefix
             .starts_with("s3://bolt-parquet/nt-research-analytics/backtests/")
+    }));
+    assert_eq!(
+        binance.records[0].accepted_tranche_sha256,
+        "7bdbaf9f0e73ded80eca6100819f42067f07142b88030bbf043d80c1ef3cb021"
     );
-    assert_first_record_artifacts_parse(&binance);
+    assert_profile_ref(
+        &binance,
+        "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml",
+    );
+    assert_declared_record_artifacts_parse(&binance);
+    let binance_run_spec = read_declared_run_spec(&binance.records[0]);
+    assert_eq!(
+        binance_run_spec.manifest.venue.starting_balances,
+        ["1_000_000 TRY"]
+    );
+    assert_ne!(
+        bybit_run_spec
+            .required_catalog_dispatch()
+            .expect("Bybit pilot dispatch")
+            .bindings[0]
+            .source_binding,
+        binance_run_spec
+            .required_catalog_dispatch()
+            .expect("Binance pilot dispatch")
+            .bindings[0]
+            .source_binding,
+        "the committed pilots retain distinct record-owned dispatch"
+    );
 }
 
-fn assert_first_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
-    let first = pack.records.first().expect("first execution-pack record");
-    let run_spec_path = resolve_repo_relative(&first.run_spec_path);
-    assert_eq!(sha256_file(&run_spec_path), first.run_spec_sha256);
-    let run_spec_text = fs::read_to_string(&run_spec_path).expect("read first run spec");
-    let run_spec: RunSpec = toml::from_str(&run_spec_text).expect("first run spec parses");
-    assert_eq!(run_spec.manifest.run_id, first.operator_run_id);
+fn assert_declared_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
+    let source_bindings_refs = pack
+        .artifact_refs
+        .iter()
+        .filter(|artifact| artifact.role == "source_bindings")
+        .collect::<Vec<_>>();
     assert_eq!(
-        run_spec.accepted_object.sha256,
-        first.selected_object_sha256
+        source_bindings_refs.len(),
+        1,
+        "pack retains one shared source-bindings artifact ref"
     );
+    let source_bindings_ref = source_bindings_refs[0];
+    assert!(
+        !pack.records.is_empty(),
+        "execution pack declares a pilot record"
+    );
+    for record in &pack.records {
+        assert_eq!(record.source_bindings_path, source_bindings_ref.path);
+        assert_eq!(record.source_bindings_sha256, source_bindings_ref.sha256);
+        assert!(
+            record
+                .artifact_paths()
+                .iter()
+                .all(|path| *path != record.source_bindings_path.as_path()),
+            "shared source bindings must not be a per-record evictable artifact"
+        );
 
-    let accepted_tranche_path = resolve_repo_relative(&first.accepted_tranche_path);
-    assert_eq!(
-        sha256_file(&accepted_tranche_path),
-        first.accepted_tranche_sha256
-    );
+        let run_spec_path = resolve_repo_relative(&record.run_spec_path);
+        assert!(run_spec_path.is_file(), "run-spec path is a regular file");
+        let run_spec_bytes = fs::read(&run_spec_path).expect("read declared run spec");
+        assert_eq!(run_spec_bytes.len() as u64, record.run_spec_bytes);
+        assert_eq!(sha256_bytes(&run_spec_bytes), record.run_spec_sha256);
+        let run_spec: RunSpec = toml::from_str(
+            std::str::from_utf8(&run_spec_bytes).expect("declared run spec is UTF-8"),
+        )
+        .expect("declared run spec parses");
+        assert_eq!(run_spec.manifest.run_id, record.operator_run_id);
+        assert_eq!(
+            run_spec.accepted_object.sha256,
+            record.selected_object_sha256
+        );
+        let artifact_store = run_spec
+            .required_artifact_store()
+            .expect("declared pilot has durable artifact-store config");
+        run_spec
+            .validate_artifact_store_publish_config(artifact_store)
+            .expect("declared pilot manifest/store config agrees");
+        let catalog_dispatch = run_spec
+            .required_catalog_dispatch()
+            .expect("declared pilot has catalog dispatch");
+        assert_eq!(catalog_dispatch.bindings.len(), 1);
+        assert_eq!(
+            catalog_dispatch.bindings[0].source_binding,
+            record.source_binding
+        );
+        assert_eq!(
+            catalog_dispatch.bindings[0].market_structure_fixture,
+            run_spec.manifest.market_structure_fixture
+        );
+        assert_eq!(
+            catalog_dispatch.bindings[0].catalog_projection_id,
+            record.operator_run_id
+        );
+        let (funding_currency, account_type) = match run_spec
+            .instrument_spec
+            .single()
+            .expect("declared pilot has one typed instrument")
+        {
+            CatalogInstrumentSpec::Spot(spec) => (spec.quote_currency.as_str(), "CASH"),
+            CatalogInstrumentSpec::CryptoPerpetual(spec) => {
+                (spec.settlement_currency.as_str(), "MARGIN")
+            }
+            CatalogInstrumentSpec::CryptoFuture(spec) => {
+                (spec.settlement_currency.as_str(), "MARGIN")
+            }
+            CatalogInstrumentSpec::BinaryOption(_) => {
+                panic!("source-universe execution packs reject binary options")
+            }
+        };
+        assert_eq!(run_spec.manifest.venue.account_type, account_type);
+        assert_eq!(
+            run_spec.manifest.venue.starting_balances,
+            [format!("1_000_000 {funding_currency}")]
+        );
 
-    let execution_plan_path = resolve_repo_relative(&first.execution_plan_path);
-    assert_eq!(
-        sha256_file(&execution_plan_path),
-        first.execution_plan_sha256
-    );
-    let execution_plan: BackfillExecutionPlan =
-        serde_json::from_slice(&fs::read(execution_plan_path).expect("read first plan"))
-            .expect("first execution plan parses");
-    assert_eq!(execution_plan.status, BackfillExecutionPlanStatus::Ready);
-    assert_eq!(execution_plan.operator_run_id, first.operator_run_id);
-    assert_eq!(
-        execution_plan.objects[0].sha256,
-        first.selected_object_sha256
-    );
+        let accepted_tranche_path = resolve_repo_relative(&record.accepted_tranche_path);
+        assert!(
+            accepted_tranche_path.is_file(),
+            "accepted-tranche path is a regular file"
+        );
+        let accepted_tranche_bytes =
+            fs::read(&accepted_tranche_path).expect("read declared accepted tranche");
+        assert_eq!(
+            accepted_tranche_bytes.len() as u64,
+            record.accepted_tranche_bytes
+        );
+        assert_eq!(
+            sha256_bytes(&accepted_tranche_bytes),
+            record.accepted_tranche_sha256
+        );
+        let accepted_tranche: BackfillAcceptedTrancheManifest =
+            serde_json::from_slice(&accepted_tranche_bytes)
+                .expect("declared accepted tranche parses");
+        assert_eq!(accepted_tranche.tranche_id, record.accepted_tranche_id);
+        assert_eq!(accepted_tranche.source_proof_id, record.source_proof_id);
+
+        let execution_plan_path = resolve_repo_relative(&record.execution_plan_path);
+        assert!(
+            execution_plan_path.is_file(),
+            "execution-plan path is a regular file"
+        );
+        let execution_plan_bytes =
+            fs::read(&execution_plan_path).expect("read declared execution plan");
+        assert_eq!(
+            execution_plan_bytes.len() as u64,
+            record.execution_plan_bytes
+        );
+        assert_eq!(
+            sha256_bytes(&execution_plan_bytes),
+            record.execution_plan_sha256
+        );
+        let execution_plan: BackfillExecutionPlan =
+            serde_json::from_slice(&execution_plan_bytes).expect("declared execution plan parses");
+        assert_eq!(execution_plan.status, BackfillExecutionPlanStatus::Ready);
+        assert_eq!(execution_plan.operator_run_id, record.operator_run_id);
+        assert_eq!(
+            execution_plan.objects[0].sha256,
+            record.selected_object_sha256
+        );
+    }
+}
+
+fn assert_profile_ref(pack: &SourceUniverseExecutionPack, expected_path: &str) {
+    let profile_refs = pack
+        .artifact_refs
+        .iter()
+        .filter(|artifact| artifact.role == "run_spec_template")
+        .collect::<Vec<_>>();
+    assert_eq!(profile_refs.len(), 1);
+    assert_eq!(profile_refs[0].path, Path::new(expected_path));
+}
+
+fn read_declared_run_spec(
+    record: &backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord,
+) -> RunSpec {
+    let bytes = fs::read(resolve_repo_relative(&record.run_spec_path))
+        .expect("read declared pilot run spec");
+    toml::from_str(std::str::from_utf8(&bytes).expect("pilot run spec is UTF-8"))
+        .expect("pilot run spec parses")
 }
 
 fn resolve_repo_relative(path: &Path) -> std::path::PathBuf {
@@ -440,12 +857,13 @@ fn resolve_repo_relative(path: &Path) -> std::path::PathBuf {
 }
 
 fn sha256_file(path: &Path) -> String {
+    sha256_bytes(&fs::read(path).expect("read file for hash"))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
-    format!(
-        "{:x}",
-        Sha256::digest(fs::read(path).expect("read file for hash"))
-    )
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 // Fix 2 — negative test for the BinaryOption bail arm in account_type_for.
@@ -515,7 +933,7 @@ fn execution_pack_rejects_binary_option_instrument_spec() {
     fs::write(
         &operator_inputs_path,
         serde_json::to_vec_pretty(&json!({
-            "schema_version": "source-universe-operator-inputs.v1",
+            "schema_version": SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION,
             "input_id": "source-universe-operator-inputs-binopt-test",
             "status": "ready",
             "gate_id": "source-universe-object-gates-binopt-test",
@@ -599,7 +1017,7 @@ fn execution_pack_rejects_binary_option_instrument_spec() {
     fs::write(
         &work_order_path,
         serde_json::to_vec_pretty(&json!({
-            "schema_version": "source-universe-conversion-work-order.v1",
+            "schema_version": SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION,
             "work_order_id": "source-universe-conversion-work-order-binopt-test",
             "status": "ready",
             "input_id": "source-universe-operator-inputs-binopt-test",
@@ -671,7 +1089,8 @@ run_spec_template_path = "{}"
 output_dir = "{}"
 record_limit = 1
 
-[venue_account_types]
+[venue_policy]
+starting_balance_amount = "100000"
 spot = "CASH"
 crypto_perpetual = "CASH"
 crypto_future = "MARGIN"
@@ -714,9 +1133,9 @@ fn crypto_perpetual_instrument_spec_json() -> serde_json::Value {
         "nt_instrument_id": "BTCUSDT.BINANCE",
         "raw_symbol": "BTCUSDT",
         "base_currency": "BTC",
-        "quote_currency": "USDT",
-        "settlement_currency": "USDT",
-        "is_inverse": false,
+        "quote_currency": "USD",
+        "settlement_currency": "BTC",
+        "is_inverse": true,
         "price_increment": "0.1",
         "size_increment": "0.0001",
         "min_quantity": "0.0001",
@@ -948,6 +1367,54 @@ liquidity_consumption = false
 allow_cash_borrowing = false
 queue_position = false
 oto_trigger_mode = "PARTIAL"
+
+[artifact_store]
+artifact_root = "s3://synthetic-artifacts"
+max_final_object_bytes = 1048576
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
+
+[artifact_store.s3]
+region = "us-east-1"
+conditional_put = "etag"
+copy_if_not_exists = "multipart"
+terminal_commit_timeout_seconds = 60
+
+[artifact_store.create_only_probe]
+prefix = ".writer-probe"
+object_name = "sentinel"
+copy_source_object_name = "copy-source"
+copy_dest_object_name = "copy-dest"
+
+[artifact_store.subpaths]
+raw = "raw"
+nt_catalog = "nt-catalog"
+nt_catalog_synthetic_proof = "nt-catalog-synthetic-proof"
+source_proofs = "source-proofs"
+backtests = "backtests"
+artifact_index = "artifact-index"
+research_analytics = "research-analytics"
+
+[artifact_store.lifecycle]
+retention = "forever"
+default_delete_expiration = "disabled"
+storage_profiles = ["active", "archive", "deep_archive"]
+
+[artifact_store.lifecycle.quiet_window_seconds]
+raw = 7200
+nt_catalog = 7200
+source_proofs = 7200
+backtests = 3600
+artifact_index = 0
+research_analytics = 7200
+
+[artifact_store.lifecycle.hot_index]
+latest_pointer_storage_profile = "active"
+current_snapshot_storage_profile = "active"
+
+[[catalog_dispatch.bindings]]
+source_binding = "stale-profile-source-binding"
+market_structure_fixture = "perps-spot"
+catalog_projection_id = "stale-profile-catalog-projection"
 "#
     .replace(
         "__NT_REVISION__",

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -2907,6 +2909,182 @@ fn f(config: ws::WebSocketConfig) {
         )
 
     assert_finding(scan_temp(mutate), "raw NT wire module path nautilus_network::websocket")
+
+
+# --- #1425 boundary-evidence capture TTL: self-describing failure + pre-expiry tripwire ---
+
+
+def run_remote_resolution_scan(*, resolve_builder, today, github_actions=False):
+    """Drive scan_root through the remote capture-provenance resolver with a controlled resolver.
+
+    `resolve_builder(verifier, committed_record)` returns the callable installed as
+    ci_provenance.resolve_exact_sha_evidence. Returns (findings, captured_stdout). Mirrors the
+    monkeypatch pattern in test_unresolvable_capture_workflow_sha_defers_to_remote_resolver_in_ci.
+    """
+    verifier = load_verifier()
+    original_remote_context = verifier.remote_fixture_context
+    original_resolve = verifier.ci_provenance.resolve_exact_sha_evidence
+    original_github_actions = os.environ.get("GITHUB_ACTIONS")
+    buffer = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        clean_files(root)
+        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
+        with zipfile.ZipFile(artifact) as archive:
+            committed = json.loads(archive.read("ci-provenance.json").decode("utf-8"))
+
+        def fake_remote_context(scan_root: Path, findings: list[str]):
+            return ("seungpyoson/bolt-v2", "token", "999")
+
+        try:
+            if github_actions:
+                os.environ["GITHUB_ACTIONS"] = "true"
+            else:
+                os.environ.pop("GITHUB_ACTIONS", None)
+            verifier.remote_fixture_context = fake_remote_context
+            verifier.ci_provenance.resolve_exact_sha_evidence = resolve_builder(verifier, committed)
+            with contextlib.redirect_stdout(buffer):
+                findings = verifier.scan_root(root, today=today)
+        finally:
+            verifier.remote_fixture_context = original_remote_context
+            verifier.ci_provenance.resolve_exact_sha_evidence = original_resolve
+            if original_github_actions is None:
+                os.environ.pop("GITHUB_ACTIONS", None)
+            else:
+                os.environ["GITHUB_ACTIONS"] = original_github_actions
+    return findings, buffer.getvalue()
+
+
+def _resolve_returning_created_at(created_at: str):
+    def build(verifier, committed):
+        def resolve(**_kwargs):
+            return verifier.ci_provenance.ResolvedEvidence(
+                run={"created_at": created_at}, artifact={}, record=committed
+            )
+
+        return resolve
+
+    return build
+
+
+def _resolve_raising(message: str):
+    def build(verifier, _committed):
+        def resolve(**_kwargs):
+            raise verifier.ci_provenance.ProvenanceError(message)
+
+        return resolve
+
+    return build
+
+
+def test_capture_lookback_exhaustion_names_operator_remediation() -> None:
+    findings, _ = run_remote_resolution_scan(
+        resolve_builder=_resolve_raising(
+            "lookback age limit exhausted before candidate evidence was found"
+        ),
+        today=dt.date(2026, 6, 26),
+    )
+    assert_finding(findings, "GitHub capture provenance resolution failed")
+    assert_finding(findings, "capture_reference_boundary_fixture=true")
+    assert_finding(findings, "CREDENTIAL-SSM")
+    assert_finding(findings, "chainlink-reference-frame.toml")
+    assert_finding(findings, "no change to the PR is required")
+
+    other_findings, _ = run_remote_resolution_scan(
+        resolve_builder=_resolve_raising("committed record digest mismatch"),
+        today=dt.date(2026, 6, 26),
+    )
+    if any("CREDENTIAL-SSM" in finding for finding in other_findings):
+        raise AssertionError(
+            f"non-exhaustion resolution failure must not carry remediation: {other_findings}"
+        )
+
+
+def test_pre_expiry_tripwire_warns_inside_window_and_is_silent_outside() -> None:
+    inside_findings, inside_out = run_remote_resolution_scan(
+        resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
+        today=dt.date(2026, 6, 27),
+    )
+    if inside_findings:
+        raise AssertionError(f"pre-expiry tripwire must not add findings: {inside_findings}")
+    if "WARNING:" not in inside_out or "expires at 2026-06-28T00:00:00Z" not in inside_out:
+        raise AssertionError(f"expected a loud pre-expiry warning inside the window: {inside_out!r}")
+    if "capture_reference_boundary_fixture=true" not in inside_out:
+        raise AssertionError(f"pre-expiry warning must name operator remediation: {inside_out!r}")
+
+    _, outside_out = run_remote_resolution_scan(
+        resolve_builder=_resolve_returning_created_at("2026-06-26T00:00:00Z"),
+        today=dt.date(2026, 6, 27),
+    )
+    if "WARNING:" in outside_out:
+        raise AssertionError(
+            f"pre-expiry tripwire must be silent outside the window: {outside_out!r}"
+        )
+
+
+def test_pre_expiry_tripwire_warning_does_not_change_exit_code() -> None:
+    findings, out = run_remote_resolution_scan(
+        resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
+        today=dt.date(2026, 6, 27),
+    )
+    if "WARNING:" not in out:
+        raise AssertionError(f"expected the tripwire to warn for this scenario: {out!r}")
+    if findings != []:
+        raise AssertionError(
+            f"a pre-expiry warning must not add findings or change the exit code: {findings}"
+        )
+
+
+def test_pre_expiry_tripwire_emits_github_actions_annotation_only_in_ci() -> None:
+    _, ci_out = run_remote_resolution_scan(
+        resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
+        today=dt.date(2026, 6, 27),
+        github_actions=True,
+    )
+    if "::warning::" not in ci_out:
+        raise AssertionError(f"expected a ::warning:: annotation under GITHUB_ACTIONS: {ci_out!r}")
+
+    _, local_out = run_remote_resolution_scan(
+        resolve_builder=_resolve_returning_created_at("2026-06-14T00:00:00Z"),
+        today=dt.date(2026, 6, 27),
+        github_actions=False,
+    )
+    if "::warning::" in local_out:
+        raise AssertionError(f"annotation must be gated on GITHUB_ACTIONS: {local_out!r}")
+
+
+def test_pre_expiry_tripwire_threshold_lives_outside_the_digested_capture_config() -> None:
+    """#1425 regression: the pre-expiry warning threshold is a verifier-module constant, never a
+    field of the digested capture-provenance config. That config is hashed into every capture
+    record's provenance_config_digest, so adding a field to it changes the digest and makes
+    ci_provenance.validate_record_schema reject every committed capture record ("record
+    provenance_config_digest does not match config"). The temp-root harness masks this because
+    write_fixture_and_artifact recomputes the digest from the temp config each run; this test pins
+    the real committed capture record against the real, unmodified config so the tripwire feature
+    cannot silently perturb capture-record digest validation."""
+    verifier = load_verifier()
+    repo_root = verifier.REPO_ROOT
+    config_path = repo_root / verifier.CAPTURE_PROVENANCE_CONFIG
+    committed_zip = repo_root / verifier.FIXTURE_DIR / "chainlink-reference-capture.zip"
+    record = verifier.ci_provenance.artifact_record_from_zip(committed_zip.read_bytes())
+    config_digest = verifier.ci_provenance.provenance_config_digest(config_path)
+    if record["provenance_config_digest"] != config_digest:
+        raise AssertionError(
+            "committed capture record provenance_config_digest "
+            f"{record['provenance_config_digest']!r} no longer matches the config digest "
+            f"{config_digest!r}; the pre-expiry tripwire feature must not perturb capture-record "
+            "digest validation (keep the threshold in a verifier-module constant, not the config)"
+        )
+    if "expiry_warning_seconds" in config_path.read_text(encoding="utf-8"):
+        raise AssertionError(
+            "the pre-expiry tripwire threshold must not live in the digested capture config; "
+            "it belongs in verify_bolt_v3_boundary_evidence.CAPTURE_EXPIRY_WARNING_SECONDS"
+        )
+    if (
+        not isinstance(verifier.CAPTURE_EXPIRY_WARNING_SECONDS, int)
+        or verifier.CAPTURE_EXPIRY_WARNING_SECONDS <= 0
+    ):
+        raise AssertionError("CAPTURE_EXPIRY_WARNING_SECONDS must be a positive integer")
 
 
 if __name__ == "__main__":

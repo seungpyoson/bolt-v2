@@ -28,6 +28,15 @@ REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
 WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
 EXEMPTIONS = Path("ci/bolt-v3-boundary-exemptions.toml")
 CAPTURE_PROVENANCE_CONFIG = Path("ci/chainlink-reference-fixture-capture-provenance.toml")
+# Pre-expiry tripwire (#1425): emit a loud, non-failing warning once the pinned capture run is
+# within this many seconds of ageing out of max_lookback_age_seconds. 259200 = 3 days: a working
+# window (spans a weekend) for an operator to re-dispatch the credentialed capture workflow before
+# the fence goes red, and a meaningful fraction of the 14-day lookback (a single missed CI day still
+# leaves >=2 warned days). Deliberately a module constant, NOT a field of CAPTURE_PROVENANCE_CONFIG:
+# that file is hashed into every capture record's provenance_config_digest, so a field here would
+# change the digest and make ci_provenance.validate_record_schema reject every committed capture
+# record ("record provenance_config_digest does not match config").
+CAPTURE_EXPIRY_WARNING_SECONDS = 259200
 FIXTURE_DIR = Path("tests/fixtures/bolt_v3/boundary_evidence")
 
 REQUIRED_CLASSES = {
@@ -750,7 +759,69 @@ def capture_workflow_digest(root: Path, config: ci_provenance.ProvenanceConfig, 
     return hashlib.sha256(result.stdout).hexdigest()
 
 
-def scan_fixture_origin(root: Path, findings: list[str]) -> None:
+BOUNDARY_CAPTURE_REMEDIATION = (
+    "This is capture-evidence maintenance, not a defect of the failing PR: no change to the PR is "
+    "required. Re-dispatch `CI [dispatch:capture-reference-boundary-fixture]` (workflow_dispatch on "
+    ".github/workflows/ci.yml with capture_reference_boundary_fixture=true and the CREDENTIAL-SSM "
+    "confirmation input; live Chainlink credentials are read via SSM), then commit the refreshed "
+    "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml."
+)
+
+
+def is_lookback_exhaustion(exc: BaseException) -> bool:
+    """True when a provenance error means the pinned capture run aged out of the lookback window."""
+    text = str(exc)
+    return "lookback age limit exhausted" in text or "lookback page limit exhausted" in text
+
+
+def capture_resolution_failure_finding(rel: str, exc: BaseException) -> str:
+    """Report a remote capture-provenance resolution failure, naming operator remediation on expiry.
+
+    On lookback exhaustion the fence stays fail-closed (this is still a finding), but the message
+    names the exact operator action so triage does not have to disprove PR causation (#1425).
+    """
+    finding = f"{rel}: GitHub capture provenance resolution failed: {exc}"
+    if is_lookback_exhaustion(exc):
+        return f"{finding}. {BOUNDARY_CAPTURE_REMEDIATION}"
+    return finding
+
+
+def capture_expiry_warning(
+    created_at: object,
+    lookback_age_seconds: int,
+    expiry_warning_seconds: int | None,
+    now: dt.datetime,
+) -> str | None:
+    """Return a loud pre-expiry warning when the resolved capture run is within the warning window.
+
+    Returns None when the tripwire is disabled, the timestamp is unusable, or the run still has more
+    than `expiry_warning_seconds` of lookback lifetime remaining. Advisory only — never fails closed.
+    """
+    if not expiry_warning_seconds or not isinstance(created_at, str):
+        return None
+    try:
+        created = ci_provenance.parse_timestamp(created_at)
+    except ci_provenance.ProvenanceError:
+        return None
+    expiry = created + dt.timedelta(seconds=lookback_age_seconds)
+    remaining = (expiry - now).total_seconds()
+    if remaining >= expiry_warning_seconds:
+        return None
+    expiry_iso = expiry.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f"boundary-evidence capture provenance expires at {expiry_iso}; within the "
+        f"{expiry_warning_seconds}s pre-expiry warning window. {BOUNDARY_CAPTURE_REMEDIATION}"
+    )
+
+
+def emit_boundary_warning(message: str) -> None:
+    """Emit a loud, non-failing warning: a stdout WARNING line plus a GitHub Actions annotation."""
+    print(f"WARNING: {message}")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning::{message}")
+
+
+def scan_fixture_origin(root: Path, findings: list[str], *, today: dt.date | None = None) -> None:
     directory = root / FIXTURE_DIR
     sidecars = sorted(directory.glob("*.toml")) if directory.exists() else []
     if not sidecars:
@@ -761,6 +832,17 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
     config_path = root / CAPTURE_PROVENANCE_CONFIG
     config = ci_provenance.load_config(
         config_path, require_workflows=False, require_deploy_window=False
+    )
+    expiry_warning_seconds = CAPTURE_EXPIRY_WARNING_SECONDS
+    lookback_age_seconds = (
+        config.deploy_artifact_lookback_age_seconds
+        if config.deploy_artifact_lookback_age_seconds is not None
+        else config.max_lookback_age_seconds
+    )
+    now = dt.datetime.combine(
+        today if today is not None else dt.date.today(),
+        dt.time.min,
+        tzinfo=dt.timezone.utc,
     )
     for sidecar in sidecars:
         rel = sidecar.relative_to(root).as_posix()
@@ -867,8 +949,16 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
                     allow_incomplete_run_with_successful_jobs=True,
                 )
             except ci_provenance.ProvenanceError as exc:
-                findings.append(f"{rel}: GitHub capture provenance resolution failed: {exc}")
+                findings.append(capture_resolution_failure_finding(rel, exc))
                 continue
+            warning = capture_expiry_warning(
+                resolved.run.get("created_at"),
+                lookback_age_seconds,
+                expiry_warning_seconds,
+                now,
+            )
+            if warning is not None:
+                emit_boundary_warning(warning)
             if resolved.record != record:
                 findings.append(f"{rel}: committed capture artifact record does not match GitHub artifact")
             remote_capture = resolved.record.get("capture")
@@ -2442,7 +2532,7 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_exemption_issue_state(root, findings)
     scan_wire_boundary(root, findings, source_paths)
     scan_chainlink_tests(root, findings)
-    scan_fixture_origin(root, findings)
+    scan_fixture_origin(root, findings, today=today)
     scan_static_wiring(root, findings)
     scan_binance_timestamp_behavioral_contract(root, findings)
     scan_nt_pin_census(root, findings)

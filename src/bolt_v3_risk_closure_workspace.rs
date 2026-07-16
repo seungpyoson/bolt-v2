@@ -179,6 +179,7 @@ impl RiskClosureWorkspaceAuthority {
     }
 }
 
+#[derive(Debug)]
 struct WorkspaceState {
     config: RiskClosureWorkspaceConfig,
     storage: Box<[u8]>,
@@ -231,6 +232,7 @@ impl WorkspaceState {
     }
 }
 
+#[derive(Debug)]
 enum SlotState {
     Free,
     Reserved {

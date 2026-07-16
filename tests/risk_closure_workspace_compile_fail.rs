@@ -65,6 +65,22 @@ fn commit(reservation: RiskClosureWorkspaceReservation, identity: ClosureIdentit
 }
 
 #[test]
+fn reservation_private_state_cannot_be_replaced() {
+    assert_compile_fails(
+        "reservation_private_state_cannot_be_replaced",
+        r#"
+fn forge(reservation: RiskClosureWorkspaceReservation) {
+    let _forged = RiskClosureWorkspaceReservation {
+        active: true,
+        ..reservation
+    };
+}
+"#,
+        "field `active` of struct `workspace::RiskClosureWorkspaceReservation` is private",
+    );
+}
+
+#[test]
 fn recovery_lease_cannot_be_cloned() {
     assert_compile_fails(
         "recovery_lease_cannot_be_cloned",
@@ -92,6 +108,22 @@ fn release(lease: RiskClosureWorkspaceLease, permit: TerminalReleasePermit) {
 }
 
 #[test]
+fn recovery_lease_private_state_cannot_be_replaced() {
+    assert_compile_fails(
+        "recovery_lease_private_state_cannot_be_replaced",
+        r#"
+fn forge(lease: RiskClosureWorkspaceLease) {
+    let _forged = RiskClosureWorkspaceLease {
+        active: true,
+        ..lease
+    };
+}
+"#,
+        "field `active` of struct `workspace::RiskClosureWorkspaceLease` is private",
+    );
+}
+
+#[test]
 fn terminal_release_permit_cannot_be_cloned() {
     assert_compile_fails(
         "terminal_release_permit_cannot_be_cloned",
@@ -101,6 +133,20 @@ fn duplicate(permit: TerminalReleasePermit) {
 }
 "#,
         "no method named `clone`",
+    );
+}
+
+#[test]
+fn consumed_terminal_release_permit_cannot_be_reused() {
+    assert_compile_fails(
+        "consumed_terminal_release_permit_cannot_be_reused",
+        r#"
+fn release(lease: RiskClosureWorkspaceLease, permit: TerminalReleasePermit) {
+    lease.release_terminal(permit).unwrap();
+    let _reuse = permit;
+}
+"#,
+        "use of moved value: `permit`",
     );
 }
 

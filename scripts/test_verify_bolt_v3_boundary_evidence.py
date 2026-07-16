@@ -2723,6 +2723,10 @@ def test_capture_record_identity_mismatches_fail_closed() -> None:
             ),
             "record workflow_path does not match config",
         ),
+        (
+            lambda record: record.update({"workflow_digest": "not-a-digest"}),
+            "record workflow_digest must be a sha256 hex digest",
+        ),
     )
     for mutator, finding in cases:
         assert_capture_record_mutation_fails(mutator, finding)
@@ -2751,7 +2755,7 @@ def test_capture_record_payload_mutations_fail_closed() -> None:
         assert_capture_record_mutation_fails(mutator, finding)
 
 
-def test_capture_artifact_uses_tested_sha_workflow_digest_after_workflow_changes() -> None:
+def test_capture_artifact_validation_ignores_later_workflow_changes() -> None:
     def mutate(root: Path) -> None:
         path = root / ".github/workflows/ci.yml"
         path.write_text(
@@ -2762,7 +2766,7 @@ def test_capture_artifact_uses_tested_sha_workflow_digest_after_workflow_changes
     assert scan_temp(mutate) == []
 
 
-def test_unresolvable_capture_workflow_sha_fails_closed() -> None:
+def test_fixture_origin_validation_does_not_require_git_history() -> None:
     def mutate(root: Path) -> None:
         mutate_capture_record(
             root,
@@ -2772,7 +2776,9 @@ def test_unresolvable_capture_workflow_sha_fails_closed() -> None:
         )
         replace_capture_head_sha(root, UNRESOLVABLE_SHA)
 
-    assert_finding(scan_temp(mutate), "is not resolvable at tested_sha")
+    findings = scan_temp(mutate)
+    if findings:
+        raise AssertionError(f"expected validation without Git history to pass: {findings}")
 
 
 def test_fixture_origin_validation_does_not_resolve_remote_evidence_in_github_actions() -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-import hashlib
 import json
 import os
 import re
@@ -721,21 +720,6 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
                 findings.append(f"src/bolt_v3_reference_price_health.rs: loopback harness uses shortcut {shortcut}")
 
 
-def capture_workflow_digest(root: Path, config: ci_provenance.ProvenanceConfig, record: dict[str, object]) -> str | None:
-    tested_sha = record.get("tested_sha")
-    if not isinstance(tested_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", tested_sha):
-        raise ci_provenance.ProvenanceError("record tested_sha must be a 40-character hex SHA")
-    result = subprocess.run(
-        ["git", "-C", str(root), "show", f"{tested_sha}:{config.workflow_path}"],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
-        return None
-    return hashlib.sha256(result.stdout).hexdigest()
-
-
 def scan_fixture_origin(root: Path, findings: list[str]) -> None:
     directory = root / FIXTURE_DIR
     sidecars = sorted(directory.glob("*.toml")) if directory.exists() else []
@@ -794,19 +778,14 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
                 config,
                 deploy_source_branch=str(data["capture_head_branch"]),
             )
-            workflow_digest = capture_workflow_digest(root, config, record)
-            if workflow_digest is None:
-                findings.append(
-                    f"{rel}: invalid capture artifact provenance: workflow {config.workflow_path} "
-                    f"is not resolvable at tested_sha {record.get('tested_sha')}"
-                )
-                continue
             ci_provenance.validate_exact_sha_record(
                 record,
                 sidecar_config,
                 requested_sha=str(data["capture_head_sha"]),
                 config_path=config_path,
-                expected_workflow_digest=workflow_digest,
+                expected_workflow_digest=ci_provenance.require_record_digest(
+                    record, "workflow_digest"
+                ),
             )
         except ci_provenance.ProvenanceError as exc:
             findings.append(f"{rel}: invalid capture artifact provenance: {exc}")

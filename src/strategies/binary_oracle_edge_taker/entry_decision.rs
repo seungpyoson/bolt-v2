@@ -11,7 +11,7 @@ use crate::{
         BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
         BoltV3EntryRealizedVolatilitySnapshotEvidence, BoltV3EntrySkipEvidence,
         BoltV3EntrySkipReasonCategory, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3RvGateResult, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3RvGateResult,
     },
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
@@ -22,6 +22,8 @@ use crate::{
 use super::{
     ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED, ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED,
     ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING, ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED,
+    ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM,
+    ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED,
     ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE, ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING,
     ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE,
     ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL, ENTRY_BLOCK_REASON_NO_SIDE_SELECTED,

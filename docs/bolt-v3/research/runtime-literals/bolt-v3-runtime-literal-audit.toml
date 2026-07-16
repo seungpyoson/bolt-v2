@@ -21104,3 +21104,11 @@ literal = '''10'''
 context = '''capacity: 10,'''
 classification = "generated_risk_closure_workspace_capacity"
 reason = "Generated closed-form quotient arena_bytes / slot_bytes; no owner-slot or capacity default exists in TOML or Rust."
+
+[[allowed]]
+path = "src/bolt_v3_application_resource_ledger.rs"
+kind = "string"
+literal = '''"bolt_v3_risk_closure_workspace.rs"'''
+context = '''#[path = "bolt_v3_risk_closure_workspace.rs"]'''
+classification = "application_resource_ledger_private_module_path"
+reason = "Compile-time Rust module path that makes the application ledger the parent of the private risk-closure workspace authority; it is not an operator runtime value or an alternate config source."

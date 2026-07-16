@@ -375,12 +375,11 @@ pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
 
 fn validate_static_target_block(context: &str, block: &TargetBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    validate_non_empty(
-        context,
-        "target.configured_target_id",
-        block.configured_target_id.as_str(),
-        &mut errors,
-    );
+    if !super::stable_identity_field_is_canonical(block.configured_target_id.as_str()) {
+        errors.push(format!(
+            "{context}: target.configured_target_id must be a non-empty, unpadded string"
+        ));
+    }
     validate_event_key(context, block.event_key.as_str(), &mut errors);
     validate_market_slug(context, block.market_slug.as_str(), &mut errors);
     if let Some(condition_id) = &block.condition_id {

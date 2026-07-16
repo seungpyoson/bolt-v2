@@ -223,6 +223,10 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
 
     let mut errors = Vec::new();
 
+    if let Some(message) = super::configured_target_identity_error(context, target) {
+        errors.push(message);
+    }
+
     errors.extend(super::validate_underlying_asset(
         context,
         "target.underlying_asset",
@@ -633,6 +637,9 @@ impl UpdownOutcomePair {
 
 #[derive(Debug)]
 pub enum BoltV3MarketIdentityError {
+    InvalidConfiguredTargetId {
+        strategy_instance_id: String,
+    },
     NonPositiveCadenceSeconds {
         strategy_instance_id: Option<String>,
         configured_target_id: Option<String>,
@@ -678,6 +685,12 @@ pub enum BoltV3MarketIdentityError {
 impl std::fmt::Display for BoltV3MarketIdentityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            BoltV3MarketIdentityError::InvalidConfiguredTargetId {
+                strategy_instance_id,
+            } => write!(
+                f,
+                "strategy `{strategy_instance_id}`: target.configured_target_id must be a non-empty, unpadded string"
+            ),
             BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
                 strategy_instance_id,
                 configured_target_id,
@@ -780,6 +793,11 @@ fn plan_strategy_updown_target(
     let RotatingMarketFamily::Updown = target.rotating_market_family;
 
     let configured_target_id = target.configured_target_id.clone();
+    if !super::stable_identity_field_is_canonical(configured_target_id.as_str()) {
+        return Err(BoltV3MarketIdentityError::InvalidConfiguredTargetId {
+            strategy_instance_id,
+        });
+    }
     if target.cadence_secs <= 0 {
         return Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id: Some(strategy_instance_id),

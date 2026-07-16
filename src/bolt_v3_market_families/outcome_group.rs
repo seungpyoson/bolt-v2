@@ -92,9 +92,7 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     };
 
     let mut errors = Vec::new();
-    if block.configured_target_id.trim().is_empty()
-        || block.configured_target_id.trim() != block.configured_target_id
-    {
+    if !super::stable_identity_field_is_canonical(block.configured_target_id.as_str()) {
         errors.push(format!(
             "{context}: target.configured_target_id must be non-empty without surrounding whitespace"
         ));

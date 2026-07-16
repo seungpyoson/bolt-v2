@@ -17739,14 +17739,6 @@ reason = "Validation field label for the optional static target condition ID; th
 [[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"
 kind = "string"
-literal = '''"target.configured_target_id"'''
-context = '''"target.configured_target_id",'''
-classification = "target_validation_field"
-reason = "Validation field label for the static target identifier; the target identifier value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/static_binary_event.rs"
-kind = "string"
 literal = '''"target.no_outcome"'''
 context = '''"target.no_outcome",'''
 classification = "target_validation_field"

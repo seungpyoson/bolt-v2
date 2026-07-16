@@ -500,6 +500,8 @@ pub fn market_identity_plan_from_config_with_bindings(
 ) -> Result<MarketIdentityPlan, InstrumentFilterError> {
     let mut plan = MarketIdentityPlan::empty();
     for strategy in &loaded.strategies {
+        let context = format!("strategy `{}`", strategy.config.strategy_instance_id);
+        ensure_configured_target_identity(&context, &strategy.config.target)?;
         let dispatch: TargetFamilyDispatch =
             strategy.config.target.clone().try_into().map_err(|error| {
                 InstrumentFilterError::TargetParseFailed {
@@ -535,6 +537,7 @@ pub fn target_runtime_fields_from_target_with_bindings(
     target: &toml::Value,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Result<TargetRuntimeFields, InstrumentFilterError> {
+    ensure_configured_target_identity("", target)?;
     let dispatch: TargetFamilyDispatch =
         target
             .clone()
@@ -1054,6 +1057,34 @@ pub(crate) fn selected_market_requirement_error(
     }
 }
 
+pub(crate) fn configured_target_identity_error(
+    context: &str,
+    target: &toml::Value,
+) -> Option<String> {
+    let configured_target_id = target
+        .as_table()
+        .and_then(|table| table.get(stringify!(configured_target_id)))
+        .and_then(toml::Value::as_str);
+    match configured_target_id {
+        Some(value) if stable_identity_field_is_canonical(value) => None,
+        _ if context.is_empty() => {
+            Some("target.configured_target_id must be a non-empty, unpadded string".to_string())
+        }
+        _ => Some(format!(
+            "{context}: target.configured_target_id must be a non-empty, unpadded string"
+        )),
+    }
+}
+
+fn ensure_configured_target_identity(
+    context: &str,
+    target: &toml::Value,
+) -> Result<(), InstrumentFilterError> {
+    configured_target_identity_error(context, target).map_or(Ok(()), |message| {
+        Err(InstrumentFilterError::TargetValidationFailure { message })
+    })
+}
+
 /// Target validation entry point used by core startup validation.
 /// Returns `(metadata, errors)`: the metadata is `None` when the raw
 /// `[target]` value cannot even produce a `configured_target_id` (in
@@ -1072,18 +1103,8 @@ pub fn validate_strategy_target_with_bindings(
     bindings: &[MarketFamilyValidationBinding],
 ) -> (Option<TargetMetadata>, Vec<InstrumentFilterError>) {
     let metadata = target.clone().try_into::<TargetMetadata>().ok();
-    let mut errors = metadata
-        .as_ref()
-        .filter(|metadata| {
-            !stable_identity_field_is_canonical(metadata.configured_target_id.as_str())
-        })
-        .map(|_| {
-            vec![InstrumentFilterError::TargetValidationFailure {
-                message: format!(
-                    "{context}: target.configured_target_id must be non-empty and unpadded"
-                ),
-            }]
-        })
+    let mut errors = configured_target_identity_error(context, target)
+        .map(|message| vec![InstrumentFilterError::TargetValidationFailure { message }])
         .unwrap_or_default();
     let dispatch: TargetFamilyDispatch = match target.clone().try_into() {
         Ok(value) => value,
@@ -1434,14 +1455,78 @@ mod tests {
                 let (_, errors) = validate_strategy_target("strategy `fixture`", &target);
                 assert!(
                     errors.iter().any(|error| {
-                        error
-                            .to_string()
-                            .contains("target.configured_target_id must be non-empty and unpadded")
+                        error.to_string().contains(
+                            "target.configured_target_id must be a non-empty, unpadded string",
+                        )
                     }),
                     "{family} production validation accepted malformed configured_target_id {malformed:?}: {errors:?}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn configured_target_identity_gate_rejects_missing_and_non_string_values() {
+        let valid_target = fixture_strategy_with_family(updown::KEY).config.target;
+        for malformed in [None, Some(toml::Value::Integer(42))] {
+            let mut target = valid_target.clone();
+            let table = target
+                .as_table_mut()
+                .expect("target fixture should be a TOML table");
+            match malformed {
+                Some(value) => {
+                    table.insert(stringify!(configured_target_id).to_string(), value);
+                }
+                None => {
+                    table.remove(stringify!(configured_target_id));
+                }
+            }
+
+            let (_, errors) = validate_strategy_target("strategy `fixture`", &target);
+            assert!(
+                errors.iter().any(|error| {
+                    error.to_string().contains(
+                        "target.configured_target_id must be a non-empty, unpadded string",
+                    )
+                }),
+                "central validation did not reject malformed configured_target_id: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn configured_target_identity_gate_precedes_runtime_and_plan_dispatch() {
+        let malformed_target = toml::toml! {
+            configured_target_id = " fixture-target"
+            rotating_market_family = "fixture_family"
+        }
+        .into();
+
+        let runtime_error = target_runtime_fields_from_target_with_bindings(
+            &malformed_target,
+            FAKE_FAMILY_BINDINGS,
+        )
+        .expect_err("runtime-field dispatch must reject malformed configured target identity");
+        assert!(
+            runtime_error
+                .to_string()
+                .contains("target.configured_target_id must be a non-empty, unpadded string")
+        );
+
+        let mut loaded = fixture_loaded_config();
+        let mut strategy = fixture_strategy_with_family("fixture_family");
+        strategy.config.target = malformed_target;
+        loaded.strategies.push(strategy);
+        let plan_error =
+            market_identity_plan_from_config_with_bindings(&loaded, FAKE_FAMILY_BINDINGS)
+                .expect_err(
+                    "identity-plan dispatch must reject malformed configured target identity",
+                );
+        assert!(
+            plan_error
+                .to_string()
+                .contains("target.configured_target_id must be a non-empty, unpadded string")
+        );
     }
 
     #[test]

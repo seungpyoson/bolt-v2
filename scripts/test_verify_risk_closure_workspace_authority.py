@@ -119,7 +119,9 @@ slot_bytes = 16777216
 
         errors = verifier.authority_errors(self.root)
 
-        self.assertTrue(any("probe.risk_closure_workspaces" in error for error in errors))
+        self.assertTrue(
+            any('["probe"]["risk_closure_workspaces"]' in error for error in errors)
+        )
 
     def test_rejects_nested_authority_in_canonical_toml(self) -> None:
         source = self.root / "config" / "risk-closure-workspaces.toml"
@@ -131,7 +133,9 @@ slot_bytes = 16777216
 
         errors = verifier.authority_errors(self.root)
 
-        self.assertTrue(any("probe.risk_closure_workspaces" in error for error in errors))
+        self.assertTrue(
+            any('["probe"]["risk_closure_workspaces"]' in error for error in errors)
+        )
 
     def test_rejects_authority_nested_in_array_table(self) -> None:
         crate = self.root / "crates" / "consumer"
@@ -143,7 +147,22 @@ slot_bytes = 16777216
 
         errors = verifier.authority_errors(self.root)
 
-        self.assertTrue(any("owners[0].risk_closure_workspaces" in error for error in errors))
+        self.assertTrue(
+            any(
+                '["owners"][0]["risk_closure_workspaces"]' in error
+                for error in errors
+            )
+        )
+
+    def test_toml_key_path_rendering_is_unambiguous(self) -> None:
+        self.assertNotEqual(
+            verifier._render_toml_key_path(("probe.a", "risk_closure_workspaces")),
+            verifier._render_toml_key_path(("probe", "a", "risk_closure_workspaces")),
+        )
+        self.assertNotEqual(
+            verifier._render_toml_key_path(("owners[0]", "risk_closure_workspaces")),
+            verifier._render_toml_key_path(("owners", 0, "risk_closure_workspaces")),
+        )
 
     def test_rejects_a_runtime_workspace_size_literal(self) -> None:
         (self.root / "src" / "consumer.rs").write_text(

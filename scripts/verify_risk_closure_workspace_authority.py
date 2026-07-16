@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import subprocess
@@ -88,10 +89,8 @@ def _render_toml_key_path(path: tuple[str | int, ...]) -> str:
     for component in path:
         if isinstance(component, int):
             rendered += f"[{component}]"
-        elif rendered:
-            rendered += f".{component}"
         else:
-            rendered = component
+            rendered += f"[{json.dumps(component)}]"
     return rendered
 
 

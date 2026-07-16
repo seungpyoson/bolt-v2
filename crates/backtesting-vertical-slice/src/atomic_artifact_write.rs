@@ -3218,13 +3218,10 @@ fn unique_temp_token() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, io::Write, sync::Arc};
+    #[cfg(target_os = "linux")]
     use std::{
-        fs,
-        io::Write,
-        sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        },
+        sync::atomic::{AtomicU64, Ordering},
         time::Duration,
     };
 
@@ -3274,20 +3271,34 @@ mod tests {
             .expect("manifest inventory byte size")
     }
 
+    #[cfg(target_os = "linux")]
     #[derive(Default)]
     struct ManualClock {
         seconds: AtomicU64,
     }
 
+    #[cfg(target_os = "linux")]
     impl crate::operator_work_budget::OperatorWorkBudgetClock for ManualClock {
         fn now(&self) -> Duration {
             Duration::from_secs(self.seconds.load(Ordering::SeqCst))
         }
     }
 
-    #[derive(Default)]
-    struct IncrementingClock {
-        seconds: AtomicU64,
+    #[cfg(target_os = "linux")]
+    struct TargetVisibilityClock {
+        target: std::path::PathBuf,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl crate::operator_work_budget::OperatorWorkBudgetClock for TargetVisibilityClock {
+        fn now(&self) -> Duration {
+            let target_is_visible = match fs::symlink_metadata(&self.target) {
+                Ok(_) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => panic!("inspect commit-boundary target: {error}"),
+            };
+            Duration::from_secs(u64::from(target_is_visible))
+        }
     }
 
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -3309,24 +3320,6 @@ mod tests {
             "unexpected error: {error}"
         );
         assert!(!real_source_parent.join("catalog.tmp").exists());
-    }
-
-    struct ExpiringObservationClock {
-        observations: AtomicU64,
-        expires_at: u64,
-    }
-
-    impl crate::operator_work_budget::OperatorWorkBudgetClock for ExpiringObservationClock {
-        fn now(&self) -> Duration {
-            let observation = self.observations.fetch_add(1, Ordering::SeqCst);
-            Duration::from_secs(u64::from(observation >= self.expires_at))
-        }
-    }
-
-    impl crate::operator_work_budget::OperatorWorkBudgetClock for IncrementingClock {
-        fn now(&self) -> Duration {
-            Duration::from_secs(self.seconds.fetch_add(1, Ordering::SeqCst))
-        }
     }
 
     /// Target receives exactly the supplied bytes after a successful write.
@@ -3362,10 +3355,12 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn guarded_atomic_write_stops_between_configured_byte_chunks() {
+    fn guarded_atomic_write_stops_between_explicit_byte_chunks() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let target = dir.path().join("large-cache-entry");
+        let clock = Arc::new(ManualClock::default());
         let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::with_clock(
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
@@ -3376,10 +3371,7 @@ mod tests {
                     require_object_selection_metadata: false,
                 },
             ),
-            Arc::new(ExpiringObservationClock {
-                observations: AtomicU64::new(0),
-                expires_at: 7,
-            }),
+            clock.clone(),
         )
         .expect("guard");
 
@@ -3387,17 +3379,27 @@ mod tests {
             &target,
             &guard,
             crate::operator_work_budget::OperatorWorkBudgetStage::Fetch,
-            |file| {
+            |file| -> anyhow::Result<()> {
                 let mut writer = crate::operator_work_budget::CooperativeDeadlineWriter::new(
                     file,
                     &guard,
                     crate::operator_work_budget::OperatorWorkBudgetStage::Fetch,
                 );
-                writer.write_all(&[b'x'; 128])?;
-                Ok(())
+                writer.write_all(&[b'x'; 64])?;
+                clock.seconds.store(1, Ordering::SeqCst);
+                let error = writer
+                    .write_all(&[b'y'; 64])
+                    .expect_err("second explicit chunk must observe the expired deadline");
+                let file = writer.into_inner();
+                assert_eq!(
+                    file.metadata().expect("stat anonymous temp").len(),
+                    64,
+                    "the expired second chunk must not reach the anonymous file"
+                );
+                Err(error.into())
             },
         )
-        .expect_err("guarded atomic write must expire during chunked temp output");
+        .expect_err("guarded atomic write must expire between explicit output chunks");
 
         assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
         assert!(
@@ -3588,6 +3590,54 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     #[test]
+    fn directory_staging_rejects_source_change_before_stage() {
+        let root = tempfile::TempDir::new().expect("temp root");
+        let temp_root = create_owned_temp_directory(&root.path().join("catalog.tmp"))
+            .expect("create temp root");
+        fs::create_dir(temp_root.path().join("data")).expect("create data root");
+        fs::write(temp_root.path().join("data/expected.parquet"), b"expected")
+            .expect("write expected file");
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::unbounded();
+        let stage = crate::operator_work_budget::OperatorWorkBudgetStage::CatalogProjection;
+        let manifest = capture_owned_directory_manifest_guarded(&temp_root, "data", &guard, stage)
+            .expect("capture exact manifest");
+        fs::write(temp_root.path().join("data/stray.parquet"), b"late stray")
+            .expect("plant pre-stage stray");
+        let final_root = root.path().join("final");
+        let target = guarded_publication_child_path(
+            &final_root,
+            std::ffi::OsStr::new("data"),
+            &guard,
+            stage,
+        )
+        .expect("guard target path");
+        fs::create_dir(&final_root).expect("create final root");
+
+        let error = match stage_directory_rename_create_only_guarded(
+            &temp_root, &manifest, &target, &guard, stage,
+        ) {
+            DirectoryStageOutcome::NotStaged(error) => error,
+            DirectoryStageOutcome::Staged => {
+                panic!("source change before staging must fail closed")
+            }
+        };
+
+        assert!(
+            error.to_string().contains("manifest root identity changed"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            !target.as_path().exists(),
+            "changed source must not cross the create-only staging boundary"
+        );
+        assert!(
+            temp_root.path().join("data/stray.parquet").is_file(),
+            "rejected source evidence must remain retained"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
     fn directory_staging_requires_exact_validation_before_authority() {
         let root = tempfile::TempDir::new().expect("temp root");
         let temp_root_path = root.path().join("catalog.tmp");
@@ -3599,8 +3649,6 @@ mod tests {
         let stage = crate::operator_work_budget::OperatorWorkBudgetStage::CatalogProjection;
         let manifest = capture_owned_directory_manifest_guarded(&temp_root, "data", &guard, stage)
             .expect("capture exact manifest");
-        fs::write(temp_root.path().join("data/stray.parquet"), b"late stray")
-            .expect("plant late stray");
         let final_root = root.path().join("final");
         let target = guarded_publication_child_path(
             &final_root,
@@ -3615,6 +3663,8 @@ mod tests {
         );
 
         assert!(matches!(outcome, DirectoryStageOutcome::Staged));
+        fs::write(target.as_path().join("stray.parquet"), b"late stray")
+            .expect("plant post-stage stray");
         let error = validate_staged_directory_manifest_guarded(&manifest, &target, &guard, stage)
             .expect_err("late exact-set change must deny reader authority");
         assert!(
@@ -4323,27 +4373,26 @@ mod tests {
                     max_decoded_bytes: u64::MAX,
                     max_source_rows: u64::MAX,
                     max_projected_row_groups: u64::MAX,
-                    // Construction observes second 0. The create and callback
-                    // boundaries consume seconds 1..5; only the post-rename
-                    // observation reaches the deadline at second 6.
-                    max_wall_seconds: 6,
+                    max_wall_seconds: 1,
                     require_object_selection_metadata: false,
                 },
             ),
-            Arc::new(IncrementingClock::default()),
+            Arc::new(TargetVisibilityClock {
+                target: target.clone(),
+            }),
         )
         .expect("guard");
-
-        atomic_file_create_or_verify_guarded(
-            &target,
-            &guard,
-            crate::operator_work_budget::OperatorWorkBudgetStage::CanonicalWrite,
-            |mut file| {
-                file.write_all(b"complete but expired canonical bytes")?;
-                Ok(())
-            },
-        )
+        let stage = crate::operator_work_budget::OperatorWorkBudgetStage::CanonicalWrite;
+        atomic_file_create_or_verify_guarded(&target, &guard, stage, |mut file| {
+            file.write_all(b"complete but expired canonical bytes")?;
+            Ok(())
+        })
         .expect("the authorized create-only commit must not be retracted");
+
+        assert!(
+            guard.check_deadline(stage).is_err(),
+            "the semantic clock must be expired after publication"
+        );
 
         assert_eq!(
             std::fs::read(&target).expect("read published artifact"),

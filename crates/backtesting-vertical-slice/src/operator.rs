@@ -9271,7 +9271,10 @@ mod tests {
             .err()
             .expect("third source record must exceed the two-row budget");
 
-        assert!(error.to_string().contains("max_source_rows"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("max_source_rows"),
+            "{error:#}"
+        );
         assert!(
             !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
             "preterminal failure must not persist a mutable started checkpoint"
@@ -9290,7 +9293,7 @@ mod tests {
             .expect("one projected row group must exceed a zero-row-group budget");
 
         assert!(
-            error.to_string().contains("max_projected_row_groups"),
+            format!("{error:#}").contains("max_projected_row_groups"),
             "{error:#}"
         );
         assert!(
@@ -9319,7 +9322,10 @@ mod tests {
             .err()
             .expect("completed output must not carry across a stricter source budget");
 
-        assert!(error.to_string().contains("max_source_rows"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("max_source_rows"),
+            "{error:#}"
+        );
         assert_eq!(guard.source_rows_consumed(), 3);
     }
 
@@ -9346,7 +9352,7 @@ mod tests {
             .expect("completed output must be rejected by a zero-row-group budget");
 
         assert!(
-            error.to_string().contains("max_projected_row_groups"),
+            format!("{error:#}").contains("max_projected_row_groups"),
             "{error:#}"
         );
         assert_eq!(

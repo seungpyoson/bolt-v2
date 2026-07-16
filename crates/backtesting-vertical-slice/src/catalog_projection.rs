@@ -6115,7 +6115,7 @@ max_notional = "200000"
             .expect_err("instrument row groups must count toward the aggregate safety limit");
 
         assert!(
-            error.to_string().contains("max_projected_row_groups"),
+            format!("{error:#}").contains("max_projected_row_groups"),
             "{error:#}"
         );
     }

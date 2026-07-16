@@ -1542,6 +1542,23 @@ mod tests {
         }
     }
 
+    struct DeadlineAdvancingWriter {
+        bytes: Vec<u8>,
+        clock: Arc<FakeClock>,
+    }
+
+    impl Write for DeadlineAdvancingWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(buffer);
+            self.clock.advance(Duration::from_secs(1));
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     struct ExpiringObservationClock {
         observations: AtomicU64,
         expires_at: u64,
@@ -2181,27 +2198,55 @@ mod tests {
     }
 
     #[test]
-    fn cooperative_writer_observes_deadline_between_byte_chunks() {
+    fn cooperative_writer_observes_deadline_between_explicit_writes() {
+        let clock = Arc::new(FakeClock::default());
         let guard = OperatorWorkBudgetGuard::with_clock(
             OperatorWorkBudget::Backfill(budget(100, 1, 1)),
-            Arc::new(ExpiringObservationClock {
-                observations: AtomicU64::new(0),
-                expires_at: 5,
-            }),
+            clock.clone(),
         )
         .expect("construct bounded guard");
         let mut bytes = Vec::new();
         let mut writer =
             CooperativeDeadlineWriter::new(&mut bytes, &guard, OperatorWorkBudgetStage::Publish);
 
+        writer
+            .write_all(&[b'x'; 64])
+            .expect("first explicit chunk before deadline");
+        clock.advance(Duration::from_secs(1));
         let error = writer
-            .write_all(&[b'x'; 128])
-            .expect_err("large write must observe the deadline between bounded chunks");
+            .write_all(&[b'y'; 64])
+            .expect_err("second explicit chunk must observe the deadline");
 
         assert!(error.to_string().contains("max_wall_seconds"), "{error}");
-        assert!(
-            bytes.len() < 128,
-            "writer must stop before the full payload"
+        drop(writer);
+        assert_eq!(bytes, vec![b'x'; 64]);
+    }
+
+    #[test]
+    fn cooperative_writer_observes_deadline_after_inner_write() {
+        let clock = Arc::new(FakeClock::default());
+        let guard = OperatorWorkBudgetGuard::with_clock(
+            OperatorWorkBudget::Backfill(budget(100, 1, 1)),
+            clock.clone(),
+        )
+        .expect("construct bounded guard");
+        let inner = DeadlineAdvancingWriter {
+            bytes: Vec::new(),
+            clock,
+        };
+        let mut writer =
+            CooperativeDeadlineWriter::new(inner, &guard, OperatorWorkBudgetStage::Publish);
+
+        let error = writer
+            .write_all(b"one completed inner write")
+            .expect_err("post-write deadline observation must reject expired output");
+
+        assert!(error.to_string().contains("max_wall_seconds"), "{error}");
+        let inner = writer.into_inner();
+        assert_eq!(
+            inner.bytes.as_slice(),
+            b"one completed inner write",
+            "the inner write completes before the post-write deadline check"
         );
     }
 

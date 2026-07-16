@@ -4017,12 +4017,17 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     assert_eq!(discovered.completion, completion_locator);
     assert_eq!(store.put_attempts().len(), put_count_before_discovery);
 
+    let first_candidate_bytes = fs::read(&candidate_path).expect("read first attempt candidate");
+    let second_output_dir = tempfile::TempDir::new().expect("second attempt temp dir");
+    let second_candidate_path = second_output_dir
+        .path()
+        .join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
     let second_spec = spec.clone();
     let work_budget = OperatorWorkBudgetGuard::unbounded();
     let second = run_from_run_spec_with_artifact_store_guarded(
         &second_spec,
         gz,
-        output_dir.path(),
+        second_output_dir.path(),
         &store,
         &versioning,
         &work_budget,
@@ -4030,6 +4035,15 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     .await
     .expect("operator artifact-store rerun replays idempotently");
     let second = executed_durable_artifacts(second);
+    assert_eq!(
+        fs::read(&candidate_path).expect("reread first attempt candidate"),
+        first_candidate_bytes,
+        "a new attempt must not mutate the first immutable local candidate"
+    );
+    assert!(
+        second_candidate_path.is_file(),
+        "the idempotent remote retry must seal its distinct local attempt"
+    );
     assert_eq!(
         second.canonical_catalog_uri.as_deref(),
         Some(expected_catalog_root.as_str())

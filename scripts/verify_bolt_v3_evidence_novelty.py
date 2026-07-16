@@ -18,31 +18,54 @@ GENERATED_PATH = pathlib.Path("src/bolt_v3_evidence_novelty_generated.rs")
 NOVELTY_PATH = pathlib.Path("src/bolt_v3_evidence_novelty.rs")
 PRODUCER_PATH = pathlib.Path("src/strategies/binary_oracle_edge_taker/mod.rs")
 
+FROZEN_MARKET_ALLOCATIONS = (
+    ("discovery_identity", 0, 32),
+    ("lifecycle_rollover", 32, 80),
+    ("subscription_book", 80, 144),
+    ("strategy_input_pricing_blocker", 144, 208),
+    ("dependency_health", 208, 240),
+    ("terminal_closed_window_skip", 240, 256),
+)
+OWNER_BY_PRODUCER = {
+    "entry_skip": "EntrySkip",
+    "strategy_input_snapshot": "BlockedStrategyInputSnapshot",
+}
+
+
+@dataclass(frozen=True)
+class AllocationRow:
+    name: str
+    id_start: int
+    id_end_exclusive: int
+
 
 @dataclass(frozen=True)
 class StateRow:
     rust_variant: str
     producer_kind: str
     semantic_state: str
-    id_start: int
-    id_end_exclusive: int
+    allocation: str
+    id: int
 
     @property
-    def capacity(self) -> int:
-        return self.id_end_exclusive - self.id_start
+    def owner(self) -> str:
+        return OWNER_BY_PRODUCER[self.producer_kind]
 
 
 @dataclass(frozen=True)
 class Registry:
     family_name: str
     family_capacity: int
+    allocations: tuple[AllocationRow, ...]
     states: tuple[StateRow, ...]
 
 
 def load_registry(path: pathlib.Path) -> Registry:
     document = tomllib.loads(path.read_text(encoding="utf-8"))
-    if set(document) != {"schema_version", "family", "state"}:
-        raise ValueError("registry must contain exactly schema_version, family, and state")
+    if set(document) != {"schema_version", "family", "allocation", "state"}:
+        raise ValueError(
+            "registry must contain exactly schema_version, family, allocation, and state"
+        )
     if document["schema_version"] != 1:
         raise ValueError("registry schema_version must be 1")
     family = document["family"]
@@ -52,8 +75,39 @@ def load_registry(path: pathlib.Path) -> Registry:
     family_capacity = family["capacity"]
     if not isinstance(family_name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", family_name):
         raise ValueError("family.name must be snake_case")
-    if not isinstance(family_capacity, int) or family_capacity <= 0:
+    if type(family_capacity) is not int or family_capacity <= 0:
         raise ValueError("family.capacity must be a positive integer")
+
+    raw_allocations = document["allocation"]
+    if not isinstance(raw_allocations, list) or not raw_allocations:
+        raise ValueError("registry must contain at least one [[allocation]] row")
+    allocation_keys = {"name", "id_start", "id_end_exclusive"}
+    allocations: list[AllocationRow] = []
+    for index, raw in enumerate(raw_allocations):
+        if not isinstance(raw, dict) or set(raw) != allocation_keys:
+            raise ValueError(
+                f"allocation[{index}] must contain exactly {sorted(allocation_keys)}"
+            )
+        row = AllocationRow(**raw)
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", row.name):
+            raise ValueError(f"allocation[{index}].name must be snake_case")
+        if (
+            type(row.id_start) is not int
+            or type(row.id_end_exclusive) is not int
+            or row.id_start < 0
+            or row.id_end_exclusive <= row.id_start
+            or row.id_end_exclusive > family_capacity
+        ):
+            raise ValueError(f"allocation[{index}] has an invalid id range")
+        allocations.append(row)
+    allocation_names = [row.name for row in allocations]
+    if len(set(allocation_names)) != len(allocation_names):
+        raise ValueError("allocation names must be unique")
+    actual_allocations = tuple(
+        (row.name, row.id_start, row.id_end_exclusive) for row in allocations
+    )
+    if actual_allocations != FROZEN_MARKET_ALLOCATIONS:
+        raise ValueError("market allocations must match the frozen family ranges")
 
     raw_states = document["state"]
     if not isinstance(raw_states, list) or not raw_states:
@@ -63,8 +117,8 @@ def load_registry(path: pathlib.Path) -> Registry:
         "rust_variant",
         "producer_kind",
         "semantic_state",
-        "id_start",
-        "id_end_exclusive",
+        "allocation",
+        "id",
     }
     for index, raw in enumerate(raw_states):
         if not isinstance(raw, dict) or set(raw) != expected_keys:
@@ -76,8 +130,13 @@ def load_registry(path: pathlib.Path) -> Registry:
             raise ValueError(f"state[{index}].producer_kind must be snake_case")
         if not re.fullmatch(r"[a-z][a-z0-9_.]*", row.semantic_state):
             raise ValueError(f"state[{index}].semantic_state must be dotted snake_case")
-        if row.id_start < 0 or row.id_end_exclusive <= row.id_start:
-            raise ValueError(f"state[{index}] has an invalid id range")
+        if row.producer_kind not in OWNER_BY_PRODUCER:
+            raise ValueError(f"state[{index}].producer_kind is not a registered owner")
+        if row.allocation not in allocation_names:
+            raise ValueError(f"state[{index}] names an unknown allocation")
+        allocation = allocations[allocation_names.index(row.allocation)]
+        if type(row.id) is not int or not allocation.id_start <= row.id < allocation.id_end_exclusive:
+            raise ValueError(f"state[{index}].id is outside allocation {row.allocation}")
         states.append(row)
 
     variants = [row.rust_variant for row in states]
@@ -86,15 +145,11 @@ def load_registry(path: pathlib.Path) -> Registry:
         raise ValueError("registry rust_variant values must be unique")
     if len(set(mappings)) != len(mappings):
         raise ValueError("registry producer/state mappings must be unique")
-    ordered = sorted(states, key=lambda row: row.id_start)
-    cursor = 0
-    for row in ordered:
-        if row.id_start != cursor:
-            raise ValueError("registry state id ranges must be contiguous and non-overlapping")
-        cursor = row.id_end_exclusive
-    if cursor != family_capacity:
-        raise ValueError("registry state id ranges must exactly cover family.capacity")
-    return Registry(family_name, family_capacity, tuple(ordered))
+    ids = [row.id for row in states]
+    if len(set(ids)) != len(ids):
+        raise ValueError("registry state ids must be unique")
+    ordered = sorted(states, key=lambda row: row.id)
+    return Registry(family_name, family_capacity, tuple(allocations), tuple(ordered))
 
 
 def render_registry(registry: Registry) -> str:
@@ -102,25 +157,37 @@ def render_registry(registry: Registry) -> str:
         "// @generated by scripts/verify_bolt_v3_evidence_novelty.py from",
         "// config/evidence-novelty.toml. Do not edit.",
         "",
-        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]",
         "pub enum EvidenceStateOwner {",
     ]
-    lines.extend(f"    {row.rust_variant}," for row in registry.states)
+    owners = tuple(dict.fromkeys(row.owner for row in registry.states))
+    lines.extend(f"    {owner}," for owner in owners)
+    lines.extend(
+        [
+            "}",
+            "",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]",
+            "#[repr(u16)]",
+            "pub enum EvidenceCanonicalState {",
+        ]
+    )
+    lines.extend(f"    {row.rust_variant} = {row.id}," for row in registry.states)
     lines.extend(
         [
             "}",
             "",
             "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
             "pub struct EvidenceStateRegistration {",
+            "    pub state: EvidenceCanonicalState,",
             "    pub owner: EvidenceStateOwner,",
             "    pub family: &'static str,",
             "    pub producer_kind: &'static str,",
             "    pub semantic_state: &'static str,",
-            "    pub id_start: usize,",
-            "    pub state_capacity: usize,",
+            "    pub id: usize,",
             "}",
             "",
-            f"pub const EVIDENCE_NOVELTY_OWNED_STATE_CAPACITY: usize = {registry.family_capacity};",
+            f"pub const EVIDENCE_NOVELTY_FAMILY_CAPACITY: usize = {registry.family_capacity};",
+            f"pub const EVIDENCE_NOVELTY_WORD_COUNT: usize = {(registry.family_capacity + 63) // 64};",
             "",
             "pub const EVIDENCE_STATE_REGISTRATIONS: &[EvidenceStateRegistration] = &[",
         ]
@@ -129,12 +196,12 @@ def render_registry(registry: Registry) -> str:
         lines.extend(
             [
                 "    EvidenceStateRegistration {",
-                f"        owner: EvidenceStateOwner::{row.rust_variant},",
+                f"        state: EvidenceCanonicalState::{row.rust_variant},",
+                f"        owner: EvidenceStateOwner::{row.owner},",
                 f"        family: {json.dumps(registry.family_name)},",
                 f"        producer_kind: {json.dumps(row.producer_kind)},",
                 f"        semantic_state: {json.dumps(row.semantic_state)},",
-                f"        id_start: {row.id_start},",
-                f"        state_capacity: {row.capacity},",
+                f"        id: {row.id},",
                 "    },",
             ]
         )
@@ -142,17 +209,30 @@ def render_registry(registry: Registry) -> str:
         [
             "];",
             "",
-            "pub const fn evidence_state_registration(",
-            "    owner: EvidenceStateOwner,",
+            "pub const fn canonical_state_registration(",
+            "    state: EvidenceCanonicalState,",
             ") -> &'static EvidenceStateRegistration {",
-            "    match owner {",
+            "    match state {",
         ]
     )
     for index, row in enumerate(registry.states):
         lines.append(
-            f"        EvidenceStateOwner::{row.rust_variant} => &EVIDENCE_STATE_REGISTRATIONS[{index}],"
+            f"        EvidenceCanonicalState::{row.rust_variant} => &EVIDENCE_STATE_REGISTRATIONS[{index}],"
         )
-    lines.extend(["    }", "}", ""])
+    lines.extend(
+        [
+            "    }",
+            "}",
+            "",
+            "pub const fn evidence_state_registration_by_id(",
+            "    id: usize,",
+            ") -> Option<&'static EvidenceStateRegistration> {",
+            "    match id {",
+        ]
+    )
+    for index, row in enumerate(registry.states):
+        lines.append(f"        {row.id} => Some(&EVIDENCE_STATE_REGISTRATIONS[{index}]),")
+    lines.extend(["        _ => None,", "    }", "}", ""])
     return "\n".join(lines)
 
 
@@ -173,7 +253,7 @@ def verification_findings(root: pathlib.Path) -> list[str]:
 
     producer_text = (root / PRODUCER_PATH).read_text(encoding="utf-8")
     referenced = set(re.findall(r"EvidenceStateOwner::([A-Z][A-Za-z0-9]*)", producer_text))
-    registered = {row.rust_variant for row in registry.states}
+    registered = {row.owner for row in registry.states}
     if referenced != registered:
         findings.append(
             f"{PRODUCER_PATH}: producer owner references {sorted(referenced)} "

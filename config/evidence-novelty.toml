@@ -4,16 +4,235 @@ schema_version = 1
 name = "market"
 capacity = 256
 
-[[state]]
-rust_variant = "EntrySkip"
-producer_kind = "entry_skip"
-semantic_state = "entry_skip.semantic"
+[[allocation]]
+name = "discovery_identity"
 id_start = 0
-id_end_exclusive = 128
+id_end_exclusive = 32
+
+[[allocation]]
+name = "lifecycle_rollover"
+id_start = 32
+id_end_exclusive = 80
+
+[[allocation]]
+name = "subscription_book"
+id_start = 80
+id_end_exclusive = 144
+
+[[allocation]]
+name = "strategy_input_pricing_blocker"
+id_start = 144
+id_end_exclusive = 208
+
+[[allocation]]
+name = "dependency_health"
+id_start = 208
+id_end_exclusive = 240
+
+[[allocation]]
+name = "terminal_closed_window_skip"
+id_start = 240
+id_end_exclusive = 256
 
 [[state]]
-rust_variant = "BlockedStrategyInputSnapshot"
+rust_variant = "BlockedStrategyInputAcceptedWatermarkAbsent"
 producer_kind = "strategy_input_snapshot"
-semantic_state = "strategy_input_snapshot.blocked_rv"
-id_start = 128
-id_end_exclusive = 256
+semantic_state = "strategy_input_snapshot.blocked_rv.accepted.watermark_absent"
+allocation = "strategy_input_pricing_blocker"
+id = 144
+
+[[state]]
+rust_variant = "BlockedStrategyInputAcceptedWatermarkPresent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.accepted.watermark_present"
+allocation = "strategy_input_pricing_blocker"
+id = 145
+
+[[state]]
+rust_variant = "BlockedStrategyInputMissingSnapshotWatermarkAbsent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_absent"
+allocation = "strategy_input_pricing_blocker"
+id = 146
+
+[[state]]
+rust_variant = "BlockedStrategyInputMissingSnapshotWatermarkPresent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_present"
+allocation = "strategy_input_pricing_blocker"
+id = 147
+
+[[state]]
+rust_variant = "BlockedStrategyInputMissingEvaluationEventTimeWatermarkAbsent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.missing_evaluation_event_time.watermark_absent"
+allocation = "strategy_input_pricing_blocker"
+id = 148
+
+[[state]]
+rust_variant = "BlockedStrategyInputMissingEvaluationEventTimeWatermarkPresent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.missing_evaluation_event_time.watermark_present"
+allocation = "strategy_input_pricing_blocker"
+id = 149
+
+[[state]]
+rust_variant = "BlockedStrategyInputRejectedFutureDatedWatermarkAbsent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_absent"
+allocation = "strategy_input_pricing_blocker"
+id = 150
+
+[[state]]
+rust_variant = "BlockedStrategyInputRejectedFutureDatedWatermarkPresent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_present"
+allocation = "strategy_input_pricing_blocker"
+id = 151
+
+[[state]]
+rust_variant = "BlockedStrategyInputRejectedStaleWatermarkAbsent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_absent"
+allocation = "strategy_input_pricing_blocker"
+id = 152
+
+[[state]]
+rust_variant = "BlockedStrategyInputRejectedStaleWatermarkPresent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_present"
+allocation = "strategy_input_pricing_blocker"
+id = 153
+
+[[state]]
+rust_variant = "BlockedStrategyInputRejectedNotReadyWatermarkAbsent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_absent"
+allocation = "strategy_input_pricing_blocker"
+id = 154
+
+[[state]]
+rust_variant = "BlockedStrategyInputRejectedNotReadyWatermarkPresent"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_present"
+allocation = "strategy_input_pricing_blocker"
+id = 155
+
+[[state]]
+rust_variant = "EntrySkipStrategyCoreNotRegistered"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.strategy_core_not_registered"
+allocation = "strategy_input_pricing_blocker"
+id = 156
+
+[[state]]
+rust_variant = "EntrySkipEntryGateBlocked"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_gate_blocked"
+allocation = "strategy_input_pricing_blocker"
+id = 157
+
+[[state]]
+rust_variant = "EntrySkipEntryPricingBlocked"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_pricing_blocked"
+allocation = "strategy_input_pricing_blocker"
+id = 158
+
+[[state]]
+rust_variant = "EntrySkipNoSideSelected"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.no_side_selected"
+allocation = "strategy_input_pricing_blocker"
+id = 159
+
+[[state]]
+rust_variant = "EntrySkipSizedNotionalNotPositive"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.sized_notional_not_positive"
+allocation = "strategy_input_pricing_blocker"
+id = 160
+
+[[state]]
+rust_variant = "EntrySkipInstrumentIdMissing"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.instrument_id_missing"
+allocation = "strategy_input_pricing_blocker"
+id = 161
+
+[[state]]
+rust_variant = "EntrySkipInstrumentMissingFromCache"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.instrument_missing_from_cache"
+allocation = "strategy_input_pricing_blocker"
+id = 162
+
+[[state]]
+rust_variant = "EntrySkipEntryPriceMissing"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_price_missing"
+allocation = "strategy_input_pricing_blocker"
+id = 163
+
+[[state]]
+rust_variant = "EntrySkipQuantityRoundingFailed"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.quantity_rounding_failed"
+allocation = "strategy_input_pricing_blocker"
+id = 164
+
+[[state]]
+rust_variant = "EntrySkipLimitNotionalExceedsSizedNotional"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.limit_notional_exceeds_sized_notional"
+allocation = "strategy_input_pricing_blocker"
+id = 165
+
+[[state]]
+rust_variant = "EntrySkipEntryQuoteNotionalBelowVenueMinimum"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_quote_notional_below_venue_minimum"
+allocation = "strategy_input_pricing_blocker"
+id = 166
+
+[[state]]
+rust_variant = "EntrySkipEntryQuoteNotionalMinimumUnmodeled"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_quote_notional_minimum_unmodeled"
+allocation = "strategy_input_pricing_blocker"
+id = 167
+
+[[state]]
+rust_variant = "EntrySkipQuantityNotPositive"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.quantity_not_positive"
+allocation = "strategy_input_pricing_blocker"
+id = 168
+
+[[state]]
+rust_variant = "EntrySkipPositionContractInvalid"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.position_contract_invalid"
+allocation = "strategy_input_pricing_blocker"
+id = 169
+
+[[state]]
+rust_variant = "EntrySkipEntryPositionContractUnsupported"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_position_contract_unsupported"
+allocation = "strategy_input_pricing_blocker"
+id = 170
+
+[[state]]
+rust_variant = "EntrySkipHistoricalEntryFeeUnavailable"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.historical_entry_fee_unavailable"
+allocation = "strategy_input_pricing_blocker"
+id = 171
+
+[[state]]
+rust_variant = "EntrySkipOnePositionInvariantViolation"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.one_position_invariant_violation"
+allocation = "strategy_input_pricing_blocker"
+id = 172

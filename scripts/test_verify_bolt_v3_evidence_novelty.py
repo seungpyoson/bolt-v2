@@ -19,25 +19,73 @@ SPEC.loader.exec_module(VERIFIER)
 
 
 class EvidenceNoveltyVerifierTests(unittest.TestCase):
+    def registry_text(self) -> str:
+        return (VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH).read_text(encoding="utf-8")
+
+    def load_text(self, text: str):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "registry.toml"
+            path.write_text(text, encoding="utf-8")
+            return VERIFIER.load_registry(path)
+
     def test_repository_registry_and_generated_bytes_match(self) -> None:
         self.assertEqual(VERIFIER.verification_findings(VERIFIER.REPO_ROOT), [])
 
+    def test_repository_registry_preserves_frozen_market_allocations(self) -> None:
+        registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
+        actual = tuple(
+            (row.name, row.id_start, row.id_end_exclusive)
+            for row in getattr(registry, "allocations", ())
+        )
+        self.assertEqual(
+            actual,
+            (
+                ("discovery_identity", 0, 32),
+                ("lifecycle_rollover", 32, 80),
+                ("subscription_book", 80, 144),
+                ("strategy_input_pricing_blocker", 144, 208),
+                ("dependency_health", 208, 240),
+                ("terminal_closed_window_skip", 240, 256),
+            ),
+        )
+
+    def test_repository_registry_assigns_permanent_canonical_ids(self) -> None:
+        registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
+        ids = tuple(getattr(row, "id", None) for row in registry.states)
+        self.assertEqual(ids, tuple(range(144, 173)))
+        self.assertEqual(len(registry.states), 29)
+
+    def test_unassigned_ids_remain_non_emittable(self) -> None:
+        registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
+        ids = {getattr(row, "id", None) for row in registry.states}
+        self.assertNotIn(143, ids)
+        self.assertNotIn(173, ids)
+        self.assertNotIn(255, ids)
+
     def test_unknown_registry_key_is_rejected(self) -> None:
-        text = (VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH).read_text(encoding="utf-8")
+        text = self.registry_text()
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "registry.toml"
             path.write_text("unknown = true\n" + text, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "exactly schema_version"):
                 VERIFIER.load_registry(path)
 
-    def test_gap_in_owned_state_ranges_is_rejected(self) -> None:
-        text = (VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH).read_text(encoding="utf-8")
-        text = text.replace("id_start = 128", "id_start = 129", 1)
-        with tempfile.TemporaryDirectory() as directory:
-            path = pathlib.Path(directory) / "registry.toml"
-            path.write_text(text, encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "contiguous and non-overlapping"):
-                VERIFIER.load_registry(path)
+    def test_state_outside_named_allocation_is_rejected(self) -> None:
+        text = self.registry_text().replace("id = 144", "id = 143", 1)
+        with self.assertRaisesRegex(ValueError, "outside allocation"):
+            self.load_text(text)
+
+    def test_duplicate_canonical_id_is_rejected(self) -> None:
+        text = self.registry_text().replace("id = 145", "id = 144", 1)
+        with self.assertRaisesRegex(ValueError, "state ids must be unique"):
+            self.load_text(text)
+
+    def test_duplicate_allocation_name_is_rejected(self) -> None:
+        text = self.registry_text().replace(
+            'name = "lifecycle_rollover"', 'name = "discovery_identity"', 1
+        )
+        with self.assertRaisesRegex(ValueError, "allocation names must be unique"):
+            self.load_text(text)
 
 
 if __name__ == "__main__":

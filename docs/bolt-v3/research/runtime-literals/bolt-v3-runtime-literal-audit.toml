@@ -21104,11 +21104,3 @@ literal = '''10'''
 context = '''capacity: 10,'''
 classification = "generated_risk_closure_workspace_capacity"
 reason = "Generated closed-form quotient arena_bytes / slot_bytes; no owner-slot or capacity default exists in TOML or Rust."
-
-[[allowed]]
-path = "src/bolt_v3_risk_closure_workspace.rs"
-kind = "string"
-literal = '''"bolt_v3_risk_closure_workspace_generated.rs"'''
-context = '''include!("bolt_v3_risk_closure_workspace_generated.rs");'''
-classification = "risk_closure_workspace_codegen_include"
-reason = "Compile-time include path for the drift-checked Rust projection generated from config/risk-closure-workspaces.toml; it names generated source and is not a runtime capacity."

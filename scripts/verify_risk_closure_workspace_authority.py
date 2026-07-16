@@ -22,6 +22,7 @@ INTEGER_LITERAL = re.compile(rf"(?<![A-Za-z0-9_]){RUST_INTEGER}(?![A-Za-z0-9_])"
 SIZE_EXPRESSION = re.compile(rf"(?:{RUST_INTEGER}|[\s()+\-*/%<>&|^~])+")
 SYMBOLIC_AUTHORITY = re.compile(r"\b(?:const|static)\s+([A-Z][A-Z0-9_]*)\b")
 INTEGER_SUFFIX = re.compile(r"(?:usize|isize|u(?:8|16|32|64|128)|i(?:8|16|32|64|128))$")
+IGNORED_TOML_PATH_PARTS = frozenset({".git", ".worktrees", "target"})
 
 
 def _integer_value(literal: str) -> int:
@@ -120,39 +121,54 @@ def _production_rust_sources(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted(sources)
 
 
+def _repository_toml_sources(root: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(
+        path
+        for path in root.rglob("*.toml")
+        if not IGNORED_TOML_PATH_PARTS.intersection(path.relative_to(root).parts)
+    )
+
+
+def _positive_integer(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 def authority_errors(root: pathlib.Path) -> list[str]:
     errors: list[str] = []
     authorities: list[pathlib.Path] = []
+    authoritative_arena_bytes: int | None = None
     authoritative_slot_bytes: int | None = None
-    for path in sorted((root / "config").rglob("*.toml")):
+    for path in _repository_toml_sources(root):
         try:
             document = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
             errors.append(f"cannot inspect {path.relative_to(root)}: {error}")
             continue
         workspace = document.get("risk_closure_workspaces")
-        if isinstance(workspace, dict) and "slot_bytes" in workspace:
+        if isinstance(workspace, dict) and ({"arena_bytes", "slot_bytes"} & workspace.keys()):
             relative = path.relative_to(root)
             authorities.append(relative)
             if relative == SOURCE:
-                candidate = workspace["slot_bytes"]
-                if (
-                    isinstance(candidate, int)
-                    and not isinstance(candidate, bool)
-                    and candidate > 0
-                ):
-                    authoritative_slot_bytes = candidate
-                else:
+                authoritative_arena_bytes = _positive_integer(workspace.get("arena_bytes"))
+                authoritative_slot_bytes = _positive_integer(workspace.get("slot_bytes"))
+                if authoritative_arena_bytes is None:
+                    errors.append(
+                        f"{SOURCE} risk_closure_workspaces.arena_bytes must be a positive integer"
+                    )
+                if authoritative_slot_bytes is None:
                     errors.append(
                         f"{SOURCE} risk_closure_workspaces.slot_bytes must be a positive integer"
                     )
     if authorities != [SOURCE]:
         errors.append(
-            "risk_closure_workspaces.slot_bytes must have exactly one TOML authority at "
+            "risk_closure_workspaces geometry must have exactly one TOML authority at "
             f"{SOURCE}; found {authorities}"
         )
-    if authoritative_slot_bytes is None:
+    if authoritative_arena_bytes is None or authoritative_slot_bytes is None:
         return errors
+    authoritative_sizes = {authoritative_arena_bytes, authoritative_slot_bytes}
 
     try:
         owner_text = (root / OWNER).read_text(encoding="utf-8")
@@ -181,19 +197,19 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         ):
             errors.append(f"private workspace configuration referenced outside {OWNER}: {relative}")
         if any(
-            _integer_value(match.group()) == authoritative_slot_bytes
+            _integer_value(match.group()) in authoritative_sizes
             for match in INTEGER_LITERAL.finditer(text)
         ):
             errors.append(f"runtime workspace-size literal found outside generated Rust: {relative}")
         if any(
-            _expression_value(match.group()) == authoritative_slot_bytes
+            _expression_value(match.group()) in authoritative_sizes
             for match in SIZE_EXPRESSION.finditer(text)
         ):
             errors.append(f"runtime workspace-size expression found outside generated Rust: {relative}")
         symbolic_names = (match.group(1) for match in SYMBOLIC_AUTHORITY.finditer(text))
         if any(
             "CLOSURE" in name
-            and ("WORKSPACE" in name or "SLOT" in name)
+            and ("WORKSPACE" in name or "SLOT" in name or "ARENA" in name)
             and ("BYTES" in name or "SIZE" in name)
             for name in symbolic_names
         ):
@@ -225,7 +241,7 @@ def main() -> int:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print("OK: risk-closure workspace slot size has one TOML authority.")
+    print("OK: risk-closure workspace geometry has one TOML authority.")
     return 0
 
 

@@ -3440,26 +3440,6 @@ def assert_mergify_actor_binding_demotes_every_full_action() -> None:
             raise AssertionError(f"{action}: non-actor spoof must demote to gate-iteration: {result}")
 
 
-def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
-    jobs = {
-        "ci-policy": "success",
-        "detector": "success",
-        "deny": "success",
-        "clippy": "success",
-        "check-aarch64": "success",
-        "source-fence": "success",
-        "nextest-fingerprint": "success",
-        "test-archive": "success",
-        "nextest-fingerprint-reuse": "skipped",
-        "test": "success",
-        "build": "success",
-        "ci-provenance-emit": "success",
-        "same-sha-main-evidence": "skipped",
-    }
-    jobs.update(overrides)
-    return jobs
-
-
 def assert_ready_pr_uses_automatic_full_signal_without_dispatch_full() -> None:
     # Standing CI policy: draft PRs and manual workflow_dispatch are the cheap
     # iteration loop. A ready PR gets the automatic full pull_request signal;
@@ -4647,6 +4627,26 @@ def pull_request_record(module, config_path: pathlib.Path, *, base_sha: str = "1
     )
     return record
 
+
+
+def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
+    jobs = {
+        "ci-policy": "success",
+        "detector": "success",
+        "deny": "success",
+        "clippy": "success",
+        "check-aarch64": "success",
+        "source-fence": "success",
+        "nextest-fingerprint": "success",
+        "test-archive": "success",
+        "nextest-fingerprint-reuse": "skipped",
+        "test": "success",
+        "build": "success",
+        "ci-provenance-emit": "success",
+        "same-sha-main-evidence": "skipped",
+    }
+    jobs.update(overrides)
+    return jobs
 
 
 def assert_ci_gate_verdict_requires_real_docs_or_iteration_proof() -> None:

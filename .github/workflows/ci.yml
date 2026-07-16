@@ -12,12 +12,8 @@ on:
     branches: [main]
     # edited catches base-ref changes (including retargets to main). Without it
     # a PR created against another branch and later retargeted to main would not
-    # trigger CI. GitHub's edited event also fires on title/body edits; the
-    # policy resolver sends ready no-code edits through verified carry-forward while keeping
-    # base-ref edits on the full, cancelling proof path.
-    # If main advances after the last full proof, verified carry-forward must
-    # reject the prior head-SHA gate unless its provenance records the current
-    # PR base SHA.
+    # trigger CI. GitHub's edited event also fires on title/body edits; ready
+    # metadata-only edits stay on iteration names, while base-ref edits run full proof.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
   push:
     # No paths-ignore on push: tag pushes and main pushes always run CI.

@@ -83,6 +83,7 @@ pub mod source_proof_migration_preflight;
 pub mod source_proof_shortlist;
 pub mod source_selection_readiness;
 pub mod source_universe_batch_execution;
+pub mod source_universe_batch_launch;
 pub mod source_universe_conversion_queue;
 pub mod source_universe_conversion_run_plan;
 pub mod source_universe_conversion_work_order;

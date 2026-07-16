@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use backtesting_vertical_slice::path_resolution::{
@@ -17,12 +14,12 @@ use backtesting_vertical_slice::source_universe_batch_execution::{
     execute_source_universe_batch_process_isolated, execute_source_universe_operator_worker,
     write_source_universe_batch_execution_report,
 };
+use backtesting_vertical_slice::source_universe_batch_launch::{
+    SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION, SourceUniverseBatchLaunchArtifactSpec,
+    SourceUniverseBatchLaunchSpec, SourceUniverseBatchTransportSpec,
+};
 use backtesting_vertical_slice::source_universe_object_transport::StagedS3SourceUniverseObjectFetcher;
 use clap::Parser;
-use serde::Deserialize;
-
-const SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION: &str =
-    "source-universe-batch-launch-spec.v2";
 
 /// Process exit code when the batch completed but at least one record failed
 /// (`continue_on_error` produced a `CompletedWithFailures`/`Failed` report)
@@ -36,85 +33,6 @@ const EXIT_PARTIAL_FAILURE: i32 = 2;
 struct Cli {
     #[arg(long)]
     spec: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceUniverseBatchLaunchArtifactSpec {
-    path: PathBuf,
-    bytes: u64,
-    sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceUniverseBatchLaunchSpec {
-    schema_version: String,
-    batch_id: String,
-    execution_pack: SourceUniverseBatchLaunchArtifactSpec,
-    output_dir: PathBuf,
-    start_sequence: Option<u64>,
-    record_limit: Option<u64>,
-    continue_on_error: bool,
-    fetch_timeout_seconds: u64,
-    worker_termination_grace_seconds: u64,
-    max_concurrent_records: u64,
-    transport: SourceUniverseBatchTransportSpec,
-    object_cache_dir: Option<PathBuf>,
-    allow_partial: bool,
-    bootstrap_limits: SourceUniverseBatchBootstrapLimits,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum SourceUniverseBatchTransportSpec {
-    StagedS3,
-    Https { http_user_agent: String },
-}
-
-impl SourceUniverseBatchLaunchSpec {
-    fn from_toml_file(path: &Path) -> Result<Self> {
-        let bytes =
-            fs::read(path).with_context(|| format!("read batch launch spec {}", path.display()))?;
-        let spec: Self = toml::from_slice(&bytes)
-            .with_context(|| format!("parse batch launch spec {}", path.display()))?;
-        ensure!(
-            spec.schema_version == SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION,
-            "batch launch spec schema_version mismatch: expected {}, got {}",
-            SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION,
-            spec.schema_version
-        );
-        ensure!(
-            spec.fetch_timeout_seconds > 0,
-            "batch launch spec fetch_timeout_seconds must be positive"
-        );
-        ensure!(
-            spec.worker_termination_grace_seconds > 0,
-            "batch launch spec worker_termination_grace_seconds must be positive"
-        );
-        spec.transport.validate()?;
-        spec.bootstrap_limits.validate()?;
-        Ok(spec)
-    }
-}
-
-impl SourceUniverseBatchTransportSpec {
-    fn validate(&self) -> Result<()> {
-        match self {
-            Self::StagedS3 => Ok(()),
-            Self::Https { http_user_agent } => validate_http_user_agent(http_user_agent),
-        }
-    }
-}
-
-fn validate_http_user_agent(value: &str) -> Result<()> {
-    ensure!(
-        !value.trim().is_empty(),
-        "batch launch spec http_user_agent must not be empty"
-    );
-    reqwest::header::HeaderValue::from_bytes(value.as_bytes())
-        .context("batch launch spec http_user_agent must be a valid HTTP HeaderValue")?;
-    Ok(())
 }
 
 #[derive(Debug, Parser)]

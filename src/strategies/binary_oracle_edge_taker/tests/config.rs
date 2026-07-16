@@ -110,6 +110,34 @@ fn parse_config_accepts_market_fok_quote_quantity_entry_order() {
 }
 
 #[test]
+fn parse_config_rejects_every_malformed_configured_target_identity() {
+    let malformed_values = [
+        None,
+        Some(Value::Integer(42)),
+        Some(Value::String(String::new())),
+        Some(Value::String("   ".to_string())),
+        Some(Value::String(" target-id".to_string())),
+        Some(Value::String("target-id ".to_string())),
+    ];
+
+    for malformed in malformed_values {
+        let mut raw = valid_raw_config();
+        let table = raw.as_table_mut().expect("valid config must be a table");
+        match malformed {
+            Some(value) => {
+                table.insert(stringify!(configured_target_id).to_string(), value);
+            }
+            None => {
+                table.remove(stringify!(configured_target_id));
+            }
+        }
+
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("malformed configured_target_id must fail during strategy construction");
+    }
+}
+
+#[test]
 fn strategy_core_uses_configured_nt_order_tag_and_oms_type() {
     let strategy = test_strategy();
 

@@ -689,7 +689,7 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     committed_capture_body = rust_registered_test_function_body(
         chainlink,
         committed_capture_test,
-        attribute_pattern=re.compile(r"test"),
+        expected_attribute="test",
         is_async=False,
     )
     if committed_capture_body is None:
@@ -714,7 +714,7 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     loopback_body = rust_registered_test_function_body(
         health,
         loopback_test,
-        attribute_pattern=re.compile(r"tokio::test(?:\([^)]*\))?"),
+        expected_attribute="tokio::test",
         is_async=True,
     )
     if loopback_body is None:
@@ -1195,104 +1195,87 @@ def rust_crate_inner_attributes(text: str) -> list[str]:
     return attributes
 
 
-def rust_outer_attribute_cluster(masked: str, end: int) -> list[str] | None:
-    cluster = re.search(
-        r"(?P<attributes>(?:#\s*\[[^\[\]]+\]\s*)+)$",
-        masked[:end],
-    )
-    if cluster is None:
-        return None
-    return [
-        re.sub(r"\s+", "", attribute)
-        for attribute in re.findall(
-            r"#\s*\[\s*([^\[\]]+?)\s*\]",
-            cluster.group("attributes"),
-        )
-    ]
-
-
 def rust_registered_test_function_body(
     text: str,
     function_name: str,
     *,
-    attribute_pattern: re.Pattern[str],
+    expected_attribute: str,
     is_async: bool,
 ) -> str | None:
     masked = _mask_rust_non_code(text)
-    if rust_crate_inner_attributes(text):
+    tokenized = rust_tokens_and_delimiter_pairs(masked)
+    if tokenized is None:
+        return None
+    tokens, pairs = tokenized
+    if not rust_inner_attributes_are_inert(tokens, pairs):
         return None
 
-    module_header = re.compile(r"(?m)^[ \t]*mod\s+tests\s*\{")
-    module_matches = [
-        match
-        for match in module_header.finditer(masked)
-        if rust_open_delimiters_at(masked, match.start()) == ()
+    module_indexes = [
+        index
+        for index, token in enumerate(tokens[:-1])
+        if token.value == "mod" and tokens[index + 1].value == "tests"
     ]
-    if len(module_matches) != 1:
+    if len(module_indexes) != 1:
         return None
-    module_match = module_matches[0]
-    if rust_outer_attribute_cluster(masked, module_match.start()) != ["cfg(test)"]:
+    module_index = module_indexes[0]
+    if rust_open_delimiters_at(masked, tokens[module_index].start) != ():
         return None
-
-    module_opening = masked.find("{", module_match.start(), module_match.end())
-    module_end = None
-    depth = 0
-    for index in range(module_opening, len(masked)):
-        char = masked[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                module_end = index
-                break
-    if module_end is None:
-        return None
-
-    module_body = masked[module_opening + 1 : module_end]
-    if any(
-        rust_open_delimiters_at(module_body, match.start()) == ()
-        for match in re.finditer(r"#\s*!\s*\[", module_body)
+    module_attributes = rust_outer_attributes_before(tokens, pairs, module_index)
+    if not rust_attributes_equal(
+        tokens, module_attributes, (("cfg", "(", "test", ")"),)
     ):
         return None
-
-    async_prefix = r"async\s+" if is_async else ""
-    function_header = re.compile(
-        rf"(?m)^[ \t]*{async_prefix}fn\s+{re.escape(function_name)}\s*\(\s*\)\s*\{{"
-    )
-    all_function_matches = list(function_header.finditer(module_body))
-    direct_function_matches = [
-        match
-        for match in all_function_matches
-        if rust_open_delimiters_at(module_body, match.start()) == ()
-    ]
-    if len(all_function_matches) != 1 or len(direct_function_matches) != 1:
-        return None
-    function_match = direct_function_matches[0]
-    attributes = rust_outer_attribute_cluster(module_body, function_match.start())
+    module_opening = module_index + 2
     if (
-        attributes is None
-        or len(attributes) != 1
-        or attribute_pattern.fullmatch(attributes[0]) is None
+        module_opening >= len(tokens)
+        or tokens[module_opening].value != "{"
+        or module_opening not in pairs
+    ):
+        return None
+    module_closing = pairs[module_opening]
+
+    function_indexes = [
+        index
+        for index, token in enumerate(tokens[:-1])
+        if token.value == "fn" and tokens[index + 1].value == function_name
+    ]
+    if len(function_indexes) != 1:
+        return None
+    function_index = function_indexes[0]
+    if not module_opening < function_index < module_closing:
+        return None
+    if rust_open_delimiters_at(masked, tokens[function_index].start) != ("{",):
+        return None
+    item_index = function_index - 1 if is_async else function_index
+    if is_async:
+        if item_index < 0 or tokens[item_index].value != "async":
+            return None
+    elif function_index > 0 and tokens[function_index - 1].value == "async":
+        return None
+    function_attributes = rust_outer_attributes_before(tokens, pairs, item_index)
+    if not rust_test_attribute_is_expected(
+        function_attributes, tokens, pairs, expected_attribute
     ):
         return None
 
-    function_opening = module_body.find(
-        "{", function_match.start(), function_match.end()
-    )
-    depth = 0
-    for index in range(function_opening, len(module_body)):
-        char = module_body[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                body = module_body[function_opening + 1 : index]
-                if re.search(r"#\s*!\s*\[", body) is not None:
-                    return None
-                return body
-    return None
+    arguments_opening = function_index + 2
+    if (
+        arguments_opening >= len(tokens)
+        or tokens[arguments_opening].value != "("
+        or pairs.get(arguments_opening) != arguments_opening + 1
+    ):
+        return None
+    function_opening = arguments_opening + 2
+    if (
+        function_opening >= len(tokens)
+        or tokens[function_opening].value != "{"
+        or function_opening not in pairs
+    ):
+        return None
+    function_closing = pairs[function_opening]
+    return masked[
+        tokens[function_opening].end : tokens[function_closing].start
+    ]
 
 
 def rust_ordinary_test_function_body(
@@ -1474,6 +1457,102 @@ def rust_tokens_and_delimiter_pairs(
     if stack:
         return None
     return tokens, pairs
+
+
+def rust_inner_attributes_are_inert(
+    tokens: list[RustToken], pairs: dict[int, int]
+) -> bool:
+    for index, token in enumerate(tokens):
+        if token.value != "#" or index + 1 >= len(tokens):
+            continue
+        if tokens[index + 1].value != "!":
+            continue
+        opening = index + 2
+        if opening >= len(tokens) or tokens[opening].value != "[":
+            return False
+        closing = pairs.get(opening)
+        if closing is None:
+            return False
+        attribute_name = tokens[opening + 1].value if opening + 1 < closing else None
+        arguments = opening + 2
+        if (
+            attribute_name not in INERT_BUILTIN_LINT_ATTRIBUTES
+            or arguments >= closing
+            or tokens[arguments].value != "("
+            or pairs.get(arguments) != closing - 1
+            or arguments + 1 >= closing - 1
+        ):
+            return False
+    return True
+
+
+def rust_outer_attributes_before(
+    tokens: list[RustToken], pairs: dict[int, int], item_index: int
+) -> tuple[tuple[int, int], ...] | None:
+    attributes: list[tuple[int, int]] = []
+    cursor = item_index - 1
+    while cursor >= 0 and tokens[cursor].value == "]":
+        opening = pairs.get(cursor)
+        if (
+            opening is not None
+            and opening >= 2
+            and tokens[opening - 2].value == "#"
+            and tokens[opening - 1].value == "!"
+        ):
+            break
+        marker = opening - 1 if opening is not None else -1
+        if (
+            opening is None
+            or marker < 0
+            or tokens[opening].value != "["
+            or tokens[marker].value != "#"
+        ):
+            return None
+        attributes.append((opening, cursor))
+        cursor = marker - 1
+    if not attributes:
+        return None
+    attributes.reverse()
+    return tuple(attributes)
+
+
+def rust_attributes_equal(
+    tokens: list[RustToken],
+    attributes: tuple[tuple[int, int], ...] | None,
+    expected: tuple[tuple[str, ...], ...],
+) -> bool:
+    if attributes is None or len(attributes) != len(expected):
+        return False
+    actual = tuple(
+        tuple(token.value for token in tokens[opening + 1 : closing])
+        for opening, closing in attributes
+    )
+    return actual == expected
+
+
+def rust_test_attribute_is_expected(
+    attributes: tuple[tuple[int, int], ...] | None,
+    tokens: list[RustToken],
+    pairs: dict[int, int],
+    expected_attribute: str,
+) -> bool:
+    if attributes is None or len(attributes) != 1:
+        return False
+    opening, closing = attributes[0]
+    values = tuple(token.value for token in tokens[opening + 1 : closing])
+    if expected_attribute == "test":
+        return values == ("test",)
+    if expected_attribute != "tokio::test":
+        return False
+    if values == ("tokio", "::", "test"):
+        return True
+    arguments = opening + 4
+    return (
+        values[:3] == ("tokio", "::", "test")
+        and arguments < closing
+        and tokens[arguments].value == "("
+        and pairs.get(arguments) == closing - 1
+    )
 
 
 def binance_crate_root_attribute_is_inert(

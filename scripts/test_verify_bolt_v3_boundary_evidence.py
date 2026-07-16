@@ -2556,6 +2556,161 @@ def test_load_bearing_chainlink_tests_reject_disabled_test_modules() -> None:
         assert_finding(scan_temp(mutate), finding)
 
 
+def test_load_bearing_chainlink_tests_reject_nested_attribute_token_bypass() -> None:
+    cases = (
+        (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "    #[test]\n    fn committed_real_capture_frame_decodes_through_production_handler() {}",
+            "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+        ),
+        (
+            "src/bolt_v3_reference_price_health.rs",
+            "    #[tokio::test(flavor = \"current_thread\")]\n    async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {",
+            "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+        ),
+    )
+    for relative_path, header, finding in cases:
+        def mutate(
+            root: Path,
+            relative_path: str = relative_path,
+            header: str = header,
+        ) -> None:
+            path = root / relative_path
+            text = path.read_text(encoding="utf-8")
+            path.write_text(
+                text.replace(
+                    header,
+                    "    #[cfg(any())]\n"
+                    "    #[doc = concat![\"hidden\"]]\n"
+                    f"{header}",
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), finding)
+
+
+def test_load_bearing_chainlink_tests_reject_nested_module_attribute_token_bypass() -> None:
+    cases = (
+        (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+        ),
+        (
+            "src/bolt_v3_reference_price_health.rs",
+            "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+        ),
+    )
+    for relative_path, finding in cases:
+        def mutate(root: Path, relative_path: str = relative_path) -> None:
+            path = root / relative_path
+            text = path.read_text(encoding="utf-8")
+            path.write_text(
+                text.replace(
+                    "#[cfg(test)]\nmod tests {",
+                    "#[cfg(any())]\n"
+                    "#[doc = concat![\"hidden\"]]\n"
+                    "#[cfg(test)]\n"
+                    "mod tests {",
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), finding)
+
+
+def test_load_bearing_chainlink_tests_reject_malformed_nonbrace_delimiters() -> None:
+    cases = (
+        (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "fn committed_real_capture_frame_decodes_through_production_handler() {}",
+            "fn committed_real_capture_frame_decodes_through_production_handler() { let _ = ( ; }",
+            "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+        ),
+        (
+            "src/bolt_v3_reference_price_health.rs",
+            "        prepare_reference_current_price_health_run_with_resolved();",
+            "        let _ = [;\n        prepare_reference_current_price_health_run_with_resolved();",
+            "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+        ),
+    )
+    for relative_path, original, replacement, finding in cases:
+        def mutate(
+            root: Path,
+            relative_path: str = relative_path,
+            original: str = original,
+            replacement: str = replacement,
+        ) -> None:
+            path = root / relative_path
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace(original, replacement), encoding="utf-8")
+
+        assert_finding(scan_temp(mutate), finding)
+
+
+def test_load_bearing_chainlink_tests_reject_global_competing_definitions() -> None:
+    cases = (
+        (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "committed_real_capture_frame_decodes_through_production_handler",
+            "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+        ),
+        (
+            "src/bolt_v3_reference_price_health.rs",
+            "chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+            "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+        ),
+    )
+    for relative_path, function_name, finding in cases:
+        for competitor in (
+            f"\n#[allow(dead_code)]\npub fn {function_name}() {{}}\n",
+            "\n#[cfg(any())]\npub mod tests {}\n",
+        ):
+            def mutate(
+                root: Path,
+                relative_path: str = relative_path,
+                competitor: str = competitor,
+            ) -> None:
+                path = root / relative_path
+                with path.open("a", encoding="utf-8") as file:
+                    file.write(competitor)
+
+            assert_finding(scan_temp(mutate), finding)
+
+
+def test_load_bearing_chainlink_tests_allow_inert_inner_lint_attributes() -> None:
+    def mutate(root: Path) -> None:
+        for relative_path in (
+            "src/bolt_v3_providers/chainlink_reference.rs",
+            "src/bolt_v3_reference_price_health.rs",
+        ):
+            path = root / relative_path
+            text = path.read_text(encoding="utf-8")
+            text = "#![allow(dead_code)]\n" + text
+            text = text.replace(
+                "mod tests {",
+                "mod tests {\n    #![warn(dead_code)]",
+                1,
+            )
+            if "committed_real_capture_frame_decodes" in text:
+                text = text.replace(
+                    "fn committed_real_capture_frame_decodes_through_production_handler() {}",
+                    "fn committed_real_capture_frame_decodes_through_production_handler() {\n"
+                    "        #![deny(unused_variables)]\n"
+                    "    }",
+                )
+            else:
+                text = text.replace(
+                    "async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {",
+                    "async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {\n"
+                    "        #![forbid(unused_variables)]",
+                )
+            path.write_text(text, encoding="utf-8")
+
+    findings = scan_temp(mutate)
+    assert not findings, findings
+
+
 def test_load_bearing_chainlink_tests_reject_macro_token_definitions() -> None:
     cases = (
         (

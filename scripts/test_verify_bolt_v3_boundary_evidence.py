@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
-import json
 import os
 import re
 import subprocess
@@ -335,6 +334,7 @@ fn handler(message: WireMessage) {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
     fn committed_real_capture_frame_decodes_through_production_handler() {}
     fn binary_report_frame_for_active_subscription_emits_custom_reference_update() {}
     fn invalid_utf8_binary_report_frame_emits_no_custom_data() {}
@@ -350,6 +350,7 @@ mod tests {
         """
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "current_thread")]
     async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {
         prepare_reference_current_price_health_run_with_resolved();
         run_prepared_reference_current_price_health().await;
@@ -2406,7 +2407,7 @@ def test_missing_committed_real_capture_decode_test_fails() -> None:
         text = path.read_text(encoding="utf-8")
         path.write_text(
             text.replace(
-                "    fn committed_real_capture_frame_decodes_through_production_handler() {}\n",
+                "    #[test]\n    fn committed_real_capture_frame_decodes_through_production_handler() {}\n",
                 "",
             ),
             encoding="utf-8",
@@ -2414,7 +2415,79 @@ def test_missing_committed_real_capture_decode_test_fails() -> None:
 
     assert_finding(
         scan_temp(mutate),
-        "missing test committed_real_capture_frame_decodes_through_production_handler",
+        "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+    )
+
+
+def test_unregistered_committed_real_capture_decode_test_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/chainlink_reference.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "    #[test]\n    fn committed_real_capture_frame_decodes_through_production_handler() {}\n",
+                "    fn committed_real_capture_frame_decodes_through_production_handler() {}\n",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+    )
+
+
+def test_comment_only_committed_real_capture_decode_test_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/chainlink_reference.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "    #[test]\n    fn committed_real_capture_frame_decodes_through_production_handler() {}\n",
+                "    // #[test]\n    // fn committed_real_capture_frame_decodes_through_production_handler() {}\n",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "expected exactly one registered #[test] fn committed_real_capture_frame_decodes_through_production_handler",
+    )
+
+
+def test_unregistered_chainlink_binary_loopback_test_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_reference_price_health.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "    #[tokio::test(flavor = \"current_thread\")]\n    async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {",
+                "    async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
+    )
+
+
+def test_comment_only_chainlink_binary_loopback_test_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_reference_price_health.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "    #[tokio::test(flavor = \"current_thread\")]\n    async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {\n        prepare_reference_current_price_health_run_with_resolved();\n        run_prepared_reference_current_price_health().await;\n    }",
+                "    // #[tokio::test]\n    // async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus() {}",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "expected exactly one registered #[tokio::test] async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus",
     )
 
 

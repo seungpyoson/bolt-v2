@@ -685,8 +685,18 @@ def scan_wire_boundary(root: Path, findings: list[str], source_paths: list[Path]
 
 def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     chainlink = read(root, "src/bolt_v3_providers/chainlink_reference.rs")
+    masked_chainlink = _mask_rust_non_code(chainlink)
+    committed_capture_test = "committed_real_capture_frame_decodes_through_production_handler"
+    committed_capture_registrations = re.findall(
+        rf"(?m)^[ \t]*#\s*\[\s*test\s*\]\s*\n[ \t]*fn\s+{re.escape(committed_capture_test)}\s*\(",
+        masked_chainlink,
+    )
+    if len(committed_capture_registrations) != 1:
+        findings.append(
+            "src/bolt_v3_providers/chainlink_reference.rs: expected exactly one "
+            f"registered #[test] fn {committed_capture_test}"
+        )
     required_names = (
-        "committed_real_capture_frame_decodes_through_production_handler",
         "binary_report_frame_for_active_subscription_emits_custom_reference_update",
         "invalid_utf8_binary_report_frame_emits_no_custom_data",
         "binary_report_frame_through_text_only_handler_emits_no_custom_data",
@@ -699,14 +709,23 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     if "WireMessage::Text(bytes) | WireMessage::Binary(bytes)" not in production:
         findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must accept Text and Binary frames")
     health = read(root, "src/bolt_v3_reference_price_health.rs")
-    if "chainlink_binary_loopback_observes_reference_update_through_health_msgbus" not in health:
-        findings.append("src/bolt_v3_reference_price_health.rs: missing Chainlink loopback health/msgbus test")
+    masked_health = _mask_rust_non_code(health)
+    loopback_test = "chainlink_binary_loopback_observes_reference_update_through_health_msgbus"
+    loopback_registrations = re.findall(
+        rf"(?m)^[ \t]*#\s*\[\s*tokio\s*::\s*test(?:\s*\([^]\n]*\))?\s*\]\s*\n[ \t]*async\s+fn\s+{re.escape(loopback_test)}\s*\(",
+        masked_health,
+    )
+    if len(loopback_registrations) != 1:
+        findings.append(
+            "src/bolt_v3_reference_price_health.rs: expected exactly one registered "
+            f"#[tokio::test] async fn {loopback_test}"
+        )
     forbidden_shortcuts = (
         "ReferenceCurrentPriceHealthObservedUpdate {",
         "ReferencePriceUpdate::try_new",
     )
     loopback_match = re.search(
-        r"async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus\(\).*?\n    \}",
+        rf"async fn {re.escape(loopback_test)}\(\).*?\n    \}}",
         health,
         re.DOTALL,
     )

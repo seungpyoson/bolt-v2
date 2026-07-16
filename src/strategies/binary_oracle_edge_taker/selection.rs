@@ -247,6 +247,11 @@ pub(super) fn select_configured_market_from_instruments(
         instruments,
         now_ms,
     )?;
+    let evidence_identity = bolt_v3_market_families::selected_market_evidence_identity_from_target(
+        target,
+        &market,
+        instruments,
+    )?;
     Some(CandidateMarket {
         market_id: market.market_id,
         instrument_id: market.instrument_id.to_string(),
@@ -256,7 +261,7 @@ pub(super) fn select_configured_market_from_instruments(
         down: CandidateOutcome {
             instrument_id: market.down_instrument_id.to_string(),
         },
-        evidence_identity: market.evidence_identity,
+        evidence_identity,
         source_identity: market.source_identity,
         selection_outcome: market.selection_outcome,
         price_to_beat: None,

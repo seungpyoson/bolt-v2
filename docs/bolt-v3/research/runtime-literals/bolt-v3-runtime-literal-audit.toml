@@ -21157,7 +21157,7 @@ reason = "Structural binary-market arity for provider-supplied selected-market e
 path = "src/bolt_v3_market_families/static_binary_event.rs"
 kind = "number"
 literal = "0"
-context = '''index: 0,'''
+context = '''0,'''
 classification = "market_identity_binary_index"
 reason = "Structural first outcome coordinate for a static binary event."
 
@@ -21165,7 +21165,7 @@ reason = "Structural first outcome coordinate for a static binary event."
 path = "src/bolt_v3_market_families/static_binary_event.rs"
 kind = "number"
 literal = "1"
-context = '''index: 1,'''
+context = '''1,'''
 classification = "market_identity_binary_index"
 reason = "Structural second outcome coordinate for a static binary event."
 
@@ -21181,7 +21181,7 @@ reason = "Pinned Gamma provider metadata key whose runtime boolean value is prov
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = "0"
-context = '''index: 0,'''
+context = '''let up = evidence_outcome_metadata(instruments, selected.up_instrument_id, OutcomeSide::Up, 0)?;'''
 classification = "market_identity_binary_index"
 reason = "Structural first outcome coordinate for an up/down binary market."
 
@@ -21189,7 +21189,7 @@ reason = "Structural first outcome coordinate for an up/down binary market."
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = "1"
-context = '''index: 1,'''
+context = '''1,'''
 classification = "market_identity_binary_index"
 reason = "Structural second outcome coordinate for an up/down binary market."
 

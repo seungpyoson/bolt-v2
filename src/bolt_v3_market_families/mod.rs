@@ -96,6 +96,11 @@ pub struct MarketFamilyValidationBinding {
         u64,
     )
         -> Result<SelectedMarketRequirement, InstrumentFilterError>,
+    pub selected_market_evidence_identity: fn(
+        MarketSelectionTarget<'_>,
+        &SelectedBinaryOptionMarket,
+        &[InstrumentAny],
+    ) -> Option<SelectedMarketEvidenceIdentity>,
     /// Family-owned fair-value model. The binary up/down pricing math
     /// is instrument-type-specific, so it lives at the family seam
     /// rather than inlined in a strategy. Returns the model's fair
@@ -150,7 +155,6 @@ pub struct SelectedBinaryOptionMarket {
     pub instrument_id: InstrumentId,
     pub up_instrument_id: InstrumentId,
     pub down_instrument_id: InstrumentId,
-    pub evidence_identity: SelectedMarketEvidenceIdentity,
     pub selection_outcome: MarketSelectionOutcome,
     pub start_timestamp_milliseconds: u64,
     pub expiration_timestamp_milliseconds: u64,
@@ -337,6 +341,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         validate_maker_market_target: updown::validate_maker_market_target,
         market_selection_candidate_windows: updown::market_selection_candidate_windows,
         selected_market_requirement: updown::selected_market_requirement,
+        selected_market_evidence_identity: updown::selected_market_evidence_identity,
         fair_probability_up: updown::fair_probability_up,
         maker_quote_targets: updown::maker_quote_targets,
         maker_settlement_payout: updown::maker_settlement_payout,
@@ -354,6 +359,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         validate_maker_market_target: unsupported_maker_market_target,
         market_selection_candidate_windows: outcome_group::market_selection_candidate_windows,
         selected_market_requirement: outcome_group::selected_market_requirement,
+        selected_market_evidence_identity: unsupported_selected_market_evidence_identity,
         fair_probability_up: outcome_group::fair_probability_up,
         maker_quote_targets: unsupported_maker_quote_targets,
         maker_settlement_payout: unsupported_maker_settlement_payout,
@@ -371,6 +377,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         validate_maker_market_target: static_binary_event::validate_maker_market_target,
         market_selection_candidate_windows: static_binary_event::market_selection_candidate_windows,
         selected_market_requirement: static_binary_event::selected_market_requirement,
+        selected_market_evidence_identity: static_binary_event::selected_market_evidence_identity,
         fair_probability_up: static_binary_event::fair_probability_up,
         maker_quote_targets: static_binary_event::maker_quote_targets,
         maker_settlement_payout: static_binary_event::maker_settlement_payout,
@@ -389,6 +396,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         market_selection_candidate_windows:
             hyperliquid_instrument::market_selection_candidate_windows,
         selected_market_requirement: hyperliquid_instrument::selected_market_requirement,
+        selected_market_evidence_identity: unsupported_selected_market_evidence_identity,
         fair_probability_up: hyperliquid_instrument::fair_probability_up,
         maker_quote_targets: unsupported_maker_quote_targets,
         maker_settlement_payout: unsupported_maker_settlement_payout,
@@ -412,6 +420,14 @@ pub fn static_binary_event_reference_current_price_fair_probability_source() -> 
 }
 
 fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
+    None
+}
+
+fn unsupported_selected_market_evidence_identity(
+    _target: MarketSelectionTarget<'_>,
+    _selected: &SelectedBinaryOptionMarket,
+    _instruments: &[InstrumentAny],
+) -> Option<SelectedMarketEvidenceIdentity> {
     None
 }
 
@@ -592,6 +608,33 @@ pub fn select_binary_option_market_from_target_with_bindings(
         return None;
     };
     (binding.select_binary_option_market)(target, instruments, now_milliseconds)
+}
+
+pub fn selected_market_evidence_identity_from_target(
+    target: MarketSelectionTarget<'_>,
+    selected: &SelectedBinaryOptionMarket,
+    instruments: &[InstrumentAny],
+) -> Option<SelectedMarketEvidenceIdentity> {
+    selected_market_evidence_identity_from_target_with_bindings(
+        target,
+        selected,
+        instruments,
+        validation_bindings(),
+    )
+}
+
+pub fn selected_market_evidence_identity_from_target_with_bindings(
+    target: MarketSelectionTarget<'_>,
+    selected: &SelectedBinaryOptionMarket,
+    instruments: &[InstrumentAny],
+    bindings: &[MarketFamilyValidationBinding],
+) -> Option<SelectedMarketEvidenceIdentity> {
+    bindings
+        .iter()
+        .find(|binding| binding.key == target.family_key)
+        .and_then(|binding| {
+            (binding.selected_market_evidence_identity)(target, selected, instruments)
+        })
 }
 
 /// Validate a maker's operator-declared market target through the owning
@@ -1172,6 +1215,7 @@ mod tests {
             validate_maker_market_target: fake_validate_maker_market_target,
             market_selection_candidate_windows: fake_market_selection_candidate_windows,
             selected_market_requirement: fake_selected_market_requirement,
+            selected_market_evidence_identity: fake_selected_market_evidence_identity,
             fair_probability_up: fake_fair_probability_up,
             maker_quote_targets: fake_maker_quote_targets,
             maker_settlement_payout: fake_maker_settlement_payout,
@@ -1221,24 +1265,6 @@ mod tests {
             instrument_id: InstrumentId::from("fixture-market.FIXTURE"),
             up_instrument_id: InstrumentId::from("fixture-up.FIXTURE"),
             down_instrument_id: InstrumentId::from("fixture-down.FIXTURE"),
-            evidence_identity: SelectedMarketEvidenceIdentity {
-                gamma_market_id: "fixture-market".to_string(),
-                condition_id: "fixture-condition".to_string(),
-                question_id: "fixture-question".to_string(),
-                negative_risk: false,
-                outcomes: [
-                    SelectedMarketEvidenceOutcome {
-                        index: 0,
-                        normalized_outcome: "up".to_string(),
-                        clob_token_id: "fixture-up".to_string(),
-                    },
-                    SelectedMarketEvidenceOutcome {
-                        index: 1,
-                        normalized_outcome: "down".to_string(),
-                        clob_token_id: "fixture-down".to_string(),
-                    },
-                ],
-            },
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 61_000,
@@ -1249,6 +1275,31 @@ mod tests {
                 question_id: "fixture-question".to_string(),
             },
         }
+    }
+
+    fn fake_selected_market_evidence_identity(
+        _target: MarketSelectionTarget<'_>,
+        _selected: &SelectedBinaryOptionMarket,
+        _instruments: &[InstrumentAny],
+    ) -> Option<SelectedMarketEvidenceIdentity> {
+        Some(SelectedMarketEvidenceIdentity {
+            gamma_market_id: "fixture-market".to_string(),
+            condition_id: "fixture-condition".to_string(),
+            question_id: "fixture-question".to_string(),
+            negative_risk: false,
+            outcomes: [
+                SelectedMarketEvidenceOutcome {
+                    index: 0,
+                    normalized_outcome: "up".to_string(),
+                    clob_token_id: "fixture-up".to_string(),
+                },
+                SelectedMarketEvidenceOutcome {
+                    index: 1,
+                    normalized_outcome: "down".to_string(),
+                    clob_token_id: "fixture-down".to_string(),
+                },
+            ],
+        })
     }
 
     fn fake_selected_market_requirement(

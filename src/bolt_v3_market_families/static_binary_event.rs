@@ -142,12 +142,17 @@ struct StaticOutcomeInstrument {
     condition_id: String,
     market_slug: String,
     question_id: String,
-    negative_risk: bool,
-    normalized_outcome: String,
-    clob_token_id: String,
     instrument_id: InstrumentId,
     activation_milliseconds: u64,
     expiration_milliseconds: u64,
+}
+
+struct StaticEvidenceOutcomeMetadata {
+    market_id: String,
+    condition_id: String,
+    question_id: String,
+    negative_risk: bool,
+    outcome: SelectedMarketEvidenceOutcome,
 }
 
 #[derive(Debug)]
@@ -267,12 +272,96 @@ pub fn select_binary_option_market(
         instrument_id: market.instrument_id,
         up_instrument_id: market.up_instrument_id,
         down_instrument_id: market.down_instrument_id,
-        evidence_identity: market.evidence_identity,
         selection_outcome: market.selection_outcome,
         start_timestamp_milliseconds: market.start_timestamp_milliseconds,
         expiration_timestamp_milliseconds: market.expiration_timestamp_milliseconds,
         seconds_to_end: market.seconds_to_end,
         source_identity: market.source_identity,
+    })
+}
+
+pub fn selected_market_evidence_identity(
+    target: MarketSelectionTarget<'_>,
+    selected: &SelectedBinaryOptionMarket,
+    instruments: &[InstrumentAny],
+) -> Option<SelectedMarketEvidenceIdentity> {
+    let yes = static_evidence_outcome_metadata(
+        instruments,
+        selected.up_instrument_id,
+        target.static_yes_outcome?,
+        0,
+    )?;
+    let no = static_evidence_outcome_metadata(
+        instruments,
+        selected.down_instrument_id,
+        target.static_no_outcome?,
+        1,
+    )?;
+    if yes.market_id != selected.market_id
+        || no.market_id != selected.market_id
+        || yes.condition_id != selected.source_identity.condition_id
+        || no.condition_id != selected.source_identity.condition_id
+        || yes.question_id != selected.source_identity.question_id
+        || no.question_id != selected.source_identity.question_id
+        || yes.negative_risk != no.negative_risk
+        || yes.outcome.normalized_outcome == no.outcome.normalized_outcome
+        || yes.outcome.clob_token_id == no.outcome.clob_token_id
+    {
+        return None;
+    }
+    Some(SelectedMarketEvidenceIdentity {
+        gamma_market_id: yes.market_id,
+        condition_id: yes.condition_id,
+        question_id: yes.question_id,
+        negative_risk: yes.negative_risk,
+        outcomes: [yes.outcome, no.outcome],
+    })
+}
+
+fn static_evidence_outcome_metadata(
+    instruments: &[InstrumentAny],
+    instrument_id: InstrumentId,
+    expected_outcome: &str,
+    index: u8,
+) -> Option<StaticEvidenceOutcomeMetadata> {
+    let InstrumentAny::BinaryOption(binary) = instruments
+        .iter()
+        .find(|instrument| instrument.id() == instrument_id)?
+    else {
+        return None;
+    };
+    let info = binary.info.as_ref()?;
+    let outcome_label = binary.outcome.as_ref()?.as_str();
+    if outcome_label != expected_outcome {
+        return None;
+    }
+    let market_id = info.get_str(METADATA_MARKET_ID_FIELD)?;
+    let condition_id = info.get_str(METADATA_CONDITION_ID_FIELD)?;
+    let question_id = info.get_str(METADATA_QUESTION_ID_FIELD)?;
+    let normalized_outcome = outcome_label.trim().to_ascii_lowercase();
+    let clob_token_id = binary.raw_symbol.as_str();
+    if [
+        market_id,
+        condition_id,
+        question_id,
+        normalized_outcome.as_str(),
+        clob_token_id,
+    ]
+    .into_iter()
+    .any(|value| !stable_identity_field_is_canonical(value))
+    {
+        return None;
+    }
+    Some(StaticEvidenceOutcomeMetadata {
+        market_id: market_id.to_string(),
+        condition_id: condition_id.to_string(),
+        question_id: question_id.to_string(),
+        negative_risk: info.get_bool("neg_risk")?,
+        outcome: SelectedMarketEvidenceOutcome {
+            index,
+            normalized_outcome,
+            clob_token_id: clob_token_id.to_string(),
+        },
     })
 }
 
@@ -540,7 +629,6 @@ struct SelectedStaticBinaryEventMarket {
     expiration_timestamp_milliseconds: u64,
     seconds_to_end: u64,
     source_identity: SelectedMarketSourceIdentity,
-    evidence_identity: SelectedMarketEvidenceIdentity,
 }
 
 fn select_static_market_from_instruments(
@@ -574,9 +662,6 @@ fn select_static_market_from_instruments(
         || yes.condition_id != no.condition_id
         || yes.market_slug != no.market_slug
         || yes.question_id != no.question_id
-        || yes.negative_risk != no.negative_risk
-        || yes.normalized_outcome == no.normalized_outcome
-        || yes.clob_token_id == no.clob_token_id
     {
         return None;
     }
@@ -587,24 +672,6 @@ fn select_static_market_from_instruments(
     }
     let start_timestamp_milliseconds = yes.activation_milliseconds.max(no.activation_milliseconds);
 
-    let evidence_identity = SelectedMarketEvidenceIdentity {
-        gamma_market_id: yes.market_id.clone(),
-        condition_id: yes.condition_id.clone(),
-        question_id: yes.question_id.clone(),
-        negative_risk: yes.negative_risk,
-        outcomes: [
-            SelectedMarketEvidenceOutcome {
-                index: 0,
-                normalized_outcome: yes.normalized_outcome.clone(),
-                clob_token_id: yes.clob_token_id.clone(),
-            },
-            SelectedMarketEvidenceOutcome {
-                index: 1,
-                normalized_outcome: no.normalized_outcome.clone(),
-                clob_token_id: no.clob_token_id.clone(),
-            },
-        ],
-    };
     Some(SelectedStaticBinaryEventMarket {
         market_id: yes.market_id,
         source_identity: SelectedMarketSourceIdentity {
@@ -612,7 +679,6 @@ fn select_static_market_from_instruments(
             market_slug: yes.market_slug,
             question_id: yes.question_id,
         },
-        evidence_identity,
         instrument_id: yes.instrument_id,
         up_instrument_id: yes.instrument_id,
         down_instrument_id: no.instrument_id,
@@ -654,18 +720,9 @@ fn static_outcome_instrument(
     let condition_id = info.get_str(METADATA_CONDITION_ID_FIELD)?;
     let market_slug = info.get_str(METADATA_MARKET_SLUG_FIELD)?;
     let question_id = info.get_str(METADATA_QUESTION_ID_FIELD)?;
-    let normalized_outcome = outcome_label.trim().to_ascii_lowercase();
-    let clob_token_id = binary.raw_symbol.as_str();
-    if [
-        market_id,
-        condition_id,
-        market_slug,
-        question_id,
-        normalized_outcome.as_str(),
-        clob_token_id,
-    ]
-    .into_iter()
-    .any(|value| !stable_identity_field_is_canonical(value))
+    if [market_id, condition_id, market_slug, question_id]
+        .into_iter()
+        .any(|value| !stable_identity_field_is_canonical(value))
     {
         return None;
     }
@@ -675,9 +732,6 @@ fn static_outcome_instrument(
         condition_id: condition_id.to_string(),
         market_slug: market_slug.to_string(),
         question_id: question_id.to_string(),
-        negative_risk: info.get_bool("neg_risk")?,
-        normalized_outcome,
-        clob_token_id: clob_token_id.to_string(),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
@@ -824,6 +878,54 @@ mod tests {
         assert_eq!(selected.start_timestamp_milliseconds, 1_000);
         assert_eq!(selected.expiration_timestamp_milliseconds, 30_000);
         assert_eq!(selected.seconds_to_end, 20);
+        assert!(
+            selected_market_evidence_identity(static_selection_target(), &selected, &instruments,)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn core_static_selection_does_not_require_evidence_only_metadata() {
+        let mut instruments = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+        for instrument in &mut instruments {
+            let InstrumentAny::BinaryOption(binary) = instrument else {
+                panic!("fixture must be a binary option");
+            };
+            binary
+                .info
+                .as_mut()
+                .expect("fixture info")
+                .remove("neg_risk");
+        }
+
+        let selected = select_binary_option_market(static_selection_target(), &instruments, 10_000)
+            .expect("core selection must not depend on evidence-only metadata");
+        assert!(
+            selected_market_evidence_identity(static_selection_target(), &selected, &instruments,)
+                .is_none(),
+            "evidence enrichment must fail closed without neg_risk"
+        );
     }
 
     #[test]
@@ -1286,24 +1388,6 @@ mod tests {
             instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             up_instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             down_instrument_id: InstrumentId::from("SAMPLE-EVENT-NO.POLYMARKET"),
-            evidence_identity: SelectedMarketEvidenceIdentity {
-                gamma_market_id: TEST_MARKET_ID.to_string(),
-                condition_id: TEST_CONDITION_ID.to_string(),
-                question_id: TEST_QUESTION_ID.to_string(),
-                negative_risk: false,
-                outcomes: [
-                    SelectedMarketEvidenceOutcome {
-                        index: 0,
-                        normalized_outcome: "yes".to_string(),
-                        clob_token_id: "SAMPLE-EVENT-YES".to_string(),
-                    },
-                    SelectedMarketEvidenceOutcome {
-                        index: 1,
-                        normalized_outcome: "no".to_string(),
-                        clob_token_id: "SAMPLE-EVENT-NO".to_string(),
-                    },
-                ],
-            },
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 30_000,

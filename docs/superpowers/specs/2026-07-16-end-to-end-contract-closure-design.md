@@ -36,7 +36,7 @@ Split the current shared outcome-instrument extraction into two projections:
 - `LifecycleInstrumentContext`: only fields required by position recovery, interval-end tracking, outcome direction, and settlement lifecycle.
 - `EvidenceMarketIdentity`: the complete stable evidence identity, including provider metadata such as negative-risk mode and ordered outcome/token identity.
 
-Selection constructs both projections when evidence is supported. Recovery constructs only the lifecycle projection and therefore cannot fail because evidence-only metadata is absent. There is no fallback or default identity path: evidence selection fails closed when its required stable metadata is unavailable, while recovery preserves its independent historical contract.
+Core market discovery constructs only fields required to resolve the market and instruments. Maker resolution consumes this core result directly. The taker explicitly enriches the core result into `EvidenceMarketIdentity` and fails closed when required stable evidence metadata is unavailable. Recovery constructs only the lifecycle projection and therefore cannot fail because evidence-only metadata is absent. There is no fallback or default identity path.
 
 ### Selected-market requirements
 
@@ -53,8 +53,8 @@ The generator emits capacity and word count using Clippy-clean `div_ceil`, plus 
 1. Raw configuration enters through TOML.
 2. `ConfiguredTargetId::try_from` rejects malformed values before family dispatch or strategy construction.
 3. Validated configuration reaches family planning and runtime construction.
-4. Family selection reads lifecycle fields independently from evidence metadata.
-5. Evidence-capable selection constructs a complete `EvidenceMarketIdentity`; missing evidence metadata rejects only that evidence/selection contract, never unrelated recovery projection.
+4. Family discovery resolves the core market without reading evidence-only metadata.
+5. Taker selection explicitly enriches the core market into a complete `EvidenceMarketIdentity`; missing evidence metadata rejects only that evidence contract, never maker resolution or recovery.
 6. `EvidenceEpisodeId` independently validates all stable components as defense in depth.
 7. Producer canonical-state mapping resolves to a frozen registry entry before payload/claim ordering proceeds.
 

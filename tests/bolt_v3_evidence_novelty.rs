@@ -96,8 +96,7 @@ fn one_hundred_thousand_a_b_a_oscillations_reach_a_fixed_ceiling() -> Result<()>
 #[test]
 fn duplicate_rejection_skips_payload_construction_and_append() -> Result<()> {
     let episode = episode("market-a");
-    let mut guard =
-        EvidenceNoveltyGuard::<TestState>::for_owner(EvidenceStateOwner::EntrySkip)?;
+    let mut guard = EvidenceNoveltyGuard::<TestState>::for_owner(EvidenceStateOwner::EntrySkip)?;
     let payloads = Cell::new(0_u64);
     let appends = Cell::new(0_u64);
 

@@ -101,6 +101,8 @@ REQUIRED_CHECK_INTEGRATION_ID = 15368
 REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
 TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
+GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES = 360
+SECONDS_PER_MINUTE = 60
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 NEXTEST_FINGERPRINT_RE = re.compile(
@@ -162,6 +164,14 @@ class RequiredCheckConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class BacktesterTestArchiveTimeoutConfig:
+    ordinary_max_job_minutes: int
+    ra001a_durable_tracer_max_job_minutes: int
+    ra001a_durable_tracer_max_wall_seconds: int
+    ra001a_durable_tracer_termination_grace_seconds: int
+
+
+@dataclasses.dataclass(frozen=True)
 class ProvenanceConfig:
     schema_version: int
     artifact_name_template: str
@@ -190,6 +200,7 @@ class ProvenanceConfig:
     max_lookback_pages: int
     max_lookback_age_seconds: int
     inherited_emitter_probe_timeout_seconds: int
+    backtester_test_archive_timeout: BacktesterTestArchiveTimeoutConfig | None
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -209,6 +220,7 @@ class CiPolicyResult:
     full_ci_deferred: bool
     gate_name: str
     backtester_gate_name: str
+    backtester_test_archive_timeout_minutes: int
     expected_event_class: str
     reason: str
 
@@ -290,6 +302,55 @@ def optional_positive_int(parent: dict[str, object], key: str, prefix: str) -> i
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
     return value
+
+
+def load_backtester_test_archive_timeout_config(
+    data: dict[str, object],
+    *,
+    required: bool,
+) -> BacktesterTestArchiveTimeoutConfig | None:
+    backtester = data.get("backtester")
+    if backtester is None and not required:
+        return None
+    if not isinstance(backtester, dict):
+        raise ProvenanceError("missing [backtester]" if backtester is None else "backtester must be a table")
+
+    timeout_prefix = "backtester.test_archive_timeout"
+    timeout = require_table(backtester, "test_archive_timeout", "backtester")
+    tracer_prefix = "backtester.ra001a_durable_tracer"
+    tracer = require_table(backtester, "ra001a_durable_tracer", "backtester")
+    ordinary_minutes = require_positive_int(timeout, "ordinary_max_job_minutes", timeout_prefix)
+    tracer_minutes = require_positive_int(
+        timeout,
+        "ra001a_durable_tracer_max_job_minutes",
+        timeout_prefix,
+    )
+    max_wall_seconds = require_positive_int(tracer, "max_wall_seconds", tracer_prefix)
+    termination_grace_seconds = require_positive_int(
+        tracer,
+        "termination_grace_seconds",
+        tracer_prefix,
+    )
+    for key, value in (
+        ("ordinary_max_job_minutes", ordinary_minutes),
+        ("ra001a_durable_tracer_max_job_minutes", tracer_minutes),
+    ):
+        if value > GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES:
+            raise ProvenanceError(
+                f"{timeout_prefix}.{key} must not exceed GitHub Actions' "
+                f"{GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES}-minute maximum"
+            )
+    if tracer_minutes * SECONDS_PER_MINUTE <= max_wall_seconds + termination_grace_seconds:
+        raise ProvenanceError(
+            f"{timeout_prefix}.ra001a_durable_tracer_max_job_minutes must exceed "
+            "the tracer wall limit plus termination grace"
+        )
+    return BacktesterTestArchiveTimeoutConfig(
+        ordinary_max_job_minutes=ordinary_minutes,
+        ra001a_durable_tracer_max_job_minutes=tracer_minutes,
+        ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
+        ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
+    )
 
 
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
@@ -632,6 +693,11 @@ def load_config(
     if ci_provenance.get("schema_version") != 1:
         raise ProvenanceError("ci_provenance.schema_version must be 1")
 
+    backtester_test_archive_timeout = load_backtester_test_archive_timeout_config(
+        data,
+        required=require_workflows,
+    )
+
     duplicated_fingerprint_keys = {
         "fingerprint_artifact_prefix",
         "fingerprint_workflow",
@@ -884,6 +950,7 @@ def load_config(
         ),
         max_lookback_age_seconds=max_lookback_age_seconds,
         inherited_emitter_probe_timeout_seconds=inherited_emitter_probe_timeout_seconds,
+        backtester_test_archive_timeout=backtester_test_archive_timeout,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,
@@ -1371,6 +1438,9 @@ def evaluate_ci_policy(
     pull_request_author_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
+    timeout = config.backtester_test_archive_timeout
+    if timeout is None:
+        raise ProvenanceError("backtester test-archive timeout config is unavailable")
     mergify_temp_pr = mergify_temp_pr_matches(
         event_name=event_name,
         event_action=event_action,
@@ -1459,6 +1529,7 @@ def evaluate_ci_policy(
         full_ci_deferred=path == "defer",
         gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
+        backtester_test_archive_timeout_minutes=timeout.ordinary_max_job_minutes,
         expected_event_class=expected_event_class_for(reason, path),
         reason=reason,
     )
@@ -3553,6 +3624,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"full_ci_deferred={str(result.full_ci_deferred).lower()}")
             print(f"gate_name={result.gate_name}")
             print(f"backtester_gate_name={result.backtester_gate_name}")
+            print(
+                "backtester_test_archive_timeout_minutes="
+                f"{result.backtester_test_archive_timeout_minutes}"
+            )
             print(f"expected_event_class={result.expected_event_class}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")

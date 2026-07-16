@@ -124,7 +124,7 @@ use crate::{
         SideSelectionInputs, UncertaintyBandInputs, choose_entry_side, outcome_side_evidence_label,
         time_uncertainty_probability, uncertainty_band_probability,
     },
-    bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
+    bolt_v3_timestamp_domain::{LocalReceiveMs, NtStrategyClockMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
     strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},

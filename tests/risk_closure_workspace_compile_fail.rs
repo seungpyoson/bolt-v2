@@ -1,6 +1,9 @@
-use std::{fs, process::Command};
+use std::{
+    fs,
+    process::{Command, Output},
+};
 
-fn assert_compile_fails(case_name: &str, body: &str, expected_diagnostic: &str) {
+fn compile_snippet(case_name: &str, body: &str) -> Output {
     let temporary = tempfile::tempdir().unwrap();
     let source_path = temporary.path().join(format!("{case_name}.rs"));
     let output_path = temporary.path().join(case_name);
@@ -13,27 +16,68 @@ fn assert_compile_fails(case_name: &str, body: &str, expected_diagnostic: &str) 
     );
     fs::write(&source_path, source).unwrap();
 
-    let output = Command::new("rustc")
+    Command::new("rustc")
         .args([
             "--edition=2024",
             "--crate-name",
             case_name,
             "--emit=metadata",
+            "--error-format=json",
             "-o",
         ])
         .arg(&output_path)
         .arg(&source_path)
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn diagnostic_codes(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|diagnostic| {
+            diagnostic
+                .get("code")?
+                .get("code")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn assert_compile_fails(case_name: &str, body: &str, expected_error_code: &str) {
+    let output = compile_snippet(case_name, body);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         !output.status.success(),
         "{case_name} unexpectedly compiled"
     );
+    let codes = diagnostic_codes(&stderr);
     assert!(
-        stderr.contains(expected_diagnostic),
-        "{case_name} failed for the wrong reason:\n{stderr}"
+        codes.iter().any(|code| code == expected_error_code),
+        "{case_name} failed with {codes:?}, expected {expected_error_code}:\n{stderr}"
+    );
+}
+
+fn assert_compiles(case_name: &str, body: &str) {
+    let output = compile_snippet(case_name, body);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{case_name} did not compile:\n{stderr}"
+    );
+}
+
+#[test]
+fn compile_fail_harness_positive_control() {
+    assert_compiles(
+        "compile_fail_harness_positive_control",
+        r#"
+fn accepts(identity: ClosureIdentity) {
+    let _ = identity.as_str();
+}
+"#,
     );
 }
 
@@ -46,7 +90,7 @@ fn duplicate(reservation: RiskClosureWorkspaceReservation) {
     let _duplicate = reservation.clone();
 }
 "#,
-        "no method named `clone`",
+        "E0599",
     );
 }
 
@@ -60,7 +104,7 @@ fn commit(reservation: RiskClosureWorkspaceReservation, identity: ClosureIdentit
     let _length = reservation.workspace_len();
 }
 "#,
-        "borrow of moved value: `reservation`",
+        "E0382",
     );
 }
 
@@ -69,14 +113,11 @@ fn reservation_private_state_cannot_be_replaced() {
     assert_compile_fails(
         "reservation_private_state_cannot_be_replaced",
         r#"
-fn forge(reservation: RiskClosureWorkspaceReservation) {
-    let _forged = RiskClosureWorkspaceReservation {
-        active: true,
-        ..reservation
-    };
+fn forge(mut reservation: RiskClosureWorkspaceReservation) {
+    reservation.active = false;
 }
 "#,
-        "field `active` of struct `workspace::RiskClosureWorkspaceReservation` is private",
+        "E0616",
     );
 }
 
@@ -89,7 +130,7 @@ fn duplicate(lease: RiskClosureWorkspaceLease) {
     let _duplicate = lease.clone();
 }
 "#,
-        "no method named `clone`",
+        "E0599",
     );
 }
 
@@ -103,7 +144,7 @@ fn release(lease: RiskClosureWorkspaceLease, permit: TerminalReleasePermit) {
     let _length = lease.workspace_len();
 }
 "#,
-        "borrow of moved value: `lease`",
+        "E0382",
     );
 }
 
@@ -112,14 +153,11 @@ fn recovery_lease_private_state_cannot_be_replaced() {
     assert_compile_fails(
         "recovery_lease_private_state_cannot_be_replaced",
         r#"
-fn forge(lease: RiskClosureWorkspaceLease) {
-    let _forged = RiskClosureWorkspaceLease {
-        active: true,
-        ..lease
-    };
+fn forge(mut lease: RiskClosureWorkspaceLease) {
+    lease.active = false;
 }
 "#,
-        "field `active` of struct `workspace::RiskClosureWorkspaceLease` is private",
+        "E0616",
     );
 }
 
@@ -132,7 +170,7 @@ fn duplicate(permit: TerminalReleasePermit) {
     let _duplicate = permit.clone();
 }
 "#,
-        "no method named `clone`",
+        "E0599",
     );
 }
 
@@ -146,7 +184,7 @@ fn release(lease: RiskClosureWorkspaceLease, permit: TerminalReleasePermit) {
     let _reuse = permit;
 }
 "#,
-        "use of moved value: `permit`",
+        "E0382",
     );
 }
 
@@ -159,6 +197,6 @@ let _permit = TerminalReleasePermit {
     closure_identity: ClosureIdentity::new("closure").unwrap(),
 };
 "#,
-        "field `closure_identity` of struct `workspace::TerminalReleasePermit` is private",
+        "E0451",
     );
 }

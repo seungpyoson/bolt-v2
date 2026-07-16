@@ -413,9 +413,7 @@ pub fn write_source_universe_execution_pack(
         );
         used_source_proof_ids.insert(record.source_proof_id.clone());
 
-        let run_dir = output_dir
-            .join("runs")
-            .join(run_directory_name(record));
+        let run_dir = output_dir.join("runs").join(run_directory_name(record));
         let run_spec_text = materialize_run_spec(
             &template,
             record,
@@ -866,7 +864,10 @@ fn validate_existing_run_directory_set(
     };
     for entry in output_entries {
         let entry = entry.with_context(|| {
-            format!("read execution-pack output entry in {}", output_dir.display())
+            format!(
+                "read execution-pack output entry in {}",
+                output_dir.display()
+            )
         })?;
         let file_type = entry.file_type().with_context(|| {
             format!(
@@ -903,9 +904,8 @@ fn validate_existing_run_directory_set(
         .collect::<BTreeSet<_>>();
 
     for entry in entries {
-        let entry = entry.with_context(|| {
-            format!("read execution-pack run entry in {}", runs_dir.display())
-        })?;
+        let entry = entry
+            .with_context(|| format!("read execution-pack run entry in {}", runs_dir.display()))?;
         let file_type = entry.file_type().with_context(|| {
             format!(
                 "read execution-pack run entry type {}",

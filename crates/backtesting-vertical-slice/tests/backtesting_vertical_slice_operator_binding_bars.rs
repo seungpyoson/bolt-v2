@@ -724,7 +724,9 @@ fn source_universe_durable_preflight_rejects_stale_nt_revision_without_output() 
         .expect_err("stale NT revision must fail before durable source bytes or output");
 
     assert!(
-        error.to_string().contains("NautilusTrader revision mismatch"),
+        error
+            .to_string()
+            .contains("NautilusTrader revision mismatch"),
         "{error:#}"
     );
     assert!(!output.exists());

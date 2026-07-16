@@ -20,11 +20,11 @@ use backtesting_vertical_slice::{
     backfill_source_proof_scope::write_backfill_source_proof_scope_report_from_spec_file,
     reference_fixture_index::repo_root_from_manifest_dir,
     research_analytics::{read_accepted_object_for_run_spec, read_run_spec_with_hash},
-    source_proof::SourceProofUsageScope,
     retired_backfill_evidence::{
         RetiredBackfillEvidenceInventory, is_retired_backfill_runtime_path,
     },
     source_catalog_mapping_readiness::write_source_catalog_mapping_readiness_report_from_spec_file,
+    source_proof::SourceProofUsageScope,
 };
 
 const REFERENCE_ROOT: &str = "specs/023-nt-research-analytics-platform/reference";
@@ -267,9 +267,7 @@ fn public_legacy_loader_rejects_retired_nested_input_before_filesystem_access() 
         "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02",
     );
     fs::create_dir_all(&active_spec_root).expect("create isolated retired-root shape");
-    let retired_report = Path::new(
-        "source-proof-scope/backfill-source-proof-scope-report.json",
-    );
+    let retired_report = Path::new("source-proof-scope/backfill-source-proof-scope-report.json");
     let spec_path = active_spec_root.join("active-accepted-tranche.toml");
     fs::write(
         &spec_path,

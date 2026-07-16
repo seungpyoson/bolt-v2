@@ -565,7 +565,9 @@ crypto_future = "MARGIN"
     assert_eq!(run_spec.manifest.venue.starting_balances, ["250000 BTC"]);
     assert_composed_operator_preflight(
         &run_spec,
-        run_spec_path.parent().expect("materialized run spec has parent"),
+        run_spec_path
+            .parent()
+            .expect("materialized run spec has parent"),
     );
     let catalog_dispatch = run_spec
         .required_catalog_dispatch()
@@ -758,10 +760,9 @@ fn assert_declared_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
     let profile_path = resolve_repo_relative(&profile_refs[0].path);
     let profile_bytes = fs::read(&profile_path).expect("read active pack profile");
     assert_eq!(sha256_bytes(&profile_bytes), profile_refs[0].sha256);
-    let profile: RunSpec = toml::from_str(
-        std::str::from_utf8(&profile_bytes).expect("active pack profile is UTF-8"),
-    )
-    .expect("active pack profile parses as the current RunSpec schema");
+    let profile: RunSpec =
+        toml::from_str(std::str::from_utf8(&profile_bytes).expect("active pack profile is UTF-8"))
+            .expect("active pack profile parses as the current RunSpec schema");
     assert_composed_operator_preflight(
         &profile,
         profile_path.parent().expect("active profile has parent"),
@@ -809,7 +810,9 @@ fn assert_declared_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
         );
         assert_composed_operator_preflight(
             &run_spec,
-            run_spec_path.parent().expect("declared run spec has parent"),
+            run_spec_path
+                .parent()
+                .expect("declared run spec has parent"),
         );
         let catalog_dispatch = run_spec
             .required_catalog_dispatch()

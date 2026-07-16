@@ -719,7 +719,11 @@ impl ResolvedArtifactRoot {
             bucket == artifact_bucket_name(&self.artifact_root)?,
             "artifact-bucket URI bucket {bucket:?} differs from the configured artifact bucket"
         );
-        ensure_path_token("artifact_bucket_uri", object_path, PathTokenMode::AllowEquals)?;
+        ensure_path_token(
+            "artifact_bucket_uri",
+            object_path,
+            PathTokenMode::AllowEquals,
+        )?;
         Ok(ObjectPath::from(object_path))
     }
 

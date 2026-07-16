@@ -12,15 +12,15 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::source_proof::{
+    AcceptanceScope, SourceBindingRegistry, SourceProofReport, SourceProofStatus,
+    SourceProofUsageScope,
+};
 use crate::{
     path_resolution::resolve_output_dir,
     retired_backfill_evidence::{
         active_backfill_runtime_output_path, read_active_backfill_runtime_input,
     },
-};
-use crate::source_proof::{
-    AcceptanceScope, SourceBindingRegistry, SourceProofReport, SourceProofStatus,
-    SourceProofUsageScope,
 };
 
 pub const BACKFILL_SOURCE_PROOF_SCOPE_SCHEMA_VERSION: &str =
@@ -290,13 +290,11 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
         }
     })?;
     let manifest_path = spec.manifest_path.display().to_string();
-    let manifest_bytes =
-        read_active_backfill_runtime_input(Some(base_dir), &spec.manifest_path).map_err(|error| {
-        BackfillSourceProofScopeError::ReadManifest {
+    let manifest_bytes = read_active_backfill_runtime_input(Some(base_dir), &spec.manifest_path)
+        .map_err(|error| BackfillSourceProofScopeError::ReadManifest {
             path: manifest_path.clone(),
             error: error.to_string(),
-        }
-    })?;
+        })?;
     let manifest_text = std::str::from_utf8(&manifest_bytes).map_err(|error| {
         BackfillSourceProofScopeError::ReadManifest {
             path: manifest_path.clone(),
@@ -324,14 +322,12 @@ pub fn write_backfill_source_proof_scope_report(
     output_dir: &Path,
     report: &BackfillSourceProofScopeReport,
 ) -> Result<BackfillSourceProofScopeArtifact, BackfillSourceProofScopeError> {
-    let path = active_backfill_runtime_output_path(
-        output_dir,
-        BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE,
-    )
-    .map_err(|error| BackfillSourceProofScopeError::CreateDir {
-        path: output_dir.display().to_string(),
-        error: error.to_string(),
-    })?;
+    let path =
+        active_backfill_runtime_output_path(output_dir, BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE)
+            .map_err(|error| BackfillSourceProofScopeError::CreateDir {
+                path: output_dir.display().to_string(),
+                error: error.to_string(),
+            })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillSourceProofScopeError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),

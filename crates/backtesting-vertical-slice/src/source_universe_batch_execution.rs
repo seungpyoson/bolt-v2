@@ -8,7 +8,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::ExitStatus,
     sync::{
@@ -57,7 +57,7 @@ use crate::operator_work_budget::{
 use crate::path_resolution::{
     resolve_contained_output_component, resolve_pack_control_path, validate_portable_path_component,
 };
-use crate::pinned_regular_file::PinnedRegularFileFingerprint;
+use crate::pinned_regular_file::{PinnedRegularFileFingerprint, read_exact_pinned_file};
 use crate::reference_artifact::ReferenceArtifactPin;
 use crate::retired_backfill_evidence::ensure_active_backfill_runtime_path;
 use crate::{
@@ -217,44 +217,6 @@ impl SourceUniverseBatchLaunchArtifacts {
             bootstrap_limits,
         })
     }
-}
-
-fn read_exact_pinned_file(
-    file: &mut fs::File,
-    path: &Path,
-    expected_bytes: u64,
-) -> Result<Vec<u8>> {
-    let byte_count = usize::try_from(expected_bytes).with_context(|| {
-        format!(
-            "declared byte length {expected_bytes} for {} does not fit usize",
-            path.display()
-        )
-    })?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(byte_count).with_context(|| {
-        format!(
-            "reserve declared {expected_bytes} bytes for pinned artifact {}",
-            path.display()
-        )
-    })?;
-    bytes.resize(byte_count, 0);
-    file.seek(SeekFrom::Start(0))
-        .with_context(|| format!("rewind pinned artifact {}", path.display()))?;
-    file.read_exact(&mut bytes).with_context(|| {
-        format!(
-            "read exactly {expected_bytes} bytes from {}",
-            path.display()
-        )
-    })?;
-    let mut trailing = [0_u8; 1];
-    ensure!(
-        file.read(&mut trailing)
-            .with_context(|| format!("check trailing bytes for {}", path.display()))?
-            == 0,
-        "pinned artifact {} exceeds declared length {expected_bytes}",
-        path.display()
-    );
-    Ok(bytes)
 }
 
 fn read_launch_artifact(

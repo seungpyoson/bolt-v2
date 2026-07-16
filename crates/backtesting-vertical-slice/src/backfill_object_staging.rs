@@ -238,12 +238,11 @@ where
             error: error.to_string(),
         }
     })?;
-    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
-        BackfillObjectStagingError::ReadSpec {
+    let spec_text =
+        std::str::from_utf8(&spec_bytes).map_err(|error| BackfillObjectStagingError::ReadSpec {
             path: spec_path_display.clone(),
             error: error.to_string(),
-        }
-    })?;
+        })?;
     let spec: BackfillObjectStagingSpec =
         toml::from_str(spec_text).map_err(|error| BackfillObjectStagingError::ParseSpecToml {
             path: spec_path_display,
@@ -272,14 +271,12 @@ where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
     let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
-    let manifest_path = active_backfill_runtime_output_path(
-        &output_dir,
-        BACKFILL_OBJECT_STAGING_MANIFEST_FILE,
-    )
-    .map_err(|error| BackfillObjectStagingError::CreateOutputDir {
-        path: output_dir.display().to_string(),
-        error: error.to_string(),
-    })?;
+    let manifest_path =
+        active_backfill_runtime_output_path(&output_dir, BACKFILL_OBJECT_STAGING_MANIFEST_FILE)
+            .map_err(|error| BackfillObjectStagingError::CreateOutputDir {
+                path: output_dir.display().to_string(),
+                error: error.to_string(),
+            })?;
     validate_spec(spec)?;
     let local_object_path =
         resolve_active_backfill_runtime_input(Some(base_dir), &spec.local_object_path).map_err(
@@ -348,16 +345,16 @@ where
             schema_columns: spec.schema_columns.clone(),
         }],
     };
-    write_manifest(&manifest_path, &manifest).map(|(manifest_path, manifest_hash, manifest_bytes)| {
-        BackfillObjectStagingArtifact {
+    write_manifest(&manifest_path, &manifest).map(
+        |(manifest_path, manifest_hash, manifest_bytes)| BackfillObjectStagingArtifact {
             manifest_path,
             manifest_hash,
             manifest_bytes,
             object_uri: spec.output_object_uri.clone(),
             object_sha256: spec.expected_sha256.clone(),
             object_bytes: actual_bytes,
-        }
-    })
+        },
+    )
 }
 
 fn validate_spec(spec: &BackfillObjectStagingSpec) -> Result<(), BackfillObjectStagingError> {

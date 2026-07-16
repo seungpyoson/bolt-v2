@@ -378,14 +378,11 @@ pub fn write_backfill_conversion_batch_plan(
     output_dir: &Path,
     plan: &BackfillConversionBatchPlan,
 ) -> Result<BackfillConversionBatchPlanArtifact, BackfillConversionBatchPlanError> {
-    let path = active_backfill_runtime_output_path(
-        output_dir,
-        BACKFILL_CONVERSION_BATCH_PLAN_FILE,
-    )
-    .map_err(|error| BackfillConversionBatchPlanError::CreateDir {
-        path: output_dir.display().to_string(),
-        error: error.to_string(),
-    })?;
+    let path = active_backfill_runtime_output_path(output_dir, BACKFILL_CONVERSION_BATCH_PLAN_FILE)
+        .map_err(|error| BackfillConversionBatchPlanError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        })?;
     fs::create_dir_all(output_dir).map_err(|error| {
         BackfillConversionBatchPlanError::CreateDir {
             path: output_dir.display().to_string(),
@@ -433,10 +430,12 @@ fn read_input(
     let execution_plan_path = spec_input.execution_plan_path.display().to_string();
     let execution_plan_bytes =
         read_active_backfill_runtime_input(Some(base_dir), &spec_input.execution_plan_path)
-            .map_err(|error| BackfillConversionBatchPlanError::ReadExecutionPlan {
-                path: execution_plan_path.clone(),
-                error: error.to_string(),
-            })?;
+            .map_err(
+                |error| BackfillConversionBatchPlanError::ReadExecutionPlan {
+                    path: execution_plan_path.clone(),
+                    error: error.to_string(),
+                },
+            )?;
     let execution_plan_hash = format!("{:x}", Sha256::digest(&execution_plan_bytes));
     let execution_plan: BackfillExecutionPlan = serde_json::from_slice(&execution_plan_bytes)
         .map_err(

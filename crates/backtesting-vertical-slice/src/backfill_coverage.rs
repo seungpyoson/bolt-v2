@@ -717,13 +717,14 @@ fn write_coverage_ledger_artifact_from_manifest_files_with_base(
                 canonical_s3_write,
             } = input;
             let path_display = path.display().to_string();
-            let bytes = read_active_backfill_runtime_input(Some(base_dir), &path).map_err(|error| {
-                BackfillCoverageManifestFileError::ReadManifest {
-                    manifest_uri: manifest_uri.clone(),
-                    path: path_display.clone(),
-                    error: error.to_string(),
-                }
-            })?;
+            let bytes =
+                read_active_backfill_runtime_input(Some(base_dir), &path).map_err(|error| {
+                    BackfillCoverageManifestFileError::ReadManifest {
+                        manifest_uri: manifest_uri.clone(),
+                        path: path_display.clone(),
+                        error: error.to_string(),
+                    }
+                })?;
             let mut summary: Value = serde_json::from_slice(&bytes).map_err(|error| {
                 BackfillCoverageManifestFileError::ParseManifestJson {
                     manifest_uri: manifest_uri.clone(),

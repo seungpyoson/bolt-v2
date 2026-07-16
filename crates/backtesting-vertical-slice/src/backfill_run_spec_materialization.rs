@@ -402,14 +402,11 @@ fn write_materialized_run_spec(
     output_dir: &Path,
     bytes: &[u8],
 ) -> Result<BackfillRunSpecMaterializationArtifact, BackfillRunSpecMaterializationError> {
-    let path = active_backfill_runtime_output_path(
-        output_dir,
-        BACKFILL_RUN_SPEC_MATERIALIZED_FILE,
-    )
-    .map_err(|error| BackfillRunSpecMaterializationError::CreateDir {
-        path: output_dir.display().to_string(),
-        error: error.to_string(),
-    })?;
+    let path = active_backfill_runtime_output_path(output_dir, BACKFILL_RUN_SPEC_MATERIALIZED_FILE)
+        .map_err(|error| BackfillRunSpecMaterializationError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        })?;
     fs::create_dir_all(output_dir).map_err(|error| {
         BackfillRunSpecMaterializationError::CreateDir {
             path: output_dir.display().to_string(),

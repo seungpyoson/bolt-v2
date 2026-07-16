@@ -62,15 +62,13 @@ fn artifact_index_commit_status_references_committed_proof_reports() {
         sha256_hex(ARTIFACT_INDEX_DIRECT_S3_PROOF_REPORT_BYTES)
     );
     assert_eq!(
-        status["producer_iam_scope"]["historical_generic_credential_failure"]
-            ["report_file_sha256"]
+        status["producer_iam_scope"]["historical_generic_credential_failure"]["report_file_sha256"]
             .as_str()
             .expect("historical producer IAM proof hash is a string"),
         sha256_hex(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT_BYTES)
     );
     assert_eq!(
-        status["producer_iam_scope"]["current_backtests_producer_proof"]
-            ["proof_file_sha256"]
+        status["producer_iam_scope"]["current_backtests_producer_proof"]["proof_file_sha256"]
             .as_str()
             .expect("backtests producer proof hash is a string"),
         sha256_hex(ARTIFACT_INDEX_BACKTESTS_COMPLETE_PROOF_BYTES)
@@ -94,8 +92,7 @@ fn artifact_index_commit_status_references_committed_proof_reports() {
         Some(90)
     );
     assert_eq!(
-        status["producer_iam_scope"]["all_current_producer_proof"]
-            ["combined_violation_count"]
+        status["producer_iam_scope"]["all_current_producer_proof"]["combined_violation_count"]
             .as_u64(),
         Some(0)
     );

@@ -4373,13 +4373,7 @@ fn run_from_local_run_spec_with_verified_registry(
 ) -> Result<RunArtifacts> {
     let spec = local_spec.get();
     registry.reassert_for(spec)?;
-    run_from_run_spec_inner(
-        local_spec,
-        object_bytes,
-        output_dir,
-        registry,
-        work_budget,
-    )
+    run_from_run_spec_inner(local_spec, object_bytes, output_dir, registry, work_budget)
 }
 
 /// Unit-test adapter for registry-identity tests. Production callers cannot
@@ -8023,12 +8017,7 @@ mod tests {
         let work_budget = OperatorWorkBudgetGuard::unbounded();
 
         assert_local_entry_rejected_before_output(
-            run_from_run_spec_guarded(
-                &spec,
-                &object_bytes,
-                &trade_output,
-                &work_budget,
-            ),
+            run_from_run_spec_guarded(&spec, &object_bytes, &trade_output, &work_budget),
             &trade_output,
             "run_from_run_spec_guarded",
         );

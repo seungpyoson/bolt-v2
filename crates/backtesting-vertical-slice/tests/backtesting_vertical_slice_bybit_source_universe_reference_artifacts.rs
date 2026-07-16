@@ -148,7 +148,10 @@ fn bybit_source_universe_plan_metadata_and_manifest_remain_exactly_aligned() {
         "backfill-source-universe-object-manifest.v1"
     );
     assert_eq!(manifest["universe_id"], universe["universe_id"]);
-    assert_eq!(manifest["object_count"], universe["summary"]["object_count"]);
+    assert_eq!(
+        manifest["object_count"],
+        universe["summary"]["object_count"]
+    );
     assert_eq!(
         manifest["accepted_bytes"],
         universe["summary"]["compressed_bytes"]
@@ -292,7 +295,10 @@ fn bybit_category_proofs_and_manifests_cover_every_staged_object() {
 
         for record in category_records {
             let uri = required_str(record, "s3_uri");
-            assert!(covered_uris.insert(uri.to_string()), "duplicate object {uri}");
+            assert!(
+                covered_uris.insert(uri.to_string()),
+                "duplicate object {uri}"
+            );
             covered_bytes += record["bytes"].as_u64().expect("object bytes");
         }
     }
@@ -326,9 +332,7 @@ fn required_str<'a>(value: &'a serde_json::Value, field: &str) -> &'a str {
         .unwrap_or_else(|| panic!("{field} must be a string"))
 }
 
-fn category_map<'a>(
-    value: &'a serde_json::Value,
-) -> BTreeMap<&'a str, &'a serde_json::Value> {
+fn category_map<'a>(value: &'a serde_json::Value) -> BTreeMap<&'a str, &'a serde_json::Value> {
     value
         .as_array()
         .expect("category array")

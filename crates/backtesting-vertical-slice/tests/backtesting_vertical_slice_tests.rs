@@ -22,10 +22,6 @@ mod backtesting_vertical_slice_backfill_coverage_cli;
 mod backtesting_vertical_slice_backfill_execution_plan;
 #[path = "backtesting_vertical_slice_backfill_execution_readiness.rs"]
 mod backtesting_vertical_slice_backfill_execution_readiness;
-#[path = "backtesting_vertical_slice_retired_backfill_evidence.rs"]
-mod backtesting_vertical_slice_retired_backfill_evidence;
-#[path = "backtesting_vertical_slice_bybit_source_universe_reference_artifacts.rs"]
-mod backtesting_vertical_slice_bybit_source_universe_reference_artifacts;
 #[path = "backtesting_vertical_slice_backfill_object_staging.rs"]
 mod backtesting_vertical_slice_backfill_object_staging;
 #[path = "backtesting_vertical_slice_backfill_preflight.rs"]
@@ -42,6 +38,8 @@ mod backtesting_vertical_slice_bar_format_families;
 mod backtesting_vertical_slice_bar_projection;
 #[path = "backtesting_vertical_slice_bar_source_adapter.rs"]
 mod backtesting_vertical_slice_bar_source_adapter;
+#[path = "backtesting_vertical_slice_bybit_source_universe_reference_artifacts.rs"]
+mod backtesting_vertical_slice_bybit_source_universe_reference_artifacts;
 #[path = "backtesting_vertical_slice_catalog_and_node.rs"]
 mod backtesting_vertical_slice_catalog_and_node;
 #[path = "backtesting_vertical_slice_conversion_boundary.rs"]
@@ -84,6 +82,8 @@ mod backtesting_vertical_slice_polymarket_nt_surface;
 mod backtesting_vertical_slice_reference_fixture_eviction;
 #[path = "backtesting_vertical_slice_research_analytics.rs"]
 mod backtesting_vertical_slice_research_analytics;
+#[path = "backtesting_vertical_slice_retired_backfill_evidence.rs"]
+mod backtesting_vertical_slice_retired_backfill_evidence;
 #[path = "backtesting_vertical_slice_s3_catalog_smoke.rs"]
 mod backtesting_vertical_slice_s3_catalog_smoke;
 #[path = "backtesting_vertical_slice_sample_venue_guard.rs"]

@@ -15,13 +15,13 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::sha256_hex;
+use crate::source_proof::SourceProofUsageScope;
 use crate::{
     path_resolution::resolve_output_dir,
     retired_backfill_evidence::{
         active_backfill_runtime_output_path, read_active_backfill_runtime_input,
     },
 };
-use crate::source_proof::SourceProofUsageScope;
 
 pub const SOURCE_CATALOG_MAPPING_READINESS_SCHEMA_VERSION: &str =
     "source-catalog-mapping-readiness-report.v2";
@@ -446,16 +446,14 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
     })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let evaluation_path = spec.catalog_mapping_evaluation_path.display().to_string();
-    let evaluation_bytes = read_active_backfill_runtime_input(
-        Some(base_dir),
-        &spec.catalog_mapping_evaluation_path,
-    )
-    .map_err(|error| {
-        SourceCatalogMappingReadinessError::ReadCatalogMappingEvaluation {
-            path: evaluation_path.clone(),
-            error: error.to_string(),
-        }
-    })?;
+    let evaluation_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.catalog_mapping_evaluation_path)
+            .map_err(
+            |error| SourceCatalogMappingReadinessError::ReadCatalogMappingEvaluation {
+                path: evaluation_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
     let evaluation: SourceCatalogMappingEvaluation = serde_json::from_slice(&evaluation_bytes)
         .map_err(
             |error| SourceCatalogMappingReadinessError::ParseCatalogMappingEvaluationJson {

@@ -633,7 +633,10 @@ pub(crate) fn active_backfill_runtime_output_path(
     let artifact_file_path = Path::new(artifact_file_name);
     ensure!(
         matches!(
-            artifact_file_path.components().collect::<Vec<_>>().as_slice(),
+            artifact_file_path
+                .components()
+                .collect::<Vec<_>>()
+                .as_slice(),
             [Component::Normal(_)]
         ),
         "backfill artifact file name must be one portable path component: {artifact_file_name:?}"

@@ -7,6 +7,7 @@
 
 use std::{
     fs::{self, File},
+    io::{Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -466,6 +467,46 @@ pub(crate) fn open_pinned_regular_file(path: &Path) -> Result<(File, PinnedRegul
         "pinned regular-file capabilities are unsupported on this platform for {}",
         path.display()
     )
+}
+
+/// Read exactly the pinned byte count from one already-opened regular-file
+/// capability, with one trailing-byte sentinel and one fallible allocation.
+pub(crate) fn read_exact_pinned_file(
+    file: &mut File,
+    path: &Path,
+    expected_bytes: u64,
+) -> Result<Vec<u8>> {
+    let byte_count = usize::try_from(expected_bytes).with_context(|| {
+        format!(
+            "declared byte length {expected_bytes} for {} does not fit usize",
+            path.display()
+        )
+    })?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(byte_count).with_context(|| {
+        format!(
+            "reserve declared {expected_bytes} bytes for pinned artifact {}",
+            path.display()
+        )
+    })?;
+    bytes.resize(byte_count, 0);
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("rewind pinned artifact {}", path.display()))?;
+    file.read_exact(&mut bytes).with_context(|| {
+        format!(
+            "read exactly {expected_bytes} bytes from {}",
+            path.display()
+        )
+    })?;
+    let mut trailing = [0_u8; 1];
+    ensure!(
+        file.read(&mut trailing)
+            .with_context(|| format!("check trailing bytes for {}", path.display()))?
+            == 0,
+        "pinned artifact {} exceeds declared length {expected_bytes}",
+        path.display()
+    );
+    Ok(bytes)
 }
 
 /// Structural helper retained for tests which independently acquire path and

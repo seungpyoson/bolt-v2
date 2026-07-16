@@ -521,7 +521,10 @@ mod tests {
             concat!("DurableCompletion", "Locator"),
             "runtime_evidence_guarded(",
         ] {
-            assert!(!source.contains(forbidden), "forbidden direct path {forbidden}");
+            assert!(
+                !source.contains(forbidden),
+                "forbidden direct path {forbidden}"
+            );
         }
     }
 
@@ -703,7 +706,10 @@ table_families = ["trades"]
         let err = run_cli_with_object_reader(&cli, &mut object_reader)
             .expect_err("durable RunSpec must reject from the local-only test core");
 
-        assert!(err.to_string().contains("source_universe_batch_execution"), "{err}");
+        assert!(
+            err.to_string().contains("source_universe_batch_execution"),
+            "{err}"
+        );
         assert!(
             !object_reader_called,
             "publish preflight must run before local object read"

@@ -734,22 +734,19 @@ pub fn write_backfill_execution_plan_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
-        BackfillExecutionPlanError::ReadSpec {
+    let spec_text =
+        std::str::from_utf8(&spec_bytes).map_err(|error| BackfillExecutionPlanError::ReadSpec {
             path: spec_path.display().to_string(),
             error: error.to_string(),
-        }
-    })?;
+        })?;
     let spec: BackfillExecutionPlanSpec =
         toml::from_str(spec_text).map_err(|error| BackfillExecutionPlanError::ParseSpecToml {
             path: spec_path.display().to_string(),
             error: error.to_string(),
         })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
-    let (tranche, accepted_tranche_manifest_hash) = read_accepted_tranche_manifest(
-        base_dir,
-        &spec.accepted_tranche_manifest_path,
-    )?;
+    let (tranche, accepted_tranche_manifest_hash) =
+        read_accepted_tranche_manifest(base_dir, &spec.accepted_tranche_manifest_path)?;
     let (run_spec, run_spec_hash) = read_run_spec(base_dir, &spec.run_spec_path)?;
     let run_binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
     let work_budget = BackfillExecutionWorkBudget {
@@ -824,12 +821,13 @@ fn read_accepted_tranche_manifest(
     base_dir: &Path,
     display_path: &Path,
 ) -> Result<(BackfillAcceptedTrancheManifest, String), BackfillExecutionPlanError> {
-    let bytes = read_active_backfill_runtime_input(Some(base_dir), display_path).map_err(|error| {
-        BackfillExecutionPlanError::ReadAcceptedTrancheManifest {
-            path: display_path.display().to_string(),
-            error: error.to_string(),
-        }
-    })?;
+    let bytes =
+        read_active_backfill_runtime_input(Some(base_dir), display_path).map_err(|error| {
+            BackfillExecutionPlanError::ReadAcceptedTrancheManifest {
+                path: display_path.display().to_string(),
+                error: error.to_string(),
+            }
+        })?;
     let hash = sha256_hex(&bytes);
     let manifest = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionPlanError::ParseAcceptedTrancheManifestJson {
@@ -844,12 +842,13 @@ fn read_run_spec(
     base_dir: &Path,
     display_path: &Path,
 ) -> Result<(RunSpec, String), BackfillExecutionPlanError> {
-    let bytes = read_active_backfill_runtime_input(Some(base_dir), display_path).map_err(|error| {
-        BackfillExecutionPlanError::ReadRunSpec {
-            path: display_path.display().to_string(),
-            error: error.to_string(),
-        }
-    })?;
+    let bytes =
+        read_active_backfill_runtime_input(Some(base_dir), display_path).map_err(|error| {
+            BackfillExecutionPlanError::ReadRunSpec {
+                path: display_path.display().to_string(),
+                error: error.to_string(),
+            }
+        })?;
     let hash = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes).map_err(|error| {
         BackfillExecutionPlanError::ParseRunSpecToml {

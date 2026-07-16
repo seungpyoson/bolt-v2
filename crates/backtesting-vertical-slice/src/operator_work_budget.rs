@@ -2065,12 +2065,13 @@ mod tests {
             );
         }
         assert!(!OPERATOR_SOURCE.contains("pub struct DurableRunDispatcher"));
-        assert!(!OPERATOR_SOURCE.contains(
-            "pub async fn run_from_run_spec_with_artifact_store_guarded"
-        ));
-        assert!(!OPERATOR_SOURCE.contains(
-            "pub async fn run_from_run_spec_with_verified_registry_guarded"
-        ));
+        assert!(
+            !OPERATOR_SOURCE.contains("pub async fn run_from_run_spec_with_artifact_store_guarded")
+        );
+        assert!(
+            !OPERATOR_SOURCE
+                .contains("pub async fn run_from_run_spec_with_verified_registry_guarded")
+        );
 
         let resolve_work_item = BATCH_SOURCE
             .split("fn resolve_work_item")
@@ -2134,12 +2135,16 @@ mod tests {
             "the exact HTTPS source transport must not follow redirects to a different URI"
         );
         let isolated_runner = BATCH_SOURCE
-            .split("impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunner")
+            .split(
+                "impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunner",
+            )
             .nth(1)
             .and_then(|source| source.split("struct PinnedWorkerDirectoryLease").next())
             .expect("process-isolated runner implementation source");
         assert_eq!(
-            isolated_runner.matches("self.worker_termination_grace").count(),
+            isolated_runner
+                .matches("self.worker_termination_grace")
+                .count(),
             2,
             "execute and deterministic discovery must share the one configured termination grace"
         );

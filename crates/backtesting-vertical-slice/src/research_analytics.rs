@@ -26,11 +26,12 @@ use crate::{
         RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec,
         validate_local_run_spec_authority,
     },
+    pinned_regular_file::{open_pinned_regular_file, read_exact_pinned_file},
     reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
+    result_contract::BacktestResultContract,
     retired_backfill_evidence::{
         read_active_backfill_runtime_input, resolve_active_backfill_runtime_input,
     },
-    result_contract::BacktestResultContract,
     source_proof::SourceProofFidelityClass,
 };
 
@@ -377,6 +378,207 @@ where
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BacktestSweepRunPreflight<'a> {
+    run_spec_file_name: &'a str,
+    output_dir_name: &'a str,
+    run_spec: &'a RunSpec,
+}
+
+#[derive(Debug, Clone)]
+struct BacktestSweepMaterializationTargets {
+    run_spec_path: PathBuf,
+    output_dir: PathBuf,
+}
+
+fn validate_backtest_sweep_runs(
+    run_spec_dir: &Path,
+    run_output_dir: &Path,
+    runs: &[BacktestSweepRunPreflight<'_>],
+) -> Result<Vec<BacktestSweepMaterializationTargets>> {
+    ensure!(!runs.is_empty(), "sweep must include at least one run");
+    ensure!(
+        run_spec_dir.is_absolute() == run_output_dir.is_absolute(),
+        "run-spec and output target roots must use the same absolute or relative anchoring"
+    );
+
+    // Prove the authority boundary for the complete plan before inspecting
+    // any materialization target owned by the caller.
+    for run in runs {
+        validate_local_run_spec_authority(run.run_spec).with_context(|| {
+            format!(
+                "validate local sweep authority for {}",
+                run.run_spec.manifest.run_id
+            )
+        })?;
+    }
+
+    let mut seen_run_spec_file_names = BTreeSet::new();
+    let mut seen_output_dir_names = BTreeSet::new();
+    let mut materialization_targets = Vec::with_capacity(runs.len());
+    for run in runs {
+        validate_run_spec_file_name(run.run_spec_file_name)?;
+        validate_leaf_path("output_dir_name", run.output_dir_name)?;
+        ensure!(
+            run.run_spec.accepted_object.bytes > 0,
+            "accepted_object.bytes for run {} must be positive",
+            run.run_spec.manifest.run_id
+        );
+        ensure!(
+            is_lowercase_sha256_hex(&run.run_spec.accepted_object.sha256),
+            "accepted_object.sha256 for run {} must be exactly 64 lowercase hexadecimal characters",
+            run.run_spec.manifest.run_id
+        );
+        ensure_object_read_within_raw_payload_limit(run.run_spec)?;
+        ensure!(
+            seen_run_spec_file_names.insert(run.run_spec_file_name.to_string()),
+            "duplicate run_spec_file_name {:?}",
+            run.run_spec_file_name
+        );
+        ensure!(
+            seen_output_dir_names.insert(run.output_dir_name.to_string()),
+            "duplicate output_dir_name {:?}",
+            run.output_dir_name
+        );
+
+        let run_spec_path = run_spec_dir.join(run.run_spec_file_name);
+        let output_dir = run_output_dir.join(run.output_dir_name);
+        validate_planned_target_path("run-spec target", &run_spec_path)?;
+        validate_planned_target_path("output target", &output_dir)?;
+        materialization_targets.push(BacktestSweepMaterializationTargets {
+            run_spec_path,
+            output_dir,
+        });
+    }
+    ensure_materialization_targets_disjoint(&materialization_targets)?;
+    Ok(materialization_targets)
+}
+
+fn validate_planned_target_path(label: &'static str, path: &Path) -> Result<()> {
+    ensure!(!path.as_os_str().is_empty(), "{label} must not be empty");
+    ensure!(
+        path.components().all(|component| matches!(
+            component,
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_)
+        )),
+        "{label} must be lexically normalized without current or parent components: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn planned_paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+fn ensure_materialization_targets_disjoint(
+    targets: &[BacktestSweepMaterializationTargets],
+) -> Result<()> {
+    let flattened = targets
+        .iter()
+        .flat_map(|target| {
+            [
+                ("run-spec target", target.run_spec_path.as_path()),
+                ("output target", target.output_dir.as_path()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    for (index, (left_label, left_path)) in flattened.iter().enumerate() {
+        for (right_label, right_path) in flattened.iter().skip(index + 1) {
+            ensure!(
+                !planned_paths_overlap(left_path, right_path),
+                "planned filesystem targets overlap: {left_label} {} and {right_label} {}",
+                left_path.display(),
+                right_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn ensure_index_target_disjoint_and_absent(
+    index_path: &Path,
+    targets: &[BacktestSweepMaterializationTargets],
+) -> Result<()> {
+    validate_planned_target_path("index target", index_path)?;
+    if let Some(first_target) = targets.first() {
+        ensure!(
+            index_path.is_absolute() == first_target.run_spec_path.is_absolute(),
+            "index and materialization targets must use the same absolute or relative anchoring"
+        );
+    }
+    for target in targets {
+        for (label, path) in [
+            ("run-spec target", target.run_spec_path.as_path()),
+            ("output target", target.output_dir.as_path()),
+        ] {
+            ensure!(
+                !planned_paths_overlap(index_path, path),
+                "planned filesystem targets overlap: index target {} and {label} {}",
+                index_path.display(),
+                path.display()
+            );
+        }
+    }
+    ensure!(
+        !index_path
+            .try_exists()
+            .with_context(|| format!("check index path {}", index_path.display()))?,
+        "index path already exists: {}",
+        index_path.display()
+    );
+    Ok(())
+}
+
+fn ensure_backtest_sweep_targets_absent(
+    targets: &[BacktestSweepMaterializationTargets],
+) -> Result<()> {
+    for target in targets {
+        ensure!(
+            !target.run_spec_path.try_exists().with_context(|| {
+                format!("check run-spec path {}", target.run_spec_path.display())
+            })?,
+            "run-spec path already exists: {}",
+            target.run_spec_path.display()
+        );
+        ensure!(
+            !target
+                .output_dir
+                .try_exists()
+                .with_context(|| format!("check output_dir {}", target.output_dir.display()))?,
+            "output_dir already exists: {}",
+            target.output_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_backtest_sweep_payloads(runs: &[BacktestSweepRun]) -> Result<()> {
+    for run in runs {
+        ensure!(
+            !run.accepted_object_bytes.is_empty(),
+            "accepted_object_bytes for run {} must not be empty",
+            run.run_spec.manifest.run_id
+        );
+        let actual_bytes = u64::try_from(run.accepted_object_bytes.len())
+            .context("accepted object byte length exceeds u64")?;
+        ensure!(
+            actual_bytes == run.run_spec.accepted_object.bytes,
+            "accepted object byte length {actual_bytes} does not match run-spec {} for run {}",
+            run.run_spec.accepted_object.bytes,
+            run.run_spec.manifest.run_id
+        );
+        let actual_sha256 = sha256_hex(&run.accepted_object_bytes);
+        ensure!(
+            actual_sha256 == run.run_spec.accepted_object.sha256,
+            "accepted object SHA-256 {actual_sha256} does not match run-spec {} for run {}",
+            run.run_spec.accepted_object.sha256,
+            run.run_spec.manifest.run_id
+        );
+    }
+    Ok(())
+}
+
 /// # Errors
 ///
 /// Returns an error if a run-spec cannot be materialized, the provided BTE
@@ -388,54 +590,19 @@ pub fn run_backtest_sweep_with_executor<F>(
 where
     F: FnMut(&RunSpec, &[u8], &Path) -> Result<()>,
 {
-    ensure!(!plan.runs.is_empty(), "sweep must include at least one run");
-    for run in &plan.runs {
-        validate_local_run_spec_authority(&run.run_spec).with_context(|| {
-            format!(
-                "validate local sweep authority for {}",
-                run.run_spec.manifest.run_id
-            )
-        })?;
-    }
-
-    let mut seen_run_spec_file_names = BTreeSet::new();
-    let mut seen_output_dir_names = BTreeSet::new();
-    for run in &plan.runs {
-        validate_run_spec_file_name(&run.run_spec_file_name)?;
-        validate_leaf_path("output_dir_name", &run.output_dir_name)?;
-        ensure!(
-            !run.accepted_object_bytes.is_empty(),
-            "accepted_object_bytes for run {} must not be empty",
-            run.run_spec.manifest.run_id
-        );
-        ensure!(
-            seen_run_spec_file_names.insert(run.run_spec_file_name.clone()),
-            "duplicate run_spec_file_name {:?}",
-            run.run_spec_file_name
-        );
-        ensure!(
-            seen_output_dir_names.insert(run.output_dir_name.clone()),
-            "duplicate output_dir_name {:?}",
-            run.output_dir_name
-        );
-
-        let run_spec_path = plan.run_spec_dir.join(&run.run_spec_file_name);
-        let output_dir = plan.run_output_dir.join(&run.output_dir_name);
-        ensure!(
-            !run_spec_path
-                .try_exists()
-                .with_context(|| format!("check run-spec path {}", run_spec_path.display()))?,
-            "run-spec path already exists: {}",
-            run_spec_path.display()
-        );
-        ensure!(
-            !output_dir
-                .try_exists()
-                .with_context(|| format!("check output_dir {}", output_dir.display()))?,
-            "output_dir already exists: {}",
-            output_dir.display()
-        );
-    }
+    let preflight_runs = plan
+        .runs
+        .iter()
+        .map(|run| BacktestSweepRunPreflight {
+            run_spec_file_name: &run.run_spec_file_name,
+            output_dir_name: &run.output_dir_name,
+            run_spec: &run.run_spec,
+        })
+        .collect::<Vec<_>>();
+    let materialization_targets =
+        validate_backtest_sweep_runs(&plan.run_spec_dir, &plan.run_output_dir, &preflight_runs)?;
+    ensure_backtest_sweep_targets_absent(&materialization_targets)?;
+    validate_backtest_sweep_payloads(&plan.runs)?;
 
     fs::create_dir_all(&plan.run_spec_dir)
         .with_context(|| format!("create run-spec dir {}", plan.run_spec_dir.display()))?;
@@ -509,6 +676,13 @@ struct PreflightedBacktestSweepSource {
     run_spec: RunSpec,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedBacktestSweepSource {
+    preflighted: PreflightedBacktestSweepSource,
+    object_path: PathBuf,
+    params: BTreeMap<String, serde_json::Value>,
+}
+
 /// # Errors
 ///
 /// Returns an error if the run-spec TOML cannot be read or parsed.
@@ -533,25 +707,53 @@ pub fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
 /// run-spec byte count, exceeds the raw payload read limit, or has the wrong
 /// SHA-256.
 pub fn read_accepted_object_for_run_spec(path: &Path, spec: &RunSpec) -> Result<Vec<u8>> {
+    ensure!(
+        spec.accepted_object.bytes > 0,
+        "accepted_object.bytes must be positive"
+    );
+    ensure!(
+        is_lowercase_sha256_hex(&spec.accepted_object.sha256),
+        "accepted_object.sha256 must be exactly 64 lowercase hexadecimal characters"
+    );
     ensure_object_read_within_raw_payload_limit(spec)?;
     let resolved_path = resolve_active_backfill_runtime_input(None, path)?;
-    let metadata = fs::metadata(&resolved_path)
-        .with_context(|| format!("stat object {}", path.display()))?;
-    let actual_bytes = metadata.len();
+    let (mut file, identity) = open_pinned_regular_file(&resolved_path)
+        .with_context(|| format!("open accepted object {}", path.display()))?;
     ensure!(
-        actual_bytes == spec.accepted_object.bytes,
-        "object byte length {actual_bytes} does not match run-spec {}",
+        identity.byte_len == spec.accepted_object.bytes,
+        "object byte length {} does not match run-spec {}",
+        identity.byte_len,
         spec.accepted_object.bytes
     );
-    let bytes =
-        fs::read(&resolved_path).with_context(|| format!("read object {}", path.display()))?;
+    identity.revalidate(&resolved_path, &file)?;
+    let bytes = read_exact_pinned_file(&mut file, &resolved_path, spec.accepted_object.bytes)?;
     let actual_sha256 = sha256_hex(&bytes);
     ensure!(
         actual_sha256 == spec.accepted_object.sha256,
         "object SHA-256 {actual_sha256} does not match run-spec {}",
         spec.accepted_object.sha256
     );
+    identity.revalidate(&resolved_path, &file)?;
     Ok(bytes)
+}
+
+fn preflight_accepted_object_for_run_spec(path: &Path, spec: &RunSpec) -> Result<PathBuf> {
+    ensure_object_read_within_raw_payload_limit(spec)?;
+    let resolved_path = resolve_active_backfill_runtime_input(None, path)?;
+    let metadata =
+        fs::metadata(&resolved_path).with_context(|| format!("stat object {}", path.display()))?;
+    ensure!(
+        metadata.is_file(),
+        "object path must be a regular file: {}",
+        path.display()
+    );
+    let actual_bytes = metadata.len();
+    ensure!(
+        actual_bytes == spec.accepted_object.bytes,
+        "object byte length {actual_bytes} does not match run-spec {}",
+        spec.accepted_object.bytes
+    );
+    Ok(resolved_path)
 }
 
 /// # Errors
@@ -588,32 +790,29 @@ fn load_backtest_sweep_source_pairs(
         "sweep source pairs must not be empty"
     );
 
+    let mut source_run_spec_paths = BTreeSet::new();
+    let mut source_object_paths = BTreeSet::new();
+    for source in &plan.sources {
+        let run_spec_path = input_relative_source_path("run-spec", &source.run_spec_path)?;
+        let object_path = input_relative_source_path("object", &source.object_path)?;
+        ensure!(
+            source_run_spec_paths.insert(run_spec_path.clone()),
+            "duplicate source run-spec path {run_spec_path:?}"
+        );
+        source_object_paths.insert(object_path);
+    }
+    for shared_path in source_run_spec_paths.intersection(&source_object_paths) {
+        ensure!(
+            false,
+            "source path {shared_path:?} cannot serve as both a run-spec control and accepted-object payload"
+        );
+    }
+
     let mut preflighted_sources = Vec::with_capacity(plan.sources.len());
-    let mut seen_output_dir_names = BTreeSet::new();
-    let mut seen_output_prefixes = BTreeSet::new();
     for source in &plan.sources {
         let (run_spec_path, source_run_spec_path) =
             resolve_source_path("run-spec", &plan.input_dir, &source.run_spec_path)?;
         let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
-        validate_local_run_spec_authority(&run_spec).with_context(|| {
-            format!(
-                "validate local sweep-publication authority for {}",
-                run_spec.manifest.run_id
-            )
-        })?;
-        let output_prefix =
-            validate_publication_run_spec_artifact_scope(&plan.artifact_root, &run_spec)?;
-        ensure!(
-            seen_output_dir_names.insert(run_spec.manifest.run_id.clone()),
-            "duplicate output_dir_name {:?}",
-            run_spec.manifest.run_id
-        );
-        // The current run-id-scoped prefix rule makes this redundant, but keep
-        // the remote-prefix uniqueness invariant explicit if that scope changes.
-        ensure!(
-            seen_output_prefixes.insert(output_prefix.clone()),
-            "duplicate manifest.output_prefix {output_prefix:?}"
-        );
         let run_spec_file_name = source_file_name("run-spec", &run_spec_path)?;
         preflighted_sources.push(PreflightedBacktestSweepSource {
             source_run_spec_path,
@@ -624,25 +823,60 @@ fn load_backtest_sweep_source_pairs(
         });
     }
 
-    // Authority, scope, and duplicate checks for every RunSpec must complete
-    // before any accepted object is resolved or read. This keeps a later
-    // durable spec from being masked by an earlier large, missing, or corrupt
-    // local object.
-    let mut loaded_runs = Vec::with_capacity(preflighted_sources.len());
+    let sweep_preflight = preflighted_sources
+        .iter()
+        .map(|source| BacktestSweepRunPreflight {
+            run_spec_file_name: &source.run_spec_file_name,
+            output_dir_name: &source.run_spec.manifest.run_id,
+            run_spec: &source.run_spec,
+        })
+        .collect::<Vec<_>>();
+    let materialization_targets =
+        validate_backtest_sweep_runs(&plan.run_spec_dir, &plan.run_output_dir, &sweep_preflight)?;
+
+    let mut seen_output_prefixes = BTreeSet::new();
+    for source in &preflighted_sources {
+        let output_prefix =
+            validate_publication_run_spec_artifact_scope(&plan.artifact_root, &source.run_spec)?;
+        // The current run-id-scoped prefix rule makes this redundant, but keep
+        // the remote-prefix uniqueness invariant explicit if that scope changes.
+        ensure!(
+            seen_output_prefixes.insert(output_prefix.clone()),
+            "duplicate manifest.output_prefix {output_prefix:?}"
+        );
+    }
+    ensure_index_target_disjoint_and_absent(&plan.index_path, &materialization_targets)?;
+    ensure_backtest_sweep_targets_absent(&materialization_targets)?;
+
+    // Resolve and stat every object before reading any payload. A later
+    // missing, aliased, non-regular, oversized, or wrong-length object cannot
+    // waste an earlier large read. The read phase repeats these checks to
+    // detect changes at the available pathname boundary.
+    let mut resolved_sources = Vec::with_capacity(preflighted_sources.len());
     for preflighted in preflighted_sources {
-        let (object_path, source_object_path) = resolve_source_path(
-            "object",
-            &plan.input_dir,
-            &preflighted.source_object_path,
-        )?;
+        let (object_path, source_object_path) =
+            resolve_source_path("object", &plan.input_dir, &preflighted.source_object_path)?;
         let params = run_pointer_params(
             &preflighted.run_spec,
-            preflighted.source_run_spec_path,
+            preflighted.source_run_spec_path.clone(),
             source_object_path,
-            preflighted.source_run_spec_sha256,
+            preflighted.source_run_spec_sha256.clone(),
         )?;
-        let accepted_object_bytes =
-            read_accepted_object_for_run_spec(&object_path, &preflighted.run_spec)?;
+        preflight_accepted_object_for_run_spec(&object_path, &preflighted.run_spec)?;
+        resolved_sources.push(ResolvedBacktestSweepSource {
+            preflighted,
+            object_path,
+            params,
+        });
+    }
+
+    let mut loaded_runs = Vec::with_capacity(resolved_sources.len());
+    for resolved in resolved_sources {
+        let accepted_object_bytes = read_accepted_object_for_run_spec(
+            &resolved.object_path,
+            &resolved.preflighted.run_spec,
+        )?;
+        let preflighted = resolved.preflighted;
         let run_id = preflighted.run_spec.manifest.run_id.clone();
         loaded_runs.push(LoadedBacktestSweepRun {
             run: BacktestSweepRun {
@@ -651,7 +885,10 @@ fn load_backtest_sweep_source_pairs(
                 run_spec: preflighted.run_spec,
                 accepted_object_bytes,
             },
-            source: LoadedBacktestSweepSource { run_id, params },
+            source: LoadedBacktestSweepSource {
+                run_id,
+                params: resolved.params,
+            },
         });
     }
     Ok(loaded_runs)
@@ -907,18 +1144,12 @@ fn validate_result_contract_matches_run(
         expected_manifest_hash
     );
 
-    let expected_accepted_object_sha256 = sha256_hex(&run.accepted_object_bytes);
+    let expected_accepted_object_sha256 = &run.run_spec.accepted_object.sha256;
     ensure!(
-        contract.accepted_object_sha256 == expected_accepted_object_sha256,
+        contract.accepted_object_sha256.as_str() == expected_accepted_object_sha256.as_str(),
         "{} accepted_object_sha256 {:?} does not match accepted object bytes {:?}",
         result_contract_path.display(),
         contract.accepted_object_sha256,
-        expected_accepted_object_sha256
-    );
-    ensure!(
-        run.run_spec.accepted_object.sha256 == expected_accepted_object_sha256,
-        "run-spec accepted_object.sha256 {:?} does not match accepted object bytes {:?}",
-        run.run_spec.accepted_object.sha256,
         expected_accepted_object_sha256
     );
 
@@ -1030,9 +1261,9 @@ fn validate_leaf_path(field: &'static str, value: &str) -> Result<()> {
     ensure!(!value.trim().is_empty(), "{field} must not be empty");
     let path = Path::new(value);
     ensure!(!path.is_absolute(), "{field} must be relative");
+    let mut components = path.components();
     ensure!(
-        path.components()
-            .all(|component| matches!(component, Component::Normal(_))),
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
         "{field} must be a single relative path segment"
     );
     Ok(())
@@ -1823,8 +2054,8 @@ mod tests {
             panic!("durable authority rejection must precede injected executor")
         })
         .expect_err("injected local sweep must reject a durable RunSpec");
-        let error =
-            run_backtest_sweep(&plan).expect_err("default local sweep must reject a durable RunSpec");
+        let error = run_backtest_sweep(&plan)
+            .expect_err("default local sweep must reject a durable RunSpec");
 
         for error in [&injected_error, &error] {
             let error_chain = format!("{error:#}");
@@ -1922,6 +2153,163 @@ mod tests {
         assert!(!plan.run_spec_dir.exists());
         assert!(!plan.run_output_dir.exists());
         assert!(!plan.index_path.exists());
+    }
+
+    #[test]
+    fn publication_preflights_all_object_metadata_before_hashing_any_payload() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let first = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-first",
+            b"expected",
+        );
+        fs::write(input_dir.join(&first.object_path), b"tampered")
+            .expect("replace first object with same-length corrupt bytes");
+        let second = write_source_pair(
+            &input_dir,
+            "second.toml",
+            "second.object",
+            "ra-second",
+            b"second",
+        );
+        let plan = publication_plan(
+            &temp,
+            input_dir,
+            TEST_ARTIFACT_ROOT,
+            vec![
+                first,
+                BacktestSweepSourcePair {
+                    run_spec_path: second.run_spec_path,
+                    object_path: PathBuf::from("missing-second.object"),
+                },
+            ],
+        );
+
+        let error = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("object metadata preflight must precede payload hashing and execution")
+        })
+        .expect_err("later missing object must reject before hashing the earlier payload");
+        let error_chain = format!("{error:#}");
+
+        assert!(error_chain.contains("missing-second.object"), "{error:#}");
+        assert!(!error_chain.contains("SHA-256"), "{error:#}");
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+        assert!(!plan.index_path.exists());
+    }
+
+    #[test]
+    fn publication_rejects_cross_pair_source_role_collision_before_parsing_run_spec() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        fs::write(input_dir.join("first.toml"), b"not valid TOML")
+            .expect("write deliberately invalid first source");
+        fs::write(input_dir.join("second.toml"), b"also not valid TOML")
+            .expect("write deliberately invalid second source");
+        let plan = publication_plan(
+            &temp,
+            input_dir,
+            TEST_ARTIFACT_ROOT,
+            vec![
+                BacktestSweepSourcePair {
+                    run_spec_path: PathBuf::from("first.toml"),
+                    object_path: PathBuf::from("second.toml"),
+                },
+                BacktestSweepSourcePair {
+                    run_spec_path: PathBuf::from("second.toml"),
+                    object_path: PathBuf::from("missing.object"),
+                },
+            ],
+        );
+
+        let error = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("source role collision must reject before parsing or execution")
+        })
+        .expect_err("one source file cannot hold both control and payload roles");
+        let error_chain = format!("{error:#}");
+
+        assert!(
+            error_chain.contains("both a run-spec control and accepted-object payload"),
+            "{error:#}"
+        );
+        assert!(!error_chain.contains("parse run-spec TOML"), "{error:#}");
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+        assert!(!plan.index_path.exists());
+    }
+
+    #[test]
+    fn publication_rejects_index_inside_output_target_before_hashing_payload() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"expected",
+        );
+        fs::write(input_dir.join(&source.object_path), b"tampered")
+            .expect("replace object with same-length corrupt bytes");
+        let mut plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        plan.index_path = plan.run_output_dir.join("ra-run-a/index.json");
+
+        let error = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("index overlap must reject before payload hashing or execution")
+        })
+        .expect_err("index target inside an output target must fail closed");
+        let error_chain = format!("{error:#}");
+
+        assert!(
+            error_chain.contains("planned filesystem targets overlap"),
+            "{error:#}"
+        );
+        assert!(!error_chain.contains("SHA-256"), "{error:#}");
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+        assert!(!plan.index_path.exists());
+    }
+
+    #[test]
+    fn publication_rejects_occupied_index_before_hashing_payload() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source = write_source_pair(
+            &input_dir,
+            "first.toml",
+            "first.object",
+            "ra-run-a",
+            b"expected",
+        );
+        fs::write(input_dir.join(&source.object_path), b"tampered")
+            .expect("replace object with same-length corrupt bytes");
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+        fs::write(&plan.index_path, b"occupied").expect("occupy index target");
+
+        let error = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("occupied index must reject before payload hashing or execution")
+        })
+        .expect_err("occupied index target must fail closed");
+        let error_chain = format!("{error:#}");
+
+        assert!(
+            error_chain.contains("index path already exists"),
+            "{error:#}"
+        );
+        assert!(!error_chain.contains("SHA-256"), "{error:#}");
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+        assert_eq!(
+            fs::read(&plan.index_path).expect("read occupied index"),
+            b"occupied"
+        );
     }
 
     #[test]
@@ -2402,7 +2790,7 @@ mod tests {
         .expect_err("object hash mismatch must fail before executor");
 
         assert_eq!(calls, 0, "executor must not see unverified object bytes");
-        assert!(err.to_string().contains("object SHA-256"), "{err}");
+        assert!(format!("{err:#}").contains("object SHA-256"), "{err:#}");
         assert!(!plan.index_path.exists(), "index must not be written");
     }
 
@@ -2429,7 +2817,7 @@ mod tests {
         .expect_err("object byte length mismatch must fail before executor");
 
         assert_eq!(calls, 0, "executor must not see wrong-length object bytes");
-        assert!(err.to_string().contains("object byte length"), "{err}");
+        assert!(format!("{err:#}").contains("object byte length"), "{err:#}");
         assert!(!plan.index_path.exists(), "index must not be written");
     }
 
@@ -2571,7 +2959,7 @@ mod tests {
     }
 
     #[test]
-    fn sweep_publication_rejects_duplicate_run_spec_names_before_executor() {
+    fn sweep_publication_rejects_duplicate_run_spec_names_before_object_read_or_executor() {
         let temp = TempDir::new().expect("temp dir");
         let input_dir = temp.path().join("inputs");
         let left_dir = input_dir.join("left");
@@ -2587,11 +2975,11 @@ mod tests {
             vec![
                 BacktestSweepSourcePair {
                     run_spec_path: PathBuf::from("left").join(left.run_spec_path),
-                    object_path: PathBuf::from("left").join(left.object_path),
+                    object_path: PathBuf::from("left/missing-left.object"),
                 },
                 BacktestSweepSourcePair {
                     run_spec_path: PathBuf::from("right").join(right.run_spec_path),
-                    object_path: PathBuf::from("right").join(right.object_path),
+                    object_path: PathBuf::from("right/missing-right.object"),
                 },
             ],
         );
@@ -2611,6 +2999,7 @@ mod tests {
             err.to_string().contains("duplicate run_spec_file_name"),
             "{err}"
         );
+        assert!(!err.to_string().contains("missing-left.object"), "{err}");
         assert!(!plan.index_path.exists(), "index must not be written");
     }
 
@@ -2651,6 +3040,133 @@ mod tests {
             "{err}"
         );
         assert!(!plan.index_path.exists(), "index must not be written");
+    }
+
+    #[test]
+    fn leaf_paths_reject_multiple_normal_components() {
+        for error in [
+            validate_leaf_path("output_dir_name", "nested/run")
+                .expect_err("nested output name must fail"),
+            validate_run_spec_file_name("nested/run.toml")
+                .expect_err("nested run-spec name must fail"),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .contains("must be a single relative path segment"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn sweep_rejects_ancestor_materialization_targets_before_mutation_or_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let object_bytes = b"one-record".to_vec();
+        for (case, run_spec_dir, run_output_dir) in [
+            (
+                "run-spec-ancestor",
+                temp.path().join("run-spec-ancestor"),
+                temp.path().join("run-spec-ancestor/run.toml"),
+            ),
+            (
+                "output-ancestor",
+                temp.path().join("output-ancestor/ra-run-a"),
+                temp.path().join("output-ancestor"),
+            ),
+        ] {
+            let plan = BacktestSweepPlan {
+                run_spec_dir,
+                run_output_dir,
+                runs: vec![BacktestSweepRun {
+                    run_spec_file_name: "run.toml".to_string(),
+                    output_dir_name: "ra-run-a".to_string(),
+                    run_spec: test_run_spec("ra-run-a", &object_bytes),
+                    accepted_object_bytes: object_bytes.clone(),
+                }],
+            };
+
+            let error = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+                panic!("ancestor target overlap must reject before executor")
+            })
+            .expect_err("ancestor materialization targets must fail closed");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("planned filesystem targets overlap"),
+                "{case}: {error:#}"
+            );
+            assert!(
+                !temp.path().join(case).exists(),
+                "{case}: preflight rejection must not create target roots"
+            );
+        }
+    }
+
+    #[test]
+    fn sweep_rejects_unverified_in_memory_payload_before_mutation_or_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let expected = b"expected";
+        let plan = BacktestSweepPlan {
+            run_spec_dir: temp.path().join("materialized-run-specs"),
+            run_output_dir: temp.path().join("run-output"),
+            runs: vec![BacktestSweepRun {
+                run_spec_file_name: "run.toml".to_string(),
+                output_dir_name: "ra-run-a".to_string(),
+                run_spec: test_run_spec("ra-run-a", expected),
+                accepted_object_bytes: b"tampered".to_vec(),
+            }],
+        };
+        let mut calls = 0;
+
+        let error = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .expect_err("unverified in-memory payload must fail closed");
+
+        assert_eq!(
+            calls, 0,
+            "executor must not receive unverified payload bytes"
+        );
+        assert!(error.to_string().contains("SHA-256"), "{error:#}");
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+    }
+
+    #[test]
+    fn sweep_rejects_cross_role_materialization_target_before_mutation_or_executor() {
+        let temp = TempDir::new().expect("temp dir");
+        let materialization_dir = temp.path().join("materialized");
+        let object_bytes = b"one-record".to_vec();
+        let run_id = "run.toml";
+        let plan = BacktestSweepPlan {
+            run_spec_dir: materialization_dir.clone(),
+            run_output_dir: materialization_dir.clone(),
+            runs: vec![BacktestSweepRun {
+                run_spec_file_name: run_id.to_string(),
+                output_dir_name: run_id.to_string(),
+                run_spec: test_run_spec(run_id, &object_bytes),
+                accepted_object_bytes: object_bytes,
+            }],
+        };
+
+        let error = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+            panic!("cross-role target collision must reject before executor")
+        })
+        .expect_err("run-spec and output target collision must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("planned filesystem targets overlap"),
+            "{error:#}"
+        );
+        assert!(
+            !materialization_dir.exists(),
+            "preflight rejection must not create the shared target root"
+        );
     }
 
     #[test]

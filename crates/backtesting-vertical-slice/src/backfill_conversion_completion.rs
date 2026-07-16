@@ -485,12 +485,12 @@ pub fn write_backfill_conversion_completion_ledger_from_spec_file(
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let batch_path = spec.batch_plan_path.display().to_string();
     let batch_bytes = read_active_backfill_runtime_input(Some(base_dir), &spec.batch_plan_path)
-        .map_err(|error| {
-        BackfillConversionCompletionLedgerError::ReadBatchPlan {
-            path: batch_path.clone(),
-            error: error.to_string(),
-        }
-    })?;
+        .map_err(
+            |error| BackfillConversionCompletionLedgerError::ReadBatchPlan {
+                path: batch_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
     let batch: BackfillConversionBatchPlan =
         serde_json::from_slice(&batch_bytes).map_err(|error| {
             BackfillConversionCompletionLedgerError::ParseBatchPlanJson {
@@ -513,11 +513,11 @@ pub fn write_backfill_conversion_completion_ledger_from_spec_file(
             let report_display = report_path.display().to_string();
             let report_bytes = read_active_backfill_runtime_input(Some(base_dir), report_path)
                 .map_err(|error| {
-                BackfillConversionCompletionLedgerError::ReadBatchExecutionReport {
-                    path: report_display.clone(),
-                    error: error.to_string(),
-                }
-            })?;
+                    BackfillConversionCompletionLedgerError::ReadBatchExecutionReport {
+                        path: report_display.clone(),
+                        error: error.to_string(),
+                    }
+                })?;
             let report: SourceUniverseBatchExecutionReport = serde_json::from_slice(&report_bytes)
                 .map_err(|error| {
                     BackfillConversionCompletionLedgerError::ParseBatchExecutionReportJson {
@@ -544,16 +544,12 @@ pub fn write_backfill_conversion_completion_ledger(
     output_dir: &Path,
     ledger: &BackfillConversionCompletionLedger,
 ) -> Result<BackfillConversionCompletionLedgerArtifact, BackfillConversionCompletionLedgerError> {
-    let path = active_backfill_runtime_output_path(
-        output_dir,
-        BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE,
-    )
-    .map_err(
-        |error| BackfillConversionCompletionLedgerError::CreateDir {
-            path: output_dir.display().to_string(),
-            error: error.to_string(),
-        },
-    )?;
+    let path =
+        active_backfill_runtime_output_path(output_dir, BACKFILL_CONVERSION_COMPLETION_LEDGER_FILE)
+            .map_err(|error| BackfillConversionCompletionLedgerError::CreateDir {
+                path: output_dir.display().to_string(),
+                error: error.to_string(),
+            })?;
     fs::create_dir_all(output_dir).map_err(|error| {
         BackfillConversionCompletionLedgerError::CreateDir {
             path: output_dir.display().to_string(),
@@ -595,12 +591,12 @@ fn read_input(
     let publication_path = spec.publication_evidence_path.display().to_string();
     let publication_bytes =
         read_active_backfill_runtime_input(Some(base_dir), &spec.publication_evidence_path)
-            .map_err(|error| {
-        BackfillConversionCompletionLedgerError::ReadPublicationEvidence {
-            path: publication_path.clone(),
-            error: error.to_string(),
-        }
-    })?;
+            .map_err(
+                |error| BackfillConversionCompletionLedgerError::ReadPublicationEvidence {
+                    path: publication_path.clone(),
+                    error: error.to_string(),
+                },
+            )?;
     let publication_evidence_hash = format!("{:x}", Sha256::digest(&publication_bytes));
     let publication_evidence: AcceptedPublicationEvidence =
         serde_json::from_slice(&publication_bytes).map_err(|error| {
@@ -611,16 +607,14 @@ fn read_input(
         })?;
 
     let mapping_path = spec.catalog_mapping_evaluation_path.display().to_string();
-    let mapping_bytes = read_active_backfill_runtime_input(
-        Some(base_dir),
-        &spec.catalog_mapping_evaluation_path,
-    )
-    .map_err(|error| {
-        BackfillConversionCompletionLedgerError::ReadCatalogMappingEvaluation {
-            path: mapping_path.clone(),
-            error: error.to_string(),
-        }
-    })?;
+    let mapping_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.catalog_mapping_evaluation_path)
+            .map_err(
+            |error| BackfillConversionCompletionLedgerError::ReadCatalogMappingEvaluation {
+                path: mapping_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
     let catalog_mapping_evaluation_hash = format!("{:x}", Sha256::digest(&mapping_bytes));
     let mapping: SourceCatalogMappingEvaluation =
         serde_json::from_slice(&mapping_bytes).map_err(|error| {
@@ -635,12 +629,12 @@ fn read_input(
         .unwrap_or_default();
     let execution_plan_path_display = execution_plan_path.display().to_string();
     let execution_plan_bytes =
-        read_active_backfill_runtime_input(Some(base_dir), &execution_plan_path).map_err(|error| {
-        BackfillConversionCompletionLedgerError::ReadExecutionPlan {
-            path: execution_plan_path_display.clone(),
-            error: error.to_string(),
-        }
-    })?;
+        read_active_backfill_runtime_input(Some(base_dir), &execution_plan_path).map_err(
+            |error| BackfillConversionCompletionLedgerError::ReadExecutionPlan {
+                path: execution_plan_path_display.clone(),
+                error: error.to_string(),
+            },
+        )?;
     let execution_plan_hash = format!("{:x}", Sha256::digest(&execution_plan_bytes));
     let execution_plan: BackfillExecutionPlan = serde_json::from_slice(&execution_plan_bytes)
         .map_err(

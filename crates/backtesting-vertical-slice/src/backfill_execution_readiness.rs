@@ -629,14 +629,12 @@ pub fn write_backfill_execution_readiness_report(
     output_dir: &Path,
     report: &BackfillExecutionReadinessReport,
 ) -> Result<BackfillExecutionReadinessArtifact, BackfillExecutionReadinessError> {
-    let path = active_backfill_runtime_output_path(
-        output_dir,
-        BACKFILL_EXECUTION_READINESS_REPORT_FILE,
-    )
-    .map_err(|error| BackfillExecutionReadinessError::CreateDir {
-        path: output_dir.display().to_string(),
-        error: error.to_string(),
-    })?;
+    let path =
+        active_backfill_runtime_output_path(output_dir, BACKFILL_EXECUTION_READINESS_REPORT_FILE)
+            .map_err(|error| BackfillExecutionReadinessError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillExecutionReadinessError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),

@@ -43,8 +43,8 @@ use crate::{
     operator::{
         CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableRunOutcome,
         OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE, RunArtifacts, RunSpec,
-        VerifiedSourceBindingRegistry, discover_current_durable_completion_with_artifact_store_guarded,
-        run_from_run_spec,
+        VerifiedSourceBindingRegistry,
+        discover_current_durable_completion_with_artifact_store_guarded, run_from_run_spec,
         run_from_run_spec_with_artifact_store_guarded,
     },
     operator_work_budget::{

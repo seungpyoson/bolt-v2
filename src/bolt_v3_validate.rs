@@ -299,7 +299,7 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             crate::bolt_v3_market_families::validate_strategy_target(&context, &strategy.target);
         if let Some(metadata) = target_metadata {
             let configured_target_id = metadata.configured_target_id;
-            if !seen_target_ids.insert(configured_target_id.clone()) {
+            if !seen_target_ids.insert(configured_target_id.to_string()) {
                 errors.push(format!(
                     "{context}: configured_target_id `{configured_target_id}` is already used by another configured target"
                 ));

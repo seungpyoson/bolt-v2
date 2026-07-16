@@ -852,7 +852,7 @@ pub fn raw_taker_config(
     insert_string(
         &mut table,
         "configured_target_id",
-        target.configured_target_id,
+        target.configured_target_id.to_string(),
     );
     insert_string(&mut table, "target_kind", target.target_kind);
     insert_string(

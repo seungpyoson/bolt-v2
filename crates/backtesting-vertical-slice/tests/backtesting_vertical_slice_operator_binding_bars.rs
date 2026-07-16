@@ -411,7 +411,7 @@ fn run_spec(
         identity: RunSpecInstrumentIdentities::Single(identity()),
         converter,
         manifest,
-        artifact_store: committed.artifact_store,
+        artifact_store: None,
         catalog_dispatch: committed.catalog_dispatch,
         selector_provenance: None,
     }

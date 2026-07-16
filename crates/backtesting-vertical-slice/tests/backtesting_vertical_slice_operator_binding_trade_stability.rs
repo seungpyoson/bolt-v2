@@ -65,6 +65,7 @@ fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
         max_member_bytes: None,
         member_suffix: None,
     };
+    spec.artifact_store = None;
     spec
 }
 

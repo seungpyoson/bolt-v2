@@ -3579,6 +3579,7 @@ async fn rejects_catalog_dispatch_fixture_mismatch_before_any_put() {
 fn rejects_manifest_fixture_mismatch() {
     let gz = gzip(SAMPLE_CSV);
     let mut spec = committed_run_spec_for(&gz);
+    spec.artifact_store = None;
     spec.manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
     let output_dir = tempfile::TempDir::new().expect("temp dir");
 

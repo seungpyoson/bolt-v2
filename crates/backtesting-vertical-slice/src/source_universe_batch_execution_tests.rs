@@ -28,7 +28,7 @@ use backtesting_vertical_slice::{
         SourceUniverseBatchExecutionRunOutput, SourceUniverseBatchLaunchArtifacts,
         SourceUniverseCacheRunVerification, SourceUniverseObjectFetcher,
         SourceUniverseOperatorRunOutcome, SourceUniverseOperatorRunner,
-        SourceUniverseVerifiedControlArtifacts,
+        SourceUniverseVerifiedControlArtifacts, VerifiedSourceObject,
         execute_source_universe_batch_with_pinned_artifacts,
         execute_source_universe_batch_with_pinned_artifacts_factories,
         validate_source_universe_batch_execution_report,
@@ -256,7 +256,10 @@ fn batch_execution_report_validator_rejects_wrong_schema() {
 
     let error = validate_source_universe_batch_execution_report(&report)
         .expect_err("wrong report schema must fail closed");
-    assert!(error.to_string().contains("schema_version mismatch"), "{error:#}");
+    assert!(
+        error.to_string().contains("schema_version mismatch"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -367,17 +370,17 @@ fn source_universe_batch_execution_can_continue_after_record_failure() {
     assert_eq!(report.failed_record_count, 1);
     assert_eq!(report.records[0].sequence, 1);
     assert_eq!(report.failures[0].sequence, 0);
-    assert_eq!(report.failures[0].failure_stage, "verify_object");
+    assert_eq!(report.failures[0].failure_stage, "fetch");
     assert!(
-        report.failures[0].attempt_output.is_none(),
-        "fetch/object-verification failures must precede output-attempt creation"
+        report.failures[0].attempt_output.is_some(),
+        "fetch-boundary failures retain the already-claimed discovery attempt"
     );
     assert_eq!(
         fs::read_dir(&output_dir)
             .expect("read batch output")
             .count(),
-        1,
-        "only the successful record owns an output attempt"
+        2,
+        "the failed discovery attempt and successful record remain distinguishable"
     );
     assert_eq!(runner.calls.len(), 1);
     assert_eq!(
@@ -576,7 +579,7 @@ fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
             &work_budget,
         )
         .expect("first fetch populates cache");
-    assert_eq!(first, object_bytes);
+    assert_eq!(first.as_bytes(), object_bytes);
     assert_eq!(
         inner_calls.load(Ordering::SeqCst),
         1,
@@ -603,7 +606,7 @@ fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
             &work_budget,
         )
         .expect("second fetch hits cache");
-    assert_eq!(second, object_bytes);
+    assert_eq!(second.as_bytes(), object_bytes);
     assert_eq!(
         inner_calls.load(Ordering::SeqCst),
         1,
@@ -653,13 +656,13 @@ fn caching_fetcher_corrupt_occupied_entry_fails_closed_and_is_retained() {
 }
 
 #[test]
-fn caching_fetcher_unverified_inner_bytes_never_enter_cache() {
+fn caching_fetcher_inner_verification_failure_never_enters_cache() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let cache_dir = temp_dir.path().join("object-cache");
     let object_bytes = b"synthetic accepted object bytes";
     let record = synthetic_record(0, object_bytes, "https://synthetic.example/object-0");
 
-    // Inner returns bytes that do not match the pinned sha/length.
+    // The inner fetch boundary rejects bytes that do not match the pin.
     let inner = CountingFetcher::new(vec![(0, b"wrong inner bytes".to_vec())]);
     let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
@@ -668,7 +671,10 @@ fn caching_fetcher_unverified_inner_bytes_never_enter_cache() {
         &committed_record_zero_controls().run_spec,
         &OperatorWorkBudgetGuard::unbounded(),
     );
-    assert!(result.is_err(), "unverified inner bytes fail the fetch");
+    assert!(
+        result.is_err(),
+        "inner verification failure stops the fetch"
+    );
     let cache_path = cache_dir.join(&record.selected_object_sha256);
     assert!(
         !cache_path.exists(),
@@ -1633,7 +1639,10 @@ fn deterministic_durable_preflight_rejects_stale_nt_before_fetch() {
 
     let error = pack_preflight_error_before_external_work(&fixture);
 
-    assert!(error.contains("NautilusTrader revision mismatch"), "{error}");
+    assert!(
+        error.contains("NautilusTrader revision mismatch"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2410,7 +2419,11 @@ fn factory_entry_constructs_one_discovery_runner_but_no_fetcher_for_current_term
     .expect("current terminal performs exact durable discovery");
 
     assert_eq!(report.completed_record_count, 1);
-    assert!(report.records[0].output_dir.starts_with(&fixture.output_dir));
+    assert!(
+        report.records[0]
+            .output_dir
+            .starts_with(&fixture.output_dir)
+    );
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 1);
 }
@@ -2553,13 +2566,13 @@ struct MutatingControlArtifactFetcher {
 impl SourceUniverseObjectFetcher for MutatingControlArtifactFetcher {
     fn fetch(
         &mut self,
-        _record: &SourceUniverseExecutionPackRecord,
+        record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Vec<u8>> {
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<VerifiedSourceObject> {
         fs::write(&self.artifact_path, &self.replacement_bytes)
             .expect("mutate control artifact during fetch");
-        Ok(self.object_bytes.clone())
+        VerifiedSourceObject::verify(record, self.object_bytes.clone(), work_budget)
     }
 }
 
@@ -2571,10 +2584,10 @@ struct FreshDiscoveryScratchDuringFetchFetcher {
 impl SourceUniverseObjectFetcher for FreshDiscoveryScratchDuringFetchFetcher {
     fn fetch(
         &mut self,
-        _record: &SourceUniverseExecutionPackRecord,
+        record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Vec<u8>> {
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<VerifiedSourceObject> {
         let entries = fs::read_dir(&self.output_root)
             .expect("read output root")
             .collect::<std::io::Result<Vec<_>>>()
@@ -2585,7 +2598,10 @@ impl SourceUniverseObjectFetcher for FreshDiscoveryScratchDuringFetchFetcher {
             "one fresh discovery scratch must be claimed before fetch"
         );
         let scratch = entries[0].path();
-        assert!(scratch.is_dir(), "the fresh discovery scratch must be a directory");
+        assert!(
+            scratch.is_dir(),
+            "the fresh discovery scratch must be a directory"
+        );
         assert_eq!(
             fs::read_dir(&scratch)
                 .expect("read fresh discovery scratch")
@@ -2593,7 +2609,7 @@ impl SourceUniverseObjectFetcher for FreshDiscoveryScratchDuringFetchFetcher {
             0,
             "no candidate or terminal artifact may exist before fetch completes"
         );
-        Ok(self.object_bytes.clone())
+        VerifiedSourceObject::verify(record, self.object_bytes.clone(), work_budget)
     }
 }
 
@@ -2608,14 +2624,14 @@ struct OutputRootSwapFetcher {
 impl SourceUniverseObjectFetcher for OutputRootSwapFetcher {
     fn fetch(
         &mut self,
-        _record: &SourceUniverseExecutionPackRecord,
+        record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Vec<u8>> {
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<VerifiedSourceObject> {
         fs::rename(&self.output_root, &self.displaced_root)
             .expect("displace leased output root during fetch");
         fs::create_dir(&self.output_root).expect("replace leased output root during fetch");
-        Ok(self.object_bytes.clone())
+        VerifiedSourceObject::verify(record, self.object_bytes.clone(), work_budget)
     }
 }
 
@@ -2624,11 +2640,11 @@ impl SourceUniverseObjectFetcher for StaticFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Vec<u8>> {
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<VerifiedSourceObject> {
         assert_eq!(record.source_url, self.expected_source_url);
         self.calls += 1;
-        Ok(self.object_bytes.clone())
+        VerifiedSourceObject::verify(record, self.object_bytes.clone(), work_budget)
     }
 }
 
@@ -2672,16 +2688,18 @@ impl SourceUniverseObjectFetcher for SequencedFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Vec<u8>> {
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<VerifiedSourceObject> {
         self.calls
             .lock()
             .expect("fetch call log")
             .push(record.sequence);
-        self.object_bytes_by_sequence
+        let bytes = self
+            .object_bytes_by_sequence
             .get(&record.sequence)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing bytes for sequence {}", record.sequence))
+            .ok_or_else(|| anyhow::anyhow!("missing bytes for sequence {}", record.sequence))?;
+        VerifiedSourceObject::verify(record, bytes, work_budget)
     }
 }
 
@@ -3463,13 +3481,15 @@ impl SourceUniverseObjectFetcher for CountingFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
-        _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Vec<u8>> {
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> anyhow::Result<VerifiedSourceObject> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.object_bytes_by_sequence
+        let bytes = self
+            .object_bytes_by_sequence
             .get(&record.sequence)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing bytes for sequence {}", record.sequence))
+            .ok_or_else(|| anyhow::anyhow!("missing bytes for sequence {}", record.sequence))?;
+        VerifiedSourceObject::verify(record, bytes, work_budget)
     }
 }
 
@@ -3558,7 +3578,7 @@ impl SourceUniverseObjectFetcher for NeverFetcher {
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
         _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<VerifiedSourceObject> {
         panic!(
             "NeverFetcher called for sequence {} — validation should have rejected the pack first",
             record.sequence

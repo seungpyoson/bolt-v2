@@ -22,7 +22,10 @@ use crate::{
     artifact_index::LifecycleState,
     artifact_store::validate_artifact_root,
     hashing::{is_lowercase_sha256_hex, sha256_hex},
-    operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
+    operator::{
+        RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec,
+        validate_local_run_spec_authority,
+    },
     reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
     retired_backfill_evidence::{
         read_active_backfill_runtime_input, resolve_active_backfill_runtime_input,
@@ -386,6 +389,14 @@ where
     F: FnMut(&RunSpec, &[u8], &Path) -> Result<()>,
 {
     ensure!(!plan.runs.is_empty(), "sweep must include at least one run");
+    for run in &plan.runs {
+        validate_local_run_spec_authority(&run.run_spec).with_context(|| {
+            format!(
+                "validate local sweep authority for {}",
+                run.run_spec.manifest.run_id
+            )
+        })?;
+    }
 
     let mut seen_run_spec_file_names = BTreeSet::new();
     let mut seen_output_dir_names = BTreeSet::new();
@@ -574,9 +585,15 @@ fn load_backtest_sweep_source_pairs(
     for source in &plan.sources {
         let (run_spec_path, source_run_spec_path) =
             resolve_source_path("run-spec", &plan.input_dir, &source.run_spec_path)?;
+        let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
+        validate_local_run_spec_authority(&run_spec).with_context(|| {
+            format!(
+                "validate local sweep-publication authority for {}",
+                run_spec.manifest.run_id
+            )
+        })?;
         let (object_path, source_object_path) =
             resolve_source_path("object", &plan.input_dir, &source.object_path)?;
-        let (run_spec, source_run_spec_sha256) = read_run_spec_with_hash(&run_spec_path)?;
         let output_prefix =
             validate_publication_run_spec_artifact_scope(&plan.artifact_root, &run_spec)?;
         ensure!(
@@ -1604,11 +1621,18 @@ mod tests {
         spec.manifest.run_id = run_id.to_string();
         spec.manifest.artifact_root = TEST_ARTIFACT_ROOT.to_string();
         spec.manifest.output_prefix = format!("{TEST_ARTIFACT_ROOT}/backtests/{run_id}");
-        if let Some(artifact_store) = spec.artifact_store.as_mut() {
-            artifact_store.artifact_root = TEST_ARTIFACT_ROOT.to_string();
-        }
+        spec.artifact_store = None;
         spec.accepted_object.sha256 = sha256_hex(accepted_object_bytes);
         spec.accepted_object.bytes = accepted_object_bytes.len() as u64;
+        spec
+    }
+
+    fn durable_test_run_spec(run_id: &str, accepted_object_bytes: &[u8]) -> RunSpec {
+        let committed: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed durable run-spec parses");
+        let mut spec = test_run_spec(run_id, accepted_object_bytes);
+        spec.artifact_store = committed.artifact_store;
+        spec.source_bindings_path = PathBuf::from("must-not-read/source-bindings.toml");
         spec
     }
 
@@ -1749,6 +1773,78 @@ mod tests {
             index_path: temp.path().join("run-pointer-index.json"),
             sources,
         }
+    }
+
+    #[test]
+    fn default_and_injected_sweeps_reject_durable_run_spec_before_materializing_output() {
+        let temp = TempDir::new().expect("temp dir");
+        let object_bytes = b"must-not-execute".to_vec();
+        let spec = durable_test_run_spec("ra-durable-run", &object_bytes);
+        let plan = BacktestSweepPlan {
+            run_spec_dir: temp.path().join("materialized-run-specs"),
+            run_output_dir: temp.path().join("run-output"),
+            runs: vec![BacktestSweepRun {
+                run_spec_file_name: "durable.toml".to_string(),
+                output_dir_name: "ra-durable-run".to_string(),
+                run_spec: spec,
+                accepted_object_bytes: object_bytes,
+            }],
+        };
+
+        let injected_error = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+            panic!("durable authority rejection must precede injected executor")
+        })
+        .expect_err("injected local sweep must reject a durable RunSpec");
+        let error =
+            run_backtest_sweep(&plan).expect_err("default local sweep must reject a durable RunSpec");
+
+        for error in [&injected_error, &error] {
+            let error_chain = format!("{error:#}");
+            assert!(
+                error_chain.contains("must use source_universe_batch_execution"),
+                "{error:#}"
+            );
+        }
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+    }
+
+    #[test]
+    fn default_and_injected_publications_reject_durable_before_object_read_or_output() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let run_spec_path = input_dir.join("durable.toml");
+        let spec = durable_test_run_spec("ra-durable-run", b"object-not-present");
+        fs::write(
+            &run_spec_path,
+            toml::to_string_pretty(&spec).expect("serialize durable run-spec"),
+        )
+        .expect("write durable run-spec");
+        let source = BacktestSweepSourcePair {
+            run_spec_path: PathBuf::from("durable.toml"),
+            object_path: PathBuf::from("must-not-read.object"),
+        };
+        let plan = publication_plan(&temp, input_dir, TEST_ARTIFACT_ROOT, vec![source]);
+
+        let injected_error = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("durable authority rejection must precede injected executor")
+        })
+        .expect_err("injected local publication must reject a durable RunSpec");
+        let error = run_backtest_sweep_publication(&plan)
+            .expect_err("default local publication must reject a durable RunSpec");
+
+        for error in [&injected_error, &error] {
+            let error_chain = format!("{error:#}");
+            assert!(
+                error_chain.contains("must use source_universe_batch_execution"),
+                "{error:#}"
+            );
+            assert!(!error_chain.contains("must-not-read.object"));
+        }
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+        assert!(!plan.index_path.exists());
     }
 
     #[test]

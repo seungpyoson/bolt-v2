@@ -13,8 +13,9 @@ use backtesting_vertical_slice::source_universe_batch_execution::{
     SourceUniverseBatchArtifactPin, SourceUniverseBatchBootstrapLimits,
     SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReportStatus,
     SourceUniverseBatchLaunchArtifacts, SourceUniverseCacheRunVerification,
-    SourceUniverseObjectFetcher, execute_source_universe_batch_process_isolated,
-    execute_source_universe_operator_worker, write_source_universe_batch_execution_report,
+    SourceUniverseObjectFetcher, VerifiedSourceObject,
+    execute_source_universe_batch_process_isolated, execute_source_universe_operator_worker,
+    write_source_universe_batch_execution_report,
 };
 use backtesting_vertical_slice::source_universe_object_transport::StagedS3SourceUniverseObjectFetcher;
 use clap::Parser;
@@ -144,14 +145,10 @@ impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
         record: &backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord,
         run_spec: &backtesting_vertical_slice::operator::RunSpec,
         work_budget: &backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<VerifiedSourceObject> {
         match self {
-            BatchWorkerFetcher::DirectHttp(fetcher) => {
-                fetcher.fetch(record, run_spec, work_budget)
-            }
-            BatchWorkerFetcher::CachedHttp(fetcher) => {
-                fetcher.fetch(record, run_spec, work_budget)
-            }
+            BatchWorkerFetcher::DirectHttp(fetcher) => fetcher.fetch(record, run_spec, work_budget),
+            BatchWorkerFetcher::CachedHttp(fetcher) => fetcher.fetch(record, run_spec, work_budget),
             BatchWorkerFetcher::DirectStagedS3(fetcher) => {
                 fetcher.fetch(record, run_spec, work_budget)
             }
@@ -348,10 +345,9 @@ mod tests {
 
     use super::{
         BatchWorkerFetcher, Cli, EXIT_PARTIAL_FAILURE,
-        SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION,
-        SourceUniverseBatchLaunchArtifactSpec, SourceUniverseBatchLaunchSpec,
-        SourceUniverseBatchTransportSpec, build_batch_worker_fetcher, partial_failure_exit_code,
-        run_batch,
+        SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION, SourceUniverseBatchLaunchArtifactSpec,
+        SourceUniverseBatchLaunchSpec, SourceUniverseBatchTransportSpec,
+        build_batch_worker_fetcher, partial_failure_exit_code, run_batch,
     };
     use backtesting_vertical_slice::source_universe_batch_execution::{
         SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionReportStatus,

@@ -26,7 +26,7 @@ use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use nautilus_backtest::result::BacktestResult;
-use object_store::{ObjectStore, aws::AmazonS3};
+use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -275,6 +275,48 @@ impl RunSpec {
             "run spec missing [[catalog_dispatch.bindings]] required for artifact-store publish path",
         )
     }
+}
+
+/// Opaque authority for the process-local operator path.
+///
+/// The durable artifact-store path has different crash, publication, and
+/// recovery semantics and is admitted only by [`DurableRunDispatcher`].
+/// Keeping this wrapper private makes it impossible for another production
+/// module to call a local inner path with a durable RunSpec by accident.
+#[derive(Clone, Copy)]
+struct LocalRunSpec<'a>(&'a RunSpec);
+
+impl<'a> LocalRunSpec<'a> {
+    fn new(spec: &'a RunSpec) -> Result<Self> {
+        ensure!(
+            spec.artifact_store.is_none(),
+            "run-spec [artifact_store] must use source_universe_batch_execution; local operator entry points are non-durable"
+        );
+        Ok(Self(spec))
+    }
+
+    fn get(self) -> &'a RunSpec {
+        self.0
+    }
+
+    /// Explicitly scoped seam for the source-universe unit-test runner. That
+    /// runner exercises local conversion before replacing the terminal seal
+    /// with a non-authoritative durable candidate. No production build can
+    /// construct this exception.
+    #[cfg(test)]
+    fn for_source_universe_test(spec: &'a RunSpec) -> Self {
+        Self(spec)
+    }
+}
+
+/// Fail-closed preflight shared by local orchestration surfaces which must
+/// reject durable RunSpecs before reading objects or creating output.
+///
+/// # Errors
+///
+/// Returns an error when `spec` selects durable artifact-store publication.
+pub(crate) fn validate_local_run_spec_authority(spec: &RunSpec) -> Result<()> {
+    LocalRunSpec::new(spec).map(|_| ())
 }
 
 fn manifest_artifact_store_option<'a>(
@@ -4311,10 +4353,38 @@ pub fn run_from_run_spec_guarded(
     output_dir: &Path,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
+    let local_spec = LocalRunSpec::new(spec)?;
     let registry = VerifiedSourceBindingRegistry::from_run_spec_guarded(spec, work_budget)?;
-    run_from_run_spec_inner(spec, object_bytes, output_dir, true, &registry, work_budget)
+    run_from_local_run_spec_with_verified_registry(
+        local_spec,
+        object_bytes,
+        output_dir,
+        &registry,
+        work_budget,
+    )
 }
 
+fn run_from_local_run_spec_with_verified_registry(
+    local_spec: LocalRunSpec<'_>,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<RunArtifacts> {
+    let spec = local_spec.get();
+    registry.reassert_for(spec)?;
+    run_from_run_spec_inner(
+        local_spec,
+        object_bytes,
+        output_dir,
+        registry,
+        work_budget,
+    )
+}
+
+/// Unit-test adapter for registry-identity tests. Production callers cannot
+/// bypass [`LocalRunSpec::new`].
+#[cfg(test)]
 pub(crate) fn run_from_run_spec_with_verified_registry(
     spec: &RunSpec,
     object_bytes: &[u8],
@@ -4322,8 +4392,13 @@ pub(crate) fn run_from_run_spec_with_verified_registry(
     registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
-    registry.reassert_for(spec)?;
-    run_from_run_spec_inner(spec, object_bytes, output_dir, true, registry, work_budget)
+    run_from_local_run_spec_with_verified_registry(
+        LocalRunSpec::new(spec)?,
+        object_bytes,
+        output_dir,
+        registry,
+        work_budget,
+    )
 }
 
 enum TradeRunPreparation {
@@ -4352,18 +4427,17 @@ struct PreparedTradeRunArtifacts {
 }
 
 fn run_from_run_spec_inner(
-    spec: &RunSpec,
+    local_spec: LocalRunSpec<'_>,
     object_bytes: &[u8],
     output_dir: &Path,
-    reuse_completed_output: bool,
     source_binding_registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<RunArtifacts> {
-    match prepare_run_from_run_spec_inner(
-        spec,
+    let spec = local_spec.get();
+    match prepare_local_run_from_run_spec_inner(
+        local_spec,
         object_bytes,
         output_dir,
-        reuse_completed_output,
         source_binding_registry,
         work_budget,
     )? {
@@ -4375,11 +4449,28 @@ fn run_from_run_spec_inner(
                 prepared,
                 runtime_manifest,
                 output_dir,
-                reuse_completed_output,
+                true,
                 work_budget,
             )
         }
     }
+}
+
+fn prepare_local_run_from_run_spec_inner(
+    local_spec: LocalRunSpec<'_>,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    source_binding_registry: &VerifiedSourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<TradeRunPreparation> {
+    prepare_run_from_run_spec_inner(
+        local_spec.get(),
+        object_bytes,
+        output_dir,
+        true,
+        source_binding_registry,
+        work_budget,
+    )
 }
 
 fn prepare_run_from_run_spec_inner(
@@ -5794,9 +5885,10 @@ pub fn run_operator_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<OperatorRunArtifacts> {
+    let local_spec = LocalRunSpec::new(spec)?;
     let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)?;
-    run_operator_from_run_spec_guarded(
-        spec,
+    run_operator_from_local_run_spec_with_verified_registry(
+        local_spec,
         object_bytes,
         output_dir,
         &registry,
@@ -5811,8 +5903,8 @@ pub fn run_operator_from_run_spec_guarded(
     registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<OperatorRunArtifacts> {
-    run_operator_from_run_spec_with_verified_registry(
-        spec,
+    run_operator_from_local_run_spec_with_verified_registry(
+        LocalRunSpec::new(spec)?,
         object_bytes,
         output_dir,
         registry,
@@ -5820,20 +5912,21 @@ pub fn run_operator_from_run_spec_guarded(
     )
 }
 
-pub(crate) fn run_operator_from_run_spec_with_verified_registry(
-    spec: &RunSpec,
+fn run_operator_from_local_run_spec_with_verified_registry(
+    local_spec: LocalRunSpec<'_>,
     object_bytes: &[u8],
     output_dir: &Path,
     registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<OperatorRunArtifacts> {
+    let spec = local_spec.get();
     registry.reassert_for(spec)?;
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
     if adapter.kind == SourceAdapterKind::CsvNativeTrades {
         return Ok(OperatorRunArtifacts::Trade(Box::new(
-            run_from_run_spec_with_verified_registry(
-                spec,
+            run_from_local_run_spec_with_verified_registry(
+                local_spec,
                 object_bytes,
                 output_dir,
                 registry,
@@ -5843,13 +5936,34 @@ pub(crate) fn run_operator_from_run_spec_with_verified_registry(
     }
     Ok(OperatorRunArtifacts::MultiTable(Box::new(
         run_multi_table_from_run_spec_with_verified_registry(
-            spec,
+            local_spec,
             object_bytes,
             output_dir,
             registry,
             work_budget,
         )?,
     )))
+}
+
+/// Explicit unit-test seam used only by `LocalSourceUniverseOperatorRunner`.
+/// Durable RunSpecs may enter this seam so the test runner can exercise local
+/// conversion before replacing its terminal seal with a candidate seal. The
+/// production library has no corresponding alternate entry point.
+#[cfg(test)]
+pub(crate) fn run_operator_from_run_spec_with_verified_registry(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    registry: &VerifiedSourceBindingRegistry,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<OperatorRunArtifacts> {
+    run_operator_from_local_run_spec_with_verified_registry(
+        LocalRunSpec::for_source_universe_test(spec),
+        object_bytes,
+        output_dir,
+        registry,
+        work_budget,
+    )
 }
 
 fn conversion_fingerprint_for(
@@ -6573,9 +6687,10 @@ pub fn run_multi_table_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<MultiTableRunArtifacts> {
+    let local_spec = LocalRunSpec::new(spec)?;
     let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)?;
     run_multi_table_from_run_spec_with_verified_registry(
-        spec,
+        local_spec,
         object_bytes,
         output_dir,
         &registry,
@@ -6584,12 +6699,13 @@ pub fn run_multi_table_from_run_spec(
 }
 
 fn run_multi_table_from_run_spec_with_verified_registry(
-    spec: &RunSpec,
+    local_spec: LocalRunSpec<'_>,
     object_bytes: &[u8],
     output_dir: &Path,
     registry: &VerifiedSourceBindingRegistry,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<MultiTableRunArtifacts> {
+    let spec = local_spec.get();
     registry.reassert_for(spec)?;
     work_budget.check_deadline(OperatorWorkBudgetStage::ObjectVerification)?;
     validate_converter_config(&spec.converter)?;
@@ -7814,7 +7930,119 @@ mod tests {
             max_member_bytes: None,
             member_suffix: None,
         };
+        spec.artifact_store = None;
         spec
+    }
+
+    fn durable_run_spec_rejected_by_local_entries(gz_bytes: &[u8]) -> RunSpec {
+        let durable: RunSpec =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed durable run-spec parses");
+        let mut spec = run_spec_for(gz_bytes);
+        spec.artifact_store = durable.artifact_store;
+        spec.source_bindings_path = PathBuf::from("must-not-read/source-bindings.toml");
+        spec
+    }
+
+    fn assert_local_entry_rejected_before_output<T>(
+        result: Result<T>,
+        output_dir: &Path,
+        entry: &str,
+    ) {
+        let error = match result {
+            Ok(_) => panic!("{entry} must reject a durable RunSpec"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("must use source_universe_batch_execution"),
+            "{entry}: {error:#}"
+        );
+        assert!(
+            !error.to_string().contains("must-not-read"),
+            "{entry} must reject before reading the source-binding registry: {error:#}"
+        );
+        assert!(
+            !output_dir.exists(),
+            "{entry} must reject before creating operator output"
+        );
+    }
+
+    #[test]
+    fn public_trade_entry_rejects_durable_run_spec_before_registry_or_output() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let spec = durable_run_spec_rejected_by_local_entries(&object_bytes);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp.path().join("output");
+
+        assert_local_entry_rejected_before_output(
+            run_from_run_spec(&spec, &object_bytes, &output_dir),
+            &output_dir,
+            "run_from_run_spec",
+        );
+    }
+
+    #[test]
+    fn public_operator_entry_rejects_durable_run_spec_before_registry_or_output() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let spec = durable_run_spec_rejected_by_local_entries(&object_bytes);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp.path().join("output");
+
+        assert_local_entry_rejected_before_output(
+            run_operator_from_run_spec(&spec, &object_bytes, &output_dir),
+            &output_dir,
+            "run_operator_from_run_spec",
+        );
+    }
+
+    #[test]
+    fn public_multi_table_entry_rejects_durable_run_spec_before_registry_or_output() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let spec = durable_run_spec_rejected_by_local_entries(&object_bytes);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp.path().join("output");
+
+        assert_local_entry_rejected_before_output(
+            run_multi_table_from_run_spec(&spec, &object_bytes, &output_dir),
+            &output_dir,
+            "run_multi_table_from_run_spec",
+        );
+    }
+
+    #[test]
+    fn public_guarded_entries_reject_durable_run_spec_before_using_registry_or_output() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let local_spec = run_spec_for(&object_bytes);
+        let registry = VerifiedSourceBindingRegistry::from_run_spec(&local_spec)
+            .expect("freeze local source-binding registry");
+        let spec = durable_run_spec_rejected_by_local_entries(&object_bytes);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let trade_output = temp.path().join("trade-output");
+        let operator_output = temp.path().join("operator-output");
+        let work_budget = OperatorWorkBudgetGuard::unbounded();
+
+        assert_local_entry_rejected_before_output(
+            run_from_run_spec_guarded(
+                &spec,
+                &object_bytes,
+                &trade_output,
+                &work_budget,
+            ),
+            &trade_output,
+            "run_from_run_spec_guarded",
+        );
+        assert_local_entry_rejected_before_output(
+            run_operator_from_run_spec_guarded(
+                &spec,
+                &object_bytes,
+                &operator_output,
+                &registry,
+                &work_budget,
+            ),
+            &operator_output,
+            "run_operator_from_run_spec_guarded",
+        );
     }
 
     #[test]
@@ -9011,6 +9239,7 @@ mod tests {
         // it the synthetic bytes must trip the SHA-256 re-verification.
         let gz = gzip(SAMPLE_CSV);
         let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("parse");
+        spec.artifact_store = None;
         spec.accepted_object.bytes = gz.len() as u64;
         let dir = tempfile::TempDir::new().unwrap();
         let err = run_from_run_spec(&spec, &gz, dir.path())

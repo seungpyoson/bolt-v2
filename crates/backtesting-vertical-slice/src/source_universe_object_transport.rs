@@ -4,14 +4,14 @@
 //! never falls back to a provider URL: it derives the one configured store
 //! from the verified RunSpec, resolves its credentials only from the RunSpec's
 //! SSM parameter references, discovers the current non-null S3 version, and
-//! reads that exact version. The batch executor remains the single owner of
-//! the final execution-pack byte-length and SHA-256 check.
+//! reads that exact version. The transport returns only an opaque object whose
+//! execution-pack byte-length and SHA-256 identity it has already verified.
 
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use futures_util::StreamExt;
-use object_store::{GetOptions, ObjectStore, path::Path as ObjectPath};
+use object_store::{GetOptions, ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 
 use crate::{
     artifact_store::{ResolvedArtifactRoot, ensure_immutable_s3_version_id},
@@ -21,7 +21,7 @@ use crate::{
         ExactSizedObjectBuffer, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
         guarded_async_operation_outcome,
     },
-    source_universe_batch_execution::SourceUniverseObjectFetcher,
+    source_universe_batch_execution::{SourceUniverseObjectFetcher, VerifiedSourceObject},
     source_universe_execution_pack::SourceUniverseExecutionPackRecord,
 };
 
@@ -64,7 +64,7 @@ impl SourceUniverseObjectFetcher for StagedS3SourceUniverseObjectFetcher {
         record: &SourceUniverseExecutionPackRecord,
         run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<VerifiedSourceObject> {
         let plan = staged_s3_read_plan(record, run_spec)?;
         let operation = fetch_staged_s3_exact_current_version(record, plan, work_budget);
         let result = match self.fetch_timeout {
@@ -80,7 +80,8 @@ impl SourceUniverseObjectFetcher for StagedS3SourceUniverseObjectFetcher {
             None => self.runtime.block_on(operation),
         };
         work_budget.check_deadline(OperatorWorkBudgetStage::Fetch)?;
-        result
+        let bytes = result?;
+        VerifiedSourceObject::verify(record, bytes, work_budget)
     }
 }
 
@@ -232,13 +233,12 @@ async fn read_staged_s3_exact_current_version(
     let mut output = ExactSizedObjectBuffer::new(expected_bytes)?;
     let mut stream = exact.into_stream();
     loop {
-        let chunk = guarded_async_operation_outcome(
-            work_budget,
-            OperatorWorkBudgetStage::Fetch,
-            async { stream.next().await.transpose() },
-        )
-        .await?
-        .context("stream exact staged S3 source")?;
+        let chunk =
+            guarded_async_operation_outcome(work_budget, OperatorWorkBudgetStage::Fetch, async {
+                stream.next().await.transpose()
+            })
+            .await?
+            .context("stream exact staged S3 source")?;
         let Some(chunk) = chunk else { break };
         output.push(&chunk, work_budget, OperatorWorkBudgetStage::Fetch)?;
     }
@@ -263,8 +263,7 @@ mod tests {
 
     use super::{read_staged_s3_exact_current_version, staged_s3_read_plan};
     use crate::{
-        operator::RunSpec,
-        operator_work_budget::OperatorWorkBudgetGuard,
+        operator::RunSpec, operator_work_budget::OperatorWorkBudgetGuard,
         source_universe_execution_pack::SourceUniverseExecutionPack,
     };
 
@@ -308,9 +307,9 @@ mod tests {
             let size = self.reported_size;
             GetResult {
                 payload: GetResultPayload::Stream(
-                    futures_util::stream::once(async move {
-                        Ok::<_, object_store::Error>(payload)
-                    })
+                    futures_util::stream::once(
+                        async move { Ok::<_, object_store::Error>(payload) },
+                    )
                     .boxed(),
                 ),
                 meta: ObjectMeta {
@@ -534,9 +533,11 @@ mod tests {
 
             let mut cross_bucket_record = pack.records[0].clone();
             let mut cross_bucket_spec = run_spec.clone();
-            let cross_bucket_uri = cross_bucket_record
-                .source_uri
-                .replacen("s3://bolt-parquet/", "s3://different-bucket/", 1);
+            let cross_bucket_uri = cross_bucket_record.source_uri.replacen(
+                "s3://bolt-parquet/",
+                "s3://different-bucket/",
+                1,
+            );
             cross_bucket_record.source_uri.clone_from(&cross_bucket_uri);
             cross_bucket_spec
                 .accepted_object

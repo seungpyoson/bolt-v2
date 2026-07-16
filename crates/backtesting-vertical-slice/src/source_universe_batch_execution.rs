@@ -2,8 +2,8 @@
 //!
 //! Source-universe execution packs already materialize one run-spec and
 //! execution plan per accepted object. This module adds the missing operator
-//! loop: fetch the pinned object, verify bytes/hash, run the existing
-//! single-object operator path, and summarize the completed records.
+//! loop: fetch the pinned object through one typed verification boundary, run
+//! the existing single-object operator path, and summarize completed records.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -63,9 +63,8 @@ use crate::retired_backfill_evidence::ensure_active_backfill_runtime_path;
 use crate::{
     operator::{
         DurableCompletionLocator, DurableOutputCandidateSealProbe, DurableRunDispatcher,
-        DurableRunReceipt, OperatorRunSummary, RunSpec,
-        VerifiedSourceBindingRegistry, probe_durable_output_candidate_seal_summary_capped,
-        validate_durable_run_spec_preflight,
+        DurableRunReceipt, OperatorRunSummary, RunSpec, VerifiedSourceBindingRegistry,
+        probe_durable_output_candidate_seal_summary_capped, validate_durable_run_spec_preflight,
         validate_run_spec_manifest_for_object_hash_with_verified_registry,
     },
     source_universe_execution_pack::{
@@ -300,13 +299,87 @@ fn read_launch_artifact(
     Ok(bytes)
 }
 
+/// Selected-object bytes whose execution-pack length and SHA-256 identity have
+/// already been proven at the fetch boundary.
+///
+/// The byte buffer is intentionally opaque: production fetchers can create it
+/// only by performing the one guarded verification traversal, while the cache
+/// can preserve an equivalent pinned-file read proof without hashing again.
+pub struct VerifiedSourceObject {
+    bytes: Vec<u8>,
+    selected_object_bytes: u64,
+    selected_object_sha256: String,
+}
+
+impl fmt::Debug for VerifiedSourceObject {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedSourceObject")
+            .field("selected_object_bytes", &self.selected_object_bytes)
+            .field("selected_object_sha256", &self.selected_object_sha256)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VerifiedSourceObject {
+    pub(crate) fn verify(
+        record: &SourceUniverseExecutionPackRecord,
+        bytes: Vec<u8>,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Self> {
+        verify_object_guarded(record, &bytes, work_budget)?;
+        Ok(Self {
+            bytes,
+            selected_object_bytes: record.selected_object_bytes,
+            selected_object_sha256: record.selected_object_sha256.clone(),
+        })
+    }
+
+    fn from_verified_cache_read(
+        record: &SourceUniverseExecutionPackRecord,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            bytes,
+            selected_object_bytes: record.selected_object_bytes,
+            selected_object_sha256: record.selected_object_sha256.clone(),
+        }
+    }
+
+    /// Borrow the proven bytes without weakening their construction boundary.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    fn ensure_matches(&self, record: &SourceUniverseExecutionPackRecord) -> Result<()> {
+        ensure!(
+            self.selected_object_bytes == record.selected_object_bytes
+                && self.selected_object_sha256.as_str() == record.selected_object_sha256.as_str(),
+            "verified source-object proof does not match execution-pack record {}",
+            record.operator_run_id
+        );
+        ensure!(
+            u64::try_from(self.bytes.len())
+                .context("verified source-object length does not fit u64")?
+                == self.selected_object_bytes,
+            "verified source-object bytes no longer match their proof"
+        );
+        Ok(())
+    }
+
+    fn into_bytes_for(self, record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>> {
+        self.ensure_matches(record)?;
+        Ok(self.bytes)
+    }
+}
+
 pub trait SourceUniverseObjectFetcher {
     fn fetch(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Vec<u8>>;
+    ) -> Result<VerifiedSourceObject>;
 }
 
 struct LazySourceUniverseObjectFetcher<'a, F, C> {
@@ -324,7 +397,7 @@ where
         record: &SourceUniverseExecutionPackRecord,
         run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<VerifiedSourceObject> {
         if self.inner.is_none() {
             *self.inner = Some((self.factory)().context("construct batch worker fetcher")?);
         }
@@ -989,8 +1062,8 @@ pub struct HttpSourceUniverseObjectFetcher {
 
 impl HttpSourceUniverseObjectFetcher {
     pub fn new(fetch_timeout_seconds: Option<u64>, http_user_agent: Option<&str>) -> Result<Self> {
-        let mut client_builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none());
+        let mut client_builder =
+            reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
         let fetch_timeout = fetch_timeout_seconds.map(Duration::from_secs);
         if let Some(fetch_timeout_seconds) = fetch_timeout_seconds {
             ensure!(
@@ -1047,7 +1120,7 @@ impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<VerifiedSourceObject> {
         let source_url = validated_http_source_url(&record.source_url)?;
         let client = self.client.clone();
         let remaining = work_budget.remaining_wall_time(OperatorWorkBudgetStage::Fetch)?;
@@ -1055,7 +1128,7 @@ impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
         let request = apply_http_request_timeout(client.get(source_url), request_timeout)
             .build()
             .with_context(|| format!("build GET request for {}", record.source_url))?;
-        self.runtime.block_on(guarded_async_operation_outcome(
+        let bytes = self.runtime.block_on(guarded_async_operation_outcome(
             work_budget,
             OperatorWorkBudgetStage::Fetch,
             async {
@@ -1085,7 +1158,8 @@ impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
                 }
                 output.finish(work_budget, OperatorWorkBudgetStage::Fetch)
             },
-        ))?
+        ))??;
+        VerifiedSourceObject::verify(record, bytes, work_budget)
     }
 }
 
@@ -1181,7 +1255,7 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
         record: &SourceUniverseExecutionPackRecord,
         cache_path: &Path,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<VerifiedSourceObject>> {
         let verification = self
             .run_verification
             .entry(&record.selected_object_sha256)?;
@@ -1254,7 +1328,9 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
                 sha256: record.selected_object_sha256.clone(),
             });
         }
-        Ok(Some(cached))
+        Ok(Some(VerifiedSourceObject::from_verified_cache_read(
+            record, cached,
+        )))
     }
 
     /// Create one immutable content-addressed entry without replacing an
@@ -1311,26 +1387,21 @@ impl<F: SourceUniverseObjectFetcher> SourceUniverseObjectFetcher
         record: &SourceUniverseExecutionPackRecord,
         run_spec: &RunSpec,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<VerifiedSourceObject> {
         work_budget.check_deadline(OperatorWorkBudgetStage::Fetch)?;
         let cache_path = self.cache_entry_path(record);
         if let Some(cached) = self.read_verified_cache_entry(record, &cache_path, work_budget)? {
             return Ok(cached);
         }
-        let object_bytes =
+        let object =
             guarded_operation_outcome(work_budget, OperatorWorkBudgetStage::Fetch, || {
                 self.inner.fetch(record, run_spec, work_budget)
             })??;
-        verify_object_guarded(record, &object_bytes, work_budget).with_context(|| {
-            format!(
-                "verify fetched object before caching {}",
-                record.operator_run_id
-            )
-        })?;
+        object.ensure_matches(record)?;
         guarded_operation_outcome(work_budget, OperatorWorkBudgetStage::Fetch, || {
-            self.store_verified(&cache_path, &object_bytes, work_budget)
+            self.store_verified(&cache_path, object.as_bytes(), work_budget)
         })??;
-        Ok(object_bytes)
+        Ok(object)
     }
 }
 
@@ -4552,26 +4623,23 @@ fn validate_selected_control_input_envelope(
     for record in selected_records() {
         for pin in control_artifact_pins(record) {
             let retirement_guard = ensure_active_backfill_runtime_path(pin.declared_path);
-            let (identity, planned_path) =
-                match retirement_guard.and_then(|()| {
-                    resolve_pack_control_path(pack_base_dir, pin.declared_path)
-                }) {
-                    Ok(path) => (
-                        ControlEnvelopeIdentity::Resolved(path.clone()),
-                        PlannedControlPath::Resolved(path),
-                    ),
-                    // Missing or otherwise invalid paths are retained as declared
-                    // identities here so `continue_on_error` can still classify
-                    // them per record during control preflight. Existing aliases
-                    // resolve to the same identity and are charged once, matching
-                    // the retained byte caches.
-                    Err(error) => (
-                        ControlEnvelopeIdentity::UnresolvedDeclared(
-                            pin.declared_path.to_path_buf(),
-                        ),
-                        PlannedControlPath::Rejected(format!("{error:#}")),
-                    ),
-                };
+            let (identity, planned_path) = match retirement_guard
+                .and_then(|()| resolve_pack_control_path(pack_base_dir, pin.declared_path))
+            {
+                Ok(path) => (
+                    ControlEnvelopeIdentity::Resolved(path.clone()),
+                    PlannedControlPath::Resolved(path),
+                ),
+                // Missing or otherwise invalid paths are retained as declared
+                // identities here so `continue_on_error` can still classify
+                // them per record during control preflight. Existing aliases
+                // resolve to the same identity and are charged once, matching
+                // the retained byte caches.
+                Err(error) => (
+                    ControlEnvelopeIdentity::UnresolvedDeclared(pin.declared_path.to_path_buf()),
+                    PlannedControlPath::Rejected(format!("{error:#}")),
+                ),
+            };
             ensure!(
                 planned_paths
                     .insert((record.sequence, pin.role), planned_path)
@@ -5162,14 +5230,14 @@ where
         }
     }
 
-    let object_bytes =
+    let object =
         match guarded_operation_outcome(&work_budget, OperatorWorkBudgetStage::Fetch, || {
             fetcher.fetch(record, control_artifacts.run_spec.as_ref(), &work_budget)
         })
         .and_then(std::convert::identity)
         .with_context(|| format!("fetch source object for {}", record.operator_run_id))
         {
-            Ok(object_bytes) => object_bytes,
+            Ok(object) => object,
             Err(error) => {
                 return record_error_slot_with_attempt(
                     record,
@@ -5181,18 +5249,19 @@ where
                 );
             }
         };
-    if let Err(error) = verify_object_guarded(record, &object_bytes, &work_budget)
-        .with_context(|| format!("verify source object for {}", record.operator_run_id))
-    {
-        return record_error_slot_with_attempt(
-            record,
-            execution_record_sha256,
-            "verify_object",
-            error,
-            output_claim.attempt_identity(),
-            config,
-        );
-    }
+    let object_bytes = match object.into_bytes_for(record) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return record_error_slot_with_attempt(
+                record,
+                execution_record_sha256,
+                "fetch",
+                error.context("bind verified source object to execution-pack record"),
+                output_claim.attempt_identity(),
+                config,
+            );
+        }
+    };
 
     // Threat boundary: this detects replacement during the potentially long
     // fetch, but it is not an openat-style capability. `SourceUniverseOperatorRunner::run`
@@ -5674,7 +5743,7 @@ mod tests {
             record: &SourceUniverseExecutionPackRecord,
             _run_spec: &RunSpec,
             _work_budget: &OperatorWorkBudgetGuard,
-        ) -> Result<Vec<u8>> {
+        ) -> Result<VerifiedSourceObject> {
             self.calls.push(record.sequence);
             anyhow::bail!("synthetic fetch failure after progression")
         }
@@ -6635,7 +6704,6 @@ mod tests {
                     .contains("exceeds configured maximum"),
             "{pack_error:#}"
         );
-
     }
 
     #[test]
@@ -7401,7 +7469,7 @@ mod tests {
             _record: &SourceUniverseExecutionPackRecord,
             _run_spec: &RunSpec,
             _work_budget: &OperatorWorkBudgetGuard,
-        ) -> Result<Vec<u8>> {
+        ) -> Result<VerifiedSourceObject> {
             panic!("inner fetcher must not be called")
         }
     }
@@ -7439,6 +7507,61 @@ mod tests {
             execution_plan_bytes: 1,
             execution_plan_sha256: sha256,
         }
+    }
+
+    #[test]
+    fn verified_source_object_rejects_wrong_length_at_fetch_boundary() {
+        let record = synthetic_cache_record();
+
+        let error = VerifiedSourceObject::verify(
+            &record,
+            b"xx".to_vec(),
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect_err("wrong-length bytes must not cross the fetch boundary");
+
+        assert!(
+            error.to_string().contains("object byte length"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn verified_source_object_rejects_wrong_hash_at_fetch_boundary() {
+        let record = synthetic_cache_record();
+
+        let error = VerifiedSourceObject::verify(
+            &record,
+            b"y".to_vec(),
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect_err("same-length corrupt bytes must not cross the fetch boundary");
+
+        assert!(error.to_string().contains("object sha256"), "{error:#}");
+    }
+
+    #[test]
+    fn verified_source_object_cannot_be_rebound_to_another_record() {
+        let record = synthetic_cache_record();
+        let object = VerifiedSourceObject::verify(
+            &record,
+            b"x".to_vec(),
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect("construct proof for original record");
+        let mut other_record = record.clone();
+        other_record.selected_object_sha256 = hex::encode(Sha256::digest(b"y"));
+
+        let error = object
+            .into_bytes_for(&other_record)
+            .expect_err("a proof must remain bound to its selected-object identity");
+
+        assert!(
+            error
+                .to_string()
+                .contains("proof does not match execution-pack record"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -7944,7 +8067,10 @@ mod tests {
         assert_eq!(reconstructed.canonical_rows, 3);
         assert_eq!(reconstructed.nt_catalog_rows, 3);
         assert_eq!(reconstructed.catalog_hash, sealed_hash);
-        assert_ne!(reconstructed.canonical_rows, untrusted_record.canonical_rows);
+        assert_ne!(
+            reconstructed.canonical_rows,
+            untrusted_record.canonical_rows
+        );
         assert_ne!(reconstructed.catalog_hash, untrusted_record.catalog_hash);
     }
 
@@ -8039,7 +8165,6 @@ mod tests {
             "{error:#}"
         );
     }
-
 }
 
 fn validated_http_source_url(source_url: &str) -> Result<reqwest::Url> {

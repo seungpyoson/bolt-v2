@@ -3086,10 +3086,16 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        Arc::new(FailingDecisionEvidenceWriter),
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
+            RecordingDecisionEvidenceWriter,
+        )),
     );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        Arc::new(FailingDecisionEvidenceWriter),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
     let strategy_id = unique_log_capture_strategy_id("entry");
     strategy.config.strategy_id = strategy_id.clone();
 
@@ -5130,6 +5136,9 @@ fn admitted_and_unblocked_paths_do_not_clear_episode_novelty() {
         Some(LocalReceiveMs::new(1_200)),
     );
     entry_strategy
+        .pricing
+        .observe_reference_current_price(&fast_spot("chainlink", 3_100.5, 1_200));
+    entry_strategy
         .record_entry_skip_once(
             1_200,
             &skip,
@@ -5137,9 +5146,6 @@ fn admitted_and_unblocked_paths_do_not_clear_episode_novelty() {
             None,
         )
         .unwrap();
-    entry_strategy
-        .pricing
-        .observe_reference_current_price(&fast_spot("chainlink", 3_100.5, 1_200));
     let admitted = entry_strategy.entry_submission_decision_at(1_200);
     assert!(
         admitted.instrument_id.is_some(),

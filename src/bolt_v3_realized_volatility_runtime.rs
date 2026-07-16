@@ -13,9 +13,11 @@ use nautilus_model::{
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, realized_volatility_engine_config},
     bolt_v3_numeric::{MIDPOINT_DIVISOR_F64, NANOS_PER_MILLI_U64, is_positive_finite},
+    bolt_v3_providers::realized_volatility_new_risk_source_available,
     bolt_v3_realized_volatility::{
-        RealizedVolEngine, RealizedVolEngineConfig, RealizedVolObservation, RealizedVolSampleKind,
-        RealizedVolSnapshot, RealizedVolSourceClass,
+        RealizedVolBlockReason, RealizedVolEngine, RealizedVolEngineConfig, RealizedVolObservation,
+        RealizedVolSampleKind, RealizedVolSnapshot, RealizedVolSourceClass,
+        RealizedVolSourceStatus,
     },
     bolt_v3_timestamp_domain::{NtStrategyClockMs, VenueEventMs},
 };
@@ -65,6 +67,7 @@ pub struct RealizedVolSurfaceRuntime {
     // semantics; production strategy callers must use the `*_for_surface` variants so a
     // strategy only subscribes its configured surface.
     subscription_requests_by_surface: BTreeMap<String, Vec<RealizedVolSubscriptionRequest>>,
+    new_risk_capability_unavailable_sources: BTreeSet<(String, String)>,
 }
 
 impl RealizedVolSurfaceRuntime {
@@ -73,11 +76,19 @@ impl RealizedVolSurfaceRuntime {
             surfaces: BTreeMap::new(),
             routes_by_event: BTreeMap::new(),
             subscription_requests_by_surface: BTreeMap::new(),
+            new_risk_capability_unavailable_sources: BTreeSet::new(),
         }
     }
 
     pub fn from_configs(
         configs: BTreeMap<String, RealizedVolEngineConfig>,
+    ) -> Result<Self, String> {
+        Self::from_configs_with_unavailable_sources(configs, BTreeSet::new())
+    }
+
+    fn from_configs_with_unavailable_sources(
+        configs: BTreeMap<String, RealizedVolEngineConfig>,
+        new_risk_capability_unavailable_sources: BTreeSet<(String, String)>,
     ) -> Result<Self, String> {
         let mut surfaces = BTreeMap::new();
         let mut routes_by_event: BTreeMap<EventRouteKey, Vec<RealizedVolSourceRoute>> =
@@ -107,6 +118,11 @@ impl RealizedVolSurfaceRuntime {
                 let Some(kind) = subscription_kind(source.source_class, source.sample_kind) else {
                     continue;
                 };
+                if new_risk_capability_unavailable_sources
+                    .contains(&(surface_id.clone(), source.source_id.clone()))
+                {
+                    continue;
+                }
                 let instrument_id = InstrumentId::from_str(source.instrument_id.as_str())
                     .map_err(|error| {
                         format!(
@@ -165,6 +181,7 @@ impl RealizedVolSurfaceRuntime {
             surfaces,
             routes_by_event,
             subscription_requests_by_surface,
+            new_risk_capability_unavailable_sources,
         })
     }
 
@@ -185,7 +202,18 @@ impl RealizedVolSurfaceRuntime {
                     })
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        Self::from_configs(configs)
+        let unavailable_client_ids = unavailable_realized_volatility_new_risk_client_ids(loaded)?;
+        let unavailable_sources = configs
+            .iter()
+            .flat_map(|(surface_id, config)| {
+                config.sources.iter().filter_map(|source| {
+                    unavailable_client_ids
+                        .contains(source.data_client_id.as_str())
+                        .then(|| (surface_id.clone(), source.source_id.clone()))
+                })
+            })
+            .collect();
+        Self::from_configs_with_unavailable_sources(configs, unavailable_sources)
     }
 
     pub fn surface_ids(&self) -> Vec<String> {
@@ -259,7 +287,7 @@ impl RealizedVolSurfaceRuntime {
     pub fn observe(&mut self, observation: RealizedVolObservation) -> bool {
         let mut matched_configured_source = false;
         let mut observed = false;
-        for state in self.surfaces.values_mut() {
+        for (surface_id, state) in &mut self.surfaces {
             let source_belongs_to_surface = state
                 .engine
                 .config()
@@ -268,7 +296,12 @@ impl RealizedVolSurfaceRuntime {
                 .any(|source| source.source_id == observation.source_id);
             if source_belongs_to_surface {
                 matched_configured_source = true;
-                observed |= state.engine.observe(observation.clone());
+                if !self
+                    .new_risk_capability_unavailable_sources
+                    .contains(&(surface_id.clone(), observation.source_id.clone()))
+                {
+                    observed |= state.engine.observe(observation.clone());
+                }
             }
         }
         if matched_configured_source {
@@ -371,7 +404,11 @@ impl RealizedVolSurfaceRuntime {
         }) {
             return state.latest_snapshot.clone();
         }
-        let snapshot = state.engine.snapshot_at(as_of_ms.value());
+        let mut snapshot = state.engine.snapshot_at(as_of_ms.value());
+        mark_unavailable_source_diagnostics(
+            &mut snapshot,
+            &self.new_risk_capability_unavailable_sources,
+        );
         state.last_refresh_ms = Some(as_of_ms);
         state.latest_snapshot = Some(snapshot.clone());
         Some(snapshot)
@@ -429,6 +466,36 @@ impl RealizedVolSurfaceRuntime {
                 self.publish_surface_after_routed_observation(surface_id.as_str())
             })
             .collect()
+    }
+}
+
+fn unavailable_realized_volatility_new_risk_client_ids(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BTreeSet<String>, String> {
+    loaded
+        .root
+        .clients
+        .iter()
+        .map(|(client_id, client)| {
+            realized_volatility_new_risk_source_available(client_id, client)
+                .map(|available| (!available).then(|| client_id.clone()))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|client_ids| client_ids.into_iter().flatten().collect())
+}
+
+fn mark_unavailable_source_diagnostics(
+    snapshot: &mut RealizedVolSnapshot,
+    unavailable_sources: &BTreeSet<(String, String)>,
+) {
+    for diagnostic in &mut snapshot.source_diagnostics {
+        if unavailable_sources
+            .contains(&(snapshot.surface_id.clone(), diagnostic.source_id.clone()))
+        {
+            diagnostic.counts_toward_quorum = false;
+            diagnostic.status = RealizedVolSourceStatus::DiagnosticOnly;
+            diagnostic.block_reason = Some(RealizedVolBlockReason::ProviderCapabilityUnavailable);
+        }
     }
 }
 

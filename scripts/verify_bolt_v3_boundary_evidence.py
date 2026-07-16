@@ -21,7 +21,7 @@ from verifier_io import require_nonempty
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_NT_GIT = "https://github.com/seungpyoson/nautilus_trader.git"
+EXPECTED_NT_GIT = "https://github.com/nautechsystems/nautilus_trader.git"
 REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
 WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
 EXEMPTIONS = Path("ci/bolt-v3-boundary-exemptions.toml")
@@ -56,8 +56,9 @@ NT_NAMING_LEDGER_PIN_SURFACE = Path(
 NT_BOUNDARY_DOCTRINE_PIN_SURFACE = Path(
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md"
 )
+NT_SOURCE_CAPABILITIES_PIN_SURFACE = Path("ci/nautilus-source-capabilities.toml")
 POLYMARKET_QUERY_FIXTURE_PIN_SURFACE = Path(
-    "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt"
+    "tests/fixtures/nt_polymarket_query_post_order_params_8160730c.txt"
 )
 NON_CARGO_PIN_SURFACES = (
     RUNTIME_CONTRACT_PIN_SURFACE,
@@ -65,10 +66,12 @@ NON_CARGO_PIN_SURFACES = (
     NT_BOUNDARY_DOCTRINE_PIN_SURFACE,
     NT_NAMING_LEDGER_PIN_SURFACE,
     POLYMARKET_QUERY_FIXTURE_PIN_SURFACE,
+    NT_SOURCE_CAPABILITIES_PIN_SURFACE,
 )
 BINANCE_SOURCE_SYMBOLS = (
     "BinanceSpotDataClient::handle_ws_message",
-    "handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init",
+    "NAUTILUS_SOURCE_CAPABILITIES",
+    "ProviderCapabilityUnavailable",
     "decode_market_data",
     "parse_trades_event",
     "parse_bbo_event",
@@ -97,19 +100,19 @@ BINANCE_TIMESTAMP_PARSER_SYMBOLS = (
     "parse_depth_diff",
 )
 BINANCE_TIMESTAMP_TEST_CASE_RESULT_CONTRACTS = {
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_multi_trade_uses_event_time_for_initialization_stamp": (
         "parse_trades_event",
         "trades",
     ),
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_bbo_uses_event_time_for_initialization_stamp": (
         "parse_bbo_event",
         "quote",
     ),
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_depth_snapshot_uses_event_time_for_initialization_stamp": (
         "parse_depth_snapshot",
         "deltas",
     ),
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_depth_diff_uses_event_time_for_initialization_stamp": (
         "parse_depth_diff",
         "deltas",
     ),
@@ -119,19 +122,19 @@ BINANCE_TIMESTAMP_DEPTH_EXPECT_MESSAGES = {
     "parse_depth_diff": "non-empty SBE depth diff must produce deltas",
 }
 BINANCE_TIMESTAMP_TEST_CASE_EVENT_CONTRACTS = {
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_multi_trade_uses_event_time_for_initialization_stamp": (
         "transact_time_us",
         "TradesStreamEvent",
     ),
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_bbo_uses_event_time_for_initialization_stamp": (
         "event_time_us",
         "BestBidAskStreamEvent",
     ),
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_depth_snapshot_uses_event_time_for_initialization_stamp": (
         "event_time_us",
         "DepthSnapshotStreamEvent",
     ),
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_depth_diff_uses_event_time_for_initialization_stamp": (
         "event_time_us",
         "DepthDiffStreamEvent",
     ),
@@ -143,14 +146,10 @@ BINANCE_TIMESTAMP_TRADE_PER_ITEM_ASSERTIONS = frozenset(
     }
 )
 BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_multi_trade_uses_event_time_for_initialization_stamp": (
         (
             "pinned parse_trades_event call",
             r"\bnt_binance_sbe_parse\s*::\s*parse_trades_event\s*\(",
-        ),
-        (
-            "unequal event/init assertion",
-            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
         ),
         (
             "two-output assertion",
@@ -164,17 +163,13 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "per-trade initialization timestamp assertion",
-            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*trade\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*trade\s*\.\s*ts_init\s*,\s*expected_ts_event",
         ),
     ),
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_bbo_uses_event_time_for_initialization_stamp": (
         (
             "pinned parse_bbo_event call",
             r"\bnt_binance_sbe_parse\s*::\s*parse_bbo_event\s*\(",
-        ),
-        (
-            "unequal event/init assertion",
-            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
         ),
         (
             "quote event timestamp assertion",
@@ -182,19 +177,15 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "quote initialization timestamp assertion",
-            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*quote\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*quote\s*\.\s*ts_init\s*,\s*expected_ts_event",
         ),
     ),
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_depth_snapshot_uses_event_time_for_initialization_stamp": (
         (
             "pinned parse_depth_snapshot call",
             r"\bnt_binance_sbe_parse\s*::\s*parse_depth_snapshot\s*\(",
         ),
         (
-            "unequal event/init assertion",
-            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
-        ),
-        (
             "three-inner-delta assertion",
             r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
         ),
@@ -204,7 +195,7 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "aggregate initialization timestamp assertion",
-            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*expected_ts_event",
         ),
         (
             "all inner event timestamps assertion",
@@ -212,19 +203,15 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "all inner initialization timestamps assertion",
-            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*expected_ts_event",
         ),
     ),
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps": (
+    "sbe_depth_diff_uses_event_time_for_initialization_stamp": (
         (
             "pinned parse_depth_diff call",
             r"\bnt_binance_sbe_parse\s*::\s*parse_depth_diff\s*\(",
         ),
         (
-            "unequal event/init assertion",
-            r"::\s*core\s*::\s*assert_ne\s*!\s*\(\s*expected_ts_event\s*,\s*adapter_ts_init",
-        ),
-        (
             "three-inner-delta assertion",
             r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*len\s*\(\s*\)\s*,\s*3",
         ),
@@ -234,7 +221,7 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "aggregate initialization timestamp assertion",
-            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert_eq\s*!\s*\(\s*deltas\s*\.\s*ts_init\s*,\s*expected_ts_event",
         ),
         (
             "all inner event timestamps assertion",
@@ -242,7 +229,7 @@ BINANCE_TIMESTAMP_TEST_CASE_REQUIREMENTS = {
         ),
         (
             "all inner initialization timestamps assertion",
-            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*adapter_ts_init",
+            r"::\s*core\s*::\s*assert\s*!\s*\(\s*deltas\s*\.\s*deltas\s*\.\s*iter\s*\(\s*\)\s*\.\s*all\s*\(\s*\|\s*delta\s*\|\s*delta\s*\.\s*ts_init\s*==\s*expected_ts_event",
         ),
     ),
 }
@@ -281,6 +268,9 @@ PIN_TEXT_PATTERNS = {
     POLYMARKET_QUERY_FIXTURE_PIN_SURFACE: (
         re.compile(r"^Revision: ([0-9a-f]{40})$", re.MULTILINE),
     ),
+    NT_SOURCE_CAPABILITIES_PIN_SURFACE: (
+        re.compile(r'^revision = "([0-9a-f]{40})"$', re.MULTILINE),
+    ),
 }
 RUNTIME_CONTRACT_PIN_SECTIONS = (
     (
@@ -297,7 +287,7 @@ RUNTIME_CONTRACT_PIN_SECTIONS = (
     (
         "## 13. CLOB V2 Readiness Gate",
         re.compile(
-            r"^Current status: this branch pins NautilusTrader to\s+`([0-9a-f]{40})` on the bolt pin-fork$",
+            r"^Current status: this branch pins the official NautilusTrader repository at the\s+immutable `v1\.230\.0` release commit\s+`([0-9a-f]{40})`\.",
             re.MULTILINE,
         ),
     ),
@@ -1801,8 +1791,7 @@ def has_governed_expected_event_contract(
     parser_call = re.compile(
         rf"\blet\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*"
         rf"{re.escape(BINANCE_TIMESTAMP_PARSER_ALIAS)}\s*::\s*"
-        rf"{re.escape(parser_symbol)}\s*\(\s*&\s*event\s*,\s*&\s*instrument\s*,\s*"
-        r"adapter_ts_init\s*\)"
+        rf"{re.escape(parser_symbol)}\s*\(\s*&\s*event\s*,\s*&\s*instrument\s*\)"
     )
     parser_calls = [
         match
@@ -1869,8 +1858,6 @@ def has_governed_binance_parser_result_contract(
         ",",
         "&",
         "instrument",
-        ",",
-        "adapter_ts_init",
         ")",
     ]
     expect_message = BINANCE_TIMESTAMP_DEPTH_EXPECT_MESSAGES.get(parser_symbol)
@@ -2045,7 +2032,7 @@ def scan_binance_timestamp_behavioral_contract(root: Path, findings: list[str]) 
         trade_loop_span = (
             binance_trade_loop_span(body)
             if function_name
-            == "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
+            == "sbe_multi_trade_uses_event_time_for_initialization_stamp"
             else None
         )
         for description, pattern in requirements:
@@ -2230,6 +2217,28 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
                 f"{surface}: NautilusTrader pin census must contain exactly one governed "
                 f"{expected_revision} value for each anchored pin claim"
             )
+        if surface == NT_SOURCE_CAPABILITIES_PIN_SURFACE:
+            try:
+                capabilities = tomllib.loads(text)
+            except tomllib.TOMLDecodeError as error:
+                findings.append(f"{surface}: could not parse capability manifest: {error}")
+                continue
+            source = capabilities.get("source", {})
+            binance = capabilities.get("binance_spot_sbe", {})
+            if source.get("git") != EXPECTED_NT_GIT:
+                findings.append(
+                    f"{surface}: capability manifest must use official git={EXPECTED_NT_GIT!r}"
+                )
+            required_flags = (
+                binance.get("schema_3_5"),
+                binance.get("adapter_receive_clock"),
+                binance.get("new_risk_quorum"),
+            )
+            if required_flags != (False, False, False):
+                findings.append(
+                    f"{surface}: official v1.230.0 Binance SBE capabilities must remain "
+                    "false/false/false"
+                )
 
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     if today is None:

@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 
 use bolt_v2::{
+    bolt_v3_config::load_bolt_v3_config,
     bolt_v3_realized_volatility::{
-        RealizedVolAggregation, RealizedVolEngineConfig, RealizedVolObservation,
-        RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceConfig,
-        RealizedVolSourceRejectReason,
+        RealizedVolAggregation, RealizedVolBlockReason, RealizedVolEngineConfig,
+        RealizedVolObservation, RealizedVolSampleKind, RealizedVolSourceClass,
+        RealizedVolSourceConfig, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
     },
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_timestamp_domain::NtStrategyClockMs,
+    nautilus_source_capabilities::NAUTILUS_SOURCE_CAPABILITIES,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -114,6 +116,77 @@ impl QuoteReplayTick {
 fn event_clock_replay_fixture() -> QuoteReplayFixture {
     toml::from_str(include_str!("fixtures/bolt_v3/rv_event_clock_replay.toml"))
         .expect("event-clock RV replay fixture should parse")
+}
+
+#[test]
+fn official_pin_capabilities_fail_closed_for_binance_sbe_new_risk_quorum() {
+    assert_eq!(
+        NAUTILUS_SOURCE_CAPABILITIES.git,
+        "https://github.com/nautechsystems/nautilus_trader.git"
+    );
+    assert_eq!(
+        NAUTILUS_SOURCE_CAPABILITIES.revision,
+        "8160730c7c550480b0a439fb11086a4c4de15f0b"
+    );
+    assert!(!NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_schema_3_5);
+    assert!(!NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_adapter_receive_clock);
+    assert!(!NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_new_risk_quorum);
+}
+
+#[test]
+fn unavailable_binance_sbe_capability_keeps_runtime_reachable_but_cannot_ready_quorum() {
+    let mut loaded = load_bolt_v3_config(&super::support::repo_path("config/root.toml"))
+        .expect("production config should load");
+    let surfaces = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_mut()
+        .expect("production config should declare RV surfaces");
+    let surface = surfaces
+        .get_mut("btc_usdt_midpoint_rv")
+        .expect("production config should declare the BTC/USDT RV surface");
+    surface
+        .sources
+        .retain(|source| source.data_client_id.as_str() == "binance_spot_data");
+
+    let mut runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
+        .expect("missing provider capabilities must not prevent runtime construction");
+    assert!(
+        runtime
+            .subscription_requests_for_surface("btc_usdt_midpoint_rv")
+            .is_empty(),
+        "unavailable Binance SBE must not create an ingestion route"
+    );
+    assert!(!runtime.observe(RealizedVolObservation {
+        source_id: "binance_btc_usdt_midpoint".to_string(),
+        source_class: RealizedVolSourceClass::SpotQuote,
+        sample_kind: RealizedVolSampleKind::Midpoint,
+        price: 100_000.0,
+        event_ts_ms: 1_000,
+        recv_ts_ms: 1_001,
+    }));
+
+    let snapshot = runtime
+        .refresh_surface_at("btc_usdt_midpoint_rv", strategy_clock_ms(1_001))
+        .expect("configured surface should remain refreshable");
+    assert!(!snapshot.ready);
+    assert_eq!(snapshot.ready_realized_vol(), None);
+    assert!(
+        snapshot
+            .blocked_reasons
+            .contains(&RealizedVolBlockReason::QuorumNotReady)
+    );
+    let diagnostic = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == "binance_btc_usdt_midpoint")
+        .expect("unavailable source should remain visible in diagnostics");
+    assert!(!diagnostic.counts_toward_quorum);
+    assert_eq!(diagnostic.status, RealizedVolSourceStatus::DiagnosticOnly);
+    assert_eq!(
+        diagnostic.block_reason,
+        Some(RealizedVolBlockReason::ProviderCapabilityUnavailable)
+    );
 }
 
 #[test]

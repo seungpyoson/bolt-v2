@@ -9,6 +9,7 @@ use std::{
 /// Repo-root manifest that is the single owner of the gated source-root list,
 /// shared with `scripts/bolt_v3_source_roots.py`.
 const GATED_SOURCE_ROOTS_MANIFEST: &str = "gated_source_roots.manifest";
+const NAUTILUS_SOURCE_CAPABILITIES_MANIFEST: &str = "ci/nautilus-source-capabilities.toml";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -19,6 +20,7 @@ fn main() {
     let manifest_dir = build_script_manifest_dir();
     emit_git_head_rerun_paths(&manifest_dir);
     emit_gated_source_roots(&manifest_dir);
+    emit_nautilus_source_capabilities(&manifest_dir);
 
     match Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -41,6 +43,157 @@ fn main() {
             println!("cargo:warning=failed to run git rev-parse HEAD: {error}");
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NautilusSourceCapabilities {
+    git: String,
+    revision: String,
+    binance_spot_sbe_schema_3_5: bool,
+    binance_spot_sbe_adapter_receive_clock: bool,
+    binance_spot_sbe_new_risk_quorum: bool,
+}
+
+fn emit_nautilus_source_capabilities(manifest_dir: &Path) {
+    let capabilities_path = manifest_dir.join(NAUTILUS_SOURCE_CAPABILITIES_MANIFEST);
+    let cargo_toml_path = manifest_dir.join("Cargo.toml");
+    println!("cargo:rerun-if-changed={}", capabilities_path.display());
+    println!("cargo:rerun-if-changed={}", cargo_toml_path.display());
+    let capabilities_text = fs::read_to_string(&capabilities_path).unwrap_or_else(|error| {
+        panic!(
+            "reading {} should succeed: {error}",
+            capabilities_path.display()
+        )
+    });
+    let capabilities = parse_nautilus_source_capabilities(&capabilities_text, &capabilities_path);
+    let cargo_toml = fs::read_to_string(&cargo_toml_path).unwrap_or_else(|error| {
+        panic!(
+            "reading {} should succeed: {error}",
+            cargo_toml_path.display()
+        )
+    });
+    verify_nautilus_dependency_anchor(&cargo_toml, &capabilities, &cargo_toml_path);
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
+    let out_path = out_dir.join("nautilus_source_capabilities.rs");
+    fs::write(
+        &out_path,
+        render_nautilus_source_capabilities(&capabilities),
+    )
+    .unwrap_or_else(|error| panic!("writing {} should succeed: {error}", out_path.display()));
+}
+
+fn parse_nautilus_source_capabilities(
+    text: &str,
+    manifest_path: &Path,
+) -> NautilusSourceCapabilities {
+    let value = |key: &str| {
+        let prefix = format!("{key} = ");
+        let matches = text
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix(&prefix))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matches.len(),
+            1,
+            "{}: key `{key}` must occur exactly once",
+            manifest_path.display()
+        );
+        matches[0]
+    };
+    let string_value = |key: &str| {
+        value(key)
+            .strip_prefix('"')
+            .and_then(|raw| raw.strip_suffix('"'))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: key `{key}` must be a quoted string",
+                    manifest_path.display()
+                )
+            })
+            .to_string()
+    };
+    let bool_value = |key: &str| match value(key) {
+        "true" => true,
+        "false" => false,
+        _ => panic!(
+            "{}: key `{key}` must be true or false",
+            manifest_path.display()
+        ),
+    };
+    let capabilities = NautilusSourceCapabilities {
+        git: string_value("git"),
+        revision: string_value("revision"),
+        binance_spot_sbe_schema_3_5: bool_value("schema_3_5"),
+        binance_spot_sbe_adapter_receive_clock: bool_value("adapter_receive_clock"),
+        binance_spot_sbe_new_risk_quorum: bool_value("new_risk_quorum"),
+    };
+    assert!(
+        capabilities.revision.len() == 40
+            && capabilities
+                .revision
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()),
+        "{}: revision must be one full 40-character Git SHA",
+        manifest_path.display()
+    );
+    assert_eq!(
+        capabilities.binance_spot_sbe_new_risk_quorum,
+        capabilities.binance_spot_sbe_schema_3_5
+            && capabilities.binance_spot_sbe_adapter_receive_clock,
+        "{}: new_risk_quorum must equal schema_3_5 && adapter_receive_clock",
+        manifest_path.display()
+    );
+    capabilities
+}
+
+fn verify_nautilus_dependency_anchor(
+    cargo_toml: &str,
+    capabilities: &NautilusSourceCapabilities,
+    cargo_toml_path: &Path,
+) {
+    let anchor = cargo_toml
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("nautilus-binance = "))
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: nautilus-binance dependency is missing",
+                cargo_toml_path.display()
+            )
+        });
+    let expected_git = format!("git = {:?}", capabilities.git);
+    let expected_revision = format!("rev = {:?}", capabilities.revision);
+    assert!(
+        anchor.contains(&expected_git) && anchor.contains(&expected_revision),
+        "{}: nautilus-binance must match the source capability manifest",
+        cargo_toml_path.display()
+    );
+    for forbidden in ["branch =", "tag =", "path ="] {
+        assert!(
+            !anchor.contains(forbidden),
+            "{}: nautilus-binance must not use `{forbidden}`",
+            cargo_toml_path.display()
+        );
+    }
+}
+
+fn render_nautilus_source_capabilities(capabilities: &NautilusSourceCapabilities) -> String {
+    format!(
+        "// @generated by build.rs from {NAUTILUS_SOURCE_CAPABILITIES_MANIFEST} — do not edit.\n\
+         pub const NAUTILUS_SOURCE_CAPABILITIES: NautilusSourceCapabilities = NautilusSourceCapabilities {{\n\
+             git: {:?},\n\
+             revision: {:?},\n\
+             binance_spot_sbe_schema_3_5: {},\n\
+             binance_spot_sbe_adapter_receive_clock: {},\n\
+             binance_spot_sbe_new_risk_quorum: {},\n\
+         }};\n",
+        capabilities.git,
+        capabilities.revision,
+        capabilities.binance_spot_sbe_schema_3_5,
+        capabilities.binance_spot_sbe_adapter_receive_clock,
+        capabilities.binance_spot_sbe_new_risk_quorum,
+    )
 }
 
 /// Generate the `GATED_SOURCE_ROOTS` constant from the repo-root manifest into
@@ -184,6 +337,48 @@ pub fn build_script_manifest_dir() -> PathBuf {
     PathBuf::from(
         env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),
     )
+}
+
+#[cfg(test)]
+mod nautilus_source_capability_tests {
+    use super::*;
+
+    const CAPABILITIES: &str = r#"
+[source]
+git = "https://github.com/nautechsystems/nautilus_trader.git"
+revision = "8160730c7c550480b0a439fb11086a4c4de15f0b"
+
+[binance_spot_sbe]
+schema_3_5 = false
+adapter_receive_clock = false
+new_risk_quorum = false
+"#;
+
+    #[test]
+    fn capability_manifest_is_bound_to_one_full_official_revision() {
+        let parsed = parse_nautilus_source_capabilities(CAPABILITIES, Path::new("capabilities"));
+        assert_eq!(
+            parsed.git,
+            "https://github.com/nautechsystems/nautilus_trader.git"
+        );
+        assert_eq!(parsed.revision, "8160730c7c550480b0a439fb11086a4c4de15f0b");
+        assert!(!parsed.binance_spot_sbe_new_risk_quorum);
+    }
+
+    #[test]
+    #[should_panic(expected = "new_risk_quorum must equal schema_3_5 && adapter_receive_clock")]
+    fn capability_manifest_cannot_claim_composite_quorum_without_both_inputs() {
+        let invalid = CAPABILITIES.replace("new_risk_quorum = false", "new_risk_quorum = true");
+        let _ = parse_nautilus_source_capabilities(&invalid, Path::new("capabilities"));
+    }
+
+    #[test]
+    #[should_panic(expected = "nautilus-binance must match the source capability manifest")]
+    fn capability_manifest_rejects_a_personal_fork_dependency_anchor() {
+        let parsed = parse_nautilus_source_capabilities(CAPABILITIES, Path::new("capabilities"));
+        let personal_fork = r#"nautilus-binance = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "8160730c7c550480b0a439fb11086a4c4de15f0b" }"#;
+        verify_nautilus_dependency_anchor(personal_fork, &parsed, Path::new("Cargo.toml"));
+    }
 }
 
 /// Paths whose change means `HEAD` now points at a different commit.

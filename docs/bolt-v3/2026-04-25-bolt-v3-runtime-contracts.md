@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `d636f17604cdbddc28ad40e0e15720e2d19bf860`
+  - current value: `8160730c7c550480b0a439fb11086a4c4de15f0b`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1374,26 +1374,29 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`d636f17604cdbddc28ad40e0e15720e2d19bf860`. WebSocket frames flow through
+`8160730c7c550480b0a439fb11086a4c4de15f0b`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
-`decode_market_data` parser family. Exact pinned source shows the handler
-capturing one local clock value per decoded message and supplying it to
-`parse_trades_event`, `parse_bbo_event`, `parse_depth_snapshot`, or
-`parse_depth_diff`; pinned-NT test
-`handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init` exercises the
-private BBO handler arm. This NT-owned path feeds both
-`RealizedVolatilityObservation` and `StrategySignalObservation`.
+`decode_market_data` parser family. Exact pinned source shows that
+`parse_trades_event`, `parse_bbo_event`, `parse_depth_snapshot`, and
+`parse_depth_diff` accept no adapter receive-clock argument and initialize
+`ts_init` from venue event time. The pin also rejects the captured Binance Spot
+SBE schema 3:5 exchange-info response.
 
-Bolt's `binance_sbe_quote_timestamps` harness exercises only the public parser
-contract: unequal venue-event and adapter-initialization stamps across every
-trade in a multi-trade message, the BBO quote, and both aggregate and inner
-snapshot/diff deltas. It cannot call the private production handler. Handler
-clock provenance is therefore governed by the exact dependency pin, reviewed
-NT source and its pinned unit test, not inferred by the Bolt harness or from
-numeric timestamp equality. For each public parser output, the venue event
-timestamp remains `ts_event` and the caller-supplied adapter-initialization
-timestamp remains `ts_init`; Bolt does not restamp, fall back, branch by venue,
-compare with a tolerance, or infer either stamp from a clock heuristic.
+The SHA-bound generated `NAUTILUS_SOURCE_CAPABILITIES` record therefore marks
+schema 3:5, adapter receive-clock ownership, and their composite new-risk
+quorum capability unavailable. `RealizedVolatilityObservation` and
+`StrategySignalObservation` must not treat that source as ready: the RV runtime
+omits its subscription and route, rejects direct observations, reports
+`ProviderCapabilityUnavailable`, and lets ordinary quorum rules decide whether
+other configured providers are sufficient. It does not restamp, infer, or
+substitute timestamps. Startup, recovery, exits, reconciliation, and settlement
+remain reachable because the capability gate is confined to new-risk RV source
+availability.
+
+The `binance_sbe_quote_timestamps` harness executes the public parsers and
+proves the absent receive-clock contract across every trade in a multi-trade
+message, the BBO quote, and both aggregate and inner snapshot/diff deltas. The
+schema capture test separately proves schema 3:5 rejection on the exact pin.
 
 The boundary verifier's Cargo-target and Rust-test-body checks are a structural
 fence only. They reject target fields or function attributes that can suppress
@@ -1502,21 +1505,15 @@ Unknown panic behavior is not acceptable.
 
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
-Current status: this branch pins NautilusTrader to
-`d636f17604cdbddc28ad40e0e15720e2d19bf860` on the bolt pin-fork
-(`seungpyoson/nautilus_trader`, branch `pin/v1.230.0-sbe-3-5-ts-init`). The
-fork commit has official `v1.230.0` release commit
-`8160730c7c550480b0a439fb11086a4c4de15f0b` as its sole parent and ports the
-Binance Spot SBE schema 3:5 instrument-loading fix (upstream
-`9a2e7a5155ffaa515c0279951eb1a06a8652ca33`), schema 3:5 request negotiation
-(upstream `3b59b08c9e651075a462f243c01664f4ccbd9b21`), and reviewed adapter receive-clock
-ownership from fork source `fa3391d90c1aace4733fc73dae082b4cfee6b8fa`.
-That pin carries Polymarket CLOB V2 adapter support, version-tolerant Binance
-Spot REST SBE decode within schema id 3, and the Hyperliquid HIP-4 metadata
-path. The compatibility
-evidence proves focused Bolt-v3 compile and test compatibility only. It does
-not prove live order signing, submission, fill parsing, collateral accounting,
-or fee behavior.
+Current status: this branch pins the official NautilusTrader repository at the
+immutable `v1.230.0` release commit
+`8160730c7c550480b0a439fb11086a4c4de15f0b`. The Polymarket query fixture is
+re-anchored to that exact official source and byte digest. Binance Spot SBE
+schema 3:5 and adapter receive-clock capabilities are explicitly unavailable
+and fail closed for affected new-risk quorum. The compatibility evidence proves
+focused Bolt-v3 compile and test compatibility only. It does not prove live
+order signing, submission, fill parsing, collateral accounting, or fee
+behavior.
 
 Live trading is allowed only if:
 

@@ -54,6 +54,7 @@ use crate::{
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     bolt_v3_wire_boundary::TransportBackend,
+    nautilus_source_capabilities::NAUTILUS_SOURCE_CAPABILITIES,
 };
 
 pub const KEY: &str = "BINANCE";
@@ -160,6 +161,24 @@ pub enum BinanceEnvironment {
     Live,
     Testnet,
     Demo,
+}
+
+pub(crate) fn realized_volatility_new_risk_source_available(
+    client_key: &str,
+    client: &ClientBlock,
+) -> Result<bool, String> {
+    let Some(data) = client.data.as_ref() else {
+        return Ok(true);
+    };
+    let config = data
+        .clone()
+        .try_into::<BinanceDataConfig>()
+        .map_err(|error| {
+            format!("clients.{client_key}.data could not parse Binance config: {error}")
+        })?;
+    Ok(config.product_type != BinanceProductType::Spot
+        || config.spot_market_data_mode != BinanceSpotMarketDataMode::Sbe
+        || NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_new_risk_quorum)
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

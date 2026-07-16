@@ -28,7 +28,7 @@ def fixture_nt_revision() -> str:
         for specification in dependencies.values()
         if isinstance(specification, dict)
         and specification.get("git")
-        == "https://github.com/seungpyoson/nautilus_trader.git"
+        == "https://github.com/nautechsystems/nautilus_trader.git"
         and isinstance(specification.get("rev"), str)
     }
     if len(revisions) != 1:
@@ -48,10 +48,10 @@ BINANCE_TIMESTAMP_PARSER_IMPORT = (
     f"as {BINANCE_TIMESTAMP_PARSER_ALIAS};"
 )
 BINANCE_TIMESTAMP_TEST_CASES = (
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_multi_trade_uses_event_time_for_initialization_stamp",
+    "sbe_bbo_uses_event_time_for_initialization_stamp",
+    "sbe_depth_snapshot_uses_event_time_for_initialization_stamp",
+    "sbe_depth_diff_uses_event_time_for_initialization_stamp",
 )
 REQUIRED_PIN_SURFACES = (
     "Cargo.toml",
@@ -62,7 +62,8 @@ REQUIRED_PIN_SURFACES = (
     "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
-    "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
+    "tests/fixtures/nt_polymarket_query_post_order_params_8160730c.txt",
+    "ci/nautilus-source-capabilities.toml",
 )
 
 
@@ -90,63 +91,63 @@ def binance_timestamp_test_source() -> str:
 use ::nautilus_binance::spot::websocket::streams::parse as nt_binance_sbe_parse;
 
 #[test]
-fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
+fn sbe_multi_trade_uses_event_time_for_initialization_stamp() {
     let transact_time_us = 1_700_000_000_100_000_i64;
     let expected_ts_event = UnixNanos::from_micros(transact_time_us as u64);
     let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
     let event = TradesStreamEvent { transact_time_us };
-    let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);
+    let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument);
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(trades.len(), 2);
     for data in trades {
         let Data::Trade(trade) = data else { panic!() };
         ::core::assert_eq!(trade.ts_event, expected_ts_event);
-        ::core::assert_eq!(trade.ts_init, adapter_ts_init);
+        ::core::assert_eq!(trade.ts_init, expected_ts_event);
     }
 }
 
 #[test]
-fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
+fn sbe_bbo_uses_event_time_for_initialization_stamp() {
     let event_time_us = 1_700_000_000_000_000_i64;
     let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
     let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
     let event = BestBidAskStreamEvent { event_time_us };
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);
+    ::core::assert_eq!(quote.ts_init, expected_ts_event);
 }
 
 #[test]
-fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps() {
+fn sbe_depth_snapshot_uses_event_time_for_initialization_stamp() {
     let event_time_us = 1_700_000_000_000_000_i64;
     let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
     let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
     let event = DepthSnapshotStreamEvent { event_time_us };
-    let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)
+    let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument)
         .expect("non-empty SBE depth snapshot must produce deltas");
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(deltas.deltas.len(), 3);
     ::core::assert_eq!(deltas.ts_event, expected_ts_event);
-    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
+    ::core::assert_eq!(deltas.ts_init, expected_ts_event);
     ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
-    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
+    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == expected_ts_event));
 }
 
 #[test]
-fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
+fn sbe_depth_diff_uses_event_time_for_initialization_stamp() {
     let event_time_us = 1_700_000_000_000_000_i64;
     let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
     let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
     let event = DepthDiffStreamEvent { event_time_us };
-    let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)
+    let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument)
         .expect("non-empty SBE depth diff must produce deltas");
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(deltas.deltas.len(), 3);
     ::core::assert_eq!(deltas.ts_event, expected_ts_event);
-    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
+    ::core::assert_eq!(deltas.ts_init, expected_ts_event);
     ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
-    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
+    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == expected_ts_event));
 }
 """
 
@@ -156,8 +157,8 @@ def clean_files(root: Path) -> None:
         root,
         "Cargo.toml",
         "[dependencies]\n"
-        f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
-        f'nautilus-network = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+        f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+        f'nautilus-network = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
         "[[test]]\n"
         f'name = "{BINANCE_TIMESTAMP_TEST_TARGET}"\n'
         f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n',
@@ -165,18 +166,29 @@ def clean_files(root: Path) -> None:
     write(root, BINANCE_TIMESTAMP_TEST_PATH, binance_timestamp_test_source())
     write(
         root,
+        "ci/nautilus-source-capabilities.toml",
+        "[source]\n"
+        'git = "https://github.com/nautechsystems/nautilus_trader.git"\n'
+        f'revision = "{EXPECTED_NT_REV}"\n\n'
+        "[binance_spot_sbe]\n"
+        "schema_3_5 = false\n"
+        "adapter_receive_clock = false\n"
+        "new_risk_quorum = false\n",
+    )
+    write(
+        root,
         "Cargo.lock",
         "version = 4\n"
         "[[package]]\n"
         'name = "nautilus-network"\n'
         'version = "0.59.0"\n'
-        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+        f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
     )
     write(
         root,
         "crates/backtesting-vertical-slice/Cargo.toml",
         "[dependencies]\n"
-        f'nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
+        f'nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
     )
     write(
         root,
@@ -185,7 +197,7 @@ def clean_files(root: Path) -> None:
         "[[package]]\n"
         'name = "nautilus-model"\n'
         'version = "0.59.0"\n'
-        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+        f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
     )
     write(
         root,
@@ -195,7 +207,8 @@ def clean_files(root: Path) -> None:
         "### 11.5 NautilusTrader pin governance\n"
         f"The live Binance Spot SBE quote boundary is owned by NautilusTrader revision `{EXPECTED_NT_REV}`.\n"
         "`BinanceSpotDataClient::handle_ws_message`\n"
-        "`handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init`\n"
+        "`NAUTILUS_SOURCE_CAPABILITIES`\n"
+        "`ProviderCapabilityUnavailable`\n"
         "`decode_market_data`\n"
         "`parse_trades_event`\n"
         "`parse_bbo_event`\n"
@@ -204,7 +217,9 @@ def clean_files(root: Path) -> None:
         "`RealizedVolatilityObservation`\n"
         "`StrategySignalObservation`\n"
         "## 13. CLOB V2 Readiness Gate\n"
-        f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork\n",
+        "Current status: this branch pins the official NautilusTrader repository at the\n"
+        "immutable `v1.230.0` release commit\n"
+        f"`{EXPECTED_NT_REV}`.\n",
     )
     write(
         root,
@@ -230,7 +245,7 @@ def clean_files(root: Path) -> None:
     )
     write(
         root,
-        "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
+        "tests/fixtures/nt_polymarket_query_post_order_params_8160730c.txt",
         "Source: NautilusTrader\n"
         f"Revision: {EXPECTED_NT_REV}\n"
         "Path: crates/adapters/polymarket/src/http/query.rs\n",
@@ -492,8 +507,8 @@ def test_pin_census_rejects_ambiguous_binance_revision_in_root_manifest() -> Non
         manifest = root / "Cargo.toml"
         manifest.write_text(
             manifest.read_text(encoding="utf-8").replace(
-                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
-                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{alternate_revision}" }}',
+                f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{alternate_revision}" }}',
             ),
             encoding="utf-8",
         )
@@ -527,8 +542,8 @@ def test_pin_census_checks_binance_dependency_against_derived_revision() -> None
         manifest = root / "Cargo.toml"
         manifest.write_text(
             manifest.read_text(encoding="utf-8").replace(
-                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
-                'nautilus-binance = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "not-an-immutable-commit" }',
+                f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                'nautilus-binance = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "not-an-immutable-commit" }',
             ),
             encoding="utf-8",
         )
@@ -622,18 +637,18 @@ def test_pin_census_reports_one_pin_finding_for_each_missing_required_surface() 
 def test_manifest_pin_census_accepts_order_multiline_and_dependency_scopes() -> None:
     manifest = f'''
 [dependencies]
-nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
-nautilus-common = {{ rev = "{EXPECTED_NT_REV}", git = "https://github.com/seungpyoson/nautilus_trader.git" }}
+nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nautilus-common = {{ rev = "{EXPECTED_NT_REV}", git = "https://github.com/nautechsystems/nautilus_trader.git" }}
 
 [dev-dependencies.nautilus-core]
 rev = "{EXPECTED_NT_REV}"
-git = "https://github.com/seungpyoson/nautilus_trader.git"
+git = "https://github.com/nautechsystems/nautilus_trader.git"
 
 [build-dependencies]
-nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 
 [target.'cfg(unix)'.dependencies.nautilus-network]
-git = "https://github.com/seungpyoson/nautilus_trader.git"
+git = "https://github.com/nautechsystems/nautilus_trader.git"
 rev = "{EXPECTED_NT_REV}"
 
 [[test]]
@@ -650,15 +665,15 @@ path = "{BINANCE_TIMESTAMP_TEST_PATH}"
 
 def test_manifest_pin_census_rejects_hidden_mixed_and_malformed_sources() -> None:
     cases = {
-        "reordered inline old pin": f'{{ rev = "{OLD_NT_REV}", git = "https://github.com/seungpyoson/nautilus_trader.git" }}',
-        "alternate source": f'{{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
-        "unpinned source": '{ git = "https://github.com/seungpyoson/nautilus_trader.git" }',
-        "branch source": '{ git = "https://github.com/seungpyoson/nautilus_trader.git", branch = "develop" }',
+        "reordered inline old pin": f'{{ rev = "{OLD_NT_REV}", git = "https://github.com/nautechsystems/nautilus_trader.git" }}',
+        "alternate source": f'{{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+        "unpinned source": '{ git = "https://github.com/nautechsystems/nautilus_trader.git" }',
+        "branch source": '{ git = "https://github.com/nautechsystems/nautilus_trader.git", branch = "develop" }',
     }
     for label, bad_dependency in cases.items():
         manifest = (
             "[dependencies]\n"
-            f'nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+            f'nautilus-common = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
             f"nautilus-core = {bad_dependency}\n"
         )
 
@@ -675,6 +690,34 @@ def test_manifest_pin_census_rejects_hidden_mixed_and_malformed_sources() -> Non
             raise AssertionError((label, findings))
 
 
+def test_capability_manifest_rejects_personal_source_and_unavailable_true_claims() -> None:
+    cases = (
+        (
+            "https://github.com/nautechsystems/nautilus_trader.git",
+            "https://github.com/seungpyoson/nautilus_trader.git",
+            "capability manifest must use official git",
+        ),
+        (
+            "new_risk_quorum = false",
+            "new_risk_quorum = true",
+            "capabilities must remain false/false/false",
+        ),
+    )
+    for original, replacement, expected in cases:
+        def mutate(
+            root: Path,
+            original: str = original,
+            replacement: str = replacement,
+        ) -> None:
+            path = root / "ci/nautilus-source-capabilities.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(original, replacement, 1),
+                encoding="utf-8",
+            )
+
+        assert_finding(scan_temp(mutate), expected)
+
+
 def test_manifest_pin_census_rejects_target_dev_and_build_mismatches() -> None:
     scopes = (
         "[dev-dependencies]",
@@ -686,9 +729,9 @@ def test_manifest_pin_census_rejects_target_dev_and_build_mismatches() -> None:
     for scope in scopes:
         manifest = (
             "[dependencies]\n"
-            f'nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n\n'
+            f'nautilus-common = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n\n'
             f"{scope}\n"
-            f'nautilus-core = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n'
+            f'nautilus-core = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n'
         )
 
         def mutate(root: Path, manifest: str = manifest) -> None:
@@ -700,10 +743,10 @@ def test_manifest_pin_census_rejects_target_dev_and_build_mismatches() -> None:
 def test_manifest_pin_census_rejects_multiline_old_pin_with_valid_decoy() -> None:
     manifest = f'''
 [dependencies]
-nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nautilus-common = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 
 [dependencies.nautilus-core]
-git = "https://github.com/seungpyoson/nautilus_trader.git"
+git = "https://github.com/nautechsystems/nautilus_trader.git"
 rev = "{OLD_NT_REV}"
 '''
 
@@ -716,8 +759,8 @@ rev = "{OLD_NT_REV}"
 def test_manifest_pin_census_rejects_aliased_nautilus_package_mismatch() -> None:
     manifest = f'''
 [dependencies]
-nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
-nt-core = {{ package = "nautilus-core", git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nautilus-common = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nt-core = {{ package = "nautilus-core", git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 '''
 
     def mutate(root: Path) -> None:
@@ -737,12 +780,12 @@ nautilus-model = { path = "vendor/nautilus-model" }
 nt-model = { package = "nautilus-model", path = "vendor/nautilus-model" }
 """,
         """
-[patch."https://github.com/seungpyoson/nautilus_trader.git"]
+[patch."https://github.com/nautechsystems/nautilus_trader.git"]
 model-fork = { path = "vendor/nautilus-model" }
 """,
         f"""
 [patch.crates-io]
-model-fork = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+model-fork = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 """,
         """
 [replace]
@@ -754,7 +797,7 @@ model-fork = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev 
 """,
         """
 [replace]
-"https://github.com/seungpyoson/nautilus_trader.git#nautilus-model@0.59.0" = { path = "vendor/nautilus-model" }
+"https://github.com/nautechsystems/nautilus_trader.git#nautilus-model@0.59.0" = { path = "vendor/nautilus-model" }
 """,
     )
     for override in overrides:
@@ -809,7 +852,7 @@ def test_manifest_pin_census_governs_actual_cargo_dependency_scopes() -> None:
                 '[package]\nname = "actual-scope"\nversion = "0.1.0"\n\n'
                 + scope
                 + "\n"
-                + f'nt-binance = {{ package = "nautilus-binance", git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
+                + f'nt-binance = {{ package = "nautilus-binance", git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
             )
             subprocess.run(repo_git_command("add", surface), cwd=root, check=True)
 
@@ -889,7 +932,7 @@ def test_pin_census_uses_tracked_lockfile_as_override_backstop() -> None:
             "[[package]]\n"
             'name = "nautilus-model"\n'
             'version = "0.59.0"\n'
-            f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
+            f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
         )
         subprocess.run(
             repo_git_command("add", manifest, lockfile),
@@ -911,7 +954,7 @@ def test_pin_census_rejects_tracked_new_standalone_workspace_with_stale_nt_pin()
             root,
             manifest,
             "[dependencies]\n"
-            f'nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
+            f'nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
         )
         write(
             root,
@@ -920,7 +963,7 @@ def test_pin_census_rejects_tracked_new_standalone_workspace_with_stale_nt_pin()
             "[[package]]\n"
             'name = "nautilus-model"\n'
             'version = "0.59.0"\n'
-            f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
+            f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
         )
         subprocess.run(
             repo_git_command("add", manifest, lockfile),
@@ -989,7 +1032,7 @@ def test_pin_census_rejects_workspace_inheritance_on_canonical_pin_roots() -> No
             path = root / manifest
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    f'{{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                    f'{{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
                     "{ workspace = true }",
                 ),
                 encoding="utf-8",
@@ -1003,7 +1046,7 @@ def test_pin_census_rejects_workspace_inheritance_on_canonical_pin_roots() -> No
 
 def test_lock_pin_census_accepts_reordered_package_fields() -> None:
     source = (
-        "git+https://github.com/seungpyoson/nautilus_trader.git"
+        "git+https://github.com/nautechsystems/nautilus_trader.git"
         f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
     )
     lock = f'''
@@ -1023,24 +1066,24 @@ name = "nautilus-common"
 
 def test_lock_pin_census_rejects_hidden_mixed_and_malformed_sources() -> None:
     canonical = (
-        "git+https://github.com/seungpyoson/nautilus_trader.git"
+        "git+https://github.com/nautechsystems/nautilus_trader.git"
         f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
     )
     cases = {
         "alternate source": (
-            "git+https://github.com/nautechsystems/nautilus_trader.git"
+            "git+https://github.com/seungpyoson/nautilus_trader.git"
             f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
         ),
         "missing rev": (
-            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            "git+https://github.com/nautechsystems/nautilus_trader.git"
             f"#{EXPECTED_NT_REV}"
         ),
         "old rev": (
-            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            "git+https://github.com/nautechsystems/nautilus_trader.git"
             f"?rev={OLD_NT_REV}#{OLD_NT_REV}"
         ),
         "wrong commit": (
-            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            "git+https://github.com/nautechsystems/nautilus_trader.git"
             f"?rev={EXPECTED_NT_REV}#{OLD_NT_REV}"
         ),
     }
@@ -1192,7 +1235,7 @@ def test_binance_timestamp_behavioral_contract_requires_case_symbols() -> None:
             "missing pinned parse_depth_snapshot call",
         ),
         (
-            "delta.ts_init == adapter_ts_init",
+            "delta.ts_init == expected_ts_event",
             "delta.ts_init != adapter_ts_init",
             "missing all inner initialization timestamps assertion",
         ),
@@ -1211,7 +1254,7 @@ def test_binance_timestamp_behavioral_contract_requires_case_symbols() -> None:
 
         assert_finding(
             scan_temp(mutate),
-            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps "
+            "sbe_depth_snapshot_uses_event_time_for_initialization_stamp "
             f"{expected_finding}",
         )
 
@@ -1264,7 +1307,7 @@ def test_binance_timestamp_behavioral_contract_accepts_canonical_fixture() -> No
 
 
 def test_binance_timestamp_behavioral_contract_rejects_assertion_macro_shadowing() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     function_header = f"#[test]\nfn {function_name}() {{"
     mutations = (
         "macro_rules! assert_eq { ($($token:tt)*) => {}; }\n",
@@ -1294,10 +1337,10 @@ def test_binance_timestamp_behavioral_contract_rejects_assertion_macro_shadowing
 
 
 def test_binance_timestamp_behavioral_contract_rejects_unreachable_assertions() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     canonical = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    ::core::assert_eq!(quote.ts_init, expected_ts_event);"""
     wrappers = (
         "if false {\n        " + canonical.replace("\n", "\n        ") + "\n    }",
         "if quote.ts_event != expected_ts_event {\n        "
@@ -1328,16 +1371,16 @@ def test_binance_timestamp_behavioral_contract_rejects_unreachable_assertions() 
 
 
 def test_binance_timestamp_behavioral_contract_rejects_bare_closure_assertions() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     canonical = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    ::core::assert_eq!(quote.ts_init, expected_ts_event);"""
     closure_prefixes = ("||", "move ||", "|_ignored: ()|")
     for closure_prefix in closure_prefixes:
         replacement = (
             f"let _a = {closure_prefix} ::core::assert_ne!(expected_ts_event, adapter_ts_init);\n"
             f"    let _b = {closure_prefix} ::core::assert_eq!(quote.ts_event, expected_ts_event);\n"
-            f"    let _c = {closure_prefix} ::core::assert_eq!(quote.ts_init, adapter_ts_init);"
+            f"    let _c = {closure_prefix} ::core::assert_eq!(quote.ts_init, expected_ts_event);"
         )
 
         def mutate(root: Path, replacement: str = replacement) -> None:
@@ -1355,11 +1398,11 @@ def test_binance_timestamp_behavioral_contract_rejects_bare_closure_assertions()
 
 
 def test_binance_timestamp_behavioral_contract_rejects_trade_bare_closure_assertions() -> None:
-    function_name = "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_multi_trade_uses_event_time_for_initialization_stamp"
     canonical = """::core::assert_eq!(trade.ts_event, expected_ts_event);
-        ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
+        ::core::assert_eq!(trade.ts_init, expected_ts_event);"""
     replacement = """let _event_proof = || ::core::assert_eq!(trade.ts_event, expected_ts_event);
-        let _init_proof = move || ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
+        let _init_proof = move || ::core::assert_eq!(trade.ts_init, expected_ts_event);"""
 
     def mutate(root: Path) -> None:
         path = root / BINANCE_TIMESTAMP_TEST_PATH
@@ -1376,9 +1419,9 @@ def test_binance_timestamp_behavioral_contract_rejects_trade_bare_closure_assert
 
 
 def test_binance_timestamp_behavioral_contract_preserves_trade_per_item_shape() -> None:
-    function_name = "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_multi_trade_uses_event_time_for_initialization_stamp"
     canonical = """::core::assert_eq!(trade.ts_event, expected_ts_event);
-        ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
+        ::core::assert_eq!(trade.ts_init, expected_ts_event);"""
     mutations = (
         "if false {\n            " + canonical.replace("\n", "\n            ") + "\n        }",
         "{\n            " + canonical.replace("\n", "\n            ") + "\n        }",
@@ -1399,10 +1442,10 @@ def test_binance_timestamp_behavioral_contract_preserves_trade_per_item_shape() 
 
 
 def test_binance_timestamp_behavioral_contract_rejects_early_exit_bypasses() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     canonical_parser = (
         "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);"
     )
     bypasses = (
         "return;",
@@ -1444,20 +1487,20 @@ def test_binance_timestamp_behavioral_contract_rejects_early_exit_bypasses() -> 
 
         assert_finding(
             scan_temp(mutate),
-            "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps "
+            "sbe_multi_trade_uses_event_time_for_initialization_stamp "
             "must not contain early-exit or conditional-compilation proof bypasses",
         )
 
 
 def test_binance_timestamp_behavioral_contract_requires_expected_event_provenance() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     canonical_expected = (
         "let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);"
     )
     canonical_event = "let event = BestBidAskStreamEvent { event_time_us };"
     canonical_parser = (
         "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);"
     )
     mutations = (
         (
@@ -1503,10 +1546,10 @@ def test_binance_timestamp_behavioral_contract_requires_expected_event_provenanc
 
 
 def test_binance_timestamp_behavioral_contract_rejects_expected_event_shadowing() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     canonical_parser = (
         "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);"
     )
     planted_patterns = (
         "let r#expected_ts_event = quote.ts_event;",
@@ -1536,13 +1579,13 @@ def test_binance_timestamp_behavioral_contract_rejects_expected_event_shadowing(
 
 
 def test_binance_timestamp_behavioral_contract_rejects_output_derived_expected_event() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     canonical_expected = (
         "let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);"
     )
     canonical_parser = (
         "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);"
     )
     mutations = (
         f"{canonical_parser}\n    let expected_ts_event = quote.ts_event;",
@@ -1567,7 +1610,7 @@ def test_binance_timestamp_behavioral_contract_rejects_output_derived_expected_e
 
 
 def test_binance_timestamp_behavioral_contract_rejects_parser_identity_shadowing() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     function_header = f"#[test]\nfn {function_name}() {{"
     mutations = (
         f"mod {BINANCE_TIMESTAMP_PARSER_ALIAS} {{}}",
@@ -1597,12 +1640,12 @@ def test_binance_timestamp_behavioral_contract_rejects_parser_identity_shadowing
 
 def test_binance_timestamp_behavioral_contract_rejects_fake_crate_identity_across_test_scopes() -> None:
     canonical = (
-        f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", '
+        f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", '
         f'rev = "{EXPECTED_NT_REV}" }}'
     )
     renamed_pin = (
         'pinned-binance = { package = "nautilus-binance", '
-        'git = "https://github.com/seungpyoson/nautilus_trader.git", '
+        'git = "https://github.com/nautechsystems/nautilus_trader.git", '
         f'rev = "{EXPECTED_NT_REV}" }}'
     )
     mutations = [
@@ -1675,7 +1718,7 @@ def test_manifest_pin_census_governs_real_nt_build_dependency_alias() -> None:
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
             + '\n[build-dependencies]\nparser-shim = '
-            + f'{{ package = "nautilus-binance", git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
+            + f'{{ package = "nautilus-binance", git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
             encoding="utf-8",
         )
 
@@ -1755,9 +1798,9 @@ def test_binance_timestamp_behavioral_contract_requires_direct_top_level_parser_
         path = root / BINANCE_TIMESTAMP_TEST_PATH
         path.write_text(
             path.read_text(encoding="utf-8").replace(
-                "let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);",
+                "let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument);",
                 "let parse = || {\n"
-                "        nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init)\n"
+                "        nt_binance_sbe_parse::parse_trades_event(&event, &instrument)\n"
                 "    };\n"
                 "    let trades = parse();",
                 1,
@@ -1767,7 +1810,7 @@ def test_binance_timestamp_behavioral_contract_requires_direct_top_level_parser_
 
     assert_finding(
         scan_temp(mutate),
-        "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps "
+        "sbe_multi_trade_uses_event_time_for_initialization_stamp "
         "must bind trades directly to pinned parse_trades_event exactly once without "
         "rebinding or reassignment",
     )
@@ -1776,14 +1819,14 @@ def test_binance_timestamp_behavioral_contract_requires_direct_top_level_parser_
 def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_call() -> None:
     canonical = (
         "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);"
     )
     mutations = (
         (
             "struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }\n"
             "    let _real_quote = "
-            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);\n"
-            "    let quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };"
+            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);\n"
+            "    let quote = FakeQuote { ts_event: expected_ts_event, ts_init: expected_ts_event };"
         ),
         (
             f"{canonical}\n"
@@ -1791,7 +1834,7 @@ def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_c
         ),
         (
             "let mut quote = "
-            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);\n"
+            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);\n"
             "    quote = quote;"
         ),
     )
@@ -1805,7 +1848,7 @@ def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_c
 
         assert_finding(
             scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "sbe_bbo_uses_event_time_for_initialization_stamp must bind "
             "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
         )
 
@@ -1813,34 +1856,34 @@ def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_c
 def test_binance_timestamp_behavioral_contract_rejects_postfix_result_laundering_for_every_parser() -> None:
     cases = (
         (
-            "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
+            "sbe_multi_trade_uses_event_time_for_initialization_stamp",
             "trades",
             "parse_trades_event",
-            "nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init)",
+            "nt_binance_sbe_parse::parse_trades_event(&event, &instrument)",
             "",
             "fabricated_trades()",
         ),
         (
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
+            "sbe_bbo_uses_event_time_for_initialization_stamp",
             "quote",
             "parse_bbo_event",
-            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init)",
+            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument)",
             "",
             "fabricated_quote()",
         ),
         (
-            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
+            "sbe_depth_snapshot_uses_event_time_for_initialization_stamp",
             "deltas",
             "parse_depth_snapshot",
-            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)",
+            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument)",
             '.expect("non-empty SBE depth snapshot must produce deltas")',
             "fabricated_deltas()",
         ),
         (
-            "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+            "sbe_depth_diff_uses_event_time_for_initialization_stamp",
             "deltas",
             "parse_depth_diff",
-            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)",
+            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument)",
             '.expect("non-empty SBE depth diff must produce deltas")',
             "fabricated_deltas()",
         ),
@@ -1858,7 +1901,7 @@ def test_binance_timestamp_behavioral_contract_rejects_postfix_result_laundering
             ),
             (
                 f"let {result_variable} = {parser_call}"
-                ".fabricate(expected_ts_event, adapter_ts_init)"
+                ".fabricate(expected_ts_event)"
                 f"{tail};"
             ),
         )
@@ -1887,15 +1930,15 @@ def test_binance_timestamp_behavioral_contract_rejects_postfix_result_laundering
 def test_binance_timestamp_behavioral_contract_rejects_noncanonical_depth_expect_chain() -> None:
     cases = (
         (
-            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
+            "sbe_depth_snapshot_uses_event_time_for_initialization_stamp",
             "parse_depth_snapshot",
-            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)",
+            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument)",
             "non-empty SBE depth snapshot must produce deltas",
         ),
         (
-            "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+            "sbe_depth_diff_uses_event_time_for_initialization_stamp",
             "parse_depth_diff",
-            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)",
+            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument)",
             "non-empty SBE depth diff must produce deltas",
         ),
     )
@@ -1912,7 +1955,7 @@ def test_binance_timestamp_behavioral_contract_rejects_noncanonical_depth_expect
             ),
             (
                 f'let deltas = {parser_call}.expect("{message}")'
-                ".fabricate(expected_ts_event, adapter_ts_init);"
+                ".fabricate(expected_ts_event);"
             ),
         )
         for replacement in mutations:
@@ -1938,28 +1981,28 @@ def test_binance_timestamp_behavioral_contract_rejects_noncanonical_depth_expect
 
 
 def test_binance_timestamp_behavioral_contract_rejects_for_and_match_result_fabrication() -> None:
-    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    ::core::assert_eq!(quote.ts_init, expected_ts_event);"""
     asserted_block = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
         ::core::assert_eq!(quote.ts_event, expected_ts_event);
-        ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+        ::core::assert_eq!(quote.ts_init, expected_ts_event);"""
     replacements = (
         """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     let _ = &quote;
-    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
+    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: expected_ts_event };
     for (_, quote) in [((), fabricated_quote)] {
         """
         + asserted_block
         + "\n    }",
         """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
     struct Wrapper { quote: FakeQuote }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     let _ = &quote;
     let fabricated_wrapper = Wrapper {
-        quote: FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init },
+        quote: FakeQuote { ts_event: expected_ts_event, ts_init: expected_ts_event },
     };
     match fabricated_wrapper {
         Wrapper { quote } => {
@@ -1981,7 +2024,7 @@ def test_binance_timestamp_behavioral_contract_rejects_for_and_match_result_fabr
 
         assert_finding(
             scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "sbe_bbo_uses_event_time_for_initialization_stamp must bind "
             "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
         )
 
@@ -1989,7 +2032,7 @@ def test_binance_timestamp_behavioral_contract_rejects_for_and_match_result_fabr
 def test_binance_timestamp_behavioral_contract_rejects_nested_binding_patterns() -> None:
     canonical = (
         "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);"
     )
     planted_patterns = (
         "for (_, Some(ref mut quote)) in values {}",
@@ -2012,41 +2055,41 @@ def test_binance_timestamp_behavioral_contract_rejects_nested_binding_patterns()
 
         assert_finding(
             scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "sbe_bbo_uses_event_time_for_initialization_stamp must bind "
             "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
         )
 
 
 def test_binance_timestamp_behavioral_contract_rejects_raw_identifier_result_fabrication() -> None:
-    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     ::core::assert_ne!(expected_ts_event, adapter_ts_init);
     ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+    ::core::assert_eq!(quote.ts_init, expected_ts_event);"""
     asserted_block = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
         ::core::assert_eq!(quote.ts_event, expected_ts_event);
-        ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
+        ::core::assert_eq!(quote.ts_init, expected_ts_event);"""
     replacements = (
         """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     let _ = &quote;
-    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
+    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: expected_ts_event };
     for (_, r#quote) in [((), fabricated_quote)] {
         """
         + asserted_block
         + "\n    }",
         """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     let _ = &quote;
-    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
+    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: expected_ts_event };
     let (_, r#quote) = ((), fabricated_quote);
     """
         + asserted_block,
         """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
     struct Wrapper { quote: FakeQuote }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
+    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);
     let _ = &quote;
     let fabricated_wrapper = Wrapper {
-        quote: FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init },
+        quote: FakeQuote { ts_event: expected_ts_event, ts_init: expected_ts_event },
     };
     match fabricated_wrapper {
         Wrapper { quote: r#quote } => {
@@ -2068,7 +2111,7 @@ def test_binance_timestamp_behavioral_contract_rejects_raw_identifier_result_fab
 
         assert_finding(
             scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "sbe_bbo_uses_event_time_for_initialization_stamp must bind "
             "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
         )
 
@@ -2076,7 +2119,7 @@ def test_binance_timestamp_behavioral_contract_rejects_raw_identifier_result_fab
 def test_binance_timestamp_behavioral_contract_fails_closed_on_ambiguous_binding_syntax() -> None:
     canonical = (
         "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
+        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument);"
     )
     planted_patterns = (
         "let (quote = value;",
@@ -2096,13 +2139,13 @@ def test_binance_timestamp_behavioral_contract_fails_closed_on_ambiguous_binding
 
         assert_finding(
             scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
+            "sbe_bbo_uses_event_time_for_initialization_stamp must bind "
             "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
         )
 
 
 def test_binance_timestamp_behavioral_contract_rejects_nonordinary_test_attributes() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
     ordinary_header = f"#[test]\nfn {function_name}()"
     mutations = (
         f"#[ignore]\n{ordinary_header}",
@@ -2160,7 +2203,7 @@ def test_binance_timestamp_behavioral_contract_rejects_crate_cfg_attr_inner_attr
 
 
 def test_binance_timestamp_behavioral_contract_requires_top_level_test_functions() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
 
     def mutate(root: Path) -> None:
         path = root / BINANCE_TIMESTAMP_TEST_PATH
@@ -2177,7 +2220,7 @@ def test_binance_timestamp_behavioral_contract_requires_top_level_test_functions
 
 
 def test_binance_timestamp_behavioral_contract_rejects_parenthesized_macro_wrapper() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
 
     def mutate(root: Path) -> None:
         path = root / BINANCE_TIMESTAMP_TEST_PATH
@@ -2191,7 +2234,7 @@ def test_binance_timestamp_behavioral_contract_rejects_parenthesized_macro_wrapp
 
 
 def test_binance_timestamp_behavioral_contract_rejects_bracketed_macro_wrapper() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
+    function_name = "sbe_bbo_uses_event_time_for_initialization_stamp"
 
     def mutate(root: Path) -> None:
         path = root / BINANCE_TIMESTAMP_TEST_PATH
@@ -2210,8 +2253,8 @@ def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> Non
         text = path.read_text(encoding="utf-8")
         path.write_text(
             text.replace(
-                f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork",
-                f"Current status: this branch pins NautilusTrader to `{OLD_NT_REV}` on the bolt pin-fork",
+                f"`{EXPECTED_NT_REV}`.",
+                f"`{OLD_NT_REV}`.",
             ),
             encoding="utf-8",
         )
@@ -2265,7 +2308,8 @@ def test_runtime_contract_requires_one_pin_per_owner_section() -> None:
 def test_runtime_contract_requires_binance_lineage_inside_owner_section() -> None:
     required = (
         "BinanceSpotDataClient::handle_ws_message",
-        "handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init",
+        "NAUTILUS_SOURCE_CAPABILITIES",
+        "ProviderCapabilityUnavailable",
         "decode_market_data",
         "parse_trades_event",
         "parse_bbo_event",

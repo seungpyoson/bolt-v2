@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 const WORKSPACE_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const WORKSPACE_CARGO_LOCK: &str = include_str!("../Cargo.lock");
-const NT_GIT_URL: &str = "https://github.com/seungpyoson/nautilus_trader.git";
+const NT_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 const REQUIRED_BACKTEST_FEATURES: [&str; 2] = ["examples", "streaming"];
 const REQUIRED_PERSISTENCE_FEATURES: [&str; 1] = ["cloud"];
 
@@ -186,7 +186,8 @@ fn lock_sources_resolve_to_revision(
             return Ok(false);
         };
         saw_nt_package = true;
-        if !source.contains(NT_GIT_URL) || !source.ends_with(&format!("#{revision}")) {
+        let expected_source = format!("git+{NT_GIT_URL}?rev={revision}#{revision}");
+        if source != expected_source {
             return Ok(false);
         }
     }
@@ -296,3 +297,70 @@ impl fmt::Display for NtDependencyProofError {
 }
 
 impl Error for NtDependencyProofError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REVISION: &str = "8160730c7c550480b0a439fb11086a4c4de15f0b";
+
+    fn manifest(git: &str) -> String {
+        format!(
+            r#"[dependencies]
+nautilus-backtest = {{ git = "{git}", rev = "{REVISION}", features = ["streaming", "examples"] }}
+nautilus-persistence = {{ git = "{git}", rev = "{REVISION}", features = ["cloud"] }}
+"#
+        )
+    }
+
+    fn lock(source: &str) -> String {
+        format!(
+            r#"version = 4
+
+[[package]]
+name = "nautilus-backtest"
+version = "0.60.0"
+source = "{source}"
+
+[[package]]
+name = "nautilus-persistence"
+version = "0.60.0"
+source = "{source}"
+"#
+        )
+    }
+
+    #[test]
+    fn official_exact_source_and_revision_produce_dependency_proof() {
+        let source = format!("git+{NT_GIT_URL}?rev={REVISION}#{REVISION}");
+        let proof = nt_dependency_proof_from_manifests(&manifest(NT_GIT_URL), &lock(&source))
+            .expect("official exact source should verify");
+        assert!(proof.lock_sources_all_resolve_to_revision);
+        assert_eq!(
+            proof.nautilus_backtest_features,
+            vec!["examples".to_string(), "streaming".to_string()]
+        );
+        assert_eq!(
+            proof.nautilus_persistence_features,
+            vec!["cloud".to_string()]
+        );
+    }
+
+    #[test]
+    fn personal_fork_manifest_is_rejected() {
+        let error = nt_dependency_proof_from_manifests(
+            &manifest("https://github.com/seungpyoson/nautilus_trader.git"),
+            &lock("unused"),
+        )
+        .expect_err("personal fork must not produce dependency proof");
+        assert!(matches!(error, NtDependencyProofError::UnexpectedGit { .. }));
+    }
+
+    #[test]
+    fn noncanonical_lock_source_is_not_exact_revision_proof() {
+        let source = format!("git+{NT_GIT_URL}?rev={REVISION}#{REVISION}-suffix");
+        let proof = nt_dependency_proof_from_manifests(&manifest(NT_GIT_URL), &lock(&source))
+            .expect("well-formed manifest should still return a negative lock proof");
+        assert!(!proof.lock_sources_all_resolve_to_revision);
+    }
+}

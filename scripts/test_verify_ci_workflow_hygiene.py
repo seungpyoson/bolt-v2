@@ -87,10 +87,10 @@ BINANCE_TIMESTAMP_PROOF_STEP_NAME = (
 )
 BINANCE_TIMESTAMP_PROOF_BINARY = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_PROOF_CASES = (
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_multi_trade_uses_event_time_for_initialization_stamp",
+    "sbe_bbo_uses_event_time_for_initialization_stamp",
+    "sbe_depth_snapshot_uses_event_time_for_initialization_stamp",
+    "sbe_depth_diff_uses_event_time_for_initialization_stamp",
 )
 BINANCE_TIMESTAMP_PROOF_EXTRACT_ROOT = (
     "$RUNNER_TEMP/binance-sbe-timestamp-proof-extract"

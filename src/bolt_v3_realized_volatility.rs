@@ -389,6 +389,7 @@ pub enum RealizedVolSourceRejectReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RealizedVolBlockReason {
     InvalidConfig,
+    ProviderCapabilityUnavailable,
     QuorumNotReady,
     SourceStale,
     CoverageBelowMinimum,
@@ -403,6 +404,7 @@ pub enum RealizedVolBlockReason {
 impl RealizedVolBlockReason {
     pub const ALL: &'static [Self] = &[
         Self::InvalidConfig,
+        Self::ProviderCapabilityUnavailable,
         Self::QuorumNotReady,
         Self::SourceStale,
         Self::CoverageBelowMinimum,

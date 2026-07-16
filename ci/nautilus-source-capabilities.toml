@@ -1,0 +1,8 @@
+[source]
+git = "https://github.com/nautechsystems/nautilus_trader.git"
+revision = "8160730c7c550480b0a439fb11086a4c4de15f0b"
+
+[binance_spot_sbe]
+schema_3_5 = false
+adapter_receive_clock = false
+new_risk_quorum = false

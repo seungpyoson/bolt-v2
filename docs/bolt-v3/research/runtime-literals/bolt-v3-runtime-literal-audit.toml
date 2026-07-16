@@ -21120,3 +21120,27 @@ literal = '''"complete_set_arbitrage"'''
 context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
 classification = "strategy_archetype_key"
 reason = "Stable complete-set discriminator used by the shared submit-mode contract's NT order-template validation."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"provider_capability_unavailable"'''
+context = '''RealizedVolBlockReason::ProviderCapabilityUnavailable => "provider_capability_unavailable",'''
+classification = "realized_volatility_block_reason_label"
+reason = "Stable evidence-schema label for the generated Nautilus source-capability blocker; it reports a fail-closed state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/nautilus_source_capabilities.rs"
+kind = "string"
+literal = '''"OUT_DIR"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/nautilus_source_capabilities.rs"));'''
+classification = "nautilus_source_capability_codegen_include"
+reason = "Build-time include path locating the build.rs-generated immutable Nautilus source-capability manifest under OUT_DIR; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/nautilus_source_capabilities.rs"
+kind = "string"
+literal = '''"/nautilus_source_capabilities.rs"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/nautilus_source_capabilities.rs"));'''
+classification = "nautilus_source_capability_codegen_include"
+reason = "Build-time file name for the generated immutable Nautilus source-capability manifest; it is not an operator runtime value."

@@ -496,6 +496,7 @@ pub fn realized_volatility_block_reason_evidence_label(
 ) -> &'static str {
     match reason {
         RealizedVolBlockReason::InvalidConfig => "invalid_config",
+        RealizedVolBlockReason::ProviderCapabilityUnavailable => "provider_capability_unavailable",
         RealizedVolBlockReason::QuorumNotReady => "quorum_not_ready",
         RealizedVolBlockReason::SourceStale => "source_stale",
         RealizedVolBlockReason::CoverageBelowMinimum => "coverage_below_minimum",
@@ -518,6 +519,9 @@ pub fn realized_vol_blocker_to_exit_evidence(
 ) -> BoltV3ExitRvSnapshotBlocker {
     match reason {
         RealizedVolBlockReason::InvalidConfig => BoltV3ExitRvSnapshotBlocker::InvalidConfig,
+        RealizedVolBlockReason::ProviderCapabilityUnavailable => {
+            BoltV3ExitRvSnapshotBlocker::ProviderCapabilityUnavailable
+        }
         RealizedVolBlockReason::QuorumNotReady => BoltV3ExitRvSnapshotBlocker::QuorumNotReady,
         RealizedVolBlockReason::SourceStale => BoltV3ExitRvSnapshotBlocker::SourceStale,
         RealizedVolBlockReason::CoverageBelowMinimum => {
@@ -918,6 +922,7 @@ pub enum BoltV3ExitTriggerSource {
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3ExitRvSnapshotBlocker {
     InvalidConfig,
+    ProviderCapabilityUnavailable,
     QuorumNotReady,
     SourceStale,
     CoverageBelowMinimum,

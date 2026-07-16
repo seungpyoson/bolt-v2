@@ -1217,10 +1217,10 @@ BINANCE_TIMESTAMP_ARCHIVE_PROOF_STEP_NAME = (
 )
 BINANCE_TIMESTAMP_ARCHIVE_PROOF_BINARY = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_ARCHIVE_PROOF_CASES = (
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
+    "sbe_multi_trade_uses_event_time_for_initialization_stamp",
+    "sbe_bbo_uses_event_time_for_initialization_stamp",
+    "sbe_depth_snapshot_uses_event_time_for_initialization_stamp",
+    "sbe_depth_diff_uses_event_time_for_initialization_stamp",
 )
 BINANCE_TIMESTAMP_ARCHIVE_PROOF_EXTRACT_ROOT = (
     "$RUNNER_TEMP/binance-sbe-timestamp-proof-extract"
@@ -1239,7 +1239,7 @@ BINANCE_TIMESTAMP_ARCHIVE_PROOF_RUN_BODY = "\n".join(
         *BINANCE_TIMESTAMP_ARCHIVE_PROOF_COMMANDS,
     )
 )
-ROOT_TEST_ARCHIVE_JOB_SHA256 = "bfd3d532fb92c024d32e5b9bf1492e75419c3ea163161f3dbc8c62a3e7a20da5"
+ROOT_TEST_ARCHIVE_JOB_SHA256 = "e4a9f3fe7eeea8068289b243024a7797d24fae6d30e28a6a70d31eddd22984da"
 CI_CLASSIFICATION_SUMMARY_LINE = (
     'echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} '
     'full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} '

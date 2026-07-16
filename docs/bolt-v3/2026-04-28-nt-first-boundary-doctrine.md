@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `d636f17604cdbddc28ad40e0e15720e2d19bf860`
-Last NT pin compatibility verified date: 2026-07-15
+Last NT pin compatibility verified rev: `8160730c7c550480b0a439fb11086a4c4de15f0b`
+Last NT pin compatibility verified date: 2026-07-16
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -123,11 +123,13 @@ Decision to repo-rule mapping:
 The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
-- `Cargo.toml` pins NT to the `v1.230.0`-based fork revision
-  (`d636f17604cdbddc28ad40e0e15720e2d19bf860`). The 2026-07-15 pin slice's
-  declared compatibility scope is the NT 0.60 migration, the governed Binance
-  boundary evidence, and required exact-head tests. It does not re-audit all
-  NT-owned behaviors cited by this doctrine.
+- `Cargo.toml` pins the official NautilusTrader repository to immutable
+  `v1.230.0` release commit
+  `8160730c7c550480b0a439fb11086a4c4de15f0b`. The 2026-07-16 correction
+  slice's declared compatibility scope is official dependency identity,
+  SHA-bound Binance capability absence, fail-closed new-risk RV gating, the
+  Polymarket fixture anchor, and required exact-head tests. It does not re-audit
+  all NT-owned behaviors cited by this doctrine.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
   remains open until live signing, order, fill, collateral, and fee behavior are

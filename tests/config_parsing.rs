@@ -2698,7 +2698,7 @@ fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
 
 #[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
-    let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_d636f176.txt");
+    let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_8160730c.txt");
     let nt_field = ["post", "only"].join("_");
     let fixture_revision = query_source
         .lines()

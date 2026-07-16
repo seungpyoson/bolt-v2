@@ -1041,6 +1041,16 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
         .find(|binding| binding.key == key)
 }
 
+pub fn realized_volatility_new_risk_source_available(
+    client_key: &str,
+    client: &ClientBlock,
+) -> Result<bool, String> {
+    if client.venue == binance::KEY {
+        return binance::realized_volatility_new_risk_source_available(client_key, client);
+    }
+    Ok(true)
+}
+
 pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64>, String> {
     let Some(binding) = binding_for_provider_key(client.venue.as_str()) else {
         return Ok(None);

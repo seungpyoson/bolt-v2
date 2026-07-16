@@ -1082,6 +1082,7 @@ fn realized_volatility_block_reason_contract_is_exhaustive() {
         RealizedVolBlockReason::ALL,
         &[
             RealizedVolBlockReason::InvalidConfig,
+            RealizedVolBlockReason::ProviderCapabilityUnavailable,
             RealizedVolBlockReason::QuorumNotReady,
             RealizedVolBlockReason::SourceStale,
             RealizedVolBlockReason::CoverageBelowMinimum,

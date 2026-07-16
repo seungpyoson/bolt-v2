@@ -33,7 +33,7 @@
 
 - [ ] **Step 1: Add failing verifier tests**
 
-Add tests that require seven exact market allocation rows, reject state IDs outside their allocation, reject duplicate IDs/names, preserve unassigned IDs, and render these permanent mappings:
+Add tests that require six exact market allocation rows, reject state IDs outside their allocation, reject duplicate IDs/names, preserve unassigned IDs, and render these permanent mappings:
 
 ```text
 144..155  BlockedStrategyInput{RvGateResult}{WatermarkAbsent|WatermarkPresent}
@@ -70,7 +70,7 @@ allocation = "strategy_input_pricing_blocker"
 id = 155
 ```
 
-Include all seven frozen allocation rows and all 29 named state rows. Validate exact keys, allocation boundaries, unique variants, unique producer/state pairs, unique IDs, and that every state ID belongs to its named allocation. Do not require unassigned IDs to be populated.
+Include all six frozen allocation rows and all 29 named state rows. Validate exact keys, allocation boundaries, unique variants, unique producer/state pairs, unique IDs, and that every state ID belongs to its named allocation. Do not require unassigned IDs to be populated.
 
 - [ ] **Step 4: Generate typed permanent IDs**
 

@@ -2078,7 +2078,7 @@ pub(super) fn active_snapshot_with_start(
     selection_snapshot(
         interval_start_ms,
         SelectionState::Active {
-            market: candidate_market(market_id, interval_start_ms),
+            market: Box::new(candidate_market(market_id, interval_start_ms)),
         },
     )
 }
@@ -2090,7 +2090,7 @@ pub(super) fn freeze_snapshot_with_start(
     selection_snapshot(
         interval_start_ms,
         SelectionState::Freeze {
-            market: candidate_market(market_id, interval_start_ms),
+            market: Box::new(candidate_market(market_id, interval_start_ms)),
             reason: "freeze window".to_string(),
         },
     )

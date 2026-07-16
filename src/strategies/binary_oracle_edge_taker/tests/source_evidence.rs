@@ -2307,7 +2307,7 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
 }
 
 #[test]
-fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
+fn entry_skip_dedupe_ignores_liveness_and_price_diagnostics() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -2357,7 +2357,7 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
             None,
         )
-        .expect("same blocker with a liveness-state transition should record");
+        .expect("same blocker with a liveness-state transition should remain suppressed");
 
     let entry_skips = evidence
         .events()
@@ -2369,22 +2369,10 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
         .collect::<Vec<_>>();
     assert_eq!(
         entry_skips.len(),
-        2,
-        "same blocker should record the initial skip and the liveness-state transition only"
+        1,
+        "one canonical blocker state must ignore liveness and price diagnostics"
     );
     assert_eq!(entry_skips[0].spot_price, None);
-    assert!(
-        entry_skips[1].spot_price.is_some(),
-        "liveness-state transition should still record current spot evidence when present"
-    );
-    assert_eq!(
-        entry_skips[1].reference_current_price.as_deref(),
-        Some("3100.5")
-    );
-    assert_eq!(
-        entry_skips[1].last_reference_ts_ms,
-        Some(liveness_transition_ts_ms)
-    );
 }
 
 #[test]
@@ -4661,14 +4649,18 @@ fn canonical_state_churn_stays_monotonic_across_episode_changes() {
     let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
     let mut blocked = rv_clock_domain_amendment_blocked_decision();
-    let original_market_id = blocked_strategy.active.market_id.clone();
+    let original_identity = blocked_strategy.active.evidence_identity.clone();
+    let mut different_identity = original_identity
+        .clone()
+        .expect("fixture must provide complete selected-market evidence identity");
+    different_identity.gamma_market_id.push_str("-different");
     let mut now_ms = 1_300_u64;
-    for market_id in [
-        original_market_id.clone(),
-        Some("<KEY_B>".to_string()),
-        original_market_id,
+    for evidence_identity in [
+        original_identity.clone(),
+        Some(different_identity),
+        original_identity,
     ] {
-        blocked_strategy.active.market_id = market_id;
+        blocked_strategy.active.evidence_identity = evidence_identity;
         for (gate, watermark) in rv_states {
             rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
             blocked_strategy

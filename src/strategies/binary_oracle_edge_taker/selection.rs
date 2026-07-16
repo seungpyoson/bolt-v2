@@ -59,11 +59,11 @@ pub(super) struct CandidateMarket {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum SelectionState {
     Active {
-        market: CandidateMarket,
+        market: Box<CandidateMarket>,
     },
     #[cfg(test)]
     Freeze {
-        market: CandidateMarket,
+        market: Box<CandidateMarket>,
         reason: String,
     },
     Idle {
@@ -186,7 +186,13 @@ pub(super) fn selection_snapshot_from_instruments(
     else {
         return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
     };
-    selection_snapshot_for_state(config, now_ms, SelectionState::Active { market })
+    selection_snapshot_for_state(
+        config,
+        now_ms,
+        SelectionState::Active {
+            market: Box::new(market),
+        },
+    )
 }
 
 pub(super) fn idle_selection_snapshot(

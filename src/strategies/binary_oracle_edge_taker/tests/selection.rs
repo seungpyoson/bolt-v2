@@ -779,7 +779,7 @@ fn same_market_transition_replaces_changed_selection_metadata() {
     let next = selection_snapshot(
         1_000,
         SelectionState::Active {
-            market: next_market,
+            market: Box::new(next_market),
         },
     );
 

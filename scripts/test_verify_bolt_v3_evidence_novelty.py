@@ -31,6 +31,19 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
     def test_repository_registry_and_generated_bytes_match(self) -> None:
         self.assertEqual(VERIFIER.verification_findings(VERIFIER.REPO_ROOT), [])
 
+    def test_generated_word_count_uses_typed_capacity_expression(self) -> None:
+        registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
+        generated = VERIFIER.render_registry(registry)
+        self.assertIn(
+            "pub const EVIDENCE_NOVELTY_WORD_COUNT: usize = 4;",
+            generated,
+        )
+        self.assertIn(
+            "EVIDENCE_NOVELTY_FAMILY_CAPACITY.div_ceil(64)",
+            generated,
+        )
+        self.assertNotIn("256.div_ceil(64)", generated)
+
     def test_producer_must_map_entry_reason_to_canonical_state_before_claim(self) -> None:
         paths = (
             VERIFIER.REGISTRY_PATH,

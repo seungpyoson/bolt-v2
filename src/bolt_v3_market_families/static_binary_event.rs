@@ -2,7 +2,10 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_model::{
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{

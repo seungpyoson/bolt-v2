@@ -41,7 +41,10 @@ use std::{
     time::Duration,
 };
 
-use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_model::{
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use serde::{Deserialize, Serialize};
 
 use super::OutcomeSide;
@@ -1625,8 +1628,12 @@ pub(crate) fn updown_position_instrument_context(
         "Down" => OutcomeSide::Down,
         _ => return None,
     };
+    let market_id = info.get_str(METADATA_MARKET_ID_FIELD)?;
+    if !stable_identity_field_is_canonical(market_id) {
+        return None;
+    }
     Some(UpdownPositionInstrumentContext {
-        market_id: info.get_str(METADATA_MARKET_ID_FIELD)?.to_string(),
+        market_id: market_id.to_string(),
         side,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
@@ -2003,6 +2010,23 @@ mod tests {
             .expect("core selection must not depend on evidence-only metadata");
         assert!(selected_market_evidence_identity(target, &selected, &instruments).is_none());
         assert!(updown_position_instrument_context(&instruments[0]).is_some());
+    }
+
+    #[test]
+    fn recovery_rejects_whitespace_padded_market_identity() {
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        let instrument = test_binary_option(
+            "configured-condition-up.POLYMARKET",
+            &market_slug,
+            " market-1 ",
+            TEST_CONDITION_ID,
+            "question-1",
+            "Up",
+            600_000,
+            900_000,
+        );
+
+        assert!(updown_position_instrument_context(&instrument).is_none());
     }
 
     #[test]

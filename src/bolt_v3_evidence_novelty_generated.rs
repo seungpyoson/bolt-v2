@@ -52,7 +52,7 @@ pub struct EvidenceStateRegistration {
 }
 
 pub const EVIDENCE_NOVELTY_FAMILY_CAPACITY: usize = 256;
-pub const EVIDENCE_NOVELTY_WORD_COUNT: usize = 256.div_ceil(64);
+pub const EVIDENCE_NOVELTY_WORD_COUNT: usize = 4;
 const _: () = assert!(
     EVIDENCE_NOVELTY_WORD_COUNT == EVIDENCE_NOVELTY_FAMILY_CAPACITY.div_ceil(64),
     "EVIDENCE_NOVELTY_WORD_COUNT must cover EVIDENCE_NOVELTY_FAMILY_CAPACITY"

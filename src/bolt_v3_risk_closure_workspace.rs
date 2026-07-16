@@ -100,6 +100,8 @@ impl RiskClosureWorkspaceAuthority {
             .position(|slot| matches!(slot, SlotState::Free))
             .ok_or(RiskClosureWorkspaceError::CapacityExhausted)?;
         let lease_id = state.take_lease_id()?;
+        let workspace_range = state.workspace_range(slot_index);
+        state.storage[workspace_range].fill(u8::default());
         state.slots[slot_index] = SlotState::Reserved { lease_id };
         Ok(RiskClosureWorkspaceReservation {
             inner: Arc::clone(&self.inner),
@@ -574,12 +576,19 @@ mod tests {
             test_config().slot_bytes()
         );
         reservation
-            .with_workspace_mut(|workspace| workspace.fill(u8::default()))
+            .with_workspace_mut(|workspace| workspace.fill(u8::MAX))
             .unwrap();
         drop(reservation);
-        let replacements = (usize::default()..TEST_CAPACITY)
-            .map(|_| authority.checkout_new_risk().unwrap())
-            .collect::<Vec<_>>();
+        let mut first_replacement = authority.checkout_new_risk().unwrap();
+        first_replacement
+            .with_workspace_mut(|workspace| {
+                assert!(workspace.iter().all(|byte| *byte == u8::default()));
+            })
+            .unwrap();
+        let mut replacements = vec![first_replacement];
+        replacements.extend(
+            (usize::from(true)..TEST_CAPACITY).map(|_| authority.checkout_new_risk().unwrap()),
+        );
         assert_eq!(replacements.len(), TEST_CAPACITY);
     }
 

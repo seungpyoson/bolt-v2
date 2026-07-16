@@ -59,6 +59,26 @@ slot_bytes = 16
 
         self.assertTrue(any("runtime workspace-size literal" in error for error in errors))
 
+    def test_rejects_a_symbolic_runtime_workspace_size_authority(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "const RISK_CLOSURE_WORKSPACE_SLOT_BYTES: usize = usize::MAX;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("symbolic workspace-size authority" in error for error in errors))
+
+    def test_malformed_toml_fails_closed_during_authority_census(self) -> None:
+        (self.root / "config" / "malformed.toml").write_text(
+            "[risk_closure_workspaces\nslot_bytes = 16\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("cannot inspect config/malformed.toml" in error for error in errors))
+
 
 if __name__ == "__main__":
     import lane_governor

@@ -13,6 +13,10 @@ import tomllib
 SOURCE = pathlib.Path("config/risk-closure-workspaces.toml")
 GENERATED = pathlib.Path("src/bolt_v3_risk_closure_workspace_generated.rs")
 PRODUCTION_SLOT_LITERAL = re.compile(r"(?<![0-9_])(?:16_777_216|16777216)(?![0-9_])")
+SYMBOLIC_SIZE_AUTHORITY = re.compile(
+    r"\b(?:const|static)\s+[A-Z0-9_]*(?:RISK_CLOSURE|CLOSURE_RISK)[A-Z0-9_]*"
+    r"(?:WORKSPACE|SLOT)[A-Z0-9_]*(?:BYTES|SIZE)\b"
+)
 
 
 def authority_errors(root: pathlib.Path) -> list[str]:
@@ -21,7 +25,8 @@ def authority_errors(root: pathlib.Path) -> list[str]:
     for path in sorted((root / "config").rglob("*.toml")):
         try:
             document = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            errors.append(f"cannot inspect {path.relative_to(root)}: {error}")
             continue
         workspace = document.get("risk_closure_workspaces")
         if isinstance(workspace, dict) and "slot_bytes" in workspace:
@@ -43,6 +48,8 @@ def authority_errors(root: pathlib.Path) -> list[str]:
             continue
         if PRODUCTION_SLOT_LITERAL.search(text):
             errors.append(f"runtime workspace-size literal found outside generated Rust: {relative}")
+        if SYMBOLIC_SIZE_AUTHORITY.search(text):
+            errors.append(f"symbolic workspace-size authority found outside generated Rust: {relative}")
     return errors
 
 

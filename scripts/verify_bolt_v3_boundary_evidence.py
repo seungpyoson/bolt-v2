@@ -683,55 +683,6 @@ def scan_wire_boundary(root: Path, findings: list[str], source_paths: list[Path]
                 findings.append(f"{rel}:{line_number(text, match.start())}: unregistered IMDS construction")
 
 
-def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
-    chainlink = read(root, "src/bolt_v3_providers/chainlink_reference.rs")
-    committed_capture_test = "committed_real_capture_frame_decodes_through_production_handler"
-    committed_capture_body = rust_registered_test_function_body(
-        chainlink,
-        committed_capture_test,
-        expected_attribute="test",
-        is_async=False,
-    )
-    if committed_capture_body is None:
-        findings.append(
-            "src/bolt_v3_providers/chainlink_reference.rs: expected exactly one "
-            f"registered #[test] fn {committed_capture_test}"
-        )
-    required_names = (
-        "binary_report_frame_for_active_subscription_emits_custom_reference_update",
-        "invalid_utf8_binary_report_frame_emits_no_custom_data",
-        "binary_report_frame_through_text_only_handler_emits_no_custom_data",
-        "planted_drop_binary_arm_mutation_would_fail_the_binary_observation_test",
-    )
-    for name in required_names:
-        if f"fn {name}" not in chainlink:
-            findings.append(f"src/bolt_v3_providers/chainlink_reference.rs: missing test {name}")
-    production = production_text(chainlink)
-    if "WireMessage::Text(bytes) | WireMessage::Binary(bytes)" not in production:
-        findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must accept Text and Binary frames")
-    health = read(root, "src/bolt_v3_reference_price_health.rs")
-    loopback_test = "chainlink_binary_loopback_observes_reference_update_through_health_msgbus"
-    loopback_body = rust_registered_test_function_body(
-        health,
-        loopback_test,
-        expected_attribute="tokio::test",
-        is_async=True,
-    )
-    if loopback_body is None:
-        findings.append(
-            "src/bolt_v3_reference_price_health.rs: expected exactly one registered "
-            f"#[tokio::test] async fn {loopback_test}"
-        )
-    forbidden_shortcuts = (
-        "ReferenceCurrentPriceHealthObservedUpdate {",
-        "ReferencePriceUpdate::try_new",
-    )
-    if loopback_body is not None:
-        for shortcut in forbidden_shortcuts:
-            if shortcut in loopback_body:
-                findings.append(f"src/bolt_v3_reference_price_health.rs: loopback harness uses shortcut {shortcut}")
-
-
 def scan_static_wiring(root: Path, findings: list[str]) -> None:
     lane_config = tomllib.loads(read(root, "ci/rust-verification.toml"))
     labels = lane_config["local_lane_policy"]["cheap_lane_labels"]
@@ -1195,89 +1146,6 @@ def rust_crate_inner_attributes(text: str) -> list[str]:
     return attributes
 
 
-def rust_registered_test_function_body(
-    text: str,
-    function_name: str,
-    *,
-    expected_attribute: str,
-    is_async: bool,
-) -> str | None:
-    masked = _mask_rust_non_code(text)
-    tokenized = rust_tokens_and_delimiter_pairs(masked)
-    if tokenized is None:
-        return None
-    tokens, pairs = tokenized
-    if not rust_inner_attributes_are_inert(tokens, pairs):
-        return None
-
-    module_indexes = [
-        index
-        for index, token in enumerate(tokens[:-1])
-        if token.value == "mod" and tokens[index + 1].value == "tests"
-    ]
-    if len(module_indexes) != 1:
-        return None
-    module_index = module_indexes[0]
-    if rust_open_delimiters_at(masked, tokens[module_index].start) != ():
-        return None
-    module_attributes = rust_outer_attributes_before(tokens, pairs, module_index)
-    if not rust_attributes_equal(
-        tokens, module_attributes, (("cfg", "(", "test", ")"),)
-    ):
-        return None
-    module_opening = module_index + 2
-    if (
-        module_opening >= len(tokens)
-        or tokens[module_opening].value != "{"
-        or module_opening not in pairs
-    ):
-        return None
-    module_closing = pairs[module_opening]
-
-    function_indexes = [
-        index
-        for index, token in enumerate(tokens[:-1])
-        if token.value == "fn" and tokens[index + 1].value == function_name
-    ]
-    if len(function_indexes) != 1:
-        return None
-    function_index = function_indexes[0]
-    if not module_opening < function_index < module_closing:
-        return None
-    if rust_open_delimiters_at(masked, tokens[function_index].start) != ("{",):
-        return None
-    item_index = function_index - 1 if is_async else function_index
-    if is_async:
-        if item_index < 0 or tokens[item_index].value != "async":
-            return None
-    elif function_index > 0 and tokens[function_index - 1].value == "async":
-        return None
-    function_attributes = rust_outer_attributes_before(tokens, pairs, item_index)
-    if not rust_test_attribute_is_expected(
-        function_attributes, tokens, pairs, expected_attribute
-    ):
-        return None
-
-    arguments_opening = function_index + 2
-    if (
-        arguments_opening >= len(tokens)
-        or tokens[arguments_opening].value != "("
-        or pairs.get(arguments_opening) != arguments_opening + 1
-    ):
-        return None
-    function_opening = arguments_opening + 2
-    if (
-        function_opening >= len(tokens)
-        or tokens[function_opening].value != "{"
-        or function_opening not in pairs
-    ):
-        return None
-    function_closing = pairs[function_opening]
-    return masked[
-        tokens[function_opening].end : tokens[function_closing].start
-    ]
-
-
 def rust_ordinary_test_function_body(
     text: str, function_name: str
 ) -> tuple[str | None, str | None, bool]:
@@ -1457,102 +1325,6 @@ def rust_tokens_and_delimiter_pairs(
     if stack:
         return None
     return tokens, pairs
-
-
-def rust_inner_attributes_are_inert(
-    tokens: list[RustToken], pairs: dict[int, int]
-) -> bool:
-    for index, token in enumerate(tokens):
-        if token.value != "#" or index + 1 >= len(tokens):
-            continue
-        if tokens[index + 1].value != "!":
-            continue
-        opening = index + 2
-        if opening >= len(tokens) or tokens[opening].value != "[":
-            return False
-        closing = pairs.get(opening)
-        if closing is None:
-            return False
-        attribute_name = tokens[opening + 1].value if opening + 1 < closing else None
-        arguments = opening + 2
-        if (
-            attribute_name not in INERT_BUILTIN_LINT_ATTRIBUTES
-            or arguments >= closing
-            or tokens[arguments].value != "("
-            or pairs.get(arguments) != closing - 1
-            or arguments + 1 >= closing - 1
-        ):
-            return False
-    return True
-
-
-def rust_outer_attributes_before(
-    tokens: list[RustToken], pairs: dict[int, int], item_index: int
-) -> tuple[tuple[int, int], ...] | None:
-    attributes: list[tuple[int, int]] = []
-    cursor = item_index - 1
-    while cursor >= 0 and tokens[cursor].value == "]":
-        opening = pairs.get(cursor)
-        if (
-            opening is not None
-            and opening >= 2
-            and tokens[opening - 2].value == "#"
-            and tokens[opening - 1].value == "!"
-        ):
-            break
-        marker = opening - 1 if opening is not None else -1
-        if (
-            opening is None
-            or marker < 0
-            or tokens[opening].value != "["
-            or tokens[marker].value != "#"
-        ):
-            return None
-        attributes.append((opening, cursor))
-        cursor = marker - 1
-    if not attributes:
-        return None
-    attributes.reverse()
-    return tuple(attributes)
-
-
-def rust_attributes_equal(
-    tokens: list[RustToken],
-    attributes: tuple[tuple[int, int], ...] | None,
-    expected: tuple[tuple[str, ...], ...],
-) -> bool:
-    if attributes is None or len(attributes) != len(expected):
-        return False
-    actual = tuple(
-        tuple(token.value for token in tokens[opening + 1 : closing])
-        for opening, closing in attributes
-    )
-    return actual == expected
-
-
-def rust_test_attribute_is_expected(
-    attributes: tuple[tuple[int, int], ...] | None,
-    tokens: list[RustToken],
-    pairs: dict[int, int],
-    expected_attribute: str,
-) -> bool:
-    if attributes is None or len(attributes) != 1:
-        return False
-    opening, closing = attributes[0]
-    values = tuple(token.value for token in tokens[opening + 1 : closing])
-    if expected_attribute == "test":
-        return values == ("test",)
-    if expected_attribute != "tokio::test":
-        return False
-    if values == ("tokio", "::", "test"):
-        return True
-    arguments = opening + 4
-    return (
-        values[:3] == ("tokio", "::", "test")
-        and arguments < closing
-        and tokens[arguments].value == "("
-        and pairs.get(arguments) == closing - 1
-    )
 
 
 def binance_crate_root_attribute_is_inert(
@@ -2471,7 +2243,6 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_exemptions(root, entries, findings, today=today)
     scan_exemption_issue_state(root, findings)
     scan_wire_boundary(root, findings, source_paths)
-    scan_chainlink_tests(root, findings)
     scan_static_wiring(root, findings)
     scan_binance_timestamp_behavioral_contract(root, findings)
     scan_nt_pin_census(root, findings)

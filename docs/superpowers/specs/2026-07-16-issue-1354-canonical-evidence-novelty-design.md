@@ -6,7 +6,7 @@ Repair the finite-novelty tracer bullet for entry-skip and blocked-RV strategy-i
 
 ## Design
 
-The TOML registry assigns permanent canonical IDs inside the frozen market-family ranges. The sixteen supported entry-skip reasons own IDs `240..255`. The twelve combinations of RV gate result and watermark presence own IDs `144..155`. Other market IDs remain reserved for their frozen families. Generated Rust exposes typed canonical IDs; runtime callers cannot submit arbitrary state values.
+The TOML registry assigns permanent canonical IDs inside the frozen market-family ranges. The twelve combinations of RV gate result and watermark presence own IDs `144..155`, and the seventeen supported entry-skip reasons own IDs `156..172`. All are strategy-input/pricing-blocker evidence inside the approved `144..208` allocation. Other market IDs remain reserved for their frozen families. Generated Rust exposes typed canonical IDs; runtime callers cannot submit arbitrary state values.
 
 Novelty is stored as a per-`EvidenceEpisodeId` fixed bitset with no eviction or input-driven reset. Switching episode A to B and back to A therefore preserves A's prior claims. Capsule-backed retirement and durable empty/reuse barriers remain future scope.
 

@@ -19,8 +19,8 @@ pub use generated::*;
 /// The complete non-temporal input surface from which a market episode may be built.
 ///
 /// Prices, timestamps, ages, counters, feed flags, slugs, and diagnostics are
-/// structurally absent. Ordered outcome/token identity is represented by the
-/// explicit up/down token fields rather than a caller-supplied collection.
+/// structurally absent. Ordered outcome/token identity is represented by a fixed
+/// two-element array whose coordinates must be exactly `0` then `1`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EvidenceOutcomeIdentity {
     pub index: u8,
@@ -87,8 +87,8 @@ impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
         {
             bail!("evidence episode requires non-empty, unpadded stable field `{field}`");
         }
-        if parts.outcomes[0].index == parts.outcomes[1].index {
-            bail!("evidence episode requires distinct ordered outcome indices");
+        if parts.outcomes[0].index != 0 || parts.outcomes[1].index != 1 {
+            bail!("evidence episode requires canonical ordered outcome indices 0 and 1");
         }
         if parts.outcomes[0].normalized_outcome == parts.outcomes[1].normalized_outcome {
             bail!("evidence episode requires distinct normalized outcomes");

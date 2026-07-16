@@ -10,7 +10,7 @@ The TOML registry assigns permanent canonical IDs inside the frozen market-famil
 
 Novelty is stored as a per-`EvidenceEpisodeId` fixed bitset with no eviction or input-driven reset. Switching episode A to B and back to A therefore preserves A's prior claims. Capsule-backed retirement and durable empty/reuse barriers remain future scope.
 
-`EvidenceEpisodeId` is constructed from the complete stable market binding: logical strategy, target, venue, Gamma market, condition, question, negative-risk mode, and exactly two ordered outcomes containing index, normalized label, and exact CLOB token ID. Prices, timestamps, slugs, diagnostics, configuration identity, and transient availability remain excluded.
+`EvidenceEpisodeId` is constructed from the complete stable market binding: logical strategy, target, venue, Gamma market, condition, question, negative-risk mode, and exactly two ordered outcomes containing canonical indices `0` then `1`, normalized label, and exact CLOB token ID. Prices, timestamps, slugs, diagnostics, configuration identity, and transient availability remain excluded.
 
 Entry blockers, source diagnostics, availability, and other observation details remain payload. They do not create dynamic canonical IDs. Unknown or unassigned IDs fail before payload construction; duplicates skip payload construction and append. Writer failures remain claimed to prevent retry storms.
 

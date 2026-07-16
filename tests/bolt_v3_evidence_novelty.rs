@@ -100,9 +100,6 @@ fn every_stable_market_component_changes_episode_identity() {
     parts.negative_risk = true;
     mutations.push(("negative-risk mode", parts));
     let mut parts = episode_parts("market-a");
-    parts.outcomes[0].index = 2;
-    mutations.push(("outcome index", parts));
-    let mut parts = episode_parts("market-a");
     parts.outcomes[0].normalized_outcome.push_str("-changed");
     mutations.push(("normalized outcome", parts));
     let mut parts = episode_parts("market-a");
@@ -117,6 +114,15 @@ fn every_stable_market_component_changes_episode_identity() {
 
 #[test]
 fn invalid_ordered_outcome_identity_is_rejected() {
+    let mut out_of_range_index = episode_parts("market-a");
+    out_of_range_index.outcomes[0].index = 2;
+    assert!(EvidenceEpisodeId::try_from(out_of_range_index).is_err());
+
+    let mut reversed_indices = episode_parts("market-a");
+    reversed_indices.outcomes[0].index = 1;
+    reversed_indices.outcomes[1].index = 0;
+    assert!(EvidenceEpisodeId::try_from(reversed_indices).is_err());
+
     let mut duplicate_index = episode_parts("market-a");
     duplicate_index.outcomes[1].index = duplicate_index.outcomes[0].index;
     assert!(EvidenceEpisodeId::try_from(duplicate_index).is_err());

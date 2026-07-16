@@ -4445,7 +4445,7 @@ dependencies = [
 [[package]]
 name = "nautilus-analysis"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4458,7 +4458,7 @@ dependencies = [
 [[package]]
 name = "nautilus-binance"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4496,7 +4496,7 @@ dependencies = [
 [[package]]
 name = "nautilus-bitmex"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4532,7 +4532,7 @@ dependencies = [
 [[package]]
 name = "nautilus-bybit"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4569,7 +4569,7 @@ dependencies = [
 [[package]]
 name = "nautilus-coinbase"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4604,7 +4604,7 @@ dependencies = [
 [[package]]
 name = "nautilus-common"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4636,7 +4636,7 @@ dependencies = [
 [[package]]
 name = "nautilus-core"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4660,7 +4660,7 @@ dependencies = [
 [[package]]
 name = "nautilus-cryptography"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -4676,7 +4676,7 @@ dependencies = [
 [[package]]
 name = "nautilus-data"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4698,7 +4698,7 @@ dependencies = [
 [[package]]
 name = "nautilus-deribit"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4734,7 +4734,7 @@ dependencies = [
 [[package]]
 name = "nautilus-execution"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4760,7 +4760,7 @@ dependencies = [
 [[package]]
 name = "nautilus-hyperliquid"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "alloy",
@@ -4799,7 +4799,7 @@ dependencies = [
 [[package]]
 name = "nautilus-kraken"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4837,7 +4837,7 @@ dependencies = [
 [[package]]
 name = "nautilus-live"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4865,7 +4865,7 @@ dependencies = [
 [[package]]
 name = "nautilus-model"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4893,7 +4893,7 @@ dependencies = [
 [[package]]
 name = "nautilus-network"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4928,7 +4928,7 @@ dependencies = [
 [[package]]
 name = "nautilus-okx"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4965,7 +4965,7 @@ dependencies = [
 [[package]]
 name = "nautilus-persistence"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4994,7 +4994,7 @@ dependencies = [
 [[package]]
 name = "nautilus-persistence-macros"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5004,7 +5004,7 @@ dependencies = [
 [[package]]
 name = "nautilus-polymarket"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "alloy",
@@ -5046,7 +5046,7 @@ dependencies = [
 [[package]]
 name = "nautilus-portfolio"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "bon",
@@ -5064,7 +5064,7 @@ dependencies = [
 [[package]]
 name = "nautilus-risk"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "bon",
@@ -5084,7 +5084,7 @@ dependencies = [
 [[package]]
 name = "nautilus-serialization"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5103,7 +5103,7 @@ dependencies = [
 [[package]]
 name = "nautilus-system"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -5126,7 +5126,7 @@ dependencies = [
 [[package]]
 name = "nautilus-trading"
 version = "0.60.0"
-source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=d636f17604cdbddc28ad40e0e15720e2d19bf860#d636f17604cdbddc28ad40e0e15720e2d19bf860"
+source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev=b25a99ccf6b3c00f62c67db88c3e63e9e60a1019#b25a99ccf6b3c00f62c67db88c3e63e9e60a1019"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",

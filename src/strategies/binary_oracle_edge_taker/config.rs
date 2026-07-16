@@ -20,7 +20,7 @@ use crate::{
     bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
     bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
-    bolt_v3_target_identity::ConfiguredTargetId,
+    bolt_v3_target_identity::{ConfiguredTargetId, stable_identity_field_is_canonical},
     strategies::registry::ValidationError,
 };
 
@@ -268,6 +268,7 @@ const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
 const INVALID_INSTRUMENT_ID_CODE: &str = stringify!(invalid_instrument_id);
 const INVALID_CONFIGURED_TARGET_ID_CODE: &str = stringify!(invalid_configured_target_id);
+const INVALID_STRATEGY_IDENTITY_CODE: &str = stringify!(invalid_strategy_identity);
 const UNSUPPORTED_EXECUTABLE_ENTRY_ORDER_SHAPE_CODE: &str =
     stringify!(unsupported_executable_entry_order_shape);
 const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
@@ -337,6 +338,15 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::ensure_bps_runtime_knobs_within_full_scale(&config)?;
         Self::ensure_executable_entry_order_shape(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
+        for (field, value) in [
+            (stringify!(strategy_id), config.strategy_id.as_str()),
+            (stringify!(order_id_tag), config.order_id_tag.as_str()),
+        ] {
+            anyhow::ensure!(
+                stable_identity_field_is_canonical(value),
+                "{field} must be a non-empty, unpadded string"
+            );
+        }
         Ok(config)
     }
 
@@ -506,6 +516,17 @@ impl BinaryOracleEdgeTakerBuilder {
                 code: INVALID_CONFIGURED_TARGET_ID_CODE,
                 message: "must be a non-empty, unpadded string".to_string(),
             });
+        }
+        for field in [stringify!(strategy_id), stringify!(order_id_tag)] {
+            if let Some(value) = table.get(field).and_then(Value::as_str)
+                && !stable_identity_field_is_canonical(value)
+            {
+                errors.push(ValidationError {
+                    field: format!("{field_prefix}.{field}"),
+                    code: INVALID_STRATEGY_IDENTITY_CODE,
+                    message: "must be a non-empty, unpadded string".to_string(),
+                });
+            }
         }
         for field_name in [
             stringify!(book_impact_cap_bps),

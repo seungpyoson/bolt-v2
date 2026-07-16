@@ -39,6 +39,9 @@ pub enum EvidenceCanonicalState {
     EntrySkipEntryPositionContractUnsupported = 170,
     EntrySkipHistoricalEntryFeeUnavailable = 171,
     EntrySkipOnePositionInvariantViolation = 172,
+    EntrySkipEntryMalformedRejected = 173,
+    EntrySkipEntryBalanceRejected = 174,
+    EntrySkipEntryUnfillableRejectedUnchangedBook = 175,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,6 +294,30 @@ pub const EVIDENCE_STATE_REGISTRATIONS: &[EvidenceStateRegistration] = &[
         semantic_state: "entry_skip.one_position_invariant_violation",
         id: 172,
     },
+    EvidenceStateRegistration {
+        state: EvidenceCanonicalState::EntrySkipEntryMalformedRejected,
+        owner: EvidenceStateOwner::EntrySkip,
+        family: "market",
+        producer_kind: "entry_skip",
+        semantic_state: "entry_skip.entry_malformed_rejected",
+        id: 173,
+    },
+    EvidenceStateRegistration {
+        state: EvidenceCanonicalState::EntrySkipEntryBalanceRejected,
+        owner: EvidenceStateOwner::EntrySkip,
+        family: "market",
+        producer_kind: "entry_skip",
+        semantic_state: "entry_skip.entry_balance_rejected",
+        id: 174,
+    },
+    EvidenceStateRegistration {
+        state: EvidenceCanonicalState::EntrySkipEntryUnfillableRejectedUnchangedBook,
+        owner: EvidenceStateOwner::EntrySkip,
+        family: "market",
+        producer_kind: "entry_skip",
+        semantic_state: "entry_skip.entry_unfillable_rejected_unchanged_book",
+        id: 175,
+    },
 ];
 
 pub const fn canonical_state_registration(
@@ -326,6 +353,9 @@ pub const fn canonical_state_registration(
         EvidenceCanonicalState::EntrySkipEntryPositionContractUnsupported => &EVIDENCE_STATE_REGISTRATIONS[26],
         EvidenceCanonicalState::EntrySkipHistoricalEntryFeeUnavailable => &EVIDENCE_STATE_REGISTRATIONS[27],
         EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation => &EVIDENCE_STATE_REGISTRATIONS[28],
+        EvidenceCanonicalState::EntrySkipEntryMalformedRejected => &EVIDENCE_STATE_REGISTRATIONS[29],
+        EvidenceCanonicalState::EntrySkipEntryBalanceRejected => &EVIDENCE_STATE_REGISTRATIONS[30],
+        EvidenceCanonicalState::EntrySkipEntryUnfillableRejectedUnchangedBook => &EVIDENCE_STATE_REGISTRATIONS[31],
     }
 }
 
@@ -362,6 +392,9 @@ pub const fn evidence_state_registration_by_id(
         170 => Some(&EVIDENCE_STATE_REGISTRATIONS[26]),
         171 => Some(&EVIDENCE_STATE_REGISTRATIONS[27]),
         172 => Some(&EVIDENCE_STATE_REGISTRATIONS[28]),
+        173 => Some(&EVIDENCE_STATE_REGISTRATIONS[29]),
+        174 => Some(&EVIDENCE_STATE_REGISTRATIONS[30]),
+        175 => Some(&EVIDENCE_STATE_REGISTRATIONS[31]),
         _ => None,
     }
 }

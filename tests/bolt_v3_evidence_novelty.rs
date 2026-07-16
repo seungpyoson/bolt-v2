@@ -50,11 +50,11 @@ fn canonical_state_ids_match_the_frozen_registry() {
         156
     );
     assert_eq!(
-        EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation as usize,
-        172
+        EvidenceCanonicalState::EntrySkipEntryUnfillableRejectedUnchangedBook as usize,
+        175
     );
     assert!(registered_evidence_state_by_id(143).is_err());
-    assert!(registered_evidence_state_by_id(173).is_err());
+    assert!(registered_evidence_state_by_id(176).is_err());
 }
 
 #[test]

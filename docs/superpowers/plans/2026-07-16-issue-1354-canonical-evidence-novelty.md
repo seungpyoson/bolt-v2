@@ -37,7 +37,7 @@ Add tests that require six exact market allocation rows, reject state IDs outsid
 
 ```text
 144..155  BlockedStrategyInput{RvGateResult}{WatermarkAbsent|WatermarkPresent}
-156..172  EntrySkip{each non-Unclassified BoltV3EntrySkipReasonCategory in declaration order}
+156..175  EntrySkip{each non-Unclassified BoltV3EntrySkipReasonCategory in declaration order}
 ```
 
 - [ ] **Step 2: Verify RED locally**
@@ -48,7 +48,7 @@ Expected: failures because the current schema has two capacity ranges and no ind
 
 - [ ] **Step 3: Replace capacity rows with allocation and state rows**
 
-Use this closed schema (the example is one of 29 state rows):
+Use this closed schema (the example is one of 32 state rows):
 
 ```toml
 schema_version = 1
@@ -70,7 +70,7 @@ allocation = "strategy_input_pricing_blocker"
 id = 155
 ```
 
-Include all six frozen allocation rows and all 29 named state rows. Validate exact keys, allocation boundaries, unique variants, unique producer/state pairs, unique IDs, and that every state ID belongs to its named allocation. Do not require unassigned IDs to be populated.
+Include all six frozen allocation rows and all 32 named state rows. Validate exact keys, allocation boundaries, unique variants, unique producer/state pairs, unique IDs, total strategy-produced reason coverage, and that every state ID belongs to its named allocation. Freeze each ID with its producer owner and semantic state. Do not require unassigned IDs to be populated.
 
 - [ ] **Step 4: Generate typed permanent IDs**
 
@@ -158,7 +158,7 @@ Add tests with these assertions:
 assert_eq!(EvidenceCanonicalState::EntrySkipStrategyCoreNotRegistered as usize, 156);
 assert_eq!(EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation as usize, 172);
 assert!(registered_evidence_state_by_id(143).is_err());
-assert!(registered_evidence_state_by_id(173).is_err());
+assert!(registered_evidence_state_by_id(176).is_err());
 ```
 
 Exercise duplicate claims using actual entry-skip and blocked-snapshot canonical variants.

@@ -528,6 +528,23 @@ fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
 }
 
 #[test]
+fn runtime_config_parse_rejects_padded_strategy_identity_fields() {
+    for field in ["strategy_id", "order_id_tag"] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("valid config must be a table")
+            .insert(field.to_string(), Value::String(" padded ".to_string()));
+
+        let error = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("padded strategy identity must fail at parse-time");
+        assert!(
+            format!("{error:#}").contains(field),
+            "identity error must name {field}: {error:#}"
+        );
+    }
+}
+
+#[test]
 fn runtime_config_parse_rejects_stale_submit_orders_switch() {
     let mut raw = valid_raw_config();
     raw.as_table_mut()

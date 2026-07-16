@@ -51,9 +51,7 @@ impl<'de> Deserialize<'de> for ConfiguredTargetId {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        Self::try_from(value).map_err(|_| {
-            de::Error::custom("configured_target_id must be a non-empty, unpadded string")
-        })
+        Self::try_from(value).map_err(|_| de::Error::custom("must be a non-empty, unpadded string"))
     }
 }
 
@@ -77,7 +75,7 @@ impl PartialEq<&str> for ConfiguredTargetId {
 
 impl fmt::Display for ConfiguredTargetIdError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("configured_target_id must be a non-empty, unpadded string")
+        formatter.write_str("must be a non-empty, unpadded string")
     }
 }
 
@@ -111,5 +109,12 @@ mod tests {
     #[test]
     fn stable_fields_allow_internal_whitespace() {
         assert!(stable_identity_field_is_canonical("New York Yes"));
+    }
+
+    #[test]
+    fn checked_identity_error_is_field_neutral() {
+        let error = ConfiguredTargetId::try_from(" target").unwrap_err();
+        assert_eq!(error.to_string(), "must be a non-empty, unpadded string");
+        assert!(!error.to_string().contains("configured_target_id"));
     }
 }

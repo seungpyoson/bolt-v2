@@ -2698,7 +2698,7 @@ fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
 
 #[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
-    let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_d636f176.txt");
+    let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_b25a99cc.txt");
     let nt_field = ["post", "only"].join("_");
     let fixture_revision = query_source
         .lines()
@@ -8429,6 +8429,34 @@ fn set_client_reconnect_timeout(
         .and_then(toml::Value::as_table_mut)
         .unwrap_or_else(|| panic!("root fixture should configure clients.{client_key}.data"));
     data.insert("reconnect_timeout_ms".to_string(), reconnect_timeout);
+}
+
+#[test]
+fn strategy_envelope_rejects_padded_identity_fields() {
+    let source = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    for (field, original, malformed) in [
+        (
+            "strategy_instance_id",
+            "strategy_instance_id = \"configured_updown_main\"",
+            "strategy_instance_id = \" configured_updown_main\"",
+        ),
+        (
+            "order_id_tag",
+            "order_id_tag = \"001\"",
+            "order_id_tag = \"001 \"",
+        ),
+    ] {
+        let messages = strategy_validation_messages_for_toml(&source.replace(original, malformed));
+        assert!(
+            messages.iter().any(|message| {
+                message.contains(field) && message.contains("non-empty, unpadded string")
+            }),
+            "expected canonical identity rejection for {field}, got {messages:#?}"
+        );
+    }
 }
 
 fn strategy_validation_messages_for_toml(strategy_toml: &str) -> Vec<String> {

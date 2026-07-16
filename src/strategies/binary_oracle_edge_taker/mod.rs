@@ -606,6 +606,15 @@ fn entry_skip_canonical_state(
         BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => {
             EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation
         }
+        BoltV3EntrySkipReasonCategory::EntryMalformedRejected => {
+            EvidenceCanonicalState::EntrySkipEntryMalformedRejected
+        }
+        BoltV3EntrySkipReasonCategory::EntryBalanceRejected => {
+            EvidenceCanonicalState::EntrySkipEntryBalanceRejected
+        }
+        BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook => {
+            EvidenceCanonicalState::EntrySkipEntryUnfillableRejectedUnchangedBook
+        }
         BoltV3EntrySkipReasonCategory::Unclassified => {
             anyhow::bail!("unregistered entry-skip semantic state")
         }
@@ -4064,8 +4073,9 @@ impl BinaryOracleEdgeTaker {
     ) -> Result<bool> {
         if reason_category == BoltV3EntrySkipReasonCategory::Unclassified {
             log::error!(
-                "binary_oracle_edge_taker rejected unregistered entry-skip semantic state: strategy_id={}",
-                self.config.strategy_id
+                "binary_oracle_edge_taker rejected unregistered entry-skip semantic state: strategy_id={} reason={}",
+                self.config.strategy_id,
+                unclassified_context.as_deref().unwrap_or("unknown")
             );
             return Ok(false);
         }

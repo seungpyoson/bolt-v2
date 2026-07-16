@@ -62,7 +62,7 @@ REQUIRED_PIN_SURFACES = (
     "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
-    "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
+    "tests/fixtures/nt_polymarket_query_post_order_params_b25a99cc.txt",
 )
 
 
@@ -230,7 +230,7 @@ def clean_files(root: Path) -> None:
     )
     write(
         root,
-        "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
+        "tests/fixtures/nt_polymarket_query_post_order_params_b25a99cc.txt",
         "Source: NautilusTrader\n"
         f"Revision: {EXPECTED_NT_REV}\n"
         "Path: crates/adapters/polymarket/src/http/query.rs\n",

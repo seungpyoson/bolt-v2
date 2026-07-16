@@ -372,6 +372,60 @@ fn strategy_selects_configured_updown_target_from_nt_binary_option_metadata() {
 }
 
 #[test]
+fn strategy_reports_incomplete_evidence_identity_distinctly_from_market_not_found() {
+    let strategy = test_strategy();
+    let current_start = 1_746_000_000_i64;
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        current_start,
+    );
+    let mut instruments = vec![
+        updown_binary_option(
+            "token-up.POLYMARKET",
+            &market_slug,
+            "market-1",
+            "Up",
+            current_start as u64 * MILLIS_PER_SECOND_U64,
+            current_start as u64 * MILLIS_PER_SECOND_U64
+                + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64,
+        ),
+        updown_binary_option(
+            "token-down.POLYMARKET",
+            &market_slug,
+            "market-1",
+            "Down",
+            current_start as u64 * MILLIS_PER_SECOND_U64,
+            current_start as u64 * MILLIS_PER_SECOND_U64
+                + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64,
+        ),
+    ];
+    for instrument in &mut instruments {
+        let InstrumentAny::BinaryOption(binary) = instrument else {
+            panic!("fixture must be a binary option");
+        };
+        binary
+            .info
+            .as_mut()
+            .expect("fixture info")
+            .remove("neg_risk");
+    }
+
+    let snapshot = selection_snapshot_from_instruments(
+        &strategy.config,
+        &instruments,
+        current_start as u64 * MILLIS_PER_SECOND_U64 + 1,
+    );
+
+    assert_eq!(
+        snapshot.decision.state,
+        SelectionState::Idle {
+            reason: TARGET_MARKET_EVIDENCE_IDENTITY_UNAVAILABLE_REASON.to_string(),
+        }
+    );
+}
+
+#[test]
 fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadata() {
     let mut strategy = test_strategy();
     strategy.config.target_kind = "static_market".to_string();

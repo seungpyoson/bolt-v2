@@ -140,8 +140,8 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
     def test_repository_registry_assigns_permanent_canonical_ids(self) -> None:
         registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
         ids = tuple(getattr(row, "id", None) for row in registry.states)
-        self.assertEqual(ids, tuple(range(144, 173)))
-        self.assertEqual(len(registry.states), 29)
+        self.assertEqual(ids, tuple(range(144, 176)))
+        self.assertEqual(len(registry.states), 32)
 
     def test_permanent_ids_cannot_swap_semantic_meanings(self) -> None:
         text = self.registry_text()
@@ -149,15 +149,63 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
         text = text.replace("id = 147", "id = 146", 1)
         text = text.replace("id = 999", "id = 147", 1)
         with self.assertRaisesRegex(
-            ValueError, "states must match frozen id-to-semantic mappings"
+            ValueError, "states must match frozen id-owner-semantic mappings"
         ):
             self.load_text(text)
+
+    def test_permanent_ids_cannot_change_producer_owner(self) -> None:
+        text = self.registry_text().replace(
+            'producer_kind = "entry_skip"',
+            'producer_kind = "strategy_input_snapshot"',
+            1,
+        )
+        text = text.replace(
+            'semantic_state = "entry_skip.strategy_core_not_registered"',
+            'semantic_state = "strategy_input_snapshot.strategy_core_not_registered"',
+            1,
+        )
+        with self.assertRaisesRegex(
+            ValueError, "states must match frozen id-owner-semantic mappings"
+        ):
+            self.load_text(text)
+
+    def test_every_strategy_entry_block_reason_must_be_classified(self) -> None:
+        paths = (
+            VERIFIER.REGISTRY_PATH,
+            VERIFIER.GENERATED_PATH,
+            VERIFIER.PRODUCER_PATH,
+            VERIFIER.ENTRY_DECISION_PATH,
+            VERIFIER.NOVELTY_PATH,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for relative_path in paths:
+                destination = root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    (VERIFIER.REPO_ROOT / relative_path).read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            entry_decision_path = root / VERIFIER.ENTRY_DECISION_PATH
+            entry_decision_path.write_text(
+                entry_decision_path.read_text(encoding="utf-8").replace(
+                    "        ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED => {",
+                    "        \"removed_reason_mapping\" => {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            findings = VERIFIER.verification_findings(root)
+        self.assertTrue(
+            any("entry-block reason mappings are incomplete" in item for item in findings),
+            findings,
+        )
 
     def test_unassigned_ids_remain_non_emittable(self) -> None:
         registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)
         ids = {getattr(row, "id", None) for row in registry.states}
         self.assertNotIn(143, ids)
-        self.assertNotIn(173, ids)
+        self.assertNotIn(176, ids)
         self.assertNotIn(255, ids)
 
     def test_unknown_registry_key_is_rejected(self) -> None:

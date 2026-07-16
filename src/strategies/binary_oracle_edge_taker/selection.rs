@@ -86,6 +86,13 @@ pub(super) struct RuntimeSelectionSnapshot {
 }
 
 pub(super) const TARGET_MARKET_NOT_FOUND_REASON: &str = stringify!(target_market_not_found);
+pub(super) const TARGET_MARKET_EVIDENCE_IDENTITY_UNAVAILABLE_REASON: &str =
+    stringify!(target_market_evidence_identity_unavailable);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ConfiguredMarketSelectionError {
+    EvidenceIdentityUnavailable,
+}
 
 pub(super) fn apply_selection_snapshot_to_active(
     active: &mut ActiveMarketState,
@@ -186,9 +193,18 @@ pub(super) fn selection_snapshot_from_instruments(
     instruments: &[InstrumentAny],
     now_ms: u64,
 ) -> RuntimeSelectionSnapshot {
-    let Some(market) = select_configured_market_from_instruments(config, instruments, now_ms)
-    else {
-        return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
+    let market = match select_configured_market_from_instruments(config, instruments, now_ms) {
+        Ok(Some(market)) => market,
+        Ok(None) => {
+            return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
+        }
+        Err(ConfiguredMarketSelectionError::EvidenceIdentityUnavailable) => {
+            return idle_selection_snapshot(
+                config,
+                now_ms,
+                TARGET_MARKET_EVIDENCE_IDENTITY_UNAVAILABLE_REASON,
+            );
+        }
     };
     selection_snapshot_for_state(
         config,
@@ -231,8 +247,10 @@ pub(super) fn select_configured_market_from_instruments(
     config: &BinaryOracleEdgeTakerConfig,
     instruments: &[InstrumentAny],
     now_ms: u64,
-) -> Option<CandidateMarket> {
-    let cadence_seconds = i64::try_from(config.cadence_seconds).ok()?;
+) -> Result<Option<CandidateMarket>, ConfiguredMarketSelectionError> {
+    let Some(cadence_seconds) = i64::try_from(config.cadence_seconds).ok() else {
+        return Ok(None);
+    };
     let target = MarketSelectionTarget {
         configured_target_id: &config.configured_target_id,
         family_key: &config.rotating_market_family,
@@ -243,17 +261,20 @@ pub(super) fn select_configured_market_from_instruments(
         static_yes_outcome: config.static_yes_outcome.as_deref(),
         static_no_outcome: config.static_no_outcome.as_deref(),
     };
-    let market = bolt_v3_market_families::select_binary_option_market_from_target(
+    let Some(market) = bolt_v3_market_families::select_binary_option_market_from_target(
         target,
         instruments,
         now_ms,
-    )?;
+    ) else {
+        return Ok(None);
+    };
     let evidence_identity = bolt_v3_market_families::selected_market_evidence_identity_from_target(
         target,
         &market,
         instruments,
-    )?;
-    Some(CandidateMarket {
+    )
+    .ok_or(ConfiguredMarketSelectionError::EvidenceIdentityUnavailable)?;
+    Ok(Some(CandidateMarket {
         market_id: market.market_id,
         instrument_id: market.instrument_id.to_string(),
         up: CandidateOutcome {
@@ -269,7 +290,7 @@ pub(super) fn select_configured_market_from_instruments(
         start_ts_ms: market.start_timestamp_milliseconds,
         expiration_ts_ms: market.expiration_timestamp_milliseconds,
         seconds_to_end: market.seconds_to_end,
-    })
+    }))
 }
 
 pub(super) fn strategy_input_market_selection_outcome(

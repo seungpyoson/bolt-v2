@@ -2632,7 +2632,7 @@ symbol = "py_option_greeks_to_arrow_record_batch_bytes"
 matched_terms = ["greeks", "option"]
 classification = "excluded"
 
-# --- NautilusTrader v1.230.0-based fork (rev d636f176) reviewed additions ---
+# --- NautilusTrader v1.230.0-based fork (rev b25a99cc) reviewed additions ---
 # Generic native/runtime surfaces below are exact false positives caused by
 # documentation language such as "surface" or unrelated expiration terms.
 [[surfaces]]

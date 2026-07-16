@@ -713,6 +713,9 @@ pub enum BoltV3EntrySkipReasonCategory {
     EntryPositionContractUnsupported,
     HistoricalEntryFeeUnavailable,
     OnePositionInvariantViolation,
+    EntryMalformedRejected,
+    EntryBalanceRejected,
+    EntryUnfillableRejectedUnchangedBook,
     Unclassified,
 }
 

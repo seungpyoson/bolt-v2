@@ -38,13 +38,15 @@ Split the current shared outcome-instrument extraction into two projections:
 
 Core market discovery constructs only fields required to resolve the market and instruments. Maker resolution consumes this core result directly. The taker explicitly enriches the core result into `EvidenceMarketIdentity` and fails closed when required stable evidence metadata is unavailable. Recovery constructs only the lifecycle projection and therefore cannot fail because evidence-only metadata is absent. There is no fallback or default identity path.
 
+The pinned Polymarket adapter is the production provenance gate. At Nautilus Trader revision `b25a99ccf6b3c00f62c67db88c3e63e9e60a1019`, Gamma parsing rejects a market whose `negRisk` field is absent instead of fabricating `false`; explicit `false` and `true` remain distinct. Repo-side projection tests may still construct incomplete instruments to prove lifecycle isolation and taker fail-closed behavior, but production construction cannot erase field presence.
+
 ### Selected-market requirements
 
 `SelectedMarketRequirement` becomes constructible only through checked constructors or checked deserialization. Its configured target identity and derived selected-market key are immutable after construction. Direct family requirement builders use the same validated identity type, preventing inconsistent identity/key pairs.
 
 ### Permanent novelty registry
 
-The verifier owns a frozen tuple containing every `(id, semantic_state)` mapping, not merely ranges or selected anchors. It rejects additions, deletions, renumbering, or semantic swaps unless the frozen contract is deliberately amended.
+The verifier owns a frozen tuple containing every `(id, producer_kind, semantic_state)` mapping, not merely ranges or selected anchors. It rejects additions, deletions, renumbering, owner changes, or semantic swaps unless the frozen contract is deliberately amended. It also requires every strategy-produced entry-block reason constant to have a category mapping.
 
 The generator emits capacity and word count using Clippy-clean `div_ceil`, plus a compile-time equality assertion. The generated file remains byte-compared with generator output and must compile in the normal Rust lanes.
 

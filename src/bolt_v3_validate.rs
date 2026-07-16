@@ -71,6 +71,7 @@ use crate::bolt_v3_providers::{
     reference_price_provider_metadata,
 };
 use crate::bolt_v3_reference_price::reference_price_source_is_unsupported;
+use crate::bolt_v3_target_identity::stable_identity_field_is_canonical;
 
 mod capital;
 mod chainlink_data_streams;
@@ -227,6 +228,20 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 "{context}: schema_version={} is unsupported by this build (only {} is currently supported)",
                 strategy.schema_version, SUPPORTED_STRATEGY_SCHEMA_VERSION
             ));
+        }
+
+        for (field, value) in [
+            (
+                stringify!(strategy_instance_id),
+                strategy.strategy_instance_id.as_str(),
+            ),
+            (stringify!(order_id_tag), strategy.order_id_tag.as_str()),
+        ] {
+            if !stable_identity_field_is_canonical(value) {
+                errors.push(format!(
+                    "{context}: {field} must be a non-empty, unpadded string"
+                ));
+            }
         }
 
         if !seen_instance_ids.insert(strategy.strategy_instance_id.as_str()) {

@@ -66,7 +66,7 @@ Expected: FAIL because swapping two IDs currently passes `load_registry`.
 
 - [ ] **Step 3: Freeze every ID-to-semantic mapping**
 
-In `scripts/verify_bolt_v3_evidence_novelty.py`, add a constant containing all 29 exact pairs from the committed TOML:
+In `scripts/verify_bolt_v3_evidence_novelty.py`, add a constant containing every exact `(id, producer_kind, semantic_state)` triple from the committed TOML (32 rows after review closure):
 
 ```python
 FROZEN_MARKET_STATES = (

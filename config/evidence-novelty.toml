@@ -236,3 +236,24 @@ producer_kind = "entry_skip"
 semantic_state = "entry_skip.one_position_invariant_violation"
 allocation = "strategy_input_pricing_blocker"
 id = 172
+
+[[state]]
+rust_variant = "EntrySkipEntryMalformedRejected"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_malformed_rejected"
+allocation = "strategy_input_pricing_blocker"
+id = 173
+
+[[state]]
+rust_variant = "EntrySkipEntryBalanceRejected"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_balance_rejected"
+allocation = "strategy_input_pricing_blocker"
+id = 174
+
+[[state]]
+rust_variant = "EntrySkipEntryUnfillableRejectedUnchangedBook"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_unfillable_rejected_unchanged_book"
+allocation = "strategy_input_pricing_blocker"
+id = 175

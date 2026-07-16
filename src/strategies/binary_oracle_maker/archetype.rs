@@ -561,9 +561,9 @@ fn market_portfolio_declaration_blocker_error(
 /// - an `family_key` not registered in the shared market-family registry can
 ///   never resolve a market, so it is rejected at load — the same registered-family
 ///   policy the runtime selection engine fails loud on;
-/// - an empty or duplicated `market_key` breaks the portfolio planner's per-market
-///   slot/rotation keying (it requires non-empty unique keys), so it is rejected
-///   at load.
+/// - a duplicated `market_key` breaks the portfolio planner's per-market
+///   slot/rotation keying, so it is rejected at load. Empty or padded keys cannot
+///   reach this function because `ConfiguredTargetId` rejects them during parsing.
 fn validate_market_declarations(
     context: &str,
     markets: &[MarketBindingParametersBlock],
@@ -571,11 +571,7 @@ fn validate_market_declarations(
 ) {
     let mut seen_keys = std::collections::BTreeSet::new();
     for market in markets {
-        if market.market_key.as_str().trim().is_empty() {
-            errors.push(format!(
-                "{context}: parameters.markets entry market_key must be a non-empty string (the portfolio planner requires a non-empty market_key to key slots and rotation)"
-            ));
-        } else if !seen_keys.insert(market.market_key.as_str()) {
+        if !seen_keys.insert(market.market_key.as_str()) {
             errors.push(format!(
                 "{context}: parameters.markets market_key `{}` is declared more than once (each declared market must have a unique key)",
                 market.market_key

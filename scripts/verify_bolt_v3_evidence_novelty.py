@@ -31,41 +31,46 @@ FROZEN_MARKET_ALLOCATIONS = (
 )
 FROZEN_MARKET_FAMILY_CAPACITY = FROZEN_MARKET_ALLOCATIONS[-1][2]
 FROZEN_MARKET_STATES = (
-    (144, "strategy_input_snapshot.blocked_rv.accepted.watermark_absent"),
-    (145, "strategy_input_snapshot.blocked_rv.accepted.watermark_present"),
-    (146, "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_absent"),
-    (147, "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_present"),
+    (144, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.accepted.watermark_absent"),
+    (145, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.accepted.watermark_present"),
+    (146, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_absent"),
+    (147, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.missing_snapshot.watermark_present"),
     (
         148,
+        "strategy_input_snapshot",
         "strategy_input_snapshot.blocked_rv.missing_evaluation_event_time.watermark_absent",
     ),
     (
         149,
+        "strategy_input_snapshot",
         "strategy_input_snapshot.blocked_rv.missing_evaluation_event_time.watermark_present",
     ),
-    (150, "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_absent"),
-    (151, "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_present"),
-    (152, "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_absent"),
-    (153, "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_present"),
-    (154, "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_absent"),
-    (155, "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_present"),
-    (156, "entry_skip.strategy_core_not_registered"),
-    (157, "entry_skip.entry_gate_blocked"),
-    (158, "entry_skip.entry_pricing_blocked"),
-    (159, "entry_skip.no_side_selected"),
-    (160, "entry_skip.sized_notional_not_positive"),
-    (161, "entry_skip.instrument_id_missing"),
-    (162, "entry_skip.instrument_missing_from_cache"),
-    (163, "entry_skip.entry_price_missing"),
-    (164, "entry_skip.quantity_rounding_failed"),
-    (165, "entry_skip.limit_notional_exceeds_sized_notional"),
-    (166, "entry_skip.entry_quote_notional_below_venue_minimum"),
-    (167, "entry_skip.entry_quote_notional_minimum_unmodeled"),
-    (168, "entry_skip.quantity_not_positive"),
-    (169, "entry_skip.position_contract_invalid"),
-    (170, "entry_skip.entry_position_contract_unsupported"),
-    (171, "entry_skip.historical_entry_fee_unavailable"),
-    (172, "entry_skip.one_position_invariant_violation"),
+    (150, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_absent"),
+    (151, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.rejected_future_dated.watermark_present"),
+    (152, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_absent"),
+    (153, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.rejected_stale.watermark_present"),
+    (154, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_absent"),
+    (155, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.rejected_not_ready.watermark_present"),
+    (156, "entry_skip", "entry_skip.strategy_core_not_registered"),
+    (157, "entry_skip", "entry_skip.entry_gate_blocked"),
+    (158, "entry_skip", "entry_skip.entry_pricing_blocked"),
+    (159, "entry_skip", "entry_skip.no_side_selected"),
+    (160, "entry_skip", "entry_skip.sized_notional_not_positive"),
+    (161, "entry_skip", "entry_skip.instrument_id_missing"),
+    (162, "entry_skip", "entry_skip.instrument_missing_from_cache"),
+    (163, "entry_skip", "entry_skip.entry_price_missing"),
+    (164, "entry_skip", "entry_skip.quantity_rounding_failed"),
+    (165, "entry_skip", "entry_skip.limit_notional_exceeds_sized_notional"),
+    (166, "entry_skip", "entry_skip.entry_quote_notional_below_venue_minimum"),
+    (167, "entry_skip", "entry_skip.entry_quote_notional_minimum_unmodeled"),
+    (168, "entry_skip", "entry_skip.quantity_not_positive"),
+    (169, "entry_skip", "entry_skip.position_contract_invalid"),
+    (170, "entry_skip", "entry_skip.entry_position_contract_unsupported"),
+    (171, "entry_skip", "entry_skip.historical_entry_fee_unavailable"),
+    (172, "entry_skip", "entry_skip.one_position_invariant_violation"),
+    (173, "entry_skip", "entry_skip.entry_malformed_rejected"),
+    (174, "entry_skip", "entry_skip.entry_balance_rejected"),
+    (175, "entry_skip", "entry_skip.entry_unfillable_rejected_unchanged_book"),
 )
 OWNER_BY_PRODUCER = {
     "entry_skip": "EntrySkip",
@@ -179,6 +184,10 @@ def load_registry(path: pathlib.Path) -> Registry:
             raise ValueError(f"state[{index}].semantic_state must be dotted snake_case")
         if row.producer_kind not in OWNER_BY_PRODUCER:
             raise ValueError(f"state[{index}].producer_kind is not a registered owner")
+        if not row.semantic_state.startswith(f"{row.producer_kind}."):
+            raise ValueError(
+                f"state[{index}].semantic_state must belong to its producer_kind"
+            )
         if row.allocation not in allocation_names:
             raise ValueError(f"state[{index}] names an unknown allocation")
         allocation = allocations[allocation_names.index(row.allocation)]
@@ -196,9 +205,11 @@ def load_registry(path: pathlib.Path) -> Registry:
     if len(set(ids)) != len(ids):
         raise ValueError("registry state ids must be unique")
     ordered = sorted(states, key=lambda row: row.id)
-    actual_states = tuple((row.id, row.semantic_state) for row in ordered)
+    actual_states = tuple(
+        (row.id, row.producer_kind, row.semantic_state) for row in ordered
+    )
     if actual_states != FROZEN_MARKET_STATES:
-        raise ValueError("states must match frozen id-to-semantic mappings")
+        raise ValueError("states must match frozen id-owner-semantic mappings")
     return Registry(family_name, family_capacity, tuple(allocations), tuple(ordered))
 
 
@@ -359,6 +370,42 @@ def verification_findings(root: pathlib.Path) -> list[str]:
                 )
 
     entry_decision_text = (root / ENTRY_DECISION_PATH).read_text(encoding="utf-8")
+    entry_reason_definitions = dict(
+        re.findall(
+            r'^const (ENTRY_BLOCK_REASON_[A-Z0-9_]+): &str\s*=\s*"([^"]+)";',
+            producer_text,
+            re.M,
+        )
+    )
+    entry_reason_constants = set(entry_reason_definitions)
+    reason_mapping = re.search(
+        r"pub\(super\) fn entry_skip_reason_category_from_str\(.*?\n\}",
+        entry_decision_text,
+        re.S,
+    )
+    mapped_entry_reasons = (
+        set(re.findall(r"ENTRY_BLOCK_REASON_[A-Z0-9_]+", reason_mapping.group(0)))
+        if reason_mapping is not None
+        else set()
+    )
+    if mapped_entry_reasons != entry_reason_constants:
+        findings.append(
+            f"{ENTRY_DECISION_PATH}: entry-block reason mappings are incomplete; "
+            f"missing={sorted(entry_reason_constants - mapped_entry_reasons)} "
+            f"unknown={sorted(mapped_entry_reasons - entry_reason_constants)}"
+        )
+    registered_entry_reasons = {
+        row.semantic_state.removeprefix("entry_skip.")
+        for row in registry.states
+        if row.producer_kind == "entry_skip"
+    }
+    produced_entry_reasons = set(entry_reason_definitions.values())
+    if registered_entry_reasons != produced_entry_reasons:
+        findings.append(
+            f"{REGISTRY_PATH}: registered entry-skip semantics must equal produced "
+            f"entry-block reasons; missing={sorted(produced_entry_reasons - registered_entry_reasons)} "
+            f"unknown={sorted(registered_entry_reasons - produced_entry_reasons)}"
+        )
     obsolete_state_types = (
         "EntrySkipSemanticState",
         "BlockedStrategyInputSemanticState",

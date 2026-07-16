@@ -614,6 +614,12 @@ pub(super) fn entry_skip_reason_category_from_str(
         ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL => {
             Some(BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional)
         }
+        ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM => {
+            Some(BoltV3EntrySkipReasonCategory::EntryQuoteNotionalBelowVenueMinimum)
+        }
+        ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED => {
+            Some(BoltV3EntrySkipReasonCategory::EntryQuoteNotionalMinimumUnmodeled)
+        }
         ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE => {
             Some(BoltV3EntrySkipReasonCategory::QuantityNotPositive)
         }

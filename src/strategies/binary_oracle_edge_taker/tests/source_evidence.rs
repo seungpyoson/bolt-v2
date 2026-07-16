@@ -4595,8 +4595,14 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
 }
 
 #[test]
-fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
-    const EXPECTED_STATES: [(BoltV3RvGateResult, bool); 6] = [
+fn rv_clock_domain_amendment_semantic_churn_stays_monotonic_but_episode_change_resets() {
+    const EXPECTED_ENTRY_STATES: [(BoltV3RvGateResult, bool); 4] = [
+        (BoltV3RvGateResult::Accepted, true),
+        (BoltV3RvGateResult::RejectedStale, true),
+        (BoltV3RvGateResult::Accepted, true),
+        (BoltV3RvGateResult::RejectedStale, true),
+    ];
+    const EXPECTED_EPISODE_STATES: [(BoltV3RvGateResult, bool); 6] = [
         (BoltV3RvGateResult::Accepted, true),
         (BoltV3RvGateResult::RejectedStale, true),
         (BoltV3RvGateResult::Accepted, true),
@@ -4619,7 +4625,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
     let mut now_ms = 1_200_u64;
-    // A -> B -> A must start a fresh two-bit novelty mask at every key transition.
+    // Semantic A -> B -> A emits the four distinct category/RV states only once.
     for category in [
         BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
         BoltV3EntrySkipReasonCategory::NoSideSelected,
@@ -4629,7 +4635,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
             entry_strategy
                 .record_entry_skip_once(now_ms, &entry, category, None)
-                .expect("each previously seen RV bit must emit after an entry-key change");
+                .expect("registered semantic state must be handled");
             now_ms += 1;
         }
     }
@@ -4645,7 +4651,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(entry_states.as_slice(), &EXPECTED_STATES[..]);
+    assert_eq!(entry_states.as_slice(), &EXPECTED_ENTRY_STATES[..]);
 
     let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
@@ -4679,7 +4685,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(blocked_states.as_slice(), &EXPECTED_STATES[..]);
+    assert_eq!(blocked_states.as_slice(), &EXPECTED_EPISODE_STATES[..]);
 }
 
 #[test]
@@ -4996,8 +5002,8 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 
     assert_eq!(
         evidence.strategy_input_attempts(),
-        3,
-        "{field:?} must reach the writer for A, B, and restored A"
+        2,
+        "{field:?} restored A must be suppressed before reaching the writer"
     );
     let records = evidence
         .events()
@@ -5225,6 +5231,22 @@ fn unclassified_entry_skip_semantic_state_fails_closed_before_append() {
         .expect("unknown semantic state rejection must preserve the declining-risk callback");
     assert!(!emitted);
     assert!(evidence.events().is_empty());
+}
+
+#[test]
+fn quote_notional_skip_reasons_are_registered_semantic_states() {
+    assert_eq!(
+        entry_skip_reason_category_from_str(
+            ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM,
+        ),
+        Some(BoltV3EntrySkipReasonCategory::EntryQuoteNotionalBelowVenueMinimum)
+    );
+    assert_eq!(
+        entry_skip_reason_category_from_str(
+            ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED,
+        ),
+        Some(BoltV3EntrySkipReasonCategory::EntryQuoteNotionalMinimumUnmodeled)
+    );
 }
 
 #[test]

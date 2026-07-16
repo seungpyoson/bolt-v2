@@ -706,6 +706,8 @@ pub enum BoltV3EntrySkipReasonCategory {
     EntryPriceMissing,
     QuantityRoundingFailed,
     LimitNotionalExceedsSizedNotional,
+    EntryQuoteNotionalBelowVenueMinimum,
+    EntryQuoteNotionalMinimumUnmodeled,
     QuantityNotPositive,
     PositionContractInvalid,
     EntryPositionContractUnsupported,

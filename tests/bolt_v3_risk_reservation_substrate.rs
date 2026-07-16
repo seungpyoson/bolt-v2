@@ -54,6 +54,8 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
 use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
 
+mod risk_closure_workspace_compile_fail;
+
 #[test]
 fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freeze_new_risk() {
     let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(

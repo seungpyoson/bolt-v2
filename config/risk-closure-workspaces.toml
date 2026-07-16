@@ -1,0 +1,6 @@
+schema_version = 1
+production_activation_enabled = false
+
+[risk_closure_workspaces]
+arena_bytes = 167772160
+slot_bytes = 16777216

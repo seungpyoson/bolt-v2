@@ -92,6 +92,23 @@ slot_bytes = 16777216
 
         self.assertTrue(any("exactly one TOML authority" in error for error in errors))
 
+    def test_rejects_any_second_canonical_toml_table(self) -> None:
+        for text in (
+            "[risk_closure_workspaces]\ncapacity = 10\n",
+            "[risk_closure_workspaces]\n",
+            "risk_closure_workspaces = 10\n",
+        ):
+            with self.subTest(text=text):
+                crate = self.root / "crates" / "consumer"
+                crate.mkdir(parents=True, exist_ok=True)
+                (crate / "runtime.toml").write_text(text, encoding="utf-8")
+
+                errors = verifier.authority_errors(self.root)
+
+                self.assertTrue(
+                    any("exactly one TOML authority" in error for error in errors)
+                )
+
     def test_rejects_a_runtime_workspace_size_literal(self) -> None:
         (self.root / "src" / "consumer.rs").write_text(
             "const RISK_CLOSURE_WORKSPACE_BYTES: usize = 16_777_216;\n",
@@ -272,6 +289,37 @@ slot_bytes = 16
         )
 
         with self.assertRaisesRegex(generator.ConfigError, "must remain false"):
+            generator.load_config(source)
+
+    def test_rejects_non_integer_or_unsupported_schema_versions(self) -> None:
+        for schema_version in ("true", "1.0", '"1"', "2"):
+            with self.subTest(schema_version=schema_version):
+                source = self.write_source(
+                    f"""
+schema_version = {schema_version}
+production_activation_enabled = false
+
+[risk_closure_workspaces]
+arena_bytes = 160
+slot_bytes = 16
+"""
+                )
+
+                with self.assertRaisesRegex(generator.ConfigError, "schema_version"):
+                    generator.load_config(source)
+
+    def test_rejects_missing_schema_version(self) -> None:
+        source = self.write_source(
+            """
+production_activation_enabled = false
+
+[risk_closure_workspaces]
+arena_bytes = 160
+slot_bytes = 16
+"""
+        )
+
+        with self.assertRaisesRegex(generator.ConfigError, "missing field"):
             generator.load_config(source)
 
     def test_rejects_unknown_or_duplicate_capacity_authorities(self) -> None:

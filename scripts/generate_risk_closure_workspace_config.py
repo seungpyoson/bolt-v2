@@ -47,8 +47,13 @@ def load_config(path: pathlib.Path) -> WorkspaceConfig:
         {"schema_version", "production_activation_enabled", "risk_closure_workspaces"},
         "root",
     )
-    if document["schema_version"] != 1:
-        raise ConfigError("schema_version must equal 1")
+    schema_version = document["schema_version"]
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != 1
+    ):
+        raise ConfigError("schema_version must equal integer 1")
     activation = document["production_activation_enabled"]
     if activation is not False:
         raise ConfigError("production_activation_enabled must remain false")

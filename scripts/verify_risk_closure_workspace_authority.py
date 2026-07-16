@@ -146,21 +146,26 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
             errors.append(f"cannot inspect {path.relative_to(root)}: {error}")
             continue
-        workspace = document.get("risk_closure_workspaces")
-        if isinstance(workspace, dict) and ({"arena_bytes", "slot_bytes"} & workspace.keys()):
-            relative = path.relative_to(root)
-            authorities.append(relative)
-            if relative == SOURCE:
-                authoritative_arena_bytes = _positive_integer(workspace.get("arena_bytes"))
-                authoritative_slot_bytes = _positive_integer(workspace.get("slot_bytes"))
-                if authoritative_arena_bytes is None:
-                    errors.append(
-                        f"{SOURCE} risk_closure_workspaces.arena_bytes must be a positive integer"
-                    )
-                if authoritative_slot_bytes is None:
-                    errors.append(
-                        f"{SOURCE} risk_closure_workspaces.slot_bytes must be a positive integer"
-                    )
+        if "risk_closure_workspaces" not in document:
+            continue
+        workspace = document["risk_closure_workspaces"]
+        relative = path.relative_to(root)
+        authorities.append(relative)
+        if relative != SOURCE:
+            continue
+        if not isinstance(workspace, dict):
+            errors.append(f"{SOURCE} risk_closure_workspaces must be a table")
+            continue
+        authoritative_arena_bytes = _positive_integer(workspace.get("arena_bytes"))
+        authoritative_slot_bytes = _positive_integer(workspace.get("slot_bytes"))
+        if authoritative_arena_bytes is None:
+            errors.append(
+                f"{SOURCE} risk_closure_workspaces.arena_bytes must be a positive integer"
+            )
+        if authoritative_slot_bytes is None:
+            errors.append(
+                f"{SOURCE} risk_closure_workspaces.slot_bytes must be a positive integer"
+            )
     if authorities != [SOURCE]:
         errors.append(
             "risk_closure_workspaces geometry must have exactly one TOML authority at "

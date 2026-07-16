@@ -500,6 +500,15 @@ struct LoadedBacktestSweepSource {
     params: BTreeMap<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone)]
+struct PreflightedBacktestSweepSource {
+    source_run_spec_path: String,
+    source_object_path: PathBuf,
+    source_run_spec_sha256: String,
+    run_spec_file_name: String,
+    run_spec: RunSpec,
+}
+
 /// # Errors
 ///
 /// Returns an error if the run-spec TOML cannot be read or parsed.
@@ -579,7 +588,7 @@ fn load_backtest_sweep_source_pairs(
         "sweep source pairs must not be empty"
     );
 
-    let mut loaded_runs = Vec::with_capacity(plan.sources.len());
+    let mut preflighted_sources = Vec::with_capacity(plan.sources.len());
     let mut seen_output_dir_names = BTreeSet::new();
     let mut seen_output_prefixes = BTreeSet::new();
     for source in &plan.sources {
@@ -592,8 +601,6 @@ fn load_backtest_sweep_source_pairs(
                 run_spec.manifest.run_id
             )
         })?;
-        let (object_path, source_object_path) =
-            resolve_source_path("object", &plan.input_dir, &source.object_path)?;
         let output_prefix =
             validate_publication_run_spec_artifact_scope(&plan.artifact_root, &run_spec)?;
         ensure!(
@@ -607,20 +614,41 @@ fn load_backtest_sweep_source_pairs(
             seen_output_prefixes.insert(output_prefix.clone()),
             "duplicate manifest.output_prefix {output_prefix:?}"
         );
-        let params = run_pointer_params(
-            &run_spec,
-            source_run_spec_path,
-            source_object_path,
-            source_run_spec_sha256,
-        )?;
-        let accepted_object_bytes = read_accepted_object_for_run_spec(&object_path, &run_spec)?;
         let run_spec_file_name = source_file_name("run-spec", &run_spec_path)?;
-        let run_id = run_spec.manifest.run_id.clone();
+        preflighted_sources.push(PreflightedBacktestSweepSource {
+            source_run_spec_path,
+            source_object_path: source.object_path.clone(),
+            source_run_spec_sha256,
+            run_spec_file_name,
+            run_spec,
+        });
+    }
+
+    // Authority, scope, and duplicate checks for every RunSpec must complete
+    // before any accepted object is resolved or read. This keeps a later
+    // durable spec from being masked by an earlier large, missing, or corrupt
+    // local object.
+    let mut loaded_runs = Vec::with_capacity(preflighted_sources.len());
+    for preflighted in preflighted_sources {
+        let (object_path, source_object_path) = resolve_source_path(
+            "object",
+            &plan.input_dir,
+            &preflighted.source_object_path,
+        )?;
+        let params = run_pointer_params(
+            &preflighted.run_spec,
+            preflighted.source_run_spec_path,
+            source_object_path,
+            preflighted.source_run_spec_sha256,
+        )?;
+        let accepted_object_bytes =
+            read_accepted_object_for_run_spec(&object_path, &preflighted.run_spec)?;
+        let run_id = preflighted.run_spec.manifest.run_id.clone();
         loaded_runs.push(LoadedBacktestSweepRun {
             run: BacktestSweepRun {
-                run_spec_file_name,
+                run_spec_file_name: preflighted.run_spec_file_name,
                 output_dir_name: run_id.clone(),
-                run_spec,
+                run_spec: preflighted.run_spec,
                 accepted_object_bytes,
             },
             source: LoadedBacktestSweepSource { run_id, params },
@@ -1842,6 +1870,55 @@ mod tests {
             );
             assert!(!error_chain.contains("must-not-read.object"));
         }
+        assert!(!plan.run_spec_dir.exists());
+        assert!(!plan.run_output_dir.exists());
+        assert!(!plan.index_path.exists());
+    }
+
+    #[test]
+    fn publication_preflights_all_run_spec_authority_before_any_object_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let local_spec = test_run_spec("ra-local-first", b"missing-local-object");
+        let durable_spec = durable_test_run_spec("ra-durable-second", b"must-not-read");
+        fs::write(
+            input_dir.join("local.toml"),
+            toml::to_string_pretty(&local_spec).expect("serialize local run-spec"),
+        )
+        .expect("write local run-spec");
+        fs::write(
+            input_dir.join("durable.toml"),
+            toml::to_string_pretty(&durable_spec).expect("serialize durable run-spec"),
+        )
+        .expect("write durable run-spec");
+        let plan = publication_plan(
+            &temp,
+            input_dir,
+            TEST_ARTIFACT_ROOT,
+            vec![
+                BacktestSweepSourcePair {
+                    run_spec_path: PathBuf::from("local.toml"),
+                    object_path: PathBuf::from("missing-local.object"),
+                },
+                BacktestSweepSourcePair {
+                    run_spec_path: PathBuf::from("durable.toml"),
+                    object_path: PathBuf::from("must-not-read.object"),
+                },
+            ],
+        );
+
+        let error = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("full authority preflight must precede object reads and execution")
+        })
+        .expect_err("later durable RunSpec must reject the whole publication plan");
+        let error_chain = format!("{error:#}");
+
+        assert!(
+            error_chain.contains("must use source_universe_batch_execution"),
+            "{error:#}"
+        );
+        assert!(!error_chain.contains("missing-local.object"));
         assert!(!plan.run_spec_dir.exists());
         assert!(!plan.run_output_dir.exists());
         assert!(!plan.index_path.exists());

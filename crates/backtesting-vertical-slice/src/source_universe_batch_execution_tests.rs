@@ -1078,7 +1078,7 @@ fn parallel_continue_on_error_collects_failures() {
 }
 
 #[test]
-fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
+fn parallel_duplicate_sha_records_fail_closed_on_corrupt_occupied_cache() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let run_spec_path = temp_dir.path().join("run-spec.toml");
     let execution_plan_path = temp_dir.path().join("execution-plan.json");
@@ -1087,8 +1087,8 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
 
     // Sequences 0 and 1 pin IDENTICAL bytes — records are not deduplicated by
     // sha, so both map to the same cache entry path. A corrupt entry is
-    // planted under that shared sha before the run: whichever worker loses
-    // any repair race must still complete its record.
+    // planted under that shared sha before the run. Both records must reject
+    // it without consulting the provider or repairing the occupied path.
     let shared_bytes = b"shared synthetic object".to_vec();
     let objects = vec![
         (0u64, shared_bytes.clone()),
@@ -1105,6 +1105,7 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
     fs::write(cache_dir.join(&shared_sha), b"corrupt cached payload").expect("plant corrupt entry");
 
     let output_dir = temp_dir.path().join("batch-output");
+    let fetch_calls = std::sync::Arc::new(Mutex::new(Vec::new()));
     let report = execute_source_universe_batch_with_factories(
         "source-universe-batch-synthetic",
         &pack_path,
@@ -1112,16 +1113,19 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
             record_limit: Some(4),
-            continue_on_error: false,
+            continue_on_error: true,
             max_concurrent_records: Some(4),
         },
         {
             let objects = objects.clone();
             let cache_dir = cache_dir.clone();
             let run_verification = SourceUniverseCacheRunVerification::default();
+            let fetch_calls = std::sync::Arc::clone(&fetch_calls);
             move || {
+                let mut inner = SequencedFetcher::from_objects(&objects);
+                inner.calls = std::sync::Arc::clone(&fetch_calls);
                 Ok(CachingSourceUniverseObjectFetcher::for_run(
-                    SequencedFetcher::from_objects(&objects),
+                    inner,
                     &cache_dir,
                     run_verification.clone(),
                 ))
@@ -1129,18 +1133,39 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
         },
         || Ok(ConcurrencyRunner::new(None)),
     )
-    .expect("duplicate-sha records complete regardless of cache repair races");
+    .expect("continue-on-error records corrupt occupied cache failures");
 
     assert_eq!(
         report.status,
-        SourceUniverseBatchExecutionReportStatus::Completed
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
     );
-    assert_eq!(report.completed_record_count, 4);
-    assert_eq!(report.failed_record_count, 0);
+    assert_eq!(report.completed_record_count, 2);
+    assert_eq!(report.failed_record_count, 2);
     assert_eq!(
-        fs::read(cache_dir.join(&shared_sha)).expect("read repaired entry"),
-        shared_bytes,
-        "corrupt shared entry repaired with verified bytes"
+        report
+            .failures
+            .iter()
+            .map(|failure| failure.sequence)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert!(report.failures.iter().all(|failure| {
+        failure.failure_stage == "fetch"
+            && failure
+                .error
+                .contains("occupied object cache entry failed immutable verification")
+    }));
+    let mut fetch_calls = fetch_calls.lock().expect("fetch call log").clone();
+    fetch_calls.sort_unstable();
+    assert_eq!(
+        fetch_calls,
+        vec![2, 3],
+        "an occupied shared digest must never fall back to the provider"
+    );
+    assert_eq!(
+        fs::read(cache_dir.join(&shared_sha)).expect("read retained corrupt entry"),
+        b"corrupt cached payload",
+        "runtime must retain rather than repair an occupied corrupt entry"
     );
 }
 

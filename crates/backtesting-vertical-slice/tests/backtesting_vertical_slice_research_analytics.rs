@@ -118,6 +118,7 @@ fn valid_experiment_result(kind: RaVerdictKind) -> ExperimentResultArtifact {
 
 fn run_spec(run_id: &str, accepted_object_bytes: &[u8]) -> RunSpec {
     let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+    spec.artifact_store = None;
     spec.manifest.run_id = run_id.to_string();
     spec.accepted_object.sha256 = sha256_hex(accepted_object_bytes);
     spec

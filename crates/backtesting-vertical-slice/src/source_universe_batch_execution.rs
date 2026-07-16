@@ -322,7 +322,15 @@ impl fmt::Debug for VerifiedSourceObject {
 }
 
 impl VerifiedSourceObject {
-    pub(crate) fn verify(
+    /// Bind owned bytes to one execution-pack record after guarded length and
+    /// SHA-256 verification. This is the sole constructor available to new
+    /// source transports; cache-proof reuse remains private.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the work budget expires or the bytes do not match
+    /// the record's selected-object length and digest.
+    pub fn verify(
         record: &SourceUniverseExecutionPackRecord,
         bytes: Vec<u8>,
         work_budget: &OperatorWorkBudgetGuard,

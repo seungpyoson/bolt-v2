@@ -21090,7 +21090,7 @@ classification = "exit_evidence_conversion_diagnostic_template"
 reason = "Fail-loud diagnostic for a checked durable-evidence projection; it reports the captured delta and does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_risk_closure_workspace/generated.rs"
+path = "src/bolt_v3_application_resource_ledger/risk_closure_workspace/generated.rs"
 kind = "number"
 literal = '''167772160'''
 context = '''arena_bytes: 167772160,'''
@@ -21098,7 +21098,7 @@ classification = "generated_risk_closure_workspace_arena_bytes"
 reason = "Generated projection of risk_closure_workspaces.arena_bytes from config/risk-closure-workspaces.toml; the generated-file drift fence prevents this emitted value from becoming an independent runtime authority."
 
 [[allowed]]
-path = "src/bolt_v3_risk_closure_workspace/generated.rs"
+path = "src/bolt_v3_application_resource_ledger/risk_closure_workspace/generated.rs"
 kind = "number"
 literal = '''16777216'''
 context = '''slot_bytes: 16777216,'''
@@ -21106,7 +21106,7 @@ classification = "generated_risk_closure_workspace_slot_bytes"
 reason = "Generated projection of the sole risk_closure_workspaces.slot_bytes TOML authority; the generated-file drift fence prevents this emitted value from becoming an independent runtime authority."
 
 [[allowed]]
-path = "src/bolt_v3_risk_closure_workspace/generated.rs"
+path = "src/bolt_v3_application_resource_ledger/risk_closure_workspace/generated.rs"
 kind = "number"
 literal = '''10'''
 context = '''capacity: 10,'''
@@ -21120,11 +21120,3 @@ literal = '''"complete_set_arbitrage"'''
 context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
 classification = "strategy_archetype_key"
 reason = "Stable complete-set discriminator used by the shared submit-mode contract's NT order-template validation."
-
-[[allowed]]
-path = "src/bolt_v3_application_resource_ledger.rs"
-kind = "string"
-literal = '''"bolt_v3_risk_closure_workspace.rs"'''
-context = '''#[path = "bolt_v3_risk_closure_workspace.rs"]'''
-classification = "application_resource_ledger_private_module_path"
-reason = "Compile-time Rust module path that makes the application ledger the parent of the private risk-closure workspace authority; it is not an operator runtime value or an alternate config source."

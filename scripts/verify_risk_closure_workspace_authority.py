@@ -20,10 +20,16 @@ from verify_bolt_v3_provider_leaks import production_text
 
 
 SOURCE = pathlib.Path("config/risk-closure-workspaces.toml")
-GENERATED = pathlib.Path("src/bolt_v3_risk_closure_workspace/generated.rs")
-OWNER = pathlib.Path("src/bolt_v3_risk_closure_workspace.rs")
+GENERATED = pathlib.Path(
+    "src/bolt_v3_application_resource_ledger/risk_closure_workspace/generated.rs"
+)
+OWNER = pathlib.Path(
+    "src/bolt_v3_application_resource_ledger/risk_closure_workspace.rs"
+)
 LEDGER = pathlib.Path("src/bolt_v3_application_resource_ledger.rs")
 LIB = pathlib.Path("src/lib.rs")
+RAW_AUTHORITY_SOURCE_PATH = "bolt_v3_application_resource_ledger/risk_closure_workspace.rs"
+LEDGER_SOURCE_PATH = "bolt_v3_application_resource_ledger.rs"
 RAW_AUTHORITY_CONSTRUCTION = (
     "RiskClosureWorkspaceAuthority::for_disabled_application_resource_ledger"
 )
@@ -41,8 +47,11 @@ FUNCTION_HEADER = re.compile(
 )
 ATTRIBUTE_HEADER = re.compile(r"#\s*\[\s*(?P<name>path|cfg_attr)\b")
 INCLUDE_MACRO = re.compile(r"\binclude\s*!\s*(?P<open>[({\[])")
-RAW_AUTHORITY_MODULE_DECLARATION = re.compile(
+LEGACY_RAW_AUTHORITY_MODULE_DECLARATION = re.compile(
     r"\b(?:pub(?:\([^)]*\))?\s+)?mod\s+bolt_v3_risk_closure_workspace\s*;"
+)
+RAW_AUTHORITY_CHILD_MODULE_DECLARATION = re.compile(
+    r"\b(?P<visibility>pub(?:\([^)]*\))?\s+)?mod\s+risk_closure_workspace\s*;"
 )
 LEDGER_MODULE_DECLARATION = re.compile(
     r"\b(?:pub(?:\([^)]*\))?\s+)?mod\s+bolt_v3_application_resource_ledger\s*;"
@@ -290,8 +299,8 @@ def _source_loader_targets(text: str) -> list[str]:
     code = strip_rust_comments_and_literals(text)
     literals = _rust_string_literals(text)
     targets = (
-        "bolt_v3_risk_closure_workspace.rs",
-        "bolt_v3_application_resource_ledger.rs",
+        RAW_AUTHORITY_SOURCE_PATH,
+        LEDGER_SOURCE_PATH,
     )
     found: list[str] = []
 
@@ -552,8 +561,10 @@ def authority_errors(root: pathlib.Path) -> list[str]:
             f"{OWNER} must contain exactly the two test-only constructor definitions; "
             f"found {authority_constructors}"
         )
-    ledger_loader_targets = _source_loader_targets(production_text(ledger_text))
-    if ledger_loader_targets.count("bolt_v3_risk_closure_workspace.rs") != 1:
+    child_declarations = list(
+        RAW_AUTHORITY_CHILD_MODULE_DECLARATION.finditer(ledger_code)
+    )
+    if len(child_declarations) != 1 or child_declarations[0].group("visibility"):
         errors.append(f"{LEDGER} must privately own the raw workspace authority module")
     if re.search(r"\bpub\s+mod\s+bolt_v3_risk_closure_workspace\s*;", lib_code):
         errors.append("raw workspace authority module must not be public")
@@ -616,7 +627,8 @@ def authority_errors(root: pathlib.Path) -> list[str]:
 
     raw_authority_source_loaders: list[pathlib.Path] = []
     ledger_source_loaders: list[pathlib.Path] = []
-    raw_authority_module_declarations: list[pathlib.Path] = []
+    raw_authority_child_module_declarations: list[tuple[pathlib.Path, str]] = []
+    legacy_raw_authority_module_declarations: list[pathlib.Path] = []
     ledger_module_declarations: list[pathlib.Path] = []
     for path in _production_rust_sources(root):
         relative = path.relative_to(root)
@@ -633,15 +645,20 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         raw_authority_source_loaders.extend(
             relative
             for target in loader_targets
-            if target == "bolt_v3_risk_closure_workspace.rs"
+            if target == RAW_AUTHORITY_SOURCE_PATH
         )
         ledger_source_loaders.extend(
             relative
             for target in loader_targets
-            if target == "bolt_v3_application_resource_ledger.rs"
+            if target == LEDGER_SOURCE_PATH
         )
-        raw_authority_module_declarations.extend(
-            relative for _ in RAW_AUTHORITY_MODULE_DECLARATION.finditer(code_text)
+        raw_authority_child_module_declarations.extend(
+            (relative, (match.group("visibility") or "").strip())
+            for match in RAW_AUTHORITY_CHILD_MODULE_DECLARATION.finditer(code_text)
+        )
+        legacy_raw_authority_module_declarations.extend(
+            relative
+            for _ in LEGACY_RAW_AUTHORITY_MODULE_DECLARATION.finditer(code_text)
         )
         ledger_module_declarations.extend(
             relative for _ in LEDGER_MODULE_DECLARATION.finditer(code_text)
@@ -674,20 +691,25 @@ def authority_errors(root: pathlib.Path) -> list[str]:
             for name in symbolic_names
         ):
             errors.append(f"symbolic workspace-size authority found outside generated Rust: {relative}")
-    if raw_authority_source_loaders != [LEDGER]:
+    if raw_authority_source_loaders:
         errors.append(
-            "raw authority source must have exactly one private module loader at "
-            f"{LEDGER}; found {raw_authority_source_loaders}"
+            "raw authority source must not have alternate source loaders; "
+            f"found {raw_authority_source_loaders}"
         )
     if ledger_source_loaders:
         errors.append(
             "application ledger source must not have alternate module loaders; "
             f"found {ledger_source_loaders}"
         )
-    if raw_authority_module_declarations:
+    if raw_authority_child_module_declarations != [(LEDGER, "")]:
         errors.append(
-            "raw authority source must not have a top-level module declaration; "
-            f"found {raw_authority_module_declarations}"
+            "raw authority must have exactly one private child module declaration at "
+            f"{LEDGER}; found {raw_authority_child_module_declarations}"
+        )
+    if legacy_raw_authority_module_declarations:
+        errors.append(
+            "raw authority source must not have a legacy top-level module declaration; "
+            f"found {legacy_raw_authority_module_declarations}"
         )
     if ledger_module_declarations != [LIB]:
         errors.append(

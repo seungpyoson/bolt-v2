@@ -28,12 +28,13 @@ slot_bytes = 16777216
 """,
             encoding="utf-8",
         )
-        (self.root / "src" / "bolt_v3_risk_closure_workspace").mkdir()
-        (self.root / "src" / "bolt_v3_risk_closure_workspace" / "generated.rs").write_text(
+        owner_directory = self.root / "src" / "bolt_v3_application_resource_ledger"
+        (owner_directory / "risk_closure_workspace").mkdir(parents=True)
+        (owner_directory / "risk_closure_workspace" / "generated.rs").write_text(
             "const RISK_CLOSURE_WORKSPACE_CONFIG: RiskClosureWorkspaceConfig = fixture();\n",
             encoding="utf-8",
         )
-        (self.root / "src" / "bolt_v3_risk_closure_workspace.rs").write_text(
+        (owner_directory / "risk_closure_workspace.rs").write_text(
             """struct RiskClosureWorkspaceConfig { slot_bytes: usize }
 pub(super) struct RiskClosureWorkspaceAuthority;
 impl RiskClosureWorkspaceAuthority {
@@ -46,8 +47,7 @@ impl RiskClosureWorkspaceAuthority {
             encoding="utf-8",
         )
         (self.root / "src" / "bolt_v3_application_resource_ledger.rs").write_text(
-            """#[path = "bolt_v3_risk_closure_workspace.rs"]
-mod risk_closure_workspace;
+            """mod risk_closure_workspace;
 use risk_closure_workspace::RiskClosureWorkspaceAuthority;
 pub struct ApplicationResourceLedger { authority: RiskClosureWorkspaceAuthority }
 pub struct NewRiskWorkspaceHandle;
@@ -82,7 +82,12 @@ impl RecoveryWorkspaceHandle {
         self.assertEqual(verifier.authority_errors(self.root), [])
 
     def test_rejects_public_workspace_configuration_type(self) -> None:
-        (self.root / "src" / "bolt_v3_risk_closure_workspace.rs").write_text(
+        (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        ).write_text(
             "pub struct RiskClosureWorkspaceConfig { slot_bytes: usize }\n",
             encoding="utf-8",
         )
@@ -92,7 +97,12 @@ impl RecoveryWorkspaceHandle {
         self.assertTrue(any("configuration type must remain private" in error for error in errors))
 
     def test_rejects_public_raw_workspace_authority(self) -> None:
-        owner = self.root / "src" / "bolt_v3_risk_closure_workspace.rs"
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
         owner.write_text(
             owner.read_text(encoding="utf-8").replace(
                 "pub(super) struct RiskClosureWorkspaceAuthority",
@@ -106,7 +116,12 @@ impl RecoveryWorkspaceHandle {
         self.assertTrue(any("raw workspace authority must remain ledger-private" in error for error in errors))
 
     def test_comment_cannot_fake_raw_authority_privacy(self) -> None:
-        owner = self.root / "src" / "bolt_v3_risk_closure_workspace.rs"
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
         owner.write_text(
             "// pub(super) struct RiskClosureWorkspaceAuthority;\n"
             + owner.read_text(encoding="utf-8").replace(
@@ -123,7 +138,12 @@ impl RecoveryWorkspaceHandle {
         )
 
     def test_rejects_cloneable_raw_workspace_authority(self) -> None:
-        owner = self.root / "src" / "bolt_v3_risk_closure_workspace.rs"
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
         owner.write_text(
             owner.read_text(encoding="utf-8").replace(
                 "pub(super) struct RiskClosureWorkspaceAuthority",
@@ -137,7 +157,12 @@ impl RecoveryWorkspaceHandle {
         self.assertTrue(any("raw workspace authority must not implement Clone" in error for error in errors))
 
     def test_rejects_second_raw_authority_constructor_definition(self) -> None:
-        owner = self.root / "src" / "bolt_v3_risk_closure_workspace.rs"
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
         owner.write_text(
             owner.read_text(encoding="utf-8")
             + "\nimpl RiskClosureWorkspaceAuthority {\n"
@@ -345,33 +370,65 @@ impl RecoveryWorkspaceHandle {
 
         self.assertTrue(any("application ledger source must not have alternate module loaders" in error for error in errors))
 
-    def test_rejects_duplicate_raw_authority_module_loader(self) -> None:
-        (self.root / "src" / "consumer.rs").write_text(
-            '#[path = "bolt_v3_risk_closure_workspace.rs"]\nmod shadow_authority;\n',
-            encoding="utf-8",
-        )
-
-        errors = verifier.authority_errors(self.root)
-
-        self.assertTrue(any("raw authority source must have exactly one private module loader" in error for error in errors))
-
-    def test_rejects_concatenated_raw_authority_include_loader(self) -> None:
-        (self.root / "src" / "consumer.rs").write_text(
-            'include!(concat!("bolt_v3_", "risk_closure_workspace.rs"));\n',
+    def test_rejects_public_raw_authority_child_module(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8").replace(
+                "mod risk_closure_workspace;",
+                "pub mod risk_closure_workspace;",
+            ),
             encoding="utf-8",
         )
 
         errors = verifier.authority_errors(self.root)
 
         self.assertTrue(
-            any("raw authority source must have exactly one private module loader" in error for error in errors)
+            any("must privately own the raw workspace authority module" in error for error in errors)
+        )
+
+    def test_rejects_duplicate_raw_authority_child_module_declaration(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "mod risk_closure_workspace;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("exactly one private child module declaration" in error for error in errors)
+        )
+
+    def test_rejects_duplicate_raw_authority_module_loader(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            '#[path = "bolt_v3_application_resource_ledger/'
+            'risk_closure_workspace.rs"]\nmod shadow_authority;\n',
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("raw authority source must not have alternate source loaders" in error for error in errors)
+        )
+
+    def test_rejects_concatenated_raw_authority_include_loader(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            'include!(concat!("bolt_v3_application_resource_ledger/", '
+            '"risk_closure_workspace.rs"));\n',
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("raw authority source must not have alternate source loaders" in error for error in errors)
         )
 
     def test_rejects_cfg_attr_path_module_loaders(self) -> None:
         cases = (
             (
-                "bolt_v3_risk_closure_workspace.rs",
-                "raw authority source must have exactly one private module loader",
+                "bolt_v3_application_resource_ledger/risk_closure_workspace.rs",
+                "raw authority source must not have alternate source loaders",
             ),
             (
                 "bolt_v3_application_resource_ledger.rs",
@@ -394,7 +451,8 @@ impl RecoveryWorkspaceHandle {
     def test_raw_string_loader_decoy_is_ignored(self) -> None:
         (self.root / "src" / "consumer.rs").write_text(
             'const DECOY: &str = r##"#[path = '
-            '\"bolt_v3_risk_closure_workspace.rs\"]"##;\n',
+            '\"bolt_v3_application_resource_ledger/'
+            'risk_closure_workspace.rs\"]"##;\n',
             encoding="utf-8",
         )
 
@@ -473,7 +531,13 @@ impl RecoveryWorkspaceHandle {
         self.assertTrue(any("raw workspace authority module must not be public" in error for error in errors))
 
     def test_rejects_public_generated_workspace_configuration(self) -> None:
-        (self.root / "src" / "bolt_v3_risk_closure_workspace" / "generated.rs").write_text(
+        (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace"
+            / "generated.rs"
+        ).write_text(
             "pub const RISK_CLOSURE_WORKSPACE_CONFIG: RiskClosureWorkspaceConfig = fixture();\n",
             encoding="utf-8",
         )

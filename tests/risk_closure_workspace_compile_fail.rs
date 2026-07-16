@@ -8,34 +8,6 @@ fn compile_snippet(case_name: &str, body: &str) -> Output {
     let source_path = temporary.path().join(format!("{case_name}.rs"));
     let output_path = temporary.path().join(case_name);
     let module_path = format!(
-        "{}/src/bolt_v3_risk_closure_workspace.rs",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let source = format!(
-        "#[path = {module_path:?}]\nmod workspace;\nuse workspace::*;\nfn main() {{\n{body}\n}}\n"
-    );
-    fs::write(&source_path, source).unwrap();
-
-    Command::new("rustc")
-        .args([
-            "--edition=2024",
-            "--crate-name",
-            case_name,
-            "--emit=metadata",
-            "--error-format=json",
-            "-o",
-        ])
-        .arg(&output_path)
-        .arg(&source_path)
-        .output()
-        .unwrap()
-}
-
-fn compile_ledger_snippet(case_name: &str, body: &str) -> Output {
-    let temporary = tempfile::tempdir().unwrap();
-    let source_path = temporary.path().join(format!("{case_name}.rs"));
-    let output_path = temporary.path().join(case_name);
-    let module_path = format!(
         "{}/src/bolt_v3_application_resource_ledger.rs",
         env!("CARGO_MANIFEST_DIR")
     );
@@ -125,32 +97,6 @@ fn assert_compile_fails(case_name: &str, body: &str, expected: ExpectedDiagnosti
 
 fn assert_compiles(case_name: &str, body: &str) {
     let output = compile_snippet(case_name, body);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "{case_name} did not compile:\n{stderr}"
-    );
-}
-
-fn assert_ledger_compile_fails(case_name: &str, body: &str, expected: ExpectedDiagnostic<'_>) {
-    let output = compile_ledger_snippet(case_name, body);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "{case_name} unexpectedly compiled"
-    );
-    let diagnostics = diagnostics(&stderr);
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| matches_expected_diagnostic(diagnostic, &expected)),
-        "{case_name} failed without the expected diagnostic:\n{stderr}"
-    );
-}
-
-fn assert_ledger_compiles(case_name: &str, body: &str) {
-    let output = compile_ledger_snippet(case_name, body);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
@@ -292,7 +238,7 @@ let _permit = TerminalReleasePermit {
 
 #[test]
 fn ledger_capability_harness_positive_control() {
-    assert_ledger_compiles(
+    assert_compiles(
         "ledger_capability_harness_positive_control",
         r#"
 fn accepts(
@@ -309,7 +255,7 @@ fn accepts(
 
 #[test]
 fn new_risk_handle_cannot_checkout_recovery() {
-    assert_ledger_compile_fails(
+    assert_compile_fails(
         "new_risk_handle_cannot_checkout_recovery",
         r#"
 fn bypass(handle: NewRiskWorkspaceHandle, identity: ClosureIdentity) {
@@ -322,7 +268,7 @@ fn bypass(handle: NewRiskWorkspaceHandle, identity: ClosureIdentity) {
 
 #[test]
 fn recovery_handle_cannot_reserve_new_risk() {
-    assert_ledger_compile_fails(
+    assert_compile_fails(
         "recovery_handle_cannot_reserve_new_risk",
         r#"
 fn bypass(handle: RecoveryWorkspaceHandle) {
@@ -335,7 +281,7 @@ fn bypass(handle: RecoveryWorkspaceHandle) {
 
 #[test]
 fn raw_workspace_authority_cannot_be_imported() {
-    assert_ledger_compile_fails(
+    assert_compile_fails(
         "raw_workspace_authority_cannot_be_imported",
         r#"
 use application_resource_ledger::risk_closure_workspace::RiskClosureWorkspaceAuthority;
@@ -347,7 +293,7 @@ fn bypass(_: RiskClosureWorkspaceAuthority) {}
 
 #[test]
 fn application_resource_ledger_cannot_be_constructed() {
-    assert_ledger_compile_fails(
+    assert_compile_fails(
         "application_resource_ledger_cannot_be_constructed",
         r#"
 let _ledger = ApplicationResourceLedger {
@@ -360,7 +306,7 @@ let _ledger = ApplicationResourceLedger {
 
 #[test]
 fn application_resource_ledger_has_no_production_constructor() {
-    assert_ledger_compile_fails(
+    assert_compile_fails(
         "application_resource_ledger_has_no_production_constructor",
         "let _ledger = ApplicationResourceLedger::new_disabled();",
         ExpectedDiagnostic::ErrorCode("E0599"),
@@ -369,7 +315,7 @@ fn application_resource_ledger_has_no_production_constructor() {
 
 #[test]
 fn application_resource_ledger_has_no_alternate_new_constructor() {
-    assert_ledger_compile_fails(
+    assert_compile_fails(
         "application_resource_ledger_has_no_alternate_new_constructor",
         "let _ledger = ApplicationResourceLedger::new();",
         ExpectedDiagnostic::ErrorCode("E0599"),
@@ -378,7 +324,7 @@ fn application_resource_ledger_has_no_alternate_new_constructor() {
 
 #[test]
 fn application_resource_ledger_has_no_default_constructor() {
-    assert_ledger_compile_fails(
+    assert_compile_fails(
         "application_resource_ledger_has_no_default_constructor",
         "let _ledger = ApplicationResourceLedger::default();",
         ExpectedDiagnostic::ErrorCode("E0599"),

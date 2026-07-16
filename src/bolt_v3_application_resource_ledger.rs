@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-#[path = "bolt_v3_risk_closure_workspace.rs"]
 mod risk_closure_workspace;
 
 use risk_closure_workspace::RiskClosureWorkspaceAuthority;

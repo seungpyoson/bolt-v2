@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_evidence_novelty::stable_identity_field_is_canonical,
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_numeric::Probability,
@@ -1071,31 +1072,44 @@ pub fn validate_strategy_target_with_bindings(
     bindings: &[MarketFamilyValidationBinding],
 ) -> (Option<TargetMetadata>, Vec<InstrumentFilterError>) {
     let metadata = target.clone().try_into::<TargetMetadata>().ok();
+    let mut errors = metadata
+        .as_ref()
+        .filter(|metadata| {
+            !stable_identity_field_is_canonical(metadata.configured_target_id.as_str())
+        })
+        .map(|_| {
+            vec![InstrumentFilterError::TargetValidationFailure {
+                message: format!(
+                    "{context}: target.configured_target_id must be non-empty and unpadded"
+                ),
+            }]
+        })
+        .unwrap_or_default();
     let dispatch: TargetFamilyDispatch = match target.clone().try_into() {
         Ok(value) => value,
         Err(error) => {
-            return (
-                metadata,
-                vec![InstrumentFilterError::Other {
-                    message: format!("{context}: target: {error}"),
-                }],
-            );
+            errors.push(InstrumentFilterError::Other {
+                message: format!("{context}: target: {error}"),
+            });
+            return (metadata, errors);
         }
     };
-    let errors = match bindings
-        .iter()
-        .find(|binding| binding.key == dispatch.rotating_market_family)
-    {
-        Some(binding) => (binding.validate_target)(context, target)
-            .into_iter()
-            .map(|message| InstrumentFilterError::TargetValidationFailure { message })
-            .collect(),
-        None => vec![InstrumentFilterError::UnsupportedFamily {
-            context: Some(context.to_string()),
-            family_key: dispatch.rotating_market_family.clone(),
-            supported: bindings.iter().map(|b| b.key).collect(),
-        }],
-    };
+    errors.extend(
+        match bindings
+            .iter()
+            .find(|binding| binding.key == dispatch.rotating_market_family)
+        {
+            Some(binding) => (binding.validate_target)(context, target)
+                .into_iter()
+                .map(|message| InstrumentFilterError::TargetValidationFailure { message })
+                .collect(),
+            None => vec![InstrumentFilterError::UnsupportedFamily {
+                context: Some(context.to_string()),
+                family_key: dispatch.rotating_market_family.clone(),
+                supported: bindings.iter().map(|b| b.key).collect(),
+            }],
+        },
+    );
     (metadata, errors)
 }
 
@@ -1381,6 +1395,53 @@ mod tests {
             injected_errors.is_empty(),
             "injected family binding should own target dispatch: {injected_errors:?}"
         );
+    }
+
+    #[test]
+    fn production_validation_rejects_malformed_configured_target_identity() {
+        let updown_target = fixture_strategy_with_family(updown::KEY).config.target;
+        let static_target: toml::Value = toml::toml! {
+            configured_target_id = "sample-event-yes-no"
+            kind = "static_market"
+            rotating_market_family = "static_binary_event"
+            event_key = "sample_event_2026"
+            market_slug = "will-sample-event-resolve-yes"
+            condition_id = "condition-sample-event"
+            yes_outcome = "Yes"
+            no_outcome = "No"
+            fair_probability_source = "reference_current_price"
+            selection_window_secs = 1
+            market_selection_rule = "configured_static"
+            retry_interval_secs = 5
+            blocked_after_secs = 60
+        }
+        .into();
+
+        for (family, valid_target) in [
+            (updown::KEY, updown_target),
+            ("static_binary_event", static_target),
+        ] {
+            for malformed in ["", "   ", " target-id", "target-id "] {
+                let mut target = valid_target.clone();
+                target
+                    .as_table_mut()
+                    .expect("target fixture should be a TOML table")
+                    .insert(
+                        "configured_target_id".to_string(),
+                        toml::Value::String(malformed.to_string()),
+                    );
+
+                let (_, errors) = validate_strategy_target("strategy `fixture`", &target);
+                assert!(
+                    errors.iter().any(|error| {
+                        error
+                            .to_string()
+                            .contains("target.configured_target_id must be non-empty and unpadded")
+                    }),
+                    "{family} production validation accepted malformed configured_target_id {malformed:?}: {errors:?}"
+                );
+            }
+        }
     }
 
     #[test]

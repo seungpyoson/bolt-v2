@@ -58,12 +58,13 @@ use crate::{
     },
     bolt_v3_providers::{
         ProviderMarketExitOrderConstraints, binding_for_provider_key,
-        new_risk_market_data_available, resolution_oracle_client_http_timeout_secs,
+        resolution_oracle_client_http_timeout_secs,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
         StrategyRuntimeCapabilities, assemble_strategy_build_context, execution_account_id,
-        settlement_currency_for_execution_account, venue_for_client,
+        new_risk_market_data_available_for_client, settlement_currency_for_execution_account,
+        venue_for_client,
     },
     strategies::{
         binary_oracle_edge_taker::{BinaryOracleEdgeTakerBuilder, KEY as STRATEGY_KIND},
@@ -676,25 +677,23 @@ pub fn raw_taker_config(
         })?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
-    let signal_client = loaded
-        .root
-        .clients
-        .get(signal_data.data_client_id.as_str())
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+    let signal_new_risk_available = new_risk_market_data_available_for_client(
+        &loaded.root,
+        signal_data.data_client_id.as_str(),
+    )
+    .map_err(
+        |message| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "signal_data data_client_id `{}` is not present in loaded clients",
-                signal_data.data_client_id
-            ),
-        })?;
-    let signal_new_risk_available =
-        new_risk_market_data_available(signal_data.data_client_id.as_str(), signal_client)
-            .map_err(
-                |message| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
-                    strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-                    message,
-                },
-            )?;
+            message,
+        },
+    )?
+    .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+        strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+        message: format!(
+            "signal_data data_client_id `{}` is not present in loaded clients",
+            signal_data.data_client_id
+        ),
+    })?;
     let resolution_data = configured_resolution_data(strategy);
     if let Some(resolution_data) = resolution_data {
         venue_for_client(&loaded.root, resolution_data.data_client_id.as_str()).ok_or_else(

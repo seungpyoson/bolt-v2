@@ -16,7 +16,7 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
-use crate::bolt_v3_providers::resolve_fee_provider;
+use crate::bolt_v3_providers::{new_risk_market_data_available, resolve_fee_provider};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::{
     BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
@@ -128,6 +128,16 @@ pub fn assemble_strategy_build_context(
 /// archetypes never touch `root.clients` directly.
 pub(crate) fn venue_for_client(root: &BoltV3RootConfig, client_id: &str) -> Option<Venue> {
     root.clients.get(client_id).map(|client| client.venue)
+}
+
+pub(crate) fn new_risk_market_data_available_for_client(
+    root: &BoltV3RootConfig,
+    client_id: &str,
+) -> Result<Option<bool>, String> {
+    root.clients
+        .get(client_id)
+        .map(|client| new_risk_market_data_available(client_id, client))
+        .transpose()
 }
 
 pub(crate) fn execution_account_id<'a>(

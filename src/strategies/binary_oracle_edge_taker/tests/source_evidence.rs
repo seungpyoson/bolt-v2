@@ -2297,7 +2297,7 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
         .sources
         .retain(|source| source.data_client_id.as_str() == "binance_spot_data");
     surfaces.clear();
-    surfaces.insert(TEST_SURFACE_ID.to_string(), surface);
+    surfaces.insert("btc_usdt_midpoint_rv".to_string(), surface);
     let runtime = Arc::new(Mutex::new(
         crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
             &loaded,
@@ -2315,7 +2315,8 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
         .context
         .clone()
         .with_realized_volatility_runtime(runtime);
-    strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy.config.realized_volatility_surface_id = "btc_usdt_midpoint_rv".to_string();
+    strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
     strategy.config.signal_new_risk_available = false;
     strategy.pricing.set_selected_pricing_spot(None);
     strategy.refresh_realized_volatility_snapshot_at(1_200);
@@ -2338,7 +2339,7 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
     );
     let snapshot = strategy
         .pricing
-        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
+        .latest_realized_vol_snapshot_for_surface("btc_usdt_midpoint_rv")
         .expect("the unavailable source should still publish an auditable snapshot");
     assert!(snapshot.blocked_reasons.contains(
         &crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ProviderCapabilityUnavailable

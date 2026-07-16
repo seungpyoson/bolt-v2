@@ -59,6 +59,10 @@ name = "bolt_v3_risk_reservation_substrate"
 path = "tests/bolt_v3_risk_reservation_substrate.rs"
 
 [[test]]
+name = "risk_closure_workspace_compile_fail"
+path = "tests/risk_closure_workspace_compile_fail.rs"
+
+[[test]]
 name = "bolt_v3_risk_reservation_epoch_manager"
 path = "tests/bolt_v3_risk_reservation_epoch_manager.rs"
 

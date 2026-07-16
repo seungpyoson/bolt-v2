@@ -22,8 +22,8 @@ class RiskClosureWorkspaceAuthorityVerifierTests(unittest.TestCase):
 schema_version = 1
 production_activation_enabled = false
 [risk_closure_workspaces]
-arena_bytes = 160
-slot_bytes = 16
+arena_bytes = 167772160
+slot_bytes = 16777216
 """,
             encoding="utf-8",
         )
@@ -41,7 +41,7 @@ slot_bytes = 16
 
     def test_rejects_a_second_toml_slot_size_authority(self) -> None:
         (self.root / "config" / "duplicate.toml").write_text(
-            "[risk_closure_workspaces]\nslot_bytes = 16\n",
+            "[risk_closure_workspaces]\nslot_bytes = 16777216\n",
             encoding="utf-8",
         )
 
@@ -58,6 +58,58 @@ slot_bytes = 16
         errors = verifier.authority_errors(self.root)
 
         self.assertTrue(any("runtime workspace-size literal" in error for error in errors))
+
+    def test_rejects_hexadecimal_runtime_workspace_size_literal(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "let workspace = vec![0_u8; 0x0100_0000usize];\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("runtime workspace-size literal" in error for error in errors))
+
+    def test_rejects_runtime_workspace_size_expression(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "let workspace = vec![0_u8; 16 * 1024 * 1024];\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
+
+    def test_rejects_runtime_workspace_size_shift_expression(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            "let workspace = vec![0_u8; 1usize << 24];\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("runtime workspace-size expression" in error for error in errors))
+
+    def test_scans_root_build_script(self) -> None:
+        (self.root / "build.rs").write_text(
+            "const CLOSURE_SLOT_BYTES: usize = 0x0100_0000;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("build.rs" in error for error in errors))
+
+    def test_scans_workspace_crate_production_sources(self) -> None:
+        crate_source = self.root / "crates" / "consumer" / "src"
+        crate_source.mkdir(parents=True)
+        (crate_source / "lib.rs").write_text(
+            "const CLOSURE_SLOT_BYTES: usize = 1 << 24;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("crates/consumer/src/lib.rs" in error for error in errors))
 
     def test_rejects_a_symbolic_runtime_workspace_size_authority(self) -> None:
         (self.root / "src" / "consumer.rs").write_text(

@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     marker::PhantomData,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{Arc, Mutex},
 };
 
@@ -90,26 +91,29 @@ impl RiskClosureWorkspaceAuthority {
     pub fn checkout_new_risk(
         &self,
     ) -> Result<RiskClosureWorkspaceReservation, RiskClosureWorkspaceError> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
-        let slot_index = state
-            .slots
-            .iter()
-            .position(|slot| matches!(slot, SlotState::Free))
-            .ok_or(RiskClosureWorkspaceError::CapacityExhausted)?;
-        let lease_id = state.take_lease_id()?;
-        let workspace_range = state.workspace_range(slot_index);
-        state.storage[workspace_range].fill(u8::default());
-        state.slots[slot_index] = SlotState::Reserved { lease_id };
-        Ok(RiskClosureWorkspaceReservation {
+        let (slot_index, lease_id) = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
+            let slot_index = state
+                .slots
+                .iter()
+                .position(|slot| matches!(slot, SlotState::Free))
+                .ok_or(RiskClosureWorkspaceError::CapacityExhausted)?;
+            let lease_id = state.take_lease_id()?;
+            state.slots[slot_index] = SlotState::Reserved { lease_id };
+            (slot_index, lease_id)
+        };
+        let mut reservation = RiskClosureWorkspaceReservation {
             inner: Arc::clone(&self.inner),
             slot_index,
             lease_id,
             active: true,
             not_clone: PhantomData,
-        })
+        };
+        reservation.clear_workspace()?;
+        Ok(reservation)
     }
 
     pub fn checkout_recovery(
@@ -153,7 +157,7 @@ impl RiskClosureWorkspaceAuthority {
             .inner
             .lock()
             .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
-        Ok(state.storage.len())
+        Ok(state.storage.reserved_bytes())
     }
 
     pub fn replace_storage_from_generated_config(&self) -> Result<(), RiskClosureWorkspaceError> {
@@ -164,6 +168,20 @@ impl RiskClosureWorkspaceAuthority {
         &self,
         config: RiskClosureWorkspaceConfig,
     ) -> Result<(), RiskClosureWorkspaceError> {
+        {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
+            if state
+                .slots
+                .iter()
+                .any(|slot| !matches!(slot, SlotState::Free))
+            {
+                return Err(RiskClosureWorkspaceError::StorageInUse);
+            }
+        }
+        let replacement = WorkspaceState::allocate(config)?;
         let mut state = self
             .inner
             .lock()
@@ -175,7 +193,6 @@ impl RiskClosureWorkspaceAuthority {
         {
             return Err(RiskClosureWorkspaceError::StorageInUse);
         }
-        let replacement = WorkspaceState::allocate(config)?;
         *state = replacement;
         Ok(())
     }
@@ -184,7 +201,7 @@ impl RiskClosureWorkspaceAuthority {
 #[derive(Debug)]
 struct WorkspaceState {
     config: RiskClosureWorkspaceConfig,
-    storage: Box<[u8]>,
+    storage: Arc<WorkspaceStorage>,
     slots: Vec<SlotState>,
     logical_slots: BTreeMap<ClosureIdentity, usize>,
     next_lease_id: u64,
@@ -201,11 +218,7 @@ impl WorkspaceState {
         {
             return Err(RiskClosureWorkspaceError::InvalidConfiguration);
         }
-        let mut storage = Vec::new();
-        storage
-            .try_reserve_exact(config.arena_bytes)
-            .map_err(|_| RiskClosureWorkspaceError::AllocationFailed)?;
-        storage.resize(config.arena_bytes, u8::MAX);
+        let storage = Arc::new(WorkspaceStorage::allocate(config)?);
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(config.capacity)
@@ -213,7 +226,7 @@ impl WorkspaceState {
         slots.resize_with(config.capacity, || SlotState::Free);
         Ok(Self {
             config,
-            storage: storage.into_boxed_slice(),
+            storage,
             slots,
             logical_slots: BTreeMap::new(),
             next_lease_id: u64::default(),
@@ -227,10 +240,66 @@ impl WorkspaceState {
             .ok_or(RiskClosureWorkspaceError::LeaseIdExhausted)?;
         Ok(self.next_lease_id)
     }
+}
 
-    fn workspace_range(&self, slot_index: usize) -> std::ops::Range<usize> {
-        let start = slot_index * self.config.slot_bytes;
-        start..start + self.config.slot_bytes
+#[derive(Debug)]
+struct WorkspaceStorage {
+    slots: Box<[Mutex<Box<[u8]>>]>,
+    reserved_bytes: usize,
+}
+
+impl WorkspaceStorage {
+    fn allocate(config: RiskClosureWorkspaceConfig) -> Result<Self, RiskClosureWorkspaceError> {
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(config.capacity)
+            .map_err(|_| RiskClosureWorkspaceError::AllocationFailed)?;
+        for _ in usize::default()..config.capacity {
+            let mut workspace = Vec::new();
+            workspace
+                .try_reserve_exact(config.slot_bytes)
+                .map_err(|_| RiskClosureWorkspaceError::AllocationFailed)?;
+            workspace.resize(config.slot_bytes, u8::MAX);
+            slots.push(Mutex::new(workspace.into_boxed_slice()));
+        }
+        Ok(Self {
+            slots: slots.into_boxed_slice(),
+            reserved_bytes: config.arena_bytes,
+        })
+    }
+
+    fn reserved_bytes(&self) -> usize {
+        self.reserved_bytes
+    }
+
+    fn clear_slot(&self, slot_index: usize) -> Result<(), RiskClosureWorkspaceError> {
+        let mut workspace = self
+            .slots
+            .get(slot_index)
+            .ok_or(RiskClosureWorkspaceError::InvalidLease)?
+            .lock()
+            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
+        workspace.fill(u8::default());
+        Ok(())
+    }
+
+    fn with_slot_mut<T>(
+        &self,
+        slot_index: usize,
+        use_workspace: impl FnOnce(&mut [u8]) -> T,
+    ) -> Result<T, RiskClosureWorkspaceError> {
+        let mut workspace = self
+            .slots
+            .get(slot_index)
+            .ok_or(RiskClosureWorkspaceError::InvalidLease)?
+            .lock()
+            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
+        let outcome = catch_unwind(AssertUnwindSafe(|| use_workspace(&mut workspace)));
+        drop(workspace);
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(payload) => resume_unwind(payload),
+        }
     }
 }
 
@@ -295,13 +364,8 @@ impl RiskClosureWorkspaceReservation {
         &mut self,
         use_workspace: impl FnOnce(&mut [u8]) -> T,
     ) -> Result<T, RiskClosureWorkspaceError> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
-        self.validate(&state)?;
-        let range = state.workspace_range(self.slot_index);
-        Ok(use_workspace(&mut state.storage[range]))
+        let storage = self.validated_storage()?;
+        storage.with_slot_mut(self.slot_index, use_workspace)
     }
 
     pub fn commit(
@@ -331,6 +395,20 @@ impl RiskClosureWorkspaceReservation {
             Some(SlotState::Reserved { lease_id }) if *lease_id == self.lease_id => Ok(()),
             _ => Err(RiskClosureWorkspaceError::InvalidLease),
         }
+    }
+
+    fn validated_storage(&self) -> Result<Arc<WorkspaceStorage>, RiskClosureWorkspaceError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
+        self.validate(&state)?;
+        Ok(Arc::clone(&state.storage))
+    }
+
+    fn clear_workspace(&mut self) -> Result<(), RiskClosureWorkspaceError> {
+        let storage = self.validated_storage()?;
+        storage.clear_slot(self.slot_index)
     }
 }
 
@@ -400,27 +478,36 @@ impl RiskClosureWorkspaceLease {
         &mut self,
         use_workspace: impl FnOnce(&mut [u8]) -> T,
     ) -> Result<T, RiskClosureWorkspaceError> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
-        self.validate(&state)?;
-        let range = state.workspace_range(self.slot_index);
-        Ok(use_workspace(&mut state.storage[range]))
+        let storage = self.validated_storage()?;
+        storage.with_slot_mut(self.slot_index, use_workspace)
     }
 
     pub fn release_terminal(
         mut self,
         permit: TerminalReleasePermit,
-    ) -> Result<(), RiskClosureWorkspaceError> {
+    ) -> Result<(), TerminalReleaseFailure> {
         if permit.closure_identity != self.closure_identity {
-            return Err(RiskClosureWorkspaceError::LeaseIdentityMismatch);
+            return Err(TerminalReleaseFailure::new(
+                RiskClosureWorkspaceError::LeaseIdentityMismatch,
+                self,
+                permit,
+            ));
         }
         let inner = Arc::clone(&self.inner);
-        let mut state = inner
-            .lock()
-            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
-        self.validate(&state)?;
+        let mut state = match inner.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return Err(TerminalReleaseFailure::new(
+                    RiskClosureWorkspaceError::StatePoisoned,
+                    self,
+                    permit,
+                ));
+            }
+        };
+        if let Err(error) = self.validate(&state) {
+            drop(state);
+            return Err(TerminalReleaseFailure::new(error, self, permit));
+        }
         state.logical_slots.remove(&self.closure_identity);
         state.slots[self.slot_index] = SlotState::Free;
         self.active = false;
@@ -437,6 +524,15 @@ impl RiskClosureWorkspaceLease {
             }
             _ => Err(RiskClosureWorkspaceError::InvalidLease),
         }
+    }
+
+    fn validated_storage(&self) -> Result<Arc<WorkspaceStorage>, RiskClosureWorkspaceError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
+        self.validate(&state)?;
+        Ok(Arc::clone(&state.storage))
     }
 }
 
@@ -472,6 +568,44 @@ impl Drop for RiskClosureWorkspaceLease {
 /// ```
 pub struct TerminalReleasePermit {
     closure_identity: ClosureIdentity,
+}
+
+/// A failed terminal release that preserves both one-use authorities for recovery.
+pub struct TerminalReleaseFailure {
+    error: RiskClosureWorkspaceError,
+    lease: RiskClosureWorkspaceLease,
+    permit: TerminalReleasePermit,
+}
+
+impl TerminalReleaseFailure {
+    fn new(
+        error: RiskClosureWorkspaceError,
+        lease: RiskClosureWorkspaceLease,
+        permit: TerminalReleasePermit,
+    ) -> Self {
+        Self {
+            error,
+            lease,
+            permit,
+        }
+    }
+
+    pub const fn error(&self) -> RiskClosureWorkspaceError {
+        self.error
+    }
+
+    pub fn into_parts(self) -> (RiskClosureWorkspaceLease, TerminalReleasePermit) {
+        (self.lease, self.permit)
+    }
+}
+
+impl std::fmt::Debug for TerminalReleaseFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalReleaseFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]
@@ -538,7 +672,7 @@ mod tests {
         let _: fn(
             RiskClosureWorkspaceLease,
             TerminalReleasePermit,
-        ) -> Result<(), RiskClosureWorkspaceError> = RiskClosureWorkspaceLease::release_terminal;
+        ) -> Result<(), TerminalReleaseFailure> = RiskClosureWorkspaceLease::release_terminal;
     }
 
     #[test]
@@ -638,6 +772,80 @@ mod tests {
             remaining.len(),
             TEST_CAPACITY.saturating_sub(usize::from(true))
         );
+        assert_eq!(
+            authority
+                .inner
+                .lock()
+                .unwrap()
+                .logical_slots
+                .values()
+                .filter(|slot| **slot == usize::from(true))
+                .count(),
+            usize::default()
+        );
+    }
+
+    #[test]
+    fn workspace_callback_does_not_hold_the_authority_lock() {
+        let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
+        let mut reservation = authority.checkout_new_risk().unwrap();
+
+        reservation
+            .with_workspace_mut(|_| {
+                assert!(authority.inner.try_lock().is_ok());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn blocked_workspace_callback_does_not_block_another_slot() {
+        let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
+        let mut first = authority.checkout_new_risk().unwrap();
+        let mut second = authority.checkout_new_risk().unwrap();
+        let (first_started_tx, first_started_rx) = std::sync::mpsc::channel();
+        let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+        let (second_finished_tx, second_finished_rx) = std::sync::mpsc::channel();
+
+        let first_thread = std::thread::spawn(move || {
+            first
+                .with_workspace_mut(|_| {
+                    first_started_tx.send(()).unwrap();
+                    release_first_rx.recv().unwrap();
+                })
+                .unwrap();
+        });
+        first_started_rx.recv().unwrap();
+        let second_thread = std::thread::spawn(move || {
+            second.with_workspace_mut(|_| ()).unwrap();
+            second_finished_tx.send(()).unwrap();
+        });
+
+        let second_finished = second_finished_rx
+            .recv_timeout(std::time::Duration::from_secs(u64::from(true)))
+            .is_ok();
+        release_first_tx.send(()).unwrap();
+        first_thread.join().unwrap();
+        second_thread.join().unwrap();
+        assert!(second_finished);
+    }
+
+    #[test]
+    fn panicking_workspace_callback_does_not_poison_recovery_authority() {
+        let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
+        let mut reservation = authority.checkout_new_risk().unwrap();
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = reservation.with_workspace_mut::<()>(|_| panic!("callback panic"));
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(
+            reservation.workspace_len().unwrap(),
+            test_config().slot_bytes()
+        );
+        reservation
+            .with_workspace_mut(|workspace| workspace.fill(u8::MAX))
+            .unwrap();
     }
 
     #[test]
@@ -686,6 +894,42 @@ mod tests {
             Some(RiskClosureWorkspaceError::UnknownClosureIdentity)
         );
         assert!(authority.checkout_new_risk().is_ok());
+    }
+
+    #[test]
+    fn terminal_release_mismatch_returns_both_lease_and_permit() {
+        let authority = RiskClosureWorkspaceAuthority::with_config(test_config()).unwrap();
+        let first = identity(usize::default());
+        let second = identity(usize::from(true));
+        authority
+            .checkout_new_risk()
+            .unwrap()
+            .commit(first.clone())
+            .unwrap();
+        authority
+            .checkout_new_risk()
+            .unwrap()
+            .commit(second.clone())
+            .unwrap();
+        let first_lease = authority.checkout_recovery(&first).unwrap();
+        let second_lease = authority.checkout_recovery(&second).unwrap();
+
+        let failure = first_lease
+            .release_terminal(terminal_permit(second.clone()))
+            .unwrap_err();
+
+        assert_eq!(
+            failure.error(),
+            RiskClosureWorkspaceError::LeaseIdentityMismatch
+        );
+        let (first_lease, second_permit) = failure.into_parts();
+        drop(first_lease);
+        second_lease.release_terminal(second_permit).unwrap();
+        assert!(authority.checkout_recovery(&first).is_ok());
+        assert_eq!(
+            authority.checkout_recovery(&second).err(),
+            Some(RiskClosureWorkspaceError::UnknownClosureIdentity)
+        );
     }
 
     #[test]

@@ -3852,6 +3852,15 @@ fresh = ["docs", "full", "tag_reuse"]
 fresh = ["docs", "full", "iteration", "tag_reuse"]
 """,
         ),
+        "runs_on_tags=false": replace_once(
+            CONFIG_TOML,
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["docs", "full", "iteration"]
+""",
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["docs", "full", "iteration", "tag_reuse"]
+""",
+        ),
     }
     for fragment, config_text in mutations.items():
         with tempfile.TemporaryDirectory() as tmp:

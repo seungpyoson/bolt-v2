@@ -901,13 +901,13 @@ def assert_verify_remote_ready_pr_requires_required_gate_job() -> None:
                         "status": "completed",
                         "conclusion": "success",
                         "createdAt": "2026-06-13T00:02:00Z",
-                        "url": "https://example.invalid/noop",
+                        "url": "https://example.invalid/iteration",
                     }
                 ],
                 None,
             )
             owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (
-                [{"name": "gate-noop", "status": "completed", "conclusion": "success"}],
+                [{"name": "gate-iteration", "status": "completed", "conclusion": "success"}],
                 None,
             )
             result, output = run_cmd_verify_remote(owner, repo)

@@ -228,6 +228,9 @@ concurrency:
     coverage-${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && !(github.event.pull_request.draft == false
+             && github.event.action == 'edited'
+             && !(github.event.changes.base.ref.from && true || false))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && ((github.event.pull_request.draft == true
@@ -3214,69 +3217,30 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
         if not any("must key on head SHA" in error for error in old_group_errors):
             raise AssertionError(f"{workflow_name} must reject run_id-keyed Mergify proof groups, got: {old_group_errors}")
 
-        head_ref_predicate = (
-            "        && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
-            "            || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))\n"
-        )
-        proof_group_arm = head_ref_predicate + f"        && {group_fragment}\n"
-        legacy_metadata_noop_branch = (
-            "        && github.event.action == 'edited'\n"
-            "        && !(github.event.changes.base.ref.from && true || false)\n"
-            f"        && {group_replacement}\n"
-            "        || github.event_name == 'pull_request'\n"
-        )
-        if legacy_metadata_noop_branch in workflow:
-            legacy_metadata_noop_workflow = workflow
-        else:
-            legacy_metadata_noop_workflow = replace_once_after(
+        if workflow_name.endswith(("/ci.yml", "/backtester-ci.yml", "/coverage-enforcer.yml")):
+            ready_metadata_exclusion = (
+                "        && !(github.event.pull_request.draft == false\n"
+                "             && github.event.action == 'edited'\n"
+                "             && !(github.event.changes.base.ref.from && true || false))\n"
+            )
+            if ready_metadata_exclusion not in workflow:
+                raise AssertionError(
+                    f"{workflow_name} must isolate ready metadata iteration from pending Mergify proof runs"
+                )
+            shared_group = replace_once_after(
                 workflow,
                 "concurrency:",
-                proof_group_arm,
-                head_ref_predicate + legacy_metadata_noop_branch + proof_group_arm,
+                ready_metadata_exclusion,
+                "",
             )
-        legacy_metadata_noop_errors = workflow_errors(workflow_name, legacy_metadata_noop_workflow)
-        if not any("queue-branch metadata-only edits must use the Mergify proof group" in error for error in legacy_metadata_noop_errors):
-            raise AssertionError(
-                f"{workflow_name} must reject queue-branch metadata-only iteration groups, got: {legacy_metadata_noop_errors}"
-            )
-
-    misplaced_metadata_after_proof_group = (
-        "group: >- ${{ github.event_name == 'pull_request' "
-        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
-        "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
-        "|| github.event_name == 'pull_request' "
-        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
-        f"&& {verifier.MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE} "
-        "&& format('pr-{0}-iteration', github.event.number) }}"
-    )
-    misplaced_metadata_errors = verifier.mergify_proof_pr_concurrency_errors(
-        misplaced_metadata_after_proof_group,
-        f"cancel-in-progress: ${{{{ github.event_name == 'pull_request' && {verifier.MERGIFY_PROOF_PR_CANCEL_GUARD} }}}}",
-    )
-    if not any("queue-branch metadata-only edits must use the Mergify proof group" in error for error in misplaced_metadata_errors):
-        raise AssertionError(
-            "Mergify proof PR concurrency must reject metadata-only edit predicates even after the proof group, "
-            f"got: {misplaced_metadata_errors}"
-        )
-    interposed_queue_metadata_group = (
-        "group: >- ${{ github.event_name == 'pull_request' "
-        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
-        "&& github.event.pull_request.draft == false "
-        f"&& {verifier.MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE} "
-        "&& format('pr-{0}-iteration', github.event.number) "
-        "|| github.event_name == 'pull_request' "
-        f"&& {verifier.MERGIFY_PROOF_PR_HEAD_REF_PREDICATE} "
-        "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) }}"
-    )
-    interposed_metadata_errors = verifier.mergify_proof_pr_concurrency_errors(
-        interposed_queue_metadata_group,
-        f"cancel-in-progress: ${{{{ github.event_name == 'pull_request' && {verifier.MERGIFY_PROOF_PR_CANCEL_GUARD} }}}}",
-    )
-    if not any("queue-branch metadata-only edits must use the Mergify proof group" in error for error in interposed_metadata_errors):
-        raise AssertionError(
-            "Mergify proof PR concurrency must reject queue metadata predicates even when another predicate "
-            f"sits between the head-ref and metadata checks, got: {interposed_metadata_errors}"
-        )
+            shared_group_errors = workflow_errors(workflow_name, shared_group)
+            if not any(
+                "Mergify proof PR concurrency must exclude ready metadata-only edits" in error
+                for error in shared_group_errors
+            ):
+                raise AssertionError(
+                    f"{workflow_name} must reject a shared Mergify full/iteration group, got: {shared_group_errors}"
+                )
 
 
 def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
@@ -6162,6 +6126,9 @@ def without_pr_concurrency(workflow: str) -> str:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && !(github.event.pull_request.draft == false
+             && github.event.action == 'edited'
+             && !(github.event.changes.base.ref.from && true || false))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && ((github.event.pull_request.draft == true
@@ -10806,12 +10773,13 @@ def main() -> int:
     )
     assert_error(
         "concurrency group must use the canonical ready PR metadata iteration predicate",
-        replace_once_after(
+        replace_once(
             BASE_WORKFLOW,
-            "github.event.pull_request.draft == false",
+            "            || (github.event.pull_request.draft == false\n"
             "                && github.event.action == 'edited'\n"
             "                && !(github.event.changes.base.ref.from && true || false)))\n"
             "        && format('pr-{0}-iteration', github.event.number)",
+            "            || (github.event.pull_request.draft == false\n"
             "                && github.event.action == 'edited')\n"
             "        && format('pr-{0}-iteration', github.event.number)",
         ),
@@ -10901,6 +10869,9 @@ def main() -> int:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && !(github.event.pull_request.draft == false
+             && github.event.action == 'edited'
+             && !(github.event.changes.base.ref.from && true || false))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
         && ((github.event.pull_request.draft == true

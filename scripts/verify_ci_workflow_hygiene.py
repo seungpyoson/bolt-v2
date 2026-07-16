@@ -1786,10 +1786,12 @@ EXPECTED_COVERAGE_ENFORCER_RUN_BODY = (
 MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/ci.yml — merge_group arm format('mq-{0}', github.ref)
     # wins under merge_group (the PR/workflow_dispatch arms are false then), before
-    # the per-ref/sha fallback; PR-draft-deferral arms are gated off merge_group.
+    # the per-ref/sha fallback; PR iteration arms are gated off merge_group.
     "group: >- ${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
+    "&& !(github.event.pull_request.draft == false && github.event.action == 'edited' "
+    "&& !(github.event.changes.base.ref.from && true || false)) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && ((github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action)) "
@@ -1814,6 +1816,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- ${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
+    "&& !(github.event.pull_request.draft == false && github.event.action == 'edited' "
+    "&& !(github.event.changes.base.ref.from && true || false)) "
     "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && ((github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action)) "
@@ -1829,6 +1833,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- coverage-${{ github.event_name == 'pull_request' "
     "&& (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
+    "&& !(github.event.pull_request.draft == false && github.event.action == 'edited' "
+    "&& !(github.event.changes.base.ref.from && true || false)) "
     "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha) "
     "|| github.event_name == 'pull_request' && ((github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action)) "
@@ -1929,12 +1935,17 @@ def mergify_proof_pr_concurrency_errors(
     # Split on event arms, not every `||`: the Mergify head-ref predicate itself
     # contains an inner OR between stable and transient queue prefixes.
     group_arms = re.split(r"\s+\|\|\s+github\.event_name\b", normalized_group)
-    if any(
-        head_ref_predicate in arm
-        and MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE in arm
-        for arm in group_arms
+    if (
+        "pr-{0}-iteration" in normalized_group
+        and "pr-{0}-full" in normalized_group
+        and not any(
+            head_ref_predicate in arm
+            and MERGIFY_PROOF_PR_GROUP_TOKEN in arm
+            and f"!({READY_PR_METADATA_ITERATION_EXPR})" in arm
+            for arm in group_arms
+        )
     ):
-        errors.append("queue-branch metadata-only edits must use the Mergify proof group")
+        errors.append("Mergify proof PR concurrency must exclude ready metadata-only edits")
     if cancel_guard not in normalized_cancel:
         errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
     return errors
@@ -2106,7 +2117,7 @@ def merge_group_concurrency_workflow_errors(workflow_text: str) -> list[str]:
 
 def verify_merge_group_concurrency(workflow_text: str) -> list[str]:
     """Standalone merge_group concurrency check for required-check workflows that
-    do not use ci.yml's full PR-deferral concurrency shape (e.g. actionlint.yml),
+    do not use ci.yml's full PR-iteration concurrency shape (e.g. actionlint.yml),
     so they get the same fail-closed merge_group isolation as ci.yml."""
     split = concurrency_group_and_cancel(workflow_text)
     if split is None:
@@ -2132,7 +2143,10 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     normalized_cancel = _normalize_concurrency_text(cancel_text)
     if "pr-{0}-iteration" not in group_text or "pr-{0}-full" not in group_text:
         errors.append("concurrency group must split iteration PR runs from full CI runs")
-    if READY_PR_METADATA_ITERATION_EXPR not in normalized_group:
+    if not any(
+        "pr-{0}-iteration" in arm and READY_PR_METADATA_ITERATION_EXPR in arm
+        for arm in re.split(r"\s+\|\|\s+github\.event_name\b", normalized_group)
+    ):
         errors.append("concurrency group must use the canonical ready PR metadata iteration predicate")
     if "pr-{0}-noop" in group_text or "pr-{0}-deferred" in group_text:
         errors.append("concurrency group must not retain noop/deferred PR routes")
@@ -9351,7 +9365,7 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                 # or the merge queue is blocked.
                 errors.append(f"{file_name}: on must define merge_group for merge queue")
             # actionlint uses a simpler concurrency shape than ci.yml (no PR
-            # draft-deferral split), so it cannot reuse verify_pr_concurrency.
+            # draft-iteration split), so it cannot reuse verify_pr_concurrency.
             # Hold its merge_group concurrency arm to the same fail-closed
             # isolation: keyed on github.ref, never cancelled.
             add_unique_errors(

@@ -15,7 +15,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-import ci_provenance
 from ci_test_manifest import _mask_rust_non_code
 from verify_bolt_v3_provider_leaks import production_text
 from verifier_io import require_nonempty
@@ -26,8 +25,6 @@ EXPECTED_NT_GIT = "https://github.com/seungpyoson/nautilus_trader.git"
 REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
 WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
 EXEMPTIONS = Path("ci/bolt-v3-boundary-exemptions.toml")
-CAPTURE_PROVENANCE_CONFIG = Path("ci/chainlink-reference-fixture-capture-provenance.toml")
-FIXTURE_DIR = Path("tests/fixtures/bolt_v3/boundary_evidence")
 
 REQUIRED_CLASSES = {
     "WebSocketFrame",
@@ -718,131 +715,6 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
         for shortcut in forbidden_shortcuts:
             if shortcut in body:
                 findings.append(f"src/bolt_v3_reference_price_health.rs: loopback harness uses shortcut {shortcut}")
-
-
-def scan_fixture_origin(root: Path, findings: list[str]) -> None:
-    directory = root / FIXTURE_DIR
-    sidecars = sorted(directory.glob("*.toml")) if directory.exists() else []
-    if not sidecars:
-        findings.append(f"{FIXTURE_DIR}: missing Chainlink fixture sidecar")
-        return
-
-    config_path = root / CAPTURE_PROVENANCE_CONFIG
-    config = ci_provenance.load_config(
-        config_path, require_workflows=False, require_deploy_window=False
-    )
-    for sidecar in sidecars:
-        rel = sidecar.relative_to(root).as_posix()
-        data = tomllib.loads(sidecar.read_text(encoding="utf-8"))
-        required = {
-            "schema_version",
-            "adapter_id",
-            "class",
-            "feeder",
-            "frame_kind",
-            "signature_verified",
-            "fixture",
-            "fixture_sha256",
-            "capture_artifact",
-            "capture_head_sha",
-            "capture_head_branch",
-        }
-        missing = sorted(key for key in required if key not in data)
-        if missing:
-            findings.append(f"{rel}: missing fields {missing}")
-            continue
-        if data["schema_version"] != 1:
-            findings.append(f"{rel}: schema_version must be 1")
-        if data["adapter_id"] != "CHAINLINK_REFERENCE_PRICE":
-            findings.append(f"{rel}: adapter_id must be CHAINLINK_REFERENCE_PRICE")
-        if data["feeder"] not in REQUIRED_WS_FEEDERS:
-            findings.append(f"{rel}: feeder is not registered")
-        if data["class"] != "WebSocketFrame" or data["frame_kind"] != "binary":
-            findings.append(f"{rel}: Chainlink fixture sidecar must declare WebSocketFrame/binary")
-        if data["signature_verified"] is not False:
-            findings.append(f"{rel}: signature_verified must be false")
-
-        fixture = sidecar.parent / str(data["fixture"])
-        artifact = sidecar.parent / str(data["capture_artifact"])
-        try:
-            fixture_digest = ci_provenance.sha256_file(fixture)
-        except ci_provenance.ProvenanceError as exc:
-            findings.append(f"{rel}: {exc}")
-            continue
-        if fixture_digest != data["fixture_sha256"]:
-            findings.append(f"{rel}: fixture_sha256 does not match fixture bytes")
-        if artifact.is_symlink():
-            findings.append(f"{rel}: capture_artifact must not be a symlink")
-            continue
-        if not artifact.exists():
-            findings.append(f"{rel}: capture_artifact is missing")
-            continue
-        try:
-            record = ci_provenance.artifact_record_from_zip(artifact.read_bytes())
-            sidecar_config = dataclasses.replace(
-                config,
-                deploy_source_branch=str(data["capture_head_branch"]),
-            )
-            # The committed receipt is the authority for capture workflow metadata.
-            # Validate digest shape without binding to current or historical Git bytes.
-            capture_workflow_digest_metadata = ci_provenance.require_record_digest(
-                record, "workflow_digest"
-            )
-            ci_provenance.validate_exact_sha_record(
-                record,
-                sidecar_config,
-                requested_sha=str(data["capture_head_sha"]),
-                config_path=config_path,
-                expected_workflow_digest=capture_workflow_digest_metadata,
-            )
-        except ci_provenance.ProvenanceError as exc:
-            findings.append(f"{rel}: invalid capture artifact provenance: {exc}")
-            continue
-        run = {
-            "id": record.get("run_id"),
-            "path": record.get("workflow_path"),
-            "event": record.get("event"),
-            "head_branch": record.get("head_branch"),
-            "head_sha": record.get("head_sha"),
-            "status": "completed",
-            "conclusion": "success",
-        }
-        if not ci_provenance.run_matches_exact_sha(
-            run,
-            dataclasses.replace(config, deploy_source_branch=str(data["capture_head_branch"])),
-            str(data["capture_head_sha"]),
-            current_run_id=None,
-        ):
-            findings.append(f"{rel}: capture run metadata does not match exact SHA")
-        capture = record.get("capture")
-        if not isinstance(capture, dict):
-            findings.append(f"{rel}: capture record is missing capture object")
-            continue
-        if capture.get("fixture_sha256") != fixture_digest:
-            findings.append(f"{rel}: capture artifact digest does not match fixture")
-        if capture.get("frame_kind") != data["frame_kind"]:
-            findings.append(f"{rel}: capture artifact frame_kind does not match sidecar")
-        if capture.get("signature_verified") is not False:
-            findings.append(f"{rel}: capture artifact must not claim signature verification")
-        if capture.get("record_kind") != "chainlink-reference-fixture-capture":
-            findings.append(f"{rel}: capture record_kind does not match")
-        if capture.get("adapter_id") != data["adapter_id"]:
-            findings.append(f"{rel}: capture adapter_id does not match sidecar")
-        client_key = capture.get("client_key")
-        if not isinstance(client_key, str) or not client_key.strip():
-            findings.append(f"{rel}: capture client_key must be non-empty")
-        if capture.get("fixture_filename") != data["fixture"]:
-            findings.append(f"{rel}: capture fixture_filename does not match sidecar")
-        observed_binary_frames = capture.get("observed_binary_frames")
-        if type(observed_binary_frames) is not int or observed_binary_frames <= 0:
-            findings.append(
-                f"{rel}: capture observed_binary_frames must be a positive integer"
-            )
-        observed_text_frames = capture.get("observed_text_frames")
-        if type(observed_text_frames) is not int or observed_text_frames < 0:
-            findings.append(
-                f"{rel}: capture observed_text_frames must be a non-negative integer"
-            )
 
 
 def scan_static_wiring(root: Path, findings: list[str]) -> None:
@@ -2406,7 +2278,6 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_exemption_issue_state(root, findings)
     scan_wire_boundary(root, findings, source_paths)
     scan_chainlink_tests(root, findings)
-    scan_fixture_origin(root, findings)
     scan_static_wiring(root, findings)
     scan_binance_timestamp_behavioral_contract(root, findings)
     scan_nt_pin_census(root, findings)

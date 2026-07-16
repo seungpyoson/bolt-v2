@@ -4,19 +4,15 @@
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
-import zipfile
 from pathlib import Path
-from unittest import mock
 
 from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
@@ -88,10 +84,6 @@ def write(root: Path, rel: str, text: str | bytes) -> None:
         path.write_bytes(text)
     else:
         path.write_text(text, encoding="utf-8")
-
-
-def digest(root: Path, rel: str) -> str:
-    return hashlib.sha256((root / rel).read_bytes()).hexdigest()
 
 
 def binance_timestamp_test_source() -> str:
@@ -446,110 +438,10 @@ jobs:
       - run: echo capture-gate
 """,
     )
-    write_capture_provenance_config(root)
-    write_fixture_and_artifact(root)
+    initialize_fixture_repo(root)
 
 
-def write_capture_provenance_config(root: Path) -> None:
-    write(
-        root,
-        "ci/chainlink-reference-fixture-capture-provenance.toml",
-        """
-schema_version = 1
-[meter]
-fingerprint_artifact_prefix = "x-"
-fingerprint_workflow = "ci"
-[ci_provenance]
-schema_version = 1
-artifact_name_template = "chainlink-reference-fixture-capture-attempt-{run_attempt}"
-workflow_key = "ci"
-workflow_name = "CI"
-workflow_path = ".github/workflows/ci.yml"
-fingerprint_source = "meter"
-[ci_provenance.full_ci]
-required_jobs = ["capture"]
-conditional_jobs = []
-conditional_job_outputs = {}
-[ci_provenance.full_ci.jobs.capture]
-check_name = "capture"
-[ci_provenance.deploy]
-artifact_name = "chainlink-reference-fixture-capture"
-require_source_event = "workflow_dispatch"
-require_source_branch = "main"
-require_gate_check = false
-[ci_provenance.dispatch]
-workflow_input = "capture_reference_boundary_fixture"
-run_name_default = "Chainlink Reference Fixture Capture"
-run_name_full = "Chainlink Reference Fixture Capture [credential-ssm]"
-run_name_iteration = "Chainlink Reference Fixture Capture [dry]"
-proof_gate_job = "gate"
-[ci_provenance.gate_names]
-gate_required = "gate"
-gate_defer = "gate-deferred"
-gate_iteration = "gate-iteration"
-gate_noop = "gate-noop"
-gate_dispatch_full = "gate-dispatch"
-backtester_required = "backtester-gate"
-backtester_defer = "backtester-gate-deferred"
-backtester_iteration = "backtester-gate-iteration"
-backtester_noop = "backtester-gate-noop"
-backtester_dispatch_full = "backtester-gate-dispatch"
-[ci_provenance.docs]
-safe_paths = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  "GEMINI.md",
-  "REASONIX.md",
-  "LICENSE",
-  "SECURITY.md",
-  ".github/ISSUE_TEMPLATE/**",
-  ".claude/**",
-  ".codex/**",
-  ".gemini/**",
-  ".opencode/**",
-  ".pi/**",
-  ".specify/**",
-]
-forbidden_ignored_build_paths = [
-  ".claude/rust-verification.toml",
-]
-non_heavy_required_jobs = ["capture"]
-[ci_provenance.api_limits]
-workflow_runs_per_page = 100
-run_jobs_per_page = 100
-run_artifacts_per_page = 100
-max_lookback_pages = 10
-max_lookback_age_seconds = 1209600
-[ci_provenance.artifacts]
-retention_days = 14
-[ci_provenance.policy]
-draft_pr_synchronize = "defer"
-draft_pr_opened = "defer"
-draft_pr_reopened = "defer"
-draft_pr_edited = "defer"
-converted_to_draft = "defer"
-ready_pr = "full"
-ready_pr_edited_no_base = "noop"
-ready_pr_reopened = "noop"
-ready_for_review = "full"
-docs = "docs"
-workflow_dispatch = "iteration"
-workflow_dispatch_full_ci = "full"
-main_push = "full"
-merge_group = "full"
-mergify_temp_pr = "full"
-tag = "tag_reuse"
-unknown_event = "full"
-[ci_provenance.mergify]
-temp_pr_head_ref_prefix = "mergify/merge-queue/"
-[ci_provenance.policy.override]
-force_full_ci = false
-ignore_emit_failure = false
-""",
-    )
-
-
-def commit_workflow(root: Path) -> str:
+def initialize_fixture_repo(root: Path) -> None:
     init_fixture_repo(root, "-q")
     subprocess.run(repo_git_command("config", "user.name", "Boundary Test"), cwd=root, check=True)
     subprocess.run(repo_git_command("config", "user.email", "boundary-test@example.invalid"), cwd=root, check=True)
@@ -559,88 +451,6 @@ def commit_workflow(root: Path) -> str:
         cwd=root,
         check=True,
     )
-    result = subprocess.run(
-        repo_git_command("rev-parse", "HEAD"),
-        cwd=root,
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def write_fixture_and_artifact(root: Path) -> None:
-    fixture_rel = "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.bin"
-    artifact_rel = "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
-    write(root, fixture_rel, b"binary frame")
-    fixture_sha = digest(root, fixture_rel)
-    workflow_digest = digest(root, ".github/workflows/ci.yml")
-    capture_sha = commit_workflow(root)
-    module = load_verifier()
-    config_digest = module.ci_provenance.provenance_config_digest(
-        root / "ci/chainlink-reference-fixture-capture-provenance.toml"
-    )
-    record = {
-        "schema_version": 1,
-        "kind": "full-ci",
-        "repository": "seungpyoson/bolt-v2",
-        "workflow_path": ".github/workflows/ci.yml",
-        "workflow_digest": workflow_digest,
-        "provenance_config_digest": config_digest,
-        "head_sha": capture_sha,
-        "tested_sha": capture_sha,
-        "run_id": 1,
-        "run_attempt": 1,
-        "check_suite_id": 1,
-        "event": "workflow_dispatch",
-        "head_branch": "seed-branch",
-        "pull_request": {"number": None, "base_sha": None},
-        "required_jobs": {"capture": "success"},
-        "conditional_jobs": {},
-        "nextest_fingerprint": None,
-        "created_at": "2026-06-26T00:00:00Z",
-        "capture": {
-            "record_kind": "chainlink-reference-fixture-capture",
-            "adapter_id": "CHAINLINK_REFERENCE_PRICE",
-            "client_key": "chainlink_reference",
-            "frame_kind": "binary",
-            "signature_verified": False,
-            "fixture_filename": "chainlink-reference-frame.bin",
-            "fixture_sha256": fixture_sha,
-            "observed_binary_frames": 1,
-            "observed_text_frames": 0,
-        },
-    }
-    artifact_path = root / artifact_rel
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(artifact_path, "w") as archive:
-        archive.writestr("ci-provenance.json", json.dumps(record, sort_keys=True))
-    write(
-        root,
-        "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml",
-        f"""
-schema_version = 1
-adapter_id = "CHAINLINK_REFERENCE_PRICE"
-class = "WebSocketFrame"
-feeder = "ReferenceCurrentPriceHealth"
-frame_kind = "binary"
-signature_verified = false
-fixture = "chainlink-reference-frame.bin"
-fixture_sha256 = "{fixture_sha}"
-capture_artifact = "chainlink-reference-capture.zip"
-capture_head_sha = "{capture_sha}"
-capture_head_branch = "seed-branch"
-""",
-    )
-
-
-def mutate_capture_record(root: Path, mutator) -> None:
-    artifact_path = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
-    with zipfile.ZipFile(artifact_path) as archive:
-        record = json.loads(archive.read("ci-provenance.json").decode("utf-8"))
-    mutator(record)
-    with zipfile.ZipFile(artifact_path, "w") as archive:
-        archive.writestr("ci-provenance.json", json.dumps(record, sort_keys=True))
 
 
 def scan_temp(mutator=None, today: dt.date = dt.date(2026, 6, 26)) -> list[str]:
@@ -656,23 +466,6 @@ def scan_temp(mutator=None, today: dt.date = dt.date(2026, 6, 26)) -> list[str]:
 def assert_finding(findings: list[str], needle: str) -> None:
     if not any(needle in finding for finding in findings):
         raise AssertionError(f"missing finding containing {needle!r}: {findings}")
-
-
-def assert_capture_record_mutation_fails(mutator, needle: str) -> None:
-    def mutate(root: Path) -> None:
-        mutate_capture_record(root, mutator)
-
-    assert_finding(scan_temp(mutate), needle)
-
-
-def test_capture_config_without_workflows_passes_boundary_scan() -> None:
-    def assert_no_workflows_table(root: Path) -> None:
-        config_path = root / "ci/chainlink-reference-fixture-capture-provenance.toml"
-        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        if "workflows" in config:
-            raise AssertionError("capture provenance fixture must not grow a [workflows] table")
-
-    assert scan_temp(assert_no_workflows_table) == []
 
 
 def test_pin_census_rejects_each_mismatched_surface() -> None:
@@ -2667,201 +2460,6 @@ def test_stale_registry_row_fails() -> None:
         )
 
     assert_finding(scan_temp(mutate), "unexpected registry entry")
-
-
-def test_unbound_invented_fixture_fails() -> None:
-    def mutate(root: Path) -> None:
-        path = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml"
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-        data["fixture_sha256"] = "0" * 64
-        path.write_text("\n".join(f'{key} = "{value}"' for key, value in data.items()) + "\n", encoding="utf-8")
-
-    assert_finding(scan_temp(mutate), "fixture_sha256 does not match")
-
-
-def test_unregistered_fixture_feeder_fails_closed() -> None:
-    def mutate(root: Path) -> None:
-        sidecar = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml"
-        sidecar.write_text(
-            sidecar.read_text(encoding="utf-8").replace(
-                'feeder = "ReferenceCurrentPriceHealth"',
-                'feeder = "UnregisteredFeeder"',
-            ),
-            encoding="utf-8",
-        )
-
-    assert_finding(scan_temp(mutate), "feeder is not registered")
-
-
-def test_missing_capture_artifact_fails_closed() -> None:
-    def mutate(root: Path) -> None:
-        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
-        artifact.unlink()
-
-    assert_finding(scan_temp(mutate), "capture_artifact is missing")
-
-
-def test_malformed_capture_artifact_fails_closed() -> None:
-    def mutate(root: Path) -> None:
-        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
-        artifact.write_bytes(b"not a ZIP archive")
-
-    assert_finding(scan_temp(mutate), "provenance artifact archive is malformed")
-
-
-def test_symlinked_capture_artifact_fails_closed() -> None:
-    def mutate(root: Path) -> None:
-        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
-        target = artifact.with_name("capture-target.zip")
-        artifact.rename(target)
-        artifact.symlink_to(target.name)
-
-    assert_finding(scan_temp(mutate), "capture_artifact must not be a symlink")
-
-
-def test_capture_record_identity_mismatches_fail_closed() -> None:
-    cases = (
-        (
-            lambda record: record.update({"head_sha": "2" * 40}),
-            "record head_sha and tested_sha must match requested exact SHA",
-        ),
-        (
-            lambda record: record.update({"head_branch": "wrong-branch"}),
-            "record head_branch must be seed-branch",
-        ),
-        (
-            lambda record: record.update(
-                {"workflow_path": ".github/workflows/wrong.yml"}
-            ),
-            "record workflow_path does not match config",
-        ),
-        (
-            lambda record: record.update({"workflow_digest": "not-a-digest"}),
-            "record workflow_digest must be a sha256 hex digest",
-        ),
-    )
-    for mutator, finding in cases:
-        assert_capture_record_mutation_fails(mutator, finding)
-
-
-def test_capture_workflow_digest_is_shape_only_metadata() -> None:
-    def mutate(root: Path) -> None:
-        mutate_capture_record(
-            root,
-            lambda record: record.update({"workflow_digest": "f" * 64}),
-        )
-
-    findings = scan_temp(mutate)
-    if findings:
-        raise AssertionError(f"expected well-formed workflow digest metadata to pass: {findings}")
-
-
-def test_capture_record_payload_mutations_fail_closed() -> None:
-    cases = (
-        (
-            lambda record: record.pop("capture"),
-            "capture record is missing capture object",
-        ),
-        (
-            lambda record: record["capture"].update({"fixture_sha256": "0" * 64}),
-            "capture artifact digest does not match fixture",
-        ),
-        (
-            lambda record: record["capture"].update({"frame_kind": "text"}),
-            "capture artifact frame_kind does not match sidecar",
-        ),
-        (
-            lambda record: record["capture"].update({"signature_verified": True}),
-            "capture artifact must not claim signature verification",
-        ),
-        (
-            lambda record: record["capture"].update({"record_kind": "wrong-kind"}),
-            "capture record_kind does not match",
-        ),
-        (
-            lambda record: record["capture"].update({"adapter_id": "WRONG_ADAPTER"}),
-            "capture adapter_id does not match sidecar",
-        ),
-        (
-            lambda record: record["capture"].update({"client_key": ""}),
-            "capture client_key must be non-empty",
-        ),
-        (
-            lambda record: record["capture"].update({"fixture_filename": "wrong.bin"}),
-            "capture fixture_filename does not match sidecar",
-        ),
-        (
-            lambda record: record["capture"].update({"observed_binary_frames": 0}),
-            "capture observed_binary_frames must be a positive integer",
-        ),
-        (
-            lambda record: record["capture"].update({"observed_text_frames": "zero"}),
-            "capture observed_text_frames must be a non-negative integer",
-        ),
-    )
-    for mutator, finding in cases:
-        assert_capture_record_mutation_fails(mutator, finding)
-
-
-def test_capture_artifact_validation_ignores_later_workflow_changes() -> None:
-    def mutate(root: Path) -> None:
-        path = root / ".github/workflows/ci.yml"
-        path.write_text(
-            path.read_text(encoding="utf-8") + "\n# post-capture workflow lint edit\n",
-            encoding="utf-8",
-        )
-
-    assert scan_temp(mutate) == []
-
-
-def test_fixture_origin_validation_does_not_require_git_history() -> None:
-    verifier = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        clean_files(root)
-        shutil.rmtree(root / ".git")
-        findings: list[str] = []
-        verifier.scan_fixture_origin(root, findings)
-
-    if findings:
-        raise AssertionError(f"expected validation outside a Git repository to pass: {findings}")
-
-
-def test_fixture_origin_validation_does_not_resolve_remote_evidence_in_github_actions() -> None:
-    verifier = load_verifier()
-
-    def unexpected_network_call(*_args, **_kwargs):
-        raise AssertionError("fixture-origin validation must not access the network")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        clean_files(root)
-        with (
-            mock.patch.object(verifier, "REPO_ROOT", root),
-            mock.patch.dict(
-                os.environ,
-                {
-                    "GITHUB_ACTIONS": "true",
-                    "GITHUB_TOKEN": "test-token",
-                    "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
-                },
-            ),
-            mock.patch.object(
-                verifier.ci_provenance,
-                "resolve_exact_sha_evidence",
-                side_effect=unexpected_network_call,
-            ),
-            mock.patch.object(
-                verifier.urllib.request,
-                "urlopen",
-                side_effect=unexpected_network_call,
-            ),
-        ):
-            findings: list[str] = []
-            verifier.scan_fixture_origin(root, findings)
-
-    if findings:
-        raise AssertionError(f"expected local fixture-origin validation to pass: {findings}")
 
 
 def test_capture_workflow_must_not_use_run_id_as_check_suite_id() -> None:

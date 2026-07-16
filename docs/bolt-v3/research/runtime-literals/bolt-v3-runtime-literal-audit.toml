@@ -20970,68 +20970,172 @@ classification = "strategy_runtime_schema_field"
 reason = "Derived runtime config field populated from the selected root realized-volatility surface policy; the value remains TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"bolt_v3_evidence_novelty_generated.rs"'''
+context = '''include!("bolt_v3_evidence_novelty_generated.rs");'''
+classification = "generated_registry_include_path"
+reason = "Stable compile-time include path for the deterministic Rust file generated from config/evidence-novelty.toml."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''("strategy_id", parts.strategy_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for a typed EvidenceEpisodeParts field; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"target_id"'''
+context = '''("target_id", parts.target_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for a typed EvidenceEpisodeParts field; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"venue_id"'''
+context = '''("venue_id", parts.venue_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for a typed EvidenceEpisodeParts field; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"market_id"'''
+context = '''("market_id", parts.market_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for a typed EvidenceEpisodeParts field; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"condition_id"'''
+context = '''("condition_id", parts.condition_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for a typed EvidenceEpisodeParts field; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"question_id"'''
+context = '''("question_id", parts.question_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for a typed EvidenceEpisodeParts field; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"up_token_id"'''
+context = '''("up_token_id", parts.up_token_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for the ordered up-outcome token identity; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"down_token_id"'''
+context = '''("down_token_id", parts.down_token_id.as_str()),'''
+classification = "evidence_episode_field_label"
+reason = "Stable diagnostic label for the ordered down-outcome token identity; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"evidence novelty capacity exhausted for registered state {}.{}"'''
+context = '''"evidence novelty capacity exhausted for registered state {}.{}",'''
+classification = "evidence_novelty_fail_closed_diagnostic"
+reason = "Stable fail-closed diagnostic template; the producer/state and capacity values come from generated TOML authority."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty_generated.rs"
 kind = "number"
 literal = "0"
-context = '''BoltV3RvGateResult::Accepted => 0,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the Accepted RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+context = '''EvidenceStateOwner::EntrySkip => &EVIDENCE_STATE_REGISTRATIONS[0],'''
+classification = "generated_evidence_registry_index"
+reason = "Deterministic array coordinate generated from the first config/evidence-novelty.toml state row."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_evidence_novelty_generated.rs"
 kind = "number"
 literal = "1"
-context = '''BoltV3RvGateResult::MissingSnapshot => 1,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the MissingSnapshot RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+context = '''EvidenceStateOwner::BlockedStrategyInputSnapshot => &EVIDENCE_STATE_REGISTRATIONS[1],'''
+classification = "generated_evidence_registry_index"
+reason = "Deterministic array coordinate generated from the second config/evidence-novelty.toml state row."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_evidence_novelty_generated.rs"
 kind = "number"
-literal = "2"
-context = '''BoltV3RvGateResult::MissingEvaluationEventTime => 2,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the MissingEvaluationEventTime RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+literal = "0"
+context = '''id_start: 0,'''
+classification = "generated_evidence_registry_bound"
+reason = "TOML-generated inclusive state-id range start for the entry_skip owner."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_evidence_novelty_generated.rs"
 kind = "number"
-literal = "3"
-context = '''BoltV3RvGateResult::RejectedFutureDated => 3,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedFutureDated RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+literal = "128"
+context = '''id_start: 128,'''
+classification = "generated_evidence_registry_bound"
+reason = "TOML-generated inclusive state-id range start for the blocked strategy-input owner."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_evidence_novelty_generated.rs"
 kind = "number"
-literal = "4"
-context = '''BoltV3RvGateResult::RejectedStale => 4,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedStale RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+literal = "128"
+context = '''state_capacity: 128,'''
+classification = "generated_evidence_registry_capacity"
+reason = "TOML-generated per-owner capacity; both rows intentionally share the same configured value and exact context."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
+path = "src/bolt_v3_evidence_novelty_generated.rs"
 kind = "number"
-literal = "5"
-context = '''BoltV3RvGateResult::RejectedNotReady => 5,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedNotReady RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
+literal = "256"
+context = '''pub const EVIDENCE_NOVELTY_OWNED_STATE_CAPACITY: usize = 256;'''
+classification = "generated_evidence_registry_capacity"
+reason = "TOML-generated closed market-family capacity and closed-form cardinality ceiling."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "2"
-context = '''let bit_index = gate_index * 2 + watermark_index;'''
-classification = "rv_gate_novelty_dimension_count"
-reason = "Each closed RV gate category has exactly two evidence states, receive-watermark absent or present; this is a bounded schema dimension, not a runtime policy value."
+path = "src/bolt_v3_evidence_novelty_generated.rs"
+kind = "string"
+literal = '''"market"'''
+context = '''family: "market",'''
+classification = "generated_evidence_registry_family"
+reason = "TOML-generated canonical evidence family; the repeated exact context covers both owned rows."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "1_u16"
-context = '''1_u16 << bit_index'''
-classification = "rv_gate_novelty_bit_identity"
-reason = "One-hot identity used to mark an observed category-and-watermark-presence state in the bounded u16 evidence mask."
+path = "src/bolt_v3_evidence_novelty_generated.rs"
+kind = "string"
+literal = '''"entry_skip"'''
+context = '''producer_kind: "entry_skip",'''
+classification = "generated_evidence_registry_producer"
+reason = "TOML-generated producer kind for the incident-driving entry-skip path."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty_generated.rs"
+kind = "string"
+literal = '''"entry_skip.semantic"'''
+context = '''semantic_state: "entry_skip.semantic",'''
+classification = "generated_evidence_registry_state"
+reason = "TOML-generated closed semantic-state owner for entry-skip evidence."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty_generated.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''producer_kind: "strategy_input_snapshot",'''
+classification = "generated_evidence_registry_producer"
+reason = "TOML-generated producer kind for the incident-driving blocked strategy-input path."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty_generated.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot.blocked_rv"'''
+context = '''semantic_state: "strategy_input_snapshot.blocked_rv",'''
+classification = "generated_evidence_registry_state"
+reason = "TOML-generated closed semantic-state owner for blocked-RV strategy-input evidence."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"

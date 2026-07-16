@@ -1,0 +1,19 @@
+schema_version = 1
+
+[family]
+name = "market"
+capacity = 256
+
+[[state]]
+rust_variant = "EntrySkip"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.semantic"
+id_start = 0
+id_end_exclusive = 128
+
+[[state]]
+rust_variant = "BlockedStrategyInputSnapshot"
+producer_kind = "strategy_input_snapshot"
+semantic_state = "strategy_input_snapshot.blocked_rv"
+id_start = 128
+id_end_exclusive = 256

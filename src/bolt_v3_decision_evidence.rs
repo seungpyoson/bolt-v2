@@ -264,7 +264,7 @@ pub enum BoltV3OrderIntentKind {
     Exit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3SubmitIntentKind {
     Entry,
@@ -618,14 +618,14 @@ pub(crate) fn option_number_evidence(value: Option<f64>) -> Option<String> {
     value.filter(|value| value.is_finite()).map(number_evidence)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3OutcomeSide {
     Up,
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3ForcedFlatReason {
     Freeze,
@@ -635,7 +635,7 @@ pub enum BoltV3ForcedFlatReason {
     FastVenueIncoherent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3ExposureOccupancy {
     PendingEntry,
@@ -646,7 +646,7 @@ pub enum BoltV3ExposureOccupancy {
     BlindRecovery,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3EntryBlockReason {
     PhaseNotActive,
@@ -663,7 +663,7 @@ pub enum BoltV3EntryBlockReason {
     OnePositionInvariant(BoltV3ExposureOccupancy),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3BinaryOutcomeEdgeBlockReason {
     MissingOrderBook,
@@ -676,7 +676,7 @@ pub enum BoltV3BinaryOutcomeEdgeBlockReason {
     FeeUnavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3EntryPricingBlockReason {
     SpotPriceMissing,
@@ -693,7 +693,7 @@ pub enum BoltV3EntryPricingBlockReason {
     SizedNotionalUnsupported(BoltV3OutcomeSide),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3EntrySkipReasonCategory {
     StrategyCoreNotRegistered,

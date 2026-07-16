@@ -124,7 +124,7 @@ use crate::{
         SideSelectionInputs, UncertaintyBandInputs, choose_entry_side, outcome_side_evidence_label,
         time_uncertainty_probability, uncertainty_band_probability,
     },
-    bolt_v3_timestamp_domain::{LocalReceiveMs, NtStrategyClockMs, VenueEventMs},
+    bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
     strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
@@ -654,20 +654,6 @@ const fn blocked_strategy_input_canonical_state(
             EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkPresent
         }
     }
-}
-
-fn reference_quote_outside_live_window(
-    quote: &ReferenceQuote,
-    interval_start_ms: VenueEventMs,
-    interval_end_ms: VenueEventMs,
-    evaluation_clock_ms: NtStrategyClockMs,
-    max_source_age_ms: u64,
-) -> bool {
-    let observed_ts_ms = VenueEventMs::new(quote.observed_ts_ms());
-    observed_ts_ms < interval_start_ms
-        || observed_ts_ms > interval_end_ms
-        || evaluation_clock_ms.saturating_duration_since_venue_event(observed_ts_ms)
-            > max_source_age_ms
 }
 
 impl PricingState {

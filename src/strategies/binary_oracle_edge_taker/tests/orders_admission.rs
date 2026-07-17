@@ -1000,7 +1000,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         .admit(
             &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
                 economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
-                    Decimal::ONE,
+                    Decimal::new(50, 2),
                 ),
                 strategy_id: "strategy-a".to_string(),
                 execution_client_id: "POLYMARKET".to_string(),

@@ -2529,7 +2529,7 @@ mod tests {
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
             economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
-                Decimal::new(25, 1),
+                notional,
             ),
             strategy_id: "strategy-a".to_string(),
             execution_client_id: "execution_client".to_string(),
@@ -2573,7 +2573,7 @@ mod tests {
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
             economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
-                Decimal::ONE,
+                Decimal::new(25, 1),
             ),
             strategy_id: "strategy-a".to_string(),
             execution_client_id: "execution_client".to_string(),

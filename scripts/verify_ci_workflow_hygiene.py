@@ -7989,13 +7989,21 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned aws credentials action")
     if "uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696" not in install_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned sccache action")
-    if 'version: "v0.10.0"' not in install_text:
-        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must pin sccache v0.10.0")
+    if "version: ${{ steps.eligibility.outputs.version }}" not in install_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install the TOML-governed sccache version")
     if 'disable_annotations: "true"' not in install_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must disable vendor sccache stats annotations")
     for fragment in ('"$SCCACHE_PATH" --start-server', '"$SCCACHE_PATH" --zero-stats || true'):
         if fragment not in enable_text:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
+    for fragment in (
+        "EXPECTED_VERSION: ${{ steps.eligibility.outputs.version }}",
+        "EXPECTED_SHA256: ${{ steps.eligibility.outputs.executable_sha256 }}",
+        "python3.12 scripts/sccache_eligibility.py verify-executable",
+        '"$SCCACHE_PATH" "$EXPECTED_VERSION" "$EXPECTED_SHA256"',
+    ):
+        if fragment not in enable_text:
+            errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must verify installed sccache bytes before server startup")
     if not step_block_has_field(enable_block, "if", "always()"):
         errors.append("Resolve sccache enablement must run under always()")
     if (
@@ -8026,6 +8034,12 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     key_prefix = location.get("key_prefix")
     if not isinstance(key_prefix, str) or not key_prefix or not key_prefix.endswith("/"):
         errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} must set location.key_prefix must be a non-empty string ending in '/'")
+    version = location.get("version")
+    if not isinstance(version, str) or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+        errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} location.version must be a v-prefixed semantic version")
+    executable_sha256 = location.get("executable_sha256")
+    if not isinstance(executable_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", executable_sha256) is None:
+        errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256 must be a lowercase SHA-256 digest")
     return errors
 
 

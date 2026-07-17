@@ -4,3 +4,6 @@ schema_version = 1
 bucket = "bolt-v2-ci-cache-675819144420-us-east-2"
 region = "us-east-2"
 key_prefix = "sccache/bolt-v2/arm64/root-nextest/"
+version = "v0.10.0"
+# SHA-256 of the extracted aarch64-unknown-linux-musl executable from the governed release.
+executable_sha256 = "8df5d557b50aa19c1c818b1a6465454a9dd807917af678f3feae11ee5c9dbe27"

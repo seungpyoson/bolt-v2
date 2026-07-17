@@ -3,8 +3,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import pathlib
+import re
+import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass
 from typing import Mapping
@@ -18,6 +23,8 @@ class SccacheEligibility:
     cache_mode: str
     bucket: str
     key_prefix: str
+    version: str
+    executable_sha256: str
     active: bool
     vars_present: bool
     location_valid: bool
@@ -60,8 +67,16 @@ def resolve_sccache_eligibility(
     bucket = _location_value(location, "bucket")
     region = _location_value(location, "region")
     key_prefix = _location_value(location, "key_prefix")
-    vars_present = all((role_arn, bucket, region, key_prefix))
-    location_valid = bool(bucket and region and key_prefix.endswith("/"))
+    version = _location_value(location, "version")
+    executable_sha256 = _location_value(location, "executable_sha256")
+    vars_present = all((role_arn, bucket, region, key_prefix, version, executable_sha256))
+    location_valid = bool(
+        bucket
+        and region
+        and key_prefix.endswith("/")
+        and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version)
+        and re.fullmatch(r"[0-9a-f]{64}", executable_sha256)
+    )
     eligible = active and vars_present and location_valid
     return SccacheEligibility(
         eligible=eligible,
@@ -70,10 +85,57 @@ def resolve_sccache_eligibility(
         cache_mode=cache_mode,
         bucket=bucket,
         key_prefix=key_prefix,
+        version=version,
+        executable_sha256=executable_sha256,
         active=active,
         vars_present=vars_present,
         location_valid=location_valid,
     )
+
+
+def verify_sccache_executable(
+    executable: pathlib.Path,
+    *,
+    expected_version: str,
+    expected_sha256: str,
+) -> bool:
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", expected_version):
+        print("::warning::configured sccache version is invalid")
+        return False
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        print("::warning::configured sccache executable digest is invalid")
+        return False
+    if not executable.is_file() or executable.is_symlink():
+        print("::warning::installed sccache path is not a regular file")
+        return False
+
+    digest = hashlib.sha256()
+    try:
+        with executable.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        print(f"::warning::unable to hash installed sccache: {exc}")
+        return False
+    if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+        print("::warning::installed sccache executable digest does not match governed bytes")
+        return False
+
+    try:
+        result = subprocess.run(
+            [str(executable), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"::warning::unable to query installed sccache version: {exc}")
+        return False
+    expected_output = f"sccache {expected_version.removeprefix('v')}"
+    if result.returncode != 0 or result.stdout.strip() != expected_output:
+        print("::warning::installed sccache version does not match governed version")
+        return False
+    return True
 
 
 def _write_line(path: str, line: str) -> None:
@@ -110,6 +172,8 @@ def main() -> int:
     _write_line(output_path, f"role_arn={eligibility.role_arn}")
     _write_line(output_path, f"region={eligibility.region}")
     _write_line(output_path, f"cache_mode={eligibility.cache_mode}")
+    _write_line(output_path, f"version={eligibility.version}")
+    _write_line(output_path, f"executable_sha256={eligibility.executable_sha256}")
 
     if eligibility.eligible:
         env_path = os.environ["GITHUB_ENV"]
@@ -132,4 +196,17 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 5 and sys.argv[1] == "verify-executable":
+        raise SystemExit(
+            0
+            if verify_sccache_executable(
+                pathlib.Path(sys.argv[2]),
+                expected_version=sys.argv[3],
+                expected_sha256=sys.argv[4],
+            )
+            else 1
+        )
+    if len(sys.argv) != 1:
+        print("usage: sccache_eligibility.py [verify-executable PATH VERSION SHA256]", file=sys.stderr)
+        raise SystemExit(2)
     raise SystemExit(main())

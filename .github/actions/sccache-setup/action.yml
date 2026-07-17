@@ -29,6 +29,12 @@ outputs:
   cache-mode:
     description: Cache access mode selected by this action.
     value: ${{ steps.eligibility.outputs.cache_mode }}
+  version:
+    description: Governed sccache release version.
+    value: ${{ steps.eligibility.outputs.version }}
+  executable-sha256:
+    description: Governed digest of the installed sccache executable.
+    value: ${{ steps.eligibility.outputs.executable_sha256 }}
 
 runs:
   using: composite
@@ -60,7 +66,7 @@ runs:
       continue-on-error: true
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
       with:
-        version: "v0.10.0"
+        version: ${{ steps.eligibility.outputs.version }}
         disable_annotations: "true"
 
     - name: Resolve sccache enablement
@@ -68,17 +74,22 @@ runs:
       continue-on-error: true
       if: always()
       shell: bash
+      env:
+        EXPECTED_VERSION: ${{ steps.eligibility.outputs.version }}
+        EXPECTED_SHA256: ${{ steps.eligibility.outputs.executable_sha256 }}
       run: |
         enabled=false
         if [[ "${{ steps.eligibility.outputs.eligible }}" == "true" \
               && "${{ steps.aws.outcome }}" == "success" \
               && "${{ steps.install.outcome }}" == "success" \
               && -n "${SCCACHE_PATH:-}" ]]; then
-          if "$SCCACHE_PATH" --start-server; then
+          if python3.12 scripts/sccache_eligibility.py verify-executable \
+              "$SCCACHE_PATH" "$EXPECTED_VERSION" "$EXPECTED_SHA256" \
+              && "$SCCACHE_PATH" --start-server; then
             "$SCCACHE_PATH" --zero-stats || true
             enabled=true
           else
-            echo "sccache server failed to start; building without cache"
+            echo "sccache verification or server startup failed; building without cache"
           fi
         fi
         echo "enabled=$enabled" >> "$GITHUB_OUTPUT"

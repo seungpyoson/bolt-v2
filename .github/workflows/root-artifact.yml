@@ -227,6 +227,8 @@ jobs:
           CACHE_MODE: ${{ steps.sccache.outputs.cache-mode }}
           ELIGIBLE: ${{ steps.sccache.outputs.eligible }}
           ENABLED: ${{ steps.sccache.outputs.enabled }}
+          EXPECTED_SCCACHE_VERSION: ${{ steps.sccache.outputs.version }}
+          EXPECTED_SCCACHE_SHA256: ${{ steps.sccache.outputs.executable-sha256 }}
           WRAPPER_PROGRAM: ${{ needs.preflight.outputs.wrapper_program }}
         run: |
           set -euo pipefail
@@ -235,7 +237,8 @@ jobs:
           [[ "$CACHE_MODE" == "read_write" ]]
           [[ -n "${SCCACHE_PATH:-}" && -x "$SCCACHE_PATH" ]]
           [[ "$(basename "$SCCACHE_PATH")" == "$WRAPPER_PROGRAM" ]]
-          [[ "$($SCCACHE_PATH --version | awk '{ print $1 }')" == "$WRAPPER_PROGRAM" ]]
+          python3.12 scripts/sccache_eligibility.py verify-executable \
+            "$SCCACHE_PATH" "$EXPECTED_SCCACHE_VERSION" "$EXPECTED_SCCACHE_SHA256"
 
       - name: Verify empty sccache statistics baseline
         run: |

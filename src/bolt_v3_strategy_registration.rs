@@ -304,15 +304,15 @@ pub(crate) fn settlement_currency_for_execution_account(
         .find(|pool| {
             pool.venue_id == execution_venue.as_str() && pool.account_id.to_string() == account_id
         })
-        .map(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
+        .and_then(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
 }
 
-pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Currency {
+pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Option<Currency> {
     let pusd = Currency::pUSD();
     if configured.eq_ignore_ascii_case(pusd.code.as_str()) {
-        pusd
+        Some(pusd)
     } else {
-        Currency::from(configured)
+        configured.parse().ok()
     }
 }
 

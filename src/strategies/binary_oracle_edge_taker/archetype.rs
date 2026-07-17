@@ -504,9 +504,7 @@ mod tests {
         assert_eq!(pool.account_id.to_string(), account_id);
         assert_eq!(
             settlement_currency_for_execution_account(&loaded.root, execution_venue, account_id),
-            Some(settlement_currency_from_config_code(
-                pool.collateral_currency.as_str()
-            ))
+            settlement_currency_from_config_code(pool.collateral_currency.as_str())
         );
     }
 
@@ -567,7 +565,7 @@ mod tests {
             settlement_currency_for_execution_account(&loaded.root, execution_venue, account_id);
         assert_eq!(
             currency,
-            Some(settlement_currency_from_config_code("pUSD")),
+            settlement_currency_from_config_code("pUSD"),
             "production root capital pool must derive pUSD for POLYMARKET / POLYMARKET-001"
         );
     }

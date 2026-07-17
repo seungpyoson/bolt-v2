@@ -46,6 +46,45 @@ struct NoopFeeProvider;
 const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
 const RV_DATA_CLIENT_VENUE: &str = "OKX";
 
+fn set_fixture_strategy_settlement_currency(
+    loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    currency: &str,
+) {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_archetype.as_str() == "binary_oracle_edge_taker")
+        .expect("fixture should include a settlement-capable strategy");
+    let execution_client_id = strategy.config.execution_client_id.as_str();
+    let execution_client = loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .expect("fixture execution client should exist");
+    let execution_venue = execution_client.venue;
+    let settlement_account_id = execution_client
+        .execution
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .and_then(|execution| execution.get("account_id"))
+        .and_then(toml::Value::as_str)
+        .expect("fixture execution client should bind an account id")
+        .to_string();
+    let pool = loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .and_then(|pools| {
+            pools.iter_mut().find(|pool| {
+                pool.venue_id == execution_venue.as_str()
+                    && pool.account_id.to_string() == settlement_account_id
+            })
+        })
+        .expect("fixture capital pool should bind the strategy execution account");
+    pool.collateral_currency = currency.to_string();
+}
+
 fn reference_price_client_from_toml(value: &str) -> ClientBlock {
     // These inserted client fragments bypass root validation, so their inline 5000ms values do not satisfy the root startup-bound rule.
     toml::from_str(value).expect("reference price test client should parse")
@@ -800,8 +839,9 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     );
 }
 
-#[test]
-fn settlement_capable_binding_is_not_invoked_without_settlement_currency() {
+fn settlement_registration_error_after_config_mutation(
+    mutate: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedBoltV3Config),
+) -> bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError {
     fn register_must_not_run(
         _node: &mut LiveNode,
         _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
@@ -853,15 +893,9 @@ fn settlement_capable_binding_is_not_invoked_without_settlement_currency() {
     let mut node = builder
         .build()
         .expect("v3 LiveNode should build before strategy registration");
-    loaded
-        .root
-        .risk
-        .capital_pools
-        .as_mut()
-        .expect("fixture capital pools should exist")
-        .clear();
+    mutate(&mut loaded);
 
-    let error =
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
@@ -870,17 +904,66 @@ fn settlement_capable_binding_is_not_invoked_without_settlement_currency() {
             execution_controls,
             decision_evidence,
         )
-        .err()
-        .expect("missing settlement currency must fail before invoking the binding");
+    }));
+    result
+        .expect("invalid settlement identity must not unwind or invoke the binding callback")
+        .expect_err("invalid settlement identity must fail before binding registration")
+}
 
+fn assert_settlement_currency_binding_error(
+    error: &bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+) {
     assert!(matches!(
-        &error,
+        error,
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding { .. }
     ));
     assert!(
         error
             .to_string()
             .contains("settlement capability requires settlement currency for execution account")
+    );
+}
+
+#[test]
+fn settlement_capable_binding_is_not_invoked_without_settlement_currency() {
+    let error = settlement_registration_error_after_config_mutation(|loaded| {
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_mut()
+            .expect("fixture capital pools should exist")
+            .clear();
+    });
+
+    assert_settlement_currency_binding_error(&error);
+}
+
+#[test]
+fn settlement_capable_binding_rejects_unknown_currency_without_unwinding_or_callback() {
+    let error = settlement_registration_error_after_config_mutation(|loaded| {
+        set_fixture_strategy_settlement_currency(loaded, "BOLT_UNKNOWN_SETTLEMENT_CURRENCY");
+    });
+
+    assert_settlement_currency_binding_error(&error);
+}
+
+#[test]
+fn strategy_validation_rejects_unknown_settlement_currency_without_unwinding() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    set_fixture_strategy_settlement_currency(&mut loaded, "BOLT_UNKNOWN_SETTLEMENT_CURRENCY");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bolt_v2::bolt_v3_validate::validate_root_only(&loaded.root)
+    }));
+    let errors = result.expect("unknown settlement currency validation must not unwind");
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("collateral_currency must be a registered currency code")),
+        "unknown settlement currency must fail config validation; errors={errors:?}"
     );
 }
 

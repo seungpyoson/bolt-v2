@@ -43,16 +43,6 @@ static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
 const PRODUCER_STOPPED_EVENT: &str = "producer_stopped";
 const DRAIN_SHUTDOWN_EVENT: &str = "drain_shutdown";
 
-fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        (*message).to_string()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "non-string panic payload".to_string()
-    }
-}
-
 struct RecordingProducerStopper {
     events: Arc<Mutex<Vec<&'static str>>>,
 }
@@ -516,7 +506,10 @@ fn settlement_runtime_sink_panics_on_poisoned_capital_admission_feed() {
     }))
     .expect_err("poisoned capital-admission feed must panic");
 
-    assert!(panic_payload_message(&panic).contains("capital admission runtime feed lock poisoned"));
+    assert!(
+        crate::panic_payload_message(panic.as_ref())
+            .contains("capital admission runtime feed lock poisoned")
+    );
 }
 
 #[test]

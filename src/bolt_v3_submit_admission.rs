@@ -1823,7 +1823,7 @@ impl BoltV3SubmitAdmissionState {
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
             self.reject_episodes
                 .lock()
-                .expect("submit admission state mutex should not be poisoned")
+                .expect("submit admission reject episodes mutex should not be poisoned")
                 .clear();
         } else if evaluation.outcome != BoltV3AdmissionOutcome::RejectedLossGovernorHalted {
             // Loss-governor halts are MECE with order-level rejects; RC5 records loss halts.
@@ -1849,7 +1849,7 @@ impl BoltV3SubmitAdmissionState {
             let mut reject_episodes = self
                 .reject_episodes
                 .lock()
-                .expect("submit admission state mutex should not be poisoned");
+                .expect("submit admission reject episodes mutex should not be poisoned");
             let episode = if let Some(episode) = reject_episodes.get_mut(&stable_episode_key) {
                 episode
             } else {
@@ -4214,16 +4214,6 @@ mod loss_governor_halt_evidence_tests {
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-        if let Some(message) = payload.downcast_ref::<&str>() {
-            (*message).to_string()
-        } else if let Some(message) = payload.downcast_ref::<String>() {
-            message.clone()
-        } else {
-            "non-string panic payload".to_string()
-        }
-    }
-
     #[derive(Debug, Default)]
     struct FailingLossGovernorHaltEvidenceWriter {
         halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
@@ -4475,7 +4465,8 @@ mod loss_governor_halt_evidence_tests {
             "a poisoned admission state must not return control to the provider-submit branch",
         );
         assert!(
-            panic_message(panic).contains("submit admission state mutex should not be poisoned"),
+            crate::panic_payload_message(panic.as_ref())
+                .contains("submit admission state mutex should not be poisoned"),
             "admission must panic specifically because the submit-admission state is poisoned"
         );
         assert_eq!(
@@ -4516,7 +4507,8 @@ mod loss_governor_halt_evidence_tests {
             "a poisoned reject-episode state must not return control to the provider-submit branch",
         );
         assert!(
-            panic_message(panic).contains("submit admission state mutex should not be poisoned"),
+            crate::panic_payload_message(panic.as_ref())
+                .contains("submit admission reject episodes mutex should not be poisoned"),
             "admission must panic specifically because the reject-episode state is poisoned"
         );
         assert_eq!(
@@ -4536,6 +4528,16 @@ mod loss_governor_halt_evidence_tests {
             "client-order-poisoned-rejected-episode".to_string(),
         );
         request.notional = Decimal::ZERO;
+        let routing_admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        assert!(
+            matches!(
+                routing_admission.admit_at(&request, 1_000),
+                Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
+            ),
+            "the rejected-path fixture must route through non-positive-notional rejection"
+        );
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             admission.poison_reject_episodes_for_test();
         }));
@@ -4558,7 +4560,8 @@ mod loss_governor_halt_evidence_tests {
             "a poisoned rejected-path episode lock must stop admission before returning",
         );
         assert!(
-            panic_message(panic).contains("submit admission state mutex should not be poisoned"),
+            crate::panic_payload_message(panic.as_ref())
+                .contains("submit admission reject episodes mutex should not be poisoned"),
             "the rejected path must panic specifically because reject episodes are poisoned"
         );
         assert_eq!(

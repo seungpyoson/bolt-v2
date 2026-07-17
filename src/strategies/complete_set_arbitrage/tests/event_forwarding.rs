@@ -233,26 +233,26 @@ fn duplicate_overfill_and_nonpositive_fills_are_not_deduplicated_or_rejected() {
 #[test]
 fn hook_ownership_and_shadow_prohibition_remain_explicit() {
     let strategy_source = include_str!("../mod.rs");
-    let data_actor = strategy_source
-        .split("impl DataActor for CompleteSetArbitrage")
-        .nth(1)
-        .and_then(|source| source.split("nautilus_strategy!").next())
+    let (_, after_data_actor) = strategy_source
+        .split_once("impl DataActor for CompleteSetArbitrage")
+        .expect("DataActor implementation should precede strategy macro");
+    let (data_actor, _) = after_data_actor
+        .split_once("nautilus_strategy_with_fill_void_guard!")
         .expect("DataActor implementation should precede strategy macro");
     assert!(!data_actor.contains("fn on_order_filled"));
 
-    let strategy_hooks = strategy_source
-        .split("nautilus_strategy!(CompleteSetArbitrage, {")
-        .nth(1)
-        .and_then(|source| source.split("});").next())
+    let (_, hook_source) = strategy_source
+        .split_once("nautilus_strategy_with_fill_void_guard!(CompleteSetArbitrage, {")
         .expect("strategy hook block should be present");
+    let (strategy_hooks, _) = hook_source
+        .split_once("});")
+        .expect("strategy hook block should terminate");
     assert!(strategy_hooks.contains("fn on_order_filled"));
     assert!(strategy_hooks.contains("complete-set fill event forwarding must succeed"));
     assert!(
         !strategy_hooks
             .contains("if let Err(error) = self.event_forwarder.forward_order_filled(event)")
     );
-    assert!(strategy_hooks.contains("fn on_order_fill_voided"));
-    assert!(strategy_hooks.contains("fail_closed_on_order_fill_voided(event)"));
     assert!(strategy_hooks.contains("fn on_order_accepted"));
     assert!(strategy_hooks.contains("fn on_order_cancel_rejected"));
 

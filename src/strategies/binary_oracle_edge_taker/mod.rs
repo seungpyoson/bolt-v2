@@ -19,7 +19,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use nautilus_system::trader::Trader;
-use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, StrategyNative, nautilus_strategy};
+use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, StrategyNative};
 use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},
@@ -27,6 +27,7 @@ use rust_decimal::{
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
+use crate::strategies::nautilus_strategy_with_fill_void_guard;
 
 use crate::{
     bolt_v3_binary_outcome_edge::{
@@ -7781,13 +7782,9 @@ impl BinaryOracleEdgeTaker {
     }
 }
 
-nautilus_strategy!(BinaryOracleEdgeTaker, {
+nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker, {
     fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) {
         self.handle_order_filled(event);
-    }
-
-    fn on_order_fill_voided(&mut self, event: &nautilus_model::events::OrderFillVoided) {
-        crate::bolt_v3_order_execution::fail_closed_on_order_fill_voided(event);
     }
 
     fn on_order_canceled(&mut self, event: &nautilus_model::events::OrderCanceled) {

@@ -976,11 +976,49 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             ),
         ),
     ]
+    normalized_root_error = (
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+        "must contain normalized repository-relative directories"
+    )
+    root_cases = [
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace('".nextest-archive/"', '".nextest-archive/,evil/"', 1),
+        ),
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace(
+                '[".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]',
+                '["/target/"]',
+                1,
+            ),
+        ),
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace('"target/"', '"target"', 1),
+        ),
+        (
+            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+            "must be sorted and unique",
+            CONFIG_TOML.replace(
+                '".nextest-archive/", ".rust-verification/"',
+                '".nextest-archive/", ".nextest-archive/", ".rust-verification/"',
+                1,
+            ),
+        ),
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace('"target/"', '"target//"', 1),
+        ),
+    ]
     with tempfile.TemporaryDirectory() as tmp:
         for expected, text in cases.items():
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
         for expected, text in issue_789_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in root_cases:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
 

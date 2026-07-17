@@ -40,6 +40,7 @@ const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
     "submit_order_via_nt",
     "cancel_order_via_nt",
     "cancel_all_orders_via_nt",
+    "modify_order_via_nt",
     "submit_order_with_params",
     "submit_order_list_with_params",
     "modify_order_with_params",
@@ -173,10 +174,13 @@ fn tokenize(source: &str) -> Vec<Token> {
 
 fn production_tokens(source: &str) -> Vec<Token> {
     let tokens = tokenize(source);
+    let macro_token_tree = macro_token_tree_mask(&tokens);
     let mut production = Vec::with_capacity(tokens.len());
     let mut cursor = 0;
     while cursor < tokens.len() {
-        if let Some(attribute_end) = cfg_test_attribute_end(&tokens, cursor) {
+        if !macro_token_tree[cursor]
+            && let Some(attribute_end) = cfg_test_attribute_end(&tokens, cursor)
+        {
             cursor = cfg_gated_item_end(&tokens, attribute_end);
         } else {
             production.push(tokens[cursor].clone());
@@ -186,31 +190,83 @@ fn production_tokens(source: &str) -> Vec<Token> {
     production
 }
 
+fn macro_token_tree_mask(tokens: &[Token]) -> Vec<bool> {
+    let mut mask = vec![false; tokens.len()];
+    let mut delimiters: Vec<(&str, bool)> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let inside_macro = delimiters.iter().any(|(_, is_macro)| *is_macro);
+        mask[index] = inside_macro;
+        match token.text.as_str() {
+            "(" | "[" | "{" => {
+                let close = match token.text.as_str() {
+                    "(" => ")",
+                    "[" => "]",
+                    "{" => "}",
+                    _ => unreachable!(),
+                };
+                let opens_macro = tokens
+                    .get(index.wrapping_sub(1))
+                    .is_some_and(|token| token.text == "!")
+                    || (tokens
+                        .get(index.wrapping_sub(2))
+                        .is_some_and(|token| token.text == "!")
+                        && tokens
+                            .get(index.wrapping_sub(3))
+                            .is_some_and(|token| token.text == "macro_rules"));
+                delimiters.push((close, inside_macro || opens_macro));
+            }
+            ")" | "]" | "}" => {
+                if delimiters
+                    .last()
+                    .is_some_and(|(close, _)| *close == token.text)
+                {
+                    delimiters.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    mask
+}
+
 fn cfg_test_attribute_end(tokens: &[Token], start: usize) -> Option<usize> {
+    // Only an unconditional test build predicate is removed. Ambiguous expressions such as
+    // `cfg(any(test, feature = ...))` remain in the production scan; a test-only compound cfg may
+    // therefore over-match, but this retained safety fence must never hide production-capable code.
     const CFG_TEST_ATTRIBUTE: &[&str] = &["#", "[", "cfg", "(", "test", ")", "]"];
     (texts(tokens.get(start..start + CFG_TEST_ATTRIBUTE.len())?) == CFG_TEST_ATTRIBUTE)
         .then_some(start + CFG_TEST_ATTRIBUTE.len())
 }
 
 fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> usize {
+    // Stop at the first complete construct boundary and never cross an enclosing brace. For a
+    // structured match-arm pattern, the first balanced brace can precede the gated body; retaining
+    // that body is an intentional fail-closed over-match rather than hiding a production sibling.
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
     while cursor < tokens.len() {
         match tokens[cursor].text.as_str() {
-            ";" => return cursor + 1,
-            "{" => {
-                let mut depth = 1usize;
-                cursor += 1;
-                while cursor < tokens.len() && depth != 0 {
-                    match tokens[cursor].text.as_str() {
-                        "{" => depth += 1,
-                        "}" => depth -= 1,
-                        _ => {}
-                    }
-                    cursor += 1;
+            "(" => parentheses += 1,
+            ")" => parentheses = parentheses.saturating_sub(1),
+            "[" => brackets += 1,
+            "]" => brackets = brackets.saturating_sub(1),
+            "{" if parentheses == 0 && brackets == 0 => braces += 1,
+            "}" if parentheses == 0 && brackets == 0 => {
+                if braces == 0 {
+                    return cursor;
                 }
-                return cursor;
+                braces -= 1;
+                if braces == 0 {
+                    return cursor + 1;
+                }
             }
-            _ => cursor += 1,
+            ";" | "," if parentheses == 0 && brackets == 0 && braces == 0 => {
+                return cursor + 1;
+            }
+            _ => {}
         }
+        cursor += 1;
     }
     cursor
 }
@@ -423,10 +479,15 @@ fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
     let actual = texts(tokens);
     let mut violations: Vec<&str> = STRATEGY_MUTATION_AUTHORITY_NAMES
         .iter()
-        .chain(NT_TRADING_COMMAND_SURFACE_NAMES)
         .copied()
         .filter(|name| actual.contains(name))
         .collect();
+    violations.extend(
+        NT_TRADING_COMMAND_SURFACE_NAMES
+            .iter()
+            .copied()
+            .filter(|name| command_surface_reference(&actual, name)),
+    );
     violations.extend(
         NT_VENUE_MUTATION_METHOD_NAMES
             .iter()
@@ -446,12 +507,16 @@ fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
 
 fn direct_method_reference(tokens: &[&str], name: &str) -> bool {
     tokens.iter().enumerate().any(|(index, token)| {
+        *token == name && index > 0 && matches!(tokens[index - 1], "." | "::")
+    })
+}
+
+fn command_surface_reference(tokens: &[&str], name: &str) -> bool {
+    tokens.iter().enumerate().any(|(index, token)| {
         *token == name
-            && index > 0
-            && matches!(tokens[index - 1], "." | "::")
             && tokens
                 .get(index + 1)
-                .is_some_and(|next| matches!(*next, "(" | "::" | "<" | ";" | "," | ")"))
+                .is_none_or(|next| matches!(*next, "::" | "<" | "(" | ";" | "," | ":" | ")"))
     })
 }
 
@@ -462,6 +527,40 @@ fn bare_function_reference(tokens: &[&str], name: &str) -> bool {
                 .get(index + 1)
                 .is_some_and(|next| matches!(*next, "(" | "::" | "<" | ";" | "," | ")"))
     })
+}
+
+fn trait_method_names<'a>(tokens: &'a [Token], trait_name: &str) -> Vec<&'a str> {
+    let actual = texts(tokens);
+    let Some(trait_start) = actual
+        .windows(2)
+        .position(|window| window == ["trait", trait_name])
+    else {
+        return Vec::new();
+    };
+    let Some(body_start) = actual[trait_start + 2..]
+        .iter()
+        .position(|token| *token == "{")
+        .map(|offset| trait_start + 2 + offset)
+    else {
+        return Vec::new();
+    };
+    let mut methods = Vec::new();
+    let mut depth = 1usize;
+    let mut cursor = body_start + 1;
+    while cursor < actual.len() && depth != 0 {
+        match actual[cursor] {
+            "{" => depth += 1,
+            "}" => depth -= 1,
+            "fn" if depth == 1 => {
+                if let Some(method) = actual.get(cursor + 1) {
+                    methods.push(*method);
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    methods
 }
 
 fn workspace_crate_files() -> Vec<PathBuf> {
@@ -613,9 +712,34 @@ fn production_tokenizer_excludes_inline_test_items_only() {
     let tokens = production_tokens(
         r#"
         fn production() { emit_order_intent(); }
+        struct StrategyState {
+            #[cfg(test)]
+            test_only_field: SubmitOrder,
+            production_field: ProductionField,
+        }
+        fn build_state() -> StrategyState {
+            StrategyState {
+                #[cfg(test)]
+                test_only_field: SubmitOrder::default(),
+                production_field: ProductionField::default(),
+            }
+        }
         #[cfg(test)]
         mod tests {
             fn fixture() { self.submit_order(order); }
+        }
+        #[cfg(test)]
+        fixture! { self.cancel_all_orders(); }
+        fn after_cfg_macro() { production_after_cfg_macro(); }
+        #[cfg(test)]
+        if test_mode() { self.modify_order(order); }
+        fn after_cfg_expression() { production_after_cfg_expression(); }
+        passthrough! { #[cfg(test)] }
+        fn after_macro_tokens() { self.modify_order_via_nt(order); }
+        match state {
+            #[cfg(test)]
+            State::Fixture { value } => { test_only_arm_body(value); }
+            State::Production => production_after_gated_arm(),
         }
         #[cfg(not(test))]
         fn retained() { self.cancel_order(order_id); }
@@ -623,7 +747,43 @@ fn production_tokenizer_excludes_inline_test_items_only() {
     );
     assert_eq!(count_sequence(&tokens, &["emit_order_intent", "("]), 1);
     assert_eq!(count_sequence(&tokens, &["submit_order", "("]), 0);
+    assert_eq!(count_sequence(&tokens, &["cancel_all_orders", "("]), 0);
+    assert_eq!(count_sequence(&tokens, &["modify_order", "("]), 0);
+    assert_eq!(count_sequence(&tokens, &["SubmitOrder"]), 0);
+    assert_eq!(count_sequence(&tokens, &["ProductionField"]), 2);
+    assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 1);
     assert_eq!(count_sequence(&tokens, &["cancel_order", "("]), 1);
+    assert_eq!(count_sequence(&tokens, &["test_only_arm_body", "("]), 1);
+    assert_eq!(
+        count_sequence(&tokens, &["production_after_gated_arm", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(&tokens, &["production_after_cfg_macro", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(&tokens, &["production_after_cfg_expression", "("]),
+        1
+    );
+}
+
+#[test]
+fn production_tokenizer_keeps_code_after_real_test_only_fields() {
+    let tokens = production_tokens(
+        &std::fs::read_to_string(repo_path("src/strategies/binary_oracle_edge_taker/mod.rs"))
+            .expect("edge-taker strategy source should be readable"),
+    );
+    for production_name in [
+        "SettlementEvidenceComputation",
+        "apply_selection_snapshot",
+        "warmup_tick_count",
+    ] {
+        assert!(
+            contains_sequence(&tokens, &[production_name]),
+            "production tokenizer must not hide `{production_name}` after a test-only field"
+        );
+    }
 }
 
 #[test]
@@ -637,6 +797,15 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         assert!(
             named_strategy_mutation_surfaces(&tokens).contains(method),
             "direct method matcher must retain {method}"
+        );
+    }
+    let function_references = tokenize(
+        "let exit = Self::exit_market as fn(&mut Self); let markets = [Self::market_exit]; let close = &self.close_position;",
+    );
+    for method in ["exit_market", "market_exit", "close_position"] {
+        assert!(
+            named_strategy_mutation_surfaces(&function_references).contains(&method),
+            "function-reference matcher must retain {method}"
         );
     }
     for function in NT_VENUE_MUTATION_BARE_NAMES {
@@ -658,6 +827,34 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         named_strategy_mutation_surfaces(&tokenize("submit_order_intent();")).is_empty(),
         "near-neighbor intent helper must not trip the exact mutation fence"
     );
+    assert!(
+        named_strategy_mutation_surfaces(&tokenize(
+            "match intent { ExitAction::CancelOrder => emit_order_intent() }"
+        ))
+        .is_empty(),
+        "Bolt-local intent variants must not be mistaken for NT command surfaces"
+    );
+}
+
+#[test]
+fn mutation_census_covers_every_nt_venue_sink_method() {
+    let tokens = source_tokens("src/bolt_v3_order_execution.rs");
+    let methods = trait_method_names(&tokens, "BoltV3NtVenueMutationSink");
+    assert_eq!(
+        methods,
+        vec![
+            "submit_order_via_nt",
+            "cancel_order_via_nt",
+            "cancel_all_orders_via_nt",
+            "modify_order_via_nt",
+        ]
+    );
+    for method in methods {
+        assert!(
+            NT_VENUE_MUTATION_METHOD_NAMES.contains(&method),
+            "NT venue sink method `{method}` must remain in the retained mutation census"
+        );
+    }
 }
 
 #[test]
@@ -701,7 +898,12 @@ fn production_bolt_v3_modules_do_not_reference_the_strategy_layer() {
 #[test]
 fn production_strategy_modules_do_not_name_nt_mutation_authority() {
     let mut violations = Vec::new();
-    for path in production_strategy_files() {
+    let strategy_files = production_strategy_files();
+    assert!(
+        !strategy_files.is_empty(),
+        "strategy mutation fence must scan at least one production source"
+    );
+    for path in strategy_files {
         let source = std::fs::read_to_string(&path).expect("strategy source should be readable");
         let tokens = production_tokens(&source);
         for surface in named_strategy_mutation_surfaces(&tokens) {

@@ -297,12 +297,13 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             self.submit_order_via_nt(order, context)?;
             self.cancel_order_via_nt(client_order_id, Some(client_id), None)?;
             self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
+            self.modify_order_via_nt(client_order_id, quantity, price, None, None)?;
             """
         )
 
         self.assertEqual(
             len(direct_violations),
-            3,
+            4,
             "private NT sink wrapper names must still be fenced outside the policy module",
         )
 

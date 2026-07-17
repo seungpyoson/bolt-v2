@@ -82,6 +82,7 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "submit_order_via_nt",
     "cancel_order_via_nt",
     "cancel_all_orders_via_nt",
+    "modify_order_via_nt",
     # Near-neighbor variants are fenced before a future NT bump can use them.
     "submit_order_with_params",
     "submit_order_list_with_params",

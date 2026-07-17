@@ -412,6 +412,24 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "the pinned NT batch-modification surface must remain fenced",
         )
 
+    def test_detects_pinned_nt_transitive_lifecycle_mutation_surface(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            strategy.strategy_core_mut().reset_market_exit_state();
+            <Self as Strategy>::check_market_exit(self, event);
+            let check = Self::check_market_exit as fn(&mut Self, TimeEvent);
+            <Self as Strategy>::stop(self);
+            Strategy::on_time_event(self, &event)?;
+            Strategy::on_start(self)?;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            7,
+            "pinned NT accessors and lifecycle wrappers that can mutate must remain fenced",
+        )
+
     def test_reserves_exact_nt_command_names_for_local_intent_enums(self) -> None:
         direct_violations = self.direct_nt_violations_for(
             """

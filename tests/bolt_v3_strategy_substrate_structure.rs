@@ -881,9 +881,16 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         );
     }
     let transport_aliases = tokenize(
-        "use msgbus::{send_any_value as dispatch}; let send = send_trading_command as fn(Endpoint, Command);",
+        "use msgbus::{send_any_value as dispatch, send_risk_command as risk, send_exec_command, send_emulator_command, send_algo_command}; let send = send_trading_command as fn(Endpoint, Command);",
     );
-    for function in ["send_any_value", "send_trading_command"] {
+    for function in [
+        "send_any_value",
+        "send_trading_command",
+        "send_risk_command",
+        "send_exec_command",
+        "send_emulator_command",
+        "send_algo_command",
+    ] {
         assert!(
             named_strategy_mutation_surfaces(&transport_aliases).contains(&function),
             "bare transport aliases and casts must retain {function}"
@@ -966,14 +973,38 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
         ));
         assert!(contains_sequence(&tokens, &["fn", "production_after", "("]));
     }
+    for source in [
+        "#[cfg(test)] unexpected_prefix fn production() { self.submit_order(order); } fn production_after() {}",
+        "#[cfg(test)] unexpected_prefix struct Production { command: SubmitOrder } struct ProductionAfter;",
+        "#[cfg(test)] unexpected_prefix mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
+        "#[cfg(test)] unexpected_prefix if enabled { self.modify_order(order); } fn production_after() {}",
+    ] {
+        let tokens = production_tokens(source);
+        assert!(
+            contains_sequence(&tokens, &["unexpected_prefix"]),
+            "an unknown cfg-gated prefix must retain the ambiguous region"
+        );
+        assert!(
+            contains_sequence(&tokens, &["production_after"]),
+            "an unknown cfg-gated prefix must not hide the production sibling"
+        );
+    }
 }
 
 #[test]
-fn pinned_nt_batch_mutation_surface_is_censused() {
+fn pinned_nt_mutation_surface_is_censused() {
     let lock = std::fs::read_to_string(repo_path("Cargo.lock"))
         .expect("Cargo.lock should retain the audited NT revision");
     assert!(lock.contains("d636f17604cdbddc28ad40e0e15720e2d19bf860"));
-    for method in ["modify_orders"] {
+    for method in [
+        "modify_orders",
+        "strategy_core_mut",
+        "reset_market_exit_state",
+        "on_start",
+        "on_time_event",
+        "check_market_exit",
+        "stop",
+    ] {
         assert!(
             NT_VENUE_MUTATION_METHOD_NAMES.contains(&method),
             "pinned NT Strategy mutation method `{method}` must remain censused"

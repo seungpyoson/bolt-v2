@@ -112,6 +112,19 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
 
         self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5, 6})
 
+    def test_detects_transitive_market_exit_lifecycle_apis(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/probe.rs",
+            """
+            self.reset_market_exit_state();
+            Strategy::check_market_exit(self, event);
+            <Self as Strategy>::stop(self);
+            Strategy::on_time_event(self, &event)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
+
     def test_policy_module_allows_only_routed_chokepoint_apis(self) -> None:
         # The chokepoint file exempts ONLY the APIs Bolt routes through the
         # shadow-mode execution-policy gate (cancel_all_orders and the newly-added

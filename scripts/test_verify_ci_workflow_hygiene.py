@@ -10987,6 +10987,34 @@ def assert_ra001a_durable_tracer_is_one_linear_workflow() -> None:
         ),
     )
 
+    current_job_env = (
+        "    env:\n"
+        "      BVS_NEXTEST_ARCHIVE_PATH: ${{ runner.temp }}/ra001a-nextest-archive.tar.zst\n"
+        "      BOLT_RA001A_RECEIPT_PATH: ${{ runner.temp }}/ra001a-durable-tracer-receipt.json\n"
+    )
+    invalid_job_env = (
+        "    env:\n"
+        "      RA001A_INVALID_JOB_CONTEXT: ${{ runner.temp }}/invalid\n"
+    )
+    if current_job_env in workflow:
+        job_context_mutation = replace_once(workflow, current_job_env, invalid_job_env)
+    else:
+        job_context_mutation = replace_once(
+            workflow,
+            "    timeout-minutes: ${{ fromJSON(needs.policy.outputs.ra001a_max_job_minutes) }}\n",
+            (
+                "    timeout-minutes: ${{ fromJSON(needs.policy.outputs.ra001a_max_job_minutes) }}\n"
+                + invalid_job_env
+            ),
+        )
+    job_context_errors = verifier.verify_repo_automation_texts(
+        {workflow_path: job_context_mutation}
+    )
+    assert any(
+        "job-level env" in error and "runner" in error
+        for error in job_context_errors
+    ), f"RA-001a workflow admitted unavailable job-level runner context: {job_context_errors!r}"
+
     mutations = {
         "enable input": workflow.replace(
             "  workflow_dispatch:\n",

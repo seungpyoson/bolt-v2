@@ -3661,6 +3661,61 @@ def job_top_level_items(job_lines: list[str]) -> dict[str, str] | None:
     return items
 
 
+JOB_LEVEL_ENV_ALLOWED_CONTEXTS = frozenset(
+    {"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"}
+)
+WORKFLOW_EXPRESSION_RE = re.compile(r"\$\{\{(?P<body>.*?)\}\}")
+WORKFLOW_CONTEXT_REFERENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.])(?P<context>github|needs|strategy|matrix|vars|secrets|inputs|"
+    r"runner|job|steps|env)\."
+)
+
+
+def job_mapping_child_block(job_lines: list[str], key: str) -> list[str]:
+    """Return one direct jobs.<job_id> mapping block, never a nested step block."""
+
+    key_pattern = re.compile(rf"^    {re.escape(key)}:\s*$")
+    for index, line in enumerate(job_lines):
+        if key_pattern.match(strip_comment(line).rstrip()) is None:
+            continue
+        block = [line]
+        for child in job_lines[index + 1 :]:
+            clean = strip_comment(child).rstrip()
+            if clean.strip():
+                indent = len(clean) - len(clean.lstrip(" "))
+                if indent <= 4:
+                    break
+            block.append(child)
+        return block
+    return []
+
+
+def job_level_env_context_errors(workflow_text: str) -> list[str]:
+    """Reject contexts GitHub cannot evaluate in jobs.<job_id>.env."""
+
+    errors: list[str] = []
+    for job_id, job_lines in parse_jobs(workflow_text).items():
+        env_block = job_mapping_child_block(job_lines, "env")
+        if not env_block:
+            continue
+        referenced_contexts = {
+            match.group("context")
+            for expression in WORKFLOW_EXPRESSION_RE.finditer(
+                uncommented_text(env_block)
+            )
+            for match in WORKFLOW_CONTEXT_REFERENCE_RE.finditer(
+                expression.group("body")
+            )
+        }
+        unavailable = sorted(referenced_contexts - JOB_LEVEL_ENV_ALLOWED_CONTEXTS)
+        if unavailable:
+            errors.append(
+                f"job {job_id} job-level env uses unavailable context(s): "
+                f"{', '.join(unavailable)}"
+            )
+    return errors
+
+
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
 
@@ -9405,6 +9460,16 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                 (f"{file_name}: {error}" for error in ci_input_set_config_errors(file_name, text)),
             )
             continue
+        if file_name.startswith(".github/workflows/") and file_name.endswith(
+            (".yml", ".yaml")
+        ):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in job_level_env_context_errors(text)
+                ),
+            )
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
         add_unique_errors(
             errors,
@@ -11763,6 +11828,8 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
             "MAX_WORKER_BYTES": consumed_policy_output(
                 "ra001a_max_worker_executable_bytes"
             ),
+            "BVS_NEXTEST_ARCHIVE_PATH": "${{ runner.temp }}/ra001a-nextest-archive.tar.zst",
+            "BOLT_RA001A_RECEIPT_PATH": "${{ runner.temp }}/ra001a-durable-tracer-receipt.json",
         }
         if (
             build_step is None
@@ -11785,6 +11852,8 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
             execute_job, "Run the sole registry-complete RA-001a tracer"
         )
         expected_tracer_env = {
+            "BVS_NEXTEST_ARCHIVE_PATH": "${{ steps.build.outputs.archive_path }}",
+            "BOLT_RA001A_RECEIPT_PATH": "${{ steps.build.outputs.receipt_path }}",
             "BOLT_RA001A_SOURCE_REVISION": consumed_policy_output("source_revision"),
             "BOLT_RA001A_GIT_EXECUTABLE": "${{ steps.build.outputs.git_executable }}",
             "BOLT_RA001A_GIT_SHA256": "${{ steps.build.outputs.git_sha256 }}",

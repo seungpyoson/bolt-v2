@@ -105,9 +105,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    env:
-      BVS_NEXTEST_ARCHIVE_PATH: ${{ runner.temp }}/ra001a-nextest-archive.tar.zst
-      BOLT_RA001A_RECEIPT_PATH: ${{ runner.temp }}/ra001a-durable-tracer-receipt.json
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -138,6 +135,8 @@ jobs:
           GIT_EXECUTABLE: ${{ needs.policy.outputs.ra001a_git_executable_path }}
           MAX_GIT_BYTES: ${{ needs.policy.outputs.ra001a_max_git_executable_bytes }}
           MAX_WORKER_BYTES: ${{ needs.policy.outputs.ra001a_max_worker_executable_bytes }}
+          BVS_NEXTEST_ARCHIVE_PATH: ${{ runner.temp }}/ra001a-nextest-archive.tar.zst
+          BOLT_RA001A_RECEIPT_PATH: ${{ runner.temp }}/ra001a-durable-tracer-receipt.json
         run: |
           set -euo pipefail
           [[ "$GIT_EXECUTABLE" == /* ]] && test -f "$GIT_EXECUTABLE" && test ! -L "$GIT_EXECUTABLE" && test -x "$GIT_EXECUTABLE" || {
@@ -191,6 +190,8 @@ jobs:
           printf 'git_executable=%s\n' "$GIT_EXECUTABLE" >> "$GITHUB_OUTPUT"
           printf 'git_bytes=%s\n' "$git_bytes" >> "$GITHUB_OUTPUT"
           printf 'git_sha256=%s\n' "$git_sha256" >> "$GITHUB_OUTPUT"
+          printf 'archive_path=%s\n' "$BVS_NEXTEST_ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+          printf 'receipt_path=%s\n' "$BOLT_RA001A_RECEIPT_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Configure RA-001a AWS credentials
         uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
@@ -202,6 +203,8 @@ jobs:
         id: tracer
         shell: bash
         env:
+          BVS_NEXTEST_ARCHIVE_PATH: ${{ steps.build.outputs.archive_path }}
+          BOLT_RA001A_RECEIPT_PATH: ${{ steps.build.outputs.receipt_path }}
           BOLT_RA001A_SOURCE_REVISION: ${{ needs.policy.outputs.source_revision }}
           BOLT_RA001A_GIT_EXECUTABLE: ${{ steps.build.outputs.git_executable }}
           BOLT_RA001A_GIT_SHA256: ${{ steps.build.outputs.git_sha256 }}

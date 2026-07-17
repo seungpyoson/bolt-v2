@@ -378,6 +378,31 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             any("active production caller" in error for error in verifier.boundary_errors(root))
         )
 
+    def test_direct_secret_output_macros_are_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        owner = root / "src/bolt_v3_polymarket_redemption.rs"
+        snippets = (
+            "fn leak(credentials: &ResolvedRedemptionCredentials) { "
+            "dbg!(&credentials.signer_private_key); }",
+            "fn leak(credentials: &ResolvedRedemptionCredentials) { "
+            'print!("{}", credentials.signer_private_key.as_str()); }',
+            "fn leak(credentials: &ResolvedRedemptionCredentials) { "
+            'eprint!("{}", credentials.signer_private_key.as_str()); }',
+        )
+        for snippet in snippets:
+            with self.subTest(snippet=snippet):
+                owner.write_text(
+                    OWNER.replace("#[cfg(test)]", f"{snippet}\n\n#[cfg(test)]", 1),
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    any(
+                        "forbidden logging or observability sink" in error
+                        for error in verifier.boundary_errors(root)
+                    )
+                )
+
     def test_public_injectable_secret_resolver_is_rejected(self) -> None:
         temporary, root = self.fixture()
         self.addCleanup(temporary.cleanup)

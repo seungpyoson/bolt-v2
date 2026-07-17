@@ -391,6 +391,9 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         errors.append("production owner must not expose an injectable secret resolver")
 
     forbidden_observability = (
+        "dbg!",
+        "print!",
+        "eprint!",
         "println!",
         "eprintln!",
         "log::",

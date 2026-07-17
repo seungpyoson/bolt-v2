@@ -1,13 +1,20 @@
 use nautilus_model::{
     enums::OrderSide as NtOrderSide,
+    events::OrderInitialized,
     identifiers::{AccountId as NtAccountId, InstrumentId as NtInstrumentId},
+    orders::OrderAny,
     types::{Price, Quantity},
 };
+use sha2::{Digest, Sha256};
 
-use crate::economics::{
-    AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId, ExecutionClientId,
-    InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg,
-    ProductSurfaceId, ReportingPolicyId, RoutingAttachment, RoutingAttachmentId, RoutingContext,
+use crate::{
+    bolt_v3_economics_runtime::EconomicsOrderBinding,
+    economics::{
+        AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
+        ExecutionClientId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId,
+        OrderSide, PlannedFillLeg, ProductSurfaceId, ReportingPolicyId, RoutingAttachment,
+        RoutingAttachmentId, RoutingContext,
+    },
 };
 
 pub struct NtEconomicsIntent<'a> {
@@ -32,6 +39,16 @@ pub enum NtEconomicsMappingError {
     InvalidIdentity,
     UnsupportedOrderSide,
     InvalidFillLeg,
+    OrderBindingSerialization,
+}
+
+pub fn economics_order_binding(
+    order: &OrderAny,
+) -> Result<EconomicsOrderBinding, NtEconomicsMappingError> {
+    let canonical_order = OrderInitialized::from(order);
+    let bytes = serde_json::to_vec(&canonical_order)
+        .map_err(|_| NtEconomicsMappingError::OrderBindingSerialization)?;
+    Ok(EconomicsOrderBinding::from_sha256(Sha256::digest(bytes)))
 }
 
 pub fn canonical_quote_request_from_nt(

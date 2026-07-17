@@ -10,9 +10,8 @@ use bolt_v2::economics::{
     EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId,
     InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderId, OrderSide,
     PlannedFillLeg, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingContext,
-    SignedNativeEffect, SnapshotId, SourceId, SourceValidity, ValuationEvidence,
-    ValuationProvider, ValuationRequest, VenueEconomicsAdapter, VenueQuoteEstimate,
-    value_with_route,
+    SignedNativeEffect, SnapshotId, SourceId, SourceValidity, ValuationEvidence, ValuationProvider,
+    ValuationRequest, VenueEconomicsAdapter, VenueQuoteEstimate, value_with_route,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -103,9 +102,7 @@ struct ReplayValuationProvider {
 }
 
 impl ReplayValuationProvider {
-    fn from_snapshot(
-        snapshot: &HistoricalEconomicsSnapshot,
-    ) -> Result<Self, EconomicsUnavailable> {
+    fn from_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<Self, EconomicsUnavailable> {
         let evidence = snapshot
             .components
             .iter()
@@ -145,12 +142,13 @@ impl ValuationProvider for ReplayValuationProvider {
                     .valid_until_ns
                     .is_none_or(|valid_until_ns| valid_until_ns >= request.requested_at_ns)
         });
-        let evidence = candidates
-            .next()
-            .cloned()
-            .ok_or_else(|| EconomicsUnavailable::MissingValuation {
-                unit: effect.unit().clone(),
-            })?;
+        let evidence =
+            candidates
+                .next()
+                .cloned()
+                .ok_or_else(|| EconomicsUnavailable::MissingValuation {
+                    unit: effect.unit().clone(),
+                })?;
         if candidates.next().is_some() {
             return Err(EconomicsUnavailable::AmbiguousValuation {
                 unit: effect.unit().clone(),
@@ -238,6 +236,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         )?
         .quote_admission(EconomicsAdmissionIntent {
             request: intent.request,
+            order_binding: intent.order_binding,
             gross_expected_value: intent.gross_expected_value,
             edge_basis,
             valuation_provider,

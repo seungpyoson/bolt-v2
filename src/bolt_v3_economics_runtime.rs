@@ -19,6 +19,7 @@ use crate::bolt_v3_economics_config::{ValuationConfig, ValuationOrientation};
 
 pub struct EconomicsAdmissionIntent {
     pub request: EconomicQuoteRequest,
+    pub order_binding: EconomicsOrderBinding,
     pub gross_expected_value: Decimal,
     pub edge_basis: EdgeBasisEvidence,
     pub valuation_provider: Arc<dyn ValuationProvider>,
@@ -27,8 +28,24 @@ pub struct EconomicsAdmissionIntent {
 
 pub struct EconomicsAdmissionQuoteIntent {
     pub request: EconomicQuoteRequest,
+    pub order_binding: EconomicsOrderBinding,
     pub gross_expected_value: Decimal,
     pub base_reservation_notional: Decimal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EconomicsOrderBinding {
+    sha256: sha2::digest::Output<sha2::Sha256>,
+}
+
+impl EconomicsOrderBinding {
+    pub fn from_sha256(sha256: sha2::digest::Output<sha2::Sha256>) -> Self {
+        Self { sha256 }
+    }
+
+    pub fn sha256(&self) -> &sha2::digest::Output<sha2::Sha256> {
+        &self.sha256
+    }
 }
 
 pub trait EconomicsAdmissionSource: Send + Sync {
@@ -367,6 +384,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         )?
         .quote_admission(EconomicsAdmissionIntent {
             request: intent.request,
+            order_binding: intent.order_binding,
             gross_expected_value: intent.gross_expected_value,
             edge_basis,
             valuation_provider: dependencies.valuation_provider,
@@ -389,6 +407,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EconomicsAdmission {
     request: EconomicQuoteRequest,
+    order_binding: EconomicsOrderBinding,
     quote: EconomicQuote,
     net_edge: NetEdgeQuote,
     base_reservation_notional: Decimal,
@@ -399,6 +418,10 @@ pub struct EconomicsAdmission {
 impl EconomicsAdmission {
     pub fn request(&self) -> &EconomicQuoteRequest {
         &self.request
+    }
+
+    pub fn order_binding(&self) -> &EconomicsOrderBinding {
+        &self.order_binding
     }
 
     pub fn quote(&self) -> &EconomicQuote {
@@ -513,6 +536,7 @@ impl BoltV3EconomicsRuntime {
         source_snapshot_ids.dedup();
         Ok(EconomicsAdmission {
             request: intent.request,
+            order_binding: intent.order_binding,
             quote,
             net_edge,
             base_reservation_notional: intent.base_reservation_notional,
@@ -539,6 +563,19 @@ fn push_valuation(
 
 #[cfg(test)]
 pub(crate) fn test_economics_admission(base_reservation_notional: Decimal) -> EconomicsAdmission {
+    test_economics_admission_with_binding(
+        base_reservation_notional,
+        EconomicsOrderBinding::from_sha256(<sha2::Sha256 as sha2::Digest>::digest(
+            b"test-order-binding",
+        )),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_economics_admission_with_binding(
+    base_reservation_notional: Decimal,
+    order_binding: EconomicsOrderBinding,
+) -> EconomicsAdmission {
     use crate::economics::{
         AccountId, AdmissionTreatment, DecisionCorrelationId, EconomicClass, EconomicComponentId,
         EconomicKind, EconomicQuoteRequest, EconomicScope, EdgeBasisPolicyId,
@@ -626,6 +663,7 @@ pub(crate) fn test_economics_admission(base_reservation_notional: Decimal) -> Ec
     .expect("test economics runtime policy should be valid")
     .quote_admission(EconomicsAdmissionIntent {
         request,
+        order_binding,
         gross_expected_value: Decimal::ONE,
         edge_basis: EdgeBasisEvidence {
             policy_id: EdgeBasisPolicyId::new("test-edge-policy")
@@ -719,6 +757,7 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
                 valid_until_ns,
             },
             request: intent.request,
+            order_binding: intent.order_binding,
             gross_expected_value: intent.gross_expected_value,
             valuation_provider: identity_valuation_provider(),
             base_reservation_notional: intent.base_reservation_notional,

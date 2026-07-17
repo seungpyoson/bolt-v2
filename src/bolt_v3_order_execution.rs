@@ -46,6 +46,7 @@ use crate::{
         NativeUnitId, OrderSide as EconomicsOrderSide, PlannedFillLeg, PositionContext,
         ProductSurfaceId, ReportingPolicyId, RoutingContext,
     },
+    integrations::nautilus::economics::economics_order_binding,
 };
 
 #[cfg(test)]
@@ -178,6 +179,16 @@ impl BoltV3OrderRoutingHandle {
             OrderSide::Sell => EconomicsOrderSide::Sell,
             _ => anyhow::bail!("bolt-v3 economics rejects unsupported order side"),
         };
+        match intent.liquidity_role {
+            LiquidityRoleAssumption::GuaranteedMaker => anyhow::ensure!(
+                intent.request.order.is_post_only(),
+                "guaranteed-maker economics requires a final post-only order"
+            ),
+            LiquidityRoleAssumption::Taker => anyhow::ensure!(
+                !intent.request.order.is_post_only(),
+                "economics liquidity-role assumption does not match final order"
+            ),
+        }
         let planned_fill_legs =
             normalize_planned_fill_legs(intent.request.order, facts, intent.planned_fill_legs)?;
         let instrument_id =
@@ -238,6 +249,9 @@ impl BoltV3OrderRoutingHandle {
         self.source
             .quote_admission(EconomicsAdmissionQuoteIntent {
                 request,
+                order_binding: economics_order_binding(intent.request.order).map_err(|error| {
+                    anyhow::anyhow!("economics order binding failed: {error:?}")
+                })?,
                 gross_expected_value: intent.gross_expected_value,
                 base_reservation_notional: facts.base_reservation_notional,
             })
@@ -403,6 +417,15 @@ impl BoltV3OrderExecutionPolicy {
             }
         };
         decision_evidence.record_order_intent(&intent)?;
+        if economics_order_binding(&order)
+            .map_err(|error| anyhow::anyhow!("economics order binding failed: {error:?}"))?
+            != *request.economics_admission.order_binding()
+        {
+            return Err(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionError::EconomicsOrderMismatch
+                    .into(),
+            );
+        }
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
                 let permit = submit_admission.admit(&request)?;
@@ -1816,6 +1839,42 @@ mod tests {
     }
 
     #[test]
+    fn live_submit_rejects_price_change_after_economics_quote() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap(),
+        ));
+        let quoted_order = limit_order("O-19700101-000000-001-PRICE-BINDING-1");
+        let final_order =
+            limit_order_at("O-19700101-000000-001-PRICE-BINDING-1", Price::new(0.60, 2));
+        let intent = intent_for_order(&quoted_order);
+        let request = submit_request_for_order(&quoted_order, Decimal::new(50, 0));
+        let mut sink = RecordingVenueMutationSink::default();
+
+        let error = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                final_order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect_err("a changed final price requires a fresh economics admission");
+
+        assert_eq!(
+            error.to_string(),
+            "bolt-v3 submit admission final order no longer matches its sealed economics quote"
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+    }
+
+    #[test]
     fn live_risk_reducing_exit_rejects_when_clamp_invalidates_sealed_economics() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
         let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
@@ -2582,9 +2641,11 @@ mod tests {
         notional: Decimal,
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
-            economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
-                notional,
-            ),
+            economics_admission:
+                crate::bolt_v3_economics_runtime::test_economics_admission_with_binding(
+                    notional,
+                    economics_order_binding(order).expect("test order binding should serialize"),
+                ),
             strategy_id: "strategy-a".to_string(),
             execution_client_id: "execution_client".to_string(),
             client_order_id: order.client_order_id().to_string(),
@@ -2626,9 +2687,11 @@ mod tests {
         position_quantity: Decimal,
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
-            economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
-                Decimal::new(25, 1),
-            ),
+            economics_admission:
+                crate::bolt_v3_economics_runtime::test_economics_admission_with_binding(
+                    Decimal::new(25, 1),
+                    economics_order_binding(order).expect("test order binding should serialize"),
+                ),
             strategy_id: "strategy-a".to_string(),
             execution_client_id: "execution_client".to_string(),
             client_order_id: order.client_order_id().to_string(),
@@ -2954,6 +3017,10 @@ mod tests {
     }
 
     fn limit_order(client_order_id: &str) -> OrderAny {
+        limit_order_at(client_order_id, Price::new(0.50, 2))
+    }
+
+    fn limit_order_at(client_order_id: &str, price: Price) -> OrderAny {
         OrderAny::Limit(
             LimitOrder::new_checked(
                 TraderId::from("TRADER-001"),
@@ -2962,7 +3029,7 @@ mod tests {
                 ClientOrderId::from(client_order_id),
                 OrderSide::Buy,
                 Quantity::new(1.0, 2),
-                Price::new(0.50, 2),
+                price,
                 TimeInForce::Gtc,
                 None,
                 false,

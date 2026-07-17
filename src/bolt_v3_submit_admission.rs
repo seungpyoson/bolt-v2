@@ -33,6 +33,7 @@ use crate::bolt_v3_loss_governor::{
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
+use crate::integrations::nautilus::economics::economics_order_binding;
 use anyhow::Context;
 use nautilus_model::{
     data::QuoteTick,
@@ -3182,6 +3183,12 @@ pub fn build_submit_admission_request_from_order(
     let price = facts.price;
     let quantity = facts.quantity;
     let quote_request = economics_admission.request();
+    anyhow::ensure!(
+        economics_order_binding(input.order)
+            .map_err(|error| anyhow::anyhow!("economics order binding failed: {error:?}"))?
+            == *economics_admission.order_binding(),
+        "bolt-v3 economics admission final order binding does not match"
+    );
     anyhow::ensure!(
         quote_request.execution_client_id.as_str() == input.execution_client_id,
         "bolt-v3 economics admission execution client does not match final order"

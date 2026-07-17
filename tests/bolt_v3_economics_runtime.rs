@@ -5,7 +5,7 @@ use bolt_v2::{
         AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,
         AuthoritativeEdgeBasis, BoltV3EconomicsRuntime, ConfiguredEconomicsAdmissionSource,
         ConfiguredEconomicsSourcePolicy, EconomicsAdmissionIntent, EconomicsAdmissionQuoteIntent,
-        EconomicsAdmissionSource,
+        EconomicsAdmissionSource, EconomicsOrderBinding,
     },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence,
@@ -86,6 +86,7 @@ fn configured_source_resolves_the_one_published_surface_for_an_instrument() {
 
 fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
     EconomicsAdmissionIntent {
+        order_binding: test_order_binding(),
         edge_basis: EdgeBasisEvidence {
             policy_id: request.edge_basis_policy_id.clone(),
             policy_version: 1,
@@ -101,6 +102,12 @@ fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
         valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(),
         base_reservation_notional: decimal("5"),
     }
+}
+
+fn test_order_binding() -> EconomicsOrderBinding {
+    EconomicsOrderBinding::from_sha256(<sha2::Sha256 as sha2::Digest>::digest(
+        b"test-order-binding",
+    ))
 }
 
 #[test]
@@ -205,6 +212,7 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
     let admission = source
         .quote_admission(EconomicsAdmissionQuoteIntent {
             request,
+            order_binding: test_order_binding(),
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })
@@ -269,6 +277,7 @@ fn configured_source_rejects_dependencies_past_the_refresh_deadline() {
     let error = source
         .quote_admission(EconomicsAdmissionQuoteIntent {
             request,
+            order_binding: test_order_binding(),
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })
@@ -327,6 +336,7 @@ fn configured_source_rejects_maker_quote_shorter_than_resting_margin() {
     let error = source
         .quote_admission(EconomicsAdmissionQuoteIntent {
             request,
+            order_binding: test_order_binding(),
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })

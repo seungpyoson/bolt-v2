@@ -107,6 +107,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     valid_until_ns,
                 },
                 request: intent.request,
+                order_binding: intent.order_binding,
                 gross_expected_value: intent.gross_expected_value,
                 valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(
                 ),
@@ -267,6 +268,9 @@ fn sample_economics_admission_with_component(
     .quote_admission(
         bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
             request,
+            order_binding: bolt_v2::bolt_v3_economics_runtime::EconomicsOrderBinding::from_sha256(
+                <sha2::Sha256 as sha2::Digest>::digest(b"test-order-binding"),
+            ),
             gross_expected_value: Decimal::ONE,
             edge_basis: EdgeBasisEvidence {
                 policy_id: EdgeBasisPolicyId::new("test-edge-policy")

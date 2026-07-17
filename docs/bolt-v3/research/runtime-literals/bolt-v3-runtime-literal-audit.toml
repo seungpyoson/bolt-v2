@@ -5215,6 +5215,30 @@ reason = "This is a provider data-client TOML field-name allowlist entry; the ru
 [[allowed]]
 path = "src/bolt_v3_providers/market_data.rs"
 kind = "string"
+literal = '''"book_stale_check_interval_secs"'''
+context = '''"book_stale_check_interval_secs",'''
+classification = "provider_data_config_toml_field"
+reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/market_data.rs"
+kind = "string"
+literal = '''"book_stale_threshold_secs"'''
+context = '''"book_stale_threshold_secs",'''
+classification = "provider_data_config_toml_field"
+reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/market_data.rs"
+kind = "string"
+literal = '''"book_snapshot_timeout_secs"'''
+context = '''"book_snapshot_timeout_secs",'''
+classification = "provider_data_config_toml_field"
+reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/market_data.rs"
+kind = "string"
 literal = '''"environment"'''
 context = '''"environment",'''
 classification = "provider_data_config_toml_field"

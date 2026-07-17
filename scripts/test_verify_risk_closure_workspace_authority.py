@@ -574,6 +574,35 @@ impl RecoveryWorkspaceHandle {
             any("raw authority source must not have alternate source loaders" in error for error in errors)
         )
 
+    def test_rejects_normalized_alternate_raw_authority_loader(self) -> None:
+        (self.root / "src" / "consumer.rs").write_text(
+            '#[path = "bolt_v3_application_resource_ledger/./risk_closure_workspace.rs"]\n'
+            "mod shadow_authority;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("raw authority source must not have alternate source loaders" in error for error in errors)
+        )
+
+    def test_rejects_parent_normalized_alternate_raw_authority_loader(self) -> None:
+        nested = self.root / "src" / "nested"
+        nested.mkdir()
+        (nested / "consumer.rs").write_text(
+            '#[path = "../bolt_v3_application_resource_ledger/'
+            './risk_closure_workspace.rs"]\n'
+            "mod shadow_authority;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("raw authority source must not have alternate source loaders" in error for error in errors)
+        )
+
     def test_rejects_concatenated_raw_authority_include_loader(self) -> None:
         (self.root / "src" / "consumer.rs").write_text(
             'include!(concat!("bolt_v3_application_resource_ledger/", '

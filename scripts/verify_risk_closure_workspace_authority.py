@@ -28,8 +28,6 @@ OWNER = pathlib.Path(
 )
 LEDGER = pathlib.Path("src/bolt_v3_application_resource_ledger.rs")
 LIB = pathlib.Path("src/lib.rs")
-RAW_AUTHORITY_SOURCE_PATH = "bolt_v3_application_resource_ledger/risk_closure_workspace.rs"
-LEDGER_SOURCE_PATH = "bolt_v3_application_resource_ledger.rs"
 RAW_AUTHORITY_CONSTRUCTION = (
     "RiskClosureWorkspaceAuthority::for_disabled_application_resource_ledger"
 )
@@ -292,14 +290,18 @@ def _path_attribute_value_ranges(text: str) -> list[tuple[int, int]]:
     return ranges
 
 
-def _source_loader_targets(text: str) -> list[str]:
+def _source_loader_targets(
+    root: pathlib.Path,
+    source: pathlib.Path,
+    text: str,
+) -> list[pathlib.Path]:
     code = strip_rust_comments_and_literals(text)
     literals = _rust_string_literals(text)
-    targets = (
-        RAW_AUTHORITY_SOURCE_PATH,
-        LEDGER_SOURCE_PATH,
-    )
-    found: list[str] = []
+    protected = {
+        (root / OWNER).resolve(): OWNER,
+        (root / LEDGER).resolve(): LEDGER,
+    }
+    found: list[pathlib.Path] = []
 
     def inspect_range(start: int, end: int) -> None:
         joined = "".join(
@@ -307,7 +309,17 @@ def _source_loader_targets(text: str) -> list[str]:
             for literal_start, literal_end, value in literals
             if start <= literal_start and literal_end <= end
         )
-        found.extend(target for target in targets if target in joined)
+        if not joined:
+            return
+        target = pathlib.Path(joined)
+        resolved = (
+            target.resolve()
+            if target.is_absolute()
+            else (source.parent / target).resolve()
+        )
+        protected_target = protected.get(resolved)
+        if protected_target is not None:
+            found.append(protected_target)
 
     for start, end in _path_attribute_value_ranges(code):
         inspect_range(start, end)
@@ -827,16 +839,16 @@ def authority_errors(root: pathlib.Path) -> list[str]:
             continue
         active_text = production_text(text)
         code_text = strip_rust_comments_and_literals(active_text)
-        loader_targets = _source_loader_targets(active_text)
+        loader_targets = _source_loader_targets(root, path, active_text)
         raw_authority_source_loaders.extend(
             relative
             for target in loader_targets
-            if target == RAW_AUTHORITY_SOURCE_PATH
+            if target == OWNER
         )
         ledger_source_loaders.extend(
             relative
             for target in loader_targets
-            if target == LEDGER_SOURCE_PATH
+            if target == LEDGER
         )
         raw_authority_child_module_declarations.extend(
             (relative, (match.group("visibility") or "").strip())

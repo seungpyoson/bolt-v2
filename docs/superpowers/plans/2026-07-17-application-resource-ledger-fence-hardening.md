@@ -508,16 +508,17 @@ def test_rejects_normalized_alternate_raw_authority_loader(self) -> None:
         any("raw authority source must not have alternate source loaders" in error for error in errors)
     )
 
-def test_rejects_parent_normalized_alternate_ledger_loader(self) -> None:
+def test_rejects_parent_normalized_alternate_raw_authority_loader(self) -> None:
     nested = self.root / "src" / "nested"
     nested.mkdir()
     (nested / "consumer.rs").write_text(
-        '#[path = "../bolt_v3_application_resource_ledger.rs"]\nmod shadow_ledger;\n',
+        '#[path = "../bolt_v3_application_resource_ledger/'
+        './risk_closure_workspace.rs"]\nmod shadow_authority;\n',
         encoding="utf-8",
     )
     errors = verifier.authority_errors(self.root)
     self.assertTrue(
-        any("application ledger source must not have alternate module loaders" in error for error in errors)
+        any("raw authority source must not have alternate source loaders" in error for error in errors)
     )
 ```
 

@@ -231,24 +231,13 @@ fn duplicate_overfill_and_nonpositive_fills_are_not_deduplicated_or_rejected() {
 }
 
 #[test]
-fn hook_ownership_and_shadow_prohibition_remain_explicit() {
-    let strategy_source = include_str!("../mod.rs");
-    let data_actor = strategy_source
-        .split("impl DataActor for CompleteSetArbitrage")
-        .nth(1)
-        .and_then(|source| source.split("nautilus_strategy!").next())
-        .expect("DataActor implementation should precede strategy macro");
-    assert!(data_actor.contains("fn on_order_filled"));
+fn compiled_strategy_owns_the_order_filled_hook() {
+    let _hook: fn(&mut super::super::CompleteSetArbitrage, &OrderFilled) =
+        <super::super::CompleteSetArbitrage as nautilus_trading::Strategy>::on_order_filled;
+}
 
-    let strategy_hooks = strategy_source
-        .split("nautilus_strategy!(CompleteSetArbitrage, {")
-        .nth(1)
-        .and_then(|source| source.split("});").next())
-        .expect("strategy hook block should be present");
-    assert!(strategy_hooks.contains("fn on_order_accepted"));
-    assert!(strategy_hooks.contains("fn on_order_cancel_rejected"));
-    assert!(!strategy_hooks.contains("fn on_order_filled"));
-
+#[test]
+fn shadow_activation_prohibition_remains_explicit() {
     let envelope_source = include_str!("../../../bolt_v3_validate/strategy_envelope.rs");
     assert!(envelope_source.contains("validate_complete_set_activation_is_shadow_only"));
     assert!(envelope_source.contains("runtime.order_execution_mode must be shadow"));

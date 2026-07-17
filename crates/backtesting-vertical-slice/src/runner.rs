@@ -3262,6 +3262,7 @@ mod tests {
         let up_projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
             source_binding: "pmxt-free-r2-archive".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
             selected_token_id: ISSUE_789_UP_TOKEN.to_string(),
             gamma_markets: gamma_markets.clone(),
@@ -3271,6 +3272,7 @@ mod tests {
         let down_projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
             source_binding: "pmxt-free-r2-archive".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
             selected_token_id: ISSUE_789_DOWN_TOKEN.to_string(),
             gamma_markets,
@@ -3973,6 +3975,7 @@ mod tests {
             let projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
                 source_binding: "pmxt-free-r2-archive".to_string(),
                 usage_scope: SourceProofUsageScope::OneOffBackfillData,
+                drop_quotes_missing_side: true,
                 selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
                 selected_token_id: token.to_string(),
                 gamma_markets: gamma_markets.clone(),

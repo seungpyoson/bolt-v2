@@ -1550,7 +1550,7 @@ mod tests {
         let spot_sbe = binance_reference_client();
         assert_eq!(
             new_risk_market_data_available("binance_spot_sbe", &spot_sbe),
-            Ok(false)
+            Ok(true)
         );
 
         let mut spot_json = spot_sbe.clone();
@@ -1566,8 +1566,8 @@ mod tests {
             );
         assert_eq!(
             new_risk_market_data_available("binance_spot_json", &spot_json),
-            Ok(false),
-            "JSON WebSocket mode does not change the pinned Spot HTTP SBE instrument decoder"
+            Ok(true),
+            "the pinned Spot HTTP SBE instrument decoder remains available in JSON WebSocket mode"
         );
 
         let mut futures = spot_sbe;

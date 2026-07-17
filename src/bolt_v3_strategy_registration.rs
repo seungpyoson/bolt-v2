@@ -642,7 +642,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transport_membership_waives_only_explicitly_unavailable_sources() {
+    fn transport_membership_requires_every_available_source() {
         let loaded =
             crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
                 .expect("production config should load");
@@ -663,23 +663,23 @@ mod tests {
             .map(|source| source.data_client_id)
             .collect::<BTreeSet<_>>();
 
+        let missing =
+            missing_realized_volatility_node_transport_memberships(surfaces, &runtime, &registered);
+        assert_eq!(missing.len(), 1);
         assert!(
-            missing_realized_volatility_node_transport_memberships(
-                surfaces,
-                &runtime,
-                &registered,
-            )
-            .is_empty(),
-            "the explicit unavailable Binance source should receive the narrow startup waiver"
+            missing
+                .iter()
+                .any(|entry| entry.contains("binance_spot_data")),
+            "the capability-available Binance source must stay loud when its transport is absent: {missing:#?}"
         );
 
         registered.remove(&ClientId::from("okx_data"));
         let missing =
             missing_realized_volatility_node_transport_memberships(surfaces, &runtime, &registered);
-        assert_eq!(missing.len(), 1);
+        assert_eq!(missing.len(), 2);
         assert!(
             missing.iter().any(|entry| entry.contains("okx_data")),
-            "an available source must stay loud even if another derivation omits it: {missing:#?}"
+            "every available source must stay loud when its transport is absent: {missing:#?}"
         );
     }
 }

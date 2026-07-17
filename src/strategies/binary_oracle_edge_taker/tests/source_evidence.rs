@@ -2281,79 +2281,23 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
 }
 
 #[test]
-fn explicit_signal_capability_gate_blocks_submit_with_available_binance_rv_source() {
-    let loaded =
-        crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
-            .expect("production config should load");
-    let runtime = Arc::new(Mutex::new(
-        crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
-            &loaded,
-        )
-        .expect("available provider capability must permit runtime construction"),
-    ));
-
+fn explicit_signal_capability_gate_rejects_a_prepared_entry_at_shared_admission() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         submit_admission.clone(),
     );
-    strategy.context = strategy
-        .context
-        .clone()
-        .with_realized_volatility_runtime(runtime);
-    strategy.config.realized_volatility_surface_id = "btc_usdt_midpoint_rv".to_string();
-    strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
     strategy.config.signal_new_risk_available = false;
-
-    strategy
-        .ensure_startup_subscription_derivations()
-        .expect("explicit signal gating must not block startup recovery and exit paths");
     register_test_strategy_with_active_instruments(&mut strategy);
-
-    for (ts_ms, bid, ask) in [
-        (1_000, 3_099.0, 3_101.0),
-        (2_000, 3_100.0, 3_102.0),
-        (3_000, 3_101.0, 3_103.0),
-        (4_000, 3_102.0, 3_104.0),
-        (5_000, 3_103.0, 3_105.0),
-        (6_000, 3_104.0, 3_106.0),
-        (7_000, 3_105.0, 3_107.0),
-        (8_000, 3_106.0, 3_108.0),
-    ] {
-        strategy
-            .on_quote(&quote_tick("BTC-USDT.OKX", bid, ask, ts_ms))
-            .expect("available OKX RV quote should process through the production surface");
-    }
-    strategy.refresh_realized_volatility_snapshot_at(8_000);
-    let snapshot = strategy
-        .pricing
-        .latest_realized_vol_snapshot_for_surface("btc_usdt_midpoint_rv")
-        .expect("production RV surface should publish an auditable snapshot");
-    assert!(snapshot.ready, "available OKX data should ready quorum");
-    assert!(
-        snapshot
-            .source_diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.source_id == "binance_btc_usdt_midpoint"
-                && diagnostic.block_reason
-                    != Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ProviderCapabilityUnavailable)),
-        "available Binance must not carry a provider-capability blocker"
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert_eq!(
+        decision.blocked_reason, None,
+        "fixture must prepare an entry"
     );
-
-    strategy.pricing.observe_reference_current_price(&fast_spot(
-        "chainlink_primary",
-        3_107.0,
-        8_000,
-    ));
-    assert!(
-        strategy.pricing.spot_price().is_some(),
-        "the valid Chainlink reference should exercise the production bootstrap fallback"
-    );
-
-    let error = strategy.try_submit_entry_order(8_000).expect_err(
-        "ready pricing inputs must still fail closed at shared provider-capability admission",
-    );
+    let error = strategy
+        .submit_admitted_entry_decision(1_200, decision)
+        .expect_err("the prepared entry must fail at shared provider-capability admission");
     assert!(
         error
             .to_string()

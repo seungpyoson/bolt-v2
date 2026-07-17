@@ -691,6 +691,62 @@ fn shared_nt_order_template_preserves_configured_trigger_and_trailing_types() {
 }
 
 #[test]
+fn shared_trailing_stop_market_normalizes_activation_and_trigger_prices() {
+    let mut factory = generic_order_factory();
+    let activation_price = trigger_price_below_limit();
+    let trigger_price = trigger_price_above_limit();
+
+    let mut activation_only = valid_template_for_direct_validation(OrderType::TrailingStopMarket);
+    activation_only.activation_price = Some(activation_price);
+    activation_only.trigger_price = None;
+    let order = build_nt_order(
+        &mut factory,
+        "generic_order",
+        &activation_only,
+        base_inputs(OrderSide::Buy),
+    )
+    .expect("activation-only trailing stop should build");
+    assert_eq!(order.activation_price(), Some(activation_price));
+    assert_eq!(order.trigger_price(), Some(activation_price));
+
+    let mut trigger_only = valid_template_for_direct_validation(OrderType::TrailingStopMarket);
+    trigger_only.activation_price = None;
+    trigger_only.trigger_price = Some(trigger_price);
+    let order = build_nt_order(
+        &mut factory,
+        "generic_order",
+        &trigger_only,
+        base_inputs(OrderSide::Buy),
+    )
+    .expect("trigger-only trailing stop should build");
+    assert_eq!(order.activation_price(), None);
+    assert_eq!(order.trigger_price(), Some(trigger_price));
+
+    let mut distinct = valid_template_for_direct_validation(OrderType::TrailingStopMarket);
+    distinct.activation_price = Some(activation_price);
+    distinct.trigger_price = Some(trigger_price);
+    let order = build_nt_order(
+        &mut factory,
+        "generic_order",
+        &distinct,
+        base_inputs(OrderSide::Buy),
+    )
+    .expect("distinct activation and trigger prices should build");
+    assert_eq!(order.activation_price(), Some(activation_price));
+    assert_eq!(order.trigger_price(), Some(trigger_price));
+
+    let mut neither = valid_template_for_direct_validation(OrderType::TrailingStopMarket);
+    neither.activation_price = None;
+    neither.trigger_price = None;
+    assert_build_error_contains(
+        &mut factory,
+        &neither,
+        OrderSide::Buy,
+        "trigger_price or generic_order_activation_price is required",
+    );
+}
+
+#[test]
 fn direct_nt_order_template_validation_rejects_market_like_post_only_orders() {
     for (order_type, expected) in [
         (

@@ -574,3 +574,79 @@ fn quote_trade_index_requests(
         .map(|request| (request.instrument_id, Some(request.data_client_id)))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bolt_v3_realized_volatility::{
+        RealizedVolAggregation, RealizedVolEstimatorConfig, RealizedVolSourceConfig,
+    };
+
+    const SURFACE_ID: &str = "capability-test-surface";
+    const SOURCE_ID: &str = "capability-test-source";
+
+    fn config() -> RealizedVolEngineConfig {
+        RealizedVolEngineConfig {
+            surface_id: SURFACE_ID.to_string(),
+            window_ms: 4_000,
+            sampling_interval_ms: 1_000,
+            min_ready_sources: 1,
+            max_source_age_ms: 500,
+            max_inter_sample_gap_ms: 2_000,
+            min_coverage_ratio: 0.75,
+            max_cross_source_dispersion: 0.50,
+            seconds_per_annum: 31_536_000.0,
+            aggregation: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+            estimator: RealizedVolEstimatorConfig::measured(),
+            sources: vec![RealizedVolSourceConfig {
+                source_id: SOURCE_ID.to_string(),
+                data_client_id: "capability-test-client".to_string(),
+                instrument_id: "CAPABILITY-TEST.TEST".to_string(),
+                source_class: RealizedVolSourceClass::SpotQuote,
+                sample_kind: RealizedVolSampleKind::Midpoint,
+                enabled: true,
+                counts_toward_quorum: true,
+                canonical_base_asset: "CAPABILITY-TEST".to_string(),
+                canonical_quote_asset: "TEST".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn explicitly_unavailable_source_is_suppressed_and_diagnostic_only() {
+        let unavailable = BTreeSet::from([(SURFACE_ID.to_string(), SOURCE_ID.to_string())]);
+        let mut runtime = RealizedVolSurfaceRuntime::from_configs_with_unavailable_sources(
+            BTreeMap::from([(SURFACE_ID.to_string(), config())]),
+            unavailable,
+        )
+        .expect("synthetic unavailable-capability runtime should build");
+
+        assert!(
+            runtime
+                .subscription_requests_for_surface(SURFACE_ID)
+                .is_empty()
+        );
+        assert!(runtime.source_new_risk_capability_unavailable(SURFACE_ID, SOURCE_ID));
+        assert!(runtime.surface_subscriptions_blocked_only_by_provider_capability(SURFACE_ID));
+
+        let snapshot = runtime
+            .refresh_surface_at(SURFACE_ID, NtStrategyClockMs::new(1_000))
+            .expect("configured surface should remain auditable");
+        assert!(
+            snapshot
+                .blocked_reasons
+                .contains(&RealizedVolBlockReason::ProviderCapabilityUnavailable)
+        );
+        let diagnostic = snapshot
+            .source_diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.source_id == SOURCE_ID)
+            .expect("unavailable source must remain visible in diagnostics");
+        assert!(!diagnostic.counts_toward_quorum);
+        assert_eq!(diagnostic.status, RealizedVolSourceStatus::DiagnosticOnly);
+        assert_eq!(
+            diagnostic.block_reason,
+            Some(RealizedVolBlockReason::ProviderCapabilityUnavailable)
+        );
+    }
+}

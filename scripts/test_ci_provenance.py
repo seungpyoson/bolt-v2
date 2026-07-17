@@ -47,6 +47,7 @@ ra001a_durable_tracer_max_job_minutes = 120
 [backtester.ra001a_durable_tracer]
 max_registry_packs = 64
 max_total_selected_object_bytes = 1073741824
+max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
 
@@ -267,6 +268,7 @@ host-health = "github_hosted"
 termination_grace_seconds = 30
 max_wall_seconds = 3600
 max_total_selected_object_bytes = 1073741824
+max_worker_executable_bytes = 1073741824
 max_registry_packs = 64
 
 [backtester.ra001a_durable_tracer.checkout]
@@ -898,6 +900,11 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "max_total_selected_object_bytes = true",
             1,
         ),
+        "backtester.ra001a_durable_tracer.max_worker_executable_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_worker_executable_bytes = 1073741824",
+            "max_worker_executable_bytes = 0",
+            1,
+        ),
         "backtester.ra001a_durable_tracer.termination_grace_seconds must be a positive integer": CONFIG_TOML.replace(
             "termination_grace_seconds = 30",
             "termination_grace_seconds = 0",
@@ -1033,6 +1040,7 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         timeout.ra001a_durable_tracer_max_job_minutes,
         timeout.ra001a_durable_tracer_max_registry_packs,
         timeout.ra001a_durable_tracer_max_total_selected_object_bytes,
+        timeout.ra001a_durable_tracer_max_worker_executable_bytes,
         timeout.ra001a_durable_tracer_max_wall_seconds,
         timeout.ra001a_durable_tracer_termination_grace_seconds,
         timeout.ra001a_allowed_ignored_runtime_roots,
@@ -1043,6 +1051,7 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         360,
         120,
         64,
+        1073741824,
         1073741824,
         3600,
         30,
@@ -1113,6 +1122,7 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
         expected_limits = (
             64,
             1073741824,
+            1073741824,
             3600,
             30,
             ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
@@ -1122,6 +1132,7 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
         actual_limits = (
             result.ra001a_max_registry_packs,
             result.ra001a_max_total_selected_object_bytes,
+            result.ra001a_max_worker_executable_bytes,
             result.ra001a_max_wall_seconds,
             result.ra001a_termination_grace_seconds,
             result.ra001a_allowed_ignored_runtime_roots,
@@ -3009,6 +3020,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             expected_ra001a_limits = {
                 "ra001a_max_registry_packs": "64",
                 "ra001a_max_total_selected_object_bytes": "1073741824",
+                "ra001a_max_worker_executable_bytes": "1073741824",
                 "ra001a_max_wall_seconds": "3600",
                 "ra001a_termination_grace_seconds": "30",
             }

@@ -166,6 +166,7 @@ class BacktesterTestArchiveTimeoutConfig:
     ra001a_durable_tracer_max_job_minutes: int
     ra001a_durable_tracer_max_registry_packs: int
     ra001a_durable_tracer_max_total_selected_object_bytes: int
+    ra001a_durable_tracer_max_worker_executable_bytes: int
     ra001a_durable_tracer_max_wall_seconds: int
     ra001a_durable_tracer_termination_grace_seconds: int
     ra001a_allowed_ignored_runtime_roots: tuple[str, ...]
@@ -227,6 +228,7 @@ class CiPolicyResult:
     backtester_issue_789_timeout_minutes: int
     ra001a_max_registry_packs: int
     ra001a_max_total_selected_object_bytes: int
+    ra001a_max_worker_executable_bytes: int
     ra001a_max_wall_seconds: int
     ra001a_termination_grace_seconds: int
     ra001a_allowed_ignored_runtime_roots: str
@@ -335,6 +337,11 @@ def load_backtester_test_archive_timeout_config(
         "max_total_selected_object_bytes",
         tracer_prefix,
     )
+    max_worker_executable_bytes = require_positive_int(
+        tracer,
+        "max_worker_executable_bytes",
+        tracer_prefix,
+    )
     max_wall_seconds = require_positive_int(tracer, "max_wall_seconds", tracer_prefix)
     termination_grace_seconds = require_positive_int(
         tracer,
@@ -399,6 +406,7 @@ def load_backtester_test_archive_timeout_config(
         ra001a_durable_tracer_max_job_minutes=tracer_minutes,
         ra001a_durable_tracer_max_registry_packs=max_registry_packs,
         ra001a_durable_tracer_max_total_selected_object_bytes=max_total_selected_object_bytes,
+        ra001a_durable_tracer_max_worker_executable_bytes=max_worker_executable_bytes,
         ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
         ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
         ra001a_allowed_ignored_runtime_roots=allowed_ignored_runtime_roots,
@@ -1536,6 +1544,9 @@ def evaluate_ci_policy(
         ra001a_max_registry_packs=timeout.ra001a_durable_tracer_max_registry_packs,
         ra001a_max_total_selected_object_bytes=(
             timeout.ra001a_durable_tracer_max_total_selected_object_bytes
+        ),
+        ra001a_max_worker_executable_bytes=(
+            timeout.ra001a_durable_tracer_max_worker_executable_bytes
         ),
         ra001a_max_wall_seconds=timeout.ra001a_durable_tracer_max_wall_seconds,
         ra001a_termination_grace_seconds=(
@@ -3374,6 +3385,10 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "ra001a_max_total_selected_object_bytes="
                 f"{result.ra001a_max_total_selected_object_bytes}"
+            )
+            print(
+                "ra001a_max_worker_executable_bytes="
+                f"{result.ra001a_max_worker_executable_bytes}"
             )
             print(f"ra001a_max_wall_seconds={result.ra001a_max_wall_seconds}")
             print(

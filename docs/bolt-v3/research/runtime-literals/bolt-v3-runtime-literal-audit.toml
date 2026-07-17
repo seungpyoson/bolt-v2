@@ -2013,6 +2013,30 @@ classification = "diagnostic_template"
 reason = "This is an error-display template for a failed SSM secret resolution without an exposed path, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "number"
+literal = '''32'''
+context = '''bytes: Zeroizing<[u8; 32]>,'''
+classification = "evm_private_key_encoding_width"
+reason = "A secp256k1 private key is structurally fixed at 32 bytes; this is a type width, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "number"
+literal = '''32'''
+context = '''pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {'''
+classification = "evm_private_key_encoding_width"
+reason = "A secp256k1 private key is structurally fixed at 32 bytes; this is a type width, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "number"
+literal = '''32'''
+context = '''pub(crate) fn as_bytes(&self) -> &[u8; 32] {'''
+classification = "evm_private_key_encoding_width"
+reason = "A secp256k1 private key is structurally fixed at 32 bytes; this is a type width, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
@@ -21140,72 +21164,8 @@ reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-la
 [[allowed]]
 path = "src/bolt_v3_polymarket_redemption.rs"
 kind = "string"
-literal = '''"signer_private_key"'''
-context = '''("signer_private_key", self.signer_private_key.as_str()),'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"builder_api_key"'''
-context = '''("builder_api_key", self.builder_api_key.as_str()),'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"builder_api_secret"'''
-context = '''("builder_api_secret", self.builder_api_secret.as_str()),'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"builder_passphrase"'''
-context = '''("builder_passphrase", self.builder_passphrase.as_str()),'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
 literal = '''"redemption request length overflowed"'''
 context = '''Self::EncodingOverflow => formatter.write_str("redemption request length overflowed"),'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"signer_private_key"'''
-context = '''"signer_private_key",'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"builder_api_key"'''
-context = '''"builder_api_key",'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"builder_api_secret"'''
-context = '''"builder_api_secret",'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"builder_passphrase"'''
-context = '''"builder_passphrase",'''
 classification = "polymarket_redemption_protocol_or_structural_constant"
 reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
 
@@ -21308,14 +21268,6 @@ reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-la
 [[allowed]]
 path = "src/bolt_v3_polymarket_redemption.rs"
 kind = "string"
-literal = '''"output_asset"'''
-context = '''(config.output_asset != Address::ZERO, "output_asset"),'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
 literal = '''"standard_adapter_target"'''
 context = '''"standard_adapter_target",'''
 classification = "polymarket_redemption_protocol_or_structural_constant"
@@ -21350,14 +21302,6 @@ path = "src/bolt_v3_polymarket_redemption.rs"
 kind = "string"
 literal = '''"maximum_safe_nonce_decimal_digits"'''
 context = '''"maximum_safe_nonce_decimal_digits",'''
-classification = "polymarket_redemption_protocol_or_structural_constant"
-reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption.rs"
-kind = "string"
-literal = '''"aws_region"'''
-context = '''(!config.aws_region.is_empty(), "aws_region"),'''
 classification = "polymarket_redemption_protocol_or_structural_constant"
 reason = "Fixed ABI, EIP-712, SAFE builder-schema, encoding-width, validation-label, or fail-closed diagnostic constant for deterministic request preparation; operator/runtime values come from the strict generated TOML projection."
 
@@ -21916,14 +21860,6 @@ reason = "Generated projection of the strict Polymarket redemption runtime and s
 [[allowed]]
 path = "src/bolt_v3_polymarket_redemption/generated.rs"
 kind = "string"
-literal = '''"0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"'''
-context = '''output_asset: alloy_primitives::address!("0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"),'''
-classification = "generated_polymarket_redemption_toml_projection"
-reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption/generated.rs"
-kind = "string"
 literal = '''"0xada100db00ca00073811820692005400218fce1f"'''
 context = '''"0xada100db00ca00073811820692005400218fce1f"'''
 classification = "generated_polymarket_redemption_toml_projection"
@@ -22014,46 +21950,6 @@ path = "src/bolt_v3_polymarket_redemption/generated.rs"
 kind = "number"
 literal = '''78'''
 context = '''maximum_safe_nonce_decimal_digits: 78,'''
-classification = "generated_polymarket_redemption_toml_projection"
-reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption/generated.rs"
-kind = "string"
-literal = '''"eu-west-2"'''
-context = '''aws_region: "eu-west-2",'''
-classification = "generated_polymarket_redemption_toml_projection"
-reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption/generated.rs"
-kind = "string"
-literal = '''"/bolt/polymarket/private-key"'''
-context = '''signer_private_key_ssm_path: "/bolt/polymarket/private-key",'''
-classification = "generated_polymarket_redemption_toml_projection"
-reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption/generated.rs"
-kind = "string"
-literal = '''"/bolt/polymarket/builder/api-key"'''
-context = '''builder_api_key_ssm_path: "/bolt/polymarket/builder/api-key",'''
-classification = "generated_polymarket_redemption_toml_projection"
-reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption/generated.rs"
-kind = "string"
-literal = '''"/bolt/polymarket/builder/api-secret"'''
-context = '''builder_api_secret_ssm_path: "/bolt/polymarket/builder/api-secret",'''
-classification = "generated_polymarket_redemption_toml_projection"
-reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
-
-[[allowed]]
-path = "src/bolt_v3_polymarket_redemption/generated.rs"
-kind = "string"
-literal = '''"/bolt/polymarket/builder/passphrase"'''
-context = '''builder_passphrase_ssm_path: "/bolt/polymarket/builder/passphrase",'''
 classification = "generated_polymarket_redemption_toml_projection"
 reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
 

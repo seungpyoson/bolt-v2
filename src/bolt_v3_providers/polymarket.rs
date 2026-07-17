@@ -51,6 +51,7 @@ use std::{
     time::Duration,
 };
 
+use alloy_signer_local::PrivateKeySigner;
 use nautilus_core::string::secret::REDACTED;
 use nautilus_model::{identifiers::AccountId, types::Currency};
 use nautilus_polymarket::{
@@ -92,7 +93,7 @@ use crate::{
         ProviderVenueTruthRuntimeSource, ProviderVenueTruthSourceContext, ResolvedClientSecrets,
         SsmSecretResolver,
     },
-    bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_secrets::{BoltV3SecretError, ResolvedEvmSigningKey, resolve_field},
     bolt_v3_wire_boundary::TransportBackend,
 };
 
@@ -275,9 +276,11 @@ pub struct ResolvedBoltV3PolymarketSecrets {
     /// Each secret field is wrapped in [`Zeroizing`] so the individual secret
     /// bytes are scrubbed on drop even when a field is moved out of the
     /// container — per-field zeroize in addition to the container-level
-    /// `ZeroizeOnDrop`. All four fields deref to `String`; the redacting
-    /// `Debug` impl below keeps them out of logs.
+    /// `ZeroizeOnDrop`. The four text fields deref to `String`; the fixed-width
+    /// signing view is also zeroized. The redacting `Debug` impl below keeps
+    /// every representation out of logs.
     pub private_key: Zeroizing<String>,
+    pub(crate) redemption_signing_key: ResolvedEvmSigningKey,
     pub api_key: Zeroizing<String>,
     /// Canonical URL-safe base64 `api_secret` (padded) handed to the NT
     /// Polymarket credential, which decodes it with the padded `URL_SAFE`
@@ -289,6 +292,12 @@ pub struct ResolvedBoltV3PolymarketSecrets {
     /// [`redaction_values`](Self::redaction_values), which redacts both forms.
     pub api_secret: Zeroizing<String>,
     pub passphrase: Zeroizing<String>,
+}
+
+impl ResolvedBoltV3PolymarketSecrets {
+    pub(crate) fn redemption_signing_key(&self) -> &ResolvedEvmSigningKey {
+        &self.redemption_signing_key
+    }
 }
 
 impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
@@ -583,15 +592,15 @@ pub fn resolve_secrets(
         &secrets.private_key_ssm_path,
         resolver,
     )?;
-    if let Err(reason) = validate_private_key_shape(&private_key) {
-        return Err(BoltV3SecretError {
+    let redemption_signing_key = decode_private_key(&private_key).map_err(|reason| {
+        BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: "private_key_ssm_path".to_string(),
             source: format!(
-                "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter: {reason}"
+                "resolved polymarket private_key is not valid EVM signing material accepted by the configured provider consumers: {reason}"
             ),
-        });
-    }
+        }
+    })?;
     let api_key = resolve_field(
         context.client_key,
         "api_key_ssm_path",
@@ -607,7 +616,7 @@ pub fn resolve_secrets(
         resolver,
     )?;
     let api_secret = normalize_api_secret_padding(api_secret_raw);
-    // Symmetric with `validate_private_key_shape` (Polymarket) and
+    // Symmetric with `decode_private_key` (Polymarket) and
     // `validate_binance_api_secret_shape` (Binance): reject api_secret material
     // the NT Polymarket credential cannot decode BEFORE it is stored, so a
     // malformed secret fails loud at SSM resolution rather than deep inside NT
@@ -630,6 +639,7 @@ pub fn resolve_secrets(
     )?;
     Ok(Arc::new(ResolvedBoltV3PolymarketSecrets {
         private_key: Zeroizing::new(private_key),
+        redemption_signing_key,
         api_key: Zeroizing::new(api_key),
         api_secret: Zeroizing::new(api_secret),
         passphrase: Zeroizing::new(passphrase),
@@ -682,10 +692,14 @@ fn parse_secrets_config(
         })
 }
 
-fn validate_private_key_shape(private_key: &str) -> Result<(), String> {
-    EvmPrivateKey::new(private_key)
-        .map(|_| ())
-        .map_err(|source| source.to_string())
+pub(crate) fn decode_private_key(private_key: &str) -> Result<ResolvedEvmSigningKey, String> {
+    let private_key = EvmPrivateKey::new(private_key).map_err(|source| source.to_string())?;
+    let bytes = private_key
+        .as_bytes()
+        .try_into()
+        .map_err(|_| "EVM private key must be exactly 32 bytes".to_string())?;
+    PrivateKeySigner::from_slice(&bytes).map_err(|source| source.to_string())?;
+    Ok(ResolvedEvmSigningKey::from_bytes(bytes))
 }
 
 fn normalize_api_secret_padding(mut api_secret: String) -> String {
@@ -700,7 +714,7 @@ fn normalize_api_secret_padding(mut api_secret: String) -> String {
 /// `Credential::new` uses, so an unusable secret is rejected at SSM resolution
 /// time rather than surfacing as an opaque NT client-construction failure
 /// later. Mirrors the resolve-time shape checks for `private_key`
-/// ([`validate_private_key_shape`]) and the Binance `api_secret`
+/// ([`decode_private_key`]) and the Binance `api_secret`
 /// (`binance::validate_binance_api_secret_shape`).
 fn validate_api_secret_shape(api_secret: &str) -> Result<(), String> {
     use base64::Engine as _;
@@ -1332,6 +1346,12 @@ fn map_execution(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_key_snapshot_rejects_an_invalid_scalar() {
+        let zero_key = format!("0x{}", "00".repeat(32));
+        assert!(decode_private_key(&zero_key).is_err());
+    }
 
     #[test]
     fn market_slug_filters_include_static_binary_event_targets_for_matching_client() {

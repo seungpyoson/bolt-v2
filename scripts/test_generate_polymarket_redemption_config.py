@@ -18,7 +18,6 @@ root_client = "polymarket_main"
 [redemption]
 chain_id = 137
 collateral_asset = "0x4444444444444444444444444444444444444444"
-output_asset = "0x5555555555555555555555555555555555555555"
 standard_adapter_target = "0x2222222222222222222222222222222222222222"
 negative_risk_adapter_target = "0x3333333333333333333333333333333333333333"
 parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -56,8 +55,8 @@ repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
 deployment_source_url = "https://docs.polymarket.com/resources/contracts"
 deployment_observed_date = "2026-07-16"
-deployment_fact_format_version = 2
-deployment_fact_sha256 = "284dac97c9c9755937402d6777b5a37f02af7f3dc4edbca25dfa54ee5f759c55"
+deployment_fact_format_version = 3
+deployment_fact_sha256 = "46cca35f1b81ab7ef3cdceacee706288ee54114f8203b1532ff5d647e36fb9cb"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
 standard_source_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
@@ -117,10 +116,9 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             'safe_address: alloy_primitives::address!("0x1111111111111111111111111111111111111111")',
             rendered,
         )
-        self.assertIn(
-            'signer_private_key_ssm_path: "/bolt/polymarket/redemption/signer-private-key"',
-            rendered,
-        )
+        self.assertNotIn("signer_private_key_ssm_path", rendered)
+        self.assertNotIn("builder_api_key_ssm_path", rendered)
+        self.assertNotIn("output_asset", rendered)
         self.assertIn("function_selector: [1, 183, 3, 124]", rendered)
         self.assertIn("dummy_index_sets: [", rendered)
         self.assertIn("U256::from_limbs([1, 0, 0, 0])", rendered)
@@ -134,6 +132,16 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
     def test_unknown_runtime_field_is_rejected(self) -> None:
         with self.assertRaisesRegex(generator.ConfigError, "unknown field"):
             self.load(RUNTIME_TOML.replace("chain_id = 137", "chain_id = 137\nsecond_chain_id = 137"))
+
+    def test_output_asset_is_rejected_as_a_dead_runtime_authority(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "unknown field"):
+            self.load(
+                RUNTIME_TOML.replace(
+                    'collateral_asset = "0x4444444444444444444444444444444444444444"',
+                    'collateral_asset = "0x4444444444444444444444444444444444444444"\n'
+                    'output_asset = "0x5555555555555555555555555555555555555555"',
+                )
+            )
 
     def test_wallet_and_signer_are_derived_from_root_client(self) -> None:
         changed = ROOT_TOML.replace(
@@ -193,10 +201,6 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             (
                 "0x4444444444444444444444444444444444444444",
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-            (
-                "0x5555555555555555555555555555555555555555",
-                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ),
             (
                 "0x0000000000000000000000000000000000000000000000000000000000000000",

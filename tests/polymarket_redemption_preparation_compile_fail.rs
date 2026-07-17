@@ -26,7 +26,7 @@ serde_json = "1"
     .expect("temporary manifest must write");
     fs::write(temporary.path().join("src/main.rs"), source).expect("temporary source must write");
 
-    Command::new(env!("CARGO"))
+    Command::new("cargo")
         .args(["check", "--offline", "--quiet"])
         .env("CARGO_TARGET_DIR", target_dir)
         .current_dir(temporary.path())
@@ -60,12 +60,13 @@ const PRELUDE: &str = r#"
 use bolt_v2::{
     bolt_v3_polymarket_redemption::{
         AttemptKind, RedemptionPreparationConfig, RedemptionRequestInput,
-        RedemptionPreparationPermit, ResolvedRedemptionCredentials,
+        RedemptionPreparationPermit,
         prepare_redemption_request,
     },
     bolt_v3_risk_closure_workspace::{
         RiskClosureWorkspaceLease, RiskClosureWorkspaceReservation,
     },
+    bolt_v3_secrets::ResolvedEvmSigningKey,
 };
 "#;
 
@@ -74,7 +75,7 @@ fn compile_fail_harness_positive_control() {
     assert_compiles(
         "redemption_compile_positive_control",
         &format!(
-            "{PRELUDE}\nfn accepts(_: RedemptionPreparationPermit, _: &mut RiskClosureWorkspaceLease, _: &RedemptionPreparationConfig, _: &ResolvedRedemptionCredentials, _: RedemptionRequestInput, _: AttemptKind) {{}}\nfn main() {{}}\n"
+            "{PRELUDE}\nfn accepts(_: RedemptionPreparationPermit, _: &mut RiskClosureWorkspaceLease, _: &RedemptionPreparationConfig, _: &ResolvedEvmSigningKey, _: RedemptionRequestInput, _: AttemptKind) {{}}\nfn main() {{}}\n"
         ),
     );
 }
@@ -120,7 +121,7 @@ fn forbidden(
     permit: RedemptionPreparationPermit,
     reservation: &mut RiskClosureWorkspaceReservation,
     config: &RedemptionPreparationConfig,
-    credentials: &ResolvedRedemptionCredentials,
+    credentials: &ResolvedEvmSigningKey,
     input: RedemptionRequestInput,
 ) {{
     prepare_redemption_request(
@@ -153,7 +154,7 @@ fn forbidden<'a>(
     permit: RedemptionPreparationPermit,
     lease: &'a mut RiskClosureWorkspaceLease,
     config: &RedemptionPreparationConfig,
-    credentials: &ResolvedRedemptionCredentials,
+    credentials: &ResolvedEvmSigningKey,
     input: RedemptionRequestInput,
 ) -> &'a [u8] {{
     let mut escaped: Option<&'a [u8]> = None;
@@ -179,17 +180,17 @@ fn main() {{}}
 }
 
 #[test]
-fn resolved_credentials_cannot_be_serialized() {
+fn resolved_signing_key_cannot_be_serialized() {
     assert_compile_fails(
         "resolved_credentials_cannot_serialize",
         &format!(
             r#"{PRELUDE}
-fn forbidden(credentials: &ResolvedRedemptionCredentials) {{
+fn forbidden(credentials: &ResolvedEvmSigningKey) {{
     let _ = serde_json::to_string(credentials).unwrap();
 }}
 fn main() {{}}
 "#,
         ),
-        &["the trait bound `ResolvedRedemptionCredentials: serde::Serialize` is not satisfied"],
+        &["the trait bound `ResolvedEvmSigningKey: serde::Serialize` is not satisfied"],
     );
 }

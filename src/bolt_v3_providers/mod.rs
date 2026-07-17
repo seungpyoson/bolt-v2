@@ -1836,6 +1836,9 @@ mod tests {
             "polymarket_main".to_string(),
             Arc::new(polymarket::ResolvedBoltV3PolymarketSecrets {
                 private_key: zeroize::Zeroizing::new(sentinel.to_string()),
+                redemption_signing_key: crate::bolt_v3_secrets::ResolvedEvmSigningKey::from_bytes(
+                    Default::default(),
+                ),
                 api_key: zeroize::Zeroizing::new("poly-api-key".to_string()),
                 api_secret: zeroize::Zeroizing::new("YWJj".to_string()),
                 passphrase: zeroize::Zeroizing::new("poly-passphrase".to_string()),

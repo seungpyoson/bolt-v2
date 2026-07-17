@@ -26,7 +26,17 @@ TOML authority checks walk parsed key trees. Comments, whitespace, file layout, 
 
 ### Secret-output finding
 
-Resolved credentials retain private fields, zeroizing storage, a redacted `Debug` implementation, and no serialization implementation. The implementation contains no logging or output sink. Evidence is direct inspection plus compile-fail serialization proof and internal adversarial review, not a predictive macro-name scanner.
+The resolved signing-key view retains private fields, zeroizing storage, no `Debug` implementation, and no serialization implementation. The provider snapshot retains its redacted `Debug` implementation. The implementation contains no logging or output sink. Evidence is direct inspection plus compile-fail serialization proof and internal adversarial review, not a predictive macro-name scanner.
+
+### One resolved signer snapshot
+
+Polymarket SSM resolution remains owned by the existing provider boundary. That boundary resolves the private key once, validates it once, and retains a neutral opaque `ResolvedEvmSigningKey` inside the provider snapshot alongside the exact resolved string needed by existing NT consumers and redaction scans. Redemption preparation borrows that stored signing-key view; it performs no SSM lookup, does not depend on the concrete provider type, and has no credential fallback.
+
+Builder credentials remain grouped in TOML but are not resolved by this disabled preparation slice. Their first consumer belongs to the later submission work tracked by issue #1384.
+
+### Review-fix closure
+
+The request signer is copied into `Zeroizing<[u8; 32]>` before Alloy signer construction. An oversized request nonce reports a request-input error rather than a configuration error. The unused `output_asset` authority is removed from runtime config and deployment-fact evidence. Compiler-negative tests invoke `cargo` through governed `PATH`, never through the build-time absolute `CARGO` path. The PR body describes #1384 without a GitHub closing keyword.
 
 ## Evidence
 
@@ -43,3 +53,4 @@ Resolved credentials retain private fields, zeroizing storage, a redacted `Debug
 - No new runtime configuration, secret source, dependency, or compatibility path.
 - No changes to calldata, signing-domain, signature-packing, retry, lease, callback, or identity semantics.
 - No attempt to reproduce Rust compiler semantics in Python.
+- No builder API resolution, network submission, query/finality handling, LiveNode wiring, deployment, activation, or trading.

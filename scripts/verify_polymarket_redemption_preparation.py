@@ -41,8 +41,8 @@ EXPECTED_EVIDENCE = {
     "adapter_revision": "ccc0596074f4dfd62c944fbca4de252893b82b4b",
     "deployment_source_url": "https://docs.polymarket.com/resources/contracts",
     "deployment_observed_date": "2026-07-16",
-    "deployment_fact_format_version": 2,
-    "deployment_fact_sha256": "7844264e5c6c456224820af716c000438d72736a5f45315ae88f4f92dc068667",
+    "deployment_fact_format_version": 3,
+    "deployment_fact_sha256": "223c425c49db5c1e3da22c5f9113e892d4f78e2aa1ab1d7ed23c39e04931e1c7",
     "standard_source_path": "src/adapters/CtfCollateralAdapter.sol",
     "standard_source_sha256": "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
     "negative_risk_source_path": "src/adapters/NegRiskCtfCollateralAdapter.sol",
@@ -96,7 +96,6 @@ def _deployment_fact_sha256(
     observed_date: object,
     chain_id: object,
     collateral_asset: object,
-    output_asset: object,
     standard_target: object,
     negative_risk_target: object,
     parent_collection_id: object,
@@ -112,7 +111,6 @@ def _deployment_fact_sha256(
         f"observed_date={observed_date}\n"
         f"chain_id={chain_id}\n"
         f"collateral_asset={str(collateral_asset).lower()}\n"
-        f"output_asset={str(output_asset).lower()}\n"
         f"CtfCollateralAdapter={str(standard_target).lower()}\n"
         f"NegRiskCtfCollateralAdapter={str(negative_risk_target).lower()}\n"
         f"parent_collection_id={str(parent_collection_id).lower()}\n"
@@ -271,7 +269,6 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
             adapter.get("deployment_observed_date"),
             redemption.get("chain_id"),
             redemption.get("collateral_asset"),
-            redemption.get("output_asset"),
             redemption.get("standard_adapter_target"),
             redemption.get("negative_risk_adapter_target"),
             redemption.get("parent_collection_id"),

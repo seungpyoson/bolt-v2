@@ -16,7 +16,6 @@ root_client = "polymarket_main"
 [redemption]
 chain_id = 137
 collateral_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 standard_adapter_target = "0xAdA100Db00Ca00073811820692005400218FcE1f"
 negative_risk_adapter_target = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 parent_collection_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -48,8 +47,8 @@ repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
 deployment_source_url = "https://docs.polymarket.com/resources/contracts"
 deployment_observed_date = "2026-07-16"
-deployment_fact_format_version = 2
-deployment_fact_sha256 = "7844264e5c6c456224820af716c000438d72736a5f45315ae88f4f92dc068667"
+deployment_fact_format_version = 3
+deployment_fact_sha256 = "223c425c49db5c1e3da22c5f9113e892d4f78e2aa1ab1d7ed23c39e04931e1c7"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
 standard_source_sha256 = "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
@@ -215,10 +214,6 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                 'collateral_asset = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
             ),
             (
-                'output_asset = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"',
-                'output_asset = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"',
-            ),
-            (
                 'standard_adapter_target = "0xAdA100Db00Ca00073811820692005400218FcE1f"',
                 'standard_adapter_target = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
             ),
@@ -251,7 +246,7 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
         mutations = (
             ("https://docs.polymarket.com/resources/contracts", "https://example.invalid"),
             ("2026-07-16", "2026-07-15"),
-            ("deployment_fact_format_version = 2", "deployment_fact_format_version = 1"),
+            ("deployment_fact_format_version = 3", "deployment_fact_format_version = 2"),
             (
                 "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
                 "1" * 64,

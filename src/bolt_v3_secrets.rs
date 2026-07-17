@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
@@ -121,6 +121,23 @@ where
 }
 
 pub type ResolvedBoltV3ClientSecrets = ResolvedClientSecrets;
+
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct ResolvedEvmSigningKey {
+    bytes: Zeroizing<[u8; 32]>,
+}
+
+impl ResolvedEvmSigningKey {
+    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self {
+            bytes: Zeroizing::new(bytes),
+        }
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        self.bytes.as_ref()
+    }
+}
 
 #[derive(Clone)]
 pub struct ResolvedBoltV3Secrets {

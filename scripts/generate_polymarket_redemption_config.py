@@ -33,7 +33,6 @@ class RuntimeConfig:
     wallet_type: str
     safe_address: str
     collateral_asset: str
-    output_asset: str
     standard_adapter_target: str
     negative_risk_adapter_target: str
     parent_collection_id: str
@@ -231,7 +230,6 @@ def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
         {
             "chain_id",
             "collateral_asset",
-            "output_asset",
             "standard_adapter_target",
             "negative_risk_adapter_target",
             "parent_collection_id",
@@ -274,7 +272,6 @@ def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
         wallet_type=wallet_type,
         safe_address=safe_address,
         collateral_asset=_address(redemption["collateral_asset"], "redemption.collateral_asset"),
-        output_asset=_address(redemption["output_asset"], "redemption.output_asset"),
         standard_adapter_target=_address(
             redemption["standard_adapter_target"], "redemption.standard_adapter_target"
         ),
@@ -314,7 +311,6 @@ def _deployment_fact_payload(
         f"observed_date={observed_date}\n"
         f"chain_id={runtime.chain_id}\n"
         f"collateral_asset={runtime.collateral_asset}\n"
-        f"output_asset={runtime.output_asset}\n"
         f"CtfCollateralAdapter={runtime.standard_adapter_target}\n"
         f"NegRiskCtfCollateralAdapter={runtime.negative_risk_adapter_target}\n"
         f"parent_collection_id={runtime.parent_collection_id}\n"
@@ -357,8 +353,8 @@ def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEviden
     _integer(
         adapter["deployment_fact_format_version"],
         "adapter_abi.deployment_fact_format_version",
-        minimum=2,
-        maximum=2,
+        minimum=3,
+        maximum=3,
     )
     observed_fact_sha256 = _sha256(
         adapter["deployment_fact_sha256"], "adapter_abi.deployment_fact_sha256"
@@ -368,7 +364,7 @@ def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEviden
     ).hexdigest()
     if observed_fact_sha256 != expected_fact_sha256:
         raise ConfigError(
-            "adapter_abi.deployment_fact_sha256 must hash the v2 canonical source URL, "
+            "adapter_abi.deployment_fact_sha256 must hash the v3 canonical source URL, "
             "observed date, and normalized runtime protocol facts"
         )
     _source_path(adapter["standard_source_path"], "adapter_abi.standard_source_path")
@@ -498,7 +494,6 @@ pub(super) const POLYMARKET_REDEMPTION_PREPARATION_CONFIG: RedemptionPreparation
         wallet_type: {_rust_string(runtime.wallet_type)},
         safe_address: alloy_primitives::address!({_rust_string(runtime.safe_address)}),
         collateral_asset: alloy_primitives::address!({_rust_string(runtime.collateral_asset)}),
-        output_asset: alloy_primitives::address!({_rust_string(runtime.output_asset)}),
         standard_adapter_target: alloy_primitives::address!(
             {_rust_string(runtime.standard_adapter_target)}
         ),
@@ -512,11 +507,6 @@ pub(super) const POLYMARKET_REDEMPTION_PREPARATION_CONFIG: RedemptionPreparation
             {dummy},
         ],
         maximum_safe_nonce_decimal_digits: {runtime.maximum_safe_nonce_decimal_digits},
-        aws_region: {_rust_string(runtime.aws_region)},
-        signer_private_key_ssm_path: {_rust_string(runtime.signer_private_key_ssm_path)},
-        builder_api_key_ssm_path: {_rust_string(runtime.builder_api_key_ssm_path)},
-        builder_api_secret_ssm_path: {_rust_string(runtime.builder_api_secret_ssm_path)},
-        builder_passphrase_ssm_path: {_rust_string(runtime.builder_passphrase_ssm_path)},
     }};
 
 pub(super) const POLYMARKET_REDEMPTION_PROTOCOL: RedemptionProtocolFacts =

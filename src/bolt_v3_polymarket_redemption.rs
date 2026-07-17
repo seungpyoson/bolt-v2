@@ -1,13 +1,13 @@
 use std::{fmt, ops::Range};
 
-use alloy_primitives::{Address, B256, Keccak256, U256, hex, keccak256};
+use alloy_primitives::{Address, B256, Keccak256, U256, keccak256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     bolt_v3_risk_closure_workspace::{RiskClosureWorkspaceError, RiskClosureWorkspaceLease},
-    secrets::SsmResolverSession,
+    bolt_v3_secrets::ResolvedEvmSigningKey,
 };
 
 pub struct RedemptionPreparationConfig {
@@ -17,17 +17,11 @@ pub struct RedemptionPreparationConfig {
     wallet_type: &'static str,
     safe_address: Address,
     collateral_asset: Address,
-    output_asset: Address,
     standard_adapter_target: Address,
     negative_risk_adapter_target: Address,
     parent_collection_id: B256,
     dummy_index_sets: [U256; 2],
     maximum_safe_nonce_decimal_digits: usize,
-    aws_region: &'static str,
-    signer_private_key_ssm_path: &'static str,
-    builder_api_key_ssm_path: &'static str,
-    builder_api_secret_ssm_path: &'static str,
-    builder_passphrase_ssm_path: &'static str,
 }
 
 struct RedemptionProtocolFacts {
@@ -47,40 +41,6 @@ use generated::{POLYMARKET_REDEMPTION_PREPARATION_CONFIG, POLYMARKET_REDEMPTION_
 
 pub fn polymarket_redemption_preparation_config() -> &'static RedemptionPreparationConfig {
     &POLYMARKET_REDEMPTION_PREPARATION_CONFIG
-}
-
-#[derive(Zeroize, ZeroizeOnDrop)]
-pub struct ResolvedRedemptionCredentials {
-    signer_private_key: Zeroizing<String>,
-    builder_api_key: Zeroizing<String>,
-    builder_api_secret: Zeroizing<String>,
-    builder_passphrase: Zeroizing<String>,
-}
-
-impl fmt::Debug for ResolvedRedemptionCredentials {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ResolvedRedemptionCredentials")
-            .field("signer_private_key", &"<redacted>")
-            .field("builder_api_key", &"<redacted>")
-            .field("builder_api_secret", &"<redacted>")
-            .field("builder_passphrase", &"<redacted>")
-            .finish()
-    }
-}
-
-impl ResolvedRedemptionCredentials {
-    fn validate(&self) -> Result<(), RedemptionPreparationError> {
-        for (field, value) in [
-            ("signer_private_key", self.signer_private_key.as_str()),
-            ("builder_api_key", self.builder_api_key.as_str()),
-            ("builder_api_secret", self.builder_api_secret.as_str()),
-            ("builder_passphrase", self.builder_passphrase.as_str()),
-        ] {
-            validate_secret(field, value)?;
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,8 +108,7 @@ impl<'request> PreparedRequest<'request> {
 pub enum RedemptionPreparationError {
     ProductionActivationForbidden,
     InvalidConfiguration { field: &'static str },
-    SecretResolutionFailed { field: &'static str },
-    InvalidResolvedSecret { field: &'static str },
+    InvalidRequestInput { field: &'static str },
     InvalidSigningKey,
     SigningFailed,
     WorkspaceTooSmall { required: usize, available: usize },
@@ -167,14 +126,8 @@ impl fmt::Display for RedemptionPreparationError {
             Self::InvalidConfiguration { field } => {
                 write!(formatter, "invalid redemption configuration field: {field}")
             }
-            Self::SecretResolutionFailed { field } => {
-                write!(
-                    formatter,
-                    "SSM resolution failed for redemption credential: {field}"
-                )
-            }
-            Self::InvalidResolvedSecret { field } => {
-                write!(formatter, "invalid resolved redemption credential: {field}")
+            Self::InvalidRequestInput { field } => {
+                write!(formatter, "invalid redemption request input: {field}")
             }
             Self::InvalidSigningKey => formatter.write_str("invalid redemption signing key"),
             Self::SigningFailed => formatter.write_str("redemption request signing failed"),
@@ -202,87 +155,19 @@ impl From<RiskClosureWorkspaceError> for RedemptionPreparationError {
     }
 }
 
-pub fn resolve_redemption_credentials(
-    session: &SsmResolverSession,
-    config: &RedemptionPreparationConfig,
-) -> Result<ResolvedRedemptionCredentials, RedemptionPreparationError> {
-    let mut resolver = |region: &str, path: &str| session.resolve(region, path);
-    resolve_redemption_credentials_from(config, &mut resolver)
-}
-
-fn resolve_redemption_credentials_from<E>(
-    config: &RedemptionPreparationConfig,
-    mut resolver: impl FnMut(&str, &str) -> Result<String, E>,
-) -> Result<ResolvedRedemptionCredentials, RedemptionPreparationError> {
-    validate_config(config)?;
-    Ok(ResolvedRedemptionCredentials {
-        signer_private_key: resolve_secret_from(
-            &mut resolver,
-            config.aws_region,
-            config.signer_private_key_ssm_path,
-            "signer_private_key",
-        )?,
-        builder_api_key: resolve_secret_from(
-            &mut resolver,
-            config.aws_region,
-            config.builder_api_key_ssm_path,
-            "builder_api_key",
-        )?,
-        builder_api_secret: resolve_secret_from(
-            &mut resolver,
-            config.aws_region,
-            config.builder_api_secret_ssm_path,
-            "builder_api_secret",
-        )?,
-        builder_passphrase: resolve_secret_from(
-            &mut resolver,
-            config.aws_region,
-            config.builder_passphrase_ssm_path,
-            "builder_passphrase",
-        )?,
-    })
-}
-
-fn resolve_secret_from<E>(
-    resolver: &mut impl FnMut(&str, &str) -> Result<String, E>,
-    region: &str,
-    path: &str,
-    field: &'static str,
-) -> Result<Zeroizing<String>, RedemptionPreparationError> {
-    let value = Zeroizing::new(
-        resolver(region, path)
-            .map_err(|_| RedemptionPreparationError::SecretResolutionFailed { field })?,
-    );
-    validate_secret(field, value.as_str())?;
-    Ok(value)
-}
-
-fn validate_secret(field: &'static str, value: &str) -> Result<(), RedemptionPreparationError> {
-    if value.is_empty() || value.chars().any(char::is_whitespace) {
-        return Err(RedemptionPreparationError::InvalidResolvedSecret { field });
-    }
-    Ok(())
-}
-
 pub fn prepare_redemption_request(
     permit: RedemptionPreparationPermit,
     lease: &mut RiskClosureWorkspaceLease,
     config: &RedemptionPreparationConfig,
-    credentials: &ResolvedRedemptionCredentials,
+    signing_key: &ResolvedEvmSigningKey,
     input: RedemptionRequestInput,
     attempt: AttemptKind,
     use_prepared: impl for<'request> FnOnce(PreparedRequest<'request>),
 ) -> Result<(), RedemptionPreparationError> {
     let RedemptionPreparationPermit { private: () } = permit;
     validate_config(config)?;
-    credentials.validate()?;
     validate_nonce(input.safe_nonce, config.maximum_safe_nonce_decimal_digits)?;
-    let mut signer_private_key = Zeroizing::new(B256::ZERO.as_slice().to_vec());
-    hex::decode_to_slice(
-        credentials.signer_private_key.as_bytes(),
-        signer_private_key.as_mut(),
-    )
-    .map_err(|_| RedemptionPreparationError::InvalidSigningKey)?;
+    let signer_private_key = Zeroizing::new(*signing_key.as_bytes());
     let signer = PrivateKeySigner::from_slice(signer_private_key.as_ref())
         .map_err(|_| RedemptionPreparationError::InvalidSigningKey)?;
     let target = match attempt {
@@ -401,7 +286,6 @@ fn validate_config(config: &RedemptionPreparationConfig) -> Result<(), Redemptio
         (config.wallet_type == "SAFE", "wallet_type"),
         (config.safe_address != Address::ZERO, "safe_address"),
         (config.collateral_asset != Address::ZERO, "collateral_asset"),
-        (config.output_asset != Address::ZERO, "output_asset"),
         (
             config.standard_adapter_target != Address::ZERO,
             "standard_adapter_target",
@@ -414,23 +298,6 @@ fn validate_config(config: &RedemptionPreparationConfig) -> Result<(), Redemptio
             config.maximum_safe_nonce_decimal_digits > 0
                 && config.maximum_safe_nonce_decimal_digits <= 78,
             "maximum_safe_nonce_decimal_digits",
-        ),
-        (!config.aws_region.is_empty(), "aws_region"),
-        (
-            config.signer_private_key_ssm_path.starts_with('/'),
-            "signer_private_key_ssm_path",
-        ),
-        (
-            config.builder_api_key_ssm_path.starts_with('/'),
-            "builder_api_key_ssm_path",
-        ),
-        (
-            config.builder_api_secret_ssm_path.starts_with('/'),
-            "builder_api_secret_ssm_path",
-        ),
-        (
-            config.builder_passphrase_ssm_path.starts_with('/'),
-            "builder_passphrase_ssm_path",
         ),
         (
             POLYMARKET_REDEMPTION_PROTOCOL.metadata.is_empty(),
@@ -448,8 +315,8 @@ fn validate_nonce(nonce: U256, maximum_digits: usize) -> Result<(), RedemptionPr
     let mut buffer = [u8::default(); 78];
     let digits = decimal_bytes(nonce, &mut buffer);
     if digits.len() > maximum_digits {
-        return Err(RedemptionPreparationError::InvalidConfiguration {
-            field: "maximum_safe_nonce_decimal_digits",
+        return Err(RedemptionPreparationError::InvalidRequestInput {
+            field: "safe_nonce",
         });
     }
     buffer.zeroize();
@@ -837,26 +704,30 @@ mod tests {
             wallet_type: "SAFE",
             safe_address: address(0x11),
             collateral_asset: address(0x44),
-            output_asset: address(0x55),
             standard_adapter_target: address(0x22),
             negative_risk_adapter_target: address(0x33),
             parent_collection_id: B256::ZERO,
             dummy_index_sets: [U256::from(1_u8), U256::from(2_u8)],
             maximum_safe_nonce_decimal_digits: 78,
-            aws_region: "us-east-1",
-            signer_private_key_ssm_path: "/bolt/polymarket/redemption/signer-private-key",
-            builder_api_key_ssm_path: "/bolt/polymarket/redemption/builder-api-key",
-            builder_api_secret_ssm_path: "/bolt/polymarket/redemption/builder-api-secret",
-            builder_passphrase_ssm_path: "/bolt/polymarket/redemption/builder-passphrase",
         }
     }
 
-    fn test_credentials() -> ResolvedRedemptionCredentials {
-        ResolvedRedemptionCredentials {
-            signer_private_key: Zeroizing::new(FIXTURE_PRIVATE_KEY.to_string()),
-            builder_api_key: Zeroizing::new("fixture-builder-key".to_string()),
-            builder_api_secret: Zeroizing::new("fixture-builder-secret".to_string()),
-            builder_passphrase: Zeroizing::new("fixture-builder-passphrase".to_string()),
+    fn test_credentials() -> ResolvedEvmSigningKey {
+        crate::bolt_v3_providers::polymarket::decode_private_key(FIXTURE_PRIVATE_KEY)
+            .expect("fixture private key must decode through the provider boundary")
+    }
+
+    fn test_provider_secrets()
+    -> crate::bolt_v3_providers::polymarket::ResolvedBoltV3PolymarketSecrets {
+        crate::bolt_v3_providers::polymarket::ResolvedBoltV3PolymarketSecrets {
+            private_key: Zeroizing::new(FIXTURE_PRIVATE_KEY.to_string()),
+            redemption_signing_key: crate::bolt_v3_providers::polymarket::decode_private_key(
+                FIXTURE_PRIVATE_KEY,
+            )
+            .expect("fixture private key must decode through the provider boundary"),
+            api_key: Zeroizing::new("fixture-builder-key".to_string()),
+            api_secret: Zeroizing::new("fixture-builder-secret".to_string()),
+            passphrase: Zeroizing::new("fixture-builder-passphrase".to_string()),
         }
     }
 
@@ -1213,60 +1084,31 @@ mod tests {
     }
 
     #[test]
-    fn grouped_credentials_use_ssm_resolver_and_redact_all_sentinels() {
+    fn provider_snapshot_is_redacted_and_drives_request_preparation() {
         fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
 
         let config = test_config();
-        let sentinel_private_key = FIXTURE_PRIVATE_KEY;
-        let sentinel_api_key = "sentinel-builder-api-key";
-        let sentinel_api_secret = "sentinel-builder-api-secret";
-        let sentinel_passphrase = "sentinel-builder-passphrase";
-        let mut resolved_paths = Vec::new();
-        let mut resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-            assert_eq!(region, config.aws_region);
-            resolved_paths.push(path.to_string());
-            match path {
-                value if value == config.signer_private_key_ssm_path => {
-                    Ok(sentinel_private_key.to_string())
-                }
-                value if value == config.builder_api_key_ssm_path => {
-                    Ok(sentinel_api_key.to_string())
-                }
-                value if value == config.builder_api_secret_ssm_path => {
-                    Ok(sentinel_api_secret.to_string())
-                }
-                value if value == config.builder_passphrase_ssm_path => {
-                    Ok(sentinel_passphrase.to_string())
-                }
-                _ => Err("unexpected SSM path"),
-            }
-        };
-
-        let credentials = resolve_redemption_credentials_from(&config, &mut resolver)
-            .expect("grouped credentials must resolve through SSM");
-        let debug = format!("{credentials:?}");
+        let provider_secrets = test_provider_secrets();
+        let debug = format!("{provider_secrets:?}");
         let sentinels = [
-            sentinel_private_key,
-            sentinel_api_key,
-            sentinel_api_secret,
-            sentinel_passphrase,
+            FIXTURE_PRIVATE_KEY,
+            "fixture-builder-key",
+            "fixture-builder-secret",
+            "fixture-builder-passphrase",
         ];
-        assert_zeroize_on_drop::<ResolvedRedemptionCredentials>();
-        assert_eq!(resolved_paths.len(), 4);
+        assert_zeroize_on_drop::<
+            crate::bolt_v3_providers::polymarket::ResolvedBoltV3PolymarketSecrets,
+        >();
         for sentinel in sentinels {
             assert!(!debug.contains(sentinel));
         }
-        assert_eq!(
-            debug,
-            "ResolvedRedemptionCredentials { signer_private_key: \"<redacted>\", builder_api_key: \"<redacted>\", builder_api_secret: \"<redacted>\", builder_passphrase: \"<redacted>\" }"
-        );
 
         let mut lease = recovery_lease(GOLDEN_STANDARD_REQUEST.len(), "secret-evidence");
         prepare_redemption_request(
             test_preparation_permit(),
             &mut lease,
             &config,
-            &credentials,
+            provider_secrets.redemption_signing_key(),
             original_input(RedemptionMarketKind::Standard),
             AttemptKind::Original,
             |prepared| {
@@ -1289,22 +1131,34 @@ mod tests {
                 }
             },
         )
-        .expect("sentinel credentials must prepare redacted evidence");
+        .expect("provider snapshot must prepare redacted evidence");
     }
 
     #[test]
-    fn invalid_resolved_secret_error_never_contains_secret_value() {
-        let config = test_config();
-        let sentinel = "sentinel secret with whitespace";
-        let mut resolver =
-            |_: &str, _: &str| -> Result<String, &'static str> { Ok(sentinel.to_string()) };
+    fn nonce_above_configured_bound_is_a_request_input_error() {
+        let mut config = test_config();
+        config.maximum_safe_nonce_decimal_digits = 1;
+        let credentials = test_credentials();
+        let mut lease = recovery_lease(GOLDEN_STANDARD_REQUEST.len(), "nonce-bound");
 
-        let error = resolve_redemption_credentials_from(&config, &mut resolver)
-            .expect_err("whitespace-bearing secret must fail closed");
-        let display = error.to_string();
-        let debug = format!("{error:?}");
-        assert!(!display.contains(sentinel));
-        assert!(!debug.contains(sentinel));
-        assert!(display.contains("signer_private_key"));
+        let mut input = original_input(RedemptionMarketKind::Standard);
+        input.safe_nonce = U256::from(10_u8);
+        let error = prepare_redemption_request(
+            test_preparation_permit(),
+            &mut lease,
+            &config,
+            &credentials,
+            input,
+            AttemptKind::Original,
+            |_| panic!("invalid nonce must fail before the callback"),
+        )
+        .expect_err("over-bound nonce must fail closed");
+
+        assert_eq!(
+            error,
+            RedemptionPreparationError::InvalidRequestInput {
+                field: "safe_nonce"
+            }
+        );
     }
 }

@@ -13,7 +13,6 @@ pub(super) const POLYMARKET_REDEMPTION_PREPARATION_CONFIG: RedemptionPreparation
         wallet_type: "SAFE",
         safe_address: alloy_primitives::address!("0xa3a5e9c062331237e5f1403b2bba7a184e5de983"),
         collateral_asset: alloy_primitives::address!("0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"),
-        output_asset: alloy_primitives::address!("0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"),
         standard_adapter_target: alloy_primitives::address!(
             "0xada100db00ca00073811820692005400218fce1f"
         ),
@@ -28,11 +27,6 @@ pub(super) const POLYMARKET_REDEMPTION_PREPARATION_CONFIG: RedemptionPreparation
             U256::from_limbs([2, 0, 0, 0]),
         ],
         maximum_safe_nonce_decimal_digits: 78,
-        aws_region: "eu-west-2",
-        signer_private_key_ssm_path: "/bolt/polymarket/private-key",
-        builder_api_key_ssm_path: "/bolt/polymarket/builder/api-key",
-        builder_api_secret_ssm_path: "/bolt/polymarket/builder/api-secret",
-        builder_passphrase_ssm_path: "/bolt/polymarket/builder/passphrase",
     };
 
 pub(super) const POLYMARKET_REDEMPTION_PROTOCOL: RedemptionProtocolFacts =

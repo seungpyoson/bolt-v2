@@ -128,4 +128,34 @@ Review the complete diff for a constructible permit, alternate preparation path,
 
 - [ ] **Step 5: Report remote evidence honestly**
 
+### Task 4: Close accepted PR review findings
+
+**Files:**
+- Modify: `src/bolt_v3_providers/polymarket.rs`
+- Modify: `src/bolt_v3_polymarket_redemption.rs`
+- Modify: `tests/polymarket_redemption_preparation_compile_fail.rs`
+- Modify: `config/polymarket-redemption.toml`
+- Modify: `config/polymarket-redemption-source-evidence.toml`
+- Modify: generator, verifier, generated projection, and focused tests.
+
+**Interfaces:**
+- Consumes: `ResolvedEvmSigningKey`, an opaque view stored inside the single provider-owned SSM snapshot.
+- Produces: disabled request preparation with no independent credential resolver.
+
+- [ ] **Step 1: Update regression evidence**
+
+Change owner and compile-fail tests to pass `ResolvedEvmSigningKey`, add an oversized-nonce classification assertion, and make generator/verifier fixtures reject `output_asset` as an unknown field.
+
+- [ ] **Step 2: Remove the duplicate credential path**
+
+Decode the provider-resolved key once into a neutral zeroizing fixed-width snapshot. Delete `ResolvedRedemptionCredentials`, its SSM resolver, and its duplicate secret validation. Make `prepare_redemption_request` borrow that provider-stored view and copy its key bytes into `Zeroizing<[u8; 32]>` before signer construction.
+
+- [ ] **Step 3: Close the mechanical findings**
+
+Return `InvalidRequestInput { field: "safe_nonce" }` for an over-bound nonce, resolve compile-test Cargo through `PATH`, remove `output_asset` end-to-end, bump the deployment-fact payload format, regenerate Rust, and remove the accidental issue-closing phrase from the PR body.
+
+- [ ] **Step 4: Verify and publish**
+
+Run the focused Python suites, generator/verifier checks, formatting, source-fence static checks, and `git diff --check`. Conduct an internal adversarial diff review, commit, publish with `just sandbox-safe-push`, and report the new exact head without waiting on CI.
+
 Do not claim Rust compilation or behavior success until exact-head remote verification has run. Report the local checks separately from pending or completed remote evidence.

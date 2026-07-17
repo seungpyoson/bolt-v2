@@ -3,6 +3,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RustToken:
+    text: str
+    start: int
+    end: int
+    is_identifier: bool
+
 
 def blank_preserving_newlines(text: str) -> str:
     return "".join("\n" if char == "\n" else " " for char in text)
@@ -127,3 +137,81 @@ def strip_rust_comments_and_literals(text: str) -> str:
         i += 1
 
     return "".join(output)
+
+
+def rust_identifier_start(char: str) -> bool:
+    return char == "_" or char.isascii() and char.isalpha()
+
+
+def rust_identifier_continue(char: str) -> bool:
+    return rust_identifier_start(char) or char.isascii() and char.isdigit()
+
+
+def rust_tokens(code_only: str) -> list[RustToken]:
+    """Tokenize identifiers and punctuation needed by lexical Rust fences.
+
+    Callers first blank comments and literals with
+    ``strip_rust_comments_and_literals`` so token offsets remain aligned with the
+    original source. Raw identifiers are canonicalized while retaining their full
+    source span.
+    """
+
+    tokens: list[RustToken] = []
+    cursor = 0
+    while cursor < len(code_only):
+        if code_only[cursor].isspace():
+            cursor += 1
+            continue
+        if (
+            code_only.startswith("r#", cursor)
+            and cursor + 2 < len(code_only)
+            and rust_identifier_start(code_only[cursor + 2])
+        ):
+            start = cursor
+            cursor += 3
+            while cursor < len(code_only) and rust_identifier_continue(code_only[cursor]):
+                cursor += 1
+            tokens.append(
+                RustToken(
+                    text=code_only[start + 2 : cursor],
+                    start=start,
+                    end=cursor,
+                    is_identifier=True,
+                )
+            )
+            continue
+        if rust_identifier_start(code_only[cursor]):
+            start = cursor
+            cursor += 1
+            while cursor < len(code_only) and rust_identifier_continue(code_only[cursor]):
+                cursor += 1
+            tokens.append(
+                RustToken(
+                    text=code_only[start:cursor],
+                    start=start,
+                    end=cursor,
+                    is_identifier=True,
+                )
+            )
+            continue
+        if code_only.startswith("::", cursor):
+            tokens.append(
+                RustToken(
+                    text="::",
+                    start=cursor,
+                    end=cursor + 2,
+                    is_identifier=False,
+                )
+            )
+            cursor += 2
+            continue
+        tokens.append(
+            RustToken(
+                text=code_only[cursor],
+                start=cursor,
+                end=cursor + 1,
+                is_identifier=False,
+            )
+        )
+        cursor += 1
+    return tokens

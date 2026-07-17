@@ -18,13 +18,6 @@ const STRATEGY_MUTATION_AUTHORITY_NAMES: &[&str] = &[
 const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
     "core_mut",
     "order_manager",
-    "send_trading_command",
-    "send_any",
-    "send_any_value",
-    "risk_engine_queue_execute",
-    "exec_engine_queue_execute",
-    "emulator_queue_execute",
-    "algo_engine_queue_execute",
     "submit_order",
     "submit_order_list",
     "modify_order",
@@ -977,6 +970,37 @@ fn production_tokenizer_keeps_code_after_real_test_only_fields() {
 
 #[test]
 fn strategy_mutation_surface_matcher_has_complete_controls() {
+    assert_eq!(
+        NT_VENUE_MUTATION_BARE_NAMES,
+        &[
+            "send_risk_command",
+            "send_exec_command",
+            "send_emulator_command",
+            "send_algo_command",
+            "send_trading_command",
+            "send_any",
+            "send_any_value",
+            "risk_engine_queue_execute",
+            "exec_engine_queue_execute",
+            "emulator_queue_execute",
+            "algo_engine_queue_execute",
+        ],
+        "the independently pinned raw-transport census must not drift"
+    );
+    let semantic_classes = [
+        NT_VENUE_MUTATION_METHOD_NAMES,
+        NT_TRANSITIVE_MUTATION_METHOD_NAMES,
+        NT_VENUE_MUTATION_BARE_NAMES,
+        NT_TRADING_COMMAND_SURFACE_NAMES,
+    ];
+    for (index, left) in semantic_classes.iter().enumerate() {
+        for right in &semantic_classes[index + 1..] {
+            assert!(
+                !left.iter().any(|name| right.contains(name)),
+                "one mutation token must have exactly one matching semantic class"
+            );
+        }
+    }
     for authority in STRATEGY_MUTATION_AUTHORITY_NAMES {
         let tokens = tokenize(&format!("use boundary::{authority};"));
         assert_eq!(named_strategy_mutation_surfaces(&tokens), vec![*authority]);
@@ -985,10 +1009,27 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         .iter()
         .chain(NT_TRANSITIVE_MUTATION_METHOD_NAMES)
     {
-        let tokens = tokenize(&format!("self.{method}(command);"));
+        for source in [
+            format!("self.{method}(command);"),
+            format!("self.r#{method}(command);"),
+            format!("Self::{method}(self, command);"),
+            format!("<Wrapper<Foo> as Strategy>::{method}(self, command);"),
+            format!("let call = Self::{method} as fn(&mut Self, Command);"),
+            format!("let call = &Self::{method};"),
+            format!("let calls = [Self::{method}];"),
+        ] {
+            let tokens = tokenize(&source);
+            assert!(
+                named_strategy_mutation_surfaces(&tokens).contains(method),
+                "direct method matcher must retain {method} in `{source}`"
+            );
+        }
+        let negative = tokenize(&format!(
+            "fn {method}() {{}} let {method}_intent = intent; const TEXT: &str = \"{method}\"; // self.{method}(command);"
+        ));
         assert!(
-            named_strategy_mutation_surfaces(&tokens).contains(method),
-            "direct method matcher must retain {method}"
+            !named_strategy_mutation_surfaces(&negative).contains(method),
+            "unqualified definitions, near-neighbors, strings, and comments must not reserve {method}"
         );
     }
     let function_references = tokenize(
@@ -1001,33 +1042,58 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         );
     }
     for function in NT_VENUE_MUTATION_BARE_NAMES {
-        let tokens = tokenize(&format!("{function}(command);"));
+        for source in [
+            format!("{function}(command);"),
+            format!("r#{function}(command);"),
+            format!("msgbus::{function}(command);"),
+            format!("msgbus::r#{function}(command);"),
+            format!("use msgbus::{function};"),
+            format!("use msgbus::{function} as dispatch;"),
+            format!("use msgbus::{{{function}}};"),
+            format!("use msgbus::{{{function} as dispatch}};"),
+            format!("let send = {function} as fn(Command);"),
+            format!("let send = msgbus::{function} as fn(Command);"),
+            format!("let send = &msgbus::{function};"),
+            format!("let sends = [msgbus::{function}];"),
+        ] {
+            let tokens = tokenize(&source);
+            assert!(
+                named_strategy_mutation_surfaces(&tokens).contains(function),
+                "bare transport matcher must retain {function} in `{source}`"
+            );
+        }
+        let negative = tokenize(&format!(
+            "let {function}_intent = intent; let my_{function} = helper; let {function}_v2 = helper; const TEXT: &str = \"{function}\"; // {function}(command);"
+        ));
         assert!(
-            named_strategy_mutation_surfaces(&tokens).contains(function),
-            "bare transport matcher must retain {function}"
-        );
-    }
-    let transport_aliases = tokenize(
-        "use msgbus::{send_any_value as dispatch, send_risk_command as risk, send_exec_command, send_emulator_command, send_algo_command}; let send = send_trading_command as fn(Endpoint, Command);",
-    );
-    for function in [
-        "send_any_value",
-        "send_trading_command",
-        "send_risk_command",
-        "send_exec_command",
-        "send_emulator_command",
-        "send_algo_command",
-    ] {
-        assert!(
-            named_strategy_mutation_surfaces(&transport_aliases).contains(&function),
-            "bare transport aliases and casts must retain {function}"
+            !named_strategy_mutation_surfaces(&negative).contains(function),
+            "near-neighbors, strings, and comments must not reserve {function}"
         );
     }
     for command in NT_TRADING_COMMAND_SURFACE_NAMES {
-        let tokens = tokenize(&format!("use nt::{command};"));
+        for source in [
+            command.to_string(),
+            format!("r#{command}"),
+            format!("nt::{command}"),
+            format!("nt::r#{command}"),
+            format!("use nt::{command};"),
+            format!("use nt::{{{command} as Alias}};"),
+            format!("type Pending = Vec<{command}>;"),
+            format!("let command = &nt::{command};"),
+            format!("let commands = [nt::{command}];"),
+        ] {
+            let tokens = tokenize(&source);
+            assert!(
+                named_strategy_mutation_surfaces(&tokens).contains(command),
+                "command-surface matcher must retain {command} in `{source}`"
+            );
+        }
+        let negative = tokenize(&format!(
+            "let {command}Intent = intent; let my_{command} = helper; const TEXT: &str = \"{command}\"; // nt::{command};"
+        ));
         assert!(
-            named_strategy_mutation_surfaces(&tokens).contains(command),
-            "command-surface matcher must retain {command}"
+            !named_strategy_mutation_surfaces(&negative).contains(command),
+            "near-neighbors, strings, and comments must not reserve {command}"
         );
     }
     let command_type_references = tokenize(

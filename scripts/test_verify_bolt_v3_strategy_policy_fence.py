@@ -20,6 +20,70 @@ VERIFIER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
 
+EXPECTED_RAW_TRANSPORT_NAMES = (
+    "send_risk_command",
+    "send_exec_command",
+    "send_emulator_command",
+    "send_algo_command",
+    "send_trading_command",
+    "send_any",
+    "send_any_value",
+    "risk_engine_queue_execute",
+    "exec_engine_queue_execute",
+    "emulator_queue_execute",
+    "algo_engine_queue_execute",
+)
+
+EXPECTED_PINNED_NT_METHOD_NAMES = frozenset(
+    {
+        "core_mut",
+        "order_manager",
+        "submit_order",
+        "submit_order_list",
+        "modify_order",
+        "modify_orders",
+        "cancel_order",
+        "cancel_orders",
+        "cancel_all_orders",
+        "close_position",
+        "close_all_positions",
+        "expire_gtd_order",
+        "reactivate_gtd_timers",
+        "set_gtd_expiry",
+        "cancel_gtd_expiry",
+        "finalize_market_exit",
+        "cancel_market_exit",
+        "deny_order",
+        "deny_order_list",
+    }
+)
+
+EXPECTED_PINNED_NT_LIFECYCLE_NAMES = (
+    "strategy_core_mut",
+    "reset_market_exit_state",
+    "on_start",
+    "on_time_event",
+    "check_market_exit",
+    "stop",
+)
+
+EXPECTED_PINNED_NT_COMMAND_NAMES = (
+    "TradingCommand",
+    "SubmitOrder",
+    "SubmitOrderList",
+    "ModifyOrder",
+    "ModifyOrders",
+    "BatchModifyOrders",
+    "BatchCancelOrders",
+    "CancelOrder",
+    "CancelOrders",
+    "CancelAllOrders",
+    "ClosePosition",
+    "CloseAllPositions",
+    "DenyOrder",
+    "DenyOrderList",
+)
+
 
 class StrategyPolicyFenceTests(unittest.TestCase):
     def violations_for(
@@ -378,8 +442,8 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertEqual(
             len(direct_violations),
-            13,
-            "raw msgbus trading-command injection must be fenced at the primitive layer",
+            15,
+            "every raw msgbus transport and command token occurrence must be fenced",
         )
 
     def test_detects_raw_transport_aliases_and_command_type_positions(self) -> None:
@@ -397,6 +461,151 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             4,
             "aliases, casts, and generic command types must remain fenced",
         )
+
+    def test_raw_transport_census_and_reference_forms_are_complete(self) -> None:
+        self.assertEqual(
+            VERIFIER.NT_VENUE_MUTATION_BARE_NAMES,
+            EXPECTED_RAW_TRANSPORT_NAMES,
+            "the independently pinned raw-transport census must not drift",
+        )
+        for name in EXPECTED_RAW_TRANSPORT_NAMES:
+            positive_sources = (
+                f"{name}(command);",
+                f"r#{name}(command);",
+                f"msgbus::{name}(command);",
+                f"msgbus::r#{name}(command);",
+                f"use msgbus::{name};",
+                f"use msgbus::{name} as dispatch;",
+                f"use msgbus::{{{name}}};",
+                f"use msgbus::{{{name} as dispatch}};",
+                f"let send = {name} as fn(Command);",
+                f"let send = msgbus::{name} as fn(Command);",
+                f"let send = &msgbus::{name};",
+                f"let sends = [msgbus::{name}];",
+            )
+            for source in positive_sources:
+                with self.subTest(name=name, source=source):
+                    self.assertTrue(
+                        self.direct_nt_violations_for(source),
+                        "every raw transport is reserved in every supported reference form",
+                    )
+
+            negative_source = f'''\
+            let {name}_intent = intent;
+            let my_{name} = helper;
+            let {name}_v2 = helper;
+            const TEXT: &str = "{name}";
+            // {name}(command);
+            '''
+            with self.subTest(name=name, source="near-neighbor controls"):
+                self.assertEqual(
+                    self.direct_nt_violations_for(negative_source),
+                    [],
+                    "near-neighbors and literals must not trip the exact-token fence",
+                )
+
+    def test_mutation_censuses_are_disjoint_and_cover_the_pinned_surface(self) -> None:
+        methods = set(VERIFIER.NT_VENUE_MUTATION_METHOD_NAMES)
+        lifecycle = set(VERIFIER.NT_TRANSITIVE_MUTATION_METHOD_NAMES)
+        transports = set(VERIFIER.NT_VENUE_MUTATION_BARE_NAMES)
+        commands = set(VERIFIER.NT_TRADING_COMMAND_SURFACE_NAMES)
+
+        self.assertTrue(EXPECTED_PINNED_NT_METHOD_NAMES <= methods)
+        self.assertEqual(
+            VERIFIER.NT_TRANSITIVE_MUTATION_METHOD_NAMES,
+            EXPECTED_PINNED_NT_LIFECYCLE_NAMES,
+        )
+        self.assertEqual(
+            VERIFIER.NT_TRADING_COMMAND_SURFACE_NAMES,
+            EXPECTED_PINNED_NT_COMMAND_NAMES,
+        )
+        semantic_classes = (methods, lifecycle, transports, commands)
+        for index, left in enumerate(semantic_classes):
+            for right in semantic_classes[index + 1 :]:
+                self.assertFalse(
+                    left & right,
+                    "one mutation token must have exactly one matching semantic class",
+                )
+
+    def test_qualified_method_reference_forms_are_complete(self) -> None:
+        for name in VERIFIER.NT_VENUE_MUTATION_METHOD_NAMES:
+            positive_sources = (
+                f"self.{name}(command);",
+                f"self.r#{name}(command);",
+                f"Self::{name}(self, command);",
+                f"<Wrapper<Foo> as Strategy>::{name}(self, command);",
+                f"let call = Self::{name} as fn(&mut Self, Command);",
+                f"let call = &Self::{name};",
+                f"let calls = [Self::{name}];",
+            )
+            for source in positive_sources:
+                with self.subTest(name=name, source=source):
+                    self.assertEqual(len(self.direct_nt_violations_for(source)), 1)
+
+            negative_source = f'''\
+            fn {name}() {{}}
+            let {name}_intent = intent;
+            const TEXT: &str = "{name}";
+            // self.{name}(command);
+            '''
+            with self.subTest(name=name, source="unqualified controls"):
+                self.assertEqual(self.direct_nt_violations_for(negative_source), [])
+
+    def test_command_reference_forms_are_complete(self) -> None:
+        for name in EXPECTED_PINNED_NT_COMMAND_NAMES:
+            positive_sources = (
+                f"{name}",
+                f"r#{name}",
+                f"nt::{name}",
+                f"nt::r#{name}",
+                f"use nt::{name};",
+                f"use nt::{{{name} as Alias}};",
+                f"type Pending = Vec<{name}>;",
+                f"let command = &nt::{name};",
+                f"let commands = [nt::{name}];",
+            )
+            for source in positive_sources:
+                with self.subTest(name=name, source=source):
+                    self.assertEqual(len(self.direct_nt_violations_for(source)), 1)
+
+            negative_source = f'''\
+            let {name}Intent = intent;
+            let my_{name} = helper;
+            const TEXT: &str = "{name}";
+            // nt::{name};
+            '''
+            with self.subTest(name=name, source="near-neighbor controls"):
+                self.assertEqual(self.direct_nt_violations_for(negative_source), [])
+
+    def test_lifecycle_reference_forms_and_strategy_scope_are_complete(self) -> None:
+        for name in EXPECTED_PINNED_NT_LIFECYCLE_NAMES:
+            positive_sources = (
+                f"self.{name}();",
+                f"self.r#{name}();",
+                f"Self::{name}(self);",
+                f"<Wrapper<Foo> as Strategy>::{name}(self);",
+                f"let call = Self::{name} as fn(&mut Self);",
+                f"let call = &Self::{name};",
+                f"let calls = [Self::{name}];",
+            )
+            for source in positive_sources:
+                with self.subTest(name=name, source=source):
+                    self.assertEqual(len(self.direct_nt_violations_for(source)), 1)
+                    self.assertEqual(
+                        self.direct_nt_violations_for(
+                            source, path="src/bolt_v3_order_execution.rs"
+                        ),
+                        [],
+                    )
+
+            negative_source = f'''\
+            fn {name}() {{}}
+            let {name}_intent = intent;
+            const TEXT: &str = "{name}";
+            // self.{name}();
+            '''
+            with self.subTest(name=name, source="unqualified controls"):
+                self.assertEqual(self.direct_nt_violations_for(negative_source), [])
 
     def test_detects_pinned_nt_batch_mutation_surface(self) -> None:
         direct_violations = self.direct_nt_violations_for(
@@ -475,7 +684,7 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertEqual(
             len(direct_violations),
-            1,
+            2,
             "the interim lexical fence deliberately reserves exact NT command names",
         )
 
@@ -659,7 +868,7 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
         self.assertEqual(
             len(self.direct_nt_violations_for(source, path="src/strategies/future.rs")),
-            4,
+            5,
             "the same NT submit primitives must remain forbidden in strategy code",
         )
 

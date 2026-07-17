@@ -21,8 +21,113 @@ VERIFIER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
 
+EXPECTED_LIFECYCLE_APIS = frozenset(
+    {
+        "market_exit_strategy",
+        "submit_order_list",
+        "close_all_positions",
+        "cancel_all_orders",
+        "close_position",
+        "cancel_orders",
+        "modify_orders",
+        "modify_order",
+        "exit_market",
+        "market_exit",
+    }
+)
+EXPECTED_TRANSITIVE_APIS = frozenset(
+    {
+        "reset_market_exit_state",
+        "check_market_exit",
+        "on_time_event",
+        "stop",
+    }
+)
+
 
 class NoExitMarketCommandFenceTests(unittest.TestCase):
+    def test_token_censuses_and_reference_forms_are_complete(self) -> None:
+        self.assertEqual(
+            VERIFIER.NT_VENUE_MUTATING_LIFECYCLE_APIS,
+            EXPECTED_LIFECYCLE_APIS,
+        )
+        self.assertEqual(
+            VERIFIER.STRATEGY_TRANSITIVE_MARKET_EXIT_APIS,
+            EXPECTED_TRANSITIVE_APIS,
+        )
+        self.assertEqual(VERIFIER.EXIT_MARKET_COMMAND_NAMES, {"ExitMarket"})
+
+        for name in EXPECTED_LIFECYCLE_APIS:
+            for source in (
+                f"self.{name}();",
+                f"self.r#{name}();",
+                f"Self::{name}(self);",
+                f"<Wrapper<Foo> as Strategy>::{name}(self);",
+                f"let call = Self::{name} as fn(&mut Self);",
+                f"let call = &Self::{name};",
+                f"let calls = [Self::{name}];",
+            ):
+                with self.subTest(kind="lifecycle", name=name, source=source):
+                    self.assertEqual(
+                        len(VERIFIER.find_violations_in_text("src/probe.rs", source)),
+                        1,
+                    )
+            with self.subTest(kind="lifecycle-negative", name=name):
+                self.assertEqual(
+                    VERIFIER.find_violations_in_text(
+                        "src/probe.rs",
+                        f'fn {name}() {{}} let {name}_intent = intent; const TEXT: &str = "{name}"; // self.{name}();',
+                    ),
+                    [],
+                )
+
+        for name in EXPECTED_TRANSITIVE_APIS:
+            for source in (
+                f"self.{name}();",
+                f"self.r#{name}();",
+                f"Self::{name}(self);",
+                f"<Wrapper<Foo> as Strategy>::{name}(self);",
+                f"let call = Self::{name} as fn(&mut Self);",
+                f"let call = &Self::{name};",
+                f"let calls = [Self::{name}];",
+            ):
+                with self.subTest(kind="transitive", name=name, source=source):
+                    self.assertEqual(
+                        len(
+                            VERIFIER.find_violations_in_text(
+                                "src/strategies/probe.rs", source
+                            )
+                        ),
+                        1,
+                    )
+                    self.assertEqual(
+                        VERIFIER.find_violations_in_text("src/probe.rs", source),
+                        [],
+                    )
+
+        for source in (
+            "ExitMarket",
+            "r#ExitMarket",
+            "StrategyCommand::ExitMarket",
+            "StrategyCommand::r#ExitMarket",
+            "use commands::ExitMarket;",
+            "use commands::{ExitMarket as Exit};",
+            "let command = &StrategyCommand::ExitMarket;",
+            "let commands = [StrategyCommand::ExitMarket];",
+        ):
+            with self.subTest(kind="command", source=source):
+                self.assertEqual(
+                    len(VERIFIER.find_violations_in_text("src/probe.rs", source)),
+                    1,
+                )
+        self.assertEqual(
+            VERIFIER.find_violations_in_text(
+                "src/probe.rs",
+                'let ExitMarketIntent = intent; const TEXT: &str = "ExitMarket"; // ExitMarket',
+            ),
+            [],
+        )
+
     def test_detects_strategy_command_exit_market(self) -> None:
         violations = VERIFIER.find_violations_in_text(
             "src/probe.rs",
@@ -165,15 +270,9 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
         self.assertTrue(VERIFIER.is_routed_chokepoint_api("modify_order"))
         self.assertTrue(VERIFIER.is_routed_chokepoint_api("cancel_all_orders"))
         # ...but a DIFFERENT, unrouted API that merely embeds an allowed name as a
-        # substring is NOT exempted. NOTE: this is a forward-proofing contract test,
-        # not a guard against a currently-reachable integration bypass. Through the
-        # real pipeline `match.group("api")` is always exactly one listed token (the
-        # forbidden regex's `(?:\.|::)` / `(?![A-Za-z0-9_])` boundary rejects
-        # impostor names like `force_modify_order` before they reach this function —
-        # that boundary is covered by `test_identifier_rules_do_not_match_substrings
-        # _or_comments`). A prior substring form was therefore not exploitable via
-        # the pipeline; pinning the exemption to exact membership keeps the allowlist
-        # from silently widening to a near-miss name if the regex ever changes.
+        # substring is NOT exempted. The shared tokenizer supplies canonical whole
+        # identifiers, and this exact-membership check keeps the allowlist from
+        # silently widening to a near-miss name if matching changes later.
         for impostor in (
             "force_modify_order",
             "modify_order_internal",

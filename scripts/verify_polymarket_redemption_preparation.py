@@ -73,6 +73,63 @@ def _repository_toml(root: pathlib.Path) -> list[pathlib.Path]:
     )
 
 
+def _production_rust_sources(
+    root: pathlib.Path,
+) -> tuple[list[pathlib.Path], list[str]]:
+    sources: set[pathlib.Path] = set()
+    errors: list[str] = []
+    manifests = (path for path in _repository_toml(root) if path.name == "Cargo.toml")
+    for manifest in manifests:
+        try:
+            cargo = _toml(manifest)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            errors.append(f"cannot inspect Cargo package {manifest.relative_to(root)}: {error}")
+            continue
+        package = cargo.get("package")
+        if package is None:
+            continue
+        if not isinstance(package, dict):
+            errors.append(f"Cargo package table must be a table: {manifest.relative_to(root)}")
+            continue
+        package_root = manifest.parent
+        source_root = package_root / "src"
+        if source_root.is_dir():
+            sources.update(
+                path
+                for path in source_root.rglob("*.rs")
+                if "tests" not in path.relative_to(package_root).parts
+            )
+
+        explicit_targets: list[tuple[str, object]] = []
+        if "lib" in cargo:
+            explicit_targets.append(("lib", cargo["lib"]))
+        bins = cargo.get("bin", [])
+        if not isinstance(bins, list):
+            errors.append(f"Cargo bin targets must be an array: {manifest.relative_to(root)}")
+            continue
+        explicit_targets.extend((f"bin[{index}]", target) for index, target in enumerate(bins))
+        for label, target in explicit_targets:
+            if not isinstance(target, dict):
+                errors.append(
+                    f"Cargo {label} target must be a table: {manifest.relative_to(root)}"
+                )
+                continue
+            target_path = target.get("path")
+            if target_path is None:
+                continue
+            if not isinstance(target_path, str):
+                errors.append(
+                    f"Cargo {label} target path must be a string: {manifest.relative_to(root)}"
+                )
+                continue
+            candidate = package_root / target_path
+            if not candidate.is_file():
+                errors.append(f"cannot inspect Cargo {label} target {candidate.relative_to(root)}")
+                continue
+            sources.add(candidate)
+    return sorted(sources), errors
+
+
 def _prepare_signature(text: str) -> str:
     start = text.find("pub fn prepare_redemption_request(")
     if start < 0:
@@ -373,7 +430,12 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         if marker not in compile_fail_text:
             errors.append(f"compile-fail proof is missing marker {marker}")
 
-    for path in sorted((root / "src").rglob("*.rs")):
+    if production.count("prepare_redemption_request") > 1:
+        errors.append("active production caller found inside disabled module")
+
+    production_sources, source_errors = _production_rust_sources(root)
+    errors.extend(source_errors)
+    for path in production_sources:
         relative = path.relative_to(root)
         if relative in {OWNER, GENERATED}:
             continue
@@ -382,7 +444,7 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         except (OSError, UnicodeDecodeError) as error:
             errors.append(f"cannot inspect production caller surface {relative}: {error}")
             continue
-        if "prepare_redemption_request" in text:
+        if "prepare_redemption_request" in _production_owner(text):
             errors.append(f"active production caller found outside disabled module: {relative}")
 
     return errors

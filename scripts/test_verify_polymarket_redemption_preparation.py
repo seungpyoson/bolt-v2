@@ -148,6 +148,8 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "Cargo.toml").write_text(
+            '[package]\nname = "redemption-fence-fixture"\nversion = "0.0.0"\n'
+            'edition = "2024"\n[dependencies]\n'
             'alloy-signer = "=2.1.0"\nalloy-signer-local = "=2.1.0"\n'
             '[[test]]\nname = "polymarket_redemption_preparation"\n'
             'path = "tests/polymarket_redemption_preparation.rs"\n',
@@ -339,6 +341,42 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertTrue(any("active production caller" in error for error in verifier.boundary_errors(root)))
+
+    def test_active_caller_in_owner_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        owner = root / "src/bolt_v3_polymarket_redemption.rs"
+        owner.write_text(
+            owner.read_text(encoding="utf-8").replace(
+                "#[cfg(test)]",
+                "fn active() { let prepare = prepare_redemption_request; }\n\n#[cfg(test)]",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any("active production caller" in error for error in verifier.boundary_errors(root))
+        )
+
+    def test_active_caller_in_nested_package_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        package = root / "crates/consumer"
+        (package / "src").mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            '[package]\nname = "consumer"\nversion = "0.0.0"\nedition = "2024"\n',
+            encoding="utf-8",
+        )
+        (package / "src/lib.rs").write_text(
+            "fn active() {\n"
+            "    let prepare = bolt_v2::bolt_v3_polymarket_redemption::"
+            "prepare_redemption_request;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any("active production caller" in error for error in verifier.boundary_errors(root))
+        )
 
     def test_public_injectable_secret_resolver_is_rejected(self) -> None:
         temporary, root = self.fixture()

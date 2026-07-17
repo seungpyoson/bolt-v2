@@ -4,8 +4,9 @@
 //! never falls back to a provider URL: it derives the one configured store
 //! from the verified RunSpec, resolves its credentials only from the RunSpec's
 //! SSM parameter references, discovers the current non-null S3 version, and
-//! reads that exact version. The transport returns only an opaque object whose
-//! execution-pack byte-length and SHA-256 identity it has already verified.
+//! reads that exact version under its nonempty conditional ETag. The transport
+//! returns only an opaque object whose execution-pack byte-length and SHA-256
+//! identity it has already verified.
 
 use std::time::Duration;
 
@@ -191,6 +192,11 @@ async fn read_staged_s3_exact_current_version(
         .clone()
         .context("current staged S3 source has no version ID")?;
     ensure_immutable_s3_version_id("current staged S3 source version ID", &version_id)?;
+    let e_tag = current
+        .e_tag
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .context("current staged S3 source has no ETag")?;
     let exact = guarded_async_operation_outcome(
         work_budget,
         OperatorWorkBudgetStage::Fetch,
@@ -198,7 +204,7 @@ async fn read_staged_s3_exact_current_version(
             object_path,
             GetOptions {
                 version: Some(version_id.clone()),
-                if_match: current.e_tag.clone(),
+                if_match: Some(e_tag.clone()),
                 ..GetOptions::default()
             },
         ),
@@ -223,12 +229,10 @@ async fn read_staged_s3_exact_current_version(
         exact.meta.version.as_deref() == Some(version_id.as_str()),
         "exact staged S3 source version metadata mismatch"
     );
-    if let Some(expected_e_tag) = &current.e_tag {
-        ensure!(
-            exact.meta.e_tag.as_ref() == Some(expected_e_tag),
-            "exact staged S3 source ETag mismatch"
-        );
-    }
+    ensure!(
+        exact.meta.e_tag.as_deref() == Some(e_tag.as_str()),
+        "exact staged S3 source ETag mismatch"
+    );
 
     let mut output = ExactSizedObjectBuffer::new(expected_bytes)?;
     let mut stream = exact.into_stream();
@@ -276,8 +280,8 @@ mod tests {
         payload: Bytes,
         head_version: Option<String>,
         exact_response_version: Option<String>,
-        e_tag: String,
-        exact_response_e_tag: String,
+        e_tag: Option<String>,
+        exact_response_e_tag: Option<String>,
         reported_size: u64,
         exact_gets: AtomicUsize,
     }
@@ -290,8 +294,8 @@ mod tests {
                 payload: Bytes::copy_from_slice(payload),
                 head_version: Some("source-version-1".to_string()),
                 exact_response_version: Some("source-version-1".to_string()),
-                e_tag: "source-etag-1".to_string(),
-                exact_response_e_tag: "source-etag-1".to_string(),
+                e_tag: Some("source-etag-1".to_string()),
+                exact_response_e_tag: Some("source-etag-1".to_string()),
                 reported_size: u64::try_from(payload.len()).expect("test payload size fits u64"),
                 exact_gets: AtomicUsize::new(0),
             }
@@ -300,7 +304,7 @@ mod tests {
         fn result(
             &self,
             version: Option<String>,
-            e_tag: String,
+            e_tag: Option<String>,
             include_payload: bool,
         ) -> GetResult {
             let payload = include_payload
@@ -318,7 +322,7 @@ mod tests {
                     location: self.location.clone(),
                     last_modified: chrono::Utc::now(),
                     size,
-                    e_tag: Some(e_tag),
+                    e_tag,
                     version,
                 },
                 range: 0..size,
@@ -368,7 +372,7 @@ mod tests {
             }
             self.exact_gets.fetch_add(1, Ordering::SeqCst);
             if options.version.as_deref() != self.head_version.as_deref()
-                || options.if_match.as_deref() != Some(self.e_tag.as_str())
+                || options.if_match.as_deref() != self.e_tag.as_deref()
             {
                 return Err(object_store::Error::Precondition {
                     path: location.to_string(),
@@ -473,6 +477,36 @@ mod tests {
     }
 
     #[test]
+    fn staged_s3_read_requires_a_nonempty_head_etag_before_exact_get() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        for store in [
+            ExactVersionReadStore {
+                e_tag: None,
+                ..ExactVersionReadStore::new(b"pinned-source")
+            },
+            ExactVersionReadStore {
+                e_tag: Some("   ".to_string()),
+                ..ExactVersionReadStore::new(b"pinned-source")
+            },
+        ] {
+            let error = runtime
+                .block_on(read_staged_s3_exact_current_version(
+                    &store,
+                    &store.location,
+                    13,
+                    "s3://bucket/backfill-staging/object.bin",
+                    &OperatorWorkBudgetGuard::unbounded(),
+                ))
+                .expect_err("an unbound conditional ETag must fail before exact GET");
+            assert!(error.to_string().contains("no ETag"), "{error:#}");
+            assert_eq!(store.exact_gets.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
     fn staged_s3_read_rejects_etag_and_body_length_drift() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -480,7 +514,11 @@ mod tests {
             .expect("test runtime");
         for store in [
             ExactVersionReadStore {
-                exact_response_e_tag: "different-etag".to_string(),
+                exact_response_e_tag: Some("different-etag".to_string()),
+                ..ExactVersionReadStore::new(b"pinned-source")
+            },
+            ExactVersionReadStore {
+                exact_response_e_tag: None,
                 ..ExactVersionReadStore::new(b"pinned-source")
             },
             ExactVersionReadStore {

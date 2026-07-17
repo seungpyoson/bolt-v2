@@ -258,9 +258,10 @@ impl RetiredBackfillEvidenceInventory {
             validate_exact_date_range(&self.records, venue, first, last, expected_count)?;
         }
 
+        let expected_aggregate_count = RETIRED_AGGREGATE_ARTIFACTS.len();
         ensure!(
-            self.retired_aggregate_artifacts.len() == 12,
-            "retired aggregate inventory must contain exactly 12 artifacts, got {}",
+            self.retired_aggregate_artifacts.len() == expected_aggregate_count,
+            "retired aggregate inventory must contain exactly {expected_aggregate_count} artifacts, got {}",
             self.retired_aggregate_artifacts.len()
         );
         let expected_aggregate_paths = RETIRED_AGGREGATE_ARTIFACTS

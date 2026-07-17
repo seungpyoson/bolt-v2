@@ -2,6 +2,7 @@
 
 - [ ] RA-001 Gate-0: route every accepted NT-native converted table family through the one manifest-bound, create-only S3 publication path and the sole exact-version-hydrated NT BacktestNode read binding; NT's catalog writer is not the publication authority.
   - [ ] RA-001a One-record tracer: every committed source-universe execution-pack registry entry uses the bounded process-isolated durable path for one CSV-native trade record; coverage is registry-derived rather than venue-listed.
+    - `reference/normalization-catalog-plan.v3.md` is intentionally retired with this implementation slice; this task list is the remaining plan authority.
   - [ ] RA-001b Fan-out: before broad publication, replace the conservative whole-RunSpec/whole-registry generation inputs with a proven durable-output-semantics projection plus the selected binding/capability digest, retaining both full hashes as provenance only; then extend the same path to the remaining accepted NT-native table families and converter bindings. No alternate publisher or manual BacktestEngine path is permitted.
 - [x] RA-002 Define point-in-time feature join rules and leakage fixtures.
 - [x] RA-003 Implement leakage-check fixtures that fail closed on future-data access.

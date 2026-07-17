@@ -3950,64 +3950,86 @@ where
             let runner_factory = &runner_factory;
             let output_root_lease = &owned_plan.output_root_lease;
             handles.push(scope.spawn(move || -> Result<()> {
-                let mut fetcher: Option<F> = None;
-                let mut runner: Option<R> = None;
-                loop {
-                    if stop_flag.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let index = next_index.fetch_add(1, Ordering::SeqCst);
-                    if index >= work_items.len() {
-                        break;
-                    }
-                    let work_item = &work_items[index];
-                    let slot = match resolve_work_item(work_item, config, &clock_factory) {
-                        ResolvedBatchWorkItem::Terminal(slot) => *slot,
-                        ResolvedBatchWorkItem::Fresh(fresh) => {
-                            let record = fresh.record;
-                            let execution_record_sha256 = fresh.execution_record_sha256;
-                            match (|| -> Result<RecordSlot> {
-                                if runner.is_none() {
-                                    runner = Some(
-                                        runner_factory()
-                                            .context("construct batch worker runner")?,
-                                    );
-                                }
-                                let mut lazy_fetcher = LazySourceUniverseObjectFetcher {
-                                    inner: &mut fetcher,
-                                    factory: fetcher_factory,
-                                };
-                                Ok(process_fresh_work_item(
-                                    fresh,
-                                    output_root_lease,
-                                    config,
-                                    &mut lazy_fetcher,
-                                    runner.as_mut().expect("batch runner initialized"),
-                                    lifecycle_cleanup_limits,
-                                    completion_policy,
-                                ))
-                            })() {
-                                Ok(slot) => slot,
-                                Err(error) => record_error_slot(
-                                    record,
-                                    execution_record_sha256,
-                                    "construct_worker_dependencies",
-                                    error,
-                                    config,
-                                ),
+                // Dev/test profiles unwind here, so convert an otherwise
+                // unclassified supervisor panic into the same typed hard-stop
+                // used for uncertain durable terminal ownership. The release
+                // profile is panic=abort and still fails closed at the process
+                // boundary rather than attempting an unsafe retry.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<()> {
+                        let mut fetcher: Option<F> = None;
+                        let mut runner: Option<R> = None;
+                        loop {
+                            if stop_flag.load(Ordering::SeqCst) {
+                                break;
                             }
+                            let index = next_index.fetch_add(1, Ordering::SeqCst);
+                            if index >= work_items.len() {
+                                break;
+                            }
+                            let work_item = &work_items[index];
+                            let slot = match resolve_work_item(work_item, config, &clock_factory) {
+                                ResolvedBatchWorkItem::Terminal(slot) => *slot,
+                                ResolvedBatchWorkItem::Fresh(fresh) => {
+                                    let record = fresh.record;
+                                    let execution_record_sha256 = fresh.execution_record_sha256;
+                                    match (|| -> Result<RecordSlot> {
+                                        if runner.is_none() {
+                                            runner = Some(
+                                                runner_factory()
+                                                    .context("construct batch worker runner")?,
+                                            );
+                                        }
+                                        let mut lazy_fetcher = LazySourceUniverseObjectFetcher {
+                                            inner: &mut fetcher,
+                                            factory: fetcher_factory,
+                                        };
+                                        Ok(process_fresh_work_item(
+                                            fresh,
+                                            output_root_lease,
+                                            config,
+                                            &mut lazy_fetcher,
+                                            runner.as_mut().expect("batch runner initialized"),
+                                            lifecycle_cleanup_limits,
+                                            completion_policy,
+                                        ))
+                                    })() {
+                                        Ok(slot) => slot,
+                                        Err(error) => record_error_slot(
+                                            record,
+                                            execution_record_sha256,
+                                            "construct_worker_dependencies",
+                                            error,
+                                            config,
+                                        ),
+                                    }
+                                }
+                            };
+                            if matches!(slot, RecordSlot::Stopped(_)) {
+                                stop_flag.store(true, Ordering::SeqCst);
+                            }
+                            *slots[index].lock().expect("batch slot mutex") = Some(slot);
                         }
-                    };
-                    if matches!(slot, RecordSlot::Stopped(_)) {
+                        Ok(())
+                    },
+                ));
+                match outcome {
+                    Ok(result) => result,
+                    Err(_) => {
                         stop_flag.store(true, Ordering::SeqCst);
+                        Err(committed_indeterminate_worker_error(
+                            "batch worker thread panicked before durable terminal ownership was proven",
+                        ))
                     }
-                    *slots[index].lock().expect("batch slot mutex") = Some(slot);
                 }
-                Ok(())
             }));
         }
         for handle in handles {
-            handle.join().expect("batch worker thread panicked")?;
+            handle.join().map_err(|_| {
+                committed_indeterminate_worker_error(
+                    "batch worker panic escaped the supervised panic boundary",
+                )
+            })??;
         }
         Ok(())
     })?;
@@ -9409,6 +9431,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn batch_worker_panic_becomes_a_committed_indeterminate_error() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp_dir.path());
+
+        let error = execute_prepared_source_universe_batch_with_factories(
+            "panic-regression",
+            &owned_plan,
+            SourceUniverseBatchExecutionConfig {
+                start_sequence: None,
+                record_limit: Some(1),
+                continue_on_error: true,
+                max_concurrent_records: Some(1),
+            },
+            TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS,
+            BatchCompletionPolicy::AllowPublish,
+            || Ok(PanicFetcher),
+            || Ok(NeverRunner),
+        )
+        .expect_err("a batch worker panic must fail closed without unwinding the supervisor");
+
+        assert!(is_committed_indeterminate_worker_error(&error));
+        assert!(
+            error.to_string().contains("batch worker thread panicked"),
+            "{error:#}"
+        );
+    }
+
     fn exact_current_discovery_report(
         owned_plan: &OwnedBatchPlan,
     ) -> SourceUniverseBatchExecutionReport {
@@ -9893,6 +9944,37 @@ mod tests {
             assert!(
                 !rendered.contains("credential-value") && !rendered.contains("operator"),
                 "source URL validation errors must not disclose URL credentials: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_transport_error_formatting_strips_attached_urls_and_credentials() {
+        let sensitive_url = reqwest::Url::parse(
+            "https://operator:credential-value@example.invalid/object.csv.gz?token=credential-value",
+        )
+        .expect("parse sensitive test URL");
+        let request_error = reqwest::Client::new()
+            .get("not-a-valid-absolute-url")
+            .build()
+            .expect_err("a relative request target must produce a reqwest error")
+            .with_url(sensitive_url.clone());
+        assert_eq!(request_error.url(), Some(&sensitive_url));
+
+        let rendered = format!(
+            "{:#}",
+            source_object_http_error(request_error, "execute source-object GET request")
+        );
+        for sensitive_component in [
+            "operator",
+            "credential-value",
+            "example.invalid",
+            "object.csv.gz",
+            "token",
+        ] {
+            assert!(
+                !rendered.contains(sensitive_component),
+                "HTTP transport error disclosed {sensitive_component:?}: {rendered}"
             );
         }
     }

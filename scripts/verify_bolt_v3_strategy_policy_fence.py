@@ -53,14 +53,11 @@ class Violation:
 
 
 NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
-    # Raw StrategyCore / OrderManager command transport is the deepest NT
-    # mutation path underneath the Strategy helper methods.
+    # Native core access and raw OrderManager command transport are the deepest
+    # mutation paths underneath the Strategy helper methods. `StrategyCore` and
+    # order-factory access remain allowed because strategies use them to construct intent.
     "core_mut",
     "order_manager",
-    "send_risk_command",
-    "send_exec_command",
-    "send_emulator_command",
-    "send_algo_command",
     # Common raw msgbus command transport helpers underneath OrderManager.
     "send_trading_command",
     "send_any",
@@ -104,7 +101,22 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "deny_order_list",
 )
 
+# High-collision lifecycle names are strategy-only evidence. Applying `stop` or
+# `on_start` to every Rust module would reject unrelated runtime/component APIs.
+NT_TRANSITIVE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
+    "strategy_core_mut",
+    "reset_market_exit_state",
+    "on_start",
+    "on_time_event",
+    "check_market_exit",
+    "stop",
+)
+
 NT_VENUE_MUTATION_BARE_NAMES: tuple[str, ...] = (
+    "send_risk_command",
+    "send_exec_command",
+    "send_emulator_command",
+    "send_algo_command",
     "send_trading_command",
     "send_any",
     "send_any_value",
@@ -135,6 +147,10 @@ NT_VENUE_MUTATION_METHOD_PATTERN = "|".join(
     re.escape(name)
     for name in sorted(NT_VENUE_MUTATION_METHOD_NAMES, key=len, reverse=True)
 )
+NT_TRANSITIVE_MUTATION_METHOD_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(NT_TRANSITIVE_MUTATION_METHOD_NAMES, key=len, reverse=True)
+)
 NT_VENUE_MUTATION_BARE_PATTERN = "|".join(
     re.escape(name)
     for name in sorted(NT_VENUE_MUTATION_BARE_NAMES, key=len, reverse=True)
@@ -155,6 +171,17 @@ DIRECT_NT_VENUE_MUTATION_RULE = Rule(
     ),
 )
 
+TRANSITIVE_NT_VENUE_MUTATION_RULE = Rule(
+    "direct NT venue mutation call",
+    re.compile(
+        r"(?:\.\s*|(?<![A-Za-z0-9_])"
+        r"(?:Self|[A-Za-z_][A-Za-z0-9_]*"
+        r"(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*::\s*|<[^>\n]+>\s*::\s*)"
+        rf"(?:{NT_TRANSITIVE_MUTATION_METHOD_PATTERN})"
+        r"(?![A-Za-z0-9_])"
+    ),
+)
+
 RAW_MSGBUS_NT_VENUE_MUTATION_RULE = Rule(
     "direct NT venue mutation call",
     re.compile(
@@ -168,6 +195,7 @@ RAW_MSGBUS_NT_VENUE_MUTATION_RULE = Rule(
 )
 
 STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
+    TRANSITIVE_NT_VENUE_MUTATION_RULE,
     Rule(
         "dead runtime-selection bus path",
         re.compile(

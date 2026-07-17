@@ -114,7 +114,7 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
 
     def test_detects_transitive_market_exit_lifecycle_apis(self) -> None:
         violations = VERIFIER.find_violations_in_text(
-            "src/probe.rs",
+            "src/strategies/probe.rs",
             """
             self.reset_market_exit_state();
             Strategy::check_market_exit(self, event);

@@ -18,10 +18,6 @@ const STRATEGY_MUTATION_AUTHORITY_NAMES: &[&str] = &[
 const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
     "core_mut",
     "order_manager",
-    "send_risk_command",
-    "send_exec_command",
-    "send_emulator_command",
-    "send_algo_command",
     "send_trading_command",
     "send_any",
     "send_any_value",
@@ -62,7 +58,20 @@ const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
     "market_exit",
 ];
 
+const NT_TRANSITIVE_MUTATION_METHOD_NAMES: &[&str] = &[
+    "strategy_core_mut",
+    "reset_market_exit_state",
+    "on_start",
+    "on_time_event",
+    "check_market_exit",
+    "stop",
+];
+
 const NT_VENUE_MUTATION_BARE_NAMES: &[&str] = &[
+    "send_risk_command",
+    "send_exec_command",
+    "send_emulator_command",
+    "send_algo_command",
     "send_trading_command",
     "send_any",
     "send_any_value",
@@ -261,6 +270,7 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
     let mut saw_item_or_expression_body = false;
     let mut saw_match_arrow = false;
     let mut can_start_item_or_macro = true;
+    let mut saw_ambiguous_prefix = false;
     while cursor < tokens.len() {
         match tokens[cursor].text.as_str() {
             token
@@ -282,10 +292,14 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
                             | "for"
                     ) =>
             {
+                if saw_ambiguous_prefix {
+                    return None;
+                }
                 saw_item_or_expression_body = true;
             }
             "!" if delimiters.is_empty() && can_start_item_or_macro => {
                 saw_item_or_expression_body = true;
+                saw_ambiguous_prefix = false;
             }
             "=" if delimiters.is_empty()
                 && tokens
@@ -329,6 +343,24 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
             }
             ";" | "," if delimiters.is_empty() => {
                 return Some(cursor + 1);
+            }
+            token
+                if delimiters.is_empty()
+                    && can_start_item_or_macro
+                    && token
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|byte| ident_start(*byte))
+                    && !matches!(
+                        token,
+                        "pub" | "unsafe" | "async" | "const" | "default" | "auto" | "move"
+                    ) =>
+            {
+                // An identifier may still become a macro path (`foo::bar!`), but it cannot be
+                // silently reinterpreted as a modifier for a later item keyword. If no `!`
+                // resolves the path before `fn`/`struct`/`mod`/an expression body, retain the
+                // entire ambiguous cfg-gated region.
+                saw_ambiguous_prefix = true;
             }
             _ => {}
         }
@@ -556,6 +588,12 @@ fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
     );
     violations.extend(
         NT_VENUE_MUTATION_METHOD_NAMES
+            .iter()
+            .copied()
+            .filter(|name| direct_method_reference(&actual, name)),
+    );
+    violations.extend(
+        NT_TRANSITIVE_MUTATION_METHOD_NAMES
             .iter()
             .copied()
             .filter(|name| direct_method_reference(&actual, name)),
@@ -857,7 +895,10 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         let tokens = tokenize(&format!("use boundary::{authority};"));
         assert_eq!(named_strategy_mutation_surfaces(&tokens), vec![*authority]);
     }
-    for method in NT_VENUE_MUTATION_METHOD_NAMES {
+    for method in NT_VENUE_MUTATION_METHOD_NAMES
+        .iter()
+        .chain(NT_TRANSITIVE_MUTATION_METHOD_NAMES)
+    {
         let tokens = tokenize(&format!("self.{method}(command);"));
         assert!(
             named_strategy_mutation_surfaces(&tokens).contains(method),
@@ -985,6 +1026,10 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
             "an unknown cfg-gated prefix must retain the ambiguous region"
         );
         assert!(
+            !named_strategy_mutation_surfaces(&tokens).is_empty(),
+            "an unknown cfg-gated prefix must not hide the fenced mutation token"
+        );
+        assert!(
             contains_sequence(&tokens, &["production_after"]),
             "an unknown cfg-gated prefix must not hide the production sibling"
         );
@@ -996,8 +1041,13 @@ fn pinned_nt_mutation_surface_is_censused() {
     let lock = std::fs::read_to_string(repo_path("Cargo.lock"))
         .expect("Cargo.lock should retain the audited NT revision");
     assert!(lock.contains("d636f17604cdbddc28ad40e0e15720e2d19bf860"));
+    for method in ["modify_orders"] {
+        assert!(
+            NT_VENUE_MUTATION_METHOD_NAMES.contains(&method),
+            "pinned NT Strategy mutation method `{method}` must remain censused"
+        );
+    }
     for method in [
-        "modify_orders",
         "strategy_core_mut",
         "reset_market_exit_state",
         "on_start",
@@ -1006,8 +1056,8 @@ fn pinned_nt_mutation_surface_is_censused() {
         "stop",
     ] {
         assert!(
-            NT_VENUE_MUTATION_METHOD_NAMES.contains(&method),
-            "pinned NT Strategy mutation method `{method}` must remain censused"
+            NT_TRANSITIVE_MUTATION_METHOD_NAMES.contains(&method),
+            "pinned NT transitive mutation method `{method}` must remain censused"
         );
     }
     for command in ["ModifyOrders", "BatchModifyOrders", "BatchCancelOrders"] {

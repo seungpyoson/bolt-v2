@@ -53,6 +53,14 @@ FORBIDDEN_RULES = (
             r"(?![A-Za-z0-9_])"
         ),
     ),
+    Rule(
+        "strategy NT transitive market-exit lifecycle API",
+        re.compile(
+            r"(?:\.|::)\s*(?:r#)?"
+            r"(?P<api>reset_market_exit_state|check_market_exit|on_time_event|stop)"
+            r"(?![A-Za-z0-9_])"
+        ),
+    ),
 )
 
 # The shared execution-policy module IS Bolt's venue-mutation chokepoint: every
@@ -106,6 +114,11 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
     scan_text = strip_rust_comments_and_literals(text)
     violations: list[Violation] = []
     for rule in FORBIDDEN_RULES:
+        if (
+            rule.label == "strategy NT transitive market-exit lifecycle API"
+            and not path.startswith("src/strategies/")
+        ):
+            continue
         for match in rule.pattern.finditer(scan_text):
             if (
                 rule.label == "NT venue-mutating lifecycle API"

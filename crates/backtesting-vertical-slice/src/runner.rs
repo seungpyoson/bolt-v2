@@ -2796,25 +2796,30 @@ mod tests {
             .context("write maker smoke instruments")?;
         catalog
             .write_to_parquet(
-                &[
-                    maker_smoke_trade(
-                        yes_id,
-                        "maker-smoke-yes-1",
-                        AggressorSide::Buyer,
-                        MAKER_SMOKE_TS_NS,
-                    ),
-                    maker_smoke_trade(
-                        no_id,
-                        "maker-smoke-no-1",
-                        AggressorSide::Seller,
-                        MAKER_SMOKE_TS_NS + 1_000_000,
-                    ),
-                ],
+                &[maker_smoke_trade(
+                    yes_id,
+                    "maker-smoke-yes-1",
+                    AggressorSide::Buyer,
+                    MAKER_SMOKE_TS_NS,
+                )],
                 None,
                 None,
                 None,
             )
-            .context("write maker smoke trade ticks")?;
+            .context("write maker smoke YES trade tick")?;
+        catalog
+            .write_to_parquet(
+                &[maker_smoke_trade(
+                    no_id,
+                    "maker-smoke-no-1",
+                    AggressorSide::Seller,
+                    MAKER_SMOKE_TS_NS + 1_000_000,
+                )],
+                None,
+                None,
+                None,
+            )
+            .context("write maker smoke NO trade tick")?;
         Ok(())
     }
 

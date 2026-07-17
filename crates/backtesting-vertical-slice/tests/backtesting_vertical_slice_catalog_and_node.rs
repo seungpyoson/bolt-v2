@@ -146,7 +146,21 @@ fn synthetic_l2_deltas(instrument_id: InstrumentId) -> Vec<OrderBookDelta> {
     let ts_event = UnixNanos::from(L2_BASE_TIMESTAMP_NANOS);
     let ts_init = UnixNanos::from(1_000_000_000u64);
     vec![
-        OrderBookDelta::clear(instrument_id, 0, ts_event, ts_init),
+        OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Clear,
+            BookOrder::new(
+                OrderSide::NoOrderSide,
+                Price::from("0.00"),
+                Quantity::from("0.000000"),
+                0,
+            ),
+            RecordFlag::F_SNAPSHOT as u8,
+            0,
+            ts_event,
+            ts_init,
+        )
+        .expect("clear delta"),
         OrderBookDelta::new_checked(
             instrument_id,
             BookAction::Add,

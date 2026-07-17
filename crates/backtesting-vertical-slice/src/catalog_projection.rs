@@ -446,6 +446,16 @@ fn parse_money(value: &str, currency: Currency, label: &str) -> Result<Money> {
     .map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
 }
 
+fn parse_optional_money(
+    value: Option<&str>,
+    currency: Currency,
+    label: &str,
+) -> Result<Option<Money>> {
+    value
+        .map(|value| parse_money(value, currency, label))
+        .transpose()
+}
+
 fn derivative_common_fields(
     input: DerivativeCommonFieldInput<'_>,
 ) -> Result<DerivativeCommonFields> {
@@ -650,26 +660,6 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
     let size_increment = parse_quantity(&spec.size_increment, "size_increment")?;
     let price_precision = price_increment.precision;
     let size_precision = size_increment.precision;
-    // The NT catalog Arrow schema for BinaryOption does NOT encode these six
-    // fields (binary_option.rs lines 412-417 in rev 6e059dc hardcode them as
-    // `None` on decode). Accepting a spec that sets them would silently drop
-    // the configured values on the projection round-trip, violating the
-    // fail-loud rule.  Reject them here so the operator knows up front.
-    for (label, value) in [
-        ("max_notional", spec.max_notional.as_deref()),
-        ("min_notional", spec.min_notional.as_deref()),
-        ("max_price", spec.max_price.as_deref()),
-        ("min_price", spec.min_price.as_deref()),
-        ("margin_init", spec.margin_init.as_deref()),
-        ("margin_maint", spec.margin_maint.as_deref()),
-    ] {
-        ensure!(
-            value.is_none(),
-            "{label} is not supported for BinaryOption: the NT catalog Arrow schema does not \
-             persist this field (decode_binary_option_batch hardcodes it as None), so it would \
-             be silently lost on the projection round-trip"
-        );
-    }
     let option = BinaryOption::new_checked(
         instrument_id,
         raw_symbol,
@@ -685,12 +675,12 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
         parse_optional_ustr(spec.description.as_deref(), "description")?,
         parse_optional_quantity(spec.max_quantity.as_deref(), "max_quantity")?,
         parse_optional_quantity(spec.min_quantity.as_deref(), "min_quantity")?,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        parse_optional_money(spec.max_notional.as_deref(), currency, "max_notional")?,
+        parse_optional_money(spec.min_notional.as_deref(), currency, "min_notional")?,
+        parse_optional_price(spec.max_price.as_deref(), "max_price")?,
+        parse_optional_price(spec.min_price.as_deref(), "min_price")?,
+        parse_optional_decimal(spec.margin_init.as_deref(), "margin_init")?,
+        parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
         None, // tick_scheme (NT bump): not populated by bolt
@@ -704,68 +694,7 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
             spec.nt_instrument_id
         )
     })?;
-    // The six NT-non-persistable fields are passed as `None`/default above, but
-    // route the constructed instrument through the single catalog-persistability
-    // invariant so the SPEC path and the one-off backfill path enforce one rule.
-    ensure_binary_option_catalog_persistable(&option)?;
     Ok(option)
-}
-
-/// THE one rule: a [`BinaryOption`] is catalog-persistable only when every
-/// field the NT catalog Arrow schema cannot encode is at its round-trip value.
-///
-/// `decode_binary_option_batch` (rev 6e059dc lines 412-417) hardcodes
-/// `max_price`, `min_price`, `max_notional`, `min_notional`, `margin_init`, and
-/// `margin_maint` to `None` on read-back; `BinaryOption`'s constructor stores
-/// the two margins as `Decimal::default()` when given `None`. So a persisted
-/// instrument round-trips losslessly only when the four `Option` bounds are
-/// `None` and the two margins are zero. Any other value would be silently
-/// dropped on the projection round-trip (FAIL LOUD: reject it here). Both the
-/// SPEC projection ([`build_binary_option`]) and the one-off backfill
-/// projection share this invariant so no second production rule can disagree on
-/// whether a degraded instrument is acceptable (NO DUAL PATHS).
-///
-/// # Errors
-///
-/// Returns an error naming the first field that would be lost on round-trip.
-pub(crate) fn ensure_binary_option_catalog_persistable(inst: &BinaryOption) -> Result<()> {
-    ensure!(
-        inst.max_price.is_none(),
-        "max_price would be silently lost on the NT catalog round-trip \
-         (decode_binary_option_batch hardcodes it as None): {:?}",
-        inst.id
-    );
-    ensure!(
-        inst.min_price.is_none(),
-        "min_price would be silently lost on the NT catalog round-trip \
-         (decode_binary_option_batch hardcodes it as None): {:?}",
-        inst.id
-    );
-    ensure!(
-        inst.max_notional.is_none(),
-        "max_notional would be silently lost on the NT catalog round-trip \
-         (decode_binary_option_batch hardcodes it as None): {:?}",
-        inst.id
-    );
-    ensure!(
-        inst.min_notional.is_none(),
-        "min_notional would be silently lost on the NT catalog round-trip \
-         (decode_binary_option_batch hardcodes it as None): {:?}",
-        inst.id
-    );
-    ensure!(
-        inst.margin_init == Decimal::default(),
-        "margin_init would be silently zeroed on the NT catalog round-trip \
-         (decode_binary_option_batch hardcodes it as None): {:?}",
-        inst.id
-    );
-    ensure!(
-        inst.margin_maint == Decimal::default(),
-        "margin_maint would be silently zeroed on the NT catalog round-trip \
-         (decode_binary_option_batch hardcodes it as None): {:?}",
-        inst.id
-    );
-    Ok(())
 }
 
 /// NT `ts_event` for a canonical row: the exchange/source event instant.
@@ -1206,9 +1135,43 @@ pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
         .rows
         .iter()
         .map(|row| {
-            canonical_row_to_order_book_delta(instrument_id, row, price_precision, size_precision)
+            let delta = canonical_row_to_order_book_delta(
+                instrument_id,
+                row,
+                price_precision,
+                size_precision,
+            )?;
+            order_book_delta_at_precision(delta, price_precision, size_precision)
         })
         .collect()
+}
+
+/// Rebuild one delta at the instrument's exact price and size precision.
+///
+/// NautilusTrader derives Parquet batch metadata from every record and rejects
+/// mixed metadata. Its `OrderBookDelta::clear` convenience constructor carries
+/// zero-precision NULL order values, while the other deltas carry instrument
+/// precision. Applying this one transformation to every delta keeps a catalog
+/// batch homogeneous without a CLEAR-specific write path.
+pub(crate) fn order_book_delta_at_precision(
+    delta: OrderBookDelta,
+    price_precision: u8,
+    size_precision: u8,
+) -> Result<OrderBookDelta> {
+    let price = Price::from_decimal_dp(delta.order.price.as_decimal(), price_precision)
+        .context("represent order-book delta price at instrument precision")?;
+    let size = Quantity::from_decimal_dp(delta.order.size.as_decimal(), size_precision)
+        .context("represent order-book delta size at instrument precision")?;
+    OrderBookDelta::new_checked(
+        delta.instrument_id,
+        delta.action,
+        BookOrder::new(delta.order.side, price, size, delta.order.order_id),
+        delta.flags,
+        delta.sequence,
+        delta.ts_event,
+        delta.ts_init,
+    )
+    .context("rebuild order-book delta at instrument precision")
 }
 
 fn canonical_row_to_order_book_delta(
@@ -3091,12 +3054,8 @@ mod tests {
     }
 
     fn binary_option_spec() -> CatalogInstrumentSpec {
-        // max_notional, min_notional, max_price, min_price, margin_init, and
-        // margin_maint are intentionally absent: the NT catalog Arrow schema
-        // does not persist them for BinaryOption (decode_binary_option_batch
-        // rev 6e059dc lines 412-417 hardcodes all six as None), so
-        // build_binary_option rejects specs that set them to avoid silent
-        // data loss on the projection round-trip.
+        // Optional risk and bound metadata is omitted in this minimal fixture;
+        // the dedicated official-catalog round-trip test covers populated values.
         CatalogInstrumentSpec::BinaryOption(BinaryOptionInstrumentSpec {
             instrument_kind: BinaryOptionInstrumentKind::BinaryOption,
             nt_instrument_id: "YES.TESTVENUE".to_string(),
@@ -3558,9 +3517,7 @@ mod tests {
         // Distinct max/min so a quantity swap would fail.
         assert_eq!(option.max_quantity, Some(Quantity::from("1000000")));
         assert_eq!(option.min_quantity, Some(Quantity::from("1")));
-        // NT catalog Arrow schema does not persist these six fields for
-        // BinaryOption (rev 6e059dc lines 412-417); build_binary_option
-        // rejects specs that set them.
+        // This minimal fixture leaves the optional risk and bound metadata absent.
         assert_eq!(option.max_notional, None);
         assert_eq!(option.min_notional, None);
         assert_eq!(option.max_price(), None);
@@ -3646,139 +3603,37 @@ mod tests {
 
     #[test]
     fn build_binary_option_rejects_out_of_range_notional() {
-        // The NT-schema guard fires before the Money parse, so max_notional
-        // is_err() whether the value is out-of-range or merely present.
         let mut spec = binary_option_inner();
         spec.max_notional = Some("1e40".to_string());
         assert!(build_binary_option(&spec).is_err());
     }
 
-    // Fix 1a — one negative test per NT-unsupported field.  Each confirms that
-    // build_binary_option rejects a spec where the field is set, with an error
-    // message naming the field and citing the NT catalog round-trip limitation.
     #[test]
-    fn build_binary_option_rejects_max_notional() {
+    fn binary_option_supported_fields_round_trip_through_official_catalog() {
         let mut spec = binary_option_inner();
         spec.max_notional = Some("100000".to_string());
-        let err = build_binary_option(&spec).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("max_notional"),
-            "error must name the field: {msg}"
-        );
-        assert!(
-            msg.contains("NT catalog Arrow schema does not persist"),
-            "error must cite the round-trip reason: {msg}"
-        );
-    }
-
-    #[test]
-    fn build_binary_option_rejects_min_notional() {
-        let mut spec = binary_option_inner();
         spec.min_notional = Some("1".to_string());
-        let err = build_binary_option(&spec).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("min_notional"),
-            "error must name the field: {msg}"
-        );
-        assert!(
-            msg.contains("NT catalog Arrow schema does not persist"),
-            "error must cite the round-trip reason: {msg}"
-        );
-    }
-
-    #[test]
-    fn build_binary_option_rejects_max_price() {
-        let mut spec = binary_option_inner();
         spec.max_price = Some("1.00".to_string());
-        let err = build_binary_option(&spec).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("max_price"),
-            "error must name the field: {msg}"
-        );
-        assert!(
-            msg.contains("NT catalog Arrow schema does not persist"),
-            "error must cite the round-trip reason: {msg}"
-        );
-    }
-
-    #[test]
-    fn build_binary_option_rejects_min_price() {
-        let mut spec = binary_option_inner();
         spec.min_price = Some("0.01".to_string());
-        let err = build_binary_option(&spec).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("min_price"),
-            "error must name the field: {msg}"
-        );
-        assert!(
-            msg.contains("NT catalog Arrow schema does not persist"),
-            "error must cite the round-trip reason: {msg}"
-        );
-    }
-
-    #[test]
-    fn build_binary_option_rejects_margin_init() {
-        let mut spec = binary_option_inner();
         spec.margin_init = Some("0.05".to_string());
-        let err = build_binary_option(&spec).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("margin_init"),
-            "error must name the field: {msg}"
-        );
-        assert!(
-            msg.contains("NT catalog Arrow schema does not persist"),
-            "error must cite the round-trip reason: {msg}"
-        );
-    }
-
-    #[test]
-    fn build_binary_option_rejects_margin_maint() {
-        let mut spec = binary_option_inner();
         spec.margin_maint = Some("0.03".to_string());
-        let err = build_binary_option(&spec).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("margin_maint"),
-            "error must name the field: {msg}"
-        );
-        assert!(
-            msg.contains("NT catalog Arrow schema does not persist"),
-            "error must cite the round-trip reason: {msg}"
-        );
-    }
+        let option = build_binary_option(&spec).expect("build supported binary option fields");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        catalog
+            .write_instruments(vec![InstrumentAny::BinaryOption(option.clone())])
+            .expect("write binary option");
+        let read_back = catalog
+            .query_instruments(None)
+            .expect("read binary option")
+            .into_iter()
+            .next()
+            .expect("one binary option");
 
-    // Fix F5 — the shared catalog-persistability invariant is the single
-    // production rule both projection paths enforce. A constructed BinaryOption
-    // carrying any NT-non-persistable field must be rejected, and a clean one
-    // must pass.
-    #[test]
-    fn ensure_binary_option_catalog_persistable_rejects_each_lost_field() {
-        let clean = build_binary_option(&binary_option_inner()).expect("clean instrument");
-        ensure_binary_option_catalog_persistable(&clean).expect("clean instrument is persistable");
-
-        let with_price_bound = BinaryOption {
-            max_price: Some(Price::from("0.999")),
-            ..clean.clone()
-        };
-        let err = ensure_binary_option_catalog_persistable(&with_price_bound).unwrap_err();
-        assert!(
-            err.to_string().contains("max_price"),
-            "error must name the lost field: {err}"
-        );
-
-        let with_margin = BinaryOption {
-            margin_init: Decimal::new(5, 2),
-            ..clean
-        };
-        let err = ensure_binary_option_catalog_persistable(&with_margin).unwrap_err();
-        assert!(
-            err.to_string().contains("margin_init"),
-            "error must name the lost field: {err}"
+        assert_eq!(
+            serde_json::to_value(read_back).expect("serialize read-back instrument"),
+            serde_json::to_value(InstrumentAny::BinaryOption(option))
+                .expect("serialize built instrument")
         );
     }
 
@@ -5136,15 +4991,10 @@ max_notional = "200000"
         assert_eq!(instruments[0].price_increment(), Price::from("0.010"));
         assert_eq!(instruments[0].size_increment(), Quantity::from("0.0010"));
 
-        // Fix 1b — per-field round-trip assertions for fields the NT catalog
-        // Arrow schema DOES persist for BinaryOption (rev 6e059dc lines 408-419).
-        // All six NT-unsupported fields (max_notional, min_notional, max_price,
-        // min_price, margin_init, margin_maint) are rejected by build_binary_option
-        // before the instrument is written, so they can never enter the catalog; the
-        // round-trip assertion for them is the rejection test, not a read-back check.
-        // Full InstrumentAny equality cannot pin field values here because
-        // BinaryOption::PartialEq compares only `id` (rev 6e059dc line 248-254),
-        // so per-field assertions are required.
+        // This fixture leaves the optional risk and bound metadata absent; the
+        // populated-field test above proves that the official catalog preserves
+        // them. Keep explicit assertions here because BinaryOption equality is
+        // identity-based rather than a complete serialized-field comparison.
         let InstrumentAny::BinaryOption(option) = &instruments[0] else {
             panic!("expected BinaryOption after catalog round-trip");
         };
@@ -5178,8 +5028,7 @@ max_notional = "200000"
             Decimal::from_str("0.002").unwrap(),
             "taker_fee must survive catalog round-trip"
         );
-        // These six are rejected by build_binary_option (and therefore can never
-        // reach the catalog write path), so they must decode as None here.
+        // The minimal fixture omits these values, so absence must also survive.
         assert_eq!(option.max_notional, None);
         assert_eq!(option.min_notional, None);
         assert_eq!(option.max_price(), None);
@@ -5405,7 +5254,11 @@ max_notional = "200000"
                 ts_init,
             )
             .expect("bid delta"),
-        ];
+        ]
+        .into_iter()
+        .map(|delta| order_book_delta_at_precision(delta, 2, 6))
+        .collect::<Result<Vec<_>>>()
+        .expect("normalize delta metadata to instrument precision");
         let tick = TradeTick::new(
             instrument_id,
             Price::from("0.51"),

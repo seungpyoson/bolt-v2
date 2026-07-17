@@ -25,7 +25,7 @@ use nautilus_model::{
     enums::{AggressorSide, BookAction, OrderSide, RecordFlag},
     identifiers::InstrumentId,
     identifiers::TradeId,
-    instruments::{BinaryOption, Instrument, InstrumentAny},
+    instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -53,7 +53,7 @@ use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::{
-    catalog_projection::{ensure_binary_option_catalog_persistable, logical_catalog_hash},
+    catalog_projection::{logical_catalog_hash, order_book_delta_at_precision},
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
@@ -928,7 +928,6 @@ pub fn project_pmxt_one_off_rows_to_nt(
 
     let instrument = create_instrument_from_def(&selected_def, UnixNanos::default())
         .context("create NT Polymarket BinaryOption from selected Gamma definition")?;
-    let instrument = normalize_binary_option_for_catalog(instrument)?;
     let (instrument_id, price_precision, size_precision) = binary_option_l2_metadata(&instrument)?;
 
     let mut order_book_deltas = Vec::new();
@@ -965,10 +964,12 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     row.ts_init,
                 )
                 .context("parse PMXT one-off book snapshot with NT Polymarket parser")?;
-                for delta in &parsed.deltas {
-                    reconstructed_levels.apply(delta);
+                for delta in parsed.deltas {
+                    let delta =
+                        order_book_delta_at_precision(delta, price_precision, size_precision)?;
+                    reconstructed_levels.apply(&delta);
+                    order_book_deltas.push(delta);
                 }
-                order_book_deltas.extend(parsed.deltas);
                 push_surface_once(
                     &mut nt_surfaces_used,
                     "nautilus_polymarket::websocket::parse::parse_book_snapshot",
@@ -1070,7 +1071,14 @@ pub fn project_pmxt_one_off_rows_to_nt(
                         delta.flags &= !(RecordFlag::F_LAST as u8);
                     }
                 }
-                order_book_deltas.extend(event_deltas);
+                order_book_deltas.extend(
+                    event_deltas
+                        .into_iter()
+                        .map(|delta| {
+                            order_book_delta_at_precision(delta, price_precision, size_precision)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                );
                 push_surface_once(
                     &mut nt_surfaces_used,
                     "nautilus_polymarket::websocket::parse::parse_book_deltas",
@@ -1972,57 +1980,6 @@ fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
-/// Rebuild the NT Polymarket `BinaryOption` so it is catalog-persistable.
-///
-/// `create_instrument_from_def` (NT rev 6e059dc) unconditionally sets
-/// `max_price = Some(0.999)` and `min_price = Some(0.001)`, but the NT catalog
-/// Arrow schema does not encode those fields (`decode_binary_option_batch`
-/// hardcodes them to `None` on read-back), so persisting the parser output as-is
-/// would silently drop both bounds on the round-trip. The SPEC projection path
-/// rejects any such field via [`ensure_binary_option_catalog_persistable`]; the
-/// one-off path must satisfy the SAME rule (NO DUAL PATHS). We clear the six
-/// NT-non-persistable fields here so the persisted instrument equals what the
-/// catalog reads back (lossless), then assert the shared invariant holds.
-fn normalize_binary_option_for_catalog(instrument: InstrumentAny) -> Result<InstrumentAny> {
-    let bo = match instrument {
-        InstrumentAny::BinaryOption(bo) => bo,
-        other => bail!("expected NT Polymarket parser to produce BinaryOption, got {other:?}"),
-    };
-    let normalized = BinaryOption::new_checked(
-        bo.id,
-        bo.raw_symbol,
-        bo.asset_class,
-        bo.currency,
-        bo.activation_ns,
-        bo.expiration_ns,
-        bo.price_precision,
-        bo.size_precision,
-        bo.price_increment,
-        bo.size_increment,
-        bo.outcome,
-        bo.description,
-        bo.max_quantity,
-        bo.min_quantity,
-        None, // max_notional: not encoded by the NT catalog Arrow schema
-        None, // min_notional: not encoded by the NT catalog Arrow schema
-        None, // max_price: not encoded by the NT catalog Arrow schema
-        None, // min_price: not encoded by the NT catalog Arrow schema
-        None, // margin_init: not encoded by the NT catalog Arrow schema
-        None, // margin_maint: not encoded by the NT catalog Arrow schema
-        Some(bo.maker_fee),
-        Some(bo.taker_fee),
-        None, // tick_scheme (NT bump): not populated by bolt
-        bo.info,
-        bo.ts_event,
-        bo.ts_init,
-    )
-    .map_err(|error| anyhow::anyhow!("rebuild catalog-persistable BinaryOption: {error}"))?;
-    // Single source of truth for "persisted == round-tripped" — fail loud if the
-    // rebuild left any NT-non-persistable field set.
-    ensure_binary_option_catalog_persistable(&normalized)?;
-    Ok(InstrumentAny::BinaryOption(normalized))
-}
-
 fn binary_option_l2_metadata(instrument: &InstrumentAny) -> Result<(InstrumentId, u8, u8)> {
     match instrument {
         InstrumentAny::BinaryOption(binary_option) => Ok((
@@ -2352,7 +2309,7 @@ mod tests {
     };
     use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
-    use super::{decimal_to_string, normalize_binary_option_for_catalog};
+    use super::decimal_to_string;
 
     #[test]
     fn decimal_to_string_handles_i128_min_without_overflow() {
@@ -2368,8 +2325,7 @@ mod tests {
     }
 
     /// Mirrors `create_instrument_from_def`: a parser-shaped `BinaryOption` with
-    /// `max_price`/`min_price` set (the sentinels NT hardcodes) — these are the
-    /// two NT-non-persistable fields the Polymarket parser populates.
+    /// the max/min price sentinels populated by the official Polymarket parser.
     fn parser_shaped_binary_option() -> BinaryOption {
         BinaryOption::new(
             InstrumentId::from("YES.POLYMARKET"),
@@ -2388,8 +2344,8 @@ mod tests {
             None,
             None,
             None,
-            Some(Price::from("0.999")), // max_price: NT sentinel, not persistable
-            Some(Price::from("0.001")), // min_price: NT sentinel, not persistable
+            Some(Price::from("0.999")),
+            Some(Price::from("0.001")),
             None,
             None,
             None,
@@ -2416,9 +2372,7 @@ mod tests {
     }
 
     #[test]
-    fn one_off_un_normalized_binary_option_loses_price_bounds_on_round_trip() {
-        // Negative case: persisting the parser output AS-IS silently drops the
-        // configured price bounds — this is the dual-standard bug F5 fixes.
+    fn official_catalog_preserves_parser_binary_option_fields() {
         let parsed = parser_shaped_binary_option();
         assert_eq!(parsed.max_price, Some(Price::from("0.999")));
         assert_eq!(parsed.min_price, Some(Price::from("0.001")));
@@ -2426,52 +2380,9 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let read_back = round_trip_first(dir.path(), InstrumentAny::BinaryOption(parsed.clone()));
 
-        // The catalog cannot encode these fields, so the read-back differs from
-        // what was persisted — silent loss the normalization must eliminate.
-        assert_eq!(read_back.max_price, None);
-        assert_eq!(read_back.min_price, None);
-        assert_ne!(read_back.max_price, parsed.max_price);
-        assert_ne!(read_back.min_price, parsed.min_price);
-    }
-
-    #[test]
-    fn one_off_normalized_binary_option_round_trips_losslessly() {
-        // Positive case: after normalization the persisted instrument equals
-        // what the catalog reads back — persisted == round-tripped (NO DUAL
-        // PATHS, FAIL LOUD on any residual non-persistable field inside
-        // normalize_binary_option_for_catalog).
-        let parsed = parser_shaped_binary_option();
-        let normalized =
-            normalize_binary_option_for_catalog(InstrumentAny::BinaryOption(parsed.clone()))
-                .expect("normalize parser output to catalog-persistable form");
-        let normalized = match normalized {
-            InstrumentAny::BinaryOption(bo) => bo,
-            other => panic!("expected BinaryOption, got {other:?}"),
-        };
-
-        // The six NT-non-persistable fields are at their round-trip values.
-        assert_eq!(normalized.max_price, None);
-        assert_eq!(normalized.min_price, None);
-        assert_eq!(normalized.max_notional, None);
-        assert_eq!(normalized.min_notional, None);
-        assert_eq!(normalized.margin_init, rust_decimal::Decimal::default());
-        assert_eq!(normalized.margin_maint, rust_decimal::Decimal::default());
-        // Fields the catalog DOES encode are preserved through normalization.
-        assert_eq!(normalized.outcome, parsed.outcome);
-        assert_eq!(normalized.description, parsed.description);
-        assert_eq!(normalized.maker_fee, parsed.maker_fee);
-        assert_eq!(normalized.taker_fee, parsed.taker_fee);
-
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let read_back =
-            round_trip_first(dir.path(), InstrumentAny::BinaryOption(normalized.clone()));
-
-        // Persisted == round-tripped across every NT-non-persistable field.
-        assert_eq!(read_back.max_price, normalized.max_price);
-        assert_eq!(read_back.min_price, normalized.min_price);
-        assert_eq!(read_back.max_notional, normalized.max_notional);
-        assert_eq!(read_back.min_notional, normalized.min_notional);
-        assert_eq!(read_back.margin_init, normalized.margin_init);
-        assert_eq!(read_back.margin_maint, normalized.margin_maint);
+        assert_eq!(
+            serde_json::to_value(read_back).expect("serialize read-back instrument"),
+            serde_json::to_value(parsed).expect("serialize parser instrument")
+        );
     }
 }

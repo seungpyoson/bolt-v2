@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 #[path = "support/rust_source_tokens.rs"]
 mod rust_source_tokens;
 
-use rust_source_tokens::{Token, count_sequence, texts, tokenize};
+use rust_source_tokens::{Token, count_sequence, item_body_tokens, item_header, texts, tokenize};
 
 const ARCHETYPES: &[&str] = &[
     "src/strategies/binary_oracle_edge_taker/archetype.rs",
@@ -201,16 +201,15 @@ fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
 
 #[test]
 fn tokenizer_ignores_comments_strings_raw_strings_chars_and_lifetimes() {
-    let controls = tokenize(
-        r###"
+    let source = r###"
         // crate::strategies::fake::KEY clients.get resolve_fee_provider
         /* nested /* crate::strategies::fake */ clients.get */
         const TEXT: &str = "crate::strategies::fake::KEY clients.get";
         const RAW: &str = r#"resolve_fee_provider crate::strategies"#;
         const CH: char = 'g';
         fn visible<'a>(value: &'a str) { assemble_strategy_build_context(value); }
-        "###,
-    );
+        "###;
+    let controls = tokenize(source);
     assert_eq!(count_sequence(&controls, &["crate", "::", "strategies"]), 0);
     assert_eq!(count_sequence(&controls, &["clients", ".", "get"]), 0);
     assert_eq!(count_sequence(&controls, &["resolve_fee_provider"]), 0);
@@ -218,6 +217,15 @@ fn tokenizer_ignores_comments_strings_raw_strings_chars_and_lifetimes() {
         count_sequence(&controls, &["assemble_strategy_build_context"]),
         1
     );
+    let visible_body = item_body_tokens(&controls, &["fn", "visible"])
+        .expect("the real function body should be located through tokens");
+    assert_eq!(
+        count_sequence(visible_body, &["assemble_strategy_build_context", "("]),
+        1
+    );
+    let visible_header = item_header(source, &controls, &["fn", "visible"])
+        .expect("the real function header should be located through tokens");
+    assert!(visible_header.contains("visible<'a>"));
 }
 
 #[test]

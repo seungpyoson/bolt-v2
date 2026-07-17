@@ -1,6 +1,8 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Token {
     pub(crate) text: String,
+    start: usize,
+    end: usize,
 }
 
 pub(crate) fn tokenize(source: &str) -> Vec<Token> {
@@ -45,6 +47,8 @@ pub(crate) fn tokenize(source: &str) -> Vec<Token> {
             }
             tokens.push(Token {
                 text: source[start..index].to_owned(),
+                start,
+                end: index,
             });
             continue;
         }
@@ -56,18 +60,24 @@ pub(crate) fn tokenize(source: &str) -> Vec<Token> {
             }
             tokens.push(Token {
                 text: source[start..index].to_owned(),
+                start,
+                end: index,
             });
             continue;
         }
         if bytes[index..].starts_with(b"::") {
             tokens.push(Token {
                 text: "::".to_owned(),
+                start: index,
+                end: index + 2,
             });
             index += 2;
             continue;
         }
         tokens.push(Token {
             text: (bytes[index] as char).to_string(),
+            start: index,
+            end: index + 1,
         });
         index += 1;
     }
@@ -191,4 +201,65 @@ pub(crate) fn count_sequence(tokens: &[Token], expected: &[&str]) -> usize {
         .windows(expected.len())
         .filter(|window| *window == expected)
         .count()
+}
+
+fn sequence_position(tokens: &[Token], expected: &[&str]) -> Option<usize> {
+    if expected.is_empty() {
+        return None;
+    }
+    let actual = texts(tokens);
+    let mut matches = actual
+        .windows(expected.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == expected).then_some(index));
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn item_bounds(tokens: &[Token], signature: &[&str]) -> Option<(usize, usize, usize)> {
+    let signature_start = sequence_position(tokens, signature)?;
+    let mut open = None;
+    for (index, token) in tokens
+        .iter()
+        .enumerate()
+        .skip(signature_start + signature.len())
+    {
+        match token.text.as_str() {
+            "{" => {
+                open = Some(index);
+                break;
+            }
+            ";" => return None,
+            _ => {}
+        }
+    }
+    let open = open?;
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.text.as_str() {
+            "{" => depth += 1,
+            "}" => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some((signature_start, open, index));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+pub(crate) fn item_body_tokens<'a>(tokens: &'a [Token], signature: &[&str]) -> Option<&'a [Token]> {
+    let (_, open, close) = item_bounds(tokens, signature)?;
+    Some(&tokens[open + 1..close])
+}
+
+pub(crate) fn item_header<'a>(
+    source: &'a str,
+    tokens: &[Token],
+    signature: &[&str],
+) -> Option<&'a str> {
+    let (signature_start, open, _) = item_bounds(tokens, signature)?;
+    Some(&source[tokens[signature_start].start..tokens[open].end])
 }

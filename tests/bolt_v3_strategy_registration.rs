@@ -1164,12 +1164,18 @@ fn invalid_second_resolution_client_fails_before_any_strategy_is_registered() {
 fn invalid_second_raw_strategy_config_fails_before_any_strategy_is_registered() {
     let (error, registered_strategy_ids) =
         production_registration_error_with_invalid_second_edge_strategy(|invalid| {
-            invalid.config.order_id_tag = "invalid tag".to_string();
+            invalid
+                .config
+                .parameters
+                .as_table_mut()
+                .expect("edge fixture parameters must be a TOML table")
+                .remove("order_notional_target")
+                .expect("edge fixture must declare order_notional_target");
         });
 
     assert!(
-        error.to_string().contains("invalid NT StrategyId"),
-        "registration error must identify the invalid mapped strategy ID: {error}"
+        error.to_string().contains("order_notional_target"),
+        "registration error must identify the missing required raw parameter: {error}"
     );
     assert!(
         registered_strategy_ids.is_empty(),
@@ -1282,7 +1288,7 @@ fn duplicate_prepared_strategy_ids_fail_before_any_strategy_is_registered() {
 }
 
 #[test]
-fn already_registered_strategy_id_fails_before_any_new_strategy_is_registered() {
+fn already_registered_order_id_tag_fails_before_any_new_strategy_is_registered() {
     fn prepare_existing(
         _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
     ) -> Result<
@@ -1329,9 +1335,12 @@ fn already_registered_strategy_id_fails_before_any_new_strategy_is_registered() 
             execution_controls,
             decision_evidence,
         )
-        .expect_err("an existing NT strategy ID must fail before commit");
+        .expect_err("an existing NT order ID tag must fail before commit");
 
-    assert!(error.to_string().contains("already registered"));
+    assert!(
+        error.to_string().contains("order_id_tag conflict"),
+        "registration error must identify the existing NT order ID tag: {error}"
+    );
     assert_eq!(
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-ALREADY-REGISTERED")]

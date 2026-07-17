@@ -722,7 +722,7 @@ pub fn declared_markets(strategy: &LoadedStrategy) -> Result<Vec<MakerMarketDecl
         .collect())
 }
 
-/// Register the maker on the live node.
+/// Prepare the maker for shared batch registration.
 ///
 /// Mirrors the taker's `prepare_runtime_strategy` structurally: translate the
 /// flat raw config table, delegate shared build-context assembly, then hand both

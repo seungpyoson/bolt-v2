@@ -2350,10 +2350,11 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        apply_backtest_config_override, assert_read_back_matches,
+        StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
         canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
-        expected_iterations, iterations_mismatch, load_bolt_v3_config, raw_taker_config,
-        replay_executable_book_at_submission, resolve_existing_input_path, run_nt_backtest_node,
+        expected_iterations, iterations_mismatch, load_bolt_v3_config,
+        prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_submission,
+        resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };

@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remove raw client/config reachability and direct commit methods from strategy callbacks while making one atomic prepared-batch coordinator the only registration path for Live and Backtester.
+**Goal:** Remove raw client/config reachability and direct commit methods from strategy callbacks while making one atomic prepared-batch coordinator the only registration path for Live and the Backtester production-registry branches changed by this PR.
 
-**Architecture:** Shared preflight resolves each configured client identity once, retains only safe client-to-venue routes, and copies the non-client root values needed by raw mapping into an immutable snapshot. `StrategyRegistry` is the only producer of opaque prepared strategies; one public batch coordinator performs NT identity preparation, batch conflict checks, and final commits for both Live and Backtester.
+**Architecture:** Shared preflight resolves each configured client identity once, retains only safe client-to-venue routes, and copies the non-client root values needed by raw mapping into an immutable snapshot. `StrategyRegistry` is the only producer of opaque prepared production-registry strategies; one public batch coordinator performs NT identity preparation, batch conflict checks, and final commits for Live and the affected Backtester branches.
 
-**Tech Stack:** Rust 2024, NautilusTrader Rust APIs, TOML-backed Bolt-v3 configuration, `anyhow`, `thiserror`, Rust integration tests, source-token structural fences, GitHub Actions/Ubicloud remote Rust verification.
+**Tech Stack:** Rust 2024, NautilusTrader Rust APIs, TOML-backed Bolt-v3 configuration, `anyhow`, Rust integration tests, source-token structural fences, GitHub Actions/Ubicloud remote Rust verification.
 
 ## Global Constraints
 
 - Follow `AGENTS.md`; no hardcoded runtime identities, fallbacks, compatibility adapters, dual registration paths, warning suppressions, or deferred debt.
 - `StrategyRegistrationContext` must not store or expose `LoadedBoltV3Config`, `BoltV3RootConfig`, `ClientBlock`, or `ResolvedBoltV3Secrets`.
-- Live and `backtesting-vertical-slice` must use the same prepared-batch coordinator; Backtester normally supplies a batch of one.
+- Live and the `backtesting-vertical-slice` production-registry branches changed by this PR must use the same prepared-batch coordinator; those Backtester branches normally supply a batch of one.
 - `PreparedStrategyRegistration` may be named publicly as an opaque return type, but its constructor, identity-preparation operation, strategy accessor, and commit operation are not public.
 - Settlement remains capability-gated and is resolved from the prepared execution client and venue before fee-provider construction; execution venue is unconditional.
 - Local compile-heavy Rust verification is prohibited. Use `cargo fmt`, `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python/static fences, and exact-head remote CI.
@@ -144,7 +144,7 @@ The current context-field assertion must fail because `pub loaded` is present. T
 In `src/bolt_v3_strategy_registration.rs`, replace the current route struct with:
 
 ```rust
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedStrategyClientRoutes {
     venues_by_client_id: BTreeMap<ClientId, Venue>,
 }
@@ -363,7 +363,7 @@ impl PreparedStrategyRegistration {
         T: Strategy + StrategyNative + DataActorNative + Component + Debug + 'static;
 
     fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId>;
-    fn commit(self, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<StrategyId>;
+    fn commit(self, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<()>;
 }
 ```
 
@@ -374,17 +374,38 @@ Remove the public `strategy_id` getter if it is not required by the coordinator.
 Implement:
 
 ```rust
-#[derive(Debug, thiserror::Error)]
-#[error("prepared strategy at batch index {failed_index} failed: {source}")]
+#[derive(Debug)]
 pub struct PreparedStrategyBatchError {
     failed_index: usize,
-    #[source]
     source: anyhow::Error,
 }
 
 impl PreparedStrategyBatchError {
+    fn new(failed_index: usize, source: impl Into<anyhow::Error>) -> Self {
+        Self {
+            failed_index,
+            source: source.into(),
+        }
+    }
+
     pub fn failed_index(&self) -> usize {
         self.failed_index
+    }
+}
+
+impl std::fmt::Display for PreparedStrategyBatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "prepared strategy at batch index {} failed: {}",
+            self.failed_index, self.source
+        )
+    }
+}
+
+impl std::error::Error for PreparedStrategyBatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
     }
 }
 
@@ -614,10 +635,10 @@ Verify directly:
 1. No callback can name or obtain LoadedBoltV3Config, BoltV3RootConfig, ClientBlock, or resolved secrets.
 2. Alias execution/signal/resolution roles use one resolver and one venue value per ClientId.
 3. PreparedStrategyRegistration has no public construction, prepare, getter, or commit method.
-4. Live and Backtester call the same register_prepared_strategy_batch function.
+4. Live and the affected Backtester production-registry branches call the same register_prepared_strategy_batch function.
 5. The complete batch finishes NT identity checks before any commit.
 6. Missing signal and resolution clients leave the trader empty.
-7. No fallback, alternate venue, hardcoded runtime identity, direct add_strategy, or retired adapter remains.
+7. No fallback, alternate venue, hardcoded runtime identity, direct `add_strategy`, or retired adapter remains in the production-registry registration paths changed by this PR.
 8. Source fences use tokens rather than comments/strings or newline-sensitive spellings.
 ```
 
@@ -650,7 +671,7 @@ The reviewer must inspect terminal exact-head primary Clippy, Nextest archive/te
 ## Plan Self-Review Checklist
 
 - Every spec control maps to a production task and explicit evidence.
-- Live and Backtester have one prepared-batch coordinator and no adapter.
+- Live and the affected Backtester production-registry branches have one prepared-batch coordinator and no adapter.
 - The context contains no loaded/root/client-block/secrets capability.
 - Safe route and config snapshot signatures are consistent across Tasks 2–4.
 - Opaque prepared-type visibility is consistent across registry, tests, and Backtester.

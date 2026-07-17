@@ -8,8 +8,9 @@ strategy-construction failure before it mutates `LiveNode`. It must also retain
 the existing single configured execution route, capability-gated resources,
 and fail-closed unsided market-order admission behavior.
 
-Live registration and `backtesting-vertical-slice` must use the same atomic
-prepared-batch coordinator. Backtesting may submit a batch of one, but it must
+Live registration and the production-registry branches in
+`backtesting-vertical-slice` must use the same atomic prepared-batch
+coordinator. Those Backtester branches may submit a batch of one, but they must
 not retain a separate registry-to-`Trader::add_strategy` path.
 
 B3 and bucket D remain excluded. The final NautilusTrader `add_strategy`
@@ -102,13 +103,15 @@ binding-specific operation: raw-config mapping, build-context assembly,
 registry selection, config parsing, and concrete strategy construction. It
 receives no `LiveNode` and cannot mutate the trader.
 
-The Backtester uses the same registry preparation method. It does not receive a
-compatibility `register_strategy` adapter and does not call `add_strategy`
-directly.
+The Backtester's production-registry branches use the same registry preparation
+method. Those branches do not receive a compatibility `register_strategy`
+adapter and do not call `add_strategy` directly; unrelated Backtester-only
+strategy kinds remain outside this PR's declared scope.
 
 ### Prepare, validate, then commit
 
-The shared batch coordinator performs the final two stages for both consumers.
+The shared batch coordinator performs the final two stages for Live and the
+affected Backtester production-registry branches.
 Live registration performs four ordered stages:
 
 1. Resolve shared client routes and capability resources, then invoke each
@@ -121,9 +124,10 @@ Live registration performs four ordered stages:
    order and return their prepared NT strategy IDs. Live registration builds
    its richer summary from those IDs and its configured strategy metadata.
 
-Backtester performs its own non-mutating manifest/config preparation, then
-passes its registry-produced batch—normally one strategy—to stages 3 and 4.
-There is one NT commit implementation in the repository.
+Each affected Backtester branch performs its own non-mutating manifest/config
+preparation, then passes its registry-produced batch—normally one strategy—to
+stages 3 and 4. There is one NT commit implementation for production-registry
+strategies.
 
 No mutating callback runs during stages 1 or 2. A missing signal client,
 missing resolution client, malformed raw strategy config, unsupported registry
@@ -151,9 +155,9 @@ than deferred configuration validation.
 | A binding launders a late lookup through `context.loaded` or a helper | Context contains no loaded/root/client-block reference; raw mapping receives only routes and a non-client snapshot | Compile/API checks and source fences reject loaded/root/client types and client lookup provenance in preparation callbacks |
 | A binding defers parsing or construction until mutation | `StrategyRuntimeBinding` exposes prepare, not register; prepared commit owns a built strategy | Structural test rejects raw mapping, registry selection, or strategy building in the commit loop |
 | Builder validation and registration diverge | One concrete `StrategyBuilder` construction method | Registry tests prove prepare constructs once and commit does not reconstruct |
-| External code bypasses the batch checks | Prepared values expose no public constructor/prepare/commit method; one shared coordinator is the sole consumer | API/compile tests prove direct prepare/commit is unavailable and Live plus Backtester use the coordinator |
-| Backtester retains the deleted registration route | Backtester uses shared route/snapshot preparation, registry preparation, and the common batch coordinator | Backtester Clippy/archive compile and structural checks reject `register_strategy` and direct `add_strategy` |
-| A duplicate or already-registered NT ID is discovered during commit | Prepared IDs and existing trader IDs are checked as complete sets before mutation | Duplicate-ID and existing-ID regressions assert zero new registrations |
+| External code bypasses the batch checks | Prepared values expose no public constructor/prepare/commit method; one shared coordinator is the sole consumer | API/compile tests prove direct prepare/commit is unavailable and Live plus the affected Backtester production-registry branches use the coordinator |
+| A Backtester production-registry branch retains the deleted registration route | Those branches use shared route/snapshot preparation, registry preparation, and the common batch coordinator | Backtester Clippy/archive compile and structural checks reject `register_strategy` and direct `add_strategy` in those branches |
+| A duplicate or existing NT strategy ID/order tag is discovered during commit | Prepared IDs/tags and existing trader IDs/tags are checked before mutation | Duplicate-batch and existing-tag regressions assert zero new registrations |
 | Settlement identity uses another route | Settlement consumes the prepared execution client and venue before fee-provider construction | Account/currency failures return typed errors and execute no commit |
 | Secrets or capability handles leak to bindings | Resolved credentials are constructor-only; prepared route and capability fields stay private | Structural tests reject any stored `ResolvedBoltV3Secrets` and undeclared resource access |
 | Missing configuration is silently replaced | Every absent client/account/currency is an error | Fail-closed tests cover each missing identity with no fallback or unwind |
@@ -165,14 +169,15 @@ Use evidence-driven test-first verification:
 
 1. Add the real-production-binding invalid-second-signal-client regression and
    confirm it fails because the first strategy is registered.
-2. Add missing-resolution-client, alias, duplicate-prepared-ID, and
-   already-registered-ID regressions before production changes.
+2. Add missing-resolution-client, alias, duplicate-prepared-ID, and existing
+   trader order-tag regressions before production changes.
 3. Add structural checks that reject loaded/root/client-block reachability,
    client-map reads in binding preparation, stored resolved secrets, deferred
    builder work, public direct commit methods, and identity preparation inside
    the commit loop. Run those checks on comment/string-stripped source.
 4. Implement the safe route/snapshot boundary and the single shared batch
-   coordinator. Migrate Backtester rather than retaining an adapter or fallback.
+   coordinator. Migrate the affected Backtester production-registry branches
+   rather than retaining an adapter or fallback.
 5. Compile-check registry tests, Live wiring, and the Backtester workspace in
    the governed remote lanes; warnings are errors and must not be suppressed.
 6. Run governed local formatting, documentation checks, static source fences,

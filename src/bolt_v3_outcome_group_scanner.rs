@@ -375,9 +375,11 @@ fn price_candidate_leg(
         .tradable_legs
         .get(&candidate.leg_id)
         .ok_or(OutcomeGroupScanBlockReason::UnknownLeg)?;
+    let quantity = decimal_from_f64(vwap.vwap_quantity)?;
+    let vwap_price = decimal_from_f64(required_vwap_field(vwap.vwap_price)?)?;
+    let limit_price = decimal_from_f64(required_vwap_field(vwap.limit_price)?)?;
     let cost_breakdown = executable_cost_breakdown(vwap, input.slippage_buffer_bps)
         .map_err(scan_reason_from_cost)?;
-    let quantity = decimal_from_f64(vwap.vwap_quantity)?;
     let gross_cost = settlement_total_from_cents(cost_breakdown.gross_cost_cents, quantity)?;
     let slippage_buffer =
         settlement_total_from_cents(cost_breakdown.slippage_buffer_cents, quantity)?;
@@ -392,8 +394,8 @@ fn price_candidate_leg(
         gross_cost,
         slippage_buffer,
         total_adjusted_cost,
-        vwap_price: decimal_from_f64(required_vwap_field(vwap.vwap_price)?)?,
-        limit_price: decimal_from_f64(required_vwap_field(vwap.limit_price)?)?,
+        vwap_price,
+        limit_price,
         observed_unix_ms: book
             .observed_unix_ms
             .ok_or(OutcomeGroupScanBlockReason::MissingBookTimestamp)?,

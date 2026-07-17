@@ -127,3 +127,63 @@ def strip_rust_comments_and_literals(text: str) -> str:
         i += 1
 
     return "".join(output)
+
+
+def retain_rust_string_literals(text: str) -> str:
+    """Retain string literals while blanking comments, chars, and Rust code."""
+    output: list[str] = []
+    i = 0
+    while i < len(text):
+        raw_end = raw_string_end(text, i)
+        if raw_end is not None:
+            output.append(text[i:raw_end])
+            i = raw_end
+            continue
+
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            if end == -1:
+                end = len(text)
+            output.append(blank_preserving_newlines(text[i:end]))
+            i = end
+            continue
+
+        if text.startswith("/*", i):
+            depth = 1
+            j = i + 2
+            while j < len(text) and depth:
+                if text.startswith("/*", j):
+                    depth += 1
+                    j += 2
+                elif text.startswith("*/", j):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            output.append(blank_preserving_newlines(text[i:j]))
+            i = j
+            continue
+
+        if text[i] in {"b", "c"} and i + 1 < len(text) and text[i + 1] == '"':
+            end = quoted_literal_end(text, i + 1, '"')
+            output.append(text[i:end])
+            i = end
+            continue
+
+        if text[i] == '"':
+            end = quoted_literal_end(text, i, '"')
+            output.append(text[i:end])
+            i = end
+            continue
+
+        if text[i] == "'":
+            end = char_literal_end(text, i)
+            if end is not None:
+                output.append(blank_preserving_newlines(text[i:end]))
+                i = end
+                continue
+
+        output.append("\n" if text[i] == "\n" else " ")
+        i += 1
+
+    return "".join(output)

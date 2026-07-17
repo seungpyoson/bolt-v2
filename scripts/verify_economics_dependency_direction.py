@@ -7,7 +7,7 @@ import pathlib
 import re
 import sys
 
-from rust_source_scanner import strip_rust_comments_and_literals
+from rust_source_scanner import retain_rust_string_literals, strip_rust_comments_and_literals
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -39,6 +39,10 @@ ESTIMATE_TO_ACTUAL_PATTERNS = (
         r"\bInto\s*<\s*ActualEconomicEntry\s*>\s*for\s*EstimatedEconomicComponent\b"
     ),
 )
+VENUE_LITERAL_PATTERN = re.compile(
+    r"\b(?:polymarket|hyperliquid|binance|bybit|deribit|kraken|coinbase|bitmex|okx)\b",
+    re.IGNORECASE,
+)
 
 
 def line_number(source: str, offset: int) -> int:
@@ -55,6 +59,7 @@ def verify(root: pathlib.Path = REPO_ROOT) -> list[str]:
     for path in files:
         source = path.read_text(encoding="utf-8")
         scanned = strip_rust_comments_and_literals(source)
+        string_literals = retain_rust_string_literals(source)
         relative = path.relative_to(root)
         for pattern, reason in FORBIDDEN_SOURCE_PATTERNS:
             for match in pattern.finditer(scanned):
@@ -67,6 +72,11 @@ def verify(root: pathlib.Path = REPO_ROOT) -> list[str]:
                     f"{relative}:{line_number(scanned, match.start())}: "
                     "estimate-to-actual conversion is forbidden"
                 )
+        for match in VENUE_LITERAL_PATTERN.finditer(string_literals):
+            errors.append(
+                f"{relative}:{line_number(string_literals, match.start())}: "
+                f"venue-specific runtime literal: {match.group(0)}"
+            )
     return errors
 
 

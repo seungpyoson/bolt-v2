@@ -37,6 +37,10 @@ class EconomicsDependencyDirectionTest(unittest.TestCase):
         )
         self.assertEqual(errors, [])
 
+    def test_rejects_venue_runtime_literal(self) -> None:
+        errors = self.verify_source('const VENUE: &str = "hyperliquid";\n')
+        self.assertTrue(any("venue-specific runtime literal" in error for error in errors), errors)
+
     def test_rejects_estimate_to_actual_conversion(self) -> None:
         errors = self.verify_source(
             "impl From<EstimatedEconomicComponent> for ActualEconomicEntry {}\n"

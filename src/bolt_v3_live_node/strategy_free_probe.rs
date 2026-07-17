@@ -12,6 +12,12 @@ pub struct BoltV3StrategyFreeReferenceQuote {
     pub captured_at_unix_nanos: u64,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3StrategyFreeReferenceQuoteEvidence {
+    pub quotes: Vec<BoltV3StrategyFreeReferenceQuote>,
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3StrategyFreeBookDeltas {
@@ -396,6 +402,13 @@ impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
         self.fail_metadata_response_probe(format!(
             "metadata_response published source-owned instrument {instrument_id} after the readiness metadata snapshot was closed; metadata_response readiness requires startup metadata to be complete before LiveNodeHandle::is_running()"
         ));
+    }
+
+    #[cfg(test)]
+    pub(super) fn evidence(&self) -> BoltV3StrategyFreeReferenceQuoteEvidence {
+        BoltV3StrategyFreeReferenceQuoteEvidence {
+            quotes: self.quotes.borrow().clone(),
+        }
     }
 
     #[cfg(test)]

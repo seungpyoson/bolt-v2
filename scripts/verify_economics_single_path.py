@@ -11,10 +11,7 @@ from rust_source_scanner import strip_rust_comments_and_literals
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-ADAPTER_PATHS = (
-    pathlib.Path("src/bolt_v3_providers/polymarket/economics.rs"),
-    pathlib.Path("src/bolt_v3_providers/hyperliquid/economics.rs"),
-)
+ADAPTER_ROOT = pathlib.Path("src/bolt_v3_providers")
 FORBIDDEN_PATTERNS = (
     (re.compile(r"\.(?:unwrap_or|unwrap_or_else|map_or|map_or_else|or_else)\s*\("), "conditional fallback primitive"),
     (re.compile(r"\bfn\s+effective_protocol_rate\b"), "runtime rate-selection function"),
@@ -31,11 +28,12 @@ def line_number(source: str, offset: int) -> int:
 
 def verify(root: pathlib.Path = REPO_ROOT) -> list[str]:
     errors: list[str] = []
-    for relative in ADAPTER_PATHS:
-        path = root / relative
-        if not path.is_file():
-            errors.append(f"missing economics adapter: {relative}")
-            continue
+    adapter_root = root / ADAPTER_ROOT
+    paths = sorted(adapter_root.glob("*/economics.rs")) if adapter_root.is_dir() else []
+    if not paths:
+        return [f"no venue economics adapters found under {ADAPTER_ROOT}"]
+    for path in paths:
+        relative = path.relative_to(root)
         scanned = strip_rust_comments_and_literals(path.read_text(encoding="utf-8"))
         for pattern, reason in FORBIDDEN_PATTERNS:
             for match in pattern.finditer(scanned):

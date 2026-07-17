@@ -27,14 +27,14 @@
 - Consumes: `create_test_execution_client`, `TestServerState`, `make_limit_order`, `make_market_order`, `make_submit_cmd`, `make_submit_order_list_cmd`, `assert_order_event`, and `order_event_reason`.
 - Produces: integration tests proving denial events and zero `/order` or `/orders` posts.
 
-- [ ] **Step 1: Create an isolated NT clone at revision `e7af3dce0c7656862c33acb962aff5ae738eecb6` and a named review branch**
+- [x] **Step 1: Create an isolated NT clone at production revision `e7af3dce0c7656862c33acb962aff5ae738eecb6` and a named review branch**
 
 ```bash
 git clone https://github.com/seungpyoson/nautilus_trader.git /private/tmp/nautilus-neg-risk-tests
 git -C /private/tmp/nautilus-neg-risk-tests switch -c codex/polymarket-neg-risk-execution-tests e7af3dce0c7656862c33acb962aff5ae738eecb6
 ```
 
-- [ ] **Step 2: Add explicit-valid and invalid instrument fixture helpers**
+- [x] **Step 2: Add explicit-valid and invalid instrument fixture helpers**
 
 Change the existing cache helper so ordinary positive tests insert `info["neg_risk"] = Bool(false)`. Refactor the current constructor body into a sibling helper accepting `Option<Value>` so tests can install absent, string, `false`, or `true` metadata without duplicating `BinaryOption` construction. The existing constructor arguments stay byte-for-byte unchanged; replace only its current `info: None` argument with `info: Some(info)`:
 
@@ -71,7 +71,7 @@ fn add_instrument_to_cache_with_neg_risk(
 }
 ```
 
-- [ ] **Step 3: Add parameterized limit and market denial tests**
+- [x] **Step 3: Add parameterized limit and market denial tests**
 
 For `None` and `Some(Value::String("false".into()))`, install the instrument, start the client, submit a valid limit or market order, and assert:
 
@@ -82,11 +82,11 @@ assert_eq!(*state.order_post_count.lock().await, 0);
 assert_eq!(*state.batch_order_post_count.lock().await, 0);
 ```
 
-- [ ] **Step 4: Add all-invalid and mixed batch tests**
+- [x] **Step 4: Add all-invalid and mixed batch tests**
 
 The all-invalid batch asserts one denial per invalid order and zero batch posts. The mixed batch uses one invalid instrument and two valid instruments carrying explicit `false` and `true`; it asserts the invalid order is denied, the valid requests reach the mock server, and the captured request bodies preserve both boolean values.
 
-- [ ] **Step 5: Verify RED against the production parent**
+- [x] **Step 5: Verify RED against the unsafe parent**
 
 Apply only the test diff to a temporary worktree at `b25a99cc`, then run:
 
@@ -96,11 +96,11 @@ cargo test -p nautilus-polymarket --test exec_client neg_risk -- --nocapture
 
 Expected: the new invalid-metadata submission tests fail because the parent fabricates `false` or otherwise reaches the HTTP server instead of emitting the required denial.
 
-- [ ] **Step 6: Verify GREEN at `e7af3dce`**
+- [x] **Step 6: Verify GREEN at `a192a89f`**
 
 Run the same targeted command on the review branch. Expected: all new tests pass and existing `exec_client` tests compile with explicit fixture metadata.
 
-- [ ] **Step 7: Commit and publish the NT test-only change**
+- [x] **Step 7: Commit and publish the NT test-only change**
 
 ```bash
 git add crates/adapters/polymarket/tests/exec_client.rs
@@ -109,6 +109,11 @@ git push origin HEAD:codex/polymarket-neg-risk-execution-tests
 ```
 
 Record the immutable commit SHA for Task 2.
+
+Recorded revision: `a192a89f7a24e435cfba7a45b6dcd6de14622967`. The targeted six-case
+regression and the complete 82-test `exec_client` integration suite pass at
+that revision. Applying the same tests to the unsafe parent `b25a99cc` fails
+all six cases because invalid metadata reaches `OrderSubmitted`.
 
 ---
 
@@ -134,19 +139,19 @@ Record the immutable commit SHA for Task 2.
 - Consumes: immutable NT commit SHA from Task 1.
 - Produces: one consistent NT revision across manifests, lockfiles, docs, fixtures, and boundary verifiers.
 
-- [ ] **Step 1: Replace the old pin on every governed surface**
+- [x] **Step 1: Replace the old pin on every governed surface**
 
-Use `rg -n 'e7af3dce0c7656862c33acb962aff5ae738eecb6|e7af3dce'` to census all references. Replace full revisions in manifests, lockfiles, documentation, verifier constants, and fixture bodies with the new 40-character SHA. Rename SHA-bearing fixtures with the new first eight characters and update every filename reference to that exact basename.
+Use `rg -n 'e7af3dce0c7656862c33acb962aff5ae738eecb6|e7af3dce'` to census the predecessor pin. Replace active pin references in manifests, lockfiles, documentation, verifier constants, and fixture bodies with `a192a89f7a24e435cfba7a45b6dcd6de14622967`. Rename SHA-bearing fixtures with `a192a89f` and update every filename reference to that exact basename. Historical red/green evidence in this plan keeps the predecessor SHA explicitly labeled as such.
 
-- [ ] **Step 2: Refresh source hashes**
+- [x] **Step 2: Refresh source hashes**
 
 Compute SHA-256 for the pinned `http/parse.rs`, `execution/lifecycle.rs`, and `execution/orders.rs`. Update only the registered fixture values; the test-only commit should leave all three production hashes unchanged.
 
-- [ ] **Step 3: Refresh both lockfiles through the governed dependency workflow**
+- [x] **Step 3: Refresh both lockfiles through the governed dependency workflow**
 
 Update only `source = git+...#<sha>` and the corresponding package identities required by the pin. Confirm no unrelated package version drift.
 
-- [ ] **Step 4: Run local non-compile verification**
+- [x] **Step 4: Run local non-compile verification**
 
 ```bash
 python3 scripts/test_verify_bolt_v3_boundary_evidence.py
@@ -162,7 +167,7 @@ git diff --check
 
 Expected: every command succeeds.
 
-- [ ] **Step 5: Commit and publish bolt**
+- [x] **Step 5: Commit and publish bolt**
 
 ```bash
 git add Cargo.toml Cargo.lock crates/backtesting-vertical-slice/Cargo.toml crates/backtesting-vertical-slice/Cargo.lock docs scripts tests/fixtures

@@ -57,10 +57,10 @@ NT_BOUNDARY_DOCTRINE_PIN_SURFACE = Path(
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md"
 )
 POLYMARKET_QUERY_FIXTURE_PIN_SURFACE = Path(
-    "tests/fixtures/nt_polymarket_query_post_order_params_e7af3dce.txt"
+    "tests/fixtures/nt_polymarket_query_post_order_params_a192a89f.txt"
 )
 POLYMARKET_NEG_RISK_FIXTURE_PIN_SURFACE = Path(
-    "tests/fixtures/nt_polymarket_neg_risk_contract_e7af3dce.txt"
+    "tests/fixtures/nt_polymarket_neg_risk_contract_a192a89f.txt"
 )
 NON_CARGO_PIN_SURFACES = (
     RUNTIME_CONTRACT_PIN_SURFACE,

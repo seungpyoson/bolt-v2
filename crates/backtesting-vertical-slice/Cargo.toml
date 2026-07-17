@@ -45,21 +45,21 @@ toml = "1.1"
 ustr = "1.1.0"
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
-nautilus-analysis = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
-nautilus-backtest = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6", features = ["streaming", "examples"] }
-nautilus-common = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
-nautilus-core = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
-nautilus-execution = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
-nautilus-model = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
-nautilus-persistence = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6", features = ["cloud"] }
-nautilus-serialization = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
-nautilus-polymarket = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
-nautilus-trading = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
+nautilus-analysis = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
+nautilus-backtest = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967", features = ["streaming", "examples"] }
+nautilus-common = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
+nautilus-core = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
+nautilus-execution = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
+nautilus-model = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
+nautilus-persistence = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967", features = ["cloud"] }
+nautilus-serialization = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
+nautilus-polymarket = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
+nautilus-trading = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
 object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }
 bolt-v2 = { path = "../.." }
 
 [dev-dependencies]
 async-trait = "0.1"
 hmac = "=0.12.1"
-nautilus-persistence-macros = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "e7af3dce0c7656862c33acb962aff5ae738eecb6" }
+nautilus-persistence-macros = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "a192a89f7a24e435cfba7a45b6dcd6de14622967" }
 tempfile = "3"

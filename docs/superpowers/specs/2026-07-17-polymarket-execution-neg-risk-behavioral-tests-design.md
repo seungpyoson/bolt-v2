@@ -47,10 +47,11 @@ checks. No alternate dependency path or local patch override will be added.
 
 ## Evidence
 
-- Red evidence: each new behavioral test fails against the currently pinned NT
-  revision because the test does not yet exist or the required observable test
-  seam is absent.
-- Green evidence: targeted NT execution tests pass for limit, market, and batch.
+- Red evidence: applying the tests to unsafe parent `b25a99cc` produces six
+  failures because missing and wrong-type metadata emits `OrderSubmitted`.
+- Green evidence: all six targeted cases and the complete 82-test execution
+  integration suite pass at test-only NT revision
+  `a192a89f7a24e435cfba7a45b6dcd6de14622967`.
 - Bolt evidence: boundary verifier/self-tests, formatting, dependency policy,
   source-fence-static, diff checks, and exact-head remote root and Backtester CI.
 

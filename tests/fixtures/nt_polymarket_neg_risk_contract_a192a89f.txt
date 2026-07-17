@@ -1,5 +1,5 @@
 Source: NautilusTrader
-Revision: e7af3dce0c7656862c33acb962aff5ae738eecb6
+Revision: a192a89f7a24e435cfba7a45b6dcd6de14622967
 
 Path: crates/adapters/polymarket/src/http/parse.rs
 Full source SHA-256: 3117c64fa1e7360ec85e5a47a6eba143c520e0f2e8b1dfffe2b844b33f4f98ec
@@ -12,3 +12,7 @@ Contract: execution lookup preserves explicit booleans, removes missing/wrong-ty
 Path: crates/adapters/polymarket/src/execution/orders.rs
 Full source SHA-256: c847dd50aaa6f26a89665eb258dad85e0e8bdbaf86bf6c5ab71bcea58b5de67b
 Contract: limit, market, and batch order paths deny lookup errors before constructing a signing request.
+
+Path: crates/adapters/polymarket/tests/exec_client.rs
+Full source SHA-256: 1380d793b185af2b47e33fdb800afbc619abee5c0839455019ab1b5c5447438c
+Contract: execution integration tests prove missing/wrong-type metadata emits OrderDenied with zero order HTTP posts, while explicit false/true entries remain independently submittable.

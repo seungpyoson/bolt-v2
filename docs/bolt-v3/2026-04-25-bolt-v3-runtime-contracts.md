@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `e7af3dce0c7656862c33acb962aff5ae738eecb6`
+  - current value: `a192a89f7a24e435cfba7a45b6dcd6de14622967`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1374,7 +1374,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`e7af3dce0c7656862c33acb962aff5ae738eecb6`. WebSocket frames flow through
+`a192a89f7a24e435cfba7a45b6dcd6de14622967`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1503,12 +1503,13 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins NautilusTrader to
-`e7af3dce0c7656862c33acb962aff5ae738eecb6` on the bolt pin-fork
-(`seungpyoson/nautilus_trader`). It extends the prior composite fork revision
-`d636f17604cdbddc28ad40e0e15720e2d19bf860` with two Polymarket provenance
-guards: Gamma parsing rejects missing `negRisk`, and execution denies orders
-when a cached or directly constructed instrument lacks boolean `neg_risk`
-metadata. The underlying composite fork ports the Binance Spot SBE schema 3:5
+`a192a89f7a24e435cfba7a45b6dcd6de14622967` on the bolt pin-fork
+(`seungpyoson/nautilus_trader`). It is a test-only descendant of production
+guard revision `e7af3dce0c7656862c33acb962aff5ae738eecb6`: Gamma parsing rejects
+missing `negRisk`, execution denies orders when a cached or directly
+constructed instrument lacks boolean `neg_risk` metadata, and the pinned
+execution integration suite proves limit, market, and batch denial before HTTP
+submission. The underlying composite fork ports the Binance Spot SBE schema 3:5
 instrument-loading fix (upstream
 `9a2e7a5155ffaa515c0279951eb1a06a8652ca33`), schema 3:5 request negotiation
 (upstream `3b59b08c9e651075a462f243c01664f4ccbd9b21`), and reviewed adapter receive-clock

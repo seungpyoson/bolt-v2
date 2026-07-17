@@ -43,6 +43,11 @@ OLD_NT_REV = "0000000000000000000000000000000000000000"
 BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_TEST_PATH = "tests/binance_sbe_quote_timestamps.rs"
 BINANCE_TIMESTAMP_PARSER_ALIAS = "nt_binance_sbe_parse"
+CURRENT_STATUS_MAP_SURFACE = "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
+CURRENT_STATUS_MAP_CAPABILITY_CLAIM = (
+    "does not provide Binance Spot SBE schema 3:5 or adapter receive-clock ownership; "
+    "those capabilities fail closed for affected new-risk consumers"
+)
 BINANCE_TIMESTAMP_PARSER_IMPORT = (
     "use ::nautilus_binance::spot::websocket::streams::parse "
     f"as {BINANCE_TIMESTAMP_PARSER_ALIAS};"
@@ -220,6 +225,12 @@ def clean_files(root: Path) -> None:
         "Current status: this branch pins the official NautilusTrader repository at the\n"
         "immutable `v1.230.0` release commit\n"
         f"`{EXPECTED_NT_REV}`.\n",
+    )
+    write(
+        root,
+        CURRENT_STATUS_MAP_SURFACE,
+        f"- The official pin {CURRENT_STATUS_MAP_CAPABILITY_CLAIM}.\n"
+        f"| 46 | Current pin | The official pin {CURRENT_STATUS_MAP_CAPABILITY_CLAIM}. |\n",
     )
     write(
         root,
@@ -716,6 +727,25 @@ def test_capability_manifest_rejects_personal_source_and_unavailable_true_claims
             )
 
         assert_finding(scan_temp(mutate), expected)
+
+
+def test_current_status_map_rejects_stale_available_binance_capability_claim() -> None:
+    def mutate(root: Path) -> None:
+        path = root / CURRENT_STATUS_MAP_SURFACE
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                CURRENT_STATUS_MAP_CAPABILITY_CLAIM,
+                "preserves Binance Spot SBE schema 3:5 plus adapter receive-clock ownership",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "current status map must state unavailable Binance Spot SBE capabilities",
+    )
 
 
 def test_manifest_pin_census_rejects_target_dev_and_build_mismatches() -> None:

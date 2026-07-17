@@ -56,6 +56,13 @@ NT_NAMING_LEDGER_PIN_SURFACE = Path(
 NT_BOUNDARY_DOCTRINE_PIN_SURFACE = Path(
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md"
 )
+CURRENT_STATUS_MAP_SURFACE = Path(
+    "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
+)
+CURRENT_STATUS_MAP_CAPABILITY_CLAIM = (
+    "does not provide Binance Spot SBE schema 3:5 or adapter receive-clock ownership; "
+    "those capabilities fail closed for affected new-risk consumers"
+)
 NT_SOURCE_CAPABILITIES_PIN_SURFACE = Path("ci/nautilus-source-capabilities.toml")
 POLYMARKET_QUERY_FIXTURE_PIN_SURFACE = Path(
     "tests/fixtures/nt_polymarket_query_post_order_params_8160730c.txt"
@@ -2239,6 +2246,17 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
                     f"{surface}: official v1.230.0 Binance SBE capabilities must remain "
                     "false/false/false"
                 )
+
+    status_map = read_required_pin_surface(root, CURRENT_STATUS_MAP_SURFACE, findings)
+    if (
+        status_map is not None
+        and status_map.count(CURRENT_STATUS_MAP_CAPABILITY_CLAIM) != 2
+    ):
+        findings.append(
+            f"{CURRENT_STATUS_MAP_SURFACE}: current status map must state unavailable "
+            "Binance Spot SBE capabilities in both the summary and readiness row"
+        )
+
 
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     if today is None:

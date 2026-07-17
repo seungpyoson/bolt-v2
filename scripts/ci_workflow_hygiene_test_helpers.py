@@ -131,16 +131,18 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && !((github.event.action == 'edited'
+              && !(github.event.changes.base.ref.from && true || false))
+             || (github.event.pull_request.draft == true
+                 && github.event.action == 'converted_to_draft'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
-        && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
-        && format('pr-{0}-deferred', github.event.number)
-        || github.event_name == 'pull_request'
-        && github.event.pull_request.draft == false
-        && (github.event.action == 'reopened'
-            || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))
-        && format('pr-{0}-noop', github.event.number)
+        && ((github.event.pull_request.draft == true
+             && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action))
+            || (github.event.pull_request.draft == false
+                && github.event.action == 'edited'
+                && !(github.event.changes.base.ref.from && true || false)))
+        && format('pr-{0}-iteration', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
@@ -152,9 +154,6 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && !(github.event.pull_request.draft == false
-             && (github.event.action == 'reopened'
-                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))))
         || github.event_name == 'workflow_dispatch' }}
 
 permissions:
@@ -212,7 +211,6 @@ jobs:
     outputs:
       ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
-      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
@@ -277,7 +275,6 @@ jobs:
         env:
           CI_POLICY_PATH: ${{ steps.policy.outputs.ci_policy_path }}
           FULL_CI_REQUIRED: ${{ steps.policy.outputs.full_ci_required }}
-          FULL_CI_DEFERRED: ${{ steps.policy.outputs.full_ci_deferred }}
           EXPECTED_EVENT_CLASS: ${{ steps.policy.outputs.expected_event_class }}
           POLICY_REASON: ${{ steps.policy.outputs.reason }}
         run: |
@@ -287,7 +284,7 @@ jobs:
           elif [[ "$CI_POLICY_PATH" == "iteration" ]]; then
             class="iteration lane"
           fi
-          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"
+          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"
 
   detector:
     name: detector
@@ -1375,23 +1372,6 @@ jobs:
           mkdir -p "$base_tree"
           git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
           echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
-      - name: Resolve gate carry-forward
-        id: carry_forward
-        if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
-        shell: bash
-        run: |
-          verdict_script="${{ steps.verdict_base.outputs.script }}"
-          if [[ -z "$verdict_script" ]]; then
-            verdict_script="scripts/ci_provenance.py"
-          fi
-          python3 "$verdict_script" resolve-gate-carry-forward \
-            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
-            --current-run-id "${{ github.run_id }}" \
-            --gate-name "${{ needs.ci-policy.outputs.gate_name }}" \
-            --workflow-path ".github/workflows/ci.yml" \
-            --require-provenance-base true \
-            | tee -a "$GITHUB_OUTPUT"
       - name: Check required lanes
         shell: bash
         run: |
@@ -1399,18 +1379,11 @@ jobs:
           if [[ -z "$verdict_script" ]]; then
             verdict_script="scripts/ci_provenance.py"
           fi
-          carry_forward_args=()
-          carry_forward_verified="${{ steps.carry_forward.outputs.carry_forward_verified }}"
-          if [[ -n "$carry_forward_verified" ]]; then
-            carry_forward_args+=(--carry-forward-verified "$carry_forward_verified")
-          fi
           python3 "$verdict_script" check-ci-gate \
             --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
             --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
-            --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}" \
             --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}" \
             --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}" \
-            "${carry_forward_args[@]}" \
             --build-required "${{ needs.detector.outputs.build_required || 'false' }}" \
             --job ci-policy=${{ needs.ci-policy.result }} \
             --job detector=${{ needs.detector.result }} \

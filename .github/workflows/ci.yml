@@ -12,12 +12,8 @@ on:
     branches: [main]
     # edited catches base-ref changes (including retargets to main). Without it
     # a PR created against another branch and later retargeted to main would not
-    # trigger CI. GitHub's edited event also fires on title/body edits; the
-    # policy resolver sends ready no-code edits through verified carry-forward while keeping
-    # base-ref edits on the full, cancelling proof path.
-    # If main advances after the last full proof, verified carry-forward must
-    # reject the prior head-SHA gate unless its provenance records the current
-    # PR base SHA.
+    # trigger CI. GitHub's edited event also fires on title/body edits; ready
+    # metadata-only edits stay on iteration names, while base-ref edits run full proof.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
   push:
     # No paths-ignore on push: tag pushes and main pushes always run CI.
@@ -66,16 +62,18 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && (startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && !((github.event.action == 'edited'
+              && !(github.event.changes.base.ref.from && true || false))
+             || (github.event.pull_request.draft == true
+                 && github.event.action == 'converted_to_draft'))
         && format('pr-{0}-mergify-proof-{1}', github.event.number, github.event.pull_request.head.sha)
         || github.event_name == 'pull_request'
-        && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
-        && format('pr-{0}-deferred', github.event.number)
-        || github.event_name == 'pull_request'
-        && github.event.pull_request.draft == false
-        && (github.event.action == 'reopened'
-            || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))
-        && format('pr-{0}-noop', github.event.number)
+        && ((github.event.pull_request.draft == true
+             && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action))
+            || (github.event.pull_request.draft == false
+                && github.event.action == 'edited'
+                && !(github.event.changes.base.ref.from && true || false)))
+        && format('pr-{0}-iteration', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
@@ -90,9 +88,6 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && !(github.event.pull_request.draft == false
-             && (github.event.action == 'reopened'
-                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))))
         || github.event_name == 'workflow_dispatch' }}
 
 env:
@@ -159,7 +154,6 @@ jobs:
     outputs:
       ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
-      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
@@ -247,7 +241,6 @@ jobs:
         env:
           CI_POLICY_PATH: ${{ steps.policy.outputs.ci_policy_path }}
           FULL_CI_REQUIRED: ${{ steps.policy.outputs.full_ci_required }}
-          FULL_CI_DEFERRED: ${{ steps.policy.outputs.full_ci_deferred }}
           EXPECTED_EVENT_CLASS: ${{ steps.policy.outputs.expected_event_class }}
           POLICY_REASON: ${{ steps.policy.outputs.reason }}
         run: |
@@ -257,12 +250,12 @@ jobs:
           elif [[ "$CI_POLICY_PATH" == "iteration" ]]; then
             class="iteration lane"
           fi
-          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} deferred=${FULL_CI_DEFERRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"
+          echo "CI classification: class=${class} policy=${CI_POLICY_PATH:-unknown} full_ci_required=${FULL_CI_REQUIRED:-false} event_class=${EXPECTED_EVENT_CLASS:-unknown} reason=${POLICY_REASON:-missing}" >> "$GITHUB_STEP_SUMMARY"
 
   # Host-health observability slice (#884): stdlib-Python sampler + dependency-free
   # HTML viewer + their test suites. These suites are the ONLY proof of the two hard
   # contracts (sampler never hangs/leaks on a degraded host; viewer never renders a
-  # false-healthy/contradictory signal), yet they are NOT Rust, so the deferred-full-CI
+  # false-healthy/contradictory signal), yet they are NOT Rust, so the iteration
   # heavy lanes never exercise them. Run them here on EVERY PR (cheap GitHub-hosted,
   # no full_ci gate, no path filter) so green PR CI actually covers this slice rather
   # than passing vacuously. It installs nothing — uses preinstalled python3 + node.
@@ -1870,26 +1863,6 @@ jobs:
           git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
           echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve gate carry-forward
-        id: carry_forward
-        if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          verdict_script="${{ steps.verdict_base.outputs.script }}"
-          if [[ -z "$verdict_script" ]]; then
-            verdict_script="scripts/ci_provenance.py"
-          fi
-          python3 "$verdict_script" resolve-gate-carry-forward \
-            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
-            --current-run-id "${{ github.run_id }}" \
-            --gate-name "${{ needs.ci-policy.outputs.gate_name }}" \
-            --workflow-path ".github/workflows/ci.yml" \
-            --require-provenance-base true \
-            | tee -a "$GITHUB_OUTPUT"
-
       - name: Check required lanes
         shell: bash
         run: |
@@ -1897,18 +1870,11 @@ jobs:
           if [[ -z "$verdict_script" ]]; then
             verdict_script="scripts/ci_provenance.py"
           fi
-          carry_forward_args=()
-          carry_forward_verified="${{ steps.carry_forward.outputs.carry_forward_verified }}"
-          if [[ -n "$carry_forward_verified" ]]; then
-            carry_forward_args+=(--carry-forward-verified "$carry_forward_verified")
-          fi
           python3 "$verdict_script" check-ci-gate \
             --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
             --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
-            --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}" \
             --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}" \
             --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}" \
-            "${carry_forward_args[@]}" \
             --build-required "${{ needs.detector.outputs.build_required || 'false' }}" \
             --job ci-policy=${{ needs.ci-policy.result }} \
             --job detector=${{ needs.detector.result }} \

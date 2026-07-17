@@ -1,5 +1,6 @@
 use std::{
     fs,
+    path::PathBuf,
     process::{Command, Output},
 };
 
@@ -7,12 +8,21 @@ fn compile_snippet(case_name: &str, body: &str) -> Output {
     let temporary = tempfile::tempdir().unwrap();
     let source_path = temporary.path().join(format!("{case_name}.rs"));
     let output_path = temporary.path().join(case_name);
-    let module_path = format!(
-        "{}/src/bolt_v3_risk_closure_workspace.rs",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let module_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/bolt_v3_application_resource_ledger.rs");
+    let staged_module_path = temporary.path().join("application_resource_ledger.rs");
+    let module_directory = module_path.with_extension("");
+    let staged_module_directory = staged_module_path.with_extension("");
+    fs::copy(&module_path, &staged_module_path).unwrap();
+    fs::create_dir(&staged_module_directory).unwrap();
+    fs::copy(
+        module_directory.join("risk_closure_workspace.rs"),
+        staged_module_directory.join("risk_closure_workspace.rs"),
+    )
+    .unwrap();
     let source = format!(
-        "#[path = {module_path:?}]\nmod workspace;\nuse workspace::*;\nfn main() {{\n{body}\n}}\n"
+        "mod application_resource_ledger;\n\
+         use application_resource_ledger::*;\nfn main() {{\n{body}\n}}\n"
     );
     fs::write(&source_path, source).unwrap();
 
@@ -232,5 +242,112 @@ let _permit = TerminalReleasePermit {
 };
 "#,
         ExpectedDiagnostic::PrivateStructConstruction,
+    );
+}
+
+#[test]
+fn ledger_capability_harness_positive_control() {
+    assert_compiles(
+        "ledger_capability_harness_positive_control",
+        r#"
+fn accepts(
+    new_risk: NewRiskWorkspaceHandle,
+    recovery: RecoveryWorkspaceHandle,
+    identity: ClosureIdentity,
+) {
+    let _ = new_risk.reserve_new_risk_workspace();
+    let _ = recovery.checkout_retained_recovery_workspace(&identity);
+}
+"#,
+    );
+}
+
+#[test]
+fn new_risk_handle_cannot_checkout_recovery() {
+    assert_compile_fails(
+        "new_risk_handle_cannot_checkout_recovery",
+        r#"
+fn bypass(handle: NewRiskWorkspaceHandle, identity: ClosureIdentity) {
+    let _ = handle.checkout_retained_recovery_workspace(&identity);
+}
+"#,
+        ExpectedDiagnostic::ErrorCode("E0599"),
+    );
+}
+
+#[test]
+fn recovery_handle_cannot_reserve_new_risk() {
+    assert_compile_fails(
+        "recovery_handle_cannot_reserve_new_risk",
+        r#"
+fn bypass(handle: RecoveryWorkspaceHandle) {
+    let _ = handle.reserve_new_risk_workspace();
+}
+"#,
+        ExpectedDiagnostic::ErrorCode("E0599"),
+    );
+}
+
+#[test]
+fn raw_workspace_authority_cannot_be_imported() {
+    assert_compile_fails(
+        "raw_workspace_authority_cannot_be_imported",
+        r#"
+use application_resource_ledger::risk_closure_workspace::RiskClosureWorkspaceAuthority;
+fn bypass(_: RiskClosureWorkspaceAuthority) {}
+"#,
+        ExpectedDiagnostic::ErrorCode("E0603"),
+    );
+}
+
+#[test]
+fn raw_workspace_authority_cannot_be_imported_from_ledger_root() {
+    assert_compile_fails(
+        "raw_workspace_authority_cannot_be_imported_from_ledger_root",
+        r#"
+use application_resource_ledger::RiskClosureWorkspaceAuthority;
+fn bypass(_: RiskClosureWorkspaceAuthority) {}
+"#,
+        ExpectedDiagnostic::ErrorCode("E0603"),
+    );
+}
+
+#[test]
+fn application_resource_ledger_cannot_be_constructed() {
+    assert_compile_fails(
+        "application_resource_ledger_cannot_be_constructed",
+        r#"
+let _ledger = ApplicationResourceLedger {
+    risk_closure_authority: panic!(),
+};
+"#,
+        ExpectedDiagnostic::ErrorCode("E0451"),
+    );
+}
+
+#[test]
+fn application_resource_ledger_has_no_production_constructor() {
+    assert_compile_fails(
+        "application_resource_ledger_has_no_production_constructor",
+        "let _ledger = ApplicationResourceLedger::new_disabled();",
+        ExpectedDiagnostic::ErrorCode("E0599"),
+    );
+}
+
+#[test]
+fn application_resource_ledger_has_no_alternate_new_constructor() {
+    assert_compile_fails(
+        "application_resource_ledger_has_no_alternate_new_constructor",
+        "let _ledger = ApplicationResourceLedger::new();",
+        ExpectedDiagnostic::ErrorCode("E0599"),
+    );
+}
+
+#[test]
+fn application_resource_ledger_has_no_default_constructor() {
+    assert_compile_fails(
+        "application_resource_ledger_has_no_default_constructor",
+        "let _ledger = ApplicationResourceLedger::default();",
+        ExpectedDiagnostic::ErrorCode("E0599"),
     );
 }

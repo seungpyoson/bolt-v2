@@ -169,6 +169,24 @@ fn bolt_v3_root_trader_id_rejects_empty_string_at_parse_time() {
 }
 
 #[test]
+fn quote_only_economics_rejects_live_order_submission() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "order_execution_mode = \"shadow\"",
+        "order_execution_mode = \"live\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&mutated).expect("mutated root should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("LiveSubmissionDisabled")),
+        "quote-only economics must not arm live execution: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_polymarket_account_id_uses_nt_typed_identifier() {
     // `PolymarketExecutionConfig.account_id` is typed as
     // `nautilus_model::identifiers::AccountId` so NT's identifier macro

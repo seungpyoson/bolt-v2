@@ -44,7 +44,7 @@ canonical_quote_asset = "USDT"
 
 [runtime]
 mode = "Live"
-order_execution_mode = "live"
+order_execution_mode = "shadow"
 
 [nautilus]
 load_state = true

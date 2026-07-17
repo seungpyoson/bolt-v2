@@ -126,6 +126,7 @@ pub enum EconomicsConfigError {
     ZeroValuationAge { route_id: String },
     DisconnectedValuationRoute { route_id: String },
     CyclicValuationRoute { route_id: String },
+    LiveSubmissionDisabled,
 }
 
 impl EconomicsRootConfig {

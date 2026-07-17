@@ -475,6 +475,41 @@ def _constructor_definitions(text: str, type_name: str) -> list[tuple[str, bool,
     return constructors
 
 
+def _explicit_factory_definitions(text: str, type_name: str) -> list[tuple[str, str]]:
+    protected_names = _protected_type_names(text, type_name)
+    factories: list[tuple[str, str]] = []
+    for _, visibility, _, name, _, returns in _function_definitions(text):
+        normalized_returns = _normalize_rust_fragment(returns)
+        if any(
+            re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(protected)}(?![A-Za-z0-9_])",
+                normalized_returns,
+            )
+            for protected in protected_names
+        ):
+            factories.append((name.removeprefix("r#"), visibility))
+    for match in re.finditer(
+        r"\b(?P<visibility>pub(?:\([^)]*\))?\s+)?"
+        r"(?:const|static)\s+(?P<name>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)"
+        r"\s*:\s*(?P<declared_type>[^=;]+)",
+        text,
+    ):
+        if any(
+            re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(protected)}(?![A-Za-z0-9_])",
+                match.group("declared_type"),
+            )
+            for protected in protected_names
+        ):
+            factories.append(
+                (
+                    match.group("name").removeprefix("r#"),
+                    (match.group("visibility") or "").strip(),
+                )
+            )
+    return factories
+
+
 def _normalize_rust_fragment(value: str) -> str:
     return re.sub(r"\s+", "", value).rstrip(",")
 
@@ -677,6 +712,14 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         )
     ):
         errors.append("raw workspace authority must not implement Clone")
+    raw_authority_factories = _explicit_factory_definitions(
+        owner_production_code, "RiskClosureWorkspaceAuthority"
+    )
+    if raw_authority_factories:
+        errors.append(
+            f"production raw workspace authority factory found in {OWNER}: "
+            f"{raw_authority_factories}"
+        )
     authority_constructors = _constructor_definitions(
         owner_code, "RiskClosureWorkspaceAuthority"
     )
@@ -707,6 +750,14 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         )
 
     ledger_production_code = strip_rust_comments_and_literals(production_text(ledger_text))
+    ledger_factories = _explicit_factory_definitions(
+        ledger_production_code, "ApplicationResourceLedger"
+    )
+    if ledger_factories:
+        errors.append(
+            f"production application resource ledger factory found in {LEDGER}: "
+            f"{ledger_factories}"
+        )
     expected_public_surface = [
         ("pub", "", "new_risk_workspace_handle", "&self", "NewRiskWorkspaceHandle"),
         ("pub", "", "recovery_workspace_handle", "&self", "RecoveryWorkspaceHandle"),

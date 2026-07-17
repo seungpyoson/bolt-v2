@@ -223,6 +223,61 @@ impl RecoveryWorkspaceHandle {
 
         self.assertTrue(any("exactly the two test-only constructor definitions" in error for error in errors))
 
+    def test_rejects_production_raw_authority_free_factory(self) -> None:
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
+        owner.write_text(
+            owner.read_text(encoding="utf-8")
+            + "\npub(super) fn production_authority_factory() "
+            + "-> RiskClosureWorkspaceAuthority { RiskClosureWorkspaceAuthority }\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("production raw workspace authority factory" in error for error in errors)
+        )
+
+    def test_rejects_production_raw_authority_static_factory(self) -> None:
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
+        owner.write_text(
+            owner.read_text(encoding="utf-8")
+            + "\npub(super) static RAW_FACTORY: "
+            + "fn() -> RiskClosureWorkspaceAuthority = RiskClosureWorkspaceAuthority;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("production raw workspace authority factory" in error for error in errors)
+        )
+
+    def test_rejects_production_application_ledger_free_factory(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8")
+            + "\npub(super) fn production_ledger_factory() "
+            + "-> ApplicationResourceLedger { panic!() }\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("production application resource ledger factory" in error for error in errors)
+        )
+
     def test_rejects_second_ledger_authority_construction_call(self) -> None:
         ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
         ledger.write_text(

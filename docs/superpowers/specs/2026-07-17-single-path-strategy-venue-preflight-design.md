@@ -57,9 +57,12 @@ resolution but receive no settlement resources.
 ### One strategy construction path
 
 `StrategyBuilder` has one concrete construction method. The registry wraps that
-method to produce a `PreparedStrategyRegistration` containing:
+method to produce the shared registration boundary's
+`PreparedStrategyRegistration`, which owns the concrete strategy behind a
+private one-use commit interface. The prepared value contains:
 
-- the NT strategy ID, available before mutation; and
+- the NT strategy ID after the dispatcher runs NT's non-mutating
+  `prepare_strategy_for_registration` check; and
 - a one-use commit operation owning the already-built concrete strategy.
 
 The existing separate `build` and `register` implementations are removed. A
@@ -78,8 +81,9 @@ The dispatcher performs three ordered stages:
 
 1. Resolve shared client routes and capability resources, then invoke each
    binding's pure preparation function.
-2. Collect every `PreparedStrategyRegistration`; reject duplicate prepared IDs
-   and IDs already present in the trader before mutation.
+2. Collect every `PreparedStrategyRegistration`; ask NT to prepare each ID
+   without registering it, then reject duplicate prepared IDs, duplicate order
+   ID tags, and IDs already present in the trader before mutation.
 3. Commit the prepared strategies to NT in configured order and build the
    registration summary from the prepared identities.
 

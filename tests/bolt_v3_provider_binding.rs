@@ -612,6 +612,78 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
 }
 
 #[test]
+fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
+    let registration = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let binding_fields = registration
+        .split_once("pub struct StrategyRuntimeBinding {")
+        .and_then(|(_, tail)| tail.split_once("\n}"))
+        .map(|(fields, _)| fields)
+        .expect("runtime binding declaration should remain inspectable");
+    assert!(binding_fields.contains("pub prepare:"));
+    assert!(!binding_fields.contains("pub register:") && !binding_fields.contains("LiveNode"));
+
+    let dispatcher = registration
+        .split_once("fn register_bolt_v3_strategies_on_node_with_handle_registry(")
+        .and_then(|(_, tail)| {
+            tail.split_once("\n}\n\nfn validate_realized_volatility_runtime_source_clients")
+        })
+        .map(|(body, _)| body)
+        .expect("shared strategy dispatcher should remain inspectable");
+    let contexts_position = dispatcher
+        .find("let contexts = loaded")
+        .expect("all shared contexts must be collected first");
+    let prepared_position = dispatcher
+        .find("let mut prepared = contexts")
+        .expect("all concrete strategies must be prepared second");
+    let identity_position = dispatcher
+        .find(".prepare_registration(&trader)")
+        .expect("all NT identities must be prepared before commit");
+    let commit_position = dispatcher
+        .find(".commit(node.kernel().trader())")
+        .expect("the dispatcher must have one final commit path");
+    assert!(
+        contexts_position < prepared_position
+            && prepared_position < identity_position
+            && identity_position < commit_position
+    );
+
+    let commit_loop = dispatcher
+        .split_once("for (strategy, prepared_registration) in prepared {")
+        .map(|(_, body)| body)
+        .expect("final commit loop should remain inspectable");
+    for forbidden_deferred_work in [
+        "StrategyRegistrationContext::new(",
+        "root.clients",
+        "raw_taker_config(",
+        "production_strategy_registry(",
+        "prepare_strategy(",
+    ] {
+        assert!(
+            !commit_loop.contains(forbidden_deferred_work),
+            "NT commit loop must not defer `{forbidden_deferred_work}`"
+        );
+    }
+
+    let registry = support::repo_text("src/strategies/registry.rs");
+    let registry_production = registry
+        .split_once("#[cfg(test)]")
+        .map_or(registry.as_str(), |(production, _)| production);
+    assert!(registry_production.contains("pub fn prepare_strategy("));
+    for retired_dual_path in [
+        "pub type BoxedStrategy",
+        "pub trait RuntimeStrategy",
+        "pub fn register_strategy(",
+        "pub fn build(",
+        "fn register(\n",
+    ] {
+        assert!(
+            !registry_production.contains(retired_dual_path),
+            "strategy registry must not retain retired dual path `{retired_dual_path}`"
+        );
+    }
+}
+
+#[test]
 fn shared_strategy_assembly_fails_closed_when_execution_client_is_missing() {
     let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("bolt-v3 fixture should load");

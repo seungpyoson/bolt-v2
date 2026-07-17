@@ -61,9 +61,9 @@ use crate::{
         resolution_oracle_client_http_timeout_secs,
     },
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
-        StrategyRuntimeCapabilities, assemble_strategy_build_context, execution_account_id,
-        settlement_currency_for_execution_account, venue_for_client,
+        BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyRegistrationContext,
+        StrategyRuntimeBinding, StrategyRuntimeCapabilities, assemble_strategy_build_context,
+        execution_account_id, settlement_currency_for_execution_account, venue_for_client,
     },
     strategies::{
         binary_oracle_edge_taker::{BinaryOracleEdgeTakerBuilder, KEY as STRATEGY_KIND},
@@ -92,7 +92,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
         realized_volatility: true,
         settlement: true,
     },
-    register: register_runtime_strategy,
+    prepare: prepare_runtime_strategy,
 };
 
 pub fn gate_requirements() -> Vec<ArchetypeGateRequirement> {
@@ -437,10 +437,9 @@ impl std::fmt::Display for BinaryOracleEdgeTakerRuntimeConfigError {
 
 impl std::error::Error for BinaryOracleEdgeTakerRuntimeConfigError {}
 
-pub fn register_runtime_strategy(
-    node: &mut nautilus_live::node::LiveNode,
+pub fn prepare_runtime_strategy(
     context: StrategyRegistrationContext<'_>,
-) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
+) -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError> {
     let raw = raw_taker_config(context.strategy, context.loaded, |client_id| {
         context.prepared_client_venue(client_id)
     })
@@ -449,12 +448,7 @@ pub fn register_runtime_strategy(
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
-        .register_strategy(
-            BinaryOracleEdgeTakerBuilder::kind(),
-            &raw,
-            &build_context,
-            node.kernel().trader(),
-        )
+        .prepare_strategy(BinaryOracleEdgeTakerBuilder::kind(), &raw, &build_context)
         .map_err(|error| binding_message(&context, error.to_string()))
 }
 
@@ -632,7 +626,7 @@ pub fn raw_taker_config(
         BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
-                "signal_data data_client_id `{}` is absent from prepared client routes",
+                "signal_data data_client_id `{}` is not present in loaded clients",
                 signal_data.data_client_id
             ),
         }
@@ -644,7 +638,7 @@ pub fn raw_taker_config(
                 BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
                     strategy_instance_id: strategy.config.strategy_instance_id.clone(),
                     message: format!(
-                        "resolution_data data_client_id `{}` is absent from prepared client routes",
+                        "resolution_data data_client_id `{}` is not present in loaded clients",
                         resolution_data.data_client_id
                     ),
                 }

@@ -240,34 +240,44 @@ git commit -m "fix: preflight all strategy client routes"
 - Modify: `tests/bolt_v3_strategy_registration.rs`
 - Modify: `tests/bolt_v3_provider_binding.rs`
 - Modify: affected registry/unit tests under `src/strategies/`
+- Modify: `tests/support/stub_runtime_strategy.rs`
+- Modify: `tests/bolt_v3_strategy_substrate_structure.rs`
 
-### Step 1: Add one-use prepared registration ownership
+### Step 1: Add one-use prepared registration ownership at the shared boundary
 
-In `src/strategies/registry.rs`, add:
+In `src/bolt_v3_strategy_registration.rs`, add a private erased commit trait
+and a public prepared owner. The shared location preserves dependency direction:
+`strategies::registry` may depend on shared registration, while shared
+registration must not depend on the strategy layer.
 
 ```rust
 pub struct PreparedStrategyRegistration {
-    strategy_id: StrategyId,
-    commit: Option<Box<dyn FnOnce(&Rc<RefCell<Trader>>) -> Result<()>>>,
+    strategy_id: Option<StrategyId>,
+    strategy: Box<dyn PreparedStrategyCommit>,
 }
 
 impl PreparedStrategyRegistration {
-    pub fn strategy_id(&self) -> &StrategyId {
-        &self.strategy_id
+    pub fn prepare_registration(&mut self, trader: &Trader) -> Result<StrategyId> {
+        let strategy_id = self.strategy.prepare_registration(trader)?;
+        self.strategy_id = Some(strategy_id);
+        Ok(strategy_id)
     }
 
-    pub fn commit(mut self, trader: &Rc<RefCell<Trader>>) -> Result<StrategyId> {
-        let commit = self
-            .commit
-            .take()
-            .context("prepared strategy registration was already consumed")?;
-        commit(trader)?;
-        Ok(self.strategy_id)
+    pub fn commit(self, trader: &Rc<RefCell<Trader>>) -> Result<StrategyId> {
+        let strategy_id = self.strategy_id.context(
+            "prepared strategy registration has no preflighted NT strategy ID",
+        )?;
+        self.strategy.commit(trader)?;
+        Ok(strategy_id)
     }
 }
 ```
 
-The commit closure owns the already-built concrete strategy. It performs no TOML parsing, client resolution, registry selection, or strategy construction.
+The private erased strategy object owns the already-built concrete strategy.
+Its preflight method delegates to NT's non-mutating
+`prepare_strategy_for_registration`; its commit method delegates to
+`add_strategy`. Neither method performs TOML parsing, client resolution,
+registry selection, or strategy construction.
 
 ### Step 2: Collapse `StrategyBuilder` to one construction method
 
@@ -288,7 +298,10 @@ pub trait StrategyBuilder: Send + Sync + 'static {
 }
 ```
 
-Use a generic registration adapter to turn `B::build(...)` into `PreparedStrategyRegistration`. Derive the `StrategyId` from the built strategy using the same identifier logic the existing concrete `register` methods use, then capture the strategy by value in the commit closure and call `trader.borrow_mut().add_strategy(strategy)`.
+Use a generic registration adapter to turn `B::build(...)` into the shared
+`PreparedStrategyRegistration`. Do not derive an approximate ID in the
+registry; the dispatcher must call NT's authoritative, non-mutating strategy-ID
+preparation before commit.
 
 Update `StrategyRegistration` to store only:
 
@@ -337,9 +350,11 @@ let prepared = loaded
     .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
 ```
 
-Before mutation, reject:
+Before mutation, call `prepare_registration` for every prepared strategy while
+holding only an immutable trader borrow, then reject:
 
 - duplicate `prepared.strategy_id()` values within the batch;
+- duplicate prepared order ID tags within the batch;
 - a prepared ID already present in `node.kernel().trader().borrow().strategy_ids()`.
 
 Only then commit:

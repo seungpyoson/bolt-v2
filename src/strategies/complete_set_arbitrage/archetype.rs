@@ -5,8 +5,6 @@
 
 use std::collections::BTreeSet;
 
-use nautilus_live::node::LiveNode;
-use nautilus_model::identifiers::StrategyId;
 use rust_decimal::Decimal;
 use toml::{Value, map::Map};
 
@@ -18,8 +16,8 @@ use crate::{
     },
     bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
-        StrategyRuntimeCapabilities, assemble_strategy_build_context,
+        BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyRegistrationContext,
+        StrategyRuntimeBinding, StrategyRuntimeCapabilities, assemble_strategy_build_context,
     },
     strategies::production_strategy_registry,
 };
@@ -34,7 +32,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
         realized_volatility: true,
         settlement: false,
     },
-    register: register_runtime_strategy,
+    prepare: prepare_runtime_strategy,
 };
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
@@ -374,22 +372,16 @@ pub fn raw_complete_set_config(
     Ok(Value::Table(table))
 }
 
-pub fn register_runtime_strategy(
-    node: &mut LiveNode,
+pub fn prepare_runtime_strategy(
     context: StrategyRegistrationContext<'_>,
-) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
+) -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError> {
     let raw = raw_complete_set_config(context.strategy)
         .map_err(|error| binding_message(&context, error.to_string()))?;
     let build_context = assemble_strategy_build_context(&context)?;
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
-        .register_strategy(
-            context.strategy_kind,
-            &raw,
-            &build_context,
-            node.kernel().trader(),
-        )
+        .prepare_strategy(context.strategy_kind, &raw, &build_context)
         .map_err(|error| binding_message(&context, error.to_string()))
 }
 

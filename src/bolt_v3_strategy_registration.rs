@@ -23,25 +23,90 @@ use crate::bolt_v3_settlement_runtime::{
 };
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
+use anyhow::Context;
+use nautilus_common::{actor::DataActorNative, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     identifiers::{ClientId, StrategyId, Venue},
     types::Currency,
 };
+use nautilus_system::trader::Trader;
+use nautilus_trading::{Strategy, StrategyNative};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime;
+
+trait PreparedStrategyCommit {
+    fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId>;
+    fn commit(self: Box<Self>, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<()>;
+}
+
+struct PreparedConcreteStrategy<T> {
+    strategy: T,
+}
+
+impl<T> PreparedStrategyCommit for PreparedConcreteStrategy<T>
+where
+    T: Strategy + StrategyNative + DataActorNative + Component + std::fmt::Debug + 'static,
+{
+    fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId> {
+        trader.prepare_strategy_for_registration(&mut self.strategy)
+    }
+
+    fn commit(self: Box<Self>, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<()> {
+        let Self { strategy } = *self;
+        trader.borrow_mut().add_strategy(strategy)
+    }
+}
+
+pub struct PreparedStrategyRegistration {
+    strategy_id: Option<StrategyId>,
+    strategy: Box<dyn PreparedStrategyCommit>,
+}
+
+impl PreparedStrategyRegistration {
+    pub fn from_strategy<T>(strategy: T) -> Self
+    where
+        T: Strategy + StrategyNative + DataActorNative + Component + std::fmt::Debug + 'static,
+    {
+        Self {
+            strategy_id: None,
+            strategy: Box::new(PreparedConcreteStrategy { strategy }),
+        }
+    }
+
+    pub fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId> {
+        let strategy_id = self.strategy.prepare_registration(trader)?;
+        self.strategy_id = Some(strategy_id);
+        Ok(strategy_id)
+    }
+
+    pub fn strategy_id(&self) -> Option<StrategyId> {
+        self.strategy_id
+    }
+
+    pub fn commit(self, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<StrategyId> {
+        let strategy_id = self.strategy_id.context(stringify!(
+            prepared_strategy_registration_has_no_preflighted_nt_strategy_id
+        ))?;
+        self.strategy.commit(trader)?;
+        Ok(strategy_id)
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct StrategyRuntimeBinding {
     pub key: &'static str,
     pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
-    pub register: for<'a> fn(
-        &mut LiveNode,
-        StrategyRegistrationContext<'a>,
-    ) -> Result<StrategyId, BoltV3StrategyRegistrationError>,
+    pub prepare:
+        for<'a> fn(
+            StrategyRegistrationContext<'a>,
+        )
+            -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,7 +296,7 @@ fn resolve_strategy_client_routes<'a>(
     roles_by_client_id
         .entry(strategy.config.execution_client_id)
         .or_default()
-        .insert("execution_client_id".to_string());
+        .insert(stringify!(execution_client_id).to_string());
     for (role, signal_data) in &strategy.config.signal_data {
         roles_by_client_id
             .entry(signal_data.data_client_id)
@@ -239,10 +304,13 @@ fn resolve_strategy_client_routes<'a>(
             .insert(format!("signal_data.{role}.data_client_id"));
     }
     if let Some(resolution_data) = strategy.config.resolution_data.as_ref() {
+        let mut resolution_role = stringify!(resolution_data).to_string();
+        resolution_role.push('.');
+        resolution_role.push_str(stringify!(data_client_id));
         roles_by_client_id
             .entry(resolution_data.data_client_id)
             .or_default()
-            .insert("resolution_data.data_client_id".to_string());
+            .insert(resolution_role);
     }
 
     let mut clients_by_id = BTreeMap::<ClientId, &'a ClientBlock>::new();
@@ -252,8 +320,7 @@ fn resolve_strategy_client_routes<'a>(
             binding_error(
                 strategy,
                 format!(
-                    "configured client `{client_id}` for {} is not present in loaded clients",
-                    roles.into_iter().collect::<Vec<_>>().join(", ")
+                    "configured client `{client_id}` for {roles:?} is not present in loaded clients"
                 ),
             )
         })?;
@@ -737,7 +804,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
         execution_controls,
     );
 
-    let prepared = loaded
+    let contexts = loaded
         .strategies
         .iter()
         .map(|strategy| {
@@ -759,9 +826,47 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
         })
         .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
 
-    for (binding, context) in prepared {
-        let strategy = context.strategy;
-        let registered_strategy_id = (binding.register)(node, context)?;
+    let mut prepared = contexts
+        .into_iter()
+        .map(|(binding, context)| {
+            let strategy = context.strategy;
+            let prepared = (binding.prepare)(context)?;
+            Ok((strategy, prepared))
+        })
+        .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
+
+    let mut prepared_strategy_ids = BTreeSet::new();
+    let mut prepared_order_id_tags = BTreeSet::new();
+    {
+        let trader = node.kernel().trader().borrow();
+        for (strategy, prepared_registration) in &mut prepared {
+            let strategy_id = prepared_registration
+                .prepare_registration(&trader)
+                .map_err(|error| binding_error(strategy, error.to_string()))?;
+            if !prepared_strategy_ids.insert(strategy_id) {
+                return Err(binding_error(
+                    strategy,
+                    format!("prepared NT strategy ID `{strategy_id}` is duplicated in the batch"),
+                ));
+            }
+            let order_id_tag = strategy_id.get_tag().to_string();
+            if !prepared_order_id_tags.insert(order_id_tag.clone()) {
+                return Err(binding_error(
+                    strategy,
+                    format!("prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"),
+                ));
+            }
+        }
+    }
+
+    for (strategy, prepared_registration) in prepared {
+        // All repository-owned parsing, client resolution, registry selection,
+        // construction, and identity checks have completed. NT add_strategy is
+        // the external commit boundary and is intentionally not wrapped in a
+        // repository-level rollback path.
+        let registered_strategy_id = prepared_registration
+            .commit(node.kernel().trader())
+            .map_err(|error| binding_error(strategy, error.to_string()))?;
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             strategy_archetype: strategy.config.strategy_archetype.clone(),

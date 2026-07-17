@@ -623,7 +623,7 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
 }
 
 #[test]
-fn every_archetype_has_one_capability_declaration_and_registration_path() {
+fn every_archetype_has_one_capability_declaration_and_preparation_path() {
     for relative in ARCHETYPES {
         let tokens = source_tokens(relative);
         assert_eq!(
@@ -635,19 +635,19 @@ fn every_archetype_has_one_capability_declaration_and_registration_path() {
             "{relative} must declare one capability set"
         );
         assert_eq!(
-            count_sequence(&tokens, &["register", ":", "register_runtime_strategy"]),
+            count_sequence(&tokens, &["prepare", ":", "prepare_runtime_strategy"]),
             1,
-            "{relative} must declare one registration callback"
+            "{relative} must declare one preparation callback"
         );
         assert_eq!(
-            count_sequence(&tokens, &["fn", "register_runtime_strategy", "("]),
+            count_sequence(&tokens, &["fn", "prepare_runtime_strategy", "("]),
             1,
-            "{relative} must define one registration entry point"
+            "{relative} must define one preparation entry point"
         );
         assert_eq!(
-            count_sequence(&tokens, &[".", "register_strategy", "("]),
+            count_sequence(&tokens, &[".", "prepare_strategy", "("]),
             1,
-            "{relative} must have one registry registration path"
+            "{relative} must have one registry preparation path"
         );
     }
 }

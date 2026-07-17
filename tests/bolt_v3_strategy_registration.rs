@@ -17,10 +17,7 @@ use bolt_v2::{
     bolt_v3_providers::FeeProvider,
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_strategy_context::StrategyBuildContext,
-    bolt_v3_submit_admission::{
-        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy,
-    },
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::{
         binary_oracle_edge_taker::{
             BinaryOracleEdgeTakerBuilder, archetype as binary_oracle_edge_taker_archetype,
@@ -34,10 +31,7 @@ use bolt_v2::{
 };
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
-use nautilus_model::{
-    enums::OrderSide,
-    identifiers::{ClientId, InstrumentId, StrategyId, Venue},
-};
+use nautilus_model::identifiers::{ClientId, InstrumentId, StrategyId, Venue};
 use rust_decimal::Decimal;
 use std::{
     collections::BTreeMap,
@@ -64,9 +58,45 @@ fn raw_edge_taker_config(
     })
 }
 
+fn strategy_registration_test_runtime(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+) -> (
+    LiveNode,
+    bolt_v2::bolt_v3_secrets::ResolvedBoltV3Secrets,
+    bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls,
+    Arc<dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+) {
+    let mut empty_loaded = loaded.clone();
+    empty_loaded.strategies.clear();
+    let resolved = resolve_bolt_v3_secrets_with(loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve");
+    let decision_evidence: Arc<
+        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let execution_controls =
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
+            submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
+            order_execution_policy:
+                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            settlement_runtime_sink: None,
+            settlement_recovery: None,
+            settlement_health_transition_emitter: None,
+        };
+    let adapters =
+        map_bolt_v3_adapters(loaded, &resolved).expect("fixture adapters should map cleanly");
+    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration");
+    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
+        .expect("fixture data clients should register before strategy registration");
+    let node = builder
+        .build()
+        .expect("v3 LiveNode should build before strategy registration");
+    (node, resolved, execution_controls, decision_evidence)
+}
+
 const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
 const RV_DATA_CLIENT_VENUE: &str = "OKX";
-static REGISTRATION_CALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PREPARATION_CALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn set_fixture_strategy_settlement_currency(
     loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
@@ -745,11 +775,12 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
 
 #[test]
 fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
-    fn register_stub(
-        node: &mut LiveNode,
+    fn prepare_stub(
         context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
-    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
-    {
+    ) -> Result<
+        bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    > {
         assert_eq!(context.strategy_kind, "stub_runtime_strategy");
         assert_eq!(
             context.capabilities,
@@ -758,39 +789,11 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 settlement: true,
             }
         );
-        let permit = context
-            .submit_admission
-            .admit(&submit_request(Decimal::new(1, 0)))
-            .map_err(|error| {
-                bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
-                    strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-                    strategy_archetype: context
-                        .strategy
-                        .config
-                        .strategy_archetype
-                        .as_str()
-                        .to_string(),
-                    message: format!("submit admission admit failed: {error:?}"),
-                }
-            })?;
-        permit.commit_submitted();
-        let strategy_id = StrategyId::from("BOLT-V3-PHASE3-BINDING");
-        node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
-            strategy_id.as_str(),
-        ))
-        .map_err(|source| {
-            bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
-                strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-                strategy_archetype: context
-                    .strategy
-                    .config
-                    .strategy_archetype
-                    .as_str()
-                    .to_string(),
-                message: source.to_string(),
-            }
-        })?;
-        Ok(strategy_id)
+        Ok(
+            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
+                support::stub_runtime_strategy::StubRuntimeStrategy::new("BOLT-V3-PHASE3-BINDING"),
+            ),
+        )
     }
 
     const TEST_BINDINGS: &[bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding] = &[
@@ -801,7 +804,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 realized_volatility: true,
                 settlement: true,
             },
-            register: register_stub,
+            prepare: prepare_stub,
         },
     ];
 
@@ -848,7 +851,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         .expect("configured strategy should register through matching runtime binding");
 
     assert_eq!(summary.registered.len(), loaded.strategies.len());
-    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(admission.admitted_order_count(), 0);
     assert_eq!(
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-PHASE3-BINDING")]
@@ -858,11 +861,12 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
 fn settlement_registration_error_after_config_mutation(
     mutate: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedBoltV3Config),
 ) -> bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError {
-    fn register_must_not_run(
-        _node: &mut LiveNode,
+    fn prepare_must_not_run(
         _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
-    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
-    {
+    ) -> Result<
+        bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    > {
         panic!("settlement identity must be validated before invoking the binding")
     }
 
@@ -874,37 +878,14 @@ fn settlement_registration_error_after_config_mutation(
                 realized_volatility: true,
                 settlement: true,
             },
-            register: register_must_not_run,
+            prepare: prepare_must_not_run,
         },
     ];
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let mut empty_loaded = loaded.clone();
-    empty_loaded.strategies.clear();
-    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
-        .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let execution_controls =
-        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
-            submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
-            order_execution_policy:
-                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-            settlement_runtime_sink: None,
-            settlement_recovery: None,
-            settlement_health_transition_emitter: None,
-        };
-    let adapters =
-        map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
-    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration");
-    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
-        .expect("fixture data clients should register before strategy registration");
-    let mut node = builder
-        .build()
-        .expect("v3 LiveNode should build before strategy registration");
+    let (mut node, resolved, execution_controls, decision_evidence) =
+        strategy_registration_test_runtime(&loaded);
     mutate(&mut loaded);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -964,29 +945,20 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
     capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities,
     invalid_execution_client_id: &str,
 ) {
-    fn register_stub(
-        node: &mut LiveNode,
-        context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
-    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
-    {
-        REGISTRATION_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
-        let strategy_id = StrategyId::from("BOLT-V3-PREFLIGHT-CALLBACK");
-        node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
-            strategy_id.as_str(),
-        ))
-        .map_err(|source| {
-            bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
-                strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-                strategy_archetype: context
-                    .strategy
-                    .config
-                    .strategy_archetype
-                    .as_str()
-                    .to_string(),
-                message: source.to_string(),
-            }
-        })?;
-        Ok(strategy_id)
+    fn prepare_stub(
+        _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
+    ) -> Result<
+        bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    > {
+        PREPARATION_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
+        Ok(
+            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
+                support::stub_runtime_strategy::StubRuntimeStrategy::new(
+                    "BOLT-V3-PREFLIGHT-CALLBACK",
+                ),
+            ),
+        )
     }
 
     let bindings = [
@@ -994,11 +966,11 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
             key: "binary_oracle_edge_taker",
             strategy_kind: "stub_runtime_strategy",
             capabilities,
-            register: register_stub,
+            prepare: prepare_stub,
         },
     ];
 
-    REGISTRATION_CALLBACK_COUNT.store(0, Ordering::SeqCst);
+    PREPARATION_CALLBACK_COUNT.store(0, Ordering::SeqCst);
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let valid = loaded
@@ -1052,7 +1024,7 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
         error,
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding { .. }
     ));
-    assert_eq!(REGISTRATION_CALLBACK_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(PREPARATION_CALLBACK_COUNT.load(Ordering::SeqCst), 0);
     assert!(node.kernel().trader().borrow().strategy_ids().is_empty());
 }
 
@@ -1089,8 +1061,12 @@ fn fee_provider_preflight_failure_for_second_strategy_runs_no_binding_callback()
     );
 }
 
-#[test]
-fn invalid_second_signal_client_fails_before_any_strategy_is_registered() {
+fn production_registration_error_with_invalid_second_edge_strategy(
+    mutate: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedStrategy),
+) -> (
+    bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    Vec<StrategyId>,
+) {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let valid = loaded
@@ -1100,41 +1076,18 @@ fn invalid_second_signal_client_fails_before_any_strategy_is_registered() {
         .expect("fixture should include an edge-taker strategy")
         .clone();
     let mut invalid = valid.clone();
-    invalid.config.strategy_instance_id = "invalid-second-signal-client".to_string();
-    invalid.config.order_id_tag = "902".to_string();
-    invalid
+    invalid.config.strategy_instance_id = "invalid-second-edge-strategy".to_string();
+    let next_order_id_tag = valid
         .config
-        .signal_data
-        .values_mut()
-        .next()
-        .expect("edge fixture must declare one signal source")
-        .data_client_id = ClientId::from("missing_signal");
+        .order_id_tag
+        .parse::<u64>()
+        .expect("fixture order ID tag should be numeric")
+        + 1;
+    invalid.config.order_id_tag = format!("{next_order_id_tag:03}");
+    mutate(&mut invalid);
 
-    let mut empty_loaded = loaded.clone();
-    empty_loaded.strategies.clear();
-    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
-        .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let execution_controls =
-        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
-            submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
-            order_execution_policy:
-                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-            settlement_runtime_sink: None,
-            settlement_recovery: None,
-            settlement_health_transition_emitter: None,
-        };
-    let adapters =
-        map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
-    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration");
-    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
-        .expect("fixture data clients should register before strategy registration");
-    let mut node = builder
-        .build()
-        .expect("v3 LiveNode should build before strategy registration");
+    let (mut node, resolved, execution_controls, decision_evidence) =
+        strategy_registration_test_runtime(&loaded);
     loaded.strategies = vec![valid, invalid];
 
     let error =
@@ -1146,15 +1099,49 @@ fn invalid_second_signal_client_fails_before_any_strategy_is_registered() {
             execution_controls,
             decision_evidence,
         )
-        .expect_err("an unknown signal client must fail registration");
+        .expect_err("the invalid second strategy must fail registration");
+
+    let registered_strategy_ids = node.kernel().trader().borrow().strategy_ids();
+    (error, registered_strategy_ids)
+}
+
+#[test]
+fn invalid_second_signal_client_fails_before_any_strategy_is_registered() {
+    let (error, registered_strategy_ids) =
+        production_registration_error_with_invalid_second_edge_strategy(|invalid| {
+            invalid
+                .config
+                .signal_data
+                .values_mut()
+                .next()
+                .expect("edge fixture must declare one signal source")
+                .data_client_id = ClientId::from("missing_signal");
+        });
 
     assert!(
         error.to_string().contains("missing_signal"),
         "registration error must identify the missing configured signal client: {error}"
     );
     assert!(
-        node.kernel().trader().borrow().strategy_ids().is_empty(),
+        registered_strategy_ids.is_empty(),
         "deterministic preparation failure must precede every NT registration"
+    );
+}
+
+#[test]
+fn invalid_second_raw_strategy_config_fails_before_any_strategy_is_registered() {
+    let (error, registered_strategy_ids) =
+        production_registration_error_with_invalid_second_edge_strategy(|invalid| {
+            invalid.config.order_id_tag = "invalid tag".to_string();
+        });
+
+    assert!(
+        error.to_string().contains("invalid NT StrategyId"),
+        "registration error must identify the invalid mapped strategy ID: {error}"
+    );
+    assert!(
+        registered_strategy_ids.is_empty(),
+        "raw mapping failure must precede every NT registration"
     );
 }
 
@@ -1176,31 +1163,8 @@ fn signal_client_aliases_execution_client_without_a_second_route() {
         .expect("edge fixture must declare one signal source")
         .data_client_id = execution_client_id;
 
-    let mut empty_loaded = loaded.clone();
-    empty_loaded.strategies.clear();
-    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
-        .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let execution_controls =
-        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
-            submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
-            order_execution_policy:
-                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-            settlement_runtime_sink: None,
-            settlement_recovery: None,
-            settlement_health_transition_emitter: None,
-        };
-    let adapters =
-        map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
-    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration");
-    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
-        .expect("fixture data clients should register before strategy registration");
-    let mut node = builder
-        .build()
-        .expect("v3 LiveNode should build before strategy registration");
+    let (mut node, resolved, execution_controls, decision_evidence) =
+        strategy_registration_test_runtime(&loaded);
 
     let summary =
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
@@ -1215,6 +1179,127 @@ fn signal_client_aliases_execution_client_without_a_second_route() {
 
     assert_eq!(summary.registered.len(), 1);
     assert_eq!(node.kernel().trader().borrow().strategy_ids().len(), 1);
+}
+
+#[test]
+fn duplicate_prepared_strategy_ids_fail_before_any_strategy_is_registered() {
+    fn prepare_duplicate(
+        _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
+    ) -> Result<
+        bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    > {
+        Ok(
+            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
+                support::stub_runtime_strategy::StubRuntimeStrategy::new(
+                    "BOLT-V3-DUPLICATE-PREPARED",
+                ),
+            ),
+        )
+    }
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let valid = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_archetype.as_str() == "binary_oracle_edge_taker")
+        .expect("fixture should include an edge-taker strategy")
+        .clone();
+    let mut duplicate = valid.clone();
+    duplicate.config.strategy_instance_id = "duplicate-prepared-strategy".to_string();
+    duplicate.config.order_id_tag = format!(
+        "{:03}",
+        valid
+            .config
+            .order_id_tag
+            .parse::<u64>()
+            .expect("fixture order ID tag should be numeric")
+            + 1
+    );
+    loaded.strategies = vec![valid, duplicate];
+    let (mut node, resolved, execution_controls, decision_evidence) =
+        strategy_registration_test_runtime(&loaded);
+    let bindings = [
+        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
+            key: "binary_oracle_edge_taker",
+            strategy_kind: "stub_runtime_strategy",
+            capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                realized_volatility: true,
+                settlement: true,
+            },
+            prepare: prepare_duplicate,
+        },
+    ];
+
+    let error =
+        bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            &loaded,
+            &resolved,
+            &bindings,
+            execution_controls,
+            decision_evidence,
+        )
+        .expect_err("duplicate prepared IDs must fail before commit");
+
+    assert!(error.to_string().contains("duplicated in the batch"));
+    assert!(node.kernel().trader().borrow().strategy_ids().is_empty());
+}
+
+#[test]
+fn already_registered_strategy_id_fails_before_any_new_strategy_is_registered() {
+    fn prepare_existing(
+        _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
+    ) -> Result<
+        bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    > {
+        Ok(
+            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
+                support::stub_runtime_strategy::StubRuntimeStrategy::new(
+                    "BOLT-V3-ALREADY-REGISTERED",
+                ),
+            ),
+        )
+    }
+
+    let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture v3 config should load");
+    let (mut node, resolved, execution_controls, decision_evidence) =
+        strategy_registration_test_runtime(&loaded);
+    node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
+        "BOLT-V3-ALREADY-REGISTERED",
+    ))
+    .expect("existing strategy fixture should register");
+    let bindings = [
+        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
+            key: "binary_oracle_edge_taker",
+            strategy_kind: "stub_runtime_strategy",
+            capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                realized_volatility: true,
+                settlement: true,
+            },
+            prepare: prepare_existing,
+        },
+    ];
+
+    let error =
+        bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            &loaded,
+            &resolved,
+            &bindings,
+            execution_controls,
+            decision_evidence,
+        )
+        .expect_err("an existing NT strategy ID must fail before commit");
+
+    assert!(error.to_string().contains("already registered"));
+    assert_eq!(
+        node.kernel().trader().borrow().strategy_ids(),
+        vec![StrategyId::from("BOLT-V3-ALREADY-REGISTERED")]
+    );
 }
 
 #[test]
@@ -1283,23 +1368,6 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
             message
         } if message.contains("runtime-backed")
     ));
-}
-
-fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
-    BoltV3SubmitAdmissionRequest {
-        strategy_id: "strategy-a".to_string(),
-        execution_client_id: "polymarket_main".to_string(),
-        client_order_id: "client-order-1".to_string(),
-        instrument_id: "instrument-1".to_string(),
-        notional,
-        order_side: OrderSide::Buy,
-        order_quantity: Decimal::new(1, 0),
-        intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-        risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
-        admission_evidence: None,
-    }
 }
 
 #[test]

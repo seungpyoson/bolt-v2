@@ -2,7 +2,8 @@ use bolt_v2::{
     bolt_v3_providers::hyperliquid::economics::{
         BlockedUnsupported, HyperliquidCarryPolicy, HyperliquidEconomicsAdapter,
         HyperliquidEconomicsAdapterConfig, HyperliquidEconomicsError, HyperliquidFormulaPolicy,
-        HyperliquidProductEconomicsSnapshot, HyperliquidUserFeesSnapshot,
+        HyperliquidProductEconomicsSnapshot, HyperliquidSnapshotMetadata,
+        HyperliquidUserFeesSnapshot,
     },
     economics::{
         EconomicClass, EconomicComponentId, FormulaId, LiquidityRoleAssumption, PositionContext,
@@ -53,6 +54,60 @@ fn user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
             "spotTakerBaseRate":0.0004,"spotMakerBaseRate":0.0001
         }}"#
     ))
+    .unwrap()
+}
+
+fn official_user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
+    HyperliquidUserFeesSnapshot::from_wire_json(
+        HyperliquidSnapshotMetadata {
+            snapshot_id: "user-fees-snapshot".to_string(),
+            source_at_ns: 90,
+            fetched_at_ns: 95,
+            valid_until_ns: 110,
+        },
+        "account",
+        &format!(
+            r#"{{
+                "dailyUserVlm":[{{
+                    "date":"2026-07-18",
+                    "userCross":"100000",
+                    "userAdd":"50000",
+                    "exchange":"1000000"
+                }}],
+                "feeSchedule":{{
+                    "cross":"0.00045",
+                    "add":"0.00015",
+                    "spotCross":"0.0007",
+                    "spotAdd":"0.0004",
+                    "tiers":{{
+                        "vip":[],
+                        "mm":[{{"makerFractionCutoff":"0.005","add":"-0.00001"}}]
+                    }},
+                    "referralDiscount":"0.04",
+                    "stakingDiscountTiers":[{{
+                        "bpsOfMaxSupply":"0",
+                        "discount":"0"
+                    }}]
+                }},
+                "userCrossRate":"0.000315",
+                "userAddRate":"{maker_rate}",
+                "userSpotCrossRate":"0.00049",
+                "userSpotAddRate":"0.00028",
+                "activeReferralDiscount":"0.04",
+                "trial":null,
+                "feeTrialReward":"0",
+                "nextTrialAvailableTimestamp":null,
+                "stakingLink":{{
+                    "type":"tradingUser",
+                    "stakingUser":"0x54c049d9c7d3c92c2462bf3d28e083f3d6805061"
+                }},
+                "activeStakingDiscount":{{
+                    "bpsOfMaxSupply":"4.7577998927",
+                    "discount":"0.3"
+                }}
+            }}"#
+        ),
+    )
     .unwrap()
 }
 
@@ -157,6 +212,51 @@ fn complete_perp_surface_applies_account_rate_and_builder_approval() {
     assert_eq!(components.len(), 3);
     assert_eq!(components[0].point_effect.amount(), decimal("-3.15"));
     assert_eq!(components[1].point_effect.amount(), decimal("-1.00"));
+}
+
+#[test]
+fn official_user_fees_wire_shape_drives_effective_taker_rate_without_double_staking() {
+    let adapter = HyperliquidEconomicsAdapter::try_new(
+        config(),
+        official_user_fees("0.000105"),
+        product("perp", false, false, "0", "0"),
+    )
+    .unwrap();
+    let mut request = perp_request();
+    request.planned_fill_legs[0].price = decimal("100");
+    request.planned_fill_legs[0].quantity = decimal("100");
+
+    let components = adapter.quote_components(&request).unwrap();
+
+    assert_eq!(components[0].point_effect.amount(), decimal("-3.024"));
+}
+
+#[test]
+fn negative_maker_rate_bypasses_referral_and_hip3_scaling() {
+    let product = HyperliquidProductEconomicsSnapshot::from_json(
+        r#"{
+            "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
+            "validUntilNs":110,"productKind":"perp","stablePair":false,
+            "alignedQuoteOrCollateral":false,"hip3":true,"deployerScale":0.5,
+            "growthMode":false,"builderProfileId":"builder-profile",
+            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "spotDustAuthorityComplete":false,
+            "carryPointRatePerNs":0.000000001,
+            "carryDebitRateBoundPerNs":0.000000002
+        }"#,
+    )
+    .unwrap();
+    let adapter =
+        HyperliquidEconomicsAdapter::try_new(config(), official_user_fees("-0.00001"), product)
+            .unwrap();
+    let mut request = perp_request();
+    request.liquidity_role = LiquidityRoleAssumption::GuaranteedMaker;
+    request.planned_fill_legs[0].price = decimal("100");
+    request.planned_fill_legs[0].quantity = decimal("500");
+
+    let components = adapter.quote_components(&request).unwrap();
+
+    assert_eq!(components[0].point_effect.amount(), decimal("0.50"));
 }
 
 #[test]

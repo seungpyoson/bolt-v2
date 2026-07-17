@@ -1106,7 +1106,6 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
         "#[cfg(test)] unexpected_prefix mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
         "#[cfg(test)] unexpected_prefix if enabled { self.modify_order(order); } fn production_after() {}",
         "#[cfg(test)] unexpected_prefix macro_rules! production { () => { self.modify_order(order); } } fn production_after() {}",
-        "#[cfg(test)] foo::bar![self.cancel_order(order_id)] fn production_after() {}",
     ] {
         let tokens = production_tokens(source);
         assert!(
@@ -1122,6 +1121,17 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
             "an unknown cfg-gated prefix must not hide the production sibling"
         );
     }
+    let tokens = production_tokens(
+        "#[cfg(test)] foo::bar![self.cancel_order(order_id)] fn production_after() {}",
+    );
+    assert!(
+        !named_strategy_mutation_surfaces(&tokens).is_empty(),
+        "a cfg-gated bracket macro without a terminator must retain its mutation token"
+    );
+    assert!(
+        contains_sequence(&tokens, &["production_after"]),
+        "a cfg-gated bracket macro without a terminator must not hide its production sibling"
+    );
     for modifier in ["pub", "unsafe", "async", "const", "default", "auto", "move"] {
         let source = format!(
             "#[cfg(test)] r#{modifier} fn production() {{ self.submit_order(order); }} fn production_after() {{}}"

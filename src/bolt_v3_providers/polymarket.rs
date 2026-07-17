@@ -51,7 +51,6 @@ use std::{
     time::Duration,
 };
 
-use alloy_signer_local::PrivateKeySigner;
 use nautilus_core::string::secret::REDACTED;
 use nautilus_model::{identifiers::AccountId, types::Currency};
 use nautilus_polymarket::{
@@ -93,7 +92,9 @@ use crate::{
         ProviderVenueTruthRuntimeSource, ProviderVenueTruthSourceContext, ResolvedClientSecrets,
         SsmSecretResolver,
     },
-    bolt_v3_secrets::{BoltV3SecretError, ResolvedEvmSigningKey, resolve_field},
+    bolt_v3_secrets::{
+        BoltV3SecretError, EVM_SIGNING_KEY_BYTES, ResolvedEvmSigningKey, resolve_field,
+    },
     bolt_v3_wire_boundary::TransportBackend,
 };
 
@@ -694,12 +695,13 @@ fn parse_secrets_config(
 
 pub(crate) fn decode_private_key(private_key: &str) -> Result<ResolvedEvmSigningKey, String> {
     let private_key = EvmPrivateKey::new(private_key).map_err(|source| source.to_string())?;
-    let bytes = private_key
-        .as_bytes()
-        .try_into()
-        .map_err(|_| "EVM private key must be exactly 32 bytes".to_string())?;
-    PrivateKeySigner::from_slice(&bytes).map_err(|source| source.to_string())?;
-    Ok(ResolvedEvmSigningKey::from_bytes(bytes))
+    let source = private_key.as_bytes();
+    if source.len() != EVM_SIGNING_KEY_BYTES {
+        return Err("EVM private key must be exactly 32 bytes".to_string());
+    }
+    let mut bytes = Zeroizing::new([u8::default(); EVM_SIGNING_KEY_BYTES]);
+    bytes.copy_from_slice(source);
+    ResolvedEvmSigningKey::new(bytes)
 }
 
 fn normalize_api_secret_padding(mut api_secret: String) -> String {

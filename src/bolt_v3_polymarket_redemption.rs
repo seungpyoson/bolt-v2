@@ -3,11 +3,11 @@ use std::{fmt, ops::Range};
 use alloy_primitives::{Address, B256, Keccak256, U256, keccak256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     bolt_v3_application_resource_ledger::{RiskClosureWorkspaceError, RiskClosureWorkspaceLease},
-    bolt_v3_secrets::ResolvedEvmSigningKey,
+    bolt_v3_secrets::{EVM_SIGNING_KEY_BYTES, ResolvedEvmSigningKey},
 };
 
 pub struct RedemptionPreparationConfig {
@@ -167,7 +167,8 @@ pub fn prepare_redemption_request(
     let RedemptionPreparationPermit { private: () } = permit;
     validate_config(config)?;
     validate_nonce(input.safe_nonce, config.maximum_safe_nonce_decimal_digits)?;
-    let signer_private_key = Zeroizing::new(*signing_key.as_bytes());
+    let mut signer_private_key = Zeroizing::new([u8::default(); EVM_SIGNING_KEY_BYTES]);
+    signer_private_key.copy_from_slice(signing_key.as_bytes());
     let signer = PrivateKeySigner::from_slice(signer_private_key.as_ref())
         .map_err(|_| RedemptionPreparationError::InvalidSigningKey)?;
     let target = match attempt {

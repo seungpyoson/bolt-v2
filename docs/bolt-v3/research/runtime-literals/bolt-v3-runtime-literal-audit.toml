@@ -2016,25 +2016,9 @@ reason = "This is an error-display template for a failed SSM secret resolution w
 path = "src/bolt_v3_secrets.rs"
 kind = "number"
 literal = '''32'''
-context = '''bytes: Zeroizing<[u8; 32]>,'''
+context = '''pub(crate) const EVM_SIGNING_KEY_BYTES: usize = 32;'''
 classification = "evm_private_key_encoding_width"
-reason = "A secp256k1 private key is structurally fixed at 32 bytes; this is a type width, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_secrets.rs"
-kind = "number"
-literal = '''32'''
-context = '''pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {'''
-classification = "evm_private_key_encoding_width"
-reason = "A secp256k1 private key is structurally fixed at 32 bytes; this is a type width, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_secrets.rs"
-kind = "number"
-literal = '''32'''
-context = '''pub(crate) fn as_bytes(&self) -> &[u8; 32] {'''
-classification = "evm_private_key_encoding_width"
-reason = "A secp256k1 private key is structurally fixed at 32 bytes; this is a type width, not an operator runtime value."
+reason = "A secp256k1 private key is structurally fixed at 32 bytes; one shared type-width constant owns that encoding fact and is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

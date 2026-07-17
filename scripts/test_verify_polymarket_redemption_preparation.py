@@ -22,10 +22,6 @@ parent_collection_id = "0x000000000000000000000000000000000000000000000000000000
 dummy_index_sets = ["1", "2"]
 [protocol_bounds]
 maximum_safe_nonce_decimal_digits = 78
-[credential_set]
-builder_api_key_ssm_path = "/api-key"
-builder_api_secret_ssm_path = "/api-secret"
-builder_passphrase_ssm_path = "/passphrase"
 """
 
 ROOT_RUNTIME = """\
@@ -46,24 +42,22 @@ schema_version = 1
 repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
 deployment_source_url = "https://docs.polymarket.com/resources/contracts"
-deployment_observed_date = "2026-07-16"
-deployment_fact_format_version = 3
-deployment_fact_sha256 = "223c425c49db5c1e3da22c5f9113e892d4f78e2aa1ab1d7ed23c39e04931e1c7"
+deployment_observed_date = "2026-07-17"
+deployment_snapshot_sha256 = "83cb40c1cd72f40d533e13af268e910f80df76c96a74a2435e39622e2ef81852"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
-standard_source_sha256 = "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90"
+standard_snapshot_sha256 = "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
-negative_risk_source_sha256 = "2461eb793fa5571a6902a52c5276f02a8621814fdc026cf3a7814879b1b3db76"
+negative_risk_snapshot_sha256 = "2461eb793fa5571a6902a52c5276f02a8621814fdc026cf3a7814879b1b3db76"
 function_signature = "redeemPositions(address,bytes32,bytes32,uint256[])"
-function_selector = "0x01b7037c"
 [safe_request]
 repository = "https://github.com/Polymarket/builder-relayer-client"
 revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"
 builder_source_path = "src/builder/safe.ts"
-builder_source_sha256 = "1142cb7fe786128361586d6fc9313a3e120e1633bdfc064169bfa78951d66cc5"
+builder_snapshot_sha256 = "1142cb7fe786128361586d6fc9313a3e120e1633bdfc064169bfa78951d66cc5"
 types_source_path = "src/types.ts"
-types_source_sha256 = "059c02b19a23d57e7b354df8c01d706cf508c27460067c1d57dad96cf5455ad3"
+types_snapshot_sha256 = "059c02b19a23d57e7b354df8c01d706cf508c27460067c1d57dad96cf5455ad3"
 signature_pack_source_path = "src/utils/index.ts"
-signature_pack_source_sha256 = "0a1b6036fb7e3f7d1629002a491a448974a69c7556741f449c441cb3e3af2941"
+signature_pack_snapshot_sha256 = "0a1b6036fb7e3f7d1629002a491a448974a69c7556741f449c441cb3e3af2941"
 operation = 0
 value = "0"
 safe_tx_gas = "0"
@@ -73,6 +67,15 @@ gas_token = "0x0000000000000000000000000000000000000000"
 refund_receiver = "0x0000000000000000000000000000000000000000"
 metadata = ""
 """
+
+SNAPSHOT_RELATIVE_PATHS = (
+    "config/polymarket-redemption-sources/docs.polymarket.com/2026-07-17/resources/contracts.md.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts.hex",
+)
 
 CARGO = """\
 [package]
@@ -92,6 +95,7 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
     def fixture(self) -> tuple[tempfile.TemporaryDirectory[str], pathlib.Path]:
         temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(temporary.name)
+        repository_root = pathlib.Path(__file__).resolve().parents[1]
         for directory in (
             "src/bolt_v3_polymarket_redemption",
             "config",
@@ -111,6 +115,10 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
         (root / "config/polymarket-redemption-source-evidence.toml").write_text(
             EVIDENCE, encoding="utf-8"
         )
+        for relative_path in SNAPSHOT_RELATIVE_PATHS:
+            destination = root / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((repository_root / relative_path).read_bytes())
         (root / "tests/polymarket_redemption_preparation.rs").write_text(
             "mod polymarket_redemption_preparation_compile_fail;\n",
             encoding="utf-8",
@@ -150,9 +158,11 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             RUNTIME.replace("production_activation_enabled = false", "production_activation_enabled = true"),
             encoding="utf-8",
         )
-        self.assertIn(
-            "production_activation_enabled must remain false",
-            verifier.boundary_errors(root),
+        self.assertTrue(
+            any(
+                "production_activation_enabled must remain false" in error
+                for error in verifier.boundary_errors(root)
+            )
         )
 
     def test_parsed_toml_authority_is_single(self) -> None:
@@ -201,12 +211,14 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             RUNTIME.replace('root_client = "polymarket_main"', 'root_client = "missing"'),
             encoding="utf-8",
         )
-        self.assertIn(
-            "wallet_authority.root_client must exist in config/root.toml",
-            verifier.boundary_errors(root),
+        self.assertTrue(
+            any(
+                "root.clients.missing must be a table" in error
+                for error in verifier.boundary_errors(root)
+            )
         )
 
-    def test_deployment_fact_hash_binds_runtime_protocol_facts(self) -> None:
+    def test_deployment_snapshot_binds_runtime_protocol_facts(self) -> None:
         mutations = (
             ("chain_id = 137", "chain_id = 138"),
             (
@@ -221,11 +233,6 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                 'negative_risk_adapter_target = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"',
                 'negative_risk_adapter_target = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"',
             ),
-            (
-                "0x0000000000000000000000000000000000000000000000000000000000000000",
-                "0x0000000000000000000000000000000000000000000000000000000000000001",
-            ),
-            ('dummy_index_sets = ["1", "2"]', 'dummy_index_sets = ["1", "3"]'),
         )
         for expected, replacement in mutations:
             with self.subTest(expected=expected):
@@ -237,7 +244,7 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                 )
                 self.assertTrue(
                     any(
-                        "deployment fact hash must bind" in error
+                        "deployment snapshot facts" in error
                         for error in verifier.boundary_errors(root)
                     )
                 )
@@ -245,8 +252,7 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
     def test_source_evidence_paths_and_hashes_are_pinned(self) -> None:
         mutations = (
             ("https://docs.polymarket.com/resources/contracts", "https://example.invalid"),
-            ("2026-07-16", "2026-07-15"),
-            ("deployment_fact_format_version = 3", "deployment_fact_format_version = 2"),
+            ("2026-07-17", "2026-07-16"),
             (
                 "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
                 "1" * 64,
@@ -267,10 +273,22 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                 )
                 self.assertTrue(
                     any(
-                        "source evidence must remain pinned" in error
+                        "redemption configuration evidence is invalid" in error
                         for error in verifier.boundary_errors(root)
                     )
                 )
+
+    def test_captured_source_mutation_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        snapshot = root / SNAPSHOT_RELATIVE_PATHS[3]
+        snapshot.write_text(b"mutated\n".hex() + "\n", encoding="ascii")
+        self.assertTrue(
+            any(
+                "does not match captured bytes" in error
+                for error in verifier.boundary_errors(root)
+            )
+        )
 
     def test_signer_dependencies_are_exact(self) -> None:
         temporary, root = self.fixture()

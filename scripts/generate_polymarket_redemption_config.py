@@ -8,16 +8,16 @@ import dataclasses
 import hashlib
 import json
 import pathlib
-import re
 import sys
 import tomllib
+import urllib.parse
+from datetime import date
+
+from ethereum_keccak import keccak_256
 
 
-HEX_40 = re.compile(r"^0x[0-9a-fA-F]{40}$")
-HEX_64 = re.compile(r"^0x[0-9a-fA-F]{64}$")
-HEX_8 = re.compile(r"^0x[0-9a-fA-F]{8}$")
-LOWER_HEX_40 = re.compile(r"^[0-9a-f]{40}$")
-LOWER_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+LOWER_HEX_DIGITS = frozenset("0123456789abcdef")
 MAX_U256 = (1 << 256) - 1
 
 
@@ -38,11 +38,6 @@ class RuntimeConfig:
     parent_collection_id: str
     dummy_index_sets: tuple[int, int]
     maximum_safe_nonce_decimal_digits: int
-    aws_region: str
-    signer_private_key_ssm_path: str
-    builder_api_key_ssm_path: str
-    builder_api_secret_ssm_path: str
-    builder_passphrase_ssm_path: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,9 +95,13 @@ def _schema_version(document: dict[str, object], field: str) -> int:
     return _integer(document[field], field, minimum=1, maximum=1)
 
 
+def _is_exact_hex(text: str, digits: int, alphabet: frozenset[str]) -> bool:
+    return len(text) == digits and all(character in alphabet for character in text)
+
+
 def _address(value: object, field: str, *, allow_zero: bool = False) -> str:
     text = _string(value, field)
-    if HEX_40.fullmatch(text) is None:
+    if not text.startswith("0x") or not _is_exact_hex(text[2:], 40, HEX_DIGITS):
         raise ConfigError(f"{field} must be a 20-byte 0x-prefixed EVM address")
     normalized = text.lower()
     if not allow_zero and normalized == "0x" + ("0" * 40):
@@ -112,21 +111,9 @@ def _address(value: object, field: str, *, allow_zero: bool = False) -> str:
 
 def _bytes32(value: object, field: str) -> str:
     text = _string(value, field)
-    if HEX_64.fullmatch(text) is None:
+    if not text.startswith("0x") or not _is_exact_hex(text[2:], 64, HEX_DIGITS):
         raise ConfigError(f"{field} must be a 32-byte 0x-prefixed value")
     return text.lower()
-
-
-def _ssm_path(value: object, field: str) -> str:
-    text = _string(value, field)
-    if (
-        not text.startswith("/")
-        or text.endswith("/")
-        or "//" in text
-        or any(character.isspace() for character in text)
-    ):
-        raise ConfigError(f"{field} must be a valid absolute SSM path")
-    return text
 
 
 def _u256(value: object, field: str) -> int:
@@ -143,14 +130,14 @@ def _u256(value: object, field: str) -> int:
 
 def _revision(value: object, field: str) -> str:
     text = _string(value, field)
-    if LOWER_HEX_40.fullmatch(text) is None:
+    if not _is_exact_hex(text, 40, LOWER_HEX_DIGITS):
         raise ConfigError(f"{field} must be a 40 lowercase hexadecimal commit SHA")
     return text
 
 
 def _sha256(value: object, field: str) -> str:
     text = _string(value, field)
-    if LOWER_HEX_64.fullmatch(text) is None:
+    if not _is_exact_hex(text, 64, LOWER_HEX_DIGITS):
         raise ConfigError(f"{field} must be a 64 lowercase hexadecimal SHA-256")
     return text
 
@@ -161,6 +148,150 @@ def _source_path(value: object, field: str) -> str:
     if path.is_absolute() or ".." in path.parts or path.as_posix() != text:
         raise ConfigError(f"{field} must be a normalized repository-relative path")
     return text
+
+
+def _verified_snapshot(
+    evidence_path: pathlib.Path,
+    relative_path: pathlib.PurePosixPath,
+    expected_sha256: object,
+    field: str,
+) -> bytes:
+    expected = _sha256(expected_sha256, f"{field}_sha256")
+    evidence_root = evidence_path.parent.resolve()
+    snapshot_path = (evidence_root / relative_path).resolve()
+    if not snapshot_path.is_relative_to(evidence_root):
+        raise ConfigError(f"derived {field} path must remain below the evidence directory")
+    try:
+        encoded = snapshot_path.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ConfigError(f"cannot read derived {field} path {snapshot_path}: {error}") from error
+    if (
+        not encoded.endswith("\n")
+        or not encoded[:-1]
+        or len(encoded[:-1]) % 2 != 0
+        or any(character not in "0123456789abcdef" for character in encoded[:-1])
+    ):
+        raise ConfigError(f"derived {field} capture must be lowercase hexadecimal plus LF")
+    snapshot = bytes.fromhex(encoded[:-1])
+    observed = hashlib.sha256(snapshot).hexdigest()
+    if observed != expected:
+        raise ConfigError(
+            f"{field}_sha256 does not match captured bytes at {relative_path}"
+        )
+    return snapshot
+
+
+def _https_snapshot_root(value: object, field: str) -> pathlib.PurePosixPath:
+    source_url = _string(value, field)
+    try:
+        parsed = urllib.parse.urlsplit(source_url)
+        port = parsed.port
+    except ValueError as error:
+        raise ConfigError(f"{field} must be a canonical HTTPS URL") from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigError(f"{field} must be a canonical HTTPS URL")
+    source_path = pathlib.PurePosixPath(parsed.path.removeprefix("/"))
+    if not source_path.parts:
+        raise ConfigError(f"{field} must include a path")
+    return pathlib.PurePosixPath(
+        "polymarket-redemption-sources", parsed.netloc, *source_path.parts
+    )
+
+
+def _repository_snapshot_path(
+    repository: object,
+    revision: object,
+    source_path: object,
+    field: str,
+) -> pathlib.PurePosixPath:
+    root = _https_snapshot_root(repository, f"{field}.repository")
+    pinned_revision = _revision(revision, f"{field}.revision")
+    pinned_source_path = _source_path(source_path, f"{field}.source_path")
+    return root / pinned_revision / f"{pinned_source_path}.hex"
+
+
+def _deployment_snapshot_path(
+    source_url: object, observed_date: object
+) -> pathlib.PurePosixPath:
+    root = _https_snapshot_root(source_url, "adapter_abi.deployment_source_url")
+    observed = _string(observed_date, "adapter_abi.deployment_observed_date")
+    try:
+        date.fromisoformat(observed)
+    except ValueError as error:
+        raise ConfigError(
+            "adapter_abi.deployment_observed_date must be an ISO calendar date"
+        ) from error
+    return pathlib.PurePosixPath(
+        "polymarket-redemption-sources",
+        root.parts[1],
+        observed,
+        *root.parts[2:-1],
+        f"{root.name}.md.hex",
+    )
+
+
+def _markdown_contract_address(snapshot: str, contract: str) -> str:
+    rows = [
+        line.split("|")
+        for line in snapshot.splitlines()
+        if line.startswith("|")
+    ]
+    matching = [row for row in rows if len(row) >= 4 and row[1].strip() == contract]
+    if len(matching) != 1:
+        raise ConfigError(
+            f"deployment snapshot must contain exactly one {contract} address row"
+        )
+    link = matching[0][2].strip()
+    prefix, separator, remainder = link.partition("[`")
+    address, closing, suffix = remainder.partition("`]")
+    if prefix or separator != "[`" or closing != "`]" or not suffix.startswith("("):
+        raise ConfigError(f"deployment snapshot has malformed {contract} address cell")
+    return _address(address, f"deployment snapshot {contract}")
+
+
+def _verify_deployment_snapshot(snapshot: bytes, runtime: RuntimeConfig) -> None:
+    try:
+        text = snapshot.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ConfigError("deployment snapshot must be UTF-8 Markdown") from error
+    chain_marker = "(Chain ID: "
+    if text.count(chain_marker) != 1:
+        raise ConfigError("deployment snapshot must contain exactly one Polygon chain ID")
+    chain_text = text.split(chain_marker, maxsplit=1)[1].split(")", maxsplit=1)[0]
+    try:
+        chain_id = int(chain_text, 10)
+    except ValueError as error:
+        raise ConfigError("deployment snapshot chain ID must be decimal") from error
+    observed = {
+        "chain_id": chain_id,
+        "collateral_asset": _markdown_contract_address(
+            text, "pUSD — CollateralToken (proxy)"
+        ),
+        "standard_adapter_target": _markdown_contract_address(
+            text, "CtfCollateralAdapter"
+        ),
+        "negative_risk_adapter_target": _markdown_contract_address(
+            text, "NegRiskCtfCollateralAdapter"
+        ),
+    }
+    expected = {
+        "chain_id": runtime.chain_id,
+        "collateral_asset": runtime.collateral_asset,
+        "standard_adapter_target": runtime.standard_adapter_target,
+        "negative_risk_adapter_target": runtime.negative_risk_adapter_target,
+    }
+    if observed != expected:
+        raise ConfigError(
+            "deployment snapshot facts do not match normalized runtime protocol targets"
+        )
 
 
 def _read_toml(path: pathlib.Path) -> dict[str, object]:
@@ -184,7 +315,6 @@ def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
             "wallet_authority",
             "redemption",
             "protocol_bounds",
-            "credential_set",
         },
         "runtime root",
     )
@@ -197,10 +327,6 @@ def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
     _exact_keys(wallet_authority, {"root_client"}, "wallet_authority")
     root_client = _string(wallet_authority["root_client"], "wallet_authority.root_client")
 
-    aws = _table(root_document.get("aws"), "root.aws")
-    aws_region = _string(aws.get("region"), "root.aws.region")
-    if any(character.isspace() for character in aws_region):
-        raise ConfigError("root.aws.region must not contain whitespace")
     clients = _table(root_document.get("clients"), "root.clients")
     client = _table(clients.get(root_client), f"root.clients.{root_client}")
     if _string(client.get("venue"), f"root.clients.{root_client}.venue") != "POLYMARKET":
@@ -218,12 +344,6 @@ def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
     safe_address = _address(
         execution.get("funder"), f"root.clients.{root_client}.execution.funder"
     )
-    secrets = _table(client.get("secrets"), f"root.clients.{root_client}.secrets")
-    signer_private_key_ssm_path = _ssm_path(
-        secrets.get("private_key_ssm_path"),
-        f"root.clients.{root_client}.secrets.private_key_ssm_path",
-    )
-
     redemption = _table(document["redemption"], "redemption")
     _exact_keys(
         redemption,
@@ -255,16 +375,6 @@ def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
         maximum=len(str(MAX_U256)),
     )
 
-    credentials = _table(document["credential_set"], "credential_set")
-    _exact_keys(
-        credentials,
-        {
-            "builder_api_key_ssm_path",
-            "builder_api_secret_ssm_path",
-            "builder_passphrase_ssm_path",
-        },
-        "credential_set",
-    )
     return RuntimeConfig(
         schema_version=schema_version,
         production_activation_enabled=activation,
@@ -284,38 +394,7 @@ def _load_runtime(path: pathlib.Path, root_path: pathlib.Path) -> RuntimeConfig:
         ),
         dummy_index_sets=dummy_index_sets,
         maximum_safe_nonce_decimal_digits=maximum_digits,
-        aws_region=aws_region,
-        signer_private_key_ssm_path=signer_private_key_ssm_path,
-        builder_api_key_ssm_path=_ssm_path(
-            credentials["builder_api_key_ssm_path"],
-            "credential_set.builder_api_key_ssm_path",
-        ),
-        builder_api_secret_ssm_path=_ssm_path(
-            credentials["builder_api_secret_ssm_path"],
-            "credential_set.builder_api_secret_ssm_path",
-        ),
-        builder_passphrase_ssm_path=_ssm_path(
-            credentials["builder_passphrase_ssm_path"],
-            "credential_set.builder_passphrase_ssm_path",
-        ),
     )
-
-
-def _deployment_fact_payload(
-    runtime: RuntimeConfig,
-    source_url: str,
-    observed_date: str,
-) -> bytes:
-    return (
-        f"source_url={source_url}\n"
-        f"observed_date={observed_date}\n"
-        f"chain_id={runtime.chain_id}\n"
-        f"collateral_asset={runtime.collateral_asset}\n"
-        f"CtfCollateralAdapter={runtime.standard_adapter_target}\n"
-        f"NegRiskCtfCollateralAdapter={runtime.negative_risk_adapter_target}\n"
-        f"parent_collection_id={runtime.parent_collection_id}\n"
-        f"dummy_index_sets={','.join(str(value) for value in runtime.dummy_index_sets)}\n"
-    ).encode("utf-8")
 
 
 def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEvidence:
@@ -331,56 +410,57 @@ def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEviden
             "revision",
             "deployment_source_url",
             "deployment_observed_date",
-            "deployment_fact_format_version",
-            "deployment_fact_sha256",
+            "deployment_snapshot_sha256",
             "standard_source_path",
-            "standard_source_sha256",
+            "standard_snapshot_sha256",
             "negative_risk_source_path",
-            "negative_risk_source_sha256",
+            "negative_risk_snapshot_sha256",
             "function_signature",
-            "function_selector",
         },
         "adapter_abi",
     )
-    _string(adapter["repository"], "adapter_abi.repository")
-    _revision(adapter["revision"], "adapter_abi.revision")
-    source_url = _string(
-        adapter["deployment_source_url"], "adapter_abi.deployment_source_url"
+    adapter_repository = adapter["repository"]
+    adapter_revision = adapter["revision"]
+    deployment_snapshot_path = _deployment_snapshot_path(
+        adapter["deployment_source_url"], adapter["deployment_observed_date"]
     )
-    observed_date = _string(
-        adapter["deployment_observed_date"], "adapter_abi.deployment_observed_date"
+    deployment_snapshot = _verified_snapshot(
+        path,
+        deployment_snapshot_path,
+        adapter["deployment_snapshot_sha256"],
+        "adapter_abi.deployment_snapshot",
     )
-    _integer(
-        adapter["deployment_fact_format_version"],
-        "adapter_abi.deployment_fact_format_version",
-        minimum=3,
-        maximum=3,
+    _verify_deployment_snapshot(deployment_snapshot, runtime)
+    _verified_snapshot(
+        path,
+        _repository_snapshot_path(
+            adapter_repository,
+            adapter_revision,
+            adapter["standard_source_path"],
+            "adapter_abi.standard_snapshot",
+        ),
+        adapter["standard_snapshot_sha256"],
+        "adapter_abi.standard_snapshot",
     )
-    observed_fact_sha256 = _sha256(
-        adapter["deployment_fact_sha256"], "adapter_abi.deployment_fact_sha256"
+    _verified_snapshot(
+        path,
+        _repository_snapshot_path(
+            adapter_repository,
+            adapter_revision,
+            adapter["negative_risk_source_path"],
+            "adapter_abi.negative_risk_snapshot",
+        ),
+        adapter["negative_risk_snapshot_sha256"],
+        "adapter_abi.negative_risk_snapshot",
     )
-    expected_fact_sha256 = hashlib.sha256(
-        _deployment_fact_payload(runtime, source_url, observed_date)
-    ).hexdigest()
-    if observed_fact_sha256 != expected_fact_sha256:
-        raise ConfigError(
-            "adapter_abi.deployment_fact_sha256 must hash the v3 canonical source URL, "
-            "observed date, and normalized runtime protocol facts"
-        )
-    _source_path(adapter["standard_source_path"], "adapter_abi.standard_source_path")
-    _sha256(adapter["standard_source_sha256"], "adapter_abi.standard_source_sha256")
-    _source_path(
-        adapter["negative_risk_source_path"], "adapter_abi.negative_risk_source_path"
+    function_signature = _string(
+        adapter["function_signature"], "adapter_abi.function_signature"
     )
-    _sha256(
-        adapter["negative_risk_source_sha256"],
-        "adapter_abi.negative_risk_source_sha256",
-    )
-    _string(adapter["function_signature"], "adapter_abi.function_signature")
-    selector_text = _string(adapter["function_selector"], "adapter_abi.function_selector")
-    if HEX_8.fullmatch(selector_text) is None:
-        raise ConfigError("adapter_abi.function_selector must be a four-byte 0x-prefixed hex value")
-    selector_bytes = bytes.fromhex(selector_text[2:])
+    try:
+        signature_bytes = function_signature.encode("ascii")
+    except UnicodeEncodeError as error:
+        raise ConfigError("adapter_abi.function_signature must be ASCII") from error
+    selector_bytes = keccak_256(signature_bytes)[:4]
 
     safe = _table(document["safe_request"], "safe_request")
     _exact_keys(
@@ -389,11 +469,11 @@ def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEviden
             "repository",
             "revision",
             "builder_source_path",
-            "builder_source_sha256",
+            "builder_snapshot_sha256",
             "types_source_path",
-            "types_source_sha256",
+            "types_snapshot_sha256",
             "signature_pack_source_path",
-            "signature_pack_source_sha256",
+            "signature_pack_snapshot_sha256",
             "operation",
             "value",
             "safe_tx_gas",
@@ -405,16 +485,20 @@ def _load_evidence(path: pathlib.Path, runtime: RuntimeConfig) -> ProtocolEviden
         },
         "safe_request",
     )
-    _string(safe["repository"], "safe_request.repository")
-    _revision(safe["revision"], "safe_request.revision")
-    for key in ("builder_source_path", "types_source_path", "signature_pack_source_path"):
-        _source_path(safe[key], f"safe_request.{key}")
-    for key in (
-        "builder_source_sha256",
-        "types_source_sha256",
-        "signature_pack_source_sha256",
-    ):
-        _sha256(safe[key], f"safe_request.{key}")
+    safe_repository = safe["repository"]
+    safe_revision = safe["revision"]
+    for source_name in ("builder", "types", "signature_pack"):
+        _verified_snapshot(
+            path,
+            _repository_snapshot_path(
+                safe_repository,
+                safe_revision,
+                safe[f"{source_name}_source_path"],
+                f"safe_request.{source_name}_snapshot",
+            ),
+            safe[f"{source_name}_snapshot_sha256"],
+            f"safe_request.{source_name}_snapshot",
+        )
     operation = _integer(safe["operation"], "safe_request.operation", minimum=0, maximum=0)
     zero_fields: dict[str, int] = {}
     for key in ("value", "safe_tx_gas", "base_gas", "gas_price"):
@@ -547,8 +631,8 @@ def main(argv: list[str] | None = None) -> int:
             current = arguments.output.read_text(encoding="utf-8")
             if current != rendered:
                 raise ConfigError(f"{arguments.output} is stale; regenerate it")
-        else:
-            arguments.output.write_text(rendered, encoding="utf-8")
+            return 0
+        arguments.output.write_text(rendered, encoding="utf-8")
     except (ConfigError, OSError, UnicodeDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

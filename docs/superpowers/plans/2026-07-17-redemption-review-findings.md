@@ -204,7 +204,7 @@ Run focused Python tests, generator/verifier checks, formatting, source-fence st
 
 - [ ] Add a provider unit test proving an invalid scalar cannot construct `ResolvedEvmSigningKey`; record remote Rust RED because the current head does not compile and local compile-heavy Rust is forbidden.
 - [ ] Allocate `Zeroizing<[u8; 32]>` before copying NT-validated bytes, validate inside the signing-key constructor, and return `&self.bytes` from the fixed-width accessor.
-- [ ] Route all fixtures through the checked provider decode, copy request bytes into an already-zeroizing buffer, and remove the unused production `ZeroizeOnDrop` import.
+- [ ] Route fixtures through the checked constructor or provider decode, copy request bytes into an already-zeroizing buffer, and remove the unused production `ZeroizeOnDrop` import.
 - [ ] Use exact-head remote build, clippy, Backtester, behavior, and compile-fail execution as GREEN evidence.
 
 ### Task 7: Remove unused credential authorities
@@ -233,12 +233,12 @@ Run focused Python tests, generator/verifier checks, formatting, source-fence st
 
 **Interfaces:**
 - Produces: `ethereum_keccak.keccak_256(data: bytes) -> bytes`.
-- Consumes: evidence-relative immutable snapshot paths plus declared SHA-256 values.
+- Consumes: source metadata whose immutable capture paths are derived from URL/repository, revision, source path, and observation date, plus declared SHA-256 values.
 
 - [ ] Add known-answer RED tests for Keccak-256 of empty bytes and the canonical redemption signature; add mutation tests showing a handwritten selector is rejected and a changed signature changes the projection.
-- [ ] Add RED tests for missing, mutated, absolute, or parent-traversing snapshot paths and for deployment facts that disagree with the captured official Markdown.
+- [ ] Add RED tests for missing or mutated derived captures, invalid or parent-traversing source metadata, and deployment facts that disagree with the captured official Markdown.
 - [ ] Implement the dependency-free Keccak permutation and derive the four-byte selector from `function_signature`.
-- [ ] Vendor the five pinned source files and official contracts Markdown, bind each path to its SHA-256, and structurally compare chain ID plus three deployment addresses to runtime TOML.
+- [ ] Vendor exact-byte hexadecimal captures of the five pinned source files and official contracts Markdown, derive every capture path from provenance metadata, bind each decoded capture to its SHA-256, and structurally compare chain ID plus three deployment addresses to runtime TOML.
 - [ ] Remove the self-referential deployment-fact hash and independently editable selector authority; regenerate Rust and run focused suites to GREEN.
 
 ### Task 9: Publish honest exact-head evidence

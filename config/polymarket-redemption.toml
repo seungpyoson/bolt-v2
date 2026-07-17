@@ -14,8 +14,3 @@ dummy_index_sets = ["1", "2"]
 
 [protocol_bounds]
 maximum_safe_nonce_decimal_digits = 78
-
-[credential_set]
-builder_api_key_ssm_path = "/bolt/polymarket/builder/api-key"
-builder_api_secret_ssm_path = "/bolt/polymarket/builder/api-secret"
-builder_passphrase_ssm_path = "/bolt/polymarket/builder/passphrase"

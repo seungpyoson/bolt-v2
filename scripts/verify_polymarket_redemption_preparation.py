@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import pathlib
 import subprocess
 import sys
 import tomllib
 from collections.abc import Iterator, Mapping
+
+import generate_polymarket_redemption_config as generator
 
 
 OWNER = pathlib.Path("src/bolt_v3_polymarket_redemption.rs")
@@ -23,41 +24,10 @@ GENERATOR = pathlib.Path("scripts/generate_polymarket_redemption_config.py")
 EXPECTED_RUNTIME_AUTHORITY_PATHS = {
     "standard_adapter_target": ("redemption", "standard_adapter_target"),
     "negative_risk_adapter_target": ("redemption", "negative_risk_adapter_target"),
-    "builder_api_key_ssm_path": ("credential_set", "builder_api_key_ssm_path"),
-    "builder_api_secret_ssm_path": (
-        "credential_set",
-        "builder_api_secret_ssm_path",
-    ),
-    "builder_passphrase_ssm_path": (
-        "credential_set",
-        "builder_passphrase_ssm_path",
-    ),
 }
 ROOT_OWNED_WALLET_FIELDS = frozenset(
     {"aws_region", "safe_address", "signer_private_key_ssm_path"}
 )
-EXPECTED_EVIDENCE = {
-    "adapter_repository": "https://github.com/Polymarket/ctf-exchange-v2",
-    "adapter_revision": "ccc0596074f4dfd62c944fbca4de252893b82b4b",
-    "deployment_source_url": "https://docs.polymarket.com/resources/contracts",
-    "deployment_observed_date": "2026-07-16",
-    "deployment_fact_format_version": 3,
-    "deployment_fact_sha256": "223c425c49db5c1e3da22c5f9113e892d4f78e2aa1ab1d7ed23c39e04931e1c7",
-    "standard_source_path": "src/adapters/CtfCollateralAdapter.sol",
-    "standard_source_sha256": "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
-    "negative_risk_source_path": "src/adapters/NegRiskCtfCollateralAdapter.sol",
-    "negative_risk_source_sha256": "2461eb793fa5571a6902a52c5276f02a8621814fdc026cf3a7814879b1b3db76",
-    "function_signature": "redeemPositions(address,bytes32,bytes32,uint256[])",
-    "function_selector": "0x01b7037c",
-    "request_repository": "https://github.com/Polymarket/builder-relayer-client",
-    "request_revision": "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290",
-    "builder_source_path": "src/builder/safe.ts",
-    "builder_source_sha256": "1142cb7fe786128361586d6fc9313a3e120e1633bdfc064169bfa78951d66cc5",
-    "types_source_path": "src/types.ts",
-    "types_source_sha256": "059c02b19a23d57e7b354df8c01d706cf508c27460067c1d57dad96cf5455ad3",
-    "signature_pack_source_path": "src/utils/index.ts",
-    "signature_pack_source_sha256": "0a1b6036fb7e3f7d1629002a491a448974a69c7556741f449c441cb3e3af2941",
-}
 
 
 def _read(path: pathlib.Path) -> str:
@@ -86,72 +56,10 @@ def _key_locations(
             path = (*prefix, key)
             yield key, path
             yield from _key_locations(child, path)
-    elif isinstance(value, list):
+        return
+    if isinstance(value, list):
         for index, child in enumerate(value):
             yield from _key_locations(child, (*prefix, f"[{index}]"))
-
-
-def _deployment_fact_sha256(
-    source_url: object,
-    observed_date: object,
-    chain_id: object,
-    collateral_asset: object,
-    standard_target: object,
-    negative_risk_target: object,
-    parent_collection_id: object,
-    dummy_index_sets: object,
-) -> str:
-    normalized_dummy_index_sets = (
-        ",".join(str(value) for value in dummy_index_sets)
-        if isinstance(dummy_index_sets, list)
-        else str(dummy_index_sets)
-    )
-    payload = (
-        f"source_url={source_url}\n"
-        f"observed_date={observed_date}\n"
-        f"chain_id={chain_id}\n"
-        f"collateral_asset={str(collateral_asset).lower()}\n"
-        f"CtfCollateralAdapter={str(standard_target).lower()}\n"
-        f"NegRiskCtfCollateralAdapter={str(negative_risk_target).lower()}\n"
-        f"parent_collection_id={str(parent_collection_id).lower()}\n"
-        f"dummy_index_sets={normalized_dummy_index_sets}\n"
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _evidence_projection(evidence: Mapping[str, object]) -> dict[str, object]:
-    adapter = evidence.get("adapter_abi")
-    safe_request = evidence.get("safe_request")
-    if not isinstance(adapter, Mapping) or not isinstance(safe_request, Mapping):
-        return {}
-    return {
-        "adapter_repository": adapter.get("repository"),
-        "adapter_revision": adapter.get("revision"),
-        "deployment_source_url": adapter.get("deployment_source_url"),
-        "deployment_observed_date": adapter.get("deployment_observed_date"),
-        "deployment_fact_format_version": adapter.get(
-            "deployment_fact_format_version"
-        ),
-        "deployment_fact_sha256": adapter.get("deployment_fact_sha256"),
-        "standard_source_path": adapter.get("standard_source_path"),
-        "standard_source_sha256": adapter.get("standard_source_sha256"),
-        "negative_risk_source_path": adapter.get("negative_risk_source_path"),
-        "negative_risk_source_sha256": adapter.get("negative_risk_source_sha256"),
-        "function_signature": adapter.get("function_signature"),
-        "function_selector": adapter.get("function_selector"),
-        "request_repository": safe_request.get("repository"),
-        "request_revision": safe_request.get("revision"),
-        "builder_source_path": safe_request.get("builder_source_path"),
-        "builder_source_sha256": safe_request.get("builder_source_sha256"),
-        "types_source_path": safe_request.get("types_source_path"),
-        "types_source_sha256": safe_request.get("types_source_sha256"),
-        "signature_pack_source_path": safe_request.get(
-            "signature_pack_source_path"
-        ),
-        "signature_pack_source_sha256": safe_request.get(
-            "signature_pack_source_sha256"
-        ),
-    }
 
 
 def _manifest_errors(cargo: Mapping[str, object]) -> list[str]:
@@ -193,8 +101,6 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
 
     try:
         runtime = _toml(root / RUNTIME)
-        root_runtime = _toml(root / ROOT_RUNTIME)
-        evidence = _toml(root / EVIDENCE)
         cargo = _toml(root / "Cargo.toml")
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         return [f"cannot inspect redemption preparation artifacts: {error}"]
@@ -221,16 +127,6 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
                 f"{RUNTIME}:{'.'.join(expected_path)}; found {authorities[key]}"
             )
 
-    if runtime.get("production_activation_enabled") is not False:
-        errors.append("production_activation_enabled must remain false")
-
-    wallet_authority = runtime.get("wallet_authority")
-    redemption = runtime.get("redemption")
-    if not isinstance(wallet_authority, Mapping) or not isinstance(redemption, Mapping):
-        errors.append("runtime config must contain wallet_authority and redemption tables")
-    elif not isinstance(wallet_authority.get("root_client"), str):
-        errors.append("wallet_authority.root_client must select a root config client")
-
     runtime_wallet_duplicates = sorted(
         key
         for key, _ in _key_locations(runtime)
@@ -242,42 +138,10 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
             f"{runtime_wallet_duplicates}"
         )
 
-    root_clients = root_runtime.get("clients")
-    selected_client = (
-        wallet_authority.get("root_client")
-        if isinstance(wallet_authority, Mapping)
-        else None
-    )
-    if (
-        not isinstance(root_clients, Mapping)
-        or not isinstance(selected_client, str)
-        or selected_client not in root_clients
-    ):
-        errors.append("wallet_authority.root_client must exist in config/root.toml")
-
-    observed_evidence = _evidence_projection(evidence)
-    if observed_evidence != EXPECTED_EVIDENCE:
-        errors.append(
-            "source evidence must remain pinned to the reviewed adapter/request revisions and ABI: "
-            f"{observed_evidence}"
-        )
-
-    adapter = evidence.get("adapter_abi")
-    if isinstance(adapter, Mapping) and isinstance(redemption, Mapping):
-        expected_hash = _deployment_fact_sha256(
-            adapter.get("deployment_source_url"),
-            adapter.get("deployment_observed_date"),
-            redemption.get("chain_id"),
-            redemption.get("collateral_asset"),
-            redemption.get("standard_adapter_target"),
-            redemption.get("negative_risk_adapter_target"),
-            redemption.get("parent_collection_id"),
-            redemption.get("dummy_index_sets"),
-        )
-        if adapter.get("deployment_fact_sha256") != expected_hash:
-            errors.append(
-                "deployment fact hash must bind the source observation to normalized runtime protocol facts"
-            )
+    try:
+        generator.load_config(root / RUNTIME, root / EVIDENCE, root / ROOT_RUNTIME)
+    except generator.ConfigError as error:
+        errors.append(f"redemption configuration evidence is invalid: {error}")
 
     errors.extend(_manifest_errors(cargo))
     return errors

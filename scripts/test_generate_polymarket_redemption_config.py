@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import pathlib
 import tempfile
 import unittest
@@ -25,11 +26,6 @@ dummy_index_sets = ["1", "2"]
 
 [protocol_bounds]
 maximum_safe_nonce_decimal_digits = 78
-
-[credential_set]
-builder_api_key_ssm_path = "/bolt/polymarket/redemption/builder-api-key"
-builder_api_secret_ssm_path = "/bolt/polymarket/redemption/builder-api-secret"
-builder_passphrase_ssm_path = "/bolt/polymarket/redemption/builder-passphrase"
 """
 
 ROOT_TOML = """\
@@ -47,32 +43,61 @@ funder = "0x1111111111111111111111111111111111111111"
 private_key_ssm_path = "/bolt/polymarket/redemption/signer-private-key"
 """
 
-EVIDENCE_TOML = """\
+STANDARD_SNAPSHOT = b"contract CtfCollateralAdapter {}\n"
+NEGATIVE_RISK_SNAPSHOT = b"contract NegRiskCtfCollateralAdapter {}\n"
+BUILDER_SNAPSHOT = b"export function buildSafeTransactionRequest() {}\n"
+TYPES_SNAPSHOT = b'export enum TransactionType { SAFE = "SAFE" }\n'
+SIGNATURE_PACK_SNAPSHOT = b"export function splitAndPackSig() {}\n"
+DEPLOYMENT_SNAPSHOT = """\
+# Contracts
+
+All Polymarket contracts are deployed on **Polygon mainnet** (Chain ID: 137).
+
+| Contract | Address |
+| --- | --- |
+| pUSD — CollateralToken (proxy) | [`0x4444444444444444444444444444444444444444`](https://example.invalid/collateral) |
+| CtfCollateralAdapter | [`0x2222222222222222222222222222222222222222`](https://example.invalid/standard) |
+| NegRiskCtfCollateralAdapter | [`0x3333333333333333333333333333333333333333`](https://example.invalid/negative-risk) |
+""".encode("utf-8")
+
+SNAPSHOTS = {
+    "polymarket-redemption-sources/docs.polymarket.com/2026-07-17/resources/contracts.md.hex": DEPLOYMENT_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol.hex": STANDARD_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol.hex": NEGATIVE_RISK_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex": BUILDER_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts.hex": TYPES_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts.hex": SIGNATURE_PACK_SNAPSHOT,
+}
+
+
+def snapshot_sha256(path: str) -> str:
+    return hashlib.sha256(SNAPSHOTS[f"{path}.hex"]).hexdigest()
+
+
+EVIDENCE_TOML = f"""\
 schema_version = 1
 
 [adapter_abi]
 repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
 deployment_source_url = "https://docs.polymarket.com/resources/contracts"
-deployment_observed_date = "2026-07-16"
-deployment_fact_format_version = 3
-deployment_fact_sha256 = "46cca35f1b81ab7ef3cdceacee706288ee54114f8203b1532ff5d647e36fb9cb"
+deployment_observed_date = "2026-07-17"
+deployment_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/docs.polymarket.com/2026-07-17/resources/contracts.md")}"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
-standard_source_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+standard_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol")}"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
-negative_risk_source_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+negative_risk_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol")}"
 function_signature = "redeemPositions(address,bytes32,bytes32,uint256[])"
-function_selector = "0x01b7037c"
 
 [safe_request]
 repository = "https://github.com/Polymarket/builder-relayer-client"
 revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"
 builder_source_path = "src/builder/safe.ts"
-builder_source_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+builder_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts")}"
 types_source_path = "src/types.ts"
-types_source_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+types_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts")}"
 signature_pack_source_path = "src/utils/index.ts"
-signature_pack_source_sha256 = "5555555555555555555555555555555555555555555555555555555555555555"
+signature_pack_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts")}"
 operation = 0
 value = "0"
 safe_tx_gas = "0"
@@ -87,6 +112,7 @@ metadata = ""
 class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
     def write(self, directory: pathlib.Path, name: str, text: str) -> pathlib.Path:
         path = directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return path
 
@@ -95,9 +121,15 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         runtime_text: str = RUNTIME_TOML,
         evidence_text: str = EVIDENCE_TOML,
         root_text: str = ROOT_TOML,
+        snapshot_overrides: dict[str, bytes] | None = None,
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
+            snapshots = SNAPSHOTS | (snapshot_overrides or {})
+            for relative_path, content in snapshots.items():
+                snapshot_path = root / relative_path
+                snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                snapshot_path.write_text(content.hex() + "\n", encoding="ascii")
             runtime = self.write(root, "runtime.toml", runtime_text)
             evidence = self.write(root, "evidence.toml", evidence_text)
             root_runtime = self.write(root, "root.toml", root_text)
@@ -143,7 +175,15 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                 )
             )
 
-    def test_wallet_and_signer_are_derived_from_root_client(self) -> None:
+    def test_dead_builder_credential_authority_is_rejected(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "unknown field"):
+            self.load(
+                runtime_text=RUNTIME_TOML
+                + "\n[credential_set]\n"
+                + 'builder_api_key_ssm_path = "/duplicate"\n'
+            )
+
+    def test_wallet_is_derived_from_root_client(self) -> None:
         changed = ROOT_TOML.replace(
             "0x1111111111111111111111111111111111111111",
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -156,10 +196,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             config.runtime.safe_address,
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
-        self.assertEqual(
-            config.runtime.signer_private_key_ssm_path,
-            "/bolt/polymarket/rotated-private-key",
-        )
+        self.assertFalse(hasattr(config.runtime, "signer_private_key_ssm_path"))
 
     def test_wallet_authority_must_select_safe_polymarket_client(self) -> None:
         with self.assertRaisesRegex(generator.ConfigError, "poly_gnosis_safe"):
@@ -167,15 +204,20 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                 root_text=ROOT_TOML.replace("poly_gnosis_safe", "ed25519")
             )
 
-    def test_non_ssm_credential_reference_is_rejected(self) -> None:
-        with self.assertRaisesRegex(generator.ConfigError, "valid absolute SSM path"):
-            self.load(RUNTIME_TOML.replace("/bolt/polymarket/redemption/builder-api-key", "builder-api-key"))
-
     def test_unpinned_evidence_revision_is_rejected(self) -> None:
         with self.assertRaisesRegex(generator.ConfigError, "40 lowercase hexadecimal"):
             self.load(evidence_text=EVIDENCE_TOML.replace("ccc0596074f4dfd62c944fbca4de252893b82b4b", "main"))
 
-    def test_deployment_fact_hash_must_match_runtime_targets(self) -> None:
+    def test_evidence_repository_must_be_canonical_https(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "canonical HTTPS URL"):
+            self.load(
+                evidence_text=EVIDENCE_TOML.replace(
+                    "https://github.com/Polymarket/ctf-exchange-v2",
+                    "https://github.com:invalid/Polymarket/ctf-exchange-v2",
+                )
+            )
+
+    def test_deployment_snapshot_must_match_runtime_targets(self) -> None:
         mutations = (
             (
                 "0x2222222222222222222222222222222222222222",
@@ -189,40 +231,78 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         for expected, replacement in mutations:
             with self.subTest(expected=expected):
                 with self.assertRaisesRegex(
-                    generator.ConfigError, "deployment_fact_sha256"
+                    generator.ConfigError, "deployment snapshot facts"
                 ):
                     self.load(
                         runtime_text=RUNTIME_TOML.replace(expected, replacement)
                     )
 
-    def test_deployment_fact_hash_must_match_runtime_protocol_facts(self) -> None:
-        mutations = (
-            ("chain_id = 137", "chain_id = 138"),
-            (
-                "0x4444444444444444444444444444444444444444",
-                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-            (
-                "0x0000000000000000000000000000000000000000000000000000000000000000",
-                "0x0000000000000000000000000000000000000000000000000000000000000001",
-            ),
-            ('dummy_index_sets = ["1", "2"]', 'dummy_index_sets = ["1", "3"]'),
-        )
-        for expected, replacement in mutations:
-            with self.subTest(expected=expected):
-                with self.assertRaisesRegex(
-                    generator.ConfigError, "deployment_fact_sha256"
-                ):
-                    self.load(runtime_text=RUNTIME_TOML.replace(expected, replacement))
+    def test_deployment_snapshot_must_match_runtime_chain(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "deployment snapshot facts"):
+            self.load(runtime_text=RUNTIME_TOML.replace("chain_id = 137", "chain_id = 138"))
+
+    def test_snapshot_bytes_must_match_registered_sha256(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "does not match captured bytes"):
+            self.load(
+                snapshot_overrides={
+                    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex": b"mutated\n"
+                }
+            )
+
+    def test_snapshot_paths_cannot_escape_evidence_directory(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "repository-relative path"):
+            self.load(
+                evidence_text=EVIDENCE_TOML.replace(
+                    'builder_source_path = "src/builder/safe.ts"',
+                    'builder_source_path = "../safe.ts"',
+                )
+            )
+
+    def test_missing_derived_snapshot_is_rejected(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "cannot read derived"):
+            self.load(
+                evidence_text=EVIDENCE_TOML.replace(
+                    'builder_source_path = "src/builder/safe.ts"',
+                    'builder_source_path = "src/builder/missing.ts"',
+                )
+            )
 
     def test_evidence_cannot_duplicate_runtime_values(self) -> None:
         duplicated = EVIDENCE_TOML + '\nruntime_safe_address = "0x1111111111111111111111111111111111111111"\n'
         with self.assertRaisesRegex(generator.ConfigError, "unknown field"):
             self.load(evidence_text=duplicated)
 
-    def test_selector_requires_exact_four_byte_hex(self) -> None:
-        with self.assertRaisesRegex(generator.ConfigError, "four-byte"):
-            self.load(evidence_text=EVIDENCE_TOML.replace("0x01b7037c", "0x01b703"))
+    def test_function_signature_is_the_only_selector_authority(self) -> None:
+        config = self.load()
+        self.assertEqual(config.evidence.function_selector, (1, 183, 3, 124))
+
+    def test_function_signature_change_changes_derived_selector(self) -> None:
+        changed = self.load(
+            evidence_text=EVIDENCE_TOML.replace(
+                "redeemPositions(address,bytes32,bytes32,uint256[])",
+                "redeemPositions(address,bytes32,bytes32,uint256[2])",
+            )
+        )
+        self.assertNotEqual(changed.evidence.function_selector, (1, 183, 3, 124))
+
+    def test_function_signature_must_be_ascii(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "must be ASCII"):
+            self.load(
+                evidence_text=EVIDENCE_TOML.replace(
+                    "redeemPositions(address,bytes32,bytes32,uint256[])",
+                    "redeemPositions(address,bytes32,bytes32,uint256[])—",
+                )
+            )
+
+    def test_handwritten_selector_is_rejected(self) -> None:
+        with self.assertRaisesRegex(generator.ConfigError, "unknown field"):
+            self.load(
+                evidence_text=EVIDENCE_TOML.replace(
+                    'function_signature = "redeemPositions(address,bytes32,bytes32,uint256[])"',
+                    'function_signature = "redeemPositions(address,bytes32,bytes32,uint256[])"\n'
+                    'function_selector = "0x01b7037c"',
+                )
+            )
 
     def test_u256_dummy_argument_overflow_is_rejected(self) -> None:
         overflow = str(1 << 256)

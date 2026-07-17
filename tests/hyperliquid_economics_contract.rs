@@ -44,20 +44,18 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
 }
 
 fn user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
-    HyperliquidUserFeesSnapshot::from_json(&format!(
-        r#"{{
-            "snapshotId":"user-fees-snapshot","accountId":"account",
-            "sourceAtNs":90,"fetchedAtNs":95,"validUntilNs":110,
-            "feeTier":"tier-1","dailyUserVolume":100000,
-            "activeReferralDiscount":0,"activeStakingDiscount":0,"trialCredits":0,
-            "perpTakerBaseRate":0.000315,"perpMakerBaseRate":{maker_rate},
-            "spotTakerBaseRate":0.0004,"spotMakerBaseRate":0.0001
-        }}"#
-    ))
-    .unwrap()
+    user_fees_with_discounts(maker_rate, "0", "0")
 }
 
 fn official_user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
+    user_fees_with_discounts(maker_rate, "0.04", "0.3")
+}
+
+fn user_fees_with_discounts(
+    maker_rate: &str,
+    referral_discount: &str,
+    staking_discount: &str,
+) -> HyperliquidUserFeesSnapshot {
     HyperliquidUserFeesSnapshot::from_wire_json(
         HyperliquidSnapshotMetadata {
             snapshot_id: "user-fees-snapshot".to_string(),
@@ -84,16 +82,16 @@ fn official_user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
                         "mm":[{{"makerFractionCutoff":"0.005","add":"-0.00001"}}]
                     }},
                     "referralDiscount":"0.04",
-                    "stakingDiscountTiers":[{{
-                        "bpsOfMaxSupply":"0",
-                        "discount":"0"
-                    }}]
+                    "stakingDiscountTiers":[
+                        {{"bpsOfMaxSupply":"0","discount":"0"}},
+                        {{"bpsOfMaxSupply":"4.7577998927","discount":"{staking_discount}"}}
+                    ]
                 }},
                 "userCrossRate":"0.000315",
                 "userAddRate":"{maker_rate}",
                 "userSpotCrossRate":"0.00049",
                 "userSpotAddRate":"0.00028",
-                "activeReferralDiscount":"0.04",
+                "activeReferralDiscount":"{referral_discount}",
                 "trial":null,
                 "feeTrialReward":"0",
                 "nextTrialAvailableTimestamp":null,
@@ -103,7 +101,7 @@ fn official_user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
                 }},
                 "activeStakingDiscount":{{
                     "bpsOfMaxSupply":"4.7577998927",
-                    "discount":"0.3"
+                    "discount":"{staking_discount}"
                 }}
             }}"#
         ),
@@ -410,13 +408,20 @@ fn negative_hip3_deployer_scale_fails_closed() {
 #[test]
 fn user_fees_parser_requires_complete_account_surface() {
     let incomplete = r#"{
-        "snapshotId":"user-fees-snapshot","accountId":"account",
-        "sourceAtNs":90,"fetchedAtNs":95,"validUntilNs":110,
-        "feeTier":"tier-1","dailyUserVolume":100000,
-        "perpTakerBaseRate":0.000315
+        "dailyUserVlm":[],
+        "userCrossRate":"0.000315"
     }"#;
     assert_eq!(
-        HyperliquidUserFeesSnapshot::from_json(incomplete),
+        HyperliquidUserFeesSnapshot::from_wire_json(
+            HyperliquidSnapshotMetadata {
+                snapshot_id: "user-fees-snapshot".to_string(),
+                source_at_ns: 90,
+                fetched_at_ns: 95,
+                valid_until_ns: 110,
+            },
+            "account",
+            incomplete,
+        ),
         Err(HyperliquidEconomicsError::InvalidUserFees)
     );
 }

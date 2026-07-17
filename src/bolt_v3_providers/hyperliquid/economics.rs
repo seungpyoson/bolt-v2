@@ -49,29 +49,204 @@ pub enum HyperliquidProductKind {
     Perp,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidUserFeesSnapshot {
     snapshot_id: String,
     account_id: String,
     source_at_ns: u64,
     fetched_at_ns: u64,
     valid_until_ns: u64,
-    fee_tier: String,
     daily_user_volume: Decimal,
     active_referral_discount: Decimal,
     active_staking_discount: Decimal,
     trial_credits: Decimal,
-    perp_taker_base_rate: Decimal,
-    perp_maker_base_rate: Decimal,
-    spot_taker_base_rate: Decimal,
-    spot_maker_base_rate: Decimal,
+    perp_taker_rate: Decimal,
+    perp_maker_rate: Decimal,
+    spot_taker_rate: Decimal,
+    spot_maker_rate: Decimal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HyperliquidSnapshotMetadata {
+    pub snapshot_id: String,
+    pub source_at_ns: u64,
+    pub fetched_at_ns: u64,
+    pub valid_until_ns: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HyperliquidUserFeesWire {
+    daily_user_vlm: Vec<HyperliquidDailyUserVolumeWire>,
+    fee_schedule: HyperliquidFeeScheduleWire,
+    user_cross_rate: Decimal,
+    user_add_rate: Decimal,
+    user_spot_cross_rate: Decimal,
+    user_spot_add_rate: Decimal,
+    active_referral_discount: Decimal,
+    trial: Option<serde_json::Value>,
+    fee_trial_reward: Decimal,
+    #[serde(rename = "nextTrialAvailableTimestamp")]
+    _next_trial_available_timestamp: Option<u64>,
+    staking_link: Option<HyperliquidStakingLinkWire>,
+    active_staking_discount: HyperliquidStakingDiscountWire,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HyperliquidDailyUserVolumeWire {
+    date: String,
+    user_cross: Decimal,
+    user_add: Decimal,
+    exchange: Decimal,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HyperliquidFeeScheduleWire {
+    cross: Decimal,
+    add: Decimal,
+    spot_cross: Decimal,
+    spot_add: Decimal,
+    tiers: HyperliquidFeeTiersWire,
+    referral_discount: Decimal,
+    staking_discount_tiers: Vec<HyperliquidStakingDiscountWire>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct HyperliquidFeeTiersWire {
+    vip: Vec<HyperliquidVipFeeTierWire>,
+    mm: Vec<HyperliquidMakerFeeTierWire>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HyperliquidVipFeeTierWire {
+    ntl_cutoff: Decimal,
+    cross: Decimal,
+    add: Decimal,
+    spot_cross: Decimal,
+    spot_add: Decimal,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HyperliquidMakerFeeTierWire {
+    maker_fraction_cutoff: Decimal,
+    add: Decimal,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HyperliquidStakingDiscountWire {
+    bps_of_max_supply: Decimal,
+    discount: Decimal,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HyperliquidStakingLinkWire {
+    r#type: String,
+    staking_user: String,
 }
 
 impl HyperliquidUserFeesSnapshot {
-    pub fn from_json(json: &str) -> Result<Self, HyperliquidEconomicsError> {
-        serde_json::from_str(json).map_err(|_| HyperliquidEconomicsError::InvalidUserFees)
+    pub fn from_wire_json(
+        metadata: HyperliquidSnapshotMetadata,
+        account_id: &str,
+        json: &str,
+    ) -> Result<Self, HyperliquidEconomicsError> {
+        let wire: HyperliquidUserFeesWire =
+            serde_json::from_str(json).map_err(|_| HyperliquidEconomicsError::InvalidUserFees)?;
+        if metadata.snapshot_id.trim().is_empty()
+            || account_id.trim().is_empty()
+            || wire.trial.is_some()
+            || wire.daily_user_vlm.is_empty()
+            || wire.daily_user_vlm.iter().any(|volume| {
+                volume.date.trim().is_empty()
+                    || volume.user_cross < Decimal::ZERO
+                    || volume.user_add < Decimal::ZERO
+                    || volume.exchange < Decimal::ZERO
+            })
+            || !valid_fee_schedule(&wire)
+        {
+            return Err(HyperliquidEconomicsError::InvalidUserFees);
+        }
+        let daily_user_volume = wire
+            .daily_user_vlm
+            .iter()
+            .try_fold(Decimal::ZERO, |total, volume| {
+                total
+                    .checked_add(volume.user_cross)
+                    .and_then(|value| value.checked_add(volume.user_add))
+            })
+            .ok_or(HyperliquidEconomicsError::InvalidUserFees)?;
+        Ok(Self {
+            snapshot_id: metadata.snapshot_id,
+            account_id: account_id.to_string(),
+            source_at_ns: metadata.source_at_ns,
+            fetched_at_ns: metadata.fetched_at_ns,
+            valid_until_ns: metadata.valid_until_ns,
+            daily_user_volume,
+            active_referral_discount: wire.active_referral_discount,
+            active_staking_discount: wire.active_staking_discount.discount,
+            trial_credits: wire.fee_trial_reward,
+            perp_taker_rate: wire.user_cross_rate,
+            perp_maker_rate: wire.user_add_rate,
+            spot_taker_rate: wire.user_spot_cross_rate,
+            spot_maker_rate: wire.user_spot_add_rate,
+        })
     }
+}
+
+fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
+    let schedule = &wire.fee_schedule;
+    let unit_interval = |value: Decimal| (Decimal::ZERO..=Decimal::ONE).contains(&value);
+    let nonnegative_rates = schedule.cross >= Decimal::ZERO
+        && schedule.add >= Decimal::ZERO
+        && schedule.spot_cross >= Decimal::ZERO
+        && schedule.spot_add >= Decimal::ZERO
+        && wire.user_cross_rate >= Decimal::ZERO
+        && wire.user_spot_cross_rate >= Decimal::ZERO;
+    let effective_within_base = wire.user_cross_rate <= schedule.cross
+        && wire.user_spot_cross_rate <= schedule.spot_cross
+        && wire.user_add_rate <= schedule.add
+        && wire.user_spot_add_rate <= schedule.spot_add;
+    let tier_rates_valid = schedule.vip.iter().all(|tier| {
+        tier.ntl_cutoff >= Decimal::ZERO
+            && tier.cross >= Decimal::ZERO
+            && tier.add >= Decimal::ZERO
+            && tier.spot_cross >= Decimal::ZERO
+            && tier.spot_add >= Decimal::ZERO
+    }) && schedule
+        .mm
+        .iter()
+        .all(|tier| tier.maker_fraction_cutoff >= Decimal::ZERO && tier.add <= schedule.add);
+    let staking_valid = !schedule.staking_discount_tiers.is_empty()
+        && schedule
+            .staking_discount_tiers
+            .iter()
+            .all(|tier| tier.bps_of_max_supply >= Decimal::ZERO && unit_interval(tier.discount))
+        && schedule
+            .staking_discount_tiers
+            .iter()
+            .any(|tier| tier.discount == wire.active_staking_discount.discount);
+    let staking_link_valid = wire
+        .staking_link
+        .as_ref()
+        .is_none_or(|link| !link.r#type.trim().is_empty() && !link.staking_user.trim().is_empty());
+    nonnegative_rates
+        && effective_within_base
+        && tier_rates_valid
+        && staking_valid
+        && staking_link_valid
+        && wire.fee_trial_reward >= Decimal::ZERO
+        && unit_interval(schedule.referral_discount)
+        && unit_interval(wire.active_referral_discount)
+        && wire.active_referral_discount <= schedule.referral_discount
+        && wire.active_staking_discount.bps_of_max_supply >= Decimal::ZERO
+        && unit_interval(wire.active_staking_discount.discount)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -176,12 +351,12 @@ impl HyperliquidEconomicsAdapter {
         }
         let base_rates = match product.product_kind {
             HyperliquidProductKind::Perp => ProtocolRatePlan {
-                maker: user_fees.perp_maker_base_rate,
-                taker: user_fees.perp_taker_base_rate,
+                maker: user_fees.perp_maker_rate,
+                taker: user_fees.perp_taker_rate,
             },
             HyperliquidProductKind::Spot => ProtocolRatePlan {
-                maker: user_fees.spot_maker_base_rate,
-                taker: user_fees.spot_taker_base_rate,
+                maker: user_fees.spot_maker_rate,
+                taker: user_fees.spot_taker_rate,
             },
         };
         let stable = match product.stable_pair {
@@ -204,12 +379,15 @@ impl HyperliquidEconomicsAdapter {
                 config.formula.hip3_at_or_above_threshold_multiplier * product.deployer_scale,
             ),
         };
-        let discount_scale = (Decimal::ONE - user_fees.active_referral_discount)
-            * (Decimal::ONE - user_fees.active_staking_discount);
-        let resolve_rate = |base| hip3.apply(growth.apply(stable.apply(base * discount_scale)));
+        let referral_scale = Decimal::ONE - user_fees.active_referral_discount;
+        let maker_before_product_and_referral = growth.apply(stable.apply(base_rates.maker));
         let rates = ProtocolRatePlan {
-            maker: resolve_rate(base_rates.maker),
-            taker: resolve_rate(base_rates.taker),
+            maker: if maker_before_product_and_referral > Decimal::ZERO {
+                hip3.apply(maker_before_product_and_referral) * referral_scale
+            } else {
+                maker_before_product_and_referral
+            },
+            taker: hip3.apply(growth.apply(stable.apply(base_rates.taker))) * referral_scale,
         };
         if config.formula.hip3_at_or_above_deployer_share < Decimal::ZERO {
             return Err(HyperliquidEconomicsError::InvalidFeeSurface);
@@ -549,11 +727,12 @@ fn validate_authority_snapshots(
 ) -> Result<(), HyperliquidEconomicsError> {
     let user_fees_valid = user_fees.source_at_ns <= user_fees.fetched_at_ns
         && user_fees.fetched_at_ns <= user_fees.valid_until_ns
-        && !user_fees.fee_tier.trim().is_empty()
         && user_fees.daily_user_volume >= Decimal::ZERO
         && user_fees.trial_credits >= Decimal::ZERO
         && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_referral_discount)
-        && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_staking_discount);
+        && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_staking_discount)
+        && user_fees.perp_taker_rate >= Decimal::ZERO
+        && user_fees.spot_taker_rate >= Decimal::ZERO;
     let product_timeline_valid = product.source_at_ns <= product.fetched_at_ns
         && product.fetched_at_ns <= product.valid_until_ns;
     let product_units_valid = match product.product_kind {

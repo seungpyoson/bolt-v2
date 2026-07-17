@@ -78,8 +78,8 @@ fn authoritative_fee_free_snapshot_emits_no_zero_component() {
     let estimate = adapter.quote(&request).unwrap();
     assert!(estimate.components.is_empty());
     let quote = validate_and_aggregate_quote(&request, estimate, &[]).unwrap();
-    assert!(quote.components.is_empty());
-    assert!(quote.core_total.is_zero());
+    assert!(quote.components().is_empty());
+    assert!(quote.core_total().is_zero());
 }
 
 #[test]

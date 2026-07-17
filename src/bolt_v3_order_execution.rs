@@ -30,7 +30,6 @@ use crate::{
     bolt_v3_economics_runtime::{
         EconomicsAdmission, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
     },
-    bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
         dispatch_maker_order_command,
@@ -670,6 +669,7 @@ pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
     pub execution_client_id: &'a str,
@@ -680,6 +680,7 @@ pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
+#[cfg(test)]
 pub(crate) fn route_kill_switch_flatten_command_with_sink<S>(
     policy: BoltV3OrderExecutionPolicy,
     sink: &mut S,
@@ -687,7 +688,7 @@ pub(crate) fn route_kill_switch_flatten_command_with_sink<S>(
     decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
     submit_admission: &BoltV3SubmitAdmissionState,
     context: BoltV3KillSwitchFlattenRoutingContext<'_>,
-    command: &BoltV3KillSwitchFlattenCommand,
+    command: &crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
 ) -> Result<BoltV3SubmitRoutingOutcome>
 where
     S: BoltV3NtVenueMutationSink + ?Sized,
@@ -750,7 +751,10 @@ where
     )
 }
 
-fn flatten_client_order_id(command: &BoltV3KillSwitchFlattenCommand) -> ClientOrderId {
+#[cfg(test)]
+fn flatten_client_order_id(
+    command: &crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
+) -> ClientOrderId {
     let mut value = String::new();
     value.push_str(command.halt_id());
     value.push('-');
@@ -819,6 +823,7 @@ pub(crate) trait BoltV3NtVenueMutationSink {
     ) -> Result<()>;
 }
 
+#[cfg(test)]
 pub(crate) struct BoltV3NtSubmitOnlySink<F>
 where
     F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
@@ -826,6 +831,7 @@ where
     dispatch: F,
 }
 
+#[cfg(test)]
 impl<F> BoltV3NtSubmitOnlySink<F>
 where
     F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
@@ -835,6 +841,7 @@ where
     }
 }
 
+#[cfg(test)]
 impl<F> BoltV3NtVenueMutationSink for BoltV3NtSubmitOnlySink<F>
 where
     F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,

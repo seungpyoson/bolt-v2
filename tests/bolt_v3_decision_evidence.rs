@@ -53,8 +53,6 @@ use bolt_v2::{
     bolt_v3_timestamp_domain::LocalReceiveMs,
 };
 use nautilus_model::enums::{OrderSide, OrderType, TimeInForce};
-use nautilus_model::identifiers::InstrumentId;
-use rust_decimal::Decimal;
 
 const EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION: u32 = 15;
 
@@ -199,7 +197,6 @@ fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3Strategy
         fast_venue_jitter_ms: Some(3),
         fast_venue_incoherent: false,
         lead_agreement_corr: Some("0.98".to_string()),
-        fee_rate_basis_points: "0".to_string(),
         selected_side: Some("up".to_string()),
         submission_instrument_id: "instrument-up".to_string(),
         submission_order_side: OrderSide::Buy.to_string(),
@@ -1264,7 +1261,6 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         fast_venue_jitter_ms: Some(3),
         fast_venue_incoherent: false,
         lead_agreement_corr: Some("0.98".to_string()),
-        fee_rate_basis_points: "0".to_string(),
         selected_side: Some("up".to_string()),
         submission_instrument_id: "instrument-up".to_string(),
         submission_order_side: OrderSide::Buy.to_string(),

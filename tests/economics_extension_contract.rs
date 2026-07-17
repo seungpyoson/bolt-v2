@@ -56,5 +56,5 @@ fn new_venue_and_non_nt_substrate_use_only_shared_contracts() {
     let request = SyntheticSubstrate.canonical_request();
     let estimate = SyntheticVenue.quote(&request).unwrap();
     let quote = validate_and_aggregate_quote(&request, estimate, &[]).unwrap();
-    assert_eq!(quote.core_total, decimal("-0.25"));
+    assert_eq!(quote.core_total(), decimal("-0.25"));
 }

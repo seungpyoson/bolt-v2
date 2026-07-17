@@ -3,7 +3,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use nautilus_model::events::OrderEventAny;
 use tokio::sync::Notify;
 
 use crate::bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter;
@@ -1299,12 +1298,6 @@ where
     }
 }
 
-fn publish_order_initialized(order: &OrderAny) {
-    let event = OrderEventAny::Initialized(order.init_event().clone());
-    let topic = format!("events.order.{}", order.strategy_id());
-    msgbus::publish_order_event(topic.into(), &event);
-}
-
 fn kill_switch_flatten_candidates_from_cache(
     cache: &nautilus_common::cache::Cache,
     action: &KillSwitchLossAction,
@@ -1384,24 +1377,6 @@ fn flatten_order_template_from_config(flatten: &KillSwitchFlattenConfigBlock) ->
         is_reduce_only: flatten.is_reduce_only,
         is_quote_quantity: flatten.is_quote_quantity,
     }
-}
-
-fn execution_clients_by_venue(loaded: &LoadedBoltV3Config) -> Result<BTreeMap<Venue, String>> {
-    let mut clients_by_venue = BTreeMap::new();
-    for (client_key, client) in loaded
-        .root
-        .clients
-        .iter()
-        .filter(|(_, client)| client.execution.is_some())
-    {
-        let venue = Venue::from(client.venue.as_str());
-        if let Some(existing) = clients_by_venue.insert(venue, client_key.clone()) {
-            anyhow::bail!(
-                "kill switch flatten requires one execution client per venue; venue={venue} clients={existing},{client_key}"
-            );
-        }
-    }
-    Ok(clients_by_venue)
 }
 
 /// Configures the durable kill-switch loss-protection accumulator from the

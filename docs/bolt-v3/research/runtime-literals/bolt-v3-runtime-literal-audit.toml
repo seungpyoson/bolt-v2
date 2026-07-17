@@ -20723,30 +20723,6 @@ classification = "order_reject_observer_episode_counter_identity"
 reason = "Reject-observer retry totals fold from zero before observed episodes contribute counts; this is observability aggregation state, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_order_execution.rs"
-kind = "string"
-literal = '''"kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"'''
-context = '''"kill switch flatten submit sink cannot cancel client_order_id={client_order_id}"'''
-classification = "kill_switch_flatten_submit_sink_diagnostic"
-reason = "Fail-loud diagnostic for an impossible cancel call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
-
-[[allowed]]
-path = "src/bolt_v3_order_execution.rs"
-kind = "string"
-literal = '''"kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"'''
-context = '''"kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"'''
-classification = "kill_switch_flatten_submit_sink_diagnostic"
-reason = "Fail-loud diagnostic for an impossible cancel-all call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
-
-[[allowed]]
-path = "src/bolt_v3_order_execution.rs"
-kind = "string"
-literal = '''"kill switch flatten submit sink cannot modify client_order_id={client_order_id}"'''
-context = '''"kill switch flatten submit sink cannot modify client_order_id={client_order_id}"'''
-classification = "kill_switch_flatten_submit_sink_diagnostic"
-reason = "Fail-loud diagnostic for an impossible modify call on the submit-only kill-switch flatten sink; it does not configure route policy, sizing, timing, or venue behavior."
-
-[[allowed]]
 path = "src/bolt_v3_live_node/risk_admission_loss.rs"
 kind = "string"
 literal = '''"kill switch flatten command failures: halt_id={} failures={}"'''

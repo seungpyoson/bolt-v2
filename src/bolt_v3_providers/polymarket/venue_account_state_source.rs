@@ -6,6 +6,7 @@ use nautilus_polymarket::{
     common::{consts::DUST_POSITION_THRESHOLD, credential::Secrets as PolymarketSecrets},
     http::{clob::PolymarketClobHttpClient, query::GetOrdersParams},
 };
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -311,11 +312,11 @@ struct ReadinessDataApiPosition {
     asset: String,
     #[serde(alias = "condition_id", alias = "conditionId")]
     condition_id: String,
-    size: f64,
+    size: Decimal,
     #[serde(alias = "avgPrice", alias = "avg_price")]
-    avg_price: Option<f64>,
+    avg_price: Option<Decimal>,
     #[serde(alias = "current_value", alias = "currentValue")]
-    current_value: Option<f64>,
+    current_value: Option<Decimal>,
     redeemable: Option<bool>,
 }
 
@@ -367,13 +368,13 @@ struct VenueAccountStateSnapshotProof<'a> {
 mod tests {
     use super::*;
 
-    fn readiness_position(size: f64, redeemable: bool) -> ReadinessDataApiPosition {
+    fn readiness_position(size: Decimal, redeemable: bool) -> ReadinessDataApiPosition {
         ReadinessDataApiPosition {
             asset: "asset".to_string(),
             condition_id: "condition".to_string(),
             size,
             avg_price: None,
-            current_value: Some(0.0),
+            current_value: Some(Decimal::ZERO),
             redeemable: Some(redeemable),
         }
     }

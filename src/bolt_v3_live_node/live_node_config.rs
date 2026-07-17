@@ -173,6 +173,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         data_engine,
         risk_engine,
         exec_engine,
+        controller: None,
         data_clients: HashMap::new(),
         exec_clients: HashMap::new(),
         plugins: Vec::new(),

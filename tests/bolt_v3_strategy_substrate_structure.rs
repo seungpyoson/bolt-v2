@@ -174,11 +174,11 @@ fn tokenize(source: &str) -> Vec<Token> {
 
 fn production_tokens(source: &str) -> Vec<Token> {
     let tokens = tokenize(source);
-    let macro_token_tree = macro_token_tree_mask(&tokens);
+    let protected_token_tree = protected_token_tree_mask(&tokens);
     let mut production = Vec::with_capacity(tokens.len());
     let mut cursor = 0;
     while cursor < tokens.len() {
-        if !macro_token_tree[cursor]
+        if !protected_token_tree[cursor]
             && let Some(attribute_end) = cfg_test_attribute_end(&tokens, cursor)
         {
             cursor = cfg_gated_item_end(&tokens, attribute_end);
@@ -190,12 +190,12 @@ fn production_tokens(source: &str) -> Vec<Token> {
     production
 }
 
-fn macro_token_tree_mask(tokens: &[Token]) -> Vec<bool> {
+fn protected_token_tree_mask(tokens: &[Token]) -> Vec<bool> {
     let mut mask = vec![false; tokens.len()];
     let mut delimiters: Vec<(&str, bool)> = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
-        let inside_macro = delimiters.iter().any(|(_, is_macro)| *is_macro);
-        mask[index] = inside_macro;
+        let inside_protected_tree = delimiters.iter().any(|(_, protected)| *protected);
+        mask[index] = inside_protected_tree;
         match token.text.as_str() {
             "(" | "[" | "{" => {
                 let close = match token.text.as_str() {
@@ -213,7 +213,14 @@ fn macro_token_tree_mask(tokens: &[Token]) -> Vec<bool> {
                         && tokens
                             .get(index.wrapping_sub(3))
                             .is_some_and(|token| token.text == "macro_rules"));
-                delimiters.push((close, inside_macro || opens_macro));
+                let opens_attribute = token.text == "["
+                    && tokens
+                        .get(index.wrapping_sub(1))
+                        .is_some_and(|token| token.text == "#");
+                delimiters.push((
+                    close,
+                    inside_protected_tree || opens_macro || opens_attribute,
+                ));
             }
             ")" | "]" | "}" => {
                 if delimiters
@@ -242,6 +249,8 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> usize {
     // Stop at the first complete construct boundary and never cross an enclosing brace. For a
     // structured match-arm pattern, the first balanced brace can precede the gated body; retaining
     // that body is an intentional fail-closed over-match rather than hiding a production sibling.
+    // Angle brackets are likewise not treated as structural depth because `<` is also an operator;
+    // a comma in a test-only generic may retain its tail, but cannot hide production code.
     let mut parentheses = 0usize;
     let mut brackets = 0usize;
     let mut braces = 0usize;
@@ -477,6 +486,7 @@ fn production_strategy_files() -> Vec<PathBuf> {
 
 fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
     let actual = texts(tokens);
+    let local_enum_variants = local_enum_variants(&actual);
     let mut violations: Vec<&str> = STRATEGY_MUTATION_AUTHORITY_NAMES
         .iter()
         .copied()
@@ -486,7 +496,7 @@ fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
         NT_TRADING_COMMAND_SURFACE_NAMES
             .iter()
             .copied()
-            .filter(|name| command_surface_reference(&actual, name)),
+            .filter(|name| command_surface_reference(&actual, name, &local_enum_variants)),
     );
     violations.extend(
         NT_VENUE_MUTATION_METHOD_NAMES
@@ -511,22 +521,96 @@ fn direct_method_reference(tokens: &[&str], name: &str) -> bool {
     })
 }
 
-fn command_surface_reference(tokens: &[&str], name: &str) -> bool {
+fn command_surface_reference(
+    tokens: &[&str],
+    name: &str,
+    local_enum_variants: &[LocalEnumVariant<'_>],
+) -> bool {
     tokens.iter().enumerate().any(|(index, token)| {
-        *token == name
-            && tokens
-                .get(index + 1)
-                .is_none_or(|next| matches!(*next, "::" | "<" | "(" | ";" | "," | ":" | ")"))
+        if *token != name {
+            return false;
+        }
+        let is_declaration = local_enum_variants
+            .iter()
+            .any(|variant| variant.declaration_index == index);
+        let is_local_reference = index >= 2
+            && tokens[index - 1] == "::"
+            && local_enum_variants.iter().any(|variant| {
+                variant.enum_name == tokens[index - 2] && variant.variant_name == name
+            });
+        !is_declaration && !is_local_reference
     })
 }
 
 fn bare_function_reference(tokens: &[&str], name: &str) -> bool {
-    tokens.iter().enumerate().any(|(index, token)| {
-        *token == name
-            && tokens
-                .get(index + 1)
-                .is_some_and(|next| matches!(*next, "(" | "::" | "<" | ";" | "," | ")"))
-    })
+    tokens.contains(&name)
+}
+
+#[derive(Debug)]
+struct LocalEnumVariant<'a> {
+    enum_name: &'a str,
+    variant_name: &'a str,
+    declaration_index: usize,
+}
+
+fn local_enum_variants<'a>(tokens: &[&'a str]) -> Vec<LocalEnumVariant<'a>> {
+    let mut variants = Vec::new();
+    let mut cursor = 0;
+    while cursor + 2 < tokens.len() {
+        if tokens[cursor] != "enum" {
+            cursor += 1;
+            continue;
+        }
+        let enum_name = tokens[cursor + 1];
+        let Some(body_start) = tokens[cursor + 2..]
+            .iter()
+            .position(|token| *token == "{")
+            .map(|offset| cursor + 2 + offset)
+        else {
+            break;
+        };
+        let mut braces = 1usize;
+        let mut parentheses = 0usize;
+        let mut brackets = 0usize;
+        let mut expect_variant = true;
+        cursor = body_start + 1;
+        while cursor < tokens.len() && braces > 0 {
+            match tokens[cursor] {
+                "{" => braces += 1,
+                "}" => braces -= 1,
+                "(" => parentheses += 1,
+                ")" => parentheses = parentheses.saturating_sub(1),
+                "[" => brackets += 1,
+                "]" => brackets = brackets.saturating_sub(1),
+                "," if braces == 1 && parentheses == 0 && brackets == 0 => {
+                    expect_variant = true;
+                }
+                token
+                    if braces == 1
+                        && parentheses == 0
+                        && brackets == 0
+                        && expect_variant
+                        && token
+                            .as_bytes()
+                            .first()
+                            .is_some_and(|byte| ident_start(*byte))
+                        && tokens
+                            .get(cursor + 1)
+                            .is_some_and(|next| matches!(*next, "(" | "{" | "=" | "," | "}")) =>
+                {
+                    variants.push(LocalEnumVariant {
+                        enum_name,
+                        variant_name: token,
+                        declaration_index: cursor,
+                    });
+                    expect_variant = false;
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
+    }
+    variants
 }
 
 fn trait_method_names<'a>(tokens: &'a [Token], trait_name: &str) -> Vec<&'a str> {
@@ -738,6 +822,8 @@ fn production_tokenizer_excludes_inline_test_items_only() {
         fn after_macro_tokens() { self.modify_order_via_nt(order); }
         #[passthrough(#[cfg(test)])]
         fn after_attribute_tokens() { self.modify_order_via_nt(order); }
+        #[passthrough(nested(#[cfg(test)]))]
+        fn after_nested_attribute_tokens() { self.modify_order_via_nt(order); }
         match state {
             #[cfg(test)]
             State::Fixture { value } => { test_only_arm_body(value); }
@@ -753,7 +839,7 @@ fn production_tokenizer_excludes_inline_test_items_only() {
     assert_eq!(count_sequence(&tokens, &["modify_order", "("]), 0);
     assert_eq!(count_sequence(&tokens, &["SubmitOrder"]), 0);
     assert_eq!(count_sequence(&tokens, &["ProductionField"]), 2);
-    assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 2);
+    assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 3);
     assert_eq!(count_sequence(&tokens, &["cancel_order", "("]), 1);
     assert_eq!(count_sequence(&tokens, &["test_only_arm_body", "("]), 1);
     assert_eq!(
@@ -853,6 +939,13 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         ))
         .is_empty(),
         "Bolt-local intent variants must not be mistaken for NT command surfaces"
+    );
+    assert_eq!(
+        named_strategy_mutation_surfaces(&tokenize(
+            "enum LocalAction { Emit = generic::<Signal, CancelOrder>() }"
+        )),
+        vec!["CancelOrder"],
+        "commas in generic expressions must not manufacture local-enum exemptions"
     );
 }
 

@@ -147,7 +147,7 @@ DIRECT_NT_VENUE_MUTATION_RULE = Rule(
         r"(?:Self|[A-Za-z_][A-Za-z0-9_]*"
         r"(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*::\s*|<[^>\n]+>\s*::\s*)"
         rf"(?:{NT_VENUE_MUTATION_METHOD_PATTERN})"
-        r"(?=\s*(?:::<|\(|;|,|\)|$))"
+        r"(?![A-Za-z0-9_])"
     ),
 )
 
@@ -156,10 +156,10 @@ RAW_MSGBUS_NT_VENUE_MUTATION_RULE = Rule(
     re.compile(
         r"(?<![A-Za-z0-9_:])"
         rf"(?:{NT_VENUE_MUTATION_BARE_PATTERN})"
-        r"(?=\s*(?:::<|\(|;|,|\)|$))"
+        r"(?![A-Za-z0-9_])"
         r"|(?<![A-Za-z0-9_:])"
         rf"(?:{NT_TRADING_COMMAND_SURFACE_PATTERN})"
-        r"(?=\s*(?:::|<|\(|;|,|:|\)|$))"
+        r"(?![A-Za-z0-9_])"
     ),
 )
 

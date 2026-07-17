@@ -378,7 +378,7 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertEqual(
             len(direct_violations),
-            11,
+            13,
             "raw msgbus trading-command injection must be fenced at the primitive layer",
         )
 
@@ -578,7 +578,7 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
         self.assertEqual(
             len(self.direct_nt_violations_for(source, path="src/strategies/future.rs")),
-            3,
+            4,
             "the same NT submit primitives must remain forbidden in strategy code",
         )
 

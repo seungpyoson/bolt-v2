@@ -100,7 +100,7 @@ REQUIRED_CHECK_INTEGRATION_ID = 15368
 REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
 TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
-GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES = 360
+BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES = 360
 SECONDS_PER_MINUTE = 60
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -384,10 +384,10 @@ def load_backtester_test_archive_timeout_config(
         ("ordinary_max_job_minutes", ordinary_minutes),
         ("ra001a_durable_tracer_max_job_minutes", tracer_minutes),
     ):
-        if value > GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES:
+        if value > BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES:
             raise ProvenanceError(
-                f"{timeout_prefix}.{key} must not exceed GitHub Actions' "
-                f"{GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES}-minute maximum"
+                f"{timeout_prefix}.{key} must not exceed the backtester policy maximum "
+                f"of {BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES} minutes"
             )
     if tracer_minutes * SECONDS_PER_MINUTE <= max_wall_seconds + termination_grace_seconds:
         raise ProvenanceError(
@@ -426,10 +426,10 @@ def load_backtester_issue_789_timeout_minutes(
         "max_job_minutes",
         "backtester.issue_789",
     )
-    if max_job_minutes > GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES:
+    if max_job_minutes > BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES:
         raise ProvenanceError(
-            "backtester.issue_789.max_job_minutes must not exceed GitHub Actions' "
-            f"{GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES}-minute maximum"
+            "backtester.issue_789.max_job_minutes must not exceed the backtester policy "
+            f"maximum of {BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES} minutes"
         )
     return max_job_minutes
 

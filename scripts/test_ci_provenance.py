@@ -873,12 +873,12 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "ra001a_durable_tracer_max_job_minutes = 0",
             1,
         ),
-        "backtester.test_archive_timeout.ordinary_max_job_minutes must not exceed GitHub Actions' 360-minute maximum": CONFIG_TOML.replace(
+        "backtester.test_archive_timeout.ordinary_max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
             "ordinary_max_job_minutes = 360",
             "ordinary_max_job_minutes = 361",
             1,
         ),
-        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must not exceed GitHub Actions' 360-minute maximum": CONFIG_TOML.replace(
+        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
             "ra001a_durable_tracer_max_job_minutes = 120",
             "ra001a_durable_tracer_max_job_minutes = 361",
             1,
@@ -968,7 +968,7 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             ),
         ),
         (
-            "backtester.issue_789.max_job_minutes must not exceed GitHub Actions' 360-minute maximum",
+            "backtester.issue_789.max_job_minutes must not exceed the backtester policy maximum of 360 minutes",
             CONFIG_TOML.replace(
                 "[backtester.issue_789]\nmax_job_minutes = 120",
                 "[backtester.issue_789]\nmax_job_minutes = 361",
@@ -1086,8 +1086,94 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         )
     if issue_789_boundary.backtester_issue_789_timeout_minutes != 360:
         raise AssertionError(
-            "the GitHub Actions 360-minute maximum must remain a valid issue #789 bound"
+            "the backtester policy maximum of 360 minutes must remain a valid issue #789 bound"
         )
+
+
+def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        config = module.load_config(config_path)
+        result = module.evaluate_ci_policy(
+            config,
+            event_name="workflow_dispatch",
+            event_action="",
+            pull_request_draft=False,
+            ra001a_durable_tracer_requested=True,
+            ref="refs/heads/codex/branch",
+        )
+        if result.ci_policy_path != "iteration" or result.full_ci_required:
+            raise AssertionError(f"RA-001a diagnostic must remain non-proof iteration: {result}")
+        if not result.ra001a_durable_tracer_required:
+            raise AssertionError(f"RA-001a diagnostic request was not preserved: {result}")
+        if result.backtester_test_archive_timeout_minutes != 120:
+            raise AssertionError(
+                "RA-001a diagnostic must select the trusted 120-minute archive timeout: "
+                f"{result}"
+            )
+        expected_limits = (
+            64,
+            1073741824,
+            3600,
+            30,
+            ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
+            4096,
+            128,
+        )
+        actual_limits = (
+            result.ra001a_max_registry_packs,
+            result.ra001a_max_total_selected_object_bytes,
+            result.ra001a_max_wall_seconds,
+            result.ra001a_termination_grace_seconds,
+            result.ra001a_allowed_ignored_runtime_roots,
+            result.ra001a_max_ignored_entry_bytes,
+            result.ra001a_max_ignored_entries,
+        )
+        if actual_limits != expected_limits:
+            raise AssertionError(f"RA-001a trusted aggregate limits drifted: {actual_limits}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config_path),
+                "--event-name",
+                "workflow_dispatch",
+                "--ra001a-durable-tracer-requested",
+                "true",
+                "--ref",
+                "refs/heads/codex/branch",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"RA-001a ci-policy CLI failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ra001a_durable_tracer_required") != "true":
+            raise AssertionError(f"RA-001a ci-policy CLI dropped the governed request: {output}")
+        if output.get("backtester_test_archive_timeout_minutes") != "120":
+            raise AssertionError(
+                f"RA-001a ci-policy CLI must expose the trusted tracer timeout: {output}"
+            )
+        for key, expected in {
+            "ra001a_allowed_ignored_runtime_roots": ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
+            "ra001a_max_ignored_entry_bytes": "4096",
+            "ra001a_max_ignored_entries": "128",
+        }.items():
+            if output.get(key) != expected:
+                raise AssertionError(f"RA-001a ci-policy CLI output {key} drifted: {output}")
+
+    assert_raises(
+        "ra001a_durable_tracer_requested is only valid for workflow_dispatch",
+        lambda: module.evaluate_ci_policy(
+            config,
+            event_name="pull_request",
+            event_action="opened",
+            pull_request_draft=True,
+            ra001a_durable_tracer_requested=True,
+            ref="refs/pull/1/merge",
+        ),
+    )
 
 
 def assert_deploy_artifact_window_uses_short_deploy_policy() -> None:

@@ -2245,12 +2245,15 @@ mod tests {
 
     #[test]
     fn live_and_shadow_cancel_all_route_through_the_same_policy_boundary() {
-        let mut sink = RecordingVenueMutationSink::default();
+        let mut live_sink = RecordingVenueMutationSink::default();
+        let mut shadow_sink = RecordingVenueMutationSink::default();
         let instrument_id = InstrumentId::from("instrument-yes.VENUE-A");
 
+        // Hold every request field constant so only execution mode can explain the differential.
+        // A counterfeit implementation that routes by side must therefore fail this test.
         let live_outcome = BoltV3OrderExecutionPolicy::live()
             .route_cancel_all_with_sink(
-                &mut sink,
+                &mut live_sink,
                 instrument_id,
                 Some(OrderSide::Buy),
                 Some(ClientId::from("execution_client")),
@@ -2259,9 +2262,9 @@ mod tests {
             .expect("live cancel-all should call NT");
         let shadow_outcome = BoltV3OrderExecutionPolicy::shadow()
             .route_cancel_all_with_sink(
-                &mut sink,
+                &mut shadow_sink,
                 instrument_id,
-                Some(OrderSide::Sell),
+                Some(OrderSide::Buy),
                 Some(ClientId::from("execution_client")),
                 None,
             )
@@ -2272,15 +2275,17 @@ mod tests {
             shadow_outcome,
             BoltV3CancelAllRoutingOutcome::SkippedByPolicy
         );
-        assert_eq!(sink.cancel_all_calls, 1);
+        assert_eq!(live_sink.cancel_all_calls, 1);
         assert_eq!(
-            sink.cancel_all_requests,
+            live_sink.cancel_all_requests,
             vec![(
                 instrument_id,
                 Some(OrderSide::Buy),
                 Some(ClientId::from("execution_client")),
             )]
         );
+        assert_eq!(shadow_sink.cancel_all_calls, 0);
+        assert!(shadow_sink.cancel_all_requests.is_empty());
     }
 
     #[test]

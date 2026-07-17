@@ -87,8 +87,12 @@ const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
     "CloseAllPositions",
     "DenyOrder",
     "DenyOrderList",
-    "ExitMarket",
 ];
+
+// `verify_bolt_v3_no_exit_market_command.py` reserves this exact token in every context. Keep its
+// predicate separate from the narrower strategy-policy command-surface matcher above so the Rust
+// evidence preserves the originating rule rather than only its vocabulary.
+const NT_EXIT_MARKET_COMMAND_NAME: &str = "ExitMarket";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Token {
@@ -492,6 +496,9 @@ fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
             .copied()
             .filter(|name| command_surface_reference(&actual, name)),
     );
+    if actual.contains(&NT_EXIT_MARKET_COMMAND_NAME) {
+        violations.push(NT_EXIT_MARKET_COMMAND_NAME);
+    }
     violations.extend(
         NT_VENUE_MUTATION_METHOD_NAMES
             .iter()
@@ -826,10 +833,25 @@ fn bounded_strategy_mutation_surface_matcher_has_controls() {
             "command-surface matcher must retain {command}"
         );
     }
+    for source in [
+        "use nautilus_model::{ExitMarket};",
+        "match command { TradingCommand::ExitMarket => emit_order_intent() }",
+        "match command { StrategyCommand::ExitMarket { instrument_id } => emit_order_intent() }",
+    ] {
+        assert!(
+            named_strategy_mutation_surfaces(&tokenize(source)).contains(&"ExitMarket"),
+            "the retained exact-token ExitMarket predicate must reject `{source}`"
+        );
+    }
     assert!(named_strategy_mutation_surfaces(&tokenize("emit_order_intent();")).is_empty());
     assert!(
         named_strategy_mutation_surfaces(&tokenize("submit_order_intent();")).is_empty(),
         "near-neighbor intent helper must not trip the exact mutation fence"
+    );
+    assert!(
+        named_strategy_mutation_surfaces(&tokenize("emit_exit_market_intent(ExitMarketIntent);"))
+            .is_empty(),
+        "near-neighbor ExitMarket identifiers must remain allowed"
     );
     assert!(
         named_strategy_mutation_surfaces(&tokenize(

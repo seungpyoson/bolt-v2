@@ -536,6 +536,9 @@ load_spreads = false
 # paper-trading websocket serves empty/thin books for production instruments,
 # producing `deltas cannot be empty` parse errors. See T043A docs.
 environment = "live"
+book_stale_check_interval_secs = 0
+book_stale_threshold_secs = 30
+book_snapshot_timeout_secs = 3
 transport_backend = "sockudo"
 
 [clients.okx_data.readiness_probe]

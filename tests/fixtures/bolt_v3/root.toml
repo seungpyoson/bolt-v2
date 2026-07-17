@@ -288,6 +288,9 @@ instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
 contract_types = ["linear", "inverse"]
 load_spreads = false
 environment = "live"
+book_stale_check_interval_secs = 0
+book_stale_threshold_secs = 30
+book_snapshot_timeout_secs = 3
 transport_backend = "sockudo"
 
 # Live Chainlink Data Streams resolution-strike source. Routes to

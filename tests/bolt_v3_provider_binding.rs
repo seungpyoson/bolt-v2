@@ -876,6 +876,69 @@ fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
 }
 
 #[test]
+fn backtester_production_registry_paths_use_the_shared_batch_coordinator() {
+    let runner = support::repo_text("crates/backtesting-vertical-slice/src/runner.rs");
+    let runner_tokens = tokenize(&runner);
+    let helper_tokens = item_body_tokens(
+        &runner_tokens,
+        &["fn", "register_manifest_binary_oracle_strategy"],
+    )
+    .expect("Backtester production-registry helper should remain inspectable");
+    assert_eq!(
+        count_sequence(helper_tokens, &[".", "prepare_strategy", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(helper_tokens, &["register_prepared_strategy_batch", "("]),
+        1
+    );
+
+    let dispatcher_tokens = item_body_tokens(&runner_tokens, &["fn", "add_manifest_strategy"])
+        .expect("Backtester strategy dispatcher should remain inspectable");
+    let edge_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_BINARY_ORACLE_EDGE_TAKER", "=", ">"],
+    )
+    .expect("Backtester edge-taker production-registry branch should remain inspectable");
+    assert_eq!(
+        count_sequence(edge_tokens, &[".", "prepare_strategy", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(edge_tokens, &["register_prepared_strategy_batch", "("]),
+        1
+    );
+
+    let maker_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_BINARY_ORACLE_MAKER", "=", ">"],
+    )
+    .expect("Backtester maker production-registry branch should remain inspectable");
+    assert_eq!(
+        count_sequence(
+            maker_tokens,
+            &["register_manifest_binary_oracle_strategy", "("],
+        ),
+        1
+    );
+
+    for production_registry_path in [helper_tokens, edge_tokens, maker_tokens] {
+        for forbidden_alternate_path in [
+            vec![".", "add_strategy", "("],
+            vec!["register_strategy", "("],
+            vec!["prepare_registration", "("],
+            vec![".", "commit", "("],
+        ] {
+            assert_eq!(
+                count_sequence(production_registry_path, &forbidden_alternate_path),
+                0,
+                "Backtester production-registry branches must not retain an alternate registration path"
+            );
+        }
+    }
+}
+
+#[test]
 fn strategy_registration_fences_ignore_comment_and_string_decoys() {
     let tokens = tokenize(
         r#"

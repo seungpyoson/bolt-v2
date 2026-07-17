@@ -213,12 +213,9 @@ impl DataActor for CompleteSetArbitrage {}
 
 nautilus_strategy!(CompleteSetArbitrage, {
     fn on_order_filled(&mut self, event: &OrderFilled) {
-        if let Err(error) = self.event_forwarder.forward_order_filled(event) {
-            log::error!(
-                "complete-set fill event forwarding failed: strategy_id={} error={error}",
-                self.config.strategy_id
-            );
-        }
+        self.event_forwarder
+            .forward_order_filled(event)
+            .expect("complete-set fill event forwarding must succeed");
     }
 
     fn on_order_accepted(&mut self, event: OrderAccepted) {

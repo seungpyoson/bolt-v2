@@ -238,16 +238,21 @@ fn hook_ownership_and_shadow_prohibition_remain_explicit() {
         .nth(1)
         .and_then(|source| source.split("nautilus_strategy!").next())
         .expect("DataActor implementation should precede strategy macro");
-    assert!(data_actor.contains("fn on_order_filled"));
+    assert!(!data_actor.contains("fn on_order_filled"));
 
     let strategy_hooks = strategy_source
         .split("nautilus_strategy!(CompleteSetArbitrage, {")
         .nth(1)
         .and_then(|source| source.split("});").next())
         .expect("strategy hook block should be present");
+    assert!(strategy_hooks.contains("fn on_order_filled"));
+    assert!(strategy_hooks.contains("complete-set fill event forwarding must succeed"));
+    assert!(
+        !strategy_hooks
+            .contains("if let Err(error) = self.event_forwarder.forward_order_filled(event)")
+    );
     assert!(strategy_hooks.contains("fn on_order_accepted"));
     assert!(strategy_hooks.contains("fn on_order_cancel_rejected"));
-    assert!(!strategy_hooks.contains("fn on_order_filled"));
 
     let envelope_source = include_str!("../../../bolt_v3_validate/strategy_envelope.rs");
     assert!(envelope_source.contains("validate_complete_set_activation_is_shadow_only"));

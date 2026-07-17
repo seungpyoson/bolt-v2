@@ -1533,7 +1533,7 @@ impl BoltV3SubmitAdmissionState {
         let mut inner = self
             .inner
             .lock()
-            .expect("submit admission state mutex should not be poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut evaluation = self.evaluate(&mut inner, request, now_ns);
         let mut admitted_counter_update = None;
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {

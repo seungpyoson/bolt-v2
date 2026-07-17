@@ -4214,6 +4214,16 @@ mod loss_governor_halt_evidence_tests {
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            (*message).to_string()
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            message.clone()
+        } else {
+            "non-string panic payload".to_string()
+        }
+    }
+
     #[derive(Debug, Default)]
     struct FailingLossGovernorHaltEvidenceWriter {
         halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
@@ -4455,13 +4465,18 @@ mod loss_governor_halt_evidence_tests {
         let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Ok(permit) = admission.admit_at(&request, 1_000) {
                 provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                // Do not drop a recovered permit here: Drop re-locks the deliberately
+                // poisoned inner state and would mask a fail-open recovery regression.
                 std::mem::forget(permit);
             }
         }));
 
+        let panic = admission_result.expect_err(
+            "a poisoned admission state must not return control to the provider-submit branch",
+        );
         assert!(
-            admission_result.is_err(),
-            "a poisoned admission state must not return control to the provider-submit branch"
+            panic_message(panic).contains("submit admission state mutex should not be poisoned"),
+            "admission must panic specifically because the submit-admission state is poisoned"
         );
         assert_eq!(
             provider_submit_count.load(Ordering::SeqCst),
@@ -4491,18 +4506,65 @@ mod loss_governor_halt_evidence_tests {
         let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Ok(permit) = admission.admit_at(&request, 1_000) {
                 provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                // Keep permit destruction from becoming an unrelated panic that could
+                // satisfy the poison assertion after an incorrect lock recovery.
                 std::mem::forget(permit);
             }
         }));
 
+        let panic = admission_result.expect_err(
+            "a poisoned reject-episode state must not return control to the provider-submit branch",
+        );
         assert!(
-            admission_result.is_err(),
-            "a poisoned reject-episode state must not return control to the provider-submit branch"
+            panic_message(panic).contains("submit admission state mutex should not be poisoned"),
+            "admission must panic specifically because the reject-episode state is poisoned"
         );
         assert_eq!(
             provider_submit_count.load(Ordering::SeqCst),
             0,
             "a poisoned reject-episode state must have no provider submit side effect"
+        );
+    }
+
+    #[test]
+    fn poisoned_reject_episode_state_blocks_rejected_path_without_provider_submit_side_effect() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let mut request = entry_request(
+            "strategy-poisoned-rejected-episode".to_string(),
+            "client-order-poisoned-rejected-episode".to_string(),
+        );
+        request.notional = Decimal::ZERO;
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_reject_episodes_for_test();
+        }));
+        assert!(
+            poisoned.is_err(),
+            "test setup must poison the reject-episode lock"
+        );
+        let provider_submit_count = AtomicU64::new(0);
+
+        let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(permit) = admission.admit_at(&request, 1_000) {
+                provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                // A recovered rejected path must return normally and fail the panic
+                // assertion; permit destruction must not supply that expected panic.
+                std::mem::forget(permit);
+            }
+        }));
+
+        let panic = admission_result.expect_err(
+            "a poisoned rejected-path episode lock must stop admission before returning",
+        );
+        assert!(
+            panic_message(panic).contains("submit admission state mutex should not be poisoned"),
+            "the rejected path must panic specifically because reject episodes are poisoned"
+        );
+        assert_eq!(
+            provider_submit_count.load(Ordering::SeqCst),
+            0,
+            "a rejected request must never reach the provider-submit continuation"
         );
     }
 

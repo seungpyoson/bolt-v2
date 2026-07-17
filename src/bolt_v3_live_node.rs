@@ -713,6 +713,15 @@ fn live_operator_health_surface(
     )
 }
 
+fn settlement_health_snapshot(
+    settlement_health: &Mutex<BoltV3SettlementHealth>,
+) -> Result<BoltV3SettlementHealth> {
+    settlement_health
+        .lock()
+        .map_err(|_| anyhow::anyhow!("settlement health lock poisoned"))
+        .map(|health| health.clone())
+}
+
 fn configured_reference_current_price_source_count(
     sources_by_client: &BTreeMap<String, Vec<BoltV3MissingInputSource>>,
 ) -> usize {
@@ -825,6 +834,26 @@ impl BoltV3LiveInputHealthAccumulator {
     }
 }
 
+fn live_input_health_snapshot(
+    input_health_accumulator: &Mutex<BoltV3LiveInputHealthAccumulator>,
+) -> Option<BoltV3InputHealth> {
+    input_health_accumulator
+        .lock()
+        .ok()
+        .map(|accumulator| accumulator.snapshot())
+}
+
+fn apply_live_input_health_transition(
+    input_health_accumulator: &Mutex<BoltV3LiveInputHealthAccumulator>,
+    configured_source_count: usize,
+    transition: BoltV3InputHealthSourceTransition,
+) -> BoltV3InputHealth {
+    match input_health_accumulator.lock() {
+        Ok(mut accumulator) => accumulator.apply_transition(transition),
+        Err(_) => BoltV3InputHealth::unobserved(configured_source_count),
+    }
+}
+
 fn build_settlement_health_transition_emitter(
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
     input_health_accumulator: Arc<Mutex<BoltV3LiveInputHealthAccumulator>>,
@@ -837,10 +866,7 @@ fn build_settlement_health_transition_emitter(
             .lock()
             .map_err(|_| anyhow::anyhow!("settlement health lock poisoned"))?
             .apply_transition(transition);
-        let input_health = input_health_accumulator
-            .lock()
-            .ok()
-            .map(|accumulator| accumulator.snapshot());
+        let input_health = live_input_health_snapshot(&input_health_accumulator);
         emit_operator_health_surface(stringify!(settlement_booking_terminal), input_health)?;
         Ok(())
     })
@@ -1420,11 +1446,7 @@ impl BoltV3LiveNodeRuntime {
         &self,
         input_health: Option<BoltV3InputHealth>,
     ) -> Result<BoltV3OperatorHealthSurface> {
-        let settlement_health = self
-            .settlement_health
-            .lock()
-            .map_err(|_| anyhow::anyhow!("settlement health lock poisoned"))?
-            .clone();
+        let settlement_health = settlement_health_snapshot(&self.settlement_health)?;
         Ok(live_operator_health_surface(
             self.order_reject_observer_feed.as_ref(),
             &self.submit_admission,
@@ -3136,10 +3158,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let settlement_health = settlement_health.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
         Arc::new(move |reason, input_health| {
-            let settlement_health = settlement_health
-                .lock()
-                .map_err(|_| anyhow::anyhow!("settlement health lock poisoned"))?
-                .clone();
+            let settlement_health = settlement_health_snapshot(&settlement_health)?;
             let surface = live_operator_health_surface(
                 order_reject_observer_feed.as_ref(),
                 &submit_admission,
@@ -3156,10 +3175,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let emit_operator_health_surface = emit_operator_health_surface.clone();
         let input_health_accumulator = input_health_accumulator.clone();
         Arc::new(move |reason| {
-            let input_health = input_health_accumulator
-                .lock()
-                .ok()
-                .map(|accumulator| accumulator.snapshot());
+            let input_health = live_input_health_snapshot(&input_health_accumulator);
             if let Err(error) = emit_operator_health_surface(reason, input_health) {
                 log::error!(
                     "operator health surface transition failed: reason={reason} error={error:#}"
@@ -3171,10 +3187,11 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let emit_operator_health_surface = emit_operator_health_surface.clone();
         let input_health_accumulator = input_health_accumulator.clone();
         Arc::new(move |reason, transition| {
-            let input_health = match input_health_accumulator.lock() {
-                Ok(mut accumulator) => accumulator.apply_transition(transition),
-                Err(_) => BoltV3InputHealth::unobserved(input_health_configured_source_count),
-            };
+            let input_health = apply_live_input_health_transition(
+                &input_health_accumulator,
+                input_health_configured_source_count,
+                transition,
+            );
             if let Err(error) = emit_operator_health_surface(reason, Some(input_health)) {
                 log::error!(
                     "input health surface transition failed: reason={reason} error={error:#}"

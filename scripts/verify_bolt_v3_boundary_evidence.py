@@ -61,14 +61,20 @@ NT_BOUNDARY_DOCTRINE_PIN_SURFACE = Path(
 POLYMARKET_QUERY_FIXTURE_PIN_SURFACE = Path(
     "tests/fixtures/nt_polymarket_query_post_order_params_d81be0bc.txt"
 )
+NT_SOURCE_CAPABILITIES_SURFACE = Path("ci/nautilus-source-capabilities.toml")
+NT_SOURCE_CAPABILITIES_BUILD_SURFACE = Path("build.rs")
+NT_SOURCE_CAPABILITIES_RUST_SURFACE = Path("src/nautilus_source_capabilities.rs")
 NON_CARGO_PIN_SURFACES = (
     RUNTIME_CONTRACT_PIN_SURFACE,
     ROOT_SCHEMA_PIN_SURFACE,
     NT_BOUNDARY_DOCTRINE_PIN_SURFACE,
     NT_NAMING_LEDGER_PIN_SURFACE,
     POLYMARKET_QUERY_FIXTURE_PIN_SURFACE,
+    NT_SOURCE_CAPABILITIES_SURFACE,
 )
 BINANCE_SOURCE_SYMBOLS = (
+    "NautilusSourceCapabilityRegistry",
+    "NAUTILUS_SOURCE_CAPABILITIES",
     "BinanceSpotDataClient::handle_ws_message",
     "handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init",
     "decode_market_data",
@@ -1012,6 +1018,9 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
         if surface == RUNTIME_CONTRACT_PIN_SURFACE:
             scan_runtime_contract_pin(surface, text, findings, expected_revision)
             continue
+        if surface == NT_SOURCE_CAPABILITIES_SURFACE:
+            scan_nt_source_capabilities(surface, text, findings, expected_revision)
+            continue
         pattern_revisions = [
             [match.group(1) for match in pattern.finditer(text)]
             for pattern in PIN_TEXT_PATTERNS[surface]
@@ -1024,6 +1033,81 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
                 f"{surface}: NautilusTrader pin census must contain exactly one governed "
                 f"{expected_revision} value for each anchored pin claim"
             )
+
+
+def scan_nt_source_capabilities(
+    surface: Path,
+    text: str,
+    findings: list[str],
+    expected_revision: str,
+) -> None:
+    prefix = f"{surface}: NautilusTrader pin census"
+    try:
+        document = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        findings.append(f"{prefix} capability manifest is not valid TOML: {error}")
+        return
+
+    if set(document) != {"revision", "binance_spot"}:
+        findings.append(
+            f"{prefix} capability manifest root must contain exactly revision and binance_spot"
+        )
+        return
+    if document.get("revision") != expected_revision:
+        findings.append(
+            f"{prefix} capability manifest revision must equal governed pin {expected_revision}"
+        )
+
+    binance_spot = document.get("binance_spot")
+    if not isinstance(binance_spot, dict) or set(binance_spot) != {
+        "sbe_schema_3_5",
+        "adapter_receive_timestamps",
+    }:
+        findings.append(
+            f"{prefix} binance_spot must contain exactly sbe_schema_3_5 and "
+            "adapter_receive_timestamps"
+        )
+        return
+    if binance_spot.get("sbe_schema_3_5") is not True:
+        findings.append(
+            f"{prefix} selected official pin must record binance_spot.sbe_schema_3_5 = true"
+        )
+    if binance_spot.get("adapter_receive_timestamps") is not True:
+        findings.append(
+            f"{prefix} selected official pin must record "
+            "binance_spot.adapter_receive_timestamps = true"
+        )
+
+
+def scan_nt_source_capability_generation(root: Path, findings: list[str]) -> None:
+    build_text = read_required_pin_surface(
+        root, NT_SOURCE_CAPABILITIES_BUILD_SURFACE, findings
+    )
+    rust_text = read_required_pin_surface(
+        root, NT_SOURCE_CAPABILITIES_RUST_SURFACE, findings
+    )
+    if build_text is not None:
+        for required in (
+            "emit_nautilus_source_capabilities(&manifest_dir);",
+            "validate_nautilus_manifest_binding(&capabilities, &cargo_path);",
+            'out_dir.join("nautilus_source_capabilities.rs")',
+        ):
+            if required not in build_text:
+                findings.append(
+                    f"{NT_SOURCE_CAPABILITIES_BUILD_SURFACE}: NautilusTrader "
+                    f"capability-registry build generation wiring missing {required}"
+                )
+    if rust_text is not None:
+        for required in (
+            "pub struct NautilusSourceCapabilityRegistry",
+            'env!("OUT_DIR")',
+            '"/nautilus_source_capabilities.rs"',
+        ):
+            if required not in rust_text:
+                findings.append(
+                    f"{NT_SOURCE_CAPABILITIES_RUST_SURFACE}: NautilusTrader "
+                    f"capability-registry Rust wiring missing {required}"
+                )
 
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     if today is None:
@@ -1040,6 +1124,7 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_static_wiring(root, findings)
     scan_forbidden_nt_sources(root, findings)
     scan_nt_pin_census(root, findings)
+    scan_nt_source_capability_generation(root, findings)
     return findings
 
 

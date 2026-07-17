@@ -2978,9 +2978,9 @@ fn binary_oracle_runtime_mapping_omits_resolution_data_when_absent() {
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
-    // A `[resolution_data]` block whose data_client_id is not a loaded client
-    // fails closed during runtime mapping (mirrors the signal_data existence check).
+fn binary_oracle_route_preflight_rejects_resolution_data_with_unknown_client() {
+    // A `[resolution_data]` block whose data_client_id is not loaded fails
+    // closed in the shared route preflight, alongside signal-data clients.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -2994,8 +2994,14 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
     });
 
     let strategy = &loaded.strategies[strategy_index];
-    let error = raw_edge_taker_config(strategy, &loaded)
-        .expect_err("resolution_data with an unknown data client must fail closed");
+    let error = match bolt_v2::bolt_v3_strategy_registration::prepare_strategy_client_routes(
+        &loaded, strategy,
+    ) {
+        Ok(_) => {
+            panic!("resolution_data with an unknown data client must fail in shared preflight")
+        }
+        Err(error) => error,
+    };
     let rendered = error.to_string();
     assert!(
         rendered.contains("resolution_data")
@@ -3016,8 +3022,8 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
 //       strike provider (CHAINLINK_DATA_STREAMS),
 //   (b) instrument_id asset prefix does not match the target's underlying_asset,
 //   (c) instrument_id has no matching feed_binding in that client.
-// Today only client-existence is checked in `raw_taker_config`, so all three
-// MUST fail until the load-time binding validation is added.
+// Shared route preflight owns client existence. These cases exercise the
+// remaining archetype-specific resolution binding checks after that preflight.
 
 /// (a) The resolution_data client exists, but its venue is not the Chainlink
 /// strike provider. Binding the strike source to a non-Chainlink venue must fail

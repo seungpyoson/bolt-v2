@@ -42,7 +42,7 @@ use crate::{
 use crate::atomic_artifact_write::validate_pinned_regular_file_identity;
 
 pub const CATALOG_PROJECTION_PUBLICATION_RECEIPT_SCHEMA_VERSION: &str =
-    "catalog-projection-publication-receipt-v1";
+    "catalog-projection-publication-receipt-v2";
 /// Amazon S3's documented 5 GB ceiling for one `PutObject` request, expressed
 /// in binary bytes.
 pub const S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES: u64 = 5 * 1024 * 1024 * 1024;
@@ -976,8 +976,7 @@ pub struct PersistedCatalogProjectionObject {
     pub sha256: String,
     pub byte_len: u64,
     pub version_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub e_tag: Option<String>,
+    pub e_tag: String,
     #[serde(skip_serializing)]
     pub create_only_write: CreateOnlyWriteDisposition,
 }
@@ -990,7 +989,7 @@ pub struct PersistedCatalogProjection {
     pub physical_manifest_sha256: String,
     pub receipt_sha256: String,
     pub receipt_version_id: String,
-    pub receipt_e_tag: Option<String>,
+    pub receipt_e_tag: String,
     pub receipt_create_only_write: CreateOnlyWriteDisposition,
     pub binding: CatalogProjectionBinding,
     pub objects: Vec<PersistedCatalogProjectionObject>,
@@ -1001,7 +1000,7 @@ pub struct CatalogProjectionPublicationReceiptLocator {
     pub receipt_uri: String,
     pub receipt_sha256: String,
     pub receipt_version_id: String,
-    pub receipt_e_tag: Option<String>,
+    pub receipt_e_tag: String,
 }
 
 impl PersistedCatalogProjection {
@@ -1024,8 +1023,7 @@ pub struct CatalogProjectionPublicationObject {
     pub sha256: String,
     pub byte_len: u64,
     pub version_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub e_tag: Option<String>,
+    pub e_tag: String,
 }
 
 /// Immutable read authority for one published catalog projection.
@@ -1033,7 +1031,7 @@ pub struct CatalogProjectionPublicationObject {
 /// S3 `If-None-Match` is collision protection, not the integrity authority: on
 /// a versioned bucket it may create a new current version when the prior
 /// current version is a delete marker. Readers therefore bind every object to
-/// this receipt's exact version ID, byte length, and SHA-256.
+/// this receipt's exact version ID, ETag, byte length, and SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogProjectionPublicationReceipt {
@@ -1114,7 +1112,7 @@ struct CatalogProjectionPublicationObjectView<'a> {
     sha256: &'a str,
     byte_len: u64,
     version_id: &'a str,
-    e_tag: Option<&'a str>,
+    e_tag: &'a str,
 }
 
 impl<'a> From<&'a CatalogProjectionPublicationObject>
@@ -1127,7 +1125,7 @@ impl<'a> From<&'a CatalogProjectionPublicationObject>
             sha256: &object.sha256,
             byte_len: object.byte_len,
             version_id: &object.version_id,
-            e_tag: object.e_tag.as_deref(),
+            e_tag: &object.e_tag,
         }
     }
 }
@@ -1140,7 +1138,7 @@ impl<'a> From<&'a PersistedCatalogProjectionObject> for CatalogProjectionPublica
             sha256: &object.sha256,
             byte_len: object.byte_len,
             version_id: &object.version_id,
-            e_tag: object.e_tag.as_deref(),
+            e_tag: &object.e_tag,
         }
     }
 }
@@ -1241,13 +1239,11 @@ fn validate_catalog_projection_publication_receipt_parts<'a>(
             ),
             receipt_object.version_id,
         )?;
-        if let Some(e_tag) = receipt_object.e_tag {
-            ensure!(
-                !e_tag.is_empty(),
-                "catalog publication receipt ETag for {} must not be empty",
-                physical_object.relative_path
-            );
-        }
+        ensure!(
+            !receipt_object.e_tag.trim().is_empty(),
+            "catalog publication receipt ETag for {} must not be empty",
+            physical_object.relative_path
+        );
         ensure!(
             receipt_object
                 .uri
@@ -1263,7 +1259,7 @@ fn validate_catalog_projection_publication_receipt_parts<'a>(
             .checked_add(receipt_object.uri.len())
             .and_then(|value| value.checked_add(receipt_object.sha256.len()))
             .and_then(|value| value.checked_add(receipt_object.version_id.len()))
-            .and_then(|value| value.checked_add(receipt_object.e_tag.map_or(0, str::len)))
+            .and_then(|value| value.checked_add(receipt_object.e_tag.len()))
             .and_then(|value| {
                 value.checked_add(std::mem::size_of::<CatalogProjectionPublicationObject>())
             })
@@ -1357,11 +1353,9 @@ impl CatalogProjectionPublicationReceipt {
                     .checked_add(string_capacity(value)?)
                     .context("publication receipt retained object string total overflow")?;
             }
-            if let Some(e_tag) = &object.e_tag {
-                retained = retained
-                    .checked_add(string_capacity(e_tag)?)
-                    .context("publication receipt retained ETag total overflow")?;
-            }
+            retained = retained
+                .checked_add(string_capacity(&object.e_tag)?)
+                .context("publication receipt retained ETag total overflow")?;
         }
         Ok(retained)
     }
@@ -1676,6 +1670,7 @@ pub struct HydratedCatalogProjection {
     pub physical_manifest_sha256: String,
     pub receipt_sha256: String,
     pub receipt_version_id: String,
+    pub receipt_e_tag: String,
     pub object_count: usize,
 }
 
@@ -1736,9 +1731,13 @@ pub(crate) struct PreparedTerminalCreate {
 }
 
 /// Fully acknowledged or exact-version-confirmed terminal object identity.
+///
+/// A PUT response without both fields is never accepted directly. It is an
+/// unusable acknowledgement which may converge only through an independent
+/// current HEAD followed by an exact-version, ETag-conditional payload read.
 pub(crate) struct ConfirmedTerminalCreate {
     pub(crate) version_id: String,
-    pub(crate) e_tag: Option<String>,
+    pub(crate) e_tag: String,
     pub(crate) disposition: CreateOnlyWriteDisposition,
 }
 
@@ -1901,17 +1900,22 @@ pub async fn recover_catalog_projection_from_current_receipt_guarded(
     let receipt_uri =
         artifact_root.catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
     let receipt_path = artifact_root.object_path_for_uri(&receipt_uri)?;
-    let get = match guarded_async_operation_outcome(work_budget, stage, store.get(&receipt_path))
-        .await?
-    {
-        Ok(get) => get,
-        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("discover catalog publication receipt {receipt_uri}"));
-        }
-    };
-    let receipt_byte_len = get.meta.size;
+    let current =
+        match guarded_async_operation_outcome(work_budget, stage, store.head(&receipt_path)).await?
+        {
+            Ok(current) => current,
+            Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("discover catalog publication receipt {receipt_uri}")
+                });
+            }
+        };
+    ensure!(
+        current.location == receipt_path,
+        "discovered catalog publication receipt location mismatch"
+    );
+    let receipt_byte_len = current.size;
     ensure!(
         receipt_byte_len > 0,
         "discovered catalog publication receipt is empty"
@@ -1921,20 +1925,34 @@ pub async fn recover_catalog_projection_from_current_receipt_guarded(
         receipt_byte_len,
         artifact_root.max_final_object_bytes,
     )?;
-    let receipt_version_id = get.meta.version.clone().with_context(|| {
+    let receipt_version_id = current.version.clone().with_context(|| {
         format!("catalog publication receipt {receipt_uri} has no S3 version ID")
     })?;
     ensure_immutable_s3_version_id(
         "discovered catalog publication receipt S3 version ID",
         &receipt_version_id,
     )?;
-    let receipt_e_tag = get.meta.e_tag.clone();
+    let receipt_e_tag = current
+        .e_tag
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .context("discovered catalog publication receipt has no nonempty ETag")?;
+    let get = get_exact_version_guarded(
+        store,
+        &receipt_path,
+        &receipt_version_id,
+        &receipt_e_tag,
+        work_budget,
+        stage,
+        "discovered catalog publication receipt",
+    )
+    .await?;
     validate_versioned_get_metadata(
         &get,
         &receipt_path,
         receipt_byte_len,
         &receipt_version_id,
-        receipt_e_tag.as_deref(),
+        &receipt_e_tag,
         "discovered catalog publication receipt",
     )?;
     let receipt_bytes = collect_exact_get_result_guarded(
@@ -2187,11 +2205,7 @@ async fn catalog_projection_for_source_binding_guarded(
             &physical_manifest_sha256,
             &objects,
         )?;
-        let e_tag_capacity = e_tag
-            .as_ref()
-            .map(|value| string_capacity_bytes(value, "catalog object ETag"))
-            .transpose()?
-            .unwrap_or(0);
+        let e_tag_capacity = string_capacity_bytes(&e_tag, "catalog object ETag")?;
         let relative_path_bytes = u64::try_from(expected_object.relative_path.len())
             .context("catalog object relative_path length does not fit u64")?;
         let sha256_bytes = u64::try_from(expected_object.sha256.len())
@@ -2360,12 +2374,10 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
         "catalog publication receipt locator version ID",
         &locator.receipt_version_id,
     )?;
-    if let Some(e_tag) = &locator.receipt_e_tag {
-        ensure!(
-            !e_tag.is_empty(),
-            "catalog publication receipt locator ETag must not be empty"
-        );
-    }
+    ensure!(
+        !locator.receipt_e_tag.trim().is_empty(),
+        "catalog publication receipt locator ETag must not be empty"
+    );
     expected_physical_manifest
         .validate_guarded(work_budget, stage)
         .map_err(anyhow::Error::from)
@@ -2379,7 +2391,7 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
         store,
         &receipt_path,
         &locator.receipt_version_id,
-        locator.receipt_e_tag.as_deref(),
+        &locator.receipt_e_tag,
         work_budget,
         stage,
         "catalog publication receipt",
@@ -2401,7 +2413,7 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
         &receipt_path,
         receipt_byte_len,
         &locator.receipt_version_id,
-        locator.receipt_e_tag.as_deref(),
+        &locator.receipt_e_tag,
         "catalog publication receipt",
     )?;
     let receipt_bytes = collect_exact_get_result_guarded(
@@ -2480,7 +2492,7 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
             store,
             &remote_path,
             &receipt_object.version_id,
-            receipt_object.e_tag.as_deref(),
+            &receipt_object.e_tag,
             work_budget,
             stage,
             &format!("catalog object {}", physical_object.relative_path),
@@ -2491,7 +2503,7 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
             &remote_path,
             physical_object.byte_len,
             &receipt_object.version_id,
-            receipt_object.e_tag.as_deref(),
+            &receipt_object.e_tag,
             &format!("catalog object {}", physical_object.relative_path),
         )?;
         let (local_path, local_file) = create_private_hydration_file(
@@ -2533,6 +2545,7 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
         physical_manifest_sha256: expected_physical_manifest_sha256,
         receipt_sha256: locator.receipt_sha256.clone(),
         receipt_version_id: locator.receipt_version_id.clone(),
+        receipt_e_tag: locator.receipt_e_tag.clone(),
         object_count: receipt.objects.len(),
     })
 }
@@ -2541,14 +2554,14 @@ async fn get_exact_version_guarded(
     store: &dyn ObjectStore,
     object_path: &ObjectPath,
     version_id: &str,
-    e_tag: Option<&str>,
+    e_tag: &str,
     work_budget: &OperatorWorkBudgetGuard,
     stage: OperatorWorkBudgetStage,
     object_label: &str,
 ) -> Result<object_store::GetResult> {
     let options = object_store::GetOptions {
         version: Some(version_id.to_string()),
-        if_match: e_tag.map(str::to_string),
+        if_match: Some(e_tag.to_string()),
         ..object_store::GetOptions::default()
     };
     let outcome =
@@ -2562,7 +2575,7 @@ fn validate_versioned_get_metadata(
     expected_path: &ObjectPath,
     expected_byte_len: u64,
     expected_version_id: &str,
-    expected_e_tag: Option<&str>,
+    expected_e_tag: &str,
     object_label: &str,
 ) -> Result<()> {
     ensure!(
@@ -2585,13 +2598,11 @@ fn validate_versioned_get_metadata(
         "{object_label} returned version {:?} instead of exact receipt version {expected_version_id:?}",
         result.meta.version
     );
-    if let Some(expected_e_tag) = expected_e_tag {
-        ensure!(
-            result.meta.e_tag.as_deref() == Some(expected_e_tag),
-            "{object_label} returned ETag {:?} instead of exact receipt ETag {expected_e_tag:?}",
-            result.meta.e_tag
-        );
-    }
+    ensure!(
+        result.meta.e_tag.as_deref() == Some(expected_e_tag),
+        "{object_label} returned ETag {:?} instead of exact receipt ETag {expected_e_tag:?}",
+        result.meta.e_tag
+    );
     Ok(())
 }
 
@@ -2949,12 +2960,18 @@ fn sha256_digest_hex_guarded(
 pub(crate) fn required_versioned_create_result(
     version: UpdateVersion,
     object_label: &str,
-) -> Result<(String, Option<String>)> {
+) -> Result<(String, String)> {
     let version_id = version.version.with_context(|| {
         format!("{object_label} did not return an S3 version ID; versioned publication is required")
     })?;
     ensure_immutable_s3_version_id(&format!("{object_label} S3 version ID"), &version_id)?;
-    Ok((version_id, version.e_tag))
+    let e_tag = version
+        .e_tag
+        .filter(|value| !value.trim().is_empty())
+        .with_context(|| {
+            format!("{object_label} did not return a nonempty ETag; conditional exact reads are required")
+        })?;
+    Ok((version_id, e_tag))
 }
 
 pub(crate) fn ensure_immutable_s3_version_id(label: &str, version_id: &str) -> Result<()> {
@@ -3194,11 +3211,12 @@ fn persisted_catalog_projection_objects_retained_bytes(
                 .checked_add(string_capacity_bytes(value, label)?)
                 .context("persisted catalog object retained byte total overflow")?;
         }
-        if let Some(e_tag) = &object.e_tag {
-            retained = retained
-                .checked_add(string_capacity_bytes(e_tag, "persisted catalog ETag")?)
-                .context("persisted catalog object retained byte total overflow")?;
-        }
+        retained = retained
+            .checked_add(string_capacity_bytes(
+                &object.e_tag,
+                "persisted catalog ETag",
+            )?)
+            .context("persisted catalog object retained byte total overflow")?;
     }
     Ok(retained)
 }
@@ -3663,7 +3681,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         &self,
         prepared: &PreparedTerminalCreate,
     ) -> Result<ConfirmedTerminalCreate> {
-        let (put_failure, acknowledged_with_unusable_version) = match self
+        let (put_failure, acknowledged_with_unusable_identity) = match self
             .store
             .put_opts(
                 &prepared.path,
@@ -3682,8 +3700,13 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                             disposition: CreateOnlyWriteDisposition::Created,
                         });
                     }
+                    // A successful mutation without a complete immutable
+                    // identity is not publication evidence. Reconciliation
+                    // below must independently discover a nonempty ETag and
+                    // bind it together with the exact version, size, and
+                    // payload bytes before this create can be confirmed.
                     Err(error) => (
-                        error.context("terminal create acknowledged an unusable S3 version"),
+                        error.context("terminal create acknowledged an unusable S3 identity"),
                         true,
                     ),
                 }
@@ -3701,7 +3724,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                 disposition: CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
             }),
             Err(TerminalCreateConfirmationFailure::Conflict(error))
-                if acknowledged_with_unusable_version => Err(TerminalCreateIndeterminate {
+                if acknowledged_with_unusable_identity => Err(TerminalCreateIndeterminate {
                     detail: format!(
                         "{} at {}: create succeeded with unusable immutable identity ({put_failure:#}); current exact-version reconciliation found a conflict and cannot prove the acknowledged version ({error:#})",
                         prepared.object_label, prepared.path
@@ -3729,7 +3752,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
     async fn confirm_current_terminal_create(
         &self,
         prepared: &PreparedTerminalCreate,
-    ) -> std::result::Result<(String, Option<String>), TerminalCreateConfirmationFailure> {
+    ) -> std::result::Result<(String, String), TerminalCreateConfirmationFailure> {
         let current = self.store.head(&prepared.path).await.map_err(|error| {
             TerminalCreateConfirmationFailure::Indeterminate(
                 anyhow::Error::new(error).context("discover current terminal object"),
@@ -3757,10 +3780,18 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         })?;
         ensure_immutable_s3_version_id("current terminal object S3 version ID", &version_id)
             .map_err(TerminalCreateConfirmationFailure::Indeterminate)?;
-        let e_tag = current.e_tag.clone();
+        let e_tag = current
+            .e_tag
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                TerminalCreateConfirmationFailure::Indeterminate(anyhow::anyhow!(
+                    "current terminal object has no nonempty ETag"
+                ))
+            })?;
         let options = GetOptions {
             version: Some(version_id.clone()),
-            if_match: e_tag.clone(),
+            if_match: Some(e_tag.clone()),
             ..GetOptions::default()
         };
         let exact = self
@@ -3777,7 +3808,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             || exact.range.start != 0
             || exact.range.end != prepared.byte_len
             || exact.meta.version.as_deref() != Some(version_id.as_str())
-            || (e_tag.is_some() && exact.meta.e_tag != e_tag)
+            || exact.meta.e_tag.as_deref() != Some(e_tag.as_str())
         {
             return Err(TerminalCreateConfirmationFailure::Indeterminate(
                 anyhow::anyhow!("exact terminal object response metadata mismatch"),
@@ -5459,6 +5490,22 @@ compression = "implicit-default"
     }
 
     #[test]
+    fn catalog_publication_rejects_missing_or_empty_etag() {
+        for e_tag in [None, Some(String::new()), Some("   ".to_string())] {
+            let error = required_versioned_create_result(
+                UpdateVersion {
+                    e_tag,
+                    version: Some("version-1".to_string()),
+                },
+                "catalog object",
+            )
+            .expect_err("versioned publication requires a nonempty ETag");
+
+            assert!(error.to_string().contains("ETag"), "{error:#}");
+        }
+    }
+
+    #[test]
     fn durable_preflight_rejects_suspended_or_absent_bucket_versioning() {
         for status in [
             None,
@@ -5600,7 +5647,7 @@ compression = "implicit-default"
                 sha256: sha256_bytes(b"x"),
                 byte_len: 1,
                 version_id: "version-1".to_string(),
-                e_tag: None,
+                e_tag: "etag-1".to_string(),
             }],
         };
         let bytes = receipt

@@ -25,11 +25,12 @@ use crate::{
         ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
         ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogCompression,
         CatalogDispatchConfig, CatalogEncodingConfig, CatalogProjectionBinding,
-        CatalogProjectionPublicationReceipt, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
-        CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES,
-        S3ArtifactStoreCredentials, StoredArtifactIndexPointer,
-        hydrate_catalog_projection_from_receipt_guarded, is_terminal_create_indeterminate,
-        persist_catalog_projection_for_source_binding_guarded,
+        CatalogProjectionPublicationObject, CatalogProjectionPublicationReceipt,
+        CreateOnlyArtifactWriter, CreateOnlyProbeTranscript, CreateOnlyWriteDisposition,
+        ResolvedArtifactRoot, S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES, S3ArtifactStoreCredentials,
+        StoredArtifactIndexPointer, hydrate_catalog_projection_from_receipt_guarded,
+        is_terminal_create_indeterminate, persist_catalog_projection_for_source_binding_guarded,
+        recover_catalog_projection_from_current_receipt_guarded,
     },
     backfill_execution_plan::BackfillExecutionWorkBudget,
     conversion_boundary::{
@@ -38,9 +39,9 @@ use crate::{
     },
     nt_catalog_capability::{
         NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
-        NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofDocument,
-        NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
-        SYNTHETIC_SOURCE_PROOF_ID,
+        NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofArtifact,
+        NtCatalogCapabilityProofDocument, NtCatalogCapabilityRunSpec, NtCatalogCredentialSource,
+        NtCatalogReadBackEvidence, SYNTHETIC_SOURCE_PROOF_ID,
     },
     operator::{
         CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableExecutionProvenance,
@@ -849,7 +850,13 @@ struct VersionedCatalogStore {
     omit_version_for: Mutex<Vec<ObjectPath>>,
     empty_version_for: Mutex<Vec<ObjectPath>>,
     null_version_for: Mutex<Vec<ObjectPath>>,
+    omit_put_e_tag_for: Mutex<Vec<ObjectPath>>,
+    blank_put_e_tag_for: Mutex<Vec<ObjectPath>>,
     omit_get_version_for: Mutex<Vec<ObjectPath>>,
+    omit_current_e_tag_once_for: Mutex<Vec<ObjectPath>>,
+    blank_current_e_tag_once_for: Mutex<Vec<ObjectPath>>,
+    omit_exact_get_e_tag_once_for: Mutex<Vec<ObjectPath>>,
+    replace_exact_get_e_tag_once_for: Mutex<Vec<(ObjectPath, String)>>,
     lost_put_ack_for: Mutex<Vec<ObjectPath>>,
     pending_put_for: Mutex<Vec<ObjectPath>>,
     fail_exact_version_get_for: Mutex<Vec<ObjectPath>>,
@@ -870,7 +877,13 @@ impl VersionedCatalogStore {
             omit_version_for: Mutex::new(Vec::new()),
             empty_version_for: Mutex::new(Vec::new()),
             null_version_for: Mutex::new(Vec::new()),
+            omit_put_e_tag_for: Mutex::new(Vec::new()),
+            blank_put_e_tag_for: Mutex::new(Vec::new()),
             omit_get_version_for: Mutex::new(Vec::new()),
+            omit_current_e_tag_once_for: Mutex::new(Vec::new()),
+            blank_current_e_tag_once_for: Mutex::new(Vec::new()),
+            omit_exact_get_e_tag_once_for: Mutex::new(Vec::new()),
+            replace_exact_get_e_tag_once_for: Mutex::new(Vec::new()),
             lost_put_ack_for: Mutex::new(Vec::new()),
             pending_put_for: Mutex::new(Vec::new()),
             fail_exact_version_get_for: Mutex::new(Vec::new()),
@@ -896,10 +909,54 @@ impl VersionedCatalogStore {
             .push(path);
     }
 
+    fn omit_current_e_tag_once(&self, path: ObjectPath) {
+        self.omit_current_e_tag_once_for
+            .lock()
+            .expect("omitted current ETag lock")
+            .push(path);
+    }
+
+    fn blank_current_e_tag_once(&self, path: ObjectPath) {
+        self.blank_current_e_tag_once_for
+            .lock()
+            .expect("blank current ETag lock")
+            .push(path);
+    }
+
+    fn omit_exact_get_e_tag_once(&self, path: ObjectPath) {
+        self.omit_exact_get_e_tag_once_for
+            .lock()
+            .expect("omitted exact GET ETag lock")
+            .push(path);
+    }
+
+    fn replace_exact_get_e_tag_once(&self, path: ObjectPath, e_tag: String) {
+        self.replace_exact_get_e_tag_once_for
+            .lock()
+            .expect("replaced exact GET ETag lock")
+            .push((path, e_tag));
+    }
+
     fn with_empty_version(self, path: ObjectPath) -> Self {
         self.empty_version_for
             .lock()
             .expect("empty version lock")
+            .push(path);
+        self
+    }
+
+    fn with_omitted_put_e_tag(self, path: ObjectPath) -> Self {
+        self.omit_put_e_tag_for
+            .lock()
+            .expect("omitted PUT ETag lock")
+            .push(path);
+        self
+    }
+
+    fn with_blank_put_e_tag(self, path: ObjectPath) -> Self {
+        self.blank_put_e_tag_for
+            .lock()
+            .expect("blank PUT ETag lock")
             .push(path);
         self
     }
@@ -997,12 +1054,75 @@ impl VersionedCatalogStore {
             .any(|candidate| candidate == path)
     }
 
+    fn omits_put_e_tag(&self, path: &ObjectPath) -> bool {
+        self.omit_put_e_tag_for
+            .lock()
+            .expect("omitted PUT ETag lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
+    fn returns_blank_put_e_tag(&self, path: &ObjectPath) -> bool {
+        self.blank_put_e_tag_for
+            .lock()
+            .expect("blank PUT ETag lock")
+            .iter()
+            .any(|candidate| candidate == path)
+    }
+
     fn omits_get_version(&self, path: &ObjectPath) -> bool {
         self.omit_get_version_for
             .lock()
             .expect("omitted GET version lock")
             .iter()
             .any(|candidate| candidate == path)
+    }
+
+    fn take_omitted_current_e_tag(&self, path: &ObjectPath) -> bool {
+        let mut paths = self
+            .omit_current_e_tag_once_for
+            .lock()
+            .expect("omitted current ETag lock");
+        let Some(index) = paths.iter().position(|candidate| candidate == path) else {
+            return false;
+        };
+        paths.remove(index);
+        true
+    }
+
+    fn take_blank_current_e_tag(&self, path: &ObjectPath) -> bool {
+        let mut paths = self
+            .blank_current_e_tag_once_for
+            .lock()
+            .expect("blank current ETag lock");
+        let Some(index) = paths.iter().position(|candidate| candidate == path) else {
+            return false;
+        };
+        paths.remove(index);
+        true
+    }
+
+    fn take_omitted_exact_get_e_tag(&self, path: &ObjectPath) -> bool {
+        let mut paths = self
+            .omit_exact_get_e_tag_once_for
+            .lock()
+            .expect("omitted exact GET ETag lock");
+        let Some(index) = paths.iter().position(|candidate| candidate == path) else {
+            return false;
+        };
+        paths.remove(index);
+        true
+    }
+
+    fn take_replaced_exact_get_e_tag(&self, path: &ObjectPath) -> Option<String> {
+        let mut replacements = self
+            .replace_exact_get_e_tag_once_for
+            .lock()
+            .expect("replaced exact GET ETag lock");
+        let index = replacements
+            .iter()
+            .position(|(candidate, _)| candidate == path)?;
+        Some(replacements.remove(index).1)
     }
 
     fn loses_put_ack(&self, path: &ObjectPath) -> bool {
@@ -1180,6 +1300,11 @@ impl ObjectStore for VersionedCatalogStore {
         } else if !self.omits_version(location) {
             result.version = Some(version_id);
         }
+        if self.omits_put_e_tag(location) {
+            result.e_tag = None;
+        } else if self.returns_blank_put_e_tag(location) {
+            result.e_tag = Some("   ".to_string());
+        }
         if let Some(hook) = &self.after_successful_put {
             hook(location, sequence);
         }
@@ -1251,6 +1376,11 @@ impl ObjectStore for VersionedCatalogStore {
             if self.omits_get_version(location) {
                 object.meta.version = None;
             }
+            if self.take_omitted_exact_get_e_tag(location) {
+                object.meta.e_tag = None;
+            } else if let Some(e_tag) = self.take_replaced_exact_get_e_tag(location) {
+                object.meta.e_tag = Some(e_tag);
+            }
             let range = 0..object.meta.size;
             let payload =
                 futures_util::stream::once(
@@ -1277,6 +1407,11 @@ impl ObjectStore for VersionedCatalogStore {
             if e_tag.is_some() {
                 result.meta.e_tag = e_tag;
             }
+        }
+        if is_head && self.take_omitted_current_e_tag(location) {
+            result.meta.e_tag = None;
+        } else if is_head && self.take_blank_current_e_tag(location) {
+            result.meta.e_tag = Some("   ".to_string());
         }
         if is_head && let Some(mutation) = self.take_current_mutation_after_head(location) {
             self.apply_current_mutation_after_head(location, mutation)
@@ -1588,8 +1723,27 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     let (persisted_version_id, persisted_e_tag) = store
         .recorded_version(&persisted_path)
         .expect("capability proof exact version");
+    let persisted_e_tag = persisted_e_tag.expect("capability proof ETag");
     assert_eq!(persisted.proof_artifact_version_id, persisted_version_id);
     assert_eq!(persisted.proof_artifact_e_tag, persisted_e_tag);
+    let serialized_persisted =
+        serde_json::to_value(&persisted).expect("serialize persisted capability proof artifact");
+    let mut missing_e_tag = serialized_persisted.clone();
+    missing_e_tag
+        .as_object_mut()
+        .expect("capability proof artifact object")
+        .remove("proof_artifact_e_tag");
+    let error = serde_json::from_value::<NtCatalogCapabilityProofArtifact>(missing_e_tag)
+        .expect_err("missing capability proof artifact ETag must fail deserialization");
+    assert!(
+        error.to_string().contains("proof_artifact_e_tag"),
+        "{error:#}"
+    );
+    let mut blank_e_tag = serialized_persisted;
+    blank_e_tag["proof_artifact_e_tag"] = serde_json::Value::String("   ".to_string());
+    let error = serde_json::from_value::<NtCatalogCapabilityProofArtifact>(blank_e_tag)
+        .expect_err("blank capability proof artifact ETag must fail deserialization");
+    assert!(error.to_string().contains("ETag"), "{error:#}");
     persisted
         .proof
         .direct_s3_catalog_access_proven(&committed_root)
@@ -2275,7 +2429,7 @@ async fn catalog_publication_receipt_crosslinks_shared_manifest_and_versions_and
         serde_json::from_slice(&receipt_bytes).expect("publication receipt JSON");
     assert_eq!(
         receipt["schema_version"].as_str(),
-        Some("catalog-projection-publication-receipt-v1")
+        Some("catalog-projection-publication-receipt-v2")
     );
     assert_eq!(
         receipt["physical_manifest_sha256"].as_str(),
@@ -2303,6 +2457,10 @@ async fn catalog_publication_receipt_crosslinks_shared_manifest_and_versions_and
         assert_eq!(
             receipt_object["version_id"].as_str(),
             Some(persisted_object.version_id.as_str())
+        );
+        assert_eq!(
+            receipt_object["e_tag"].as_str(),
+            Some(persisted_object.e_tag.as_str())
         );
         assert_eq!(
             receipt_object["sha256"].as_str(),
@@ -2423,6 +2581,7 @@ async fn catalog_publication_recovers_lost_receipt_ack_via_exact_version() {
     let (recorded_version, recorded_e_tag) = store
         .recorded_version(&receipt_path)
         .expect("receipt version was committed before acknowledgement was lost");
+    let recorded_e_tag = recorded_e_tag.expect("receipt must have a nonempty ETag");
     assert_eq!(persisted.receipt_version_id, recorded_version);
     assert_eq!(persisted.receipt_e_tag, recorded_e_tag);
     assert_eq!(
@@ -2444,7 +2603,7 @@ async fn catalog_publication_recovers_lost_receipt_ack_via_exact_version() {
             .into_iter()
             .filter(|(path, _, _)| path == &receipt_path)
             .collect::<Vec<_>>(),
-        vec![(receipt_path, recorded_version, recorded_e_tag)],
+        vec![(receipt_path, recorded_version, Some(recorded_e_tag))],
         "lost acknowledgement recovery must bind the current HEAD to one exact-version GET"
     );
 }
@@ -2753,6 +2912,67 @@ async fn exact_version_receipt_hydration_builds_only_the_shared_physical_manifes
 }
 
 #[tokio::test]
+async fn hydration_requires_receipt_etag_and_exact_response_match() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-receipt-etag");
+    let source = tempfile::TempDir::new().expect("source temp dir");
+    write_catalog_file(source.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let store = VersionedCatalogStore::new();
+    let persisted = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        source.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish hydration source");
+    let receipt_path = root
+        .object_path_for_uri(&persisted.receipt_uri)
+        .expect("receipt path");
+
+    store.omit_exact_get_e_tag_once(receipt_path);
+    let hydration_parent = tempfile::TempDir::new().expect("hydration parent");
+    let hydration_root =
+        create_private_hydration_root(hydration_parent.path(), "catalog-hydration");
+    let error = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &persisted.receipt_locator(),
+        &physical_manifest,
+        &hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("missing exact receipt response ETag must fail closed");
+    assert!(format!("{error:#}").contains("ETag"), "{error:#}");
+
+    let mut blank_locator = persisted.receipt_locator();
+    blank_locator.receipt_e_tag = "   ".to_string();
+    let exact_gets_before = store.exact_version_get_attempts().len();
+    let blank_hydration_parent = tempfile::TempDir::new().expect("blank hydration parent");
+    let blank_hydration_root =
+        create_private_hydration_root(blank_hydration_parent.path(), "catalog-hydration");
+    let error = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &blank_locator,
+        &physical_manifest,
+        &blank_hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("blank receipt locator ETag must fail before exact GET");
+    assert!(format!("{error:#}").contains("ETag"), "{error:#}");
+    assert_eq!(store.exact_version_get_attempts().len(), exact_gets_before);
+}
+
+#[tokio::test]
 async fn hydration_rejects_wrong_receipt_version_before_touching_private_root() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = catalog_dispatch("projection-wrong-receipt-version");
@@ -2962,7 +3182,7 @@ fn receipt_parse_rejects_noncanonical_json_even_when_hash_matches_bytes() {
         )
         .expect("physical manifest hash");
     let receipt = serde_json::json!({
-        "schema_version": "catalog-projection-publication-receipt-v1",
+        "schema_version": "catalog-projection-publication-receipt-v2",
         "catalog_root_uri": "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=canonical/",
         "physical_manifest_sha256": physical_manifest_sha256,
         "physical_manifest": physical_manifest,
@@ -2976,7 +3196,8 @@ fn receipt_parse_rejects_noncanonical_json_even_when_hash_matches_bytes() {
             "uri": "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=canonical/part-000.parquet",
             "sha256": sha256_hex(b"catalog"),
             "byte_len": 7,
-            "version_id": "version-1"
+            "version_id": "version-1",
+            "e_tag": "etag-1"
         }]
     });
     let noncanonical = serde_json::to_vec_pretty(&receipt).expect("noncanonical receipt bytes");
@@ -2991,6 +3212,56 @@ fn receipt_parse_rejects_noncanonical_json_even_when_hash_matches_bytes() {
     .expect_err("pretty JSON must not pass canonical receipt validation");
 
     assert!(format!("{error:#}").contains("not canonical"), "{error:#}");
+}
+
+#[test]
+fn catalog_receipt_requires_nonempty_object_etag() {
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let physical_manifest_sha256 = physical_manifest
+        .manifest_sha256_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::Publish,
+        )
+        .expect("physical manifest hash");
+    let mut receipt = CatalogProjectionPublicationReceipt {
+        schema_version: "catalog-projection-publication-receipt-v2".to_string(),
+        catalog_root_uri:
+            "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=etag-required/".to_string(),
+        physical_manifest_sha256,
+        physical_manifest,
+        binding: CatalogProjectionBinding {
+            source_binding: "binary-official".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "etag-required".to_string(),
+        },
+        objects: vec![CatalogProjectionPublicationObject {
+            relative_path: "part-000.parquet".to_string(),
+            uri: "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=etag-required/part-000.parquet"
+                .to_string(),
+            sha256: sha256_hex(b"catalog"),
+            byte_len: 7,
+            version_id: "version-1".to_string(),
+            e_tag: "etag-1".to_string(),
+        }],
+    };
+
+    let mut missing = serde_json::to_value(&receipt).expect("serialize receipt");
+    missing["objects"][0]
+        .as_object_mut()
+        .expect("receipt object")
+        .remove("e_tag");
+    let error = serde_json::from_value::<CatalogProjectionPublicationReceipt>(missing)
+        .expect_err("missing catalog object ETag must fail deserialization");
+    assert!(error.to_string().contains("e_tag"), "{error:#}");
+
+    receipt.objects[0].e_tag = "   ".to_string();
+    let error = receipt
+        .canonical_bytes_guarded(
+            &OperatorWorkBudgetGuard::unbounded(),
+            OperatorWorkBudgetStage::Publish,
+        )
+        .expect_err("blank catalog object ETag must fail validation");
+    assert!(error.to_string().contains("ETag"), "{error:#}");
 }
 
 #[tokio::test]
@@ -3476,6 +3747,225 @@ async fn catalog_publication_reconciles_missing_receipt_version_exactly() {
 }
 
 #[tokio::test]
+async fn catalog_publication_reconciles_unusable_put_etag_only_through_exact_identity() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+
+    for (projection_id, blank_put_etag) in [
+        ("projection-missing-put-etag", false),
+        ("projection-blank-put-etag", true),
+    ] {
+        let dispatch = catalog_dispatch(projection_id);
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+        let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+        let receipt_path = root
+            .object_path_for_uri(&root.catalog_projection_manifest_object_uri(projection_id))
+            .expect("receipt path");
+        let store = if blank_put_etag {
+            VersionedCatalogStore::new().with_blank_put_e_tag(receipt_path.clone())
+        } else {
+            VersionedCatalogStore::new().with_omitted_put_e_tag(receipt_path.clone())
+        };
+
+        let persisted = persist_catalog_projection_for_source_binding_guarded(
+            &store,
+            &root,
+            &root.emulate_bucket_versioning_enabled_for_contract_test(),
+            &dispatch,
+            "binary-official",
+            MarketStructureFixture::BinaryOption,
+            temp.path(),
+            &physical_manifest,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .await
+        .expect("unusable PUT ETag is reconciled only through independent exact identity");
+
+        let (recorded_version, recorded_e_tag) = store
+            .recorded_version(&receipt_path)
+            .expect("receipt version was independently recorded");
+        let recorded_e_tag = recorded_e_tag.expect("independent HEAD ETag is nonempty");
+        assert_eq!(
+            persisted.receipt_create_only_write,
+            CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
+            "an unusable PUT acknowledgement must never be accepted as Created"
+        );
+        assert_eq!(persisted.receipt_version_id, recorded_version);
+        assert_eq!(persisted.receipt_e_tag, recorded_e_tag);
+        assert_eq!(
+            store
+                .exact_version_get_attempts()
+                .into_iter()
+                .filter(|(path, _, _)| path == &receipt_path)
+                .collect::<Vec<_>>(),
+            vec![(receipt_path, recorded_version, Some(recorded_e_tag))],
+            "reconciliation must bind the independently observed ETag as If-Match"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unusable_put_etag_with_missing_or_blank_head_etag_is_indeterminate() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+
+    for (projection_id, blank_etag) in [
+        ("projection-missing-head-etag", false),
+        ("projection-blank-head-etag", true),
+    ] {
+        let dispatch = catalog_dispatch(projection_id);
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+        let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+        let receipt_path = root
+            .object_path_for_uri(&root.catalog_projection_manifest_object_uri(projection_id))
+            .expect("receipt path");
+        let store = if blank_etag {
+            VersionedCatalogStore::new().with_blank_put_e_tag(receipt_path.clone())
+        } else {
+            VersionedCatalogStore::new().with_omitted_put_e_tag(receipt_path.clone())
+        };
+        if blank_etag {
+            store.blank_current_e_tag_once(receipt_path.clone());
+        } else {
+            store.omit_current_e_tag_once(receipt_path.clone());
+        }
+
+        let error = persist_catalog_projection_for_source_binding_guarded(
+            &store,
+            &root,
+            &root.emulate_bucket_versioning_enabled_for_contract_test(),
+            &dispatch,
+            "binary-official",
+            MarketStructureFixture::BinaryOption,
+            temp.path(),
+            &physical_manifest,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .await
+        .expect_err("an unusable PUT ETag cannot converge without an independent HEAD ETag");
+
+        assert!(is_terminal_create_indeterminate(&error), "{error:#}");
+        assert!(format!("{error:#}").contains("ETag"), "{error:#}");
+        assert!(
+            store
+                .exact_version_get_attempts()
+                .iter()
+                .all(|(path, _, _)| path != &receipt_path),
+            "missing or blank HEAD ETag must fail before exact GET"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unusable_put_etag_with_mismatched_exact_response_etag_is_indeterminate() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let projection_id = "projection-mismatched-confirmation-etag";
+    let dispatch = catalog_dispatch(projection_id);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(&root.catalog_projection_manifest_object_uri(projection_id))
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new().with_omitted_put_e_tag(receipt_path.clone());
+    store.replace_exact_get_e_tag_once(
+        receipt_path.clone(),
+        "mismatched-exact-response-etag".to_string(),
+    );
+
+    let error = persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &root.emulate_bucket_versioning_enabled_for_contract_test(),
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("mismatched exact response ETag cannot confirm an unusable PUT acknowledgement");
+
+    assert!(is_terminal_create_indeterminate(&error), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("response metadata mismatch"),
+        "{error:#}"
+    );
+    let (_, independently_observed_e_tag) = store
+        .recorded_version(&receipt_path)
+        .expect("receipt version was independently observed");
+    let independently_observed_e_tag =
+        independently_observed_e_tag.expect("independent HEAD ETag is nonempty");
+    assert!(
+        store
+            .exact_version_get_attempts()
+            .last()
+            .is_some_and(|(path, _, if_match)| path == &receipt_path
+                && if_match.as_deref() == Some(independently_observed_e_tag.as_str())),
+        "confirmation must send the independently observed ETag as If-Match"
+    );
+}
+
+#[tokio::test]
+async fn catalog_receipt_recovery_requires_nonempty_head_etag_before_exact_get() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = catalog_dispatch("projection-recovery-head-etag");
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
+    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
+    let receipt_path = root
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-recovery-head-etag"),
+        )
+        .expect("receipt path");
+    let store = VersionedCatalogStore::new();
+    let versioning = root.emulate_bucket_versioning_enabled_for_contract_test();
+
+    persist_catalog_projection_for_source_binding_guarded(
+        &store,
+        &root,
+        &versioning,
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+        &physical_manifest,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish recovery fixture");
+
+    for blank_etag in [false, true] {
+        if blank_etag {
+            store.blank_current_e_tag_once(receipt_path.clone());
+        } else {
+            store.omit_current_e_tag_once(receipt_path.clone());
+        }
+        let exact_gets_before = store.exact_version_get_attempts().len();
+        let error = recover_catalog_projection_from_current_receipt_guarded(
+            &store,
+            &root,
+            &versioning,
+            &dispatch,
+            "binary-official",
+            MarketStructureFixture::BinaryOption,
+            &physical_manifest,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .await
+        .expect_err("catalog receipt recovery requires a nonempty current ETag");
+
+        assert!(format!("{error:#}").contains("ETag"), "{error:#}");
+        assert_eq!(
+            store.exact_version_get_attempts().len(),
+            exact_gets_before,
+            "missing or blank receipt discovery ETag must fail before exact GET"
+        );
+    }
+}
+
+#[tokio::test]
 async fn catalog_publication_reconciles_null_receipt_version_exactly() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = catalog_dispatch("projection-null-receipt-version");
@@ -3753,11 +4243,11 @@ async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch
 
 #[tokio::test]
 async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
-    const LEGACY_V2_DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.v2.json";
+    const LEGACY_V3_DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.v3.json";
 
     assert_eq!(
-        DURABLE_COMPLETION_MANIFEST_FILE, "durable-completion-manifest.v3.json",
-        "the RunSpec-bound v3 schema must own an explicitly versioned immutable key"
+        DURABLE_COMPLETION_MANIFEST_FILE, "durable-completion-manifest.v4.json",
+        "the ETag-bound v4 schema must own an explicitly versioned immutable key"
     );
     let gz = gzip(SAMPLE_CSV);
     let spec = committed_run_spec_for(&gz);
@@ -3780,14 +4270,14 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let legacy_completion_uri = format!(
         "{}/{}",
         spec.manifest.output_prefix.trim_end_matches('/'),
-        LEGACY_V2_DURABLE_COMPLETION_MANIFEST_FILE
+        LEGACY_V3_DURABLE_COMPLETION_MANIFEST_FILE
     );
     let legacy_completion_path = artifact_root
         .object_path_for_uri(&legacy_completion_uri)
         .expect("legacy durable completion path");
     assert_ne!(
         completion_path, legacy_completion_path,
-        "RunSpec-bound v3 terminals must not reuse the immutable v2 terminal key"
+        "ETag-bound v4 terminals must not reuse the immutable v3 terminal key"
     );
     let candidate_path = output_dir
         .path()
@@ -3807,7 +4297,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
                 terminal_put_observed_candidate_for_hook.store(true, Ordering::SeqCst);
             }
         }));
-    let legacy_completion_bytes: &[u8] = b"preexisting immutable v2 durable terminal";
+    let legacy_completion_bytes: &[u8] = b"preexisting immutable v3 durable terminal";
     store
         .put_opts(
             &legacy_completion_path,
@@ -3815,7 +4305,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             PutMode::Overwrite.into(),
         )
         .await
-        .expect("seed immutable legacy v2 durable terminal");
+        .expect("seed immutable legacy v3 durable terminal");
     let expected_catalog_root = catalog_dispatch
         .catalog_root_for(
             &spec.source_proof.source_binding,
@@ -3834,10 +4324,10 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("legacy v2 key must not interfere with v3 discovery");
+    .expect("legacy v3 key must not interfere with v4 discovery");
     assert!(
         legacy_only_discovery.is_none(),
-        "a preexisting v2 terminal must not be discovered as a v3 terminal"
+        "a preexisting v3 terminal must not be discovered as a v4 terminal"
     );
 
     let work_budget = OperatorWorkBudgetGuard::unbounded();
@@ -3866,13 +4356,13 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         store
             .get(&legacy_completion_path)
             .await
-            .expect("legacy v2 durable terminal remains readable")
+            .expect("legacy v3 durable terminal remains readable")
             .bytes()
             .await
-            .expect("read legacy v2 durable terminal bytes")
+            .expect("read legacy v3 durable terminal bytes")
             .as_ref(),
         legacy_completion_bytes,
-        "v3 publication must not mutate the immutable v2 terminal"
+        "v4 publication must not mutate the immutable v3 terminal"
     );
     assert_eq!(
         store
@@ -3881,7 +4371,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .filter(|path| *path == &legacy_completion_path)
             .count(),
         1,
-        "only the test seed may write the legacy v2 terminal key"
+        "only the test seed may write the legacy v3 terminal key"
     );
     assert_eq!(
         store
@@ -3976,6 +4466,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         receipt.receipt_version_id,
         persisted_projection.receipt_version_id
     );
+    assert_eq!(receipt.receipt_e_tag, persisted_projection.receipt_e_tag);
     assert_eq!(
         receipt.physical_manifest_sha256,
         persisted_projection.physical_manifest_sha256
@@ -4115,7 +4606,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     assert_eq!(discovered.completion, completion_locator);
     assert_eq!(
         discovered.completion.object.uri, completion_uri,
-        "publication and discovery must use the same v3 terminal key"
+        "publication and discovery must use the same v4 terminal key"
     );
     assert_eq!(
         discovered.execution_attestation, original_execution_attestation,
@@ -4194,6 +4685,70 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .nt_catalog_manifest_uri
             .as_deref(),
         Some(persisted_projection.receipt_uri.as_str())
+    );
+
+    let exact_gets_before_missing_response_etag = store.exact_version_get_attempts().len();
+    store.omit_exact_get_e_tag_once(completion_path.clone());
+    let error = discover_current_durable_completion_with_artifact_store_guarded(
+        &spec,
+        &store,
+        &versioning,
+        &source_bindings,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("exact-version response without an ETag must fail closed");
+    assert!(
+        format!("{error:#}").contains("exact-version ETag mismatch"),
+        "{error:#}"
+    );
+    assert_eq!(
+        store.exact_version_get_attempts().len(),
+        exact_gets_before_missing_response_etag + 1
+    );
+    assert!(
+        store
+            .exact_version_get_attempts()
+            .last()
+            .is_some_and(|(path, _, if_match)| path == &completion_path
+                && if_match.as_deref() == Some(completion_locator.object.e_tag.as_str())),
+        "every durable exact-version GET must carry the committed ETag as If-Match"
+    );
+
+    store.replace_exact_get_e_tag_once(
+        completion_path.clone(),
+        "different-response-etag".to_string(),
+    );
+    let error = discover_current_durable_completion_with_artifact_store_guarded(
+        &spec,
+        &store,
+        &versioning,
+        &source_bindings,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("mismatched exact-version response ETag must fail closed");
+    assert!(
+        format!("{error:#}").contains("exact-version ETag mismatch"),
+        "{error:#}"
+    );
+
+    let exact_gets_before_missing_discovery_etag = store.exact_version_get_attempts().len();
+    store.omit_current_e_tag_once(completion_path.clone());
+    let error = discover_current_durable_completion_with_artifact_store_guarded(
+        &spec,
+        &store,
+        &versioning,
+        &source_bindings,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("current durable completion without an ETag must fail before exact GET");
+    assert!(format!("{error:#}").contains("nonempty ETag"), "{error:#}");
+    assert_eq!(
+        store.exact_version_get_attempts().len(),
+        exact_gets_before_missing_discovery_etag,
+        "missing discovery ETag must fail before any exact-version GET"
     );
 
     let put_count_before_failed_discovery = store.put_attempts().len();

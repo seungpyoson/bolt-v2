@@ -64,6 +64,7 @@ bolt-v2 = { path = "../.." }
 async-trait = "0.1"
 hmac = "=0.12.1"
 nautilus-persistence-macros = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
+proc-macro2 = "=1.0.106"
 quote = "=1.0.45"
 syn = { version = "=2.0.118", features = ["full", "parsing", "visit", "visit-mut"] }
 tempfile = "3"

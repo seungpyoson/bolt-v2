@@ -7,11 +7,10 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
+    env, fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -21,23 +20,22 @@ use crate::{
     atomic_artifact_write::{atomic_file_create_or_verify_guarded, open_pinned_regular_file},
     canonical_trades::{SourceAdapterKind, TRADE_TABLE_FAMILY, require_registered_source_adapter},
     hashing::{is_lowercase_sha256_hex, sha256_hex},
-    operator::{
-        DURABLE_COMPLETION_MANIFEST_FILE, RunSpec, VerifiedSourceBindingRegistry,
-        validate_durable_run_spec_preflight,
-    },
+    operator::DURABLE_COMPLETION_MANIFEST_FILE,
     operator_work_budget::{
         CooperativeDeadlineWriter, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
     },
-    path_resolution::resolve_pack_control_path,
+    path_resolution::resolve_output_dir,
     pinned_regular_file::read_exact_pinned_file,
-    retired_backfill_evidence::ensure_active_backfill_runtime_path,
     source_universe_batch_execution::{
-        SourceUniverseBatchExecutionRecordProvenance, SourceUniverseBatchExecutionReport,
-        SourceUniverseBatchExecutionReportStatus, execution_record_digest,
+        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE, SourceUniverseBatchExecutionRecordProvenance,
+        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
+        SourceUniverseSelectedControlPreflightInput, execution_record_digest,
+        preflight_selected_source_universe_controls,
         validate_source_universe_batch_execution_report,
     },
     source_universe_batch_launch::{
-        CommittedSourceUniverseExecutionPack, discover_committed_source_universe_execution_packs,
+        CommittedSourceUniverseExecutionPack, SourceUniverseBatchLaunchSpec,
+        discover_committed_source_universe_execution_packs,
     },
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
@@ -100,6 +98,8 @@ pub struct SourceUniverseDurableTracerReceiptSetArtifact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceUniverseDurableTracerAggregateLimits {
+    /// The complete-registry breadth ceiling. Because RA-001a requires exactly
+    /// one selected record per pack, this is also the aggregate record ceiling.
     pub max_registry_packs: u64,
     pub max_total_selected_object_bytes: u64,
 }
@@ -107,7 +107,14 @@ pub struct SourceUniverseDurableTracerAggregateLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceUniverseDurableTracerAggregateEnvelope {
     pub registry_packs: u64,
+    pub total_selected_records: u64,
     pub total_selected_object_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceUniverseDurableTracerRegistryRun {
+    pub aggregate: SourceUniverseDurableTracerAggregateEnvelope,
+    pub report_inputs: Vec<SourceUniverseDurableTracerReportInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +253,11 @@ fn launch_selected_record<'a>(
         "RA-001a launch for {} must select exactly one record",
         pack.pack_id
     );
+    ensure!(
+        !committed.launch_spec.continue_on_error,
+        "RA-001a launch for {} must fail closed on its selected record",
+        pack.pack_id
+    );
     pack.records
         .iter()
         .find(|record| {
@@ -262,96 +274,74 @@ fn launch_selected_record<'a>(
         })
 }
 
-fn validate_selected_run_spec_scope(
+fn preflight_committed_ra001a_selected_controls(
     committed: &CommittedSourceUniverseExecutionPack,
     pack: &SourceUniverseExecutionPack,
-    record: &SourceUniverseExecutionPackRecord,
+    selected: &SourceUniverseExecutionPackRecord,
 ) -> Result<()> {
+    let pack_base_dir = committed
+        .summary_path
+        .parent()
+        .context("committed execution-pack summary has no parent")?;
+    let launch_parent = committed
+        .launch_path
+        .parent()
+        .context("committed batch launch has no parent")?;
+    let resolved_launch_output =
+        resolve_output_dir(launch_parent, &committed.launch_spec.output_dir);
+    let record_limit = usize::try_from(
+        committed
+            .launch_spec
+            .record_limit
+            .context("RA-001a committed launch is missing record_limit")?,
+    )
+    .context("RA-001a record_limit does not fit usize")?;
+    let controls =
+        preflight_selected_source_universe_controls(SourceUniverseSelectedControlPreflightInput {
+            pack,
+            pack_base_dir,
+            preflight_output_root: &resolved_launch_output,
+            start_sequence: committed.launch_spec.start_sequence,
+            record_limit,
+            continue_on_error: false,
+            limits: committed.launch_spec.bootstrap_limits,
+        })
+        .with_context(|| {
+            format!(
+                "preflight ordinary controls for RA-001a pack {}",
+                pack.pack_id
+            )
+        })?;
     ensure!(
         pack.table_family == TRADE_TABLE_FAMILY,
         "RA-001a committed pack {} table_family must be {}",
         pack.pack_id,
         TRADE_TABLE_FAMILY
     );
-    let pack_base_dir = committed
-        .summary_path
-        .parent()
-        .context("committed execution-pack summary has no parent")?;
-
-    ensure_active_backfill_runtime_path(&record.run_spec_path)?;
-    let run_spec_path = resolve_pack_control_path(pack_base_dir, &record.run_spec_path)?;
-    let run_spec_artifact = read_pinned_artifact(
-        &run_spec_path,
-        "selected run spec",
-        committed
-            .launch_spec
-            .bootstrap_limits
-            .max_control_artifact_bytes,
-    )?;
+    let run_specs = controls.verified_run_specs().collect::<Vec<_>>();
     ensure!(
-        run_spec_artifact.pin.bytes == record.run_spec_bytes
-            && run_spec_artifact.pin.sha256 == record.run_spec_sha256,
-        "selected run-spec byte/SHA-256 pin mismatch for {} sequence {}",
-        pack.pack_id,
-        record.sequence
+        run_specs.len() == 1,
+        "RA-001a committed pack {} must preflight exactly one selected RunSpec",
+        pack.pack_id
     );
-    let run_spec: RunSpec = toml::from_slice(&run_spec_artifact.bytes)
-        .with_context(|| format!("parse selected run spec {}", run_spec_path.display()))?;
-    ensure!(
-        run_spec.source_bindings_path == record.source_bindings_path,
-        "selected run spec source-bindings path disagrees with committed pack {} sequence {}",
-        pack.pack_id,
-        record.sequence
-    );
-
-    ensure_active_backfill_runtime_path(&record.source_bindings_path)?;
-    let source_bindings_path =
-        resolve_pack_control_path(pack_base_dir, &record.source_bindings_path)?;
-    let source_bindings_artifact = read_pinned_artifact(
-        &source_bindings_path,
-        "selected source-bindings registry",
-        committed
-            .launch_spec
-            .bootstrap_limits
-            .max_control_artifact_bytes,
-    )?;
-    ensure!(
-        source_bindings_artifact.pin.bytes == record.source_bindings_bytes
-            && source_bindings_artifact.pin.sha256 == record.source_bindings_sha256,
-        "selected source-bindings byte/SHA-256 pin mismatch for {} sequence {}",
-        pack.pack_id,
-        record.sequence
-    );
-    let registry = VerifiedSourceBindingRegistry::from_frozen_pack_bytes(
-        &run_spec,
-        source_bindings_path,
-        Arc::from(source_bindings_artifact.bytes),
-        &record.source_bindings_sha256,
-    )?;
-    validate_durable_run_spec_preflight(&run_spec, &registry).with_context(|| {
-        format!(
-            "validate durable selected run spec for {} sequence {}",
-            pack.pack_id, record.sequence
-        )
-    })?;
     let adapter = require_registered_source_adapter(
-        &run_spec.converter.identity,
-        &run_spec.converter.version,
+        &run_specs[0].converter.identity,
+        &run_specs[0].converter.version,
     )?;
     ensure!(
         adapter.kind == SourceAdapterKind::CsvNativeTrades
             && adapter.table_family == TRADE_TABLE_FAMILY,
         "RA-001a selected adapter for {} sequence {} must be CSV-native trades",
         pack.pack_id,
-        record.sequence
+        selected.sequence
     );
     Ok(())
 }
 
 /// Preflight the complete registry before any source process starts. Breadth
-/// remains registry-derived, while the aggregate count and selected network
-/// bytes must fit explicit operator-owned cost limits.
-pub fn validate_source_universe_durable_tracer_aggregate_limits(
+/// remains registry-derived, while aggregate pack count, one-record-per-pack
+/// selection, and selected network bytes must fit operator-owned cost limits.
+fn validate_source_universe_durable_tracer_aggregate_limits(
     committed: &[CommittedSourceUniverseExecutionPack],
     limits: SourceUniverseDurableTracerAggregateLimits,
 ) -> Result<SourceUniverseDurableTracerAggregateEnvelope> {
@@ -371,6 +361,7 @@ pub fn validate_source_universe_durable_tracer_aggregate_limits(
         limits.max_registry_packs
     );
 
+    let mut total_selected_records = 0_u64;
     let mut total_selected_object_bytes = 0_u64;
     for pack in committed {
         let execution_pack = read_pinned_artifact(
@@ -380,7 +371,19 @@ pub fn validate_source_universe_durable_tracer_aggregate_limits(
         )?;
         let parsed = parse_execution_pack(pack, &execution_pack)?;
         let selected = launch_selected_record(pack, &parsed)?;
-        validate_selected_run_spec_scope(pack, &parsed, selected)?;
+        preflight_committed_ra001a_selected_controls(pack, &parsed, selected)?;
+        total_selected_records = total_selected_records
+            .checked_add(
+                pack.launch_spec
+                    .record_limit
+                    .context("RA-001a committed launch is missing record_limit")?,
+            )
+            .context("RA-001a total selected-record count overflow")?;
+        ensure!(
+            total_selected_records <= limits.max_registry_packs,
+            "RA-001a total selected-record count {total_selected_records} exceeds the one-record-per-pack registry ceiling {}",
+            limits.max_registry_packs
+        );
         total_selected_object_bytes = total_selected_object_bytes
             .checked_add(selected.selected_object_bytes)
             .context("RA-001a total selected-object byte count overflow")?;
@@ -390,10 +393,204 @@ pub fn validate_source_universe_durable_tracer_aggregate_limits(
             limits.max_total_selected_object_bytes
         );
     }
+    ensure!(
+        total_selected_records == registry_packs,
+        "RA-001a complete registry must select exactly one record per pack: {registry_packs} packs selected {total_selected_records} records"
+    );
 
     Ok(SourceUniverseDurableTracerAggregateEnvelope {
         registry_packs,
+        total_selected_records,
         total_selected_object_bytes,
+    })
+}
+
+fn run_admitted_source_universe_durable_tracer_registry<F>(
+    committed: &[CommittedSourceUniverseExecutionPack],
+    limits: SourceUniverseDurableTracerAggregateLimits,
+    launch: F,
+) -> Result<SourceUniverseDurableTracerRegistryRun>
+where
+    F: FnMut(
+        &CommittedSourceUniverseExecutionPack,
+    ) -> Result<SourceUniverseDurableTracerReportInput>,
+{
+    // This validation must finish for the complete discovered registry before
+    // `launch` is invoked even once. The callback boundary is also the unit-test
+    // seam proving rejected breadth, record selection, or bytes cannot fan out.
+    let aggregate = validate_source_universe_durable_tracer_aggregate_limits(committed, limits)?;
+    launch_preflighted_source_universe_durable_tracer_registry(committed, aggregate, launch)
+}
+
+fn revalidate_committed_launch_artifact(pack: &CommittedSourceUniverseExecutionPack) -> Result<()> {
+    let pinned = SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+        &pack.launch_path,
+        pack.launch_bytes,
+        &pack.launch_sha256,
+    )
+    .with_context(|| format!("revalidate admitted launch artifact for {}", pack.pack_id))?;
+    ensure!(
+        pinned.canonical_path == pack.launch_path,
+        "admitted launch path canonical identity changed for {}: expected {}, got {}",
+        pack.pack_id,
+        pack.launch_path.display(),
+        pinned.canonical_path.display()
+    );
+    Ok(())
+}
+
+fn launch_preflighted_source_universe_durable_tracer_registry<F>(
+    committed: &[CommittedSourceUniverseExecutionPack],
+    aggregate: SourceUniverseDurableTracerAggregateEnvelope,
+    mut launch: F,
+) -> Result<SourceUniverseDurableTracerRegistryRun>
+where
+    F: FnMut(
+        &CommittedSourceUniverseExecutionPack,
+    ) -> Result<SourceUniverseDurableTracerReportInput>,
+{
+    // Revalidate every launch artifact after complete control/cost admission
+    // and before invoking the launcher even once. The child independently
+    // checks the same pin, closing the remaining revalidation-to-open race.
+    for pack in committed {
+        revalidate_committed_launch_artifact(pack)?;
+    }
+    let mut report_inputs = Vec::with_capacity(committed.len());
+    for pack in committed {
+        let report_input =
+            launch(pack).with_context(|| format!("run admitted RA-001a pack {}", pack.pack_id))?;
+        ensure!(
+            report_input.pack_id == pack.pack_id,
+            "RA-001a launcher report identity mismatch: expected {}, got {}",
+            pack.pack_id,
+            report_input.pack_id
+        );
+        report_inputs.push(report_input);
+    }
+    Ok(SourceUniverseDurableTracerRegistryRun {
+        aggregate,
+        report_inputs,
+    })
+}
+
+fn validate_ra001a_worker_executable(path: &Path) -> Result<PathBuf> {
+    ensure!(
+        path.is_absolute(),
+        "RA-001a worker executable must be an absolute path: {}",
+        path.display()
+    );
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("stat RA-001a worker executable {}", path.display()))?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "RA-001a worker executable must be one non-symlink regular file: {}",
+        path.display()
+    );
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("canonicalize RA-001a worker executable {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        ensure!(
+            canonical
+                .metadata()
+                .with_context(|| {
+                    format!(
+                        "read RA-001a worker executable metadata {}",
+                        canonical.display()
+                    )
+                })?
+                .permissions()
+                .mode()
+                & 0o111
+                != 0,
+            "RA-001a worker executable is not executable: {}",
+            canonical.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn launch_admitted_source_universe_pack(
+    repo_root: &Path,
+    worker_executable: &Path,
+    pack: &CommittedSourceUniverseExecutionPack,
+) -> Result<SourceUniverseDurableTracerReportInput> {
+    let status = Command::new(worker_executable)
+        .arg("--spec")
+        .arg(&pack.launch_path)
+        .arg("--spec-bytes")
+        .arg(pack.launch_bytes.to_string())
+        .arg("--spec-sha256")
+        .arg(&pack.launch_sha256)
+        .current_dir(repo_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| {
+            format!(
+                "start source-universe batch process for committed pack {}",
+                pack.pack_id
+            )
+        })?;
+    ensure!(
+        status.success(),
+        "source-universe batch process failed for committed pack {} with {status}",
+        pack.pack_id
+    );
+
+    let launch_parent = pack
+        .launch_path
+        .parent()
+        .context("committed launch path has no parent")?;
+    let declared_output = resolve_output_dir(launch_parent, &pack.launch_spec.output_dir);
+    let canonical_output = declared_output.canonicalize().with_context(|| {
+        format!(
+            "canonicalize completed output for committed pack {} at {}",
+            pack.pack_id,
+            declared_output.display()
+        )
+    })?;
+    let report_path = canonical_output.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
+    let report_metadata = fs::symlink_metadata(&report_path).with_context(|| {
+        format!(
+            "stat completed report for committed pack {} at {}",
+            pack.pack_id,
+            report_path.display()
+        )
+    })?;
+    ensure!(
+        report_metadata.is_file() && !report_metadata.file_type().is_symlink(),
+        "completed report for committed pack {} must be one non-symlink regular file at {}",
+        pack.pack_id,
+        report_path.display()
+    );
+    Ok(SourceUniverseDurableTracerReportInput {
+        pack_id: pack.pack_id.clone(),
+        report_path,
+    })
+}
+
+/// Admit and execute the complete committed RA-001a registry through one
+/// production fanout boundary.
+///
+/// Discovery and the aggregate pack, one-record-per-pack, selected-byte, and
+/// selected RunSpec checks all finish before the first source worker process
+/// can start. Callers cannot supply a venue subset or launch an admitted pack
+/// through a second tracer path.
+pub fn run_source_universe_durable_tracer_registry(
+    repo_root: &Path,
+    worker_executable: &Path,
+    limits: SourceUniverseDurableTracerAggregateLimits,
+) -> Result<SourceUniverseDurableTracerRegistryRun> {
+    let worker_executable = validate_ra001a_worker_executable(worker_executable)?;
+    let committed = discover_committed_source_universe_execution_packs(repo_root)
+        .context("discover complete committed RA-001a execution-pack registry")?;
+    run_admitted_source_universe_durable_tracer_registry(&committed, limits, |pack| {
+        launch_admitted_source_universe_pack(repo_root, &worker_executable, pack)
     })
 }
 
@@ -899,6 +1096,11 @@ pub fn build_source_universe_durable_tracer_receipt_set(
             "batch launch spec",
             pack.launch_spec.bootstrap_limits.max_launch_artifact_bytes,
         )?;
+        ensure!(
+            launch.pin.bytes == pack.launch_bytes && launch.pin.sha256 == pack.launch_sha256,
+            "batch launch spec changed after committed-registry discovery for {}",
+            pack.pack_id
+        );
         let report_artifact = read_pinned_artifact(
             report_path,
             "batch report",
@@ -960,7 +1162,7 @@ fn validate_report_against_pack(
         pack.pack_id
     );
     let expected = launch_selected_record(committed, pack)?;
-    validate_selected_run_spec_scope(committed, pack, expected)?;
+    preflight_committed_ra001a_selected_controls(committed, pack, expected)?;
     let actual = &report.records[0];
     validate_report_record_exact_fields(expected, actual)?;
     ensure!(
@@ -1096,6 +1298,12 @@ pub fn validate_source_universe_durable_tracer_receipt_set(
             "batch launch spec",
             pack.launch_spec.bootstrap_limits.max_launch_artifact_bytes,
         )?;
+        ensure!(
+            launch_artifact.pin.bytes == pack.launch_bytes
+                && launch_artifact.pin.sha256 == pack.launch_sha256,
+            "batch launch spec changed after committed-registry discovery for {}",
+            pack.pack_id
+        );
         ensure!(
             receipt.launch == launch_artifact.pin,
             "launch byte/SHA-256 pin mismatch for {}",
@@ -1243,7 +1451,10 @@ mod tests {
             SourceUniverseBatchExecutionRecordProvenance, SourceUniverseBatchExecutionReport,
             SourceUniverseBatchExecutionReportStatus, execution_record_digest,
         },
-        source_universe_batch_launch::discover_committed_source_universe_execution_packs,
+        source_universe_batch_launch::{
+            CommittedSourceUniverseExecutionPack,
+            discover_committed_source_universe_execution_packs,
+        },
         source_universe_execution_pack::SourceUniverseExecutionPack,
     };
 
@@ -1252,6 +1463,7 @@ mod tests {
         SourceUniverseDurableTracerReportInput, build_source_universe_durable_tracer_receipt_set,
         parse_and_validate_source_universe_durable_tracer_receipt_set,
         read_and_validate_source_universe_durable_tracer_receipt_set,
+        run_admitted_source_universe_durable_tracer_registry,
         validate_source_universe_durable_tracer_aggregate_limits,
         validate_source_universe_durable_tracer_receipt_set,
         verify_source_universe_durable_tracer_checkout,
@@ -1284,6 +1496,104 @@ mod tests {
             .and_then(std::path::Path::parent)
             .expect("crate is nested below repository root")
             .to_path_buf()
+    }
+
+    fn exact_aggregate_limits(
+        committed: &[CommittedSourceUniverseExecutionPack],
+    ) -> (SourceUniverseDurableTracerAggregateLimits, u64) {
+        let selected_bytes = committed
+            .iter()
+            .map(|pack| {
+                let bytes = fs::read(&pack.summary_path).expect("read committed execution pack");
+                let summary: SourceUniverseExecutionPack =
+                    serde_json::from_slice(&bytes).expect("parse committed execution pack");
+                summary
+                    .records
+                    .iter()
+                    .find(|record| {
+                        pack.launch_spec
+                            .start_sequence
+                            .is_none_or(|start| record.sequence >= start)
+                    })
+                    .expect("RA-001a launch selects one materialized record")
+                    .selected_object_bytes
+            })
+            .sum::<u64>();
+        (
+            SourceUniverseDurableTracerAggregateLimits {
+                max_registry_packs: u64::try_from(committed.len())
+                    .expect("registry count fits u64"),
+                max_total_selected_object_bytes: selected_bytes,
+            },
+            selected_bytes,
+        )
+    }
+
+    fn mirror_last_pack_with_corrupt_accepted_tranche(
+        committed: &mut [CommittedSourceUniverseExecutionPack],
+    ) -> TempDir {
+        let source_root = repo_root().canonicalize().expect("canonical source root");
+        let mirror = TempDir::new().expect("create corrupt-control mirror");
+        fs::write(mirror.path().join("justfile"), b"mirror\n").expect("write mirror marker");
+        fs::write(mirror.path().join("AGENTS.md"), b"mirror\n").expect("write mirror marker");
+
+        let pack = committed
+            .last_mut()
+            .expect("committed registry is nonempty");
+        let original_summary_path = pack.summary_path.clone();
+        let summary_bytes = fs::read(&original_summary_path).expect("read execution pack");
+        let mut summary: SourceUniverseExecutionPack =
+            serde_json::from_slice(&summary_bytes).expect("parse execution pack");
+        let selected = summary
+            .records
+            .iter_mut()
+            .find(|record| {
+                pack.launch_spec
+                    .start_sequence
+                    .is_none_or(|start| record.sequence >= start)
+            })
+            .expect("RA-001a launch selects one record");
+        for path in [
+            &selected.run_spec_path,
+            &selected.accepted_tranche_path,
+            &selected.execution_plan_path,
+            &selected.source_bindings_path,
+        ] {
+            let source = source_root.join(path);
+            let destination = mirror.path().join(path);
+            fs::create_dir_all(destination.parent().expect("control has parent"))
+                .expect("create mirrored control parent");
+            fs::copy(&source, &destination).expect("copy mirrored control");
+        }
+        let corrupt_path = mirror.path().join(&selected.accepted_tranche_path);
+        let mut corrupt_bytes = fs::read(&corrupt_path).expect("read mirrored tranche");
+        corrupt_bytes.extend_from_slice(b"\ncorrupt-trailing-control\n");
+        fs::write(&corrupt_path, &corrupt_bytes).expect("corrupt mirrored tranche");
+        selected.accepted_tranche_bytes =
+            u64::try_from(corrupt_bytes.len()).expect("corrupt tranche length fits u64");
+        selected.accepted_tranche_sha256 = sha256_hex(&corrupt_bytes);
+
+        let mirror_summary_path = mirror.path().join(
+            original_summary_path
+                .strip_prefix(&source_root)
+                .expect("summary is below source root"),
+        );
+        fs::create_dir_all(mirror_summary_path.parent().expect("summary has parent"))
+            .expect("create mirrored summary parent");
+        let mirror_summary_bytes = crate::reference_artifact::canonical_json_bytes(&summary)
+            .expect("serialize mirrored execution pack");
+        fs::write(&mirror_summary_path, &mirror_summary_bytes)
+            .expect("write mirrored execution pack");
+        pack.summary_path = mirror_summary_path;
+        pack.scope_dir = mirror.path().join(
+            pack.scope_dir
+                .strip_prefix(&source_root)
+                .expect("scope is below source root"),
+        );
+        pack.launch_spec.execution_pack.bytes =
+            u64::try_from(mirror_summary_bytes.len()).expect("summary length fits u64");
+        pack.launch_spec.execution_pack.sha256 = sha256_hex(&mirror_summary_bytes);
+        mirror
     }
 
     fn run_git(repo: &std::path::Path, args: &[&str]) -> std::process::Output {
@@ -1530,7 +1840,7 @@ mod tests {
                         sha256: COMPLETION_SHA256.to_string(),
                         byte_len: 1,
                         version_id: format!("version-{}", record.sequence),
-                        e_tag: Some(format!("etag-{}", record.sequence)),
+                        e_tag: format!("etag-{}", record.sequence),
                     },
                 }),
             };
@@ -1564,33 +1874,13 @@ mod tests {
     fn aggregate_limits_bound_registry_breadth_and_selected_source_bytes() {
         let committed = discover_committed_source_universe_execution_packs(&repo_root())
             .expect("discover committed execution packs");
-        let selected_bytes = committed
-            .iter()
-            .map(|pack| {
-                let bytes = fs::read(&pack.summary_path).expect("read committed execution pack");
-                let summary: SourceUniverseExecutionPack =
-                    serde_json::from_slice(&bytes).expect("parse committed execution pack");
-                summary
-                    .records
-                    .iter()
-                    .find(|record| {
-                        pack.launch_spec
-                            .start_sequence
-                            .is_none_or(|start| record.sequence >= start)
-                    })
-                    .expect("RA-001a launch selects one materialized record")
-                    .selected_object_bytes
-            })
-            .sum::<u64>();
-        let exact_limits = SourceUniverseDurableTracerAggregateLimits {
-            max_registry_packs: u64::try_from(committed.len()).expect("registry count fits u64"),
-            max_total_selected_object_bytes: selected_bytes,
-        };
+        let (exact_limits, selected_bytes) = exact_aggregate_limits(&committed);
 
         let envelope =
             validate_source_universe_durable_tracer_aggregate_limits(&committed, exact_limits)
                 .expect("accept exact aggregate limits");
         assert_eq!(envelope.registry_packs, exact_limits.max_registry_packs);
+        assert_eq!(envelope.total_selected_records, envelope.registry_packs);
         assert_eq!(envelope.total_selected_object_bytes, selected_bytes);
 
         let count_error = validate_source_universe_durable_tracer_aggregate_limits(
@@ -1616,6 +1906,261 @@ mod tests {
                 .to_string()
                 .contains("max_total_selected_object_bytes")
         );
+    }
+
+    #[test]
+    fn production_admission_rejects_pack_byte_and_record_breaches_before_fanout() {
+        let mut committed = discover_committed_source_universe_execution_packs(&repo_root())
+            .expect("discover committed execution packs");
+        let (exact_limits, selected_bytes) = exact_aggregate_limits(&committed);
+
+        let mut pack_breach_launches = 0_u64;
+        let pack_error = run_admitted_source_universe_durable_tracer_registry(
+            &committed,
+            SourceUniverseDurableTracerAggregateLimits {
+                max_registry_packs: exact_limits.max_registry_packs - 1,
+                ..exact_limits
+            },
+            |pack| {
+                pack_breach_launches += 1;
+                Ok(SourceUniverseDurableTracerReportInput {
+                    pack_id: pack.pack_id.clone(),
+                    report_path: PathBuf::from("/must-not-launch"),
+                })
+            },
+        )
+        .expect_err("reject registry breadth before fanout");
+        assert!(pack_error.to_string().contains("max_registry_packs"));
+        assert_eq!(pack_breach_launches, 0);
+
+        let mut byte_breach_launches = 0_u64;
+        let byte_error = run_admitted_source_universe_durable_tracer_registry(
+            &committed,
+            SourceUniverseDurableTracerAggregateLimits {
+                max_total_selected_object_bytes: selected_bytes - 1,
+                ..exact_limits
+            },
+            |pack| {
+                byte_breach_launches += 1;
+                Ok(SourceUniverseDurableTracerReportInput {
+                    pack_id: pack.pack_id.clone(),
+                    report_path: PathBuf::from("/must-not-launch"),
+                })
+            },
+        )
+        .expect_err("reject aggregate selected bytes before fanout");
+        assert!(
+            byte_error
+                .to_string()
+                .contains("max_total_selected_object_bytes")
+        );
+        assert_eq!(byte_breach_launches, 0);
+
+        committed[0].launch_spec.record_limit = Some(2);
+        let mut record_breach_launches = 0_u64;
+        let record_error = run_admitted_source_universe_durable_tracer_registry(
+            &committed,
+            exact_limits,
+            |pack| {
+                record_breach_launches += 1;
+                Ok(SourceUniverseDurableTracerReportInput {
+                    pack_id: pack.pack_id.clone(),
+                    report_path: PathBuf::from("/must-not-launch"),
+                })
+            },
+        )
+        .expect_err("reject more than one selected record before fanout");
+        assert!(
+            record_error
+                .to_string()
+                .contains("must select exactly one record")
+        );
+        assert_eq!(record_breach_launches, 0);
+    }
+
+    #[test]
+    fn production_admission_rejects_corrupt_ordinary_control_before_fanout() {
+        let mut committed = discover_committed_source_universe_execution_packs(&repo_root())
+            .expect("discover committed execution packs");
+        let _mirror = mirror_last_pack_with_corrupt_accepted_tranche(&mut committed);
+        let (limits, _) = exact_aggregate_limits(&committed);
+        let mut launches = 0_u64;
+        let error =
+            run_admitted_source_universe_durable_tracer_registry(&committed, limits, |pack| {
+                launches += 1;
+                Ok(SourceUniverseDurableTracerReportInput {
+                    pack_id: pack.pack_id.clone(),
+                    report_path: PathBuf::from("/must-not-launch"),
+                })
+            })
+            .expect_err("reject corrupt accepted-tranche control before fanout");
+        assert!(
+            error.to_string().contains("preflight ordinary controls"),
+            "{error:#}"
+        );
+        assert_eq!(launches, 0);
+    }
+
+    #[test]
+    fn production_admission_rejects_last_launch_path_mutation_before_fanout() {
+        let mut committed = discover_committed_source_universe_execution_packs(&repo_root())
+            .expect("discover committed execution packs");
+        let (limits, _) = exact_aggregate_limits(&committed);
+        let aggregate =
+            validate_source_universe_durable_tracer_aggregate_limits(&committed, limits)
+                .expect("complete-registry cost/control admission succeeds before mutation");
+        let pack = committed
+            .last_mut()
+            .expect("committed registry is nonempty");
+        let mut replaced = fs::read(&pack.launch_path).expect("read admitted launch bytes");
+        let last = replaced.last_mut().expect("launch spec is nonempty");
+        *last = if *last == b'\n' { b' ' } else { b'\n' };
+        let replacement = TempDir::new().expect("create mutated launch parent");
+        let replacement_path = replacement.path().join("source-universe-batch-launch.toml");
+        fs::write(&replacement_path, &replaced).expect("write mutated last-pack launch bytes");
+        pack.launch_path = replacement_path
+            .canonicalize()
+            .expect("canonicalize mutated launch path");
+
+        let mut launches = 0_u64;
+        let error = launch_preflighted_source_universe_durable_tracer_registry(
+            &committed,
+            aggregate,
+            |pack| {
+                launches += 1;
+                Ok(SourceUniverseDurableTracerReportInput {
+                    pack_id: pack.pack_id.clone(),
+                    report_path: PathBuf::from("/must-not-launch"),
+                })
+            },
+        )
+        .expect_err("mutated last-pack launch artifact must reject before fanout");
+        assert!(format!("{error:#}").contains("SHA-256 mismatch"));
+        assert_eq!(launches, 0);
+    }
+
+    #[test]
+    fn production_admission_fans_out_only_after_complete_registry_preflight() {
+        let committed = discover_committed_source_universe_execution_packs(&repo_root())
+            .expect("discover committed execution packs");
+        let (limits, selected_bytes) = exact_aggregate_limits(&committed);
+        let mut launched = Vec::new();
+        let run =
+            run_admitted_source_universe_durable_tracer_registry(&committed, limits, |pack| {
+                launched.push(pack.pack_id.clone());
+                Ok(SourceUniverseDurableTracerReportInput {
+                    pack_id: pack.pack_id.clone(),
+                    report_path: PathBuf::from("/synthetic-report"),
+                })
+            })
+            .expect("admit exact complete-registry envelope");
+        assert_eq!(
+            run.aggregate.registry_packs,
+            u64::try_from(committed.len()).expect("registry count fits u64")
+        );
+        assert_eq!(
+            run.aggregate.total_selected_records,
+            run.aggregate.registry_packs
+        );
+        assert_eq!(run.aggregate.total_selected_object_bytes, selected_bytes);
+        assert_eq!(run.report_inputs.len(), committed.len());
+        assert_eq!(
+            launched,
+            committed
+                .iter()
+                .map(|pack| pack.pack_id.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn production_source_census_locks_one_registry_runner_and_private_fanout() {
+        let production = include_str!("source_universe_durable_tracer.rs");
+        let production = production
+            .split_once("\n#[cfg(test)]\nmod tests")
+            .expect("durable tracer source retains one explicit test-module boundary")
+            .0;
+        let live_harness =
+            include_str!("../tests/backtesting_vertical_slice_source_universe_durable_tracer.rs");
+        let batch_cli = include_str!("bin/source_universe_batch_execution.rs");
+        let batch_cli = batch_cli
+            .split_once("\n#[cfg(test)]\nmod tests")
+            .expect("batch CLI source retains one explicit test-module boundary")
+            .0;
+        assert_eq!(
+            production
+                .matches("pub fn run_source_universe_durable_tracer_registry(")
+                .count(),
+            1,
+            "exactly one public RA tracer registry runner must exist"
+        );
+        assert_eq!(
+            production
+                .matches("fn launch_admitted_source_universe_pack(")
+                .count(),
+            1,
+            "exactly one private RA tracer process fanout must exist"
+        );
+        assert_eq!(
+            production
+                .matches("Command::new(worker_executable)")
+                .count(),
+            1,
+            "the private fanout must own the only RA tracer worker Command"
+        );
+        assert_eq!(
+            production.matches(".arg(\"--spec-bytes\")").count(),
+            1,
+            "the tracer must pass the admitted launch byte length once"
+        );
+        assert_eq!(
+            production.matches(".arg(\"--spec-sha256\")").count(),
+            1,
+            "the tracer must pass the admitted launch SHA-256 once"
+        );
+        assert_eq!(
+            batch_cli
+                .matches("SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(")
+                .count(),
+            1,
+            "the child CLI must consume launch TOML through one pinned reader"
+        );
+        assert!(
+            !batch_cli.contains("SourceUniverseBatchLaunchSpec::from_toml_file("),
+            "the child CLI must not regain an unpinned launch reader"
+        );
+        assert_eq!(
+            production
+                .matches("resolve_output_dir(launch_parent, &committed.launch_spec.output_dir)")
+                .count(),
+            1,
+            "tracer admission must preflight the worker's resolved launch output root"
+        );
+        assert_eq!(
+            production
+                .matches("resolve_output_dir(launch_parent, &pack.launch_spec.output_dir)")
+                .count(),
+            1,
+            "tracer report discovery must reuse the resolved launch output root"
+        );
+        assert_eq!(
+            live_harness
+                .matches("run_source_universe_durable_tracer_registry(")
+                .count(),
+            1,
+            "the live harness must call the sole production registry runner once"
+        );
+        for forbidden in [
+            "Command::new",
+            "discover_committed_source_universe_execution_packs",
+            "validate_source_universe_durable_tracer_aggregate_limits",
+            "for pack in",
+        ] {
+            assert!(
+                !live_harness.contains(forbidden),
+                "live harness must not regain direct fanout fragment {forbidden:?}"
+            );
+        }
     }
 
     #[test]

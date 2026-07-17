@@ -12,7 +12,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 use crate::{
     atomic_artifact_write::open_pinned_regular_file,
-    hashing::sha256_hex,
+    hashing::{is_lowercase_sha256_hex, sha256_hex},
     path_resolution::{resolve_pack_control_path, validate_portable_path_component},
     pinned_regular_file::{PinnedRegularFileIdentity, read_exact_pinned_file},
     source_universe_batch_execution::{
@@ -291,6 +291,8 @@ pub struct CommittedSourceUniverseExecutionPack {
     pub scope_dir: PathBuf,
     pub generator_spec_path: PathBuf,
     pub launch_path: PathBuf,
+    pub launch_bytes: u64,
+    pub launch_sha256: String,
     pub summary_path: PathBuf,
     pub pack_id: String,
     pub launch_spec: SourceUniverseBatchLaunchSpec,
@@ -325,6 +327,12 @@ pub struct SourceUniverseBatchLaunchSpec {
     pub local_storage: SourceUniverseLocalStoragePolicy,
 }
 
+#[derive(Debug)]
+pub struct PinnedSourceUniverseBatchLaunchSpec {
+    pub canonical_path: PathBuf,
+    pub spec: SourceUniverseBatchLaunchSpec,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceUniverseBatchTransportSpec {
@@ -333,10 +341,77 @@ pub enum SourceUniverseBatchTransportSpec {
 }
 
 impl SourceUniverseBatchLaunchSpec {
-    pub fn from_toml_file(path: &Path) -> Result<Self> {
-        let bytes =
-            fs::read(path).with_context(|| format!("read batch launch spec {}", path.display()))?;
-        Self::from_toml_bytes(path, &bytes)
+    /// Read exactly the launch artifact admitted by the parent tracer.
+    ///
+    /// Length and SHA-256 are checked before parsing, so a pathname replacement
+    /// cannot make the child execute a different output root, execution pack,
+    /// or resource envelope from the one admitted before process fanout.
+    pub fn from_sha256_pinned_toml_file(
+        path: &Path,
+        expected_bytes: u64,
+        expected_sha256: &str,
+    ) -> Result<PinnedSourceUniverseBatchLaunchSpec> {
+        ensure!(
+            expected_bytes > 0,
+            "expected batch launch spec byte length must be positive"
+        );
+        ensure!(
+            is_lowercase_sha256_hex(expected_sha256),
+            "expected batch launch spec SHA-256 must be lowercase hex"
+        );
+        let declared_parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent_lease = PinnedDirectoryLease::open(declared_parent, None)
+            .context("pin batch launch spec parent directory")?;
+        let canonical_path = require_regular_contained_file(
+            &parent_lease.canonical_path,
+            path,
+            "batch launch spec",
+        )?;
+        ensure!(
+            canonical_path.parent() == Some(parent_lease.canonical_path.as_path()),
+            "batch launch spec {} must be one direct child of its pinned parent {}",
+            canonical_path.display(),
+            parent_lease.canonical_path.display()
+        );
+        parent_lease.revalidate()?;
+        let (mut file, identity) =
+            open_pinned_regular_file(&canonical_path).with_context(|| {
+                format!("open pinned batch launch spec {}", canonical_path.display())
+            })?;
+        identity
+            .revalidate_expected_parent(&parent_lease.canonical_path, &parent_lease.metadata)?;
+        ensure!(
+            identity.byte_len == expected_bytes,
+            "batch launch spec {} byte length mismatch: expected {}, got {}",
+            canonical_path.display(),
+            expected_bytes,
+            identity.byte_len
+        );
+        let bytes = read_exact_pinned_file(&mut file, &canonical_path, expected_bytes)?;
+        identity.revalidate(&canonical_path, &file)?;
+        identity
+            .revalidate_expected_parent(&parent_lease.canonical_path, &parent_lease.metadata)?;
+        parent_lease.revalidate()?;
+        let actual_sha256 = sha256_hex(&bytes);
+        ensure!(
+            actual_sha256 == expected_sha256,
+            "batch launch spec {} SHA-256 mismatch: expected {}, got {}",
+            canonical_path.display(),
+            expected_sha256,
+            actual_sha256
+        );
+        let spec = Self::from_toml_bytes(&canonical_path, &bytes)?;
+        identity.revalidate(&canonical_path, &file)?;
+        identity
+            .revalidate_expected_parent(&parent_lease.canonical_path, &parent_lease.metadata)?;
+        parent_lease.revalidate()?;
+        Ok(PinnedSourceUniverseBatchLaunchSpec {
+            canonical_path,
+            spec,
+        })
     }
 
     fn from_toml_bytes(path: &Path, bytes: &[u8]) -> Result<Self> {
@@ -494,6 +569,7 @@ pub fn discover_committed_source_universe_execution_packs(
             "batch launch spec",
             (&canonical_scope_dir, &scope_lease.metadata),
         )?;
+        let launch_sha256 = sha256_hex(&launch_bytes);
         let launch_spec =
             SourceUniverseBatchLaunchSpec::from_toml_bytes(&launch_path, &launch_bytes)?;
         let expected_summary_identity = Path::new(SOURCE_UNIVERSE_EXECUTION_PACK_OUTPUT_DIR)
@@ -582,6 +658,8 @@ pub fn discover_committed_source_universe_execution_packs(
             scope_dir: canonical_scope_dir,
             generator_spec_path: generator_spec_path.clone(),
             launch_path: launch_path.clone(),
+            launch_bytes: launch_identity.byte_len,
+            launch_sha256,
             summary_path: summary_path.clone(),
             pack_id: summary.pack_id,
             launch_spec,

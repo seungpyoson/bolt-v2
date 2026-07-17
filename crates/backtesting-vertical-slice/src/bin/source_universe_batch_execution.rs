@@ -33,6 +33,10 @@ const EXIT_PARTIAL_FAILURE: i32 = 2;
 struct Cli {
     #[arg(long)]
     spec: PathBuf,
+    #[arg(long)]
+    spec_bytes: u64,
+    #[arg(long)]
+    spec_sha256: String,
 }
 
 #[derive(Debug, Parser)]
@@ -123,8 +127,12 @@ fn main() -> Result<()> {
     }
     let cli = Cli::parse();
     let spec_path = resolve_existing_input_path(&cli.spec);
-    let spec = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)?;
-    run_batch(&spec_path, spec)
+    let pinned = SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+        &spec_path,
+        cli.spec_bytes,
+        &cli.spec_sha256,
+    )?;
+    run_batch(&pinned.canonical_path, pinned.spec)
 }
 
 fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()> {
@@ -285,6 +293,7 @@ mod tests {
         SourceUniverseBatchTransportSpec, build_batch_worker_fetcher, partial_failure_exit_code,
         resolve_execution_pack_path, run_batch,
     };
+    use backtesting_vertical_slice::hashing::sha256_hex;
     use backtesting_vertical_slice::source_universe_batch_execution::{
         SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionReportStatus,
         SourceUniverseBatchResourceLimits, SourceUniverseCacheRunVerification,
@@ -296,6 +305,18 @@ mod tests {
     };
     use backtesting_vertical_slice::source_universe_local_storage::SourceUniverseLocalStoragePolicy;
     use clap::Parser;
+
+    fn read_test_launch_spec(
+        path: &std::path::Path,
+    ) -> anyhow::Result<SourceUniverseBatchLaunchSpec> {
+        let bytes = fs::read(path)?;
+        SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+            path,
+            u64::try_from(bytes.len()).expect("test launch length fits u64"),
+            &sha256_hex(&bytes),
+        )
+        .map(|pinned| pinned.spec)
+    }
 
     fn test_local_storage_policy(root: &std::path::Path) -> SourceUniverseLocalStoragePolicy {
         let workspace_root = root.join("workspace");
@@ -712,7 +733,7 @@ max_lifecycle_cleanup_depth = 64
         )
         .expect("write incomplete launch spec");
 
-        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+        let error = read_test_launch_spec(&spec_path)
             .expect_err("missing aggregate bootstrap cap must fail closed");
         assert!(
             error.to_string().contains("parse batch launch spec"),
@@ -773,8 +794,8 @@ max_lifecycle_cleanup_depth = 64
         )
         .expect("write launch spec with unknown field");
 
-        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
-            .expect_err("unknown runtime field must fail closed");
+        let error =
+            read_test_launch_spec(&spec_path).expect_err("unknown runtime field must fail closed");
         assert!(
             error.to_string().contains("parse batch launch spec"),
             "{error:#}"
@@ -835,7 +856,7 @@ max_lifecycle_cleanup_depth = 64
         )
         .expect("write launch spec with retired resume input");
 
-        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+        let error = read_test_launch_spec(&spec_path)
             .expect_err("retired resume_report input must fail closed");
         assert!(
             error.to_string().contains("parse batch launch spec"),
@@ -911,7 +932,7 @@ max_lifecycle_cleanup_depth = 64
             )
             .expect("write launch spec with invalid bootstrap limits");
 
-            let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+            let error = read_test_launch_spec(&spec_path)
                 .expect_err("invalid bootstrap limit values must fail closed");
             assert!(error.to_string().contains(expected_error), "{error:#}");
         }
@@ -923,20 +944,41 @@ max_lifecycle_cleanup_depth = 64
             Cli::try_parse_from(["source-universe-batch-execution"]).is_err(),
             "the launch TOML path must be required"
         );
+        assert!(
+            Cli::try_parse_from(["source-universe-batch-execution", "--spec", "launch.toml",])
+                .is_err(),
+            "the admitted launch byte length and SHA-256 must be required"
+        );
         let error = Cli::try_parse_from([
             "source-universe-batch-execution",
             "--spec",
             "launch.toml",
+            "--spec-bytes",
+            "1",
+            "--spec-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
             "--max-launch-artifact-bytes",
             "1024",
         ])
         .expect_err("the retired scalar bootstrap flag must not remain accepted");
         assert!(error.to_string().contains("unexpected argument"), "{error}");
 
-        let parsed =
-            Cli::try_parse_from(["source-universe-batch-execution", "--spec", "launch.toml"])
-                .expect("one launch TOML path parses");
+        let parsed = Cli::try_parse_from([
+            "source-universe-batch-execution",
+            "--spec",
+            "launch.toml",
+            "--spec-bytes",
+            "1",
+            "--spec-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ])
+        .expect("one SHA-pinned launch TOML path parses");
         assert_eq!(parsed.spec, PathBuf::from("launch.toml"));
+        assert_eq!(parsed.spec_bytes, 1);
+        assert_eq!(
+            parsed.spec_sha256,
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
         assert!(
             Cli::try_parse_from([
                 "source-universe-batch-execution",
@@ -944,6 +986,10 @@ max_lifecycle_cleanup_depth = 64
                 "first.toml",
                 "--spec",
                 "second.toml",
+                "--spec-bytes",
+                "1",
+                "--spec-sha256",
+                "0000000000000000000000000000000000000000000000000000000000000000",
             ])
             .is_err(),
             "duplicate launch specs must fail"
@@ -1000,8 +1046,7 @@ max_lifecycle_cleanup_depth = 64
             "0".repeat(64)
         );
         fs::write(&spec_path, &valid).expect("write complete launch spec");
-        let parsed = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
-            .expect("complete launch spec parses");
+        let parsed = read_test_launch_spec(&spec_path).expect("complete launch spec parses");
         assert_eq!(parsed.start_sequence, Some(7));
         assert_eq!(parsed.record_limit, Some(3));
 
@@ -1013,7 +1058,7 @@ max_lifecycle_cleanup_depth = 64
             ),
         )
         .expect("write launch spec with zero worker memory limit");
-        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+        let error = read_test_launch_spec(&spec_path)
             .expect_err("zero worker memory limit must fail closed");
         assert!(
             error
@@ -1030,7 +1075,7 @@ max_lifecycle_cleanup_depth = 64
             ),
         )
         .expect("write launch spec with unknown nested limit");
-        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+        let error = read_test_launch_spec(&spec_path)
             .expect_err("unknown nested bootstrap limit must fail closed");
         assert!(
             error.to_string().contains("parse batch launch spec"),
@@ -1044,7 +1089,7 @@ max_lifecycle_cleanup_depth = 64
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let committed_packs = discover_committed_source_universe_execution_packs(&repository_root)
             .expect("discover committed execution packs");
-        for committed_pack in committed_packs {
+        for committed_pack in &committed_packs {
             let spec = &committed_pack.launch_spec;
             assert_eq!(spec.start_sequence, Some(0));
             assert_eq!(spec.record_limit, Some(1));
@@ -1064,11 +1109,101 @@ max_lifecycle_cleanup_depth = 64
                 u64::try_from(pack_bytes.len()).expect("pack size fits u64"),
                 spec.execution_pack.bytes
             );
+            assert_eq!(sha256_hex(&pack_bytes), spec.execution_pack.sha256);
+            let launch_bytes =
+                fs::read(&committed_pack.launch_path).expect("read committed batch launch spec");
             assert_eq!(
-                backtesting_vertical_slice::hashing::sha256_hex(&pack_bytes),
-                spec.execution_pack.sha256
+                u64::try_from(launch_bytes.len()).expect("launch size fits u64"),
+                committed_pack.launch_bytes
             );
+            assert_eq!(sha256_hex(&launch_bytes), committed_pack.launch_sha256);
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn sha_pinned_launch_reader_rejects_same_length_path_replacement_before_parse() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let committed = discover_committed_source_universe_execution_packs(&repository_root)
+            .expect("discover committed execution packs");
+        let pack = committed.last().expect("committed registry is nonempty");
+        let original = fs::read(&pack.launch_path).expect("read committed launch bytes");
+        let temp = tempfile::tempdir().expect("temporary launch spec parent");
+        let mutable_path = temp.path().join("source-universe-batch-launch.toml");
+        fs::write(&mutable_path, &original).expect("write admitted launch bytes");
+        SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+            &mutable_path,
+            pack.launch_bytes,
+            &pack.launch_sha256,
+        )
+        .expect("exact admitted launch bytes parse");
+        let length_error = SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+            &mutable_path,
+            pack.launch_bytes + 1,
+            &pack.launch_sha256,
+        )
+        .expect_err("wrong admitted launch length must fail before reading");
+        assert!(
+            length_error.to_string().contains("byte length mismatch"),
+            "{length_error:#}"
+        );
+
+        let mut replaced = original;
+        let last = replaced.last_mut().expect("launch spec is nonempty");
+        *last = if *last == b'\n' { b' ' } else { b'\n' };
+        fs::write(&mutable_path, &replaced).expect("replace launch bytes at admitted path");
+        let error = SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+            &mutable_path,
+            pack.launch_bytes,
+            &pack.launch_sha256,
+        )
+        .expect_err("same-length launch replacement must fail before parsing");
+        assert!(error.to_string().contains("SHA-256 mismatch"), "{error:#}");
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn sha_pinned_launch_reader_rejects_leaf_and_parent_symlink_substitution() {
+        use std::os::unix::fs::symlink;
+
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let committed = discover_committed_source_universe_execution_packs(&repository_root)
+            .expect("discover committed execution packs");
+        let pack = committed.last().expect("committed registry is nonempty");
+        let original = fs::read(&pack.launch_path).expect("read committed launch bytes");
+        let temp = tempfile::tempdir().expect("temporary launch spec parent");
+        let real_parent = temp.path().join("real-parent");
+        fs::create_dir(&real_parent).expect("create real launch parent");
+        let real_launch = real_parent.join("source-universe-batch-launch.toml");
+        fs::write(&real_launch, &original).expect("write real launch bytes");
+
+        let leaf_link = real_parent.join("leaf-link.toml");
+        symlink(&real_launch, &leaf_link).expect("create launch leaf symlink");
+        let leaf_error = SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+            &leaf_link,
+            pack.launch_bytes,
+            &pack.launch_sha256,
+        )
+        .expect_err("launch leaf symlink must fail closed");
+        let leaf_chain = format!("{leaf_error:#}");
+        assert!(
+            leaf_chain.contains("non-symlink regular file"),
+            "{leaf_error:#}"
+        );
+
+        let parent_link = temp.path().join("parent-link");
+        symlink(&real_parent, &parent_link).expect("create launch parent symlink");
+        let parent_error = SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
+            &parent_link.join("source-universe-batch-launch.toml"),
+            pack.launch_bytes,
+            &pack.launch_sha256,
+        )
+        .expect_err("launch parent symlink must fail closed");
+        let parent_chain = format!("{parent_error:#}");
+        assert!(
+            parent_chain.contains("must be a non-symlink directory"),
+            "{parent_error:#}"
+        );
     }
 
     #[test]
@@ -1124,7 +1259,7 @@ max_lifecycle_cleanup_depth = 64
         )
         .expect("write conflicting launch spec");
 
-        SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+        read_test_launch_spec(&spec_path)
             .expect_err("staged S3 transport must not accept HTTPS-only configuration");
     }
 
@@ -1180,8 +1315,8 @@ max_lifecycle_cleanup_depth = 64
         )
         .expect("write zero-grace launch spec");
 
-        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
-            .expect_err("zero termination grace must fail closed");
+        let error =
+            read_test_launch_spec(&spec_path).expect_err("zero termination grace must fail closed");
         assert!(
             error
                 .to_string()

@@ -248,6 +248,7 @@ fn completed_writer_accepts_identical_retry_and_rejects_metadata_replacement() {
                 receipt_uri: "s3://durable-catalog/publication-receipt.json".to_string(),
                 receipt_sha256: "1".repeat(64),
                 receipt_version_id: "receipt-version".to_string(),
+                receipt_e_tag: "receipt-etag".to_string(),
                 physical_manifest_sha256: "2".repeat(64),
             },
         })

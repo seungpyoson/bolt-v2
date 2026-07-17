@@ -1075,7 +1075,7 @@ mod tests {
                         sha256: digest.clone(),
                         byte_len: 1,
                         version_id: format!("test-version-{sequence}"),
-                        e_tag: None,
+                        e_tag: format!("test-etag-{sequence}"),
                     },
                 }),
             })

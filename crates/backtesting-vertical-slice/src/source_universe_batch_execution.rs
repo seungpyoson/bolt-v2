@@ -58,7 +58,8 @@ use crate::operator_work_budget::{
     system_operator_work_budget_clock,
 };
 use crate::path_resolution::{
-    resolve_contained_output_component, resolve_pack_control_path, validate_portable_path_component,
+    resolve_contained_output_component, resolve_pack_control_path, resolve_planned_write_path,
+    validate_portable_path_component,
 };
 use crate::pinned_regular_file::{PinnedRegularFileFingerprint, read_exact_pinned_file};
 use crate::reference_artifact::ReferenceArtifactPin;
@@ -83,7 +84,7 @@ use crate::{
 };
 
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION: &str =
-    "source-universe-batch-execution-report.v9";
+    "source-universe-batch-execution-report.v10";
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE: &str =
     "source-universe-batch-execution-report.json";
 
@@ -505,6 +506,34 @@ struct SourceUniverseVerifiedControlArtifacts {
     pub source_bindings_bytes: Arc<[u8]>,
     pub source_bindings_sha256: String,
     pub source_bindings: VerifiedSourceBindingRegistry,
+}
+
+/// Side-effect-free input for the sole selected-control preflight shared by
+/// ordinary batch execution and complete-registry RA tracer admission.
+pub(crate) struct SourceUniverseSelectedControlPreflightInput<'a> {
+    pub pack: &'a SourceUniverseExecutionPack,
+    pub pack_base_dir: &'a Path,
+    /// Prospective resolved launch output root used only to derive each record
+    /// output path for manifest validation. The preflight never creates it or
+    /// writes below it.
+    pub preflight_output_root: &'a Path,
+    pub start_sequence: Option<u64>,
+    pub record_limit: usize,
+    pub continue_on_error: bool,
+    pub limits: SourceUniverseBatchBootstrapLimits,
+}
+
+pub(crate) struct SourceUniverseSelectedControlPreflight {
+    verified_control_artifacts: BTreeMap<u64, SourceUniverseVerifiedControlArtifacts>,
+    control_artifact_failures: BTreeMap<u64, String>,
+}
+
+impl SourceUniverseSelectedControlPreflight {
+    pub(crate) fn verified_run_specs(&self) -> impl Iterator<Item = &RunSpec> {
+        self.verified_control_artifacts
+            .values()
+            .map(|controls| controls.run_spec.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4731,6 +4760,155 @@ fn validate_pack_record_control_alignment(
     Ok(())
 }
 
+fn resolve_selected_control_preflight_output_component(
+    output_root: &Path,
+    operator_run_id: &str,
+) -> Result<PathBuf> {
+    if output_root.exists() {
+        return resolve_contained_output_component(output_root, operator_run_id);
+    }
+    validate_portable_path_component("operator_run_id", operator_run_id)?;
+    let planned_root = resolve_planned_write_path(output_root).with_context(|| {
+        format!(
+            "resolve prospective batch output root {}",
+            output_root.display()
+        )
+    })?;
+    resolve_planned_write_path(&planned_root.join(operator_run_id)).with_context(|| {
+        format!(
+            "resolve prospective operator output below {}",
+            planned_root.display()
+        )
+    })
+}
+
+/// Validate every ordinary selected control and manifest without fetching a
+/// source object, creating output, or starting a worker process.
+///
+/// This is the single authority used by both [`prepare_batch`] and the RA
+/// complete-registry admission. A caller may choose ordinary
+/// `continue_on_error` classification, while RA admission passes `false` so
+/// any invalid selected control rejects the whole registry before fanout.
+pub(crate) fn preflight_selected_source_universe_controls(
+    input: SourceUniverseSelectedControlPreflightInput<'_>,
+) -> Result<SourceUniverseSelectedControlPreflight> {
+    let SourceUniverseSelectedControlPreflightInput {
+        pack,
+        pack_base_dir,
+        preflight_output_root,
+        start_sequence,
+        record_limit,
+        continue_on_error,
+        limits,
+    } = input;
+    let selected_record_count = pack
+        .records
+        .iter()
+        .filter(|record| {
+            start_sequence.is_none_or(|start_sequence| record.sequence >= start_sequence)
+        })
+        .take(record_limit)
+        .count();
+    ensure!(
+        selected_record_count > 0,
+        "batch selection for execution pack {} selects zero records (start_sequence={start_sequence:?}, record_limit={record_limit})",
+        pack.pack_id
+    );
+    let control_input_envelope = validate_selected_control_input_envelope(
+        pack,
+        pack_base_dir,
+        start_sequence,
+        record_limit,
+        limits,
+    )?;
+    let preflight_output_root = if preflight_output_root.is_absolute() {
+        preflight_output_root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("resolve current directory for batch output preflight")?
+            .join(preflight_output_root)
+    };
+
+    // Validate every record's sha256 field before any fetch or cache activity.
+    // A pack record whose selected_object_sha256 is not exactly 64 lowercase-hex
+    // characters would be used verbatim as a filesystem path component by the
+    // caching fetcher, allowing path traversal. Fail loud here so the class of
+    // invalid pack is caught at the single consume boundary.
+    for record in &pack.records {
+        validate_sha256_hex(&record.selected_object_sha256).with_context(|| {
+            format!(
+                "pack record {} (operator_run_id {}) has an invalid selected_object_sha256: \
+                 expected 64 lowercase-hex chars, got {} chars",
+                record.sequence,
+                record.operator_run_id,
+                record.selected_object_sha256.len(),
+            )
+        })?;
+    }
+
+    // Bind the selected records to the exact control bytes pinned by the pack
+    // before cache access, source fetches, or worker construction. Each unique
+    // resolved file is read once, while every selected record's expected digest
+    // remains checked independently.
+    let mut verified_artifact_cache = BTreeMap::new();
+    let mut verified_registry_cache = BTreeMap::new();
+    let mut verified_control_artifacts = BTreeMap::new();
+    let mut control_artifact_failures = BTreeMap::new();
+    for record in pack
+        .records
+        .iter()
+        .filter(|record| {
+            start_sequence.is_none_or(|start_sequence| record.sequence >= start_sequence)
+        })
+        .take(record_limit)
+    {
+        ensure!(
+            !verified_control_artifacts.contains_key(&record.sequence)
+                && !control_artifact_failures.contains_key(&record.sequence),
+            "execution pack {} has duplicate selected sequence {}",
+            pack.pack_id,
+            record.sequence,
+        );
+        let preflight = (|| {
+            let prospective_output_dir = resolve_selected_control_preflight_output_component(
+                &preflight_output_root,
+                &record.operator_run_id,
+            )?;
+            verify_pack_control_artifacts(PackControlVerificationInput {
+                pack,
+                pack_base_dir,
+                record,
+                record_output_dir: &prospective_output_dir,
+                control_input_envelope: &control_input_envelope,
+                verified_artifact_cache: &mut verified_artifact_cache,
+                verified_registry_cache: &mut verified_registry_cache,
+                limits,
+            })
+        })();
+        match preflight {
+            Ok(verified) => {
+                validate_durable_run_spec_preflight(&verified.run_spec, &verified.source_bindings)
+                    .with_context(|| {
+                        format!(
+                            "durable preflight for selected pack record {} ({})",
+                            record.sequence, record.operator_run_id
+                        )
+                    })?;
+                verified_control_artifacts.insert(record.sequence, verified);
+            }
+            Err(error) if continue_on_error => {
+                control_artifact_failures.insert(record.sequence, format!("{error:#}"));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(SourceUniverseSelectedControlPreflight {
+        verified_control_artifacts,
+        control_artifact_failures,
+    })
+}
+
 fn prepare_batch(
     batch_id: &str,
     launch_artifacts: &SourceUniverseBatchLaunchArtifacts,
@@ -4780,116 +4958,17 @@ fn prepare_batch(
         .record_limit
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(usize::MAX);
-    let selected_record_count = pack
-        .records
-        .iter()
-        .filter(|record| {
-            config
-                .start_sequence
-                .is_none_or(|start_sequence| record.sequence >= start_sequence)
-        })
-        .take(record_limit)
-        .count();
-    ensure!(
-        selected_record_count > 0,
-        "batch selection for execution pack {} selects zero records (start_sequence={:?}, record_limit={})",
-        pack.pack_id,
-        config.start_sequence,
-        record_limit
-    );
     let execution_record_sha256s = execution_record_digests(&pack)?;
-    let control_input_envelope = validate_selected_control_input_envelope(
-        &pack,
-        &pack_base_dir,
-        config.start_sequence,
-        record_limit,
-        launch_artifacts.bootstrap_limits,
-    )?;
-    let preflight_output_root = if output_dir.is_absolute() {
-        output_dir.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .context("resolve current directory for batch output preflight")?
-            .join(output_dir)
-    };
-
-    // Validate every record's sha256 field before any fetch or cache activity.
-    // A pack record whose selected_object_sha256 is not exactly 64 lowercase-hex
-    // characters would be used verbatim as a filesystem path component by the
-    // caching fetcher, allowing path traversal. Fail loud here so the class of
-    // invalid pack is caught at the single consume boundary.
-    for record in &pack.records {
-        validate_sha256_hex(&record.selected_object_sha256).with_context(|| {
-            format!(
-                "pack record {} (operator_run_id {}) has an invalid selected_object_sha256: \
-                 expected 64 lowercase-hex chars, got {} chars",
-                record.sequence,
-                record.operator_run_id,
-                record.selected_object_sha256.len(),
-            )
+    let selected_control_preflight =
+        preflight_selected_source_universe_controls(SourceUniverseSelectedControlPreflightInput {
+            pack: &pack,
+            pack_base_dir: &pack_base_dir,
+            preflight_output_root: output_dir,
+            start_sequence: config.start_sequence,
+            record_limit,
+            continue_on_error: config.continue_on_error,
+            limits: launch_artifacts.bootstrap_limits,
         })?;
-    }
-
-    // Bind the selected records to the exact control bytes pinned by the pack
-    // before cache access, source fetches, or worker construction. Selection is
-    // intentional: committed campaign packs retain
-    // only a bounded golden subset of generated run artifacts, and record_limit
-    // is the operator's explicit execution window. Each unique resolved file is
-    // read once, while every selected record's expected digest is still checked.
-    let mut verified_artifact_cache = BTreeMap::new();
-    let mut verified_registry_cache = BTreeMap::new();
-    let mut verified_control_artifacts = BTreeMap::new();
-    let mut control_artifact_failures = BTreeMap::new();
-    for record in pack
-        .records
-        .iter()
-        .filter(|record| {
-            config
-                .start_sequence
-                .is_none_or(|start_sequence| record.sequence >= start_sequence)
-        })
-        .take(record_limit)
-    {
-        ensure!(
-            !verified_control_artifacts.contains_key(&record.sequence)
-                && !control_artifact_failures.contains_key(&record.sequence),
-            "execution pack {} has duplicate selected sequence {}",
-            pack.pack_id,
-            record.sequence,
-        );
-        let preflight = (|| {
-            let prospective_output_dir = resolve_contained_output_component(
-                &preflight_output_root,
-                &record.operator_run_id,
-            )?;
-            verify_pack_control_artifacts(PackControlVerificationInput {
-                pack: &pack,
-                pack_base_dir: &pack_base_dir,
-                record,
-                record_output_dir: &prospective_output_dir,
-                control_input_envelope: &control_input_envelope,
-                verified_artifact_cache: &mut verified_artifact_cache,
-                verified_registry_cache: &mut verified_registry_cache,
-                limits: launch_artifacts.bootstrap_limits,
-            })
-        })();
-        match preflight {
-            Ok(verified) => {
-                validate_durable_run_spec_preflight(&verified.run_spec, &verified.source_bindings)
-                    .with_context(|| {
-                        format!(
-                            "durable preflight for selected pack record {} ({})",
-                            record.sequence, record.operator_run_id
-                        )
-                    })?;
-                verified_control_artifacts.insert(record.sequence, verified);
-            }
-            Err(error) if config.continue_on_error => {
-                control_artifact_failures.insert(record.sequence, format!("{error:#}"));
-            }
-            Err(error) => return Err(error),
-        }
-    }
 
     // No selected source-universe record can create output until every
     // selected RunSpec has proved the sole durable store/SSM/dispatch/capability
@@ -4902,8 +4981,8 @@ fn prepare_batch(
     Ok(OwnedBatchPlan {
         pack,
         execution_record_sha256s,
-        verified_control_artifacts,
-        control_artifact_failures,
+        verified_control_artifacts: selected_control_preflight.verified_control_artifacts,
+        control_artifact_failures: selected_control_preflight.control_artifact_failures,
         start_sequence: config.start_sequence,
         record_limit,
         output_root_lease,
@@ -6021,7 +6100,7 @@ pub(crate) fn synthetic_test_durable_completion() -> DurableCompletionLocator {
             sha256: crate::hashing::sha256_hex(b"synthetic durable completion"),
             byte_len: 1,
             version_id: "synthetic-version".to_string(),
-            e_tag: None,
+            e_tag: "synthetic-etag".to_string(),
         },
     }
 }

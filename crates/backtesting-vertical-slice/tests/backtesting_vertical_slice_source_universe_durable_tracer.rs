@@ -1,19 +1,15 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use backtesting_vertical_slice::{
     operator_work_budget::OperatorWorkBudgetGuard,
-    path_resolution::resolve_output_dir,
-    source_universe_batch_execution::SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE,
-    source_universe_batch_launch::discover_committed_source_universe_execution_packs,
     source_universe_durable_tracer::{
         SourceUniverseDurableTracerAggregateLimits, SourceUniverseDurableTracerCheckoutPolicy,
-        SourceUniverseDurableTracerReportInput, build_source_universe_durable_tracer_receipt_set,
+        build_source_universe_durable_tracer_receipt_set,
         read_and_validate_source_universe_durable_tracer_receipt_set,
-        validate_source_universe_durable_tracer_aggregate_limits,
+        run_source_universe_durable_tracer_registry,
         verify_source_universe_durable_tracer_checkout,
         write_source_universe_durable_tracer_receipt_set,
     },
@@ -96,15 +92,10 @@ fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
     verify_source_universe_durable_tracer_checkout(&repo_root, &source_revision, &checkout_policy)
         .expect("bind RA-001a proof to exact clean checkout before pack execution");
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_source_universe_batch_execution"));
-    assert!(
-        binary.is_absolute() && binary.is_file(),
-        "Cargo-provided source-universe batch executable must be one absolute file"
-    );
 
-    let committed = discover_committed_source_universe_execution_packs(&repo_root)
-        .expect("discover complete committed execution-pack registry");
-    let aggregate = validate_source_universe_durable_tracer_aggregate_limits(
-        &committed,
+    let registry_run = run_source_universe_durable_tracer_registry(
+        &repo_root,
+        &binary,
         SourceUniverseDurableTracerAggregateLimits {
             max_registry_packs: required_positive_u64_env(MAX_REGISTRY_PACKS_ENV),
             max_total_selected_object_bytes: required_positive_u64_env(
@@ -112,55 +103,13 @@ fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
             ),
         },
     )
-    .expect("preflight registry-complete RA-001a aggregate cost envelope");
+    .expect("admit and execute registry-complete RA-001a aggregate cost envelope");
     eprintln!(
-        "RA-001a aggregate preflight: registry_packs={} selected_object_bytes={}",
-        aggregate.registry_packs, aggregate.total_selected_object_bytes
+        "RA-001a aggregate preflight: registry_packs={} selected_records={} selected_object_bytes={}",
+        registry_run.aggregate.registry_packs,
+        registry_run.aggregate.total_selected_records,
+        registry_run.aggregate.total_selected_object_bytes
     );
-    let mut report_inputs = Vec::with_capacity(committed.len());
-    for pack in &committed {
-        let status = Command::new(&binary)
-            .arg("--spec")
-            .arg(&pack.launch_path)
-            .current_dir(&repo_root)
-            .status()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "start source-universe batch process for committed pack {}: {error}",
-                    pack.pack_id
-                )
-            });
-        assert!(
-            status.success(),
-            "source-universe batch process failed for committed pack {} with {}; stdout/stderr were streamed to the workflow log",
-            pack.pack_id,
-            status,
-        );
-
-        let launch_parent = pack
-            .launch_path
-            .parent()
-            .expect("committed launch path has a parent");
-        let declared_output = resolve_output_dir(launch_parent, &pack.launch_spec.output_dir);
-        let canonical_output = declared_output.canonicalize().unwrap_or_else(|error| {
-            panic!(
-                "canonicalize completed output for committed pack {} at {}: {error}",
-                pack.pack_id,
-                declared_output.display()
-            )
-        });
-        let report_path = canonical_output.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
-        assert!(
-            report_path.is_file(),
-            "completed report is absent for committed pack {} at {}",
-            pack.pack_id,
-            report_path.display()
-        );
-        report_inputs.push(SourceUniverseDurableTracerReportInput {
-            pack_id: pack.pack_id.clone(),
-            report_path,
-        });
-    }
 
     verify_source_universe_durable_tracer_checkout(&repo_root, &source_revision, &checkout_policy)
         .expect("revalidate exact clean checkout before receipt generation");
@@ -168,7 +117,7 @@ fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
         &repo_root,
         &source_revision,
         &expected_worker_sha256,
-        &report_inputs,
+        &registry_run.report_inputs,
     )
     .expect("build registry-complete RA-001a durable tracer receipt set");
     let artifact = write_source_universe_durable_tracer_receipt_set(

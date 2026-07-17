@@ -34,14 +34,17 @@ pub const CONVERSION_GENERATION_PATH_MARKER: &str = "/conversion=";
 pub const CONVERSION_TABLES_FILE: &str = "conversion-tables.json";
 
 // v4 adds the path-owned complete conversion-semantics digest to the embedded
-// fingerprint. RunSpec conversion paths derive it from the normalized full
-// RunSpec with only the terminal `/conversion=<sha256>` suffix removed; other
-// paths must bind their own complete output-determining semantics.
+// fingerprint. RA-001a intentionally uses a conservative normalized full
+// RunSpec hash with only the terminal `/conversion=<sha256>` suffix removed.
+// That can rotate a generation for provenance-only RunSpec changes; RA-001b
+// owns narrowing it to the proven output-semantics projection plus the selected
+// binding/capability digest. Other paths must bind their own complete
+// output-determining semantics.
 pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v4";
 pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v4";
 // Metadata contains the manifest/checkpoint hashes, not the fingerprint
 // itself, so its wire schema is unchanged by the v4 identity expansion.
-pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v2";
+pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v3";
 
 /// Converter identity fields that must match before output can be reused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,9 +65,11 @@ pub struct ConversionFingerprint {
     /// Canonical digest of the explicit NT Parquet encoding configuration.
     /// Completed output is reusable only when this identity is unchanged.
     pub catalog_encoding_hash: String,
-    /// Canonical digest of this path's complete output-determining conversion
-    /// semantics. RunSpec paths remove only their derived terminal generation
-    /// suffix before hashing; non-RunSpec paths bind their own exact semantics.
+    /// Canonical digest of this path's conversion semantics. RA-001a RunSpec
+    /// paths conservatively hash the normalized full RunSpec, removing only
+    /// their derived terminal generation suffix; RA-001b owns the narrower
+    /// proven output-semantics projection. Non-RunSpec paths bind their own
+    /// exact semantics.
     pub conversion_semantics_sha256: String,
 }
 
@@ -470,11 +475,12 @@ pub struct CatalogPublicationReceiptIdentity {
     pub receipt_uri: String,
     pub receipt_sha256: String,
     pub receipt_version_id: String,
+    pub receipt_e_tag: String,
     pub physical_manifest_sha256: String,
 }
 
 impl CatalogPublicationReceiptIdentity {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.catalog_root_uri.starts_with("s3://") && self.catalog_root_uri.ends_with('/'),
             "catalog publication root URI must be a canonical S3 directory URI"
@@ -498,6 +504,10 @@ impl CatalogPublicationReceiptIdentity {
         ensure!(
             !self.receipt_version_id.trim().is_empty(),
             "catalog publication receipt version id must not be empty"
+        );
+        ensure!(
+            !self.receipt_e_tag.trim().is_empty(),
+            "catalog publication receipt ETag must not be empty"
         );
         ensure!(
             crate::hashing::is_lowercase_sha256_hex(&self.physical_manifest_sha256),

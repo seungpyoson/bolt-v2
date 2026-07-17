@@ -246,10 +246,26 @@ pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_uri: String,
     pub proof_artifact_sha256: String,
     pub proof_artifact_version_id: String,
-    pub proof_artifact_e_tag: Option<String>,
+    #[serde(deserialize_with = "deserialize_nonempty_proof_artifact_etag")]
+    pub proof_artifact_e_tag: String,
     pub proof_artifact_create_only_write: CreateOnlyWriteDisposition,
     pub proof: NtCatalogCapabilityProof,
     pub evidence: NtCatalogCapabilityEvidence,
+}
+
+fn deserialize_nonempty_proof_artifact_etag<'de, D>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.trim().is_empty() {
+        return Err(serde::de::Error::custom(
+            "NT catalog capability proof artifact ETag must not be empty",
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

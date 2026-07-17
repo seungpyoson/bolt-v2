@@ -152,13 +152,13 @@ pub const OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE: &str =
     "operator-durable-output-candidate-seal.json";
 /// Published-catalog `BacktestNode` proof artifact filename.
 pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
-/// Sole remote completion authority for an attested v3 durable catalog run.
+/// Sole remote completion authority for an attested v4 durable catalog run.
 ///
 /// The schema version is part of the immutable key: an older terminal must
-/// never block or be mistaken for a v3 terminal.
-pub const DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.v3.json";
-const PUBLISHED_CATALOG_PROOF_VERSION: &str = "published-catalog-proof.v2";
-const DURABLE_COMPLETION_MANIFEST_VERSION: &str = "durable-completion-manifest.v3";
+/// never block or be mistaken for a v4 terminal.
+pub const DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.v4.json";
+const PUBLISHED_CATALOG_PROOF_VERSION: &str = "published-catalog-proof.v3";
+const DURABLE_COMPLETION_MANIFEST_VERSION: &str = "durable-completion-manifest.v4";
 
 const OPERATOR_ATTESTED_REDACTED: &str = "operator-attested-redacted";
 const OPERATOR_ATTESTED_ELAPSED_TIME_SECS: f64 = 0.0;
@@ -489,7 +489,8 @@ pub struct RunArtifacts {
 }
 
 /// Exact immutable S3 object identity carried by the durable terminal
-/// manifest. A current-key lookup is never an acceptable substitute.
+/// manifest. Version ID, ETag, size, and digest are all mandatory; a
+/// current-key lookup is never an acceptable substitute.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableObjectVersionIdentity {
@@ -497,8 +498,7 @@ pub struct DurableObjectVersionIdentity {
     pub sha256: String,
     pub byte_len: u64,
     pub version_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub e_tag: Option<String>,
+    pub e_tag: String,
 }
 
 impl DurableObjectVersionIdentity {
@@ -510,9 +510,10 @@ impl DurableObjectVersionIdentity {
         );
         ensure!(self.byte_len > 0, "{label} byte length must be positive");
         ensure_immutable_s3_version_id(&format!("{label} S3 version ID"), &self.version_id)?;
-        if let Some(e_tag) = &self.e_tag {
-            ensure!(!e_tag.is_empty(), "{label} ETag must not be empty");
-        }
+        ensure!(
+            !self.e_tag.trim().is_empty(),
+            "{label} ETag must not be empty"
+        );
         Ok(())
     }
 }
@@ -2764,6 +2765,7 @@ pub struct PublishedCatalogProof {
     pub publication_receipt_uri: String,
     pub publication_receipt_sha256: String,
     pub publication_receipt_version_id: String,
+    pub publication_receipt_e_tag: String,
     pub publication_physical_manifest_sha256: String,
     pub expected_iterations: usize,
     pub nt_iterations: usize,
@@ -2786,6 +2788,7 @@ impl PublishedCatalogProof {
         let receipt = metadata
             .hydrated_publication_receipt()
             .context("published-catalog proof requires hydrated publication metadata")?;
+        receipt.validate()?;
         let (catalog_scheme, _) = self
             .catalog_uri
             .split_once("://")
@@ -2802,6 +2805,7 @@ impl PublishedCatalogProof {
                     == Some(receipt.receipt_uri.as_str())
                 && self.publication_receipt_sha256 == receipt.receipt_sha256
                 && self.publication_receipt_version_id == receipt.receipt_version_id
+                && self.publication_receipt_e_tag == receipt.receipt_e_tag
                 && self.publication_physical_manifest_sha256 == receipt.physical_manifest_sha256,
             "published-catalog proof receipt identity does not match metadata and result contract"
         );
@@ -3025,13 +3029,13 @@ async fn read_pinned_durable_object_guarded(
     path: &object_store::path::Path,
     byte_len: u64,
     version_id: &str,
-    e_tag: Option<&str>,
+    e_tag: &str,
     label: &str,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<Vec<u8>> {
     let options = object_store::GetOptions {
         version: Some(version_id.to_string()),
-        if_match: e_tag.map(str::to_string),
+        if_match: Some(e_tag.to_string()),
         ..object_store::GetOptions::default()
     };
     let result = guarded_async_operation_outcome(
@@ -3049,12 +3053,10 @@ async fn read_pinned_durable_object_guarded(
             && result.meta.version.as_deref() == Some(version_id),
         "{label} exact-version response metadata mismatch"
     );
-    if let Some(e_tag) = e_tag {
-        ensure!(
-            result.meta.e_tag.as_deref() == Some(e_tag),
-            "{label} exact-version ETag mismatch"
-        );
-    }
+    ensure!(
+        result.meta.e_tag.as_deref() == Some(e_tag),
+        "{label} exact-version ETag mismatch"
+    );
     let mut output = ExactSizedObjectBuffer::new(byte_len)?;
     let mut stream = result.into_stream();
     loop {
@@ -3093,7 +3095,7 @@ async fn read_exact_durable_object_guarded(
         &path,
         identity.byte_len,
         &identity.version_id,
-        identity.e_tag.as_deref(),
+        &identity.e_tag,
         label,
         work_budget,
     )
@@ -3152,18 +3154,17 @@ async fn discover_current_durable_completion_guarded(
         .as_deref()
         .context("current durable completion has no S3 version ID")?;
     ensure_immutable_s3_version_id("current durable completion S3 version ID", version_id)?;
-    if let Some(e_tag) = current.e_tag.as_deref() {
-        ensure!(
-            !e_tag.is_empty(),
-            "current durable completion ETag is empty"
-        );
-    }
+    let e_tag = current
+        .e_tag
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .context("current durable completion has no nonempty ETag")?;
     let bytes = read_pinned_durable_object_guarded(
         store,
         &path,
         current.size,
         version_id,
-        current.e_tag.as_deref(),
+        e_tag,
         "current durable completion manifest",
         work_budget,
     )
@@ -3179,7 +3180,7 @@ async fn discover_current_durable_completion_guarded(
             sha256,
             byte_len: current.size,
             version_id: version_id.to_string(),
-            e_tag: current.e_tag,
+            e_tag: e_tag.to_string(),
         },
     };
     locator.validate()?;
@@ -3357,6 +3358,7 @@ async fn validate_durable_completion_manifest_bytes_guarded(
         receipt_identity.receipt_uri == manifest.publication_receipt.uri
             && receipt_identity.receipt_sha256 == manifest.publication_receipt.sha256
             && receipt_identity.receipt_version_id == manifest.publication_receipt.version_id
+            && receipt_identity.receipt_e_tag == manifest.publication_receipt.e_tag
             && receipt_identity.physical_manifest_sha256 == receipt.physical_manifest_sha256
             && contract.catalog_hash == manifest.catalog_hash
             && metadata.catalog_hash == manifest.catalog_hash
@@ -5173,7 +5175,8 @@ async fn run_from_run_spec_with_verified_registry_guarded(
         hydrated.catalog_root_uri == persisted.catalog_root_uri
             && hydrated.physical_manifest_sha256 == persisted.physical_manifest_sha256
             && hydrated.receipt_sha256 == persisted.receipt_sha256
-            && hydrated.receipt_version_id == persisted.receipt_version_id,
+            && hydrated.receipt_version_id == persisted.receipt_version_id
+            && hydrated.receipt_e_tag == persisted.receipt_e_tag,
         "hydrated catalog identity differs from the just-published immutable receipt"
     );
     let mut hydrated_manifest = prepared.local_manifest.clone();
@@ -5213,6 +5216,7 @@ async fn run_from_run_spec_with_verified_registry_guarded(
         publication_receipt_uri: persisted.receipt_uri.clone(),
         publication_receipt_sha256: persisted.receipt_sha256.clone(),
         publication_receipt_version_id: persisted.receipt_version_id.clone(),
+        publication_receipt_e_tag: persisted.receipt_e_tag.clone(),
         publication_physical_manifest_sha256: persisted.physical_manifest_sha256.clone(),
         expected_iterations: artifacts.output.expected_iterations,
         nt_iterations: artifacts.output.nt_result.iterations,
@@ -5237,6 +5241,7 @@ async fn run_from_run_spec_with_verified_registry_guarded(
                             receipt_uri: persisted.receipt_uri.clone(),
                             receipt_sha256: persisted.receipt_sha256.clone(),
                             receipt_version_id: persisted.receipt_version_id.clone(),
+                            receipt_e_tag: persisted.receipt_e_tag.clone(),
                             physical_manifest_sha256: persisted.physical_manifest_sha256.clone(),
                         },
                     },
@@ -9536,6 +9541,7 @@ venue = "must-not-be-part-of-durable-capability"
                 .to_string(),
             receipt_sha256: "1".repeat(64),
             receipt_version_id: "receipt-version".to_string(),
+            receipt_e_tag: "receipt-etag".to_string(),
             physical_manifest_sha256: "2".repeat(64),
         };
         let bind_retry = |local_catalog_root: PathBuf| {
@@ -9587,8 +9593,35 @@ venue = "must-not-be-part-of-durable-capability"
                 .to_string(),
             receipt_sha256: "1".repeat(64),
             receipt_version_id: "receipt-version".to_string(),
+            receipt_e_tag: "receipt-etag".to_string(),
             physical_manifest_sha256: "2".repeat(64),
         };
+        let mut missing_e_tag_wire = serde_json::to_value(&receipt).unwrap();
+        missing_e_tag_wire
+            .as_object_mut()
+            .expect("receipt wire object")
+            .remove("receipt_e_tag");
+        assert!(
+            serde_json::from_value::<CatalogPublicationReceiptIdentity>(missing_e_tag_wire)
+                .is_err(),
+            "receipt identity without an ETag must not deserialize"
+        );
+        let mut blank_e_tag_receipt = receipt.clone();
+        blank_e_tag_receipt.receipt_e_tag = "   ".to_string();
+        assert!(
+            artifacts
+                .output
+                .conversion_catalog_metadata
+                .clone()
+                .with_catalog_consumption_evidence(
+                    CatalogConsumptionEvidence::HydratedPublication {
+                        local_catalog_root: dir.path().join("blank-etag-hydration"),
+                        receipt: blank_e_tag_receipt,
+                    },
+                )
+                .is_err(),
+            "blank receipt ETag must fail before publication evidence is retained"
+        );
         let metadata = artifacts
             .output
             .conversion_catalog_metadata
@@ -9610,6 +9643,7 @@ venue = "must-not-be-part-of-durable-capability"
             publication_receipt_uri: receipt.receipt_uri.clone(),
             publication_receipt_sha256: receipt.receipt_sha256.clone(),
             publication_receipt_version_id: receipt.receipt_version_id.clone(),
+            publication_receipt_e_tag: receipt.receipt_e_tag.clone(),
             publication_physical_manifest_sha256: receipt.physical_manifest_sha256.clone(),
             expected_iterations: iterations,
             nt_iterations: iterations,
@@ -9622,6 +9656,21 @@ venue = "must-not-be-part-of-durable-capability"
             .validate_against(&metadata, &contract, &spec)
             .expect("fully bound proof");
 
+        let mut blank_receipt = receipt.clone();
+        blank_receipt.receipt_e_tag = "   ".to_string();
+        let mut blank_metadata = metadata.clone();
+        blank_metadata.catalog_consumption = CatalogConsumption::HydratedPublication {
+            receipt: blank_receipt,
+        };
+        let mut matching_blank_proof = proof.clone();
+        matching_blank_proof.publication_receipt_e_tag = "   ".to_string();
+        assert!(
+            matching_blank_proof
+                .validate_against(&blank_metadata, &contract, &spec)
+                .is_err(),
+            "matching blank ETags must not satisfy proof validation"
+        );
+
         let mut wrong_scheme = proof.clone();
         wrong_scheme.catalog_fs_protocol = "file".to_string();
         assert!(
@@ -9633,6 +9682,13 @@ venue = "must-not-be-part-of-durable-capability"
         wrong_result.expected_iterations += 1;
         assert!(
             wrong_result
+                .validate_against(&metadata, &contract, &spec)
+                .is_err()
+        );
+        let mut wrong_receipt_e_tag = proof.clone();
+        wrong_receipt_e_tag.publication_receipt_e_tag = "other-receipt-etag".to_string();
+        assert!(
+            wrong_receipt_e_tag
                 .validate_against(&metadata, &contract, &spec)
                 .is_err()
         );
@@ -9873,6 +9929,35 @@ venue = "must-not-be-part-of-durable-capability"
     }
 
     #[test]
+    fn durable_object_identity_requires_nonempty_etag() {
+        let mut identity = DurableObjectVersionIdentity {
+            uri: "s3://test-bucket/backtests/result.json".to_string(),
+            sha256: sha256_hex(b"result"),
+            byte_len: 1,
+            version_id: "version-1".to_string(),
+            e_tag: "etag-1".to_string(),
+        };
+        identity
+            .validate("durable test object")
+            .expect("nonempty ETag validates");
+
+        let mut missing = serde_json::to_value(&identity).expect("serialize durable identity");
+        missing
+            .as_object_mut()
+            .expect("durable identity object")
+            .remove("e_tag");
+        let error = serde_json::from_value::<DurableObjectVersionIdentity>(missing)
+            .expect_err("missing durable ETag must fail deserialization");
+        assert!(error.to_string().contains("e_tag"), "{error:#}");
+
+        identity.e_tag = "   ".to_string();
+        let error = identity
+            .validate("durable test object")
+            .expect_err("blank durable ETag must fail validation");
+        assert!(error.to_string().contains("ETag"), "{error:#}");
+    }
+
+    #[test]
     fn durable_cross_claim_validation_rejects_a_valid_contract_swapped_from_another_run() {
         let gz = gzip(SAMPLE_CSV);
         let first_spec = run_spec_for(&gz);
@@ -9896,7 +9981,7 @@ venue = "must-not-be-part-of-durable-capability"
             sha256: sha256_hex(role.as_bytes()),
             byte_len: 1,
             version_id: format!("version-{role}"),
-            e_tag: None,
+            e_tag: format!("etag-{role}"),
         };
         let publication_receipt = versioned_object(
             portable_artifact_uri(&first_spec.manifest.output_prefix, "catalog-receipt.json"),

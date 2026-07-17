@@ -175,6 +175,30 @@ def main() -> int:
         expected_mode="read_only",
     )
     assert_case(
+        "missing peer architecture digest fails closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        location={**LOCATION, "executable_sha256": {"ARM64": arm64_digest}},
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+    )
+    assert_case(
+        "extra unknown architecture digest fails closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        location={
+            **LOCATION,
+            "executable_sha256": {
+                **executable_digests,
+                "RISCV64": "0" * 64,
+            },
+        },
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+    )
+    assert_case(
         "unknown runner architecture fails closed",
         event_name="pull_request",
         github_ref="refs/pull/1302/merge",

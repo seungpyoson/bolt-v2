@@ -41,7 +41,7 @@ def _location_value(location: Mapping[str, object], key: str) -> str:
 
 def _architecture_digest(location: Mapping[str, object], runner_arch: str) -> tuple[str, bool]:
     raw_digests = location.get("executable_sha256")
-    if not isinstance(raw_digests, Mapping) or not raw_digests:
+    if not isinstance(raw_digests, Mapping) or set(raw_digests) != {"ARM64", "X64"}:
         return "", False
     digests_valid = all(
         isinstance(arch, str)

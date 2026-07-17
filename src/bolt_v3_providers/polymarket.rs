@@ -590,7 +590,7 @@ pub fn resolve_secrets(
             client_key: context.client_key.to_string(),
             field: "private_key_ssm_path".to_string(),
             source: format!(
-                "resolved polymarket private_key is not valid EVM signing material accepted by the configured provider consumers: {reason}"
+                "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter: {reason}"
             ),
         }
     })?;

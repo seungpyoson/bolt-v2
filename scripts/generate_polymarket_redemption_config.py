@@ -23,6 +23,8 @@ CANONICAL_HOST_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 CANONICAL_PROVENANCE_PATH_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-._~"
 )
+MAX_DNS_LABEL_OCTETS = 63
+MAX_DNS_HOSTNAME_OCTETS = 253
 MAX_U256 = (1 << 256) - 1
 
 
@@ -209,10 +211,10 @@ def _https_snapshot_root(value: object, field: str) -> pathlib.PurePosixPath:
             character
             for character in label.lower().strip("-")
             if character in CANONICAL_HOST_LABEL_CHARS
-        )
+        )[:MAX_DNS_LABEL_OCTETS]
         for label in hostname.rstrip(".").split(".")
         if label
-    )
+    )[:MAX_DNS_HOSTNAME_OCTETS].rstrip(".")
     canonical_path = "/" + _canonical_relative_path(parsed.path)
     canonical_url = urllib.parse.urlunsplit(
         ("https", canonical_hostname, canonical_path, "", "")

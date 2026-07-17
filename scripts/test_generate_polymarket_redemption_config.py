@@ -218,6 +218,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             )
 
     def test_repository_url_aliases_are_rejected(self) -> None:
+        overlong_label = "a" * 64
         aliases = (
             "https://github.com/Polymarket/../Polymarket/ctf-exchange-v2",
             "https://github.com//Polymarket/ctf-exchange-v2",
@@ -231,6 +232,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             "https://github.com/Polymarket/ctf-exchange-v2?ref=main",
             "https://github.com/Polymarket/ctf-exchange-v2#source",
             "https:///github.com/Polymarket/ctf-exchange-v2",
+            f"https://{overlong_label}.com/Polymarket/ctf-exchange-v2",
         )
         for alias in aliases:
             with self.subTest(alias=alias):
@@ -245,6 +247,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                     )
 
     def test_deployment_url_aliases_are_rejected(self) -> None:
+        overlong_hostname = ".".join(("a" * 63,) * 4)
         aliases = (
             "https://docs.polymarket.com/resources/../resources/contracts",
             "https://docs.polymarket.com//resources/contracts",
@@ -252,6 +255,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             "https://docs.polymarket.com./resources/contracts",
             r"https://docs.polymarket.com/resources\\contracts",
             "https:///docs.polymarket.com/resources/contracts",
+            f"https://{overlong_hostname}/resources/contracts",
         )
         for alias in aliases:
             with self.subTest(alias=alias):

@@ -404,6 +404,10 @@ fn is_test_source_path(path: &Path) -> bool {
         .any(|component| component.as_os_str() == "tests")
 }
 
+fn strategy_test_module_edges_are_cfg_gated(_tokens: &[Token]) -> bool {
+    false
+}
+
 fn production_strategy_files() -> Vec<PathBuf> {
     rust_files_below(&repo_path("src/strategies"))
         .into_iter()
@@ -2030,6 +2034,10 @@ use registration::StrategyRuntimeBinding;"#,
             "pub fn production_runtime_bindings() -> &'static [StrategyRuntimeBinding] { loop {} }",
             "#[cfg(test)] mod tests {} pub fn production_runtime_bindings() -> &'static [StrategyRuntimeBinding] { include!(\"hidden.rs\"); loop {} }",
         ),
+        valid.replace(
+            "#[cfg(test)] mod tests {}",
+            "#[allow(dead_code)] mod tests { #[cfg(test)] mod tests {} impl IntoIterator for crate::bolt_v3_strategy_registration::StrategyRuntimeBinding { type Item = crate::strategies::binary_oracle_maker::BinaryOracleMakerBuilder; type IntoIter = std::iter::Empty<Self::Item>; fn into_iter(self) -> Self::IntoIter { std::iter::empty() } } }",
+        ),
     ];
     for source in adversarial {
         assert!(!strategy_bindings_surface_errors(&tokenize(&source)).is_empty());
@@ -2239,6 +2247,40 @@ fn venue_ownership_rejects_a_test_only_accessor_decoy() {
         "the PR2 venue caller surface must remain accepted"
     );
 
+    let pr2_alternate_venue_argument = tokenize(
+        "fn venue_for_client(root: &Root, client_id: &str) { root.clients.get(client_id); } \
+         fn resolve_settlement_capability(loaded: &Loaded, execution_client_id: &str) { \
+             let Some(execution_venue) = venue_for_client(&loaded.root, execution_client_id) else { \
+                 return Invalid; \
+             }; \
+             let Some(settlement_currency) = settlement_currency_for_execution_account( \
+                 &loaded.root, { let _ = execution_venue; alternate_venue() }, account_id, \
+             ) else { return Invalid; }; \
+             Resolved(Resources { execution_venue, settlement_currency }); \
+         } \
+         fn execution_venue_for_context(context: &Context) -> Result<Venue, Error> { \
+             let execution_client_id = context.execution_client_id; \
+             venue_for_client(&context.root, execution_client_id).ok_or_else(|| error()) \
+         }",
+    );
+    assert!(
+        !shared_venue_ownership_errors(&pr2_alternate_venue_argument).is_empty(),
+        "settlement currency must consume the resolved venue directly"
+    );
+
+    let mut impl_caller = source_tokens("src/bolt_v3_strategy_registration.rs");
+    impl_caller.extend(tokenize(
+        "impl StrategyRegistrationContext<'_> { \
+             fn sneaky_venue(&self) { \
+                 venue_for_client(&self.loaded.root, \"polymarket\"); \
+             } \
+         }",
+    ));
+    assert!(
+        !shared_venue_ownership_errors(&impl_caller).is_empty(),
+        "venue_for_client calls inside impl methods must be attributed"
+    );
+
     for caller in [
         "fn assemble_strategy_build_context() { \
              let execution_venue = self::venue_for_client(root, client_id).ok_or_else(|| error())?; \
@@ -2312,6 +2354,16 @@ fn strategy_client_map_matcher_covers_non_get_access_paths() {
     ] {
         assert_eq!(count_sequence(&tokenize(source), &["clients"]), 1);
     }
+}
+
+#[test]
+fn excluded_strategy_test_modules_require_cfg_test_edges() {
+    assert!(strategy_test_module_edges_are_cfg_gated(&tokenize(
+        "#[cfg(test)] mod tests;"
+    )));
+    assert!(!strategy_test_module_edges_are_cfg_gated(&tokenize(
+        "mod tests;"
+    )));
 }
 
 #[test]

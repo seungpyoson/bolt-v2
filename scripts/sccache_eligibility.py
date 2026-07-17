@@ -11,8 +11,8 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,21 @@ def _location_value(location: Mapping[str, object], key: str) -> str:
     return value
 
 
+def _architecture_digest(location: Mapping[str, object], runner_arch: str) -> tuple[str, bool]:
+    raw_digests = location.get("executable_sha256")
+    if not isinstance(raw_digests, Mapping) or not raw_digests:
+        return "", False
+    digests_valid = all(
+        isinstance(arch, str)
+        and re.fullmatch(r"[A-Z0-9_]+", arch)
+        and isinstance(digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+        for arch, digest in raw_digests.items()
+    )
+    selected = raw_digests.get(runner_arch)
+    return (selected if isinstance(selected, str) else ""), digests_valid
+
+
 def resolve_sccache_eligibility(
     *,
     active: bool,
@@ -46,6 +61,7 @@ def resolve_sccache_eligibility(
     github_ref: str,
     read_role_arn: str,
     write_role_arn: str,
+    runner_arch: str,
     location: Mapping[str, object],
 ) -> SccacheEligibility:
     write_requested = bool(write_role_arn)
@@ -68,14 +84,16 @@ def resolve_sccache_eligibility(
     region = _location_value(location, "region")
     key_prefix = _location_value(location, "key_prefix")
     version = _location_value(location, "version")
-    executable_sha256 = _location_value(location, "executable_sha256")
+    executable_sha256, architecture_digests_valid = _architecture_digest(location, runner_arch)
     vars_present = all((role_arn, bucket, region, key_prefix, version, executable_sha256))
     location_valid = bool(
         bucket
         and region
         and key_prefix.endswith("/")
         and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version)
-        and re.fullmatch(r"[0-9a-f]{64}", executable_sha256)
+        and architecture_digests_valid
+        and re.fullmatch(r"[A-Z0-9_]+", runner_arch)
+        and executable_sha256
     )
     eligible = active and vars_present and location_valid
     return SccacheEligibility(
@@ -164,6 +182,7 @@ def main() -> int:
         github_ref=os.environ.get("GITHUB_REF", ""),
         read_role_arn=os.environ.get("READ_ROLE_ARN", ""),
         write_role_arn=os.environ.get("WRITE_ROLE_ARN", ""),
+        runner_arch=os.environ.get("RUNNER_ARCH", ""),
         location=_load_location(config_path),
     )
 

@@ -27,10 +27,12 @@ def assert_case(
     github_ref: str,
     read_role_arn: str = "arn:aws:iam::123456789012:role/read",
     write_role_arn: str = "arn:aws:iam::123456789012:role/write",
+    runner_arch: str = "ARM64",
     location: dict[str, object] | None = None,
     expected_eligible: bool,
     expected_role: str,
     expected_mode: str,
+    expected_digest: str | None = None,
 ) -> None:
     result = resolve_sccache_eligibility(
         active=active,
@@ -38,15 +40,23 @@ def assert_case(
         github_ref=github_ref,
         read_role_arn=read_role_arn,
         write_role_arn=write_role_arn,
+        runner_arch=runner_arch,
         location=LOCATION if location is None else location,
     )
     actual = (result.eligible, result.role_arn, result.cache_mode)
     expected = (expected_eligible, expected_role, expected_mode)
     if actual != expected:
         raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
+    if expected_digest is not None and result.executable_sha256 != expected_digest:
+        raise AssertionError(f"{label}: expected digest {expected_digest!r}, got {result.executable_sha256!r}")
 
 
 def main() -> int:
+    executable_digests = LOCATION.get("executable_sha256")
+    if not isinstance(executable_digests, dict) or set(executable_digests) != {"ARM64", "X64"}:
+        raise AssertionError("sccache executable provenance must cover the supported ARM64 and X64 runners")
+    arm64_digest = executable_digests["ARM64"]
+    x64_digest = executable_digests["X64"]
     read_role = "arn:aws:iam::123456789012:role/read"
     write_role = "arn:aws:iam::123456789012:role/write"
     assert_case(
@@ -56,6 +66,7 @@ def main() -> int:
         expected_eligible=True,
         expected_role=write_role,
         expected_mode="read_write",
+        expected_digest=arm64_digest,
     )
     assert_case(
         "main dispatch may write",
@@ -72,6 +83,8 @@ def main() -> int:
         expected_eligible=True,
         expected_role=read_role,
         expected_mode="read_only",
+        runner_arch="X64",
+        expected_digest=x64_digest,
     )
     assert_case(
         "merge group reads only",
@@ -150,6 +163,26 @@ def main() -> int:
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
+    )
+    assert_case(
+        "missing current architecture digest fails closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        runner_arch="X64",
+        location={**LOCATION, "executable_sha256": {"ARM64": arm64_digest}},
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+    )
+    assert_case(
+        "unknown runner architecture fails closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        runner_arch="RISCV64",
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+        expected_digest="",
     )
 
     verify = getattr(sccache_eligibility, "verify_sccache_executable", None)

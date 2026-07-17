@@ -47,6 +47,7 @@ runs:
         SCCACHE_ACTIVE: ${{ inputs.active }}
         READ_ROLE_ARN: ${{ inputs.role-arn }}
         WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}
+        RUNNER_ARCH: ${{ runner.arch }}
         CONFIG_PATH: ${{ inputs.config-path }}
       run: |
         python3.12 scripts/sccache_eligibility.py

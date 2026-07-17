@@ -7967,11 +7967,15 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
         "SCCACHE_ACTIVE: ${{ inputs.active }}",
         "READ_ROLE_ARN: ${{ inputs.role-arn }}",
         "WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}",
+        "RUNNER_ARCH: ${{ runner.arch }}",
         "CONFIG_PATH: ${{ inputs.config-path }}",
         "python3.12 scripts/sccache_eligibility.py",
     ):
         if fragment not in eligibility_text:
-            errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
+            if fragment == "RUNNER_ARCH: ${{ runner.arch }}":
+                errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must pass runner.arch to the sccache eligibility owner")
+            else:
+                errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
     for fragment in (
         'event_name == "push"',
         'event_name == "workflow_dispatch"',
@@ -8038,8 +8042,20 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     if not isinstance(version, str) or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version) is None:
         errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} location.version must be a v-prefixed semantic version")
     executable_sha256 = location.get("executable_sha256")
-    if not isinstance(executable_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", executable_sha256) is None:
-        errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256 must be a lowercase SHA-256 digest")
+    if not isinstance(executable_sha256, dict):
+        errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256 must be an architecture table")
+    else:
+        expected_arches = {"ARM64", "X64"}
+        if set(executable_sha256) != expected_arches:
+            errors.append(
+                f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256 must define exactly ARM64 and X64"
+            )
+        for arch in sorted(expected_arches):
+            digest = executable_sha256.get(arch)
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                errors.append(
+                    f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256.{arch} must be a lowercase SHA-256 digest"
+                )
     return errors
 
 
@@ -8060,6 +8076,8 @@ def sccache_eligibility_script_contract_errors(script_text: str) -> list[str]:
         'SCCACHE_S3_KEY_PREFIX={eligibility.key_prefix}',
         "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
         "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
+        'runner_arch=os.environ.get("RUNNER_ARCH", "")',
+        "def _architecture_digest(",
     ):
         if fragment not in script_text:
             errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} must include {fragment!r}")

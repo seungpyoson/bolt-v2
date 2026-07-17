@@ -349,10 +349,14 @@ def load_required_checks(
         prefix = f"ci_provenance.required_checks.{key}"
         if not isinstance(raw_entry, dict):
             raise ProvenanceError(f"{prefix} must be a table")
+        if "supports_carry_forward" in raw_entry:
+            raise ProvenanceError(f"{prefix}.supports_carry_forward is retired")
         integration_id = raw_entry.get("integration_id")
         if not isinstance(integration_id, int) or isinstance(integration_id, bool):
             raise ProvenanceError(f"{prefix}.integration_id must be an integer")
         proof_rule = require_table(raw_entry, "proof_rule", prefix)
+        if "carry_forward" in proof_rule:
+            raise ProvenanceError(f"{prefix}.proof_rule.carry_forward is retired")
         required_checks[key] = RequiredCheckConfig(
             key=key,
             context=require_string(raw_entry, "context", prefix),
@@ -642,6 +646,14 @@ def load_config(
     deploy = require_table(ci_provenance, "deploy", "ci_provenance")
     dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
     gate_names_table = require_table(ci_provenance, "gate_names", "ci_provenance")
+    retired_gate_name_keys = sorted(
+        set(gate_names_table)
+        & {"gate_defer", "gate_noop", "backtester_defer", "backtester_noop"}
+    )
+    if retired_gate_name_keys:
+        raise ProvenanceError(
+            f"ci_provenance.gate_names contains retired keys: {retired_gate_name_keys!r}"
+        )
     docs_table = require_table(ci_provenance, "docs", "ci_provenance")
     mergify = require_table(ci_provenance, "mergify", "ci_provenance")
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")

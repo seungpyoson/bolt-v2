@@ -3707,6 +3707,46 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def assert_retired_carry_forward_config_keys_are_rejected() -> None:
+    module = load_script()
+    mutations = {
+        "ci_provenance.gate_names contains retired keys: ['gate_defer']": replace_once(
+            CONFIG_TOML,
+            'gate_required = "gate"',
+            'gate_required = "gate"\ngate_defer = "gate-defer"',
+        ),
+        "ci_provenance.gate_names contains retired keys: ['gate_noop']": replace_once(
+            CONFIG_TOML,
+            'gate_required = "gate"',
+            'gate_required = "gate"\ngate_noop = "gate-noop"',
+        ),
+        "ci_provenance.gate_names contains retired keys: ['backtester_defer']": replace_once(
+            CONFIG_TOML,
+            'backtester_required = "backtester-gate"',
+            'backtester_required = "backtester-gate"\nbacktester_defer = "backtester-gate-defer"',
+        ),
+        "ci_provenance.gate_names contains retired keys: ['backtester_noop']": replace_once(
+            CONFIG_TOML,
+            'backtester_required = "backtester-gate"',
+            'backtester_required = "backtester-gate"\nbacktester_noop = "backtester-gate-noop"',
+        ),
+        "ci_provenance.required_checks.gate.supports_carry_forward is retired": replace_once(
+            CONFIG_TOML,
+            "runs_on_tags = true",
+            "runs_on_tags = true\nsupports_carry_forward = true",
+        ),
+        "ci_provenance.required_checks.gate.proof_rule.carry_forward is retired": replace_once(
+            CONFIG_TOML,
+            'fresh = ["docs", "full", "tag_reuse"]',
+            'fresh = ["docs", "full", "tag_reuse"]\ncarry_forward = ["noop"]',
+        ),
+    }
+    for fragment, config_text in mutations.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(pathlib.Path(tmp), config_text)
+            assert_raises(fragment, lambda: module.load_config(config_path))
+
+
 EXPECTED_REQUIRED_CHECK_PROOF_RULES = {
     "gate": {
         "runs_on_tags": True,
@@ -4975,6 +5015,7 @@ def main() -> int:
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
     assert_gate_names_reject_collisions()
+    assert_retired_carry_forward_config_keys_are_rejected()
     assert_required_checks_registry_matches_sources()
     assert_required_checks_registry_is_closed()
     assert_required_checks_registry_rejects_arrival_and_target_drift()

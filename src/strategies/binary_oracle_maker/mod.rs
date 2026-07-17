@@ -44,7 +44,7 @@ use crate::{
     },
     bolt_v3_maker_quote_control::QuoteControlBlockReason,
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
-    bolt_v3_maker_quote_set::{QuoteSetBlockReason, QuoteSetLegDecision},
+    bolt_v3_maker_quote_set::QuoteSetLegDecision,
     bolt_v3_maker_risk::{
         MakerLossRiskPolicy, MakerRiskDecision, apply_maker_risk_mode,
         maker_risk_mode_for_loss_decision,

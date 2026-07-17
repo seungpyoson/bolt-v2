@@ -3908,7 +3908,7 @@ impl BinaryOracleEdgeTaker {
 
     fn executable_entry_probe_for_side(
         &self,
-        _side: OutcomeSide,
+        side: OutcomeSide,
         order_side: OrderSide,
         edge_pricing_notional: f64,
     ) -> Result<ExecutableEntryProbe, BinaryOutcomeEdgeBlockReason> {
@@ -4740,7 +4740,7 @@ impl BinaryOracleEdgeTaker {
 
     fn current_exit_ev_bps_at(
         &self,
-        side: OutcomeSide,
+        _side: OutcomeSide,
         order_config: &ExitOrderExecutionConfig,
     ) -> Option<f64> {
         let effective_entry_cost = self.open_position_effective_entry_cost()?;

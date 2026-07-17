@@ -1161,13 +1161,11 @@ pub(crate) fn order_book_delta_at_precision(
     let price_value = delta.order.price.as_decimal().to_string();
     let price_value = rescaled(&price_value, price_precision)
         .context("represent order-book delta price at instrument precision")?;
-    let price = Price::from_str(&price_value)
-        .with_context(|| format!("parse order-book delta price {price_value:?}"))?;
+    let price = parse_price(&price_value, "order-book delta price")?;
     let size_value = delta.order.size.as_decimal().to_string();
     let size_value = rescaled(&size_value, size_precision)
         .context("represent order-book delta size at instrument precision")?;
-    let size = Quantity::from_str(&size_value)
-        .with_context(|| format!("parse order-book delta size {size_value:?}"))?;
+    let size = parse_quantity(&size_value, "order-book delta size")?;
     OrderBookDelta::new_checked(
         delta.instrument_id,
         delta.action,

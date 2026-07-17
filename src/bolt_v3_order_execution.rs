@@ -91,19 +91,23 @@ pub struct BoltV3PlannedFillLeg {
     pub quantity: Decimal,
 }
 
+pub struct BoltV3OrderRoutingConfig<'a> {
+    pub execution_client_id: &'a str,
+    pub account_id: &'a str,
+    pub product_surface_id: &'a str,
+    pub reporting_policy_id: &'a str,
+    pub reporting_unit: &'a str,
+    pub edge_basis_policy_id: &'a str,
+    pub carry_plan: BoltV3CarryPlan,
+}
+
 impl BoltV3OrderRoutingHandle {
     pub fn new(
         source: Arc<dyn EconomicsAdmissionSource>,
-        execution_client_id: &str,
-        account_id: &str,
-        product_surface_id: &str,
-        reporting_policy_id: &str,
-        reporting_unit: &str,
-        edge_basis_policy_id: &str,
-        carry_plan: BoltV3CarryPlan,
+        config: BoltV3OrderRoutingConfig<'_>,
     ) -> anyhow::Result<Self> {
         if matches!(
-            carry_plan,
+            config.carry_plan,
             BoltV3CarryPlan::Required {
                 holding_horizon_ns: 0
             }
@@ -112,13 +116,13 @@ impl BoltV3OrderRoutingHandle {
         }
         Ok(Self {
             source,
-            execution_client_id: EconomicsExecutionClientId::new(execution_client_id)?,
-            account_id: EconomicsAccountId::new(account_id)?,
-            product_surface_id: ProductSurfaceId::new(product_surface_id)?,
-            reporting_policy_id: ReportingPolicyId::new(reporting_policy_id)?,
-            reporting_unit: NativeUnitId::new(reporting_unit)?,
-            edge_basis_policy_id: EdgeBasisPolicyId::new(edge_basis_policy_id)?,
-            carry_plan,
+            execution_client_id: EconomicsExecutionClientId::new(config.execution_client_id)?,
+            account_id: EconomicsAccountId::new(config.account_id)?,
+            product_surface_id: ProductSurfaceId::new(config.product_surface_id)?,
+            reporting_policy_id: ReportingPolicyId::new(config.reporting_policy_id)?,
+            reporting_unit: NativeUnitId::new(config.reporting_unit)?,
+            edge_basis_policy_id: EdgeBasisPolicyId::new(config.edge_basis_policy_id)?,
+            carry_plan: config.carry_plan,
         })
     }
 

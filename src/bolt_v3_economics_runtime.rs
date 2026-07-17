@@ -450,13 +450,15 @@ pub(crate) fn test_order_routing_handle(
 ) -> crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
     crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
         Arc::new(TestEconomicsAdmissionSource),
-        execution_client_id,
-        "test-account",
-        "test-product-surface",
-        "test-reporting-policy",
-        "test-reporting-unit",
-        "test-edge-policy",
-        crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+        crate::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
+            execution_client_id,
+            account_id: "test-account",
+            product_surface_id: "test-product-surface",
+            reporting_policy_id: "test-reporting-policy",
+            reporting_unit: "test-reporting-unit",
+            edge_basis_policy_id: "test-edge-policy",
+            carry_plan: crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+        },
     )
     .expect("test order routing handle should build")
 }

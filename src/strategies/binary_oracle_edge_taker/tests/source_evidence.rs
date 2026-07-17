@@ -2705,6 +2705,7 @@ fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
         price: None,
         quantity_value: None,
         client_order_id: None,
+        planned_fill_legs: Vec::new(),
         blocked_reason: None,
     }
 }

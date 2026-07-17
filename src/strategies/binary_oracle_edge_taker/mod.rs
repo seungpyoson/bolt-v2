@@ -108,6 +108,7 @@ use crate::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy, OrderValuationContext,
         build_submit_admission_request_from_order, limit_notional_exceeds_sized_notional,
+        order_economics_facts,
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingConfig, TakerPricingRequest,
@@ -143,6 +144,31 @@ use crate::{
 pub mod archetype;
 
 mod selection;
+
+enum StrategyPlannedFillInput {
+    Exact(Vec<BoltV3PlannedFillLeg>),
+    #[cfg(test)]
+    CompiledSingleLevelFixture,
+}
+
+impl StrategyPlannedFillInput {
+    fn resolve(
+        self,
+        request: &BoltV3SubmitAdmissionRequestInput<'_>,
+    ) -> Result<Vec<BoltV3PlannedFillLeg>> {
+        match self {
+            Self::Exact(legs) => Ok(legs),
+            #[cfg(test)]
+            Self::CompiledSingleLevelFixture => {
+                let facts = order_economics_facts(request)?;
+                Ok(vec![BoltV3PlannedFillLeg {
+                    price: facts.price,
+                    quantity: facts.planned_fill_quantity,
+                }])
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 use self::selection::CandidateMarket;
@@ -5140,7 +5166,7 @@ impl BinaryOracleEdgeTaker {
             fields.submission_blocked_reason,
         );
     }
-    fn submit_order_with_decision_evidence(
+    fn submit_order_with_decision_evidence_and_fill_plan(
         &mut self,
         intent: BoltV3OrderIntentEvidence,
         order: nautilus_model::orders::OrderAny,
@@ -5148,31 +5174,13 @@ impl BinaryOracleEdgeTaker {
         gross_expected_value: Decimal,
         planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
     ) -> Result<BoltV3SubmitRoutingOutcome> {
-        // A15: build the (fallible) admission request BEFORE recording the
-        // order-intent evidence line. The request build can fail (e.g. a
-        // market-style order whose instrument declares no structural price
-        // ceiling, or unavailable canonical economics), in which case the order never
-        // fires —
-        // recording the intent first would leave an orphan evidence line for an
-        // order that was never submitted. Recording after the build keeps the
-        // evidence chain truthful: an order-intent line exists only once the
-        // order is fully valued and about to enter admission.
-        let request = self.submit_admission_request_from_order(
-            &intent,
-            &order,
-            gross_expected_value,
-            planned_fill_legs,
-        )?;
-        let policy = self.context.order_execution_policy();
-        let decision_evidence = self.context.decision_evidence_arc();
-        let submit_admission = self.context.submit_admission_arc();
-        let routing = BoltV3SubmitRoutingRequest::new(
-            decision_evidence.as_ref(),
-            submit_admission.as_ref(),
+        self.submit_order_with_decision_evidence_inner(
             intent,
-            request,
-        );
-        policy.route_submit(routing, self, order, submit_context)
+            order,
+            submit_context,
+            gross_expected_value,
+            StrategyPlannedFillInput::Exact(planned_fill_legs),
+        )
     }
 
     fn cancel_resting_order(
@@ -5189,12 +5197,70 @@ impl BinaryOracleEdgeTaker {
         Ok(())
     }
 
+    #[cfg(test)]
+    fn submit_order_with_decision_evidence(
+        &mut self,
+        intent: BoltV3OrderIntentEvidence,
+        order: nautilus_model::orders::OrderAny,
+        submit_context: BoltV3SubmitContext,
+        gross_expected_value: Decimal,
+    ) -> Result<BoltV3SubmitRoutingOutcome> {
+        self.submit_order_with_decision_evidence_inner(
+            intent,
+            order,
+            submit_context,
+            gross_expected_value,
+            StrategyPlannedFillInput::CompiledSingleLevelFixture,
+        )
+    }
+
+    fn submit_order_with_decision_evidence_inner(
+        &mut self,
+        intent: BoltV3OrderIntentEvidence,
+        order: nautilus_model::orders::OrderAny,
+        submit_context: BoltV3SubmitContext,
+        gross_expected_value: Decimal,
+        planned_fill_input: StrategyPlannedFillInput,
+    ) -> Result<BoltV3SubmitRoutingOutcome> {
+        let request = self.submit_admission_request_from_order_inner(
+            &intent,
+            &order,
+            gross_expected_value,
+            planned_fill_input,
+        )?;
+        let policy = self.context.order_execution_policy();
+        let decision_evidence = self.context.decision_evidence_arc();
+        let submit_admission = self.context.submit_admission_arc();
+        let routing = BoltV3SubmitRoutingRequest::new(
+            decision_evidence.as_ref(),
+            submit_admission.as_ref(),
+            intent,
+            request,
+        );
+        policy.route_submit(routing, self, order, submit_context)
+    }
+
+    #[cfg(test)]
     fn submit_admission_request_from_order(
         &self,
         intent: &BoltV3OrderIntentEvidence,
         order: &nautilus_model::orders::OrderAny,
         gross_expected_value: Decimal,
-        planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
+    ) -> Result<BoltV3SubmitAdmissionRequest> {
+        self.submit_admission_request_from_order_inner(
+            intent,
+            order,
+            gross_expected_value,
+            StrategyPlannedFillInput::CompiledSingleLevelFixture,
+        )
+    }
+
+    fn submit_admission_request_from_order_inner(
+        &self,
+        intent: &BoltV3OrderIntentEvidence,
+        order: &nautilus_model::orders::OrderAny,
+        gross_expected_value: Decimal,
+        planned_fill_input: StrategyPlannedFillInput,
     ) -> Result<BoltV3SubmitAdmissionRequest> {
         let client_order_id = order.client_order_id().to_string();
         let is_quote_quantity = order.is_quote_quantity();
@@ -5263,6 +5329,7 @@ impl BinaryOracleEdgeTaker {
             lifecycle_policy: self.submit_lifecycle_policy(),
             risk_reducing_exit_position,
         };
+        let planned_fill_legs = planned_fill_input.resolve(&admission_input)?;
         let economics_admission =
             self.context
                 .order_routing()?
@@ -6522,7 +6589,7 @@ impl BinaryOracleEdgeTaker {
             .decision_evidence()
             .record_strategy_input_snapshot(&strategy_input_snapshot)
             .and_then(|()| {
-                self.submit_order_with_decision_evidence(
+                self.submit_order_with_decision_evidence_and_fill_plan(
                     intent,
                     order,
                     BoltV3SubmitContext::with_client_id(client_id),

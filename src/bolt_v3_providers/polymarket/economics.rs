@@ -198,8 +198,10 @@ impl PolymarketEconomicsAdapter {
                         ExecutionKind::ProtocolTrading,
                         self.config.platform_component_id.clone(),
                         self.config.platform_formula_id.clone(),
-                        self.config.platform_rate_factor_id.clone(),
-                        *rate,
+                        CalculationFactor {
+                            factor_id: self.config.platform_rate_factor_id.clone(),
+                            value: *rate,
+                        },
                         amount,
                     )?);
                 }
@@ -234,8 +236,10 @@ impl PolymarketEconomicsAdapter {
                         ExecutionKind::AttachedRouting,
                         self.config.builder_component_id.clone(),
                         self.config.builder_formula_id.clone(),
-                        self.config.builder_rate_factor_id.clone(),
-                        rate_bps,
+                        CalculationFactor {
+                            factor_id: self.config.builder_rate_factor_id.clone(),
+                            value: rate_bps,
+                        },
                         amount,
                     )?);
                 }
@@ -309,8 +313,7 @@ impl PolymarketEconomicsAdapter {
         execution_kind: ExecutionKind,
         component_id: crate::economics::EconomicComponentId,
         formula_id: FormulaId,
-        factor_id: FormulaId,
-        factor_value: Decimal,
+        calculation_factor: CalculationFactor,
         amount: Decimal,
     ) -> Result<EstimatedEconomicComponent, PolymarketEconomicsError> {
         let snapshot_id = SnapshotId::new(self.snapshot.snapshot_id.clone())
@@ -328,10 +331,7 @@ impl PolymarketEconomicsAdapter {
             point_effect,
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
-            calculation_factors: vec![CalculationFactor {
-                factor_id,
-                value: factor_value,
-            }],
+            calculation_factors: vec![calculation_factor],
             formula_id,
             source: SourceValidity {
                 source_id: self.config.source_id.clone(),

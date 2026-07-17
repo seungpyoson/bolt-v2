@@ -5143,6 +5143,12 @@ mod tests {
                 }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
                 BoltV3AdmissionOutcome::RejectedCapitalAdmission => "rejected_capital_admission",
+                BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => {
+                    "rejected_economics_quote_expired"
+                }
+                BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch => {
+                    "rejected_economics_order_mismatch"
+                }
             };
             assert_eq!(decision_field["outcome"], expected_outcome);
             if outcome == BoltV3AdmissionOutcome::RejectedLossGovernorHalted {

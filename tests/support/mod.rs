@@ -120,13 +120,15 @@ pub fn sample_order_routing_handle(
 ) -> bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
     bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
         Arc::new(SampleEconomicsAdmissionSource),
-        execution_client_id,
-        "test-account",
-        "test-product-surface",
-        "test-reporting-policy",
-        "test-reporting-unit",
-        "test-edge-policy",
-        bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
+            execution_client_id,
+            account_id: "test-account",
+            product_surface_id: "test-product-surface",
+            reporting_policy_id: "test-reporting-policy",
+            reporting_unit: "test-reporting-unit",
+            edge_basis_policy_id: "test-edge-policy",
+            carry_plan: bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+        },
     )
     .expect("sample order routing handle should build")
 }

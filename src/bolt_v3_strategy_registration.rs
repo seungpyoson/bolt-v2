@@ -222,19 +222,21 @@ fn build_order_routing_handle(
         })?;
     BoltV3OrderRoutingHandle::new(
         Arc::new(source),
-        execution_client_id,
-        account_id,
-        product_surface_id,
-        economics.reporting_policy.as_str(),
-        context
-            .loaded
-            .root
-            .economics
-            .reporting
-            .pnl_currency
-            .as_str(),
-        edge_basis_policy_id,
-        carry_plan,
+        crate::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
+            execution_client_id,
+            account_id,
+            product_surface_id,
+            reporting_policy_id: economics.reporting_policy.as_str(),
+            reporting_unit: context
+                .loaded
+                .root
+                .economics
+                .reporting
+                .pnl_currency
+                .as_str(),
+            edge_basis_policy_id,
+            carry_plan,
+        },
     )
     .map_err(|error| binding_message(context, format!("economics routing: {error:#}")))
 }

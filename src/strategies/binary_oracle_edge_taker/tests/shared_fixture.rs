@@ -235,6 +235,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
             fetched_at_ns: intent.request.requested_at_ns,
             valid_until_ns: intent.request.requested_at_ns.saturating_add(1),
         };
+        let valid_until_ns = source.valid_until_ns;
         let adapter = RecordingEconomicsAdapterFixture {
             estimate: VenueQuoteEstimate {
                 authority: source.clone(),
@@ -1040,13 +1041,15 @@ pub(super) fn fixture_order_routing(
     let reporting_unit = fixture_settlement_currency();
     crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
         economics_source,
-        fixture_execution_venue().as_str(),
-        account_id.as_str(),
-        "prediction-market-binary",
-        "test-reporting-policy",
-        reporting_unit.code.as_str(),
-        "test-edge-basis-policy",
-        crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+        crate::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
+            execution_client_id: fixture_execution_venue().as_str(),
+            account_id: account_id.as_str(),
+            product_surface_id: "prediction-market-binary",
+            reporting_policy_id: "test-reporting-policy",
+            reporting_unit: reporting_unit.code.as_str(),
+            edge_basis_policy_id: "test-edge-basis-policy",
+            carry_plan: crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+        },
     )
     .expect("test economics routing should build")
 }

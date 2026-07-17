@@ -6,6 +6,15 @@ const ARCHETYPES: &[&str] = &[
     "src/strategies/complete_set_arbitrage/archetype.rs",
 ];
 
+const STRATEGY_MUTATION_AUTHORITY_NAMES: &[&str] = &[
+    "BoltV3NtSubmitOnlySink",
+    "BoltV3NtVenueMutationSink",
+    "BoltV3OrderExecutionMode",
+    "BoltV3OrderExecutionPolicy",
+    "NtStrategyVenueMutationSink",
+    "with_order_execution_policy",
+];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Token {
     text: String,
@@ -285,6 +294,26 @@ fn production_bolt_v3_files() -> Vec<PathBuf> {
     files
 }
 
+fn production_strategy_files() -> Vec<PathBuf> {
+    rust_files_below(&repo_path("src/strategies"))
+        .into_iter()
+        .filter(|path| {
+            !path
+                .components()
+                .any(|component| component.as_os_str() == "tests")
+        })
+        .collect()
+}
+
+fn named_strategy_mutation_authorities(tokens: &[Token]) -> Vec<&str> {
+    let actual = texts(tokens);
+    STRATEGY_MUTATION_AUTHORITY_NAMES
+        .iter()
+        .copied()
+        .filter(|name| actual.contains(name))
+        .collect()
+}
+
 fn workspace_crate_files() -> Vec<PathBuf> {
     rust_files_below(&repo_path("crates"))
 }
@@ -430,6 +459,18 @@ fn retired_registry_matcher_covers_direct_and_grouped_paths_only() {
 }
 
 #[test]
+fn strategy_mutation_authority_matcher_has_positive_and_negative_controls() {
+    let forbidden = tokenize(
+        "use crate::bolt_v3_order_execution::BoltV3NtVenueMutationSink;",
+    );
+    assert_eq!(
+        named_strategy_mutation_authorities(&forbidden),
+        vec!["BoltV3NtVenueMutationSink"]
+    );
+    assert!(named_strategy_mutation_authorities(&tokenize("emit_order_intent();")).is_empty());
+}
+
+#[test]
 fn every_archetype_uses_the_shared_build_context_without_inlining_provider_lookup() {
     for relative in ARCHETYPES {
         let tokens = source_tokens(relative);
@@ -464,6 +505,22 @@ fn production_bolt_v3_modules_do_not_reference_the_strategy_layer() {
     assert!(
         violations.is_empty(),
         "production bolt_v3 modules reference strategy paths: {violations:?}"
+    );
+}
+
+#[test]
+fn production_strategy_modules_do_not_name_nt_mutation_authority() {
+    let mut violations = Vec::new();
+    for path in production_strategy_files() {
+        let source = std::fs::read_to_string(&path).expect("strategy source should be readable");
+        let tokens = tokenize(&source);
+        for authority in named_strategy_mutation_authorities(&tokens) {
+            violations.push(format!("{}: {authority}", relative(&path)));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "production strategy modules name NT mutation authority outside shared admission: {violations:?}"
     );
 }
 

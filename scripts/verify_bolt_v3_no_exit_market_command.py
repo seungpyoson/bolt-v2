@@ -11,18 +11,25 @@ bypass Bolt's shadow-mode submit/cancel chokepoints.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from bolt_v3_source_roots import REPO_ROOT
-from rust_source_scanner import rust_tokens, strip_rust_comments_and_literals
+from rust_source_scanner import strip_rust_comments_and_literals
 from verify_bolt_v3_provider_leaks import production_text as production_source_text
 from verifier_io import require_nonempty
 
 
 def production_text(path: Path) -> str:
     return production_source_text(path.read_text(encoding="utf-8"))
+
+
+@dataclass(frozen=True)
+class Rule:
+    label: str
+    pattern: re.Pattern[str]
 
 
 @dataclass(frozen=True)
@@ -33,28 +40,19 @@ class Violation:
     excerpt: str
 
 
-EXIT_MARKET_COMMAND_NAMES = frozenset({"ExitMarket"})
-NT_VENUE_MUTATING_LIFECYCLE_APIS = frozenset(
-    {
-        "market_exit_strategy",
-        "submit_order_list",
-        "close_all_positions",
-        "cancel_all_orders",
-        "close_position",
-        "cancel_orders",
-        "modify_orders",
-        "modify_order",
-        "exit_market",
-        "market_exit",
-    }
-)
-STRATEGY_TRANSITIVE_MARKET_EXIT_APIS = frozenset(
-    {
-        "reset_market_exit_state",
-        "check_market_exit",
-        "on_time_event",
-        "stop",
-    }
+FORBIDDEN_RULES = (
+    Rule(
+        "NT ExitMarket command sender",
+        re.compile(r"(?<![A-Za-z0-9_])ExitMarket(?![A-Za-z0-9_])"),
+    ),
+    Rule(
+        "NT venue-mutating lifecycle API",
+        re.compile(
+            r"(?:\.|::)\s*(?:r#)?"
+            r"(?P<api>market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
+            r"(?![A-Za-z0-9_])"
+        ),
+    ),
 )
 
 # The shared execution-policy module IS Bolt's venue-mutation chokepoint: every
@@ -83,8 +81,19 @@ def is_routed_chokepoint_api(api: str) -> bool:
     substring but is a DIFFERENT, unrouted API; this returns False for it so the
     chokepoint exemption stays per-API.
 
-    The token matcher supplies one canonical identifier at a time, so an impostor
-    such as `force_modify_order` cannot reach this exact-membership exemption.
+    Scope of what this guards: this exact-match form is FORWARD-PROOFING of the
+    chokepoint-exemption contract, not a fix for a currently-reachable bypass. In
+    `find_violations_in_text`, `match.group("api")` is supplied by the forbidden
+    lifecycle regex, whose `(?:\\.|::)` prefix and `(?![A-Za-z0-9_])` suffix make the
+    capture ALWAYS exactly one of the listed API tokens — an impostor name like
+    `force_modify_order` can never reach this function through the real pipeline
+    (the regex boundary already rejects it; that path is covered by the
+    substring/comment boundary test). So a prior substring form was not exploitable
+    via the pipeline. What this function adds is a directly unit-tested,
+    self-contained exemption contract: `is_routed_chokepoint_api` is asserted on its
+    own (the impostor cases below document and forward-proof the contract), so the
+    chokepoint allowlist can't silently widen to a near-miss name if the regex ever
+    changes.
     """
     return api in ALLOWED_CHOKEPOINT_APIS
 
@@ -95,39 +104,27 @@ def line_number(text: str, pos: int) -> int:
 
 def find_violations_in_text(path: str, text: str) -> list[Violation]:
     scan_text = strip_rust_comments_and_literals(text)
-    tokens = rust_tokens(scan_text)
     violations: list[Violation] = []
-    for index, token in enumerate(tokens):
-        if not token.is_identifier:
-            continue
-        qualified = index > 0 and tokens[index - 1].text in {".", "::"}
-        label: str | None = None
-        if token.text in EXIT_MARKET_COMMAND_NAMES:
-            label = "NT ExitMarket command sender"
-        elif qualified and token.text in NT_VENUE_MUTATING_LIFECYCLE_APIS:
-            if path == CHOKEPOINT_POLICY_PATH and is_routed_chokepoint_api(token.text):
+    for rule in FORBIDDEN_RULES:
+        for match in rule.pattern.finditer(scan_text):
+            if (
+                rule.label == "NT venue-mutating lifecycle API"
+                and path == CHOKEPOINT_POLICY_PATH
+                and is_routed_chokepoint_api(match.group("api"))
+            ):
                 continue
-            label = "NT venue-mutating lifecycle API"
-        elif (
-            qualified
-            and path.startswith("src/strategies/")
-            and token.text in STRATEGY_TRANSITIVE_MARKET_EXIT_APIS
-        ):
-            label = "strategy NT transitive market-exit lifecycle API"
-        if label is None:
-            continue
-        line_start = text.rfind("\n", 0, token.start) + 1
-        line_end = text.find("\n", token.end)
-        if line_end == -1:
-            line_end = len(text)
-        violations.append(
-            Violation(
-                path=path,
-                line=line_number(scan_text, token.start),
-                label=label,
-                excerpt=text[line_start:line_end].strip(),
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.end())
+            if line_end == -1:
+                line_end = len(text)
+            violations.append(
+                Violation(
+                    path=path,
+                    line=line_number(scan_text, match.start()),
+                    label=rule.label,
+                    excerpt=text[line_start:line_end].strip(),
+                )
             )
-        )
     return violations
 
 

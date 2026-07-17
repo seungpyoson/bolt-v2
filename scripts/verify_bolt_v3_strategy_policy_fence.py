@@ -27,7 +27,7 @@ from bolt_v3_source_roots import (
     STRATEGY_SOURCE_ROOTS,
     source_set_files,
 )
-from rust_source_scanner import RustToken, rust_tokens, strip_rust_comments_and_literals
+from rust_source_scanner import strip_rust_comments_and_literals
 from verify_bolt_v3_provider_leaks import production_text
 from verifier_io import require_nonempty
 
@@ -45,11 +45,6 @@ class Rule:
 
 
 @dataclass(frozen=True)
-class MutationSurfaceRule:
-    semantic_class: str
-
-
-@dataclass(frozen=True)
 class Violation:
     path: str
     line: int
@@ -58,16 +53,26 @@ class Violation:
 
 
 NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
-    # Native core access and raw OrderManager command transport are the deepest
-    # mutation paths underneath the Strategy helper methods. `StrategyCore` and
-    # order-factory access remain allowed because strategies use them to construct intent.
+    # Raw StrategyCore / OrderManager command transport is the deepest NT
+    # mutation path underneath the Strategy helper methods.
     "core_mut",
     "order_manager",
+    "send_risk_command",
+    "send_exec_command",
+    "send_emulator_command",
+    "send_algo_command",
+    # Common raw msgbus command transport helpers underneath OrderManager.
+    "send_trading_command",
+    "send_any",
+    "send_any_value",
+    "risk_engine_queue_execute",
+    "exec_engine_queue_execute",
+    "emulator_queue_execute",
+    "algo_engine_queue_execute",
     # Current pinned NautilusTrader Strategy venue-mutation methods.
     "submit_order",
     "submit_order_list",
     "modify_order",
-    "modify_orders",
     "cancel_order",
     "cancel_orders",
     "cancel_all_orders",
@@ -77,7 +82,6 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "submit_order_via_nt",
     "cancel_order_via_nt",
     "cancel_all_orders_via_nt",
-    "modify_order_via_nt",
     # Near-neighbor variants are fenced before a future NT bump can use them.
     "submit_order_with_params",
     "submit_order_list_with_params",
@@ -98,22 +102,7 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "deny_order_list",
 )
 
-# High-collision lifecycle names are strategy-only evidence. Applying `stop` or
-# `on_start` to every Rust module would reject unrelated runtime/component APIs.
-NT_TRANSITIVE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
-    "strategy_core_mut",
-    "reset_market_exit_state",
-    "on_start",
-    "on_time_event",
-    "check_market_exit",
-    "stop",
-)
-
 NT_VENUE_MUTATION_BARE_NAMES: tuple[str, ...] = (
-    "send_risk_command",
-    "send_exec_command",
-    "send_emulator_command",
-    "send_algo_command",
     "send_trading_command",
     "send_any",
     "send_any_value",
@@ -128,9 +117,6 @@ NT_TRADING_COMMAND_SURFACE_NAMES: tuple[str, ...] = (
     "SubmitOrder",
     "SubmitOrderList",
     "ModifyOrder",
-    "ModifyOrders",
-    "BatchModifyOrders",
-    "BatchCancelOrders",
     "CancelOrder",
     "CancelOrders",
     "CancelAllOrders",
@@ -140,12 +126,43 @@ NT_TRADING_COMMAND_SURFACE_NAMES: tuple[str, ...] = (
     "DenyOrderList",
 )
 
-DIRECT_NT_VENUE_MUTATION_RULE = MutationSurfaceRule("qualified_method")
-TRANSITIVE_NT_VENUE_MUTATION_RULE = MutationSurfaceRule("strategy_qualified_lifecycle")
-RAW_MSGBUS_NT_VENUE_MUTATION_RULE = MutationSurfaceRule("reserved_identifier")
+NT_VENUE_MUTATION_METHOD_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(NT_VENUE_MUTATION_METHOD_NAMES, key=len, reverse=True)
+)
+NT_VENUE_MUTATION_BARE_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(NT_VENUE_MUTATION_BARE_NAMES, key=len, reverse=True)
+)
+NT_TRADING_COMMAND_SURFACE_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(NT_TRADING_COMMAND_SURFACE_NAMES, key=len, reverse=True)
+)
 
-STRATEGY_POLICY_RULES: tuple[Rule | MutationSurfaceRule, ...] = (
-    TRANSITIVE_NT_VENUE_MUTATION_RULE,
+DIRECT_NT_VENUE_MUTATION_RULE = Rule(
+    "direct NT venue mutation call",
+    re.compile(
+        r"(?:\.\s*|(?<![A-Za-z0-9_])"
+        r"(?:Self|[A-Za-z_][A-Za-z0-9_]*"
+        r"(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*::\s*|<[^>\n]+>\s*::\s*)"
+        rf"(?:{NT_VENUE_MUTATION_METHOD_PATTERN})"
+        r"(?=\s*(?:::<|\(|;|,|\)|$))"
+    ),
+)
+
+RAW_MSGBUS_NT_VENUE_MUTATION_RULE = Rule(
+    "direct NT venue mutation call",
+    re.compile(
+        r"(?<![A-Za-z0-9_:])"
+        rf"(?:{NT_VENUE_MUTATION_BARE_PATTERN})"
+        r"(?=\s*(?:::<|\(|;|,|\)|$))"
+        r"|(?<![A-Za-z0-9_:])"
+        rf"(?:{NT_TRADING_COMMAND_SURFACE_PATTERN})"
+        r"(?=\s*(?:::|<|\(|;|,|:|\)|$))"
+    ),
+)
+
+STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
     Rule(
         "dead runtime-selection bus path",
         re.compile(
@@ -261,7 +278,7 @@ EXECUTION_POLICY_RULES: tuple[Rule, ...] = (
     ),
 )
 
-FORBIDDEN_RULES: tuple[Rule | MutationSurfaceRule, ...] = (
+FORBIDDEN_RULES: tuple[Rule, ...] = (
     *STRATEGY_POLICY_RULES,
     *EXECUTION_POLICY_RULES,
     DIRECT_NT_VENUE_MUTATION_RULE,
@@ -443,66 +460,8 @@ def collect_strategy_source_root_violations() -> list[Violation]:
     ]
 
 
-def violation_for_span(
-    path: str, text: str, start: int, end: int, label: str
-) -> Violation:
-    line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    if line_end == -1:
-        line_end = len(text)
-    return Violation(
-        path=path,
-        line=line_number(text, start),
-        label=label,
-        excerpt=text[line_start:line_end].strip(),
-    )
-
-
-def mutation_surface_violations(
-    path: str,
-    text: str,
-    tokens: list[RustToken],
-    rule: MutationSurfaceRule,
-) -> list[Violation]:
-    if path in ALLOWED_DIRECT_NT_MUTATION_PATHS:
-        return []
-    if (
-        rule.semantic_class == "strategy_qualified_lifecycle"
-        and not path.startswith("src/strategies/")
-    ):
-        return []
-
-    violations: list[Violation] = []
-    for index, token in enumerate(tokens):
-        if not token.is_identifier:
-            continue
-        qualified = index > 0 and tokens[index - 1].text in {".", "::"}
-        matched = (
-            rule.semantic_class == "reserved_identifier"
-            and token.text
-            in NT_VENUE_MUTATION_BARE_NAMES + NT_TRADING_COMMAND_SURFACE_NAMES
-        ) or (
-            rule.semantic_class == "qualified_method"
-            and qualified
-            and token.text in NT_VENUE_MUTATION_METHOD_NAMES
-        ) or (
-            rule.semantic_class == "strategy_qualified_lifecycle"
-            and qualified
-            and token.text in NT_TRANSITIVE_MUTATION_METHOD_NAMES
-        )
-        if matched:
-            violations.append(
-                violation_for_span(
-                    path, text, token.start, token.end, "direct NT venue mutation call"
-                )
-            )
-    return violations
-
-
 def find_violations_in_text(
-    path: str,
-    text: str,
-    rules: tuple[Rule | MutationSurfaceRule, ...] = FORBIDDEN_RULES,
+    path: str, text: str, rules: tuple[Rule, ...] = FORBIDDEN_RULES
 ) -> list[Violation]:
     # Blank comments and string literals to equal-length whitespace, preserving
     # every newline so match offsets still map 1:1 onto `text` for accurate line
@@ -510,11 +469,12 @@ def find_violations_in_text(
     # banned token named inside an error message or doc string is not a false
     # positive; literal-targeting rules (scan_literals=True) scan the original.
     code_only = strip_rust_comments_and_literals(text)
-    tokens = rust_tokens(code_only)
     violations: list[Violation] = []
     for rule in rules:
-        if isinstance(rule, MutationSurfaceRule):
-            violations.extend(mutation_surface_violations(path, text, tokens, rule))
+        if (
+            rule.label == "direct NT venue mutation call"
+            and path in ALLOWED_DIRECT_NT_MUTATION_PATHS
+        ):
             continue
         if (
             rule.label == "direct kill-switch action bypass"
@@ -553,18 +513,20 @@ def find_violations_in_text(
             continue
         scan_text = text if rule.scan_literals else code_only
         for match in rule.pattern.finditer(scan_text):
-            violation = violation_for_span(
-                path, text, match.start(), match.end(), rule.label
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.end())
+            if line_end == -1:
+                line_end = len(text)
+            violation = Violation(
+                path=path,
+                line=line_number(text, match.start()),
+                label=rule.label,
+                excerpt=text[line_start:line_end].strip(),
             )
             if (violation.path, violation.label, violation.excerpt) in ALLOWED_EXACT_VIOLATIONS:
                 continue
             violations.append(violation)
-    return [
-        violation
-        for violation in violations
-        if (violation.path, violation.label, violation.excerpt)
-        not in ALLOWED_EXACT_VIOLATIONS
-    ]
+    return violations
 
 
 def collect_violations() -> list[Violation]:

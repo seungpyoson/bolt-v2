@@ -1016,7 +1016,7 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
     }
     for source in [
         "#[cfg(test)] unexpected_prefix fn production() { self.submit_order(order); } fn production_after() {}",
-        "#[cfg(test)] unexpected_prefix struct Production { command: SubmitOrder } struct ProductionAfter;",
+        "#[cfg(test)] unexpected_prefix struct Production { command: SubmitOrder } struct production_after;",
         "#[cfg(test)] unexpected_prefix mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
         "#[cfg(test)] unexpected_prefix if enabled { self.modify_order(order); } fn production_after() {}",
     ] {

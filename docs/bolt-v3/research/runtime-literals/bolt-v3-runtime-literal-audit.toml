@@ -21210,7 +21210,7 @@ classification = "provider_market_metadata_key"
 reason = "Pinned Gamma provider metadata key whose runtime boolean value is provider supplied."
 
 [[allowed]]
-path = "src/bolt_v3_risk_closure_workspace/generated.rs"
+path = "src/bolt_v3_application_resource_ledger/risk_closure_workspace/generated.rs"
 kind = "number"
 literal = '''167772160'''
 context = '''arena_bytes: 167772160,'''
@@ -21218,7 +21218,7 @@ classification = "generated_risk_closure_workspace_arena_bytes"
 reason = "Generated projection of risk_closure_workspaces.arena_bytes from config/risk-closure-workspaces.toml; the generated-file drift fence prevents this emitted value from becoming an independent runtime authority."
 
 [[allowed]]
-path = "src/bolt_v3_risk_closure_workspace/generated.rs"
+path = "src/bolt_v3_application_resource_ledger/risk_closure_workspace/generated.rs"
 kind = "number"
 literal = '''16777216'''
 context = '''slot_bytes: 16777216,'''
@@ -21226,7 +21226,7 @@ classification = "generated_risk_closure_workspace_slot_bytes"
 reason = "Generated projection of the sole risk_closure_workspaces.slot_bytes TOML authority; the generated-file drift fence prevents this emitted value from becoming an independent runtime authority."
 
 [[allowed]]
-path = "src/bolt_v3_risk_closure_workspace/generated.rs"
+path = "src/bolt_v3_application_resource_ledger/risk_closure_workspace/generated.rs"
 kind = "number"
 literal = '''10'''
 context = '''capacity: 10,'''

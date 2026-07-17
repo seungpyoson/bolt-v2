@@ -281,12 +281,10 @@ integration_id = 15368
 required = true
 target = true
 runs_on_tags = true
-supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
 fresh = ["docs", "full", "tag_reuse"]
-carry_forward = ["noop"]
 
 [ci_provenance.required_checks.backtester-gate]
 context = "backtester-gate"
@@ -295,12 +293,10 @@ integration_id = 15368
 required = true
 target = true
 runs_on_tags = true
-supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["docs", "full", "noop", "tag_reuse"]
-carry_forward = []
+fresh = ["docs", "full", "tag_reuse"]
 
 [ci_provenance.required_checks.host-health]
 context = "host-health"
@@ -309,12 +305,10 @@ integration_id = 15368
 required = true
 target = true
 runs_on_tags = false
-supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
-carry_forward = []
+fresh = ["docs", "full", "iteration"]
 
 [ci_provenance.required_checks.actionlint]
 context = "actionlint"
@@ -323,12 +317,10 @@ integration_id = 15368
 required = true
 target = true
 runs_on_tags = false
-supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.actionlint.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
-carry_forward = []
+fresh = ["docs", "full", "iteration"]
 
 [ci_provenance.required_checks.coverage-enforcer]
 context = "coverage-enforcer"
@@ -337,12 +329,10 @@ integration_id = 15368
 required = false
 target = true
 runs_on_tags = false
-supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
-fresh = ["docs", "full", "iteration", "noop"]
-carry_forward = []
+fresh = ["docs", "full", "iteration"]
 
 [ci_provenance.docs]
 safe_paths = [
@@ -620,8 +610,8 @@ keep_reason = "personal/non-CI artifact is not a cleanup candidate"
 
 # Draft PRs and manual workflow_dispatch are cheap iteration feedback. Ready PR
 # opened/synchronize/ready_for_review runs publish the automatic full signal;
-# ready metadata-only transitions carry required noop proof, and merge-boundary
-# paths remain full.
+# ready metadata-only edits stay on iteration names, while reopened and
+# merge-boundary paths run fresh full proof.
 [ci_provenance.policy]
 draft_pr_synchronize = "iteration"
 draft_pr_opened = "iteration"
@@ -629,8 +619,8 @@ draft_pr_reopened = "iteration"
 draft_pr_edited = "iteration"
 converted_to_draft = "iteration"
 ready_pr = "full"
-ready_pr_edited_no_base = "noop"
-ready_pr_reopened = "noop"
+ready_pr_edited_no_base = "iteration"
+ready_pr_reopened = "full"
 ready_for_review = "full"
 docs = "docs"
 workflow_dispatch = "iteration"

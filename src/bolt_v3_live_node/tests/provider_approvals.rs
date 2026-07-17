@@ -46,6 +46,23 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
+
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
@@ -181,6 +198,23 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
+
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
@@ -306,6 +340,23 @@ include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
+
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
 
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
@@ -462,6 +513,23 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
+
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
@@ -588,6 +656,23 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
+
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
@@ -704,6 +789,23 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
+
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
@@ -818,6 +920,23 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
+
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
@@ -931,6 +1050,23 @@ include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
+
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
 
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"

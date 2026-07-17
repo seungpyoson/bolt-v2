@@ -448,9 +448,9 @@ fn read_artifact_bytes(dir: &std::path::Path, name: &str) -> Vec<u8> {
     fs::read(dir.join(name)).unwrap_or_else(|error| panic!("read artifact {name}: {error}"))
 }
 
-/// Run a second time on the same output dir and prove the reuse path keeps
-/// every completion artifact byte-identical (and the tables index when present).
-fn assert_idempotent_rerun(spec: &RunSpec, object_bytes: &[u8], dir: &std::path::Path) {
+/// A fresh run must reject an occupied output directory without changing its
+/// committed artifacts.
+fn assert_fresh_rerun_rejected(spec: &RunSpec, object_bytes: &[u8], dir: &std::path::Path) {
     let mut before = BTreeMap::new();
     for name in [
         CONVERSION_MANIFEST_FILE,
@@ -465,25 +465,20 @@ fn assert_idempotent_rerun(spec: &RunSpec, object_bytes: &[u8], dir: &std::path:
         .exists()
         .then(|| read_artifact_bytes(dir, CONVERSION_TABLES_FILE));
 
-    let rerun = run_operator_from_run_spec(spec, object_bytes, dir).expect("idempotent rerun");
-    let rerun = assert_multi(rerun);
-    assert_eq!(
-        rerun.conversion_tables_path.is_some(),
-        tables_before.is_some(),
-        "rerun must preserve tables-index presence"
-    );
+    run_operator_from_run_spec(spec, object_bytes, dir)
+        .expect_err("fresh rerun must reject occupied output");
     for (name, bytes) in before {
         assert_eq!(
             read_artifact_bytes(dir, name),
             bytes,
-            "completed artifact {name} must stay byte-identical across reruns"
+            "occupied artifact {name} must stay byte-identical after rejection"
         );
     }
     if let Some(tables_bytes) = tables_before {
         assert_eq!(
             read_artifact_bytes(dir, CONVERSION_TABLES_FILE),
             tables_bytes,
-            "conversion tables index must stay byte-identical across reruns"
+            "conversion tables index must stay byte-identical after rejection"
         );
     }
 }
@@ -590,7 +585,7 @@ fn jsonl_snapshot_deltas_run_spec_end_to_end() {
         "single-table conversions never write the tables index"
     );
 
-    assert_idempotent_rerun(&spec, object_bytes, &output_dir);
+    assert_fresh_rerun_rejected(&spec, object_bytes, &output_dir);
 }
 
 #[test]
@@ -644,7 +639,7 @@ fn tar_jsonl_snapshot_deltas_run_spec_end_to_end_multi_member() {
     );
     assert_eq!(artifacts.nt_result.iterations, table.rows);
 
-    assert_idempotent_rerun(&spec, &object_bytes, &output_dir);
+    assert_fresh_rerun_rejected(&spec, &object_bytes, &output_dir);
 }
 
 #[test]
@@ -726,7 +721,7 @@ fn tar_snapshot_keyed_specs_two_instruments_two_subroots() {
         "two tables -> tables index written"
     );
 
-    assert_idempotent_rerun(&spec, &object_bytes, &output_dir);
+    assert_fresh_rerun_rejected(&spec, &object_bytes, &output_dir);
 }
 
 #[test]

@@ -5,12 +5,11 @@ use backtesting_vertical_slice::path_resolution::{
     resolve_existing_input_path, resolve_output_dir, resolve_pack_control_path,
 };
 use backtesting_vertical_slice::source_universe_batch_execution::{
-    CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
-    SOURCE_UNIVERSE_OPERATOR_WORKER_MODE, SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT,
-    SourceUniverseBatchArtifactPin, SourceUniverseBatchExecutionConfig,
-    SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchLaunchArtifacts,
-    SourceUniverseBatchResourceLimits, SourceUniverseCacheRunVerification,
-    SourceUniverseObjectFetcher, VerifiedSourceObject,
+    HttpSourceUniverseObjectFetcher, SOURCE_UNIVERSE_OPERATOR_WORKER_MODE,
+    SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT, SourceUniverseBatchArtifactPin,
+    SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReportStatus,
+    SourceUniverseBatchLaunchArtifacts, SourceUniverseBatchResourceLimits,
+    SourceUniverseObjectFetcher, VerifiedSourceObject, WriteThroughSourceUniverseObjectFetcher,
     execute_source_universe_batch_process_isolated, execute_source_universe_operator_worker,
     validate_process_isolated_batch_selection,
 };
@@ -55,11 +54,12 @@ struct WorkerCli {
     worker_max_virtual_memory_bytes: u64,
 }
 
-/// Object fetcher used by every batch worker. Both selected transports pass
-/// through the one mandatory content-addressed cache and shared run verifier.
+/// Object fetcher used by every batch worker. Each selected transport fetches
+/// its origin and then writes the verified bytes through to the mandatory
+/// content-addressed evidence archive.
 enum BatchWorkerFetcher {
-    CachedHttp(CachingSourceUniverseObjectFetcher<HttpSourceUniverseObjectFetcher>),
-    CachedStagedS3(CachingSourceUniverseObjectFetcher<StagedS3SourceUniverseObjectFetcher>),
+    Http(WriteThroughSourceUniverseObjectFetcher<HttpSourceUniverseObjectFetcher>),
+    StagedS3(WriteThroughSourceUniverseObjectFetcher<StagedS3SourceUniverseObjectFetcher>),
 }
 
 impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
@@ -67,12 +67,15 @@ impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
         &mut self,
         record: &backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord,
         run_spec: &backtesting_vertical_slice::operator::RunSpec,
+        attempt_identity: &str,
         work_budget: &backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard,
     ) -> Result<VerifiedSourceObject> {
         match self {
-            BatchWorkerFetcher::CachedHttp(fetcher) => fetcher.fetch(record, run_spec, work_budget),
-            BatchWorkerFetcher::CachedStagedS3(fetcher) => {
-                fetcher.fetch(record, run_spec, work_budget)
+            BatchWorkerFetcher::Http(fetcher) => {
+                fetcher.fetch(record, run_spec, attempt_identity, work_budget)
+            }
+            BatchWorkerFetcher::StagedS3(fetcher) => {
+                fetcher.fetch(record, run_spec, attempt_identity, work_budget)
             }
         }
     }
@@ -82,30 +85,21 @@ fn build_batch_worker_fetcher(
     transport: &SourceUniverseBatchTransportSpec,
     fetch_timeout_seconds: u64,
     object_cache_dir: &Path,
-    cache_run_verification: SourceUniverseCacheRunVerification,
 ) -> Result<BatchWorkerFetcher> {
     match transport {
         SourceUniverseBatchTransportSpec::Https { http_user_agent } => {
             let fetcher = HttpSourceUniverseObjectFetcher::new(
-                Some(fetch_timeout_seconds),
-                Some(http_user_agent.as_str()),
+                fetch_timeout_seconds,
+                http_user_agent.as_str(),
             )?;
-            Ok(BatchWorkerFetcher::CachedHttp(
-                CachingSourceUniverseObjectFetcher::for_run(
-                    fetcher,
-                    object_cache_dir,
-                    cache_run_verification,
-                ),
+            Ok(BatchWorkerFetcher::Http(
+                WriteThroughSourceUniverseObjectFetcher::new(fetcher, object_cache_dir),
             ))
         }
         SourceUniverseBatchTransportSpec::StagedS3 => {
-            let fetcher = StagedS3SourceUniverseObjectFetcher::new(Some(fetch_timeout_seconds))?;
-            Ok(BatchWorkerFetcher::CachedStagedS3(
-                CachingSourceUniverseObjectFetcher::for_run(
-                    fetcher,
-                    object_cache_dir,
-                    cache_run_verification,
-                ),
+            let fetcher = StagedS3SourceUniverseObjectFetcher::new(fetch_timeout_seconds)?;
+            Ok(BatchWorkerFetcher::StagedS3(
+                WriteThroughSourceUniverseObjectFetcher::new(fetcher, object_cache_dir),
             ))
         }
     }
@@ -133,6 +127,15 @@ fn main() -> Result<()> {
         &cli.spec_sha256,
     )?;
     run_batch(&pinned.canonical_path, pinned.spec)
+}
+
+fn require_absolute_output_root(output_dir: &Path) -> Result<PathBuf> {
+    ensure!(
+        output_dir.is_absolute(),
+        "resolved batch output root must be absolute: {}",
+        output_dir.display()
+    );
+    Ok(output_dir.to_path_buf())
 }
 
 fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()> {
@@ -164,7 +167,9 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
         "batch launch spec worker_termination_grace_seconds must be positive"
     );
     transport.validate()?;
-    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let base_dir = spec_path
+        .parent()
+        .context("batch launch spec path must have a parent directory")?;
     let execution_pack_path = resolve_execution_pack_path(spec_path, &execution_pack.path)?;
     let declared_output_dir = resolve_output_dir(base_dir, &declared_output_dir);
     let declared_object_cache_dir = resolve_output_dir(base_dir, &declared_object_cache_dir);
@@ -176,7 +181,6 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
     )?;
     let output_dir = local_storage_lease.output_root().to_path_buf();
     let object_cache_dir = local_storage_lease.cache_root().to_path_buf();
-    let cache_run_verification = SourceUniverseCacheRunVerification::default();
     let worker_cache_dir = object_cache_dir.clone();
 
     let fetcher_factory = move || -> Result<BatchWorkerFetcher> {
@@ -184,16 +188,9 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
             &transport,
             fetch_timeout_seconds,
             worker_cache_dir.as_path(),
-            cache_run_verification.clone(),
         )
     };
-    let absolute_output_dir = if output_dir.is_absolute() {
-        output_dir.clone()
-    } else {
-        std::env::current_dir()
-            .context("resolve current directory")?
-            .join(&output_dir)
-    };
+    let absolute_output_dir = require_absolute_output_root(&output_dir)?;
     let request_root = absolute_output_dir.join(SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT);
     let execution_pack = SourceUniverseBatchArtifactPin::try_new(
         execution_pack_path,
@@ -254,7 +251,9 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
 }
 
 fn resolve_execution_pack_path(spec_path: &Path, declared_path: &Path) -> Result<PathBuf> {
-    let spec_parent = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let spec_parent = spec_path
+        .parent()
+        .context("batch launch spec path must have a parent directory")?;
     resolve_pack_control_path(spec_parent, declared_path).with_context(|| {
         format!(
             "resolve execution pack {} from launch spec parent {}",
@@ -291,20 +290,56 @@ mod tests {
     use super::{
         BatchWorkerFetcher, Cli, EXIT_PARTIAL_FAILURE, SourceUniverseBatchLaunchSpec,
         SourceUniverseBatchTransportSpec, build_batch_worker_fetcher, partial_failure_exit_code,
-        resolve_execution_pack_path, run_batch,
+        require_absolute_output_root, resolve_execution_pack_path, run_batch,
     };
     use backtesting_vertical_slice::hashing::sha256_hex;
     use backtesting_vertical_slice::source_universe_batch_execution::{
         SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionReportStatus,
-        SourceUniverseBatchResourceLimits, SourceUniverseCacheRunVerification,
+        SourceUniverseBatchResourceLimits,
     };
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    use backtesting_vertical_slice::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
+    use backtesting_vertical_slice::source_universe_batch_launch::{
+        CommittedSourceUniverseExecutionPack, discover_committed_source_universe_execution_packs,
+        inspect_worktree_source_universe_execution_pack_scope_names,
+    };
     use backtesting_vertical_slice::source_universe_batch_launch::{
         SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION, SourceUniverseBatchLaunchArtifactSpec,
     };
     use backtesting_vertical_slice::source_universe_local_storage::SourceUniverseLocalStoragePolicy;
     use clap::Parser;
+
+    fn test_bootstrap_limits() -> SourceUniverseBatchBootstrapLimits {
+        SourceUniverseBatchBootstrapLimits {
+            max_launch_artifact_bytes: 65_536,
+            max_control_artifact_bytes: 65_536,
+            max_retained_control_input_bytes: 262_144,
+        }
+    }
+
+    #[test]
+    fn batch_worker_rejects_a_relative_resolved_output_root() {
+        let error = require_absolute_output_root(std::path::Path::new("relative/output"))
+            .expect_err("a relative output root must not fall back to the current directory");
+        assert!(
+            error
+                .to_string()
+                .contains("resolved batch output root must be absolute"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    fn discover_test_packs(
+        repository_root: &std::path::Path,
+    ) -> anyhow::Result<Vec<CommittedSourceUniverseExecutionPack>> {
+        let scope_names =
+            inspect_worktree_source_universe_execution_pack_scope_names(repository_root, 64)?;
+        discover_committed_source_universe_execution_packs(
+            repository_root,
+            &scope_names,
+            test_bootstrap_limits(),
+        )
+    }
 
     fn read_test_launch_spec(
         path: &std::path::Path,
@@ -1087,8 +1122,8 @@ max_lifecycle_cleanup_depth = 64
     #[test]
     fn committed_one_record_launch_profiles_select_exact_staged_s3_packs() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let committed_packs = discover_committed_source_universe_execution_packs(&repository_root)
-            .expect("discover committed execution packs");
+        let committed_packs =
+            discover_test_packs(&repository_root).expect("discover committed execution packs");
         for committed_pack in &committed_packs {
             let spec = &committed_pack.launch_spec;
             assert_eq!(spec.start_sequence, Some(0));
@@ -1124,8 +1159,8 @@ max_lifecycle_cleanup_depth = 64
     #[test]
     fn sha_pinned_launch_reader_rejects_same_length_path_replacement_before_parse() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let committed = discover_committed_source_universe_execution_packs(&repository_root)
-            .expect("discover committed execution packs");
+        let committed =
+            discover_test_packs(&repository_root).expect("discover committed execution packs");
         let pack = committed.last().expect("committed registry is nonempty");
         let original = fs::read(&pack.launch_path).expect("read committed launch bytes");
         let temp = tempfile::tempdir().expect("temporary launch spec parent");
@@ -1167,8 +1202,8 @@ max_lifecycle_cleanup_depth = 64
         use std::os::unix::fs::symlink;
 
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let committed = discover_committed_source_universe_execution_packs(&repository_root)
-            .expect("discover committed execution packs");
+        let committed =
+            discover_test_packs(&repository_root).expect("discover committed execution packs");
         let pack = committed.last().expect("committed registry is nonempty");
         let original = fs::read(&pack.launch_path).expect("read committed launch bytes");
         let temp = tempfile::tempdir().expect("temporary launch spec parent");
@@ -1327,15 +1362,14 @@ max_lifecycle_cleanup_depth = 64
 
     #[test]
     fn transport_selection_constructs_only_the_requested_implementation() {
-        let cache = tempfile::tempdir().expect("temporary object cache");
+        let cache = tempfile::tempdir().expect("temporary source-object evidence archive");
         let staged = build_batch_worker_fetcher(
             &SourceUniverseBatchTransportSpec::StagedS3,
             1,
             cache.path(),
-            SourceUniverseCacheRunVerification::default(),
         )
         .expect("construct staged-S3 transport");
-        assert!(matches!(staged, BatchWorkerFetcher::CachedStagedS3(_)));
+        assert!(matches!(staged, BatchWorkerFetcher::StagedS3(_)));
 
         let https = build_batch_worker_fetcher(
             &SourceUniverseBatchTransportSpec::Https {
@@ -1343,9 +1377,8 @@ max_lifecycle_cleanup_depth = 64
             },
             1,
             cache.path(),
-            SourceUniverseCacheRunVerification::default(),
         )
         .expect("construct HTTPS transport");
-        assert!(matches!(https, BatchWorkerFetcher::CachedHttp(_)));
+        assert!(matches!(https, BatchWorkerFetcher::Http(_)));
     }
 }

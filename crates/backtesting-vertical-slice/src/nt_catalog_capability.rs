@@ -2,8 +2,10 @@ use std::{collections::BTreeSet, env, str::FromStr};
 
 use ahash::AHashMap;
 use anyhow::{Context, Result, anyhow, ensure};
-use aws_config::BehaviorVersion;
-use aws_sdk_ssm::{Client as SsmClient, config::Region};
+use aws_sdk_ssm::{
+    Client as SsmClient,
+    config::{BehaviorVersion, Credentials, Region},
+};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::TradeTick,
@@ -29,10 +31,14 @@ use crate::{
 
 pub const NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION: &str = "nt-catalog-capability-proof.v1";
 pub const SYNTHETIC_SOURCE_PROOF_ID: &str = "synthetic-fixture";
+const GITHUB_ACTIONS_OIDC_ACCESS_KEY_ID_ENV: &str = "AWS_ACCESS_KEY_ID";
+const GITHUB_ACTIONS_OIDC_SECRET_ACCESS_KEY_ENV: &str = "AWS_SECRET_ACCESS_KEY";
+const GITHUB_ACTIONS_OIDC_SESSION_TOKEN_ENV: &str = "AWS_SESSION_TOKEN";
+const GITHUB_ACTIONS_OIDC_PROVIDER_NAME: &str = "github-actions-oidc-environment";
 pub const REQUIRED_AMBIENT_AWS_CREDENTIAL_ENV_VARS: &[&str] = &[
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
+    GITHUB_ACTIONS_OIDC_ACCESS_KEY_ID_ENV,
+    GITHUB_ACTIONS_OIDC_SECRET_ACCESS_KEY_ENV,
+    GITHUB_ACTIONS_OIDC_SESSION_TOKEN_ENV,
     "AWS_DEFAULT_REGION",
     "AWS_REGION",
     "AWS_ENDPOINT",
@@ -65,10 +71,50 @@ pub struct NtCatalogSsmCredentialResolver {
     client: SsmClient,
 }
 
+fn github_actions_oidc_credentials_from_environment() -> Result<Credentials> {
+    github_actions_oidc_credentials_from(env::var)
+}
+
+fn github_actions_oidc_credentials_from(
+    mut read_env: impl FnMut(&str) -> std::result::Result<String, env::VarError>,
+) -> Result<Credentials> {
+    let mut required = |name: &'static str| -> Result<String> {
+        let value = read_env(name).map_err(|error| match error {
+            env::VarError::NotPresent => anyhow!(
+                "GitHub Actions OIDC credential provider requires environment input {name}"
+            ),
+            env::VarError::NotUnicode(_) => anyhow!(
+                "GitHub Actions OIDC credential provider environment input {name} must be valid Unicode"
+            ),
+        })?;
+        ensure!(
+            !value.trim().is_empty(),
+            "GitHub Actions OIDC credential provider environment input {name} must not be empty"
+        );
+        ensure!(
+            value.trim() == value,
+            "GitHub Actions OIDC credential provider environment input {name} must not contain surrounding whitespace"
+        );
+        Ok(value)
+    };
+
+    let access_key_id = required(GITHUB_ACTIONS_OIDC_ACCESS_KEY_ID_ENV)?;
+    let secret_access_key = required(GITHUB_ACTIONS_OIDC_SECRET_ACCESS_KEY_ENV)?;
+    let session_token = required(GITHUB_ACTIONS_OIDC_SESSION_TOKEN_ENV)?;
+    Ok(Credentials::new(
+        access_key_id,
+        secret_access_key,
+        Some(session_token),
+        None,
+        GITHUB_ACTIONS_OIDC_PROVIDER_NAME,
+    ))
+}
+
 impl NtCatalogSsmCredentialResolver {
     /// # Errors
     ///
-    /// Returns an error if the configured AWS region is empty.
+    /// Returns an error if the configured AWS region is invalid or any required
+    /// GitHub Actions OIDC credential export is missing or malformed.
     pub async fn from_region(region: &str) -> Result<Self> {
         ensure!(
             !region.trim().is_empty(),
@@ -78,12 +124,17 @@ impl NtCatalogSsmCredentialResolver {
             region.trim() == region,
             "SSM credential resolver region must not include surrounding whitespace"
         );
-        let config = aws_config::defaults(BehaviorVersion::latest())
+        // The workflow exchanges its OIDC identity before launching the worker and
+        // exports exactly one temporary credential set. Building the service config
+        // directly prevents profile, container, and IMDS credential discovery.
+        let credentials = github_actions_oidc_credentials_from_environment()?;
+        let config = aws_sdk_ssm::Config::builder()
+            .behavior_version(BehaviorVersion::latest())
             .region(Region::new(region.to_string()))
-            .load()
-            .await;
+            .credentials_provider(credentials)
+            .build();
         Ok(Self {
-            client: SsmClient::new(&config),
+            client: SsmClient::from_conf(config),
         })
     }
 
@@ -1229,15 +1280,15 @@ impl NtCatalogCapabilityRunSpec {
             format!("NT catalog capability proof {proof_artifact_uri}"),
         )?;
         let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
-        let confirmed_proof = writer
-            .create_or_confirm_terminal(prepared_proof, permit)
+        let created_proof = writer
+            .create_terminal_strict(prepared_proof, permit)
             .await?;
         Ok(NtCatalogCapabilityProofArtifact {
             proof_artifact_uri,
             proof_artifact_sha256,
-            proof_artifact_version_id: confirmed_proof.version_id,
-            proof_artifact_e_tag: confirmed_proof.e_tag,
-            proof_artifact_create_only_write: confirmed_proof.disposition,
+            proof_artifact_version_id: created_proof.version_id,
+            proof_artifact_e_tag: created_proof.e_tag,
+            proof_artifact_create_only_write: CreateOnlyWriteDisposition::Created,
             proof,
             evidence: proof_evidence,
         })
@@ -1701,6 +1752,8 @@ fn is_allowed_storage_option_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
+        env::VarError,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1744,6 +1797,117 @@ mod tests {
             }),
         )
         .expect("expiring guard")
+    }
+
+    #[test]
+    fn ssm_resolver_bootstraps_one_explicit_oidc_environment_provider() {
+        let source = include_str!("nt_catalog_capability.rs");
+        let constructor = source
+            .split("pub async fn from_region(region: &str) -> Result<Self> {")
+            .nth(1)
+            .expect("SSM resolver constructor exists")
+            .split("    #[must_use]")
+            .next()
+            .expect("SSM resolver constructor has a following boundary");
+        let resolver = source
+            .split("fn github_actions_oidc_credentials_from_environment()")
+            .nth(1)
+            .expect("explicit OIDC credential provider exists")
+            .split("#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]")
+            .next()
+            .expect("credential resolver has a following item boundary");
+
+        assert!(constructor.contains("github_actions_oidc_credentials_from_environment()?"));
+        assert!(constructor.contains("aws_sdk_ssm::Config::builder()"));
+        assert!(constructor.contains(".credentials_provider(credentials)"));
+        assert_eq!(resolver.matches(".credentials_provider(").count(), 1);
+        assert_eq!(resolver.matches("Ok(Credentials::new(").count(), 1);
+        for forbidden in [
+            "aws_config::",
+            "EnvironmentVariableCredentialsProvider",
+            "DefaultCredentialsChain",
+            "ProfileFileCredentialsProvider",
+            "ContainerCredentialsProvider",
+            "ImdsCredentialsProvider",
+        ] {
+            assert!(
+                !resolver.contains(forbidden),
+                "credential resolver must not contain fallback provider {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn oidc_environment_credentials_query_only_the_exact_exported_inputs() {
+        let mut requested = Vec::new();
+        let credentials = github_actions_oidc_credentials_from(|name| {
+            requested.push(name.to_string());
+            Ok(match name {
+                "AWS_ACCESS_KEY_ID" => "access",
+                "AWS_SECRET_ACCESS_KEY" => "secret",
+                "AWS_SESSION_TOKEN" => "session",
+                _ => unreachable!("only the exact OIDC credential inputs are requested"),
+            }
+            .to_string())
+        })
+        .expect("the complete OIDC credential export is accepted");
+
+        assert_eq!(
+            requested,
+            vec![
+                "AWS_ACCESS_KEY_ID".to_string(),
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                "AWS_SESSION_TOKEN".to_string(),
+            ]
+        );
+        assert_eq!(credentials.access_key_id(), "access");
+        assert_eq!(credentials.secret_access_key(), "secret");
+        assert_eq!(credentials.session_token(), Some("session"));
+    }
+
+    #[test]
+    fn oidc_environment_credentials_require_all_three_exact_inputs() {
+        let complete = BTreeMap::from([
+            ("AWS_ACCESS_KEY_ID", "access"),
+            ("AWS_SECRET_ACCESS_KEY", "secret"),
+            ("AWS_SESSION_TOKEN", "session"),
+        ]);
+
+        for missing in [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        ] {
+            let mut values = complete.clone();
+            values.remove(missing);
+            let error = github_actions_oidc_credentials_from(|name| {
+                values
+                    .get(name)
+                    .map(|value| (*value).to_string())
+                    .ok_or(VarError::NotPresent)
+            })
+            .expect_err("a missing OIDC credential input must fail closed");
+
+            assert!(error.to_string().contains(missing), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn oidc_environment_credentials_do_not_accept_blank_or_padded_inputs() {
+        for invalid in ["", " ", " padded", "padded "] {
+            let error = github_actions_oidc_credentials_from(|name| {
+                Ok(match name {
+                    "AWS_ACCESS_KEY_ID" => invalid,
+                    "AWS_SECRET_ACCESS_KEY" => "secret",
+                    "AWS_SESSION_TOKEN" => "session",
+                    _ => unreachable!("only the exact OIDC credential inputs are requested"),
+                }
+                .to_string())
+            })
+            .expect_err("blank or padded OIDC credential input must fail closed");
+
+            assert!(error.to_string().contains("AWS_ACCESS_KEY_ID"), "{error:#}");
+        }
     }
 
     #[test]

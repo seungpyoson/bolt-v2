@@ -35,19 +35,17 @@ use backtesting_vertical_slice::{
     reference_fixture_index::repo_root_from_manifest_dir,
     research_analytics::{read_accepted_object_for_run_spec, read_run_spec_with_hash},
     retired_backfill_evidence::{
-        RetiredBackfillEvidenceInventory, is_retired_backfill_runtime_path,
+        RetiredBackfillEvidenceInventory, is_retired_backfill_evidence_reference,
+        is_retired_backfill_runtime_path,
     },
     source_catalog_mapping_readiness::write_source_catalog_mapping_readiness_report_from_spec_file,
     source_proof::SourceProofUsageScope,
     source_proof_migration_preflight::SourceProofMigrationPreflightStatus,
 };
+use chrono::NaiveDate;
 
 const REFERENCE_ROOT: &str = "specs/023-nt-research-analytics-platform/reference";
 const RETIRED_GATE_ROOT: &str = "specs/023-nt-research-analytics-platform/reference/backfill-gates";
-const ACTIVE_GOLDEN_RUN_SPECS: &[&str] = &[
-    "backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml",
-    "backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml",
-];
 
 #[test]
 fn retired_backfill_inventory_preserves_exact_typed_evidence_and_tombstones() {
@@ -55,25 +53,34 @@ fn retired_backfill_inventory_preserves_exact_typed_evidence_and_tombstones() {
     let inventory = RetiredBackfillEvidenceInventory::load(&repo_root)
         .expect("retired backfill evidence inventory loads and validates");
 
-    assert_eq!(inventory.records.len(), 185);
-    assert_eq!(
-        inventory
-            .records
-            .iter()
-            .filter(|record| record.venue.as_str() == "binance")
-            .count(),
-        92
-    );
-    assert_eq!(
-        inventory
-            .records
-            .iter()
-            .filter(|record| record.venue.as_str() == "bybit")
-            .count(),
-        93
-    );
+    let declared_record_count = inventory
+        .series_coverage
+        .iter()
+        .map(|coverage| {
+            let first = NaiveDate::parse_from_str(&coverage.first_archive_date, "%Y-%m-%d")
+                .expect("declared first archive date parses");
+            let last = NaiveDate::parse_from_str(&coverage.last_archive_date, "%Y-%m-%d")
+                .expect("declared last archive date parses");
+            usize::try_from((last - first).num_days() + 1)
+                .expect("declared record count fits usize")
+        })
+        .sum::<usize>();
+    assert_eq!(inventory.records.len(), declared_record_count);
     let tombstones = inventory.tombstoned_paths();
-    assert_eq!(tombstones.len(), 2_971);
+    let declared_tombstone_count = inventory
+        .records
+        .iter()
+        .map(|record| {
+            record.gate_artifact_tombstones.len()
+                + if record.retired_daily_run_spec.is_some() {
+                    1
+                } else {
+                    0
+                }
+        })
+        .sum::<usize>()
+        + inventory.retired_aggregate_artifacts.len();
+    assert_eq!(tombstones.len(), declared_tombstone_count);
     for path in tombstones {
         assert!(
             is_retired_backfill_runtime_path(Path::new(path)),
@@ -92,47 +99,32 @@ fn retired_backfill_inventory_preserves_exact_typed_evidence_and_tombstones() {
 #[test]
 fn retired_backfill_roots_and_daily_profiles_cannot_regrow() {
     let repo_root = repo_root_from_manifest_dir();
+    let inventory = RetiredBackfillEvidenceInventory::load(&repo_root)
+        .expect("retired backfill evidence inventory loads");
     assert!(
         !repo_root.join(RETIRED_GATE_ROOT).exists(),
         "the retired per-day backfill-gates tree must stay absent"
     );
 
-    for retired_root in [
-        "backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31",
-        "backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01",
-        "backfill-coverage-ledgers/binance-bnbusdc-2026-03-01-2026-05-31",
-        "backfill-coverage-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01",
-        "backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31",
-        "backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01",
-    ] {
+    for scope in &inventory.aggregate_scopes {
+        let retired_root = Path::new(&scope.root).join(&scope.scope);
         assert!(
-            !repo_root.join(REFERENCE_ROOT).join(retired_root).exists(),
-            "retired aggregate root {retired_root} must stay absent"
+            !repo_root.join(REFERENCE_ROOT).join(&retired_root).exists(),
+            "retired aggregate root {} must stay absent",
+            retired_root.display()
         );
     }
 
-    let reference_root = repo_root.join(REFERENCE_ROOT);
-    let mut active_daily_profiles = fs::read_dir(&reference_root)
-        .expect("read reference root")
-        .map(|entry| entry.expect("read reference entry").path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.starts_with("backtesting-vertical-slice-run-spec.")
-                        && name.contains("bnbusdc-2026-")
-                        && name.ends_with(".toml")
-                })
-        })
-        .map(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .expect("UTF-8 run-spec file name")
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    active_daily_profiles.sort();
-    assert_eq!(active_daily_profiles, ACTIVE_GOLDEN_RUN_SPECS);
+    for active in &inventory.retained_active_daily_run_specs {
+        assert!(
+            repo_root.join(active).is_file(),
+            "declared active profile {active:?} must exist"
+        );
+        assert!(
+            !is_retired_backfill_runtime_path(Path::new(active)),
+            "declared active profile {active:?} must remain active"
+        );
+    }
 }
 
 #[test]
@@ -150,7 +142,7 @@ fn every_retained_repo_reference_to_the_retired_lane_has_one_tombstone() {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        for reference in repo_references_to_retired_lane(&text) {
+        for reference in repo_references_to_retired_lane(&text, &inventory) {
             assert!(
                 tombstones.contains(reference),
                 "retained reference {reference:?} in {} lacks an exact tombstone",
@@ -187,14 +179,16 @@ fn runtime_loaders_reject_retired_paths_before_filesystem_access() {
     }
 
     let repo_root = repo_root_from_manifest_dir();
-    for active in ACTIVE_GOLDEN_RUN_SPECS {
-        let repo_relative = Path::new(REFERENCE_ROOT).join(active);
+    let inventory = RetiredBackfillEvidenceInventory::load(&repo_root)
+        .expect("retired backfill evidence inventory loads");
+    for active in &inventory.retained_active_daily_run_specs {
+        let repo_relative = Path::new(active);
         assert!(
-            !is_retired_backfill_runtime_path(&repo_relative),
+            !is_retired_backfill_runtime_path(repo_relative),
             "active golden profile {active} must remain loadable"
         );
         assert!(
-            !is_retired_backfill_runtime_path(&repo_root.join(repo_relative)),
+            !is_retired_backfill_runtime_path(&repo_root.join(active)),
             "absolute active golden profile {active} must remain loadable"
         );
     }
@@ -494,12 +488,14 @@ fn public_legacy_writer_rejects_retired_final_path_before_directory_creation() {
 #[test]
 fn public_object_loader_rejects_retired_nested_object_before_filesystem_access() {
     let repo_root = repo_root_from_manifest_dir();
-    let (run_spec, _) = read_run_spec_with_hash(
-        &repo_root
-            .join(REFERENCE_ROOT)
-            .join(ACTIVE_GOLDEN_RUN_SPECS[0]),
-    )
-    .expect("active golden RunSpec loads");
+    let inventory = RetiredBackfillEvidenceInventory::load(&repo_root)
+        .expect("retired backfill evidence inventory loads");
+    let active = inventory
+        .retained_active_daily_run_specs
+        .first()
+        .expect("one active daily profile");
+    let (run_spec, _) =
+        read_run_spec_with_hash(&repo_root.join(active)).expect("active golden RunSpec loads");
     let retired_object = Path::new(
         "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/object-staging/backfill-object-staging-manifest.json",
     );
@@ -536,8 +532,138 @@ fn runtime_classifier_does_not_claim_future_or_unrelated_paths() {
     }
 }
 
-fn repo_references_to_retired_lane(text: &str) -> impl Iterator<Item = &str> {
-    text.match_indices("repo://").filter_map(|(start, _)| {
+#[test]
+fn evidence_reference_census_does_not_depend_on_registered_tombstone_roots() {
+    for path in [
+        "specs/023-nt-research-analytics-platform/reference/backfill-gates/unregistered-market-2027-01-01/arbitrary/control.toml",
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches",
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/unregistered-scope/arbitrary/new-control.toml",
+        "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.unregistered-market-2027-01-01.toml",
+    ] {
+        assert!(
+            is_retired_backfill_evidence_reference(Path::new(path)),
+            "generic evidence census must see {path:?} even without a runtime tombstone root"
+        );
+        assert!(
+            !is_retired_backfill_runtime_path(Path::new(path)),
+            "evidence census must not create an alternate runtime classifier for {path:?}"
+        );
+    }
+}
+
+#[test]
+fn malformed_or_implicit_retirement_authority_fails_closed() {
+    let repo_root = repo_root_from_manifest_dir();
+    let inventory = RetiredBackfillEvidenceInventory::load(&repo_root)
+        .expect("retired backfill evidence inventory loads");
+
+    let mut malformed_venue = inventory.clone();
+    malformed_venue.records[0].venue = "OKX".to_string();
+    let error = malformed_venue
+        .validate_structure()
+        .expect_err("uppercase venue slug must reject");
+    assert!(
+        error.to_string().contains("lowercase ASCII slug"),
+        "{error:#}"
+    );
+
+    let mut mismatched_scope = inventory.clone();
+    mismatched_scope.records[0].gate_artifact_tombstones[0].path = mismatched_scope.records[0]
+        .gate_artifact_tombstones[0]
+        .path
+        .replace("binance-bnbusdc", "wrong-bnbusdc");
+    let error = mismatched_scope
+        .validate_structure()
+        .expect_err("gate scope not bound to record identity must reject");
+    assert!(
+        error.to_string().contains("exact retired artifact set"),
+        "{error:#}"
+    );
+
+    let mut missing_record = inventory.clone();
+    missing_record.records.remove(1);
+    let error = missing_record
+        .validate_structure()
+        .expect_err("coverage declaration must detect a removed record and its boundary");
+    assert!(
+        error.to_string().contains("gap or overlap")
+            || error.to_string().contains("declared endpoints"),
+        "{error:#}"
+    );
+
+    let mut missing_tombstone = inventory.clone();
+    missing_tombstone.retired_aggregate_artifacts.pop();
+    let error = missing_tombstone
+        .validate_structure()
+        .expect_err("aggregate declaration must detect a removed tombstone");
+    assert!(
+        error
+            .to_string()
+            .contains("must exactly match declared aggregate scopes"),
+        "{error:#}"
+    );
+
+    let mut missing_root = inventory.clone();
+    let removed_root = missing_root.aggregate_scopes[0].root.clone();
+    missing_root
+        .aggregate_scopes
+        .retain(|scope| scope.root != removed_root);
+    missing_root
+        .retired_aggregate_artifacts
+        .retain(|tombstone| {
+            !tombstone
+                .artifact
+                .path
+                .contains(&format!("/{removed_root}/"))
+        });
+    let error = missing_root
+        .validate_structure()
+        .expect_err("generic role coverage must detect a removed aggregate root");
+    assert!(
+        error
+            .to_string()
+            .contains("must cover every structural aggregate root"),
+        "{error:#}"
+    );
+
+    let mut mixed_case_instrument = inventory.clone();
+    mixed_case_instrument.series_coverage[0].instrument_id = "bnbusdc".to_string();
+    let error = mixed_case_instrument
+        .validate_structure()
+        .expect_err("mixed-case-equivalent instrument identities must reject");
+    assert!(
+        error.to_string().contains("uppercase portable ASCII"),
+        "{error:#}"
+    );
+
+    let mut mismatched_binding = inventory.clone();
+    mismatched_binding.records[0].source_binding = "different-source-binding".to_string();
+    let error = mismatched_binding
+        .validate_structure()
+        .expect_err("record binding outside its series declaration must reject");
+    assert!(
+        error.to_string().contains("source_binding") && error.to_string().contains("declared"),
+        "{error:#}"
+    );
+
+    let mut missing_disposition = inventory;
+    missing_disposition.retained_active_daily_run_specs.clear();
+    let error = missing_disposition
+        .validate_structure()
+        .expect_err("missing active daily disposition must reject");
+    assert!(
+        error
+            .to_string()
+            .contains("must exactly account for records without a retired daily RunSpec"),
+        "{error:#}"
+    );
+}
+
+fn repo_references_to_retired_lane<'a>(
+    text: &'a str,
+    inventory: &'a RetiredBackfillEvidenceInventory,
+) -> impl Iterator<Item = &'a str> {
+    text.match_indices("repo://").filter_map(move |(start, _)| {
         let candidate = &text[start + "repo://".len()..];
         let end = candidate
             .find(|character: char| {
@@ -546,7 +672,12 @@ fn repo_references_to_retired_lane(text: &str) -> impl Iterator<Item = &str> {
             })
             .unwrap_or(candidate.len());
         let path = &candidate[..end];
-        is_retired_backfill_runtime_path(Path::new(path)).then_some(path)
+        (is_retired_backfill_evidence_reference(Path::new(path))
+            && !inventory
+                .retained_active_daily_run_specs
+                .iter()
+                .any(|active| active == path))
+        .then_some(path)
     })
 }
 

@@ -36,14 +36,8 @@ on:
     inputs:
       issue_789:
         description: "Run the non-required issue #789 diagnostic after the iteration gate"
-        type: boolean
         required: false
-        default: false
-      ra001a_durable_tracer:
-        description: "Run the non-required RA-001a registry-complete durable tracer"
-        type: boolean
-        required: false
-        default: false
+        default: "false"
   pull_request:
     branches: [main]
     # Explicit types are required because the default set (opened, synchronize,
@@ -85,9 +79,6 @@ concurrency:
         || github.event_name == 'pull_request'
         && format('bvs-pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
-        && inputs.ra001a_durable_tracer == true
-        && format('bvs-ra001a-tracer-{0}', github.sha)
-        || github.event_name == 'workflow_dispatch'
         && format('bvs-{0}-dispatch-iteration', github.ref_name)
         || github.event_name == 'merge_group'
         && format('bvs-mq-{0}', github.ref)
@@ -96,8 +87,7 @@ concurrency:
     ${{ github.event_name == 'pull_request'
         && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        || (github.event_name == 'workflow_dispatch'
-            && inputs.ra001a_durable_tracer != true) }}
+        || github.event_name == 'workflow_dispatch' }}
 
 env:
   JUST_VERSION: "1.49.0"
@@ -114,22 +104,11 @@ jobs:
     outputs:
       ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
-      backtester_test_archive_timeout_minutes: ${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}
-      backtester_issue_789_timeout_minutes: ${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}
-      ra001a_durable_tracer_required: ${{ steps.policy.outputs.ra001a_durable_tracer_required }}
-      ra001a_max_registry_packs: ${{ steps.policy.outputs.ra001a_max_registry_packs }}
-      ra001a_max_total_selected_object_bytes: ${{ steps.policy.outputs.ra001a_max_total_selected_object_bytes }}
-      ra001a_max_worker_executable_bytes: ${{ steps.policy.outputs.ra001a_max_worker_executable_bytes }}
-      ra001a_trusted_policy_output_sha256: ${{ steps.policy.outputs.ra001a_trusted_policy_output_sha256 }}
-      ra001a_max_wall_seconds: ${{ steps.policy.outputs.ra001a_max_wall_seconds }}
-      ra001a_termination_grace_seconds: ${{ steps.policy.outputs.ra001a_termination_grace_seconds }}
-      ra001a_allowed_ignored_runtime_roots: ${{ steps.policy.outputs.ra001a_allowed_ignored_runtime_roots }}
-      ra001a_max_ignored_entry_bytes: ${{ steps.policy.outputs.ra001a_max_ignored_entry_bytes }}
-      ra001a_max_ignored_entries: ${{ steps.policy.outputs.ra001a_max_ignored_entries }}
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
       reason: ${{ steps.policy.outputs.reason }}
+      trusted_revision: ${{ steps.policy_base.outputs.revision }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -140,142 +119,73 @@ jobs:
 
       - name: Prepare trusted base policy tree
         id: policy_base
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_branch="$PR_BASE_REF"
-            base_ref="refs/remotes/origin/bvs-policy-base-${PR_NUMBER}"
+            trusted_branch="$PR_BASE_REF"
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
             merge_group_base="$MERGE_GROUP_BASE_REF"
             if [[ "$merge_group_base" == refs/heads/* ]]; then
-              base_branch="${merge_group_base#refs/heads/}"
+              trusted_branch="${merge_group_base#refs/heads/}"
             elif [[ "$merge_group_base" == refs/* ]]; then
               echo "unsupported merge_group base_ref: $merge_group_base" >&2
               exit 1
             else
-              base_branch="$merge_group_base"
+              trusted_branch="$merge_group_base"
             fi
-            base_ref="refs/remotes/origin/bvs-policy-base-merge-group-${GITHUB_RUN_ID}"
-          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            base_branch="$DEFAULT_BRANCH"
-            base_ref="refs/remotes/origin/bvs-policy-base-dispatch-${GITHUB_RUN_ID}"
+          elif [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            trusted_branch="$REPOSITORY_DEFAULT_BRANCH"
           else
-            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            echo "unsupported trusted policy event: $EVENT_NAME" >&2
             exit 1
           fi
-          git check-ref-format "refs/heads/$base_branch"
-          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          git check-ref-format "refs/heads/$trusted_branch"
+          trusted_ref="refs/remotes/origin/bvs-policy-trusted-${GITHUB_RUN_ID}"
+          git fetch --no-tags origin "+refs/heads/${trusted_branch}:${trusted_ref}"
+          trusted_revision="$(git rev-parse --verify "${trusted_ref}^{commit}")"
+          if [[ ! "$trusted_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted policy revision is missing or malformed: $trusted_revision" >&2
+            exit 1
+          fi
+          readonly trusted_revision
           base_tree="$RUNNER_TEMP/bvs-policy-base-tree"
-          mkdir -p "$base_tree"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
-          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
-          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
+          mkdir "$base_tree"
+          git archive "$trusted_revision" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          test -f "$base_tree/scripts/ci_provenance.py"
+          test -f "$base_tree/ci/github-actions-runners.toml"
+          {
+            echo "script=$base_tree/scripts/ci_provenance.py"
+            echo "config=$base_tree/ci/github-actions-runners.toml"
+            echo "revision=$trusted_revision"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Compute Backtester CI policy
         id: policy
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          ISSUE_789_REQUESTED: ${{ inputs.issue_789 || false }}
-          RA001A_DURABLE_TRACER_REQUESTED: ${{ inputs.ra001a_durable_tracer || false }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
           PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}
           EVENT_SENDER_ID: ${{ github.event.sender.id }}
-          RA001A_TRACER_ROLE_ARN: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}
-          RA001A_TRACER_REGION: ${{ vars.AWS_RA001A_TRACER_REGION }}
         run: |
-          if [[ "$EVENT_NAME" == "workflow_dispatch" \
-            && "$ISSUE_789_REQUESTED" == "true" \
-            && "$RA001A_DURABLE_TRACER_REQUESTED" == "true" ]]; then
-            echo "issue #789 and the RA-001a durable tracer are mutually exclusive managed-heavy requests" >&2
-            exit 1
-          fi
-          if [[ "$EVENT_NAME" == "workflow_dispatch" \
-            && "$RA001A_DURABLE_TRACER_REQUESTED" == "true" ]]; then
-            test -n "$RA001A_TRACER_ROLE_ARN" || { echo "AWS_RA001A_TRACER_ROLE_ARN is required" >&2; exit 1; }
-            test -n "$RA001A_TRACER_REGION" || { echo "AWS_RA001A_TRACER_REGION is required" >&2; exit 1; }
-          fi
-          policy_script="${{ steps.policy_base.outputs.script }}"
-          policy_config="${{ steps.policy_base.outputs.config }}"
-          if [[ "$EVENT_NAME" == "pull_request" \
-            || "$EVENT_NAME" == "merge_group" \
-            || "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            :
-          else
-            policy_script="scripts/ci_provenance.py"
-            policy_config="ci/github-actions-runners.toml"
-          fi
-          readonly policy_script policy_config
-          test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }
-          test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }
-          author_args=()
-          if python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"; then
-            author_args=(--pull-request-author-id "$PR_AUTHOR_ID")
-          fi
-          tracer_args=()
-          if python3 "$policy_script" ci-policy --help | grep -q -- "--ra001a-durable-tracer-requested"; then
-            tracer_args=(--ra001a-durable-tracer-requested "$RA001A_DURABLE_TRACER_REQUESTED")
-          elif [[ "$RA001A_DURABLE_TRACER_REQUESTED" == "true" ]]; then
-            echo "trusted policy resolver does not support the requested RA-001a tracer" >&2
-            exit 1
-          fi
-          readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"
-          test ! -e "$policy_output" || { echo "trusted policy output path already exists" >&2; exit 1; }
+          readonly policy_script="${{ steps.policy_base.outputs.script }}"
+          readonly policy_config="${{ steps.policy_base.outputs.config }}"
+          test -f "$policy_script"
+          test -f "$policy_config"
           python3 "$policy_script" ci-policy \
             --config "$policy_config" \
             --event-name "${{ github.event_name }}" \
             --event-action "${{ github.event.action || '' }}" \
             --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
             --pull-request-head-ref "$PR_HEAD_REF" \
-            "${author_args[@]}" \
+            --pull-request-author-id "$PR_AUTHOR_ID" \
             --pull-request-base-changed "${{ github.event.changes.base.ref.from && true || false }}" \
-            "${tracer_args[@]}" \
             --ref "${{ github.ref }}" \
-            | tee "$policy_output"
-          policy_output_sha256="$(sha256sum "$policy_output" | cut -d ' ' -f 1)"
-          readonly policy_output_sha256
-          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }
-          for positive_policy_key in \
-            backtester_test_archive_timeout_minutes \
-            backtester_issue_789_timeout_minutes \
-            ra001a_max_registry_packs \
-            ra001a_max_total_selected_object_bytes \
-            ra001a_max_worker_executable_bytes \
-            ra001a_max_wall_seconds \
-            ra001a_termination_grace_seconds \
-            ra001a_max_ignored_entry_bytes \
-            ra001a_max_ignored_entries; do
-            value_counts="$(awk -F= -v key="$positive_policy_key" '$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf "%d:%d", all, valid }' "$policy_output")"
-            [[ "$value_counts" == "1:1" ]] || {
-              echo "trusted policy resolver must emit exactly one positive ${positive_policy_key}" >&2
-              exit 1
-            }
-          done
-          ignored_roots_counts="$(awk -F= '$1 == "ra001a_allowed_ignored_runtime_roots" { all += 1; if ($2 ~ /^[-A-Za-z0-9._\/]+(,[-A-Za-z0-9._\/]+)*$/) valid += 1 } END { printf "%d:%d", all, valid }' "$policy_output")"
-          [[ "$ignored_roots_counts" == "1:1" ]] || {
-            echo "trusted policy resolver must emit exactly one normalized ignored-runtime root list" >&2
-            exit 1
-          }
-          tracer_required_counts="$(awk -F= '$1 == "ra001a_durable_tracer_required" { all += 1; if ($2 == "true" || $2 == "false") valid += 1 } END { printf "%d:%d", all, valid }' "$policy_output")"
-          [[ "$tracer_required_counts" == "1:1" ]] || {
-            echo "trusted policy resolver must emit exactly one boolean ra001a_durable_tracer_required" >&2
-            exit 1
-          }
-          tracer_required="$(awk -F= '$1 == "ra001a_durable_tracer_required" { print $2 }' "$policy_output")"
-          [[ "$tracer_required" == "$RA001A_DURABLE_TRACER_REQUESTED" ]] || {
-            echo "trusted policy resolver tracer decision does not match the dispatch request" >&2
-            exit 1
-          }
-          [[ "$(sha256sum "$policy_output" | cut -d ' ' -f 1)" == "$policy_output_sha256" ]] || { echo "trusted policy output changed after validation" >&2; exit 1; }
-          cat "$policy_output" >> "$GITHUB_OUTPUT"
-          printf 'ra001a_trusted_policy_output_sha256=%s\n' "$policy_output_sha256" >> "$GITHUB_OUTPUT"
+            | tee -a "$GITHUB_OUTPUT"
 
   # Always-runs detector (no compile, no toolchain). Decides whether the crate or any of its
   # shared build inputs changed between the PR base and head, so the heavy lanes can skip on
@@ -387,9 +297,8 @@ jobs:
   test-archive:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]
-    if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true') }}
+    if: ${{ needs.detect.outputs.bvs_changed == 'true' && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}
     outputs:
       bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
@@ -397,6 +306,8 @@ jobs:
       contents: read
       id-token: write
     env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
       NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
       NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
@@ -404,15 +315,6 @@ jobs:
       NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Route BVS transient outputs outside checkout
-        shell: bash
-        run: |
-          {
-            echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"
-            echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-nextest-archive.tar.zst"
-            echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-bin-sidecars.tar.gz"
-          } >> "$GITHUB_ENV"
 
       - name: Compute BVS artifact input hash
         id: bvs_artifact_inputs
@@ -745,7 +647,7 @@ jobs:
           (
             cd "$target_dir"
             printf '%s\0' "${tar_inputs[@]}" \
-              | tar --null -czf "$BVS_BIN_SIDECARS_PATH" --files-from -
+              | tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
           )
 
       - name: Print sccache stats
@@ -813,14 +715,12 @@ jobs:
       - name: List scoped BVS archive tests
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-list-extract"
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH" --extract-to "$RUNNER_TEMP/bvs-nextest-list-extract" --extract-overwrite --workspace-remap "$GITHUB_WORKSPACE/crates/backtesting-vertical-slice"
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH" --extract-to "$RUNNER_TEMP/bvs-nextest-list-extract" --extract-overwrite --workspace-remap "$GITHUB_WORKSPACE/crates/backtesting-vertical-slice"
 
       - name: Setup BVS MinIO S3 smoke
-        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}
         uses: ./.github/actions/setup-bvs-minio-s3-smoke
 
       - name: test BVS MinIO S3 smoke
-        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract-s3-smoke"
           env "$BVS_MINIO_S3_SMOKE_ENV_VAR=$BVS_MINIO_S3_SMOKE_ENV_VALUE" \
@@ -831,7 +731,6 @@ jobs:
               backtesting_vertical_slice_s3_catalog_smoke
 
       - name: test
-        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
@@ -856,73 +755,8 @@ jobs:
             exit 1
           fi
 
-      - name: Configure AWS credentials for RA-001a durable tracer
-        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}
-        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
-        with:
-          role-to-assume: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_RA001A_TRACER_REGION }}
-
-      - name: Resolve RA-001a durable tracer inputs
-        id: ra001a-durable-tracer-inputs
-        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}
-        shell: bash
-        env:
-          WORKER_EXECUTABLE: ${{ steps.crate_target.outputs.dir }}/debug/source_universe_batch_execution
-          RECEIPT_PATH: ${{ runner.temp }}/ra001a-durable-tracer/receipt-set.json
-        run: |
-          test -x "$WORKER_EXECUTABLE" || { echo "RA-001a worker sidecar is missing or not executable"; exit 1; }
-          mkdir -p "$(dirname "$RECEIPT_PATH")"
-          test ! -e "$RECEIPT_PATH" || { echo "RA-001a receipt path already exists"; exit 1; }
-          worker_sha256="$(sha256sum "$WORKER_EXECUTABLE" | cut -d ' ' -f 1)"
-          [[ "$worker_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "RA-001a worker SHA-256 is invalid"; exit 1; }
-          worker_bytes="$(stat -c '%s' "$WORKER_EXECUTABLE")"
-          [[ "$worker_bytes" =~ ^[1-9][0-9]*$ ]] || { echo "RA-001a worker byte length is invalid"; exit 1; }
-          echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"
-          echo "worker_bytes=$worker_bytes" >> "$GITHUB_OUTPUT"
-          echo "receipt_path=$RECEIPT_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Run RA-001a registry-complete durable tracer
-        id: ra001a-durable-tracer
-        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}
-        shell: bash
-        env:
-          BOLT_RA001A_SOURCE_REVISION: ${{ github.sha }}
-          BOLT_RA001A_WORKER_SHA256: ${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}
-          BOLT_RA001A_WORKER_BYTES: ${{ steps.ra001a-durable-tracer-inputs.outputs.worker_bytes }}
-          BOLT_RA001A_RECEIPT_PATH: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}
-          BOLT_RA001A_MAX_REGISTRY_PACKS: ${{ needs.ci-policy.outputs.ra001a_max_registry_packs }}
-          BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: ${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}
-          BOLT_RA001A_MAX_WORKER_EXECUTABLE_BYTES: ${{ needs.ci-policy.outputs.ra001a_max_worker_executable_bytes }}
-          BOLT_RA001A_TRUSTED_POLICY_OUTPUT_SHA256: ${{ needs.ci-policy.outputs.ra001a_trusted_policy_output_sha256 }}
-          BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS: ${{ needs.ci-policy.outputs.ra001a_allowed_ignored_runtime_roots }}
-          BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES: ${{ needs.ci-policy.outputs.ra001a_max_ignored_entry_bytes }}
-          BOLT_RA001A_MAX_IGNORED_ENTRIES: ${{ needs.ci-policy.outputs.ra001a_max_ignored_entries }}
-          RA001A_MAX_WALL_SECONDS: ${{ needs.ci-policy.outputs.ra001a_max_wall_seconds }}
-          RA001A_TERMINATION_GRACE_SECONDS: ${{ needs.ci-policy.outputs.ra001a_termination_grace_seconds }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract-ra001a"
-          timeout --signal=TERM --kill-after="${RA001A_TERMINATION_GRACE_SECONDS}s" "${RA001A_MAX_WALL_SECONDS}s" \
-            just bte-test-archive-run \
-            "$BVS_NEXTEST_ARCHIVE_PATH" \
-            "$RUNNER_TEMP/bvs-nextest-archive-extract-ra001a" \
-            --run-ignored ignored-only \
-            --no-tests=fail \
-            -E 'binary(=backtesting_vertical_slice_tests) & test(=backtesting_vertical_slice_source_universe_durable_tracer::registry_complete_ra001a_live_tracer_runs_every_committed_pack)'
-          test -s "$BOLT_RA001A_RECEIPT_PATH" || { echo "RA-001a receipt is missing or empty"; exit 1; }
-
-      - name: Upload RA-001a durable tracer receipt
-        id: upload-ra001a-durable-tracer-receipt
-        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ra001a-durable-tracer-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Stop BVS MinIO S3 smoke container
-        if: ${{ always() && needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}
+        if: always()
         run: docker rm -f "$BVS_MINIO_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   issue_789:
@@ -930,9 +764,8 @@ jobs:
     # Diagnostic evidence lane: issue #789 is manual-only iteration feedback
     # and never extends the default required backtester-gate critical path.
     needs: [ci-policy, detect, gate]
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.issue_789 == true && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.issue_789 == 'true' && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}
     env:
       BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst
       BOLT_ISSUE_789_RESULT_PATH: ${{ github.workspace }}/crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
@@ -990,57 +823,42 @@ jobs:
 
       - name: Prepare trusted base verdict tree
         id: verdict_base
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
-          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}
         run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_branch="$PR_BASE_REF"
-            base_ref="refs/remotes/origin/bvs-gate-base-${PR_NUMBER}"
-          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
-            merge_group_base="$MERGE_GROUP_BASE_REF"
-            if [[ "$merge_group_base" == refs/heads/* ]]; then
-              base_branch="${merge_group_base#refs/heads/}"
-            elif [[ "$merge_group_base" == refs/* ]]; then
-              echo "unsupported merge_group base_ref: $merge_group_base" >&2
-              exit 1
-            else
-              base_branch="$merge_group_base"
-            fi
-            base_ref="refs/remotes/origin/bvs-gate-base-merge-group-${GITHUB_RUN_ID}"
-          else
-            echo "unsupported trusted base event: $EVENT_NAME" >&2
+          if [[ ! "$TRUSTED_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted verdict revision is missing or malformed: $TRUSTED_REVISION" >&2
             exit 1
           fi
-          git check-ref-format "refs/heads/$base_branch"
-          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          trusted_ref="refs/remotes/origin/bvs-gate-trusted-${GITHUB_RUN_ID}"
+          git fetch --no-tags origin "+${TRUSTED_REVISION}:${trusted_ref}"
+          fetched_revision="$(git rev-parse --verify "${trusted_ref}^{commit}")"
+          if [[ "$fetched_revision" != "$TRUSTED_REVISION" ]]; then
+            echo "trusted verdict revision changed during fetch" >&2
+            exit 1
+          fi
           base_tree="$RUNNER_TEMP/bvs-gate-base-tree"
-          mkdir -p "$base_tree"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
-          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          mkdir "$base_tree"
+          git archive "$TRUSTED_REVISION" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          test -f "$base_tree/scripts/ci_provenance.py"
+          test -f "$base_tree/ci/github-actions-runners.toml"
+          {
+            echo "script=$base_tree/scripts/ci_provenance.py"
+            echo "config=$base_tree/ci/github-actions-runners.toml"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check required lanes
         shell: bash
         run: |
-          verdict_script="${{ steps.verdict_base.outputs.script }}"
-          if [[ -z "$verdict_script" ]]; then
-            verdict_script="scripts/ci_provenance.py"
-          fi
-          tracer_verdict_args=()
-          if python3 "$verdict_script" check-backtester-gate --help | grep -q -- "--ra001a-durable-tracer-required"; then
-            tracer_verdict_args=(--ra001a-durable-tracer-required "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required || 'false' }}")
-          elif [[ "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required || 'false' }}" == "true" ]]; then
-            echo "trusted verdict resolver does not support the requested RA-001a tracer" >&2
-            exit 1
-          fi
+          readonly verdict_script="${{ steps.verdict_base.outputs.script }}"
+          readonly verdict_config="${{ steps.verdict_base.outputs.config }}"
+          test -f "$verdict_script"
+          test -f "$verdict_config"
           python3 "$verdict_script" check-backtester-gate \
+            --config "$verdict_config" \
             --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
             --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
-            "${tracer_verdict_args[@]}" \
             --bvs-changed "${{ needs.detect.outputs.bvs_changed || 'false' }}" \
             --job ci-policy=${{ needs.ci-policy.result }} \
             --job detect=${{ needs.detect.result }} \

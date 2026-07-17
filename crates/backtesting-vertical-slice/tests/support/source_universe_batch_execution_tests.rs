@@ -24,18 +24,18 @@ use backtesting_vertical_slice::{
     operator_work_budget::OperatorWorkBudgetGuard,
     source_proof::SourceBindingRegistry,
     source_universe_batch_execution::{
-        CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
-        LocalSourceUniverseOperatorRunner, ProcessIsolatedSourceUniverseOperatorRunner,
-        SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT, SourceUniverseBatchArtifactPin,
-        SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionCompletionResolution,
-        SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionRecordProvenance,
-        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
-        SourceUniverseBatchExecutionRunOutput,
+        HttpSourceUniverseObjectFetcher, LocalSourceUniverseOperatorRunner,
+        ProcessIsolatedSourceUniverseOperatorRunner, SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT,
+        SourceUniverseBatchArtifactPin, SourceUniverseBatchBootstrapLimits,
+        SourceUniverseBatchExecutionCompletionResolution, SourceUniverseBatchExecutionConfig,
+        SourceUniverseBatchExecutionRecordProvenance, SourceUniverseBatchExecutionReport,
+        SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
         SourceUniverseBatchLaunchArtifacts, SourceUniverseBatchResourceLimits,
-        SourceUniverseCacheRunVerification, SourceUniverseObjectFetcher,
-        SourceUniverseOperatorRunOutcome, SourceUniverseOperatorRunner,
-        SourceUniverseVerifiedControlArtifacts, TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS,
-        VerifiedSourceObject, execute_source_universe_batch_with_pinned_artifacts,
+        SourceUniverseObjectFetcher, SourceUniverseOperatorRunOutcome,
+        SourceUniverseOperatorRunner, SourceUniverseVerifiedControlArtifacts,
+        TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS, VerifiedSourceObject,
+        WriteThroughSourceUniverseObjectFetcher,
+        execute_source_universe_batch_with_pinned_artifacts,
         execute_source_universe_batch_with_pinned_artifacts_factories,
         synthetic_test_durable_completion, validate_source_universe_batch_execution_report,
         write_source_universe_batch_execution_report,
@@ -91,7 +91,9 @@ where
         output_dir,
         SourceUniverseBatchExecutionConfig {
             record_limit,
-            ..SourceUniverseBatchExecutionConfig::default()
+            start_sequence: None,
+            continue_on_error: false,
+            max_concurrent_records: Some(1),
         },
         fetcher,
         runner,
@@ -298,7 +300,7 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
 }
 
 #[test]
-fn batch_report_separates_attempt_and_terminal_publisher_identity() {
+fn batch_report_accepts_only_fresh_attempt_publisher_identity() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
     let mut fetcher = StaticFetcher {
@@ -306,10 +308,9 @@ fn batch_report_separates_attempt_and_terminal_publisher_identity() {
         object_bytes: b"accepted object bytes".to_vec(),
         calls: 0,
     };
-    let pack: SourceUniverseExecutionPack = serde_json::from_slice(
-        &fs::read(&fixture.pack_path).expect("read pack"),
-    )
-    .expect("parse pack");
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read pack"))
+            .expect("parse pack");
     fetcher.expected_source_url = pack.records[0].source_url.clone();
     let mut runner = RecordingRunner::default();
     let report = execute_source_universe_batch(
@@ -322,12 +323,12 @@ fn batch_report_separates_attempt_and_terminal_publisher_identity() {
     )
     .expect("fresh publication report");
 
-    let mut discovered = report.clone();
-    discovered.records[0].completion_resolution =
-        SourceUniverseBatchExecutionCompletionResolution::Discovered;
-    discovered.records[0].terminal_publisher_worker_sha256 = sha256_hex(b"publisher generation A");
-    validate_source_universe_batch_execution_report(&discovered)
-        .expect("discovery may observe a terminal from an older worker generation");
+    let mut legacy = serde_json::to_value(&report).expect("serialize current report");
+    legacy["records"][0]["completion_resolution"] =
+        serde_json::Value::String("discovered".to_string());
+    let discovery = serde_json::from_value::<SourceUniverseBatchExecutionReport>(legacy)
+        .expect_err("legacy discovered completion must fail current-schema deserialization");
+    assert!(discovery.to_string().contains("unknown variant"));
 
     let mut mismatched_publication = report.clone();
     mismatched_publication.records[0].terminal_publisher_worker_sha256 =
@@ -336,8 +337,9 @@ fn batch_report_separates_attempt_and_terminal_publisher_identity() {
         .expect_err("fresh publication must bind the attempt worker as terminal publisher");
     assert!(format!("{mismatch:#}").contains("freshly published"));
 
-    discovered.records[0].terminal_publisher_worker_sha256 = "not-a-sha256".to_string();
-    let tamper = validate_source_universe_batch_execution_report(&discovered)
+    let mut invalid_publisher = report;
+    invalid_publisher.records[0].terminal_publisher_worker_sha256 = "not-a-sha256".to_string();
+    let tamper = validate_source_universe_batch_execution_report(&invalid_publisher)
         .expect_err("tampered terminal publisher identity must fail closed");
     assert!(format!("{tamper:#}").contains("terminal_publisher_worker_sha256"));
 }
@@ -510,7 +512,7 @@ fn source_universe_batch_execution_respects_start_sequence() {
             start_sequence: Some(1),
             record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -571,7 +573,7 @@ fn source_universe_batch_execution_can_continue_after_record_failure() {
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: true,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -632,7 +634,7 @@ fn continue_on_error_records_control_preflight_failure_and_runs_later_record() {
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: true,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -693,7 +695,7 @@ fn continue_on_error_isolates_malformed_control_digest_to_its_record() {
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: true,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -732,7 +734,7 @@ fn continue_on_error_isolates_rejected_runner_output_and_runs_later_record() {
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: true,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -768,7 +770,7 @@ fn continue_on_error_isolates_rejected_runner_output_and_runs_later_record() {
 
 #[test]
 fn http_source_universe_fetcher_rejects_zero_timeout() {
-    match HttpSourceUniverseObjectFetcher::new(Some(0), None) {
+    match HttpSourceUniverseObjectFetcher::new(0, "bolt-source-universe-test") {
         Ok(_) => panic!("zero timeout accepted"),
         Err(err) => assert!(
             err.to_string()
@@ -778,92 +780,154 @@ fn http_source_universe_fetcher_rejects_zero_timeout() {
 }
 
 #[test]
-fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
+fn write_through_archive_fetches_origin_then_rejects_occupied_attempt_evidence() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let cache_dir = temp_dir.path().join("object-cache");
+    let attempt_identity = "attempt-one";
     let object_bytes = b"synthetic accepted object bytes";
     let record = synthetic_record(0, object_bytes, "https://synthetic.example/object-0");
+    let cache_path = cache_dir
+        .join(attempt_identity)
+        .join(&record.selected_object_sha256);
+    fs::create_dir_all(cache_path.parent().expect("attempt evidence parent"))
+        .expect("plant occupied attempt evidence namespace");
+    fs::write(&cache_path, object_bytes).expect("plant valid preexisting evidence");
 
     let inner = CountingFetcher::new(vec![(0, object_bytes.to_vec())]);
     let inner_calls = inner.calls();
-    let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
-
-    let work_budget = OperatorWorkBudgetGuard::unbounded();
-    let first = fetcher
-        .fetch(
-            &record,
-            &committed_record_zero_controls().run_spec,
-            &work_budget,
-        )
-        .expect("first fetch populates cache");
-    assert_eq!(first.as_bytes(), object_bytes);
-    assert_eq!(
-        inner_calls.load(Ordering::SeqCst),
-        1,
-        "miss calls inner once"
-    );
-
-    let cache_path = cache_dir.join(&record.selected_object_sha256);
-    assert!(cache_path.exists(), "cache entry persisted under sha key");
-    assert_eq!(
-        fs::read(&cache_path).expect("read cache entry"),
-        object_bytes,
-        "cache entry holds verified bytes"
-    );
-    let stray_temp = fs::read_dir(&cache_dir)
-        .expect("read cache dir")
-        .filter_map(|entry| entry.ok())
-        .any(|entry| entry.file_name() != std::ffi::OsStr::new(&record.selected_object_sha256));
-    assert!(!stray_temp, "no temp files left behind after atomic rename");
-
-    let second = fetcher
-        .fetch(
-            &record,
-            &committed_record_zero_controls().run_spec,
-            &work_budget,
-        )
-        .expect("second fetch hits cache");
-    assert_eq!(second.as_bytes(), object_bytes);
-    assert_eq!(
-        inner_calls.load(Ordering::SeqCst),
-        1,
-        "cache hit does not call inner again"
-    );
-}
-
-#[test]
-fn caching_fetcher_corrupt_occupied_entry_fails_closed_and_is_retained() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let cache_dir = temp_dir.path().join("object-cache");
-    fs::create_dir_all(&cache_dir).expect("create cache dir");
-    let object_bytes = b"synthetic accepted object bytes";
-    let record = synthetic_record(0, object_bytes, "https://synthetic.example/object-0");
-
-    // Plant a corrupt cache entry under the sha key (wrong length and bytes).
-    let cache_path = cache_dir.join(&record.selected_object_sha256);
-    fs::write(&cache_path, b"corrupt cached payload").expect("plant corrupt entry");
-
-    let inner = CountingFetcher::new(vec![(0, object_bytes.to_vec())]);
-    let inner_calls = inner.calls();
-    let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
+    let mut fetcher = WriteThroughSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
     let error = fetcher
         .fetch(
             &record,
             &committed_record_zero_controls().run_spec,
+            attempt_identity,
             &OperatorWorkBudgetGuard::unbounded(),
         )
-        .expect_err("an occupied corrupt content-addressed name must fail closed");
+        .expect_err("an occupied attempt evidence namespace must fail after origin fetch");
     assert!(
-        error
-            .to_string()
-            .contains("occupied object cache entry failed immutable verification"),
+        format!("{error:#}").contains("create fresh source-object evidence attempt directory"),
         "{error:#}"
     );
     assert_eq!(
         inner_calls.load(Ordering::SeqCst),
-        0,
-        "an occupied cache name must never fall through to a refetch-and-replace path"
+        1,
+        "occupied evidence must not bypass the origin fetch"
+    );
+    assert_eq!(
+        fs::read(&cache_path).expect("read preexisting evidence"),
+        object_bytes
+    );
+}
+
+#[test]
+fn write_through_archive_uses_the_explicit_fresh_attempt_identity() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cache_dir = temp_dir.path().join("object-cache");
+    let object_bytes = b"synthetic accepted object bytes";
+    let record = synthetic_record(0, object_bytes, "https://synthetic.example/object-0");
+    let inner = CountingFetcher::new(vec![(0, object_bytes.to_vec())]);
+    let inner_calls = inner.calls();
+    let mut fetcher = WriteThroughSourceUniverseObjectFetcher::new(inner, &cache_dir);
+
+    for attempt_identity in ["attempt-one", "attempt-two"] {
+        let object = fetcher
+            .fetch(
+                &record,
+                &committed_record_zero_controls().run_spec,
+                attempt_identity,
+                &OperatorWorkBudgetGuard::unbounded(),
+            )
+            .expect("each explicit attempt gets one fresh evidence namespace");
+        assert_eq!(object.as_bytes(), object_bytes);
+        assert_eq!(
+            fs::read(
+                cache_dir
+                    .join(attempt_identity)
+                    .join(&record.selected_object_sha256)
+            )
+            .expect("read attempt-scoped evidence"),
+            object_bytes
+        );
+    }
+    assert_eq!(inner_calls.load(Ordering::SeqCst), 2);
+    assert_ne!(cache_dir.join("attempt-one"), cache_dir.join("attempt-two"));
+}
+
+#[test]
+fn write_through_archive_persists_new_origin_evidence_atomically() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cache_dir = temp_dir.path().join("object-cache");
+    let object_bytes = b"synthetic accepted object bytes";
+    let record = synthetic_record(0, object_bytes, "https://synthetic.example/object-0");
+    let inner = CountingFetcher::new(vec![(0, object_bytes.to_vec())]);
+    let inner_calls = inner.calls();
+    let mut fetcher = WriteThroughSourceUniverseObjectFetcher::new(inner, &cache_dir);
+
+    let object = fetcher
+        .fetch(
+            &record,
+            &committed_record_zero_controls().run_spec,
+            "attempt-one",
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect("origin fetch writes new evidence");
+    assert_eq!(object.as_bytes(), object_bytes);
+    assert_eq!(inner_calls.load(Ordering::SeqCst), 1);
+
+    let cache_path = cache_dir
+        .join("attempt-one")
+        .join(&record.selected_object_sha256);
+    assert!(cache_path.exists(), "evidence persisted under its sha key");
+    assert_eq!(
+        fs::read(&cache_path).expect("read evidence entry"),
+        object_bytes,
+        "evidence entry holds verified origin bytes"
+    );
+    let stray_temp = fs::read_dir(cache_dir.join("attempt-one"))
+        .expect("read evidence archive")
+        .filter_map(|entry| entry.ok())
+        .any(|entry| entry.file_name() != std::ffi::OsStr::new(&record.selected_object_sha256));
+    assert!(!stray_temp, "no temp files left behind after atomic rename");
+}
+
+#[test]
+fn write_through_archive_fetches_origin_then_rejects_conflicting_occupant() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cache_dir = temp_dir.path().join("object-cache");
+    let attempt_identity = "attempt-one";
+    fs::create_dir_all(cache_dir.join(attempt_identity)).expect("create occupied attempt dir");
+    let object_bytes = b"synthetic accepted object bytes";
+    let record = synthetic_record(0, object_bytes, "https://synthetic.example/object-0");
+
+    // Plant conflicting evidence under the sha key (wrong length and bytes).
+    let cache_path = cache_dir
+        .join(attempt_identity)
+        .join(&record.selected_object_sha256);
+    fs::write(&cache_path, b"corrupt cached payload").expect("plant corrupt entry");
+
+    let inner = CountingFetcher::new(vec![(0, object_bytes.to_vec())]);
+    let inner_calls = inner.calls();
+    let mut fetcher = WriteThroughSourceUniverseObjectFetcher::new(inner, &cache_dir);
+
+    let error = fetcher
+        .fetch(
+            &record,
+            &committed_record_zero_controls().run_spec,
+            attempt_identity,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .expect_err("conflicting archived evidence must fail closed after origin fetch");
+    assert!(
+        error
+            .to_string()
+            .contains("create fresh source-object evidence attempt directory"),
+        "{error:#}"
+    );
+    assert_eq!(
+        inner_calls.load(Ordering::SeqCst),
+        1,
+        "a conflicting archive occupant must not bypass the origin fetch"
     );
     assert_eq!(
         fs::read(&cache_path).expect("read retained corrupt entry"),
@@ -873,7 +937,7 @@ fn caching_fetcher_corrupt_occupied_entry_fails_closed_and_is_retained() {
 }
 
 #[test]
-fn caching_fetcher_inner_verification_failure_never_enters_cache() {
+fn write_through_archive_rejects_unverified_origin_bytes_without_storing_them() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let cache_dir = temp_dir.path().join("object-cache");
     let object_bytes = b"synthetic accepted object bytes";
@@ -881,18 +945,21 @@ fn caching_fetcher_inner_verification_failure_never_enters_cache() {
 
     // The inner fetch boundary rejects bytes that do not match the pin.
     let inner = CountingFetcher::new(vec![(0, b"wrong inner bytes".to_vec())]);
-    let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
+    let mut fetcher = WriteThroughSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
     let result = fetcher.fetch(
         &record,
         &committed_record_zero_controls().run_spec,
+        "attempt-one",
         &OperatorWorkBudgetGuard::unbounded(),
     );
     assert!(
         result.is_err(),
         "inner verification failure stops the fetch"
     );
-    let cache_path = cache_dir.join(&record.selected_object_sha256);
+    let cache_path = cache_dir
+        .join("attempt-one")
+        .join(&record.selected_object_sha256);
     assert!(
         !cache_path.exists(),
         "unverified bytes must never be written to the cache"
@@ -900,7 +967,7 @@ fn caching_fetcher_inner_verification_failure_never_enters_cache() {
 }
 
 #[test]
-fn current_terminal_discovery_skips_fetch_and_execution() {
+fn current_terminal_presence_fails_before_fetch_and_execution() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let valid_object = valid_bybit_trade_object();
     let objects = vec![(0u64, valid_object)];
@@ -910,7 +977,7 @@ fn current_terminal_discovery_skips_fetch_and_execution() {
     let fetch_calls = fetcher.calls();
     let mut runner = CurrentCompletionValidationRunner::exact();
 
-    let report = execute_source_universe_batch_with_config(
+    let error = execute_source_universe_batch_with_config(
         "source-universe-report-absent-recovery",
         &fixture.pack_path,
         &output,
@@ -918,196 +985,35 @@ fn current_terminal_discovery_skips_fetch_and_execution() {
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
     )
-    .expect("the deterministic current terminal is sufficient");
+    .expect_err("an existing terminal cannot satisfy a fresh execution");
 
-    assert_eq!(report.completed_record_count, 1);
+    assert!(
+        error
+            .to_string()
+            .contains("refuses existing completion object"),
+        "{error:#}"
+    );
     assert!(
         fetch_calls.lock().expect("fetch log").is_empty(),
-        "current-terminal discovery must precede and suppress source fetch"
+        "completion-absence check must precede and suppress source fetch"
     );
     assert_eq!(runner.discovery_calls, vec![0]);
     assert!(
         runner.run_calls.is_empty(),
-        "current-terminal discovery must not invoke BacktestNode execution"
-    );
-    let report_json = serde_json::to_value(&report).expect("serialize recovered report");
-    assert!(report_json["records"][0].get("output_dir").is_none());
-    assert_eq!(
-        report.records[0].completion_provenance,
-        SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
-    );
-    assert_eq!(
-        report.records[0].completion_resolution,
-        SourceUniverseBatchExecutionCompletionResolution::Discovered
-    );
-    assert_eq!(
-        report.records[0].attempt_worker_sha256,
-        super::synthetic_test_current_attempt_worker_sha256()
-    );
-    assert_eq!(
-        report.records[0].terminal_publisher_worker_sha256,
-        super::synthetic_test_worker_executable_sha256()
-    );
-    assert_ne!(
-        report.records[0].attempt_worker_sha256,
-        report.records[0].terminal_publisher_worker_sha256,
-        "an exact current terminal may have been published by an older worker generation"
+        "completion-absence check must not invoke BacktestNode execution"
     );
 }
 
 #[test]
-fn repeated_current_terminal_discovery_produces_identical_report_bytes() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let valid_object = valid_bybit_trade_object();
-    let objects = vec![(0_u64, valid_object)];
-    let fixture = write_valid_pack(temp_dir.path(), &objects);
-    let output = temp_dir.path().join("repeat-discovery-output");
-    let config = SourceUniverseBatchExecutionConfig {
-        start_sequence: None,
-        record_limit: Some(1),
-        continue_on_error: false,
-        max_concurrent_records: None,
-    };
-
-    let mut first_fetcher = SequencedFetcher::from_objects(&objects);
-    let mut first_runner = CurrentCompletionValidationRunner::exact();
-    let first_report = execute_source_universe_batch_with_config(
-        "source-universe-repeat-discovery",
-        &fixture.pack_path,
-        &output,
-        config.clone(),
-        &mut first_fetcher,
-        &mut first_runner,
-    )
-    .expect("first deterministic current-terminal discovery");
-    let first_artifact = write_source_universe_batch_execution_report(&output, &first_report)
-        .expect("publish first deterministic report");
-    let first_bytes = fs::read(&first_artifact.path).expect("read first report bytes");
-
-    let mut second_fetcher = SequencedFetcher::from_objects(&objects);
-    let mut second_runner = CurrentCompletionValidationRunner::exact();
-    let second_report = execute_source_universe_batch_with_config(
-        "source-universe-repeat-discovery",
-        &fixture.pack_path,
-        &output,
-        config,
-        &mut second_fetcher,
-        &mut second_runner,
-    )
-    .expect("second deterministic current-terminal discovery");
-    let second_bytes =
-        backtesting_vertical_slice::reference_artifact::canonical_json_bytes(&second_report)
-            .expect("serialize second report");
-
-    assert_eq!(
-        second_bytes, first_bytes,
-        "fresh protocol scratch identity must not alter durable report bytes"
-    );
-    write_source_universe_batch_execution_report(&output, &second_report)
-        .expect("identical restart report must satisfy FailOnDirty");
-}
-
-#[test]
-fn current_terminal_discovery_falls_through_to_fresh_work_per_record() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let valid_object = valid_bybit_trade_object();
-    let objects = vec![(0_u64, valid_object.clone()), (1_u64, valid_object)];
-    let fixture = write_valid_pack(temp_dir.path(), &objects);
-    let output = temp_dir.path().join("mixed-discovery-output");
-    let mut fetcher = SequencedFetcher::from_objects(&objects);
-    let fetch_calls = fetcher.calls();
-    let mut runner = CurrentCompletionValidationRunner::exact();
-
-    let report = execute_source_universe_batch_with_config(
-        "source-universe-mixed-discovery",
-        &fixture.pack_path,
-        &output,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(2),
-            continue_on_error: false,
-            max_concurrent_records: None,
-        },
-        &mut fetcher,
-        &mut runner,
-    )
-    .expect("discovered and fresh records complete through one recovery lane");
-
-    assert_eq!(report.completed_record_count, 2);
-    assert_eq!(report.total_canonical_rows, 2);
-    assert_eq!(report.total_nt_catalog_rows, 2);
-    assert_eq!(
-        report
-            .records
-            .iter()
-            .map(|record| record.sequence)
-            .collect::<Vec<_>>(),
-        vec![0, 1],
-        "mixed completion paths must preserve pack order"
-    );
-    assert_eq!(runner.discovery_calls, vec![0, 1]);
-    assert_eq!(
-        fetch_calls.lock().expect("fetch log").as_slice(),
-        &[1],
-        "only the record without a current terminal may fetch"
-    );
-    assert_eq!(
-        runner.run_calls,
-        vec![1],
-        "only the record without a current terminal may execute"
-    );
-    assert_eq!(
-        report.records[0].completion_provenance,
-        SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
-    );
-    assert_eq!(
-        report.records[0].completion_resolution,
-        SourceUniverseBatchExecutionCompletionResolution::Discovered
-    );
-    assert_ne!(
-        report.records[0].attempt_worker_sha256,
-        report.records[0].terminal_publisher_worker_sha256
-    );
-    assert_eq!(
-        report.records[1].completion_provenance,
-        SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
-    );
-    assert_eq!(
-        report.records[1].completion_resolution,
-        SourceUniverseBatchExecutionCompletionResolution::Published
-    );
-    assert_eq!(
-        report.records[1].attempt_worker_sha256,
-        report.records[1].terminal_publisher_worker_sha256
-    );
-}
-
-#[test]
-fn current_terminal_missing_exact_remote_version_is_committed_indeterminate_without_refetch() {
+fn current_terminal_head_error_is_committed_indeterminate_without_refetch() {
     assert_current_terminal_failure_stops_without_refetch(
-        CurrentCompletionValidationBehavior::MissingExactVersion,
-        "missing exact remote version",
-    );
-}
-
-#[test]
-fn current_terminal_foreign_exact_remote_version_is_committed_indeterminate_without_refetch() {
-    assert_current_terminal_failure_stops_without_refetch(
-        CurrentCompletionValidationBehavior::ForeignExactVersion,
-        "current durable completion does not match submitted run",
-    );
-}
-
-#[test]
-fn current_terminal_corrupt_exact_remote_version_is_committed_indeterminate_without_refetch() {
-    assert_current_terminal_failure_stops_without_refetch(
-        CurrentCompletionValidationBehavior::CorruptExactVersion,
-        "exact-version SHA-256 mismatch",
+        CurrentCompletionValidationBehavior::HeadError,
+        "completion HEAD failed",
     );
 }
 
@@ -1131,7 +1037,7 @@ fn assert_current_terminal_failure_stops_without_refetch(
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: true,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -1391,7 +1297,7 @@ fn parallel_continue_on_error_collects_failures() {
 }
 
 #[test]
-fn parallel_duplicate_sha_records_fail_closed_on_corrupt_occupied_cache() {
+fn parallel_duplicate_sha_records_fetch_origin_then_reject_conflicting_evidence() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let run_spec_path = temp_dir.path().join("run-spec.toml");
     let execution_plan_path = temp_dir.path().join("execution-plan.json");
@@ -1399,9 +1305,9 @@ fn parallel_duplicate_sha_records_fail_closed_on_corrupt_occupied_cache() {
     fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     // Sequences 0 and 1 pin IDENTICAL bytes — records are not deduplicated by
-    // sha, so both map to the same cache entry path. A corrupt entry is
-    // planted under that shared sha before the run. Both records must reject
-    // it without consulting the provider or repairing the occupied path.
+    // sha, so both map to the same evidence path. A corrupt entry is planted
+    // under that shared sha before the run. Both records must still fetch the
+    // provider first, then reject the conflicting immutable evidence path.
     let shared_bytes = b"shared synthetic object".to_vec();
     let objects = vec![
         (0u64, shared_bytes.clone()),
@@ -1432,15 +1338,12 @@ fn parallel_duplicate_sha_records_fail_closed_on_corrupt_occupied_cache() {
         {
             let objects = objects.clone();
             let cache_dir = cache_dir.clone();
-            let run_verification = SourceUniverseCacheRunVerification::default();
             let fetch_calls = std::sync::Arc::clone(&fetch_calls);
             move || {
                 let mut inner = SequencedFetcher::from_objects(&objects);
                 inner.calls = std::sync::Arc::clone(&fetch_calls);
-                Ok(CachingSourceUniverseObjectFetcher::for_run(
-                    inner,
-                    &cache_dir,
-                    run_verification.clone(),
+                Ok(WriteThroughSourceUniverseObjectFetcher::new(
+                    inner, &cache_dir,
                 ))
             }
         },
@@ -1466,14 +1369,14 @@ fn parallel_duplicate_sha_records_fail_closed_on_corrupt_occupied_cache() {
         failure.failure_stage == "fetch"
             && failure
                 .error
-                .contains("occupied object cache entry failed immutable verification")
+                .contains("create or verify immutable source-object evidence")
     }));
     let mut fetch_calls = fetch_calls.lock().expect("fetch call log").clone();
     fetch_calls.sort_unstable();
     assert_eq!(
         fetch_calls,
-        vec![2, 3],
-        "an occupied shared digest must never fall back to the provider"
+        vec![0, 1, 2, 3],
+        "every selected record must call its configured origin before archiving"
     );
     assert_eq!(
         fs::read(cache_dir.join(&shared_sha)).expect("read retained corrupt entry"),
@@ -2221,7 +2124,7 @@ fn foreign_deterministic_symlink_does_not_reduce_multi_record_progress() {
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: true,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2314,9 +2217,9 @@ fn prepare_batch_rejects_parent_dir_traversal_sha256() {
         &output_dir,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
-            record_limit: None,
+            record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2359,9 +2262,9 @@ fn prepare_batch_rejects_absolute_path_sha256() {
         &output_dir,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
-            record_limit: None,
+            record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2404,9 +2307,9 @@ fn prepare_batch_rejects_uppercase_hex_sha256() {
         &output_dir,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
-            record_limit: None,
+            record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2441,9 +2344,9 @@ fn prepare_batch_rejects_short_hex_sha256() {
         &output_dir,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
-            record_limit: None,
+            record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2479,7 +2382,7 @@ fn prepare_batch_rejects_zero_max_concurrent_records() {
         &output_dir,
         SourceUniverseBatchExecutionConfig {
             start_sequence: None,
-            record_limit: None,
+            record_limit: Some(1),
             continue_on_error: false,
             max_concurrent_records: Some(0),
         },
@@ -2515,7 +2418,7 @@ fn prepare_batch_rejects_non_strict_full_pack_sequence_outside_selected_window()
             start_sequence: Some(2),
             record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2559,7 +2462,7 @@ fn prepare_batch_rejects_duplicate_sequence_outside_selected_window() {
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2596,7 +2499,7 @@ fn prepare_batch_allows_strict_sequence_gaps() {
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: false,
-            max_concurrent_records: None,
+            max_concurrent_records: Some(1),
         },
         &mut fetcher,
         &mut runner,
@@ -2776,7 +2679,7 @@ fn factory_entry_rejects_empty_selection_before_output_or_dependencies() {
         &fixture.output_dir,
         SourceUniverseBatchExecutionConfig {
             start_sequence: Some(1),
-            record_limit: None,
+            record_limit: Some(1),
             continue_on_error: false,
             max_concurrent_records: Some(4),
         },
@@ -2804,14 +2707,14 @@ fn factory_entry_rejects_empty_selection_before_output_or_dependencies() {
 }
 
 #[test]
-fn factory_entry_constructs_one_discovery_runner_but_no_fetcher_for_current_terminal() {
+fn factory_entry_rejects_current_terminal_without_constructing_fetcher() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let objects = vec![(0, valid_bybit_trade_object())];
     let fixture = write_valid_pack(temp_dir.path(), &objects);
     let fetcher_factory_calls = AtomicUsize::new(0);
     let runner_factory_calls = AtomicUsize::new(0);
 
-    let report = execute_source_universe_batch_with_factories(
+    let error = execute_source_universe_batch_with_factories(
         "source-universe-batch-current-terminal",
         &fixture.pack_path,
         &fixture.output_dir,
@@ -2830,11 +2733,14 @@ fn factory_entry_constructs_one_discovery_runner_but_no_fetcher_for_current_term
             Ok(CurrentCompletionValidationRunner::exact())
         },
     )
-    .expect("current terminal performs exact durable discovery");
+    .expect_err("current terminal must fail fresh-only execution");
 
-    assert_eq!(report.completed_record_count, 1);
-    let report_json = serde_json::to_value(&report).expect("serialize discovered report");
-    assert!(report_json["records"][0].get("output_dir").is_none());
+    assert!(
+        error
+            .to_string()
+            .contains("refuses existing completion object"),
+        "{error:#}"
+    );
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 1);
 }
@@ -2984,6 +2890,7 @@ impl SourceUniverseObjectFetcher for MutatingControlArtifactFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
+        _attempt_identity: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<VerifiedSourceObject> {
         fs::write(&self.artifact_path, &self.replacement_bytes)
@@ -3002,6 +2909,7 @@ impl SourceUniverseObjectFetcher for FreshDiscoveryScratchDuringFetchFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
+        _attempt_identity: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<VerifiedSourceObject> {
         let entries = fs::read_dir(&self.output_root)
@@ -3042,6 +2950,7 @@ impl SourceUniverseObjectFetcher for OutputRootSwapFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
+        _attempt_identity: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<VerifiedSourceObject> {
         fs::rename(&self.output_root, &self.displaced_root)
@@ -3056,6 +2965,7 @@ impl SourceUniverseObjectFetcher for StaticFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
+        _attempt_identity: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<VerifiedSourceObject> {
         assert_eq!(record.source_url, self.expected_source_url);
@@ -3104,6 +3014,7 @@ impl SourceUniverseObjectFetcher for SequencedFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
+        _attempt_identity: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<VerifiedSourceObject> {
         self.calls
@@ -3146,10 +3057,8 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
 }
 
 enum CurrentCompletionValidationBehavior {
-    Exact,
-    MissingExactVersion,
-    ForeignExactVersion,
-    CorruptExactVersion,
+    Present,
+    HeadError,
 }
 
 struct CurrentCompletionValidationRunner {
@@ -3160,7 +3069,7 @@ struct CurrentCompletionValidationRunner {
 
 impl CurrentCompletionValidationRunner {
     fn exact() -> Self {
-        Self::new(CurrentCompletionValidationBehavior::Exact)
+        Self::new(CurrentCompletionValidationBehavior::Present)
     }
 
     fn new(behavior: CurrentCompletionValidationBehavior) -> Self {
@@ -3191,45 +3100,25 @@ impl SourceUniverseOperatorRunner for CurrentCompletionValidationRunner {
         ))
     }
 
-    fn discover_current_completion(
+    fn assert_current_completion_absent(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
-        control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+        _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
         _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Option<super::SourceUniverseDiscoveredRunReceipt>> {
+    ) -> anyhow::Result<()> {
         self.discovery_calls.push(record.sequence);
         if record.sequence != 0 {
-            return Ok(None);
+            return Ok(());
         }
         match self.behavior {
-            CurrentCompletionValidationBehavior::MissingExactVersion => {
-                anyhow::bail!("missing exact remote version")
+            CurrentCompletionValidationBehavior::HeadError => {
+                anyhow::bail!("completion HEAD failed")
             }
-            CurrentCompletionValidationBehavior::CorruptExactVersion => {
-                anyhow::bail!("durable completion manifest exact-version SHA-256 mismatch")
+            CurrentCompletionValidationBehavior::Present => {
+                anyhow::bail!("fresh durable execution refuses existing completion object")
             }
-            CurrentCompletionValidationBehavior::ForeignExactVersion => {
-                anyhow::bail!("current durable completion does not match submitted run")
-            }
-            CurrentCompletionValidationBehavior::Exact => {}
         }
-        Ok(Some(super::SourceUniverseDiscoveredRunReceipt {
-            attempt_worker_sha256: super::synthetic_test_current_attempt_worker_sha256(),
-            receipt: DurableRunReceipt {
-                completion: synthetic_test_durable_completion(),
-                execution_attestation: DurableExecutionAttestation::new_process_isolated(
-                    super::synthetic_test_worker_executable_sha256(),
-                )?,
-                run_id: control_artifacts.run_spec.manifest.run_id.clone(),
-                submitted_manifest_hash: control_artifacts.run_spec.manifest.manifest_hash(),
-                canonical_rows: 1,
-                nt_catalog_rows: 1,
-                catalog_hash: sha256_hex(
-                    format!("remote-catalog-{}", record.sequence).as_bytes(),
-                ),
-            },
-        }))
     }
 }
 
@@ -3484,12 +3373,7 @@ fn rewrite_control_triple_and_regenerate_execution_plan(
     record_index: usize,
     mutate: impl FnOnce(&mut RunSpec, &mut BackfillAcceptedTrancheManifest),
 ) {
-    rewrite_control_triple(
-        fixture,
-        record_index,
-        true,
-        mutate,
-    );
+    rewrite_control_triple(fixture, record_index, true, mutate);
 }
 
 fn rewrite_control_triple_without_generation_rebind(
@@ -3551,7 +3435,9 @@ fn rewrite_control_triple(
             &source_bindings_bytes,
         );
     }
-    record.output_prefix.clone_from(&run_spec.manifest.output_prefix);
+    record
+        .output_prefix
+        .clone_from(&run_spec.manifest.output_prefix);
     record.source_bindings_bytes = source_bindings_bytes.len() as u64;
     record.source_bindings_sha256 = sha256_hex(&source_bindings_bytes);
     let run_spec_bytes = toml::to_string_pretty(&run_spec)
@@ -3775,9 +3661,7 @@ fn write_n_record_pack(
         run_spec.manifest.run_id.clone_from(&operator_run_id);
         run_spec.manifest.output_prefix = format!(
             "{}-synthetic-{sequence}",
-            output_prefix_without_conversion_generation(
-                &committed.run_spec.manifest.output_prefix,
-            )
+            output_prefix_without_conversion_generation(&committed.run_spec.manifest.output_prefix,)
         );
         run_spec.accepted_object.sha256.clone_from(&object_sha256);
         run_spec.accepted_object.bytes = object_bytes.len() as u64;
@@ -3952,8 +3836,8 @@ fn synthetic_record(
     }
 }
 
-/// Inner fetcher for the caching tests: serves pinned bytes by sequence and
-/// counts how many times it was actually invoked.
+/// Origin fetcher for write-through archive tests: serves pinned bytes by
+/// sequence and counts how many times it was invoked.
 struct CountingFetcher {
     object_bytes_by_sequence: std::collections::BTreeMap<u64, Vec<u8>>,
     calls: std::sync::Arc<AtomicUsize>,
@@ -3977,6 +3861,7 @@ impl SourceUniverseObjectFetcher for CountingFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
+        _attempt_identity: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<VerifiedSourceObject> {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -4073,6 +3958,7 @@ impl SourceUniverseObjectFetcher for NeverFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _run_spec: &RunSpec,
+        _attempt_identity: &str,
         _work_budget: &OperatorWorkBudgetGuard,
     ) -> anyhow::Result<VerifiedSourceObject> {
         panic!(

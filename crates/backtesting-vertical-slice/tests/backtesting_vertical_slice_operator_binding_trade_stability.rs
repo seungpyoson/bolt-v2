@@ -2,8 +2,8 @@
 //! an existing trade run-spec still flows through the single-table trade entry
 //! (dispatched by `run_operator_from_run_spec`), produces byte-identical
 //! `conversion-manifest.json` / `catalog-metadata.json` / `result-contract.json`
-//! across same-directory reruns, deterministic conversion artifacts across
-//! fresh output directories, and NEVER writes `conversion-tables.json`.
+//! across fresh output directories, rejects same-directory reruns without
+//! mutation, and NEVER writes `conversion-tables.json`.
 //!
 //! Follows the committed-reference pattern of
 //! `backtesting_vertical_slice_backfill_gate_reference_artifacts`: the committed
@@ -104,35 +104,32 @@ fn trade_run_spec_artifacts_are_byte_stable_and_never_write_tables_index() {
     let metadata_a = read_artifact_bytes(dir_a.path(), CATALOG_METADATA_FILE);
     let contract_a = read_artifact_bytes(dir_a.path(), RESULT_CONTRACT_FILE);
 
-    // Same-directory rerun reuses the completed output byte-identically.
-    let second = run_trade(&spec, &gz, dir_a.path());
-    assert_eq!(
-        second.output.projection.catalog_hash,
-        first.output.projection.catalog_hash
-    );
+    // Same-directory reruns are not an alternate success path.
+    run_operator_from_run_spec(&spec, &gz, dir_a.path())
+        .expect_err("fresh trade rerun must reject occupied output");
     assert_eq!(
         read_artifact_bytes(dir_a.path(), CONVERSION_MANIFEST_FILE),
         manifest_a,
-        "conversion-manifest.json must stay byte-identical across reruns"
+        "conversion-manifest.json must stay byte-identical after rejection"
     );
     assert_eq!(
         read_artifact_bytes(dir_a.path(), CATALOG_METADATA_FILE),
         metadata_a,
-        "catalog-metadata.json must stay byte-identical across reruns"
+        "catalog-metadata.json must stay byte-identical after rejection"
     );
     assert_eq!(
         read_artifact_bytes(dir_a.path(), RESULT_CONTRACT_FILE),
         contract_a,
-        "result contract must stay byte-identical across reruns"
+        "result contract must stay byte-identical after rejection"
     );
     assert!(
         !dir_a.path().join(CONVERSION_TABLES_FILE).exists(),
-        "trade reruns must never write {CONVERSION_TABLES_FILE}"
+        "rejected trade reruns must never write {CONVERSION_TABLES_FILE}"
     );
 
     // Fresh run in directory B: the conversion artifacts are deterministic
     // byte-for-byte; the result contract is stable up to the run-volatile
-    // engine identity fields the completed-output verifier also normalizes.
+    // engine identity fields normalized for comparison below.
     let dir_b = tempfile::TempDir::new().expect("temp dir B");
     let third = run_trade(&spec, &gz, dir_b.path());
     assert_eq!(

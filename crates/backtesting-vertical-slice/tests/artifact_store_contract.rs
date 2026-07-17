@@ -30,7 +30,6 @@ use crate::{
         ResolvedArtifactRoot, S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES, S3ArtifactStoreCredentials,
         StoredArtifactIndexPointer, hydrate_catalog_projection_from_receipt_guarded,
         is_terminal_create_indeterminate, persist_catalog_projection_for_source_binding_guarded,
-        recover_catalog_projection_from_current_receipt_guarded,
     },
     backfill_execution_plan::BackfillExecutionWorkBudget,
     conversion_boundary::{
@@ -46,8 +45,9 @@ use crate::{
     operator::{
         CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableExecutionProvenance,
         DurableRunOutcome, OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE, RunArtifacts, RunSpec,
-        VerifiedSourceBindingRegistry, conversion_generation_sha256_for_run_spec,
-        discover_current_durable_completion_with_artifact_store_guarded, run_from_run_spec,
+        VerifiedSourceBindingRegistry,
+        assert_current_durable_completion_absent_with_artifact_store_guarded,
+        conversion_generation_sha256_for_run_spec, run_from_run_spec,
         run_from_run_spec_with_artifact_store_guarded,
     },
     operator_work_budget::{
@@ -835,12 +835,6 @@ struct VersionedCatalogState {
     current: Vec<(ObjectPath, String)>,
 }
 
-#[derive(Clone)]
-enum CurrentMutationAfterHead {
-    Overwrite(bytes::Bytes),
-    Delete,
-}
-
 struct VersionedCatalogStore {
     inner: InMemory,
     state: Mutex<VersionedCatalogState>,
@@ -861,7 +855,6 @@ struct VersionedCatalogStore {
     pending_put_for: Mutex<Vec<ObjectPath>>,
     fail_exact_version_get_for: Mutex<Vec<ObjectPath>>,
     exact_version_get_attempts: Mutex<Vec<(ObjectPath, String, Option<String>)>>,
-    current_mutation_after_head_for: Mutex<Vec<(ObjectPath, CurrentMutationAfterHead)>>,
     after_successful_put: Option<CatalogPutHook>,
     after_successful_get: Option<CatalogGetHook>,
 }
@@ -888,7 +881,6 @@ impl VersionedCatalogStore {
             pending_put_for: Mutex::new(Vec::new()),
             fail_exact_version_get_for: Mutex::new(Vec::new()),
             exact_version_get_attempts: Mutex::new(Vec::new()),
-            current_mutation_after_head_for: Mutex::new(Vec::new()),
             after_successful_put: None,
             after_successful_get: None,
         }
@@ -985,35 +977,11 @@ impl VersionedCatalogStore {
         self
     }
 
-    fn with_failed_exact_version_get(self, path: ObjectPath) -> Self {
-        self.fail_exact_version_get_for
-            .lock()
-            .expect("failed exact-version GET lock")
-            .push(path);
-        self
-    }
-
     fn fail_exact_version_get(&self, path: ObjectPath) {
         self.fail_exact_version_get_for
             .lock()
             .expect("failed exact-version GET lock")
             .push(path);
-    }
-
-    fn with_current_overwrite_after_head(self, path: ObjectPath, bytes: Vec<u8>) -> Self {
-        self.current_mutation_after_head_for
-            .lock()
-            .expect("current mutation after HEAD lock")
-            .push((path, CurrentMutationAfterHead::Overwrite(bytes.into())));
-        self
-    }
-
-    fn with_current_delete_after_head(self, path: ObjectPath) -> Self {
-        self.current_mutation_after_head_for
-            .lock()
-            .expect("current mutation after HEAD lock")
-            .push((path, CurrentMutationAfterHead::Delete));
-        self
     }
 
     fn with_after_successful_put(mut self, hook: CatalogPutHook) -> Self {
@@ -1216,50 +1184,6 @@ impl VersionedCatalogStore {
         Ok(())
     }
 
-    fn take_current_mutation_after_head(
-        &self,
-        location: &ObjectPath,
-    ) -> Option<CurrentMutationAfterHead> {
-        let mut mutations = self
-            .current_mutation_after_head_for
-            .lock()
-            .expect("current mutation after HEAD lock");
-        let index = mutations
-            .iter()
-            .position(|(candidate, _)| candidate == location)?;
-        Some(mutations.remove(index).1)
-    }
-
-    async fn apply_current_mutation_after_head(
-        &self,
-        location: &ObjectPath,
-        mutation: CurrentMutationAfterHead,
-    ) -> ObjectStoreResult<()> {
-        match mutation {
-            CurrentMutationAfterHead::Overwrite(bytes) => {
-                let result = self
-                    .inner
-                    .put_opts(location, bytes.into(), PutOptions::default())
-                    .await?;
-                let sequence = self.successful_puts.fetch_add(1, Ordering::SeqCst) + 1;
-                self.record_current_version(
-                    location,
-                    format!("catalog-version-{sequence}"),
-                    result.e_tag,
-                )
-                .await
-            }
-            CurrentMutationAfterHead::Delete => {
-                self.inner.delete(location).await?;
-                self.state
-                    .lock()
-                    .expect("catalog version state lock")
-                    .current
-                    .retain(|(candidate, _)| candidate != location);
-                Ok(())
-            }
-        }
-    }
 }
 
 impl fmt::Debug for VersionedCatalogStore {
@@ -1412,10 +1336,6 @@ impl ObjectStore for VersionedCatalogStore {
             result.meta.e_tag = None;
         } else if is_head && self.take_blank_current_e_tag(location) {
             result.meta.e_tag = Some("   ".to_string());
-        }
-        if is_head && let Some(mutation) = self.take_current_mutation_after_head(location) {
-            self.apply_current_mutation_after_head(location, mutation)
-                .await?;
         }
         let sequence = self.successful_gets.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(hook) = &self.after_successful_get {
@@ -1700,7 +1620,31 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     let persisted_path = committed_root
         .object_path_for_uri(&plan.proof_artifact_uri)
         .expect("proof artifact uri is under artifact root");
-    let store = VersionedCatalogStore::new().with_lost_put_ack(persisted_path.clone());
+    let lost_ack_store = VersionedCatalogStore::new().with_lost_put_ack(persisted_path.clone());
+    let lost_ack_writer = CreateOnlyArtifactWriter::new(&lost_ack_store, &committed_root);
+    let lost_ack_error = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence_guarded(
+            &fixture.artifact_store,
+            &lost_ack_writer,
+            &evidence,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .await
+        .expect_err("lost proof acknowledgement must stop as indeterminate");
+    assert!(
+        is_terminal_create_indeterminate(&lost_ack_error),
+        "{lost_ack_error:#}"
+    );
+    assert!(
+        lost_ack_store
+            .exact_version_get_attempts()
+            .iter()
+            .all(|(path, _, _)| path != &persisted_path),
+        "proof publication must not recover an indeterminate acknowledgement"
+    );
+
+    let store = VersionedCatalogStore::new();
     let writer = CreateOnlyArtifactWriter::new(&store, &committed_root);
     let persisted = fixture
         .nt_catalog_capability_proof
@@ -1718,7 +1662,7 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     assert_eq!(persisted.proof_artifact_sha256.len(), 64);
     assert_eq!(
         persisted.proof_artifact_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+        CreateOnlyWriteDisposition::Created
     );
     let (persisted_version_id, persisted_e_tag) = store
         .recorded_version(&persisted_path)
@@ -1754,8 +1698,8 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
             .iter()
             .filter(|(path, _, _)| path == &persisted_path)
             .count(),
-        1,
-        "capability proof lost-ack recovery must use one exact-version GET"
+        0,
+        "fresh capability proof publication must accept only its direct create acknowledgement"
     );
     let persisted_bytes = store
         .get(&persisted_path)
@@ -1777,7 +1721,7 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     persisted_document
         .validate(&committed_root)
         .expect("persisted proof document validates");
-    let idempotent_persisted = fixture
+    let replay_error = fixture
         .nt_catalog_capability_proof
         .persist_completed_proof_from_evidence_guarded(
             &fixture.artifact_store,
@@ -1786,14 +1730,10 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
             &OperatorWorkBudgetGuard::unbounded(),
         )
         .await
-        .expect("same proof artifact bytes are idempotent");
-    assert_eq!(
-        idempotent_persisted.proof_artifact_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
-    );
-    assert_eq!(
-        idempotent_persisted.proof_artifact_sha256,
-        persisted.proof_artifact_sha256
+        .expect_err("same proof artifact bytes must conflict with the occupied terminal key");
+    assert!(
+        format!("{replay_error:#}").contains("occupied"),
+        "{replay_error:#}"
     );
     let mut changed_valid_evidence = evidence.clone();
     changed_valid_evidence.read_back.query_files_result_count += 1;
@@ -1807,7 +1747,7 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         )
         .await
         .expect_err("changed proof artifact bytes must be rejected at the same URI");
-    assert_error_chain_contains(&err, "different payload");
+    assert_error_chain_contains(&err, "occupied");
 
     let root = artifact_config().resolve().expect("valid artifact root");
     let mut proof = synthetic_capability_proof(
@@ -2281,7 +2221,7 @@ async fn create_only_probe_expiry_after_setup_writes_no_probe_object() {
 }
 
 #[tokio::test]
-async fn create_only_probe_replays_existing_same_payload_sentinels() {
+async fn create_only_probe_rejects_existing_same_payload_sentinels() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();
     let writer = CreateOnlyArtifactWriter::new(&store, &root);
@@ -2294,22 +2234,20 @@ async fn create_only_probe_replays_existing_same_payload_sentinels() {
         )
         .await
         .expect("first create-only probe");
-    let replay = writer
+    let error = writer
         .probe_create_only_guarded(
             &root,
             "probe-run-123",
             &OperatorWorkBudgetGuard::unbounded(),
         )
         .await
-        .expect("same-payload probe replay must be idempotent");
+        .expect_err("same-payload probe replay must fail strict creation");
 
-    assert_eq!(replay.probe_uri, first.probe_uri);
-    assert_eq!(replay.copy_source_uri, first.copy_source_uri);
-    assert_eq!(replay.copy_dest_uri, first.copy_dest_uri);
-    assert!(replay.first_create_succeeded);
-    assert!(replay.duplicate_create_rejected);
-    assert!(replay.first_copy_succeeded);
-    assert!(replay.duplicate_copy_rejected);
+    assert!(first.first_create_succeeded);
+    assert!(first.duplicate_create_rejected);
+    assert!(first.first_copy_succeeded);
+    assert!(first.duplicate_copy_rejected);
+    assert!(format!("{error:#}").contains("strict create-only put"));
 }
 
 fn catalog_dispatch(projection_id: &str) -> CatalogDispatchConfig {
@@ -2502,7 +2440,7 @@ async fn catalog_publication_receipt_crosslinks_shared_manifest_and_versions_and
 }
 
 #[tokio::test]
-async fn catalog_publication_idempotence_preserves_existing_object_and_receipt_versions() {
+async fn catalog_publication_rejects_an_existing_catalog_even_when_bytes_match() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = catalog_dispatch("projection-idempotent");
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -2523,7 +2461,7 @@ async fn catalog_publication_idempotence_preserves_existing_object_and_receipt_v
     )
     .await
     .expect("first publication");
-    let replay = persist_catalog_projection_for_source_binding_guarded(
+    let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
         &root.emulate_bucket_versioning_enabled_for_contract_test(),
@@ -2535,23 +2473,29 @@ async fn catalog_publication_idempotence_preserves_existing_object_and_receipt_v
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("idempotent publication replay");
+    .expect_err("fresh publication must reject an occupied catalog object");
 
-    assert_eq!(replay.receipt_sha256, first.receipt_sha256);
-    assert_eq!(replay.receipt_version_id, first.receipt_version_id);
-    assert_eq!(replay.objects[0].version_id, first.objects[0].version_id);
+    assert!(format!("{error:#}").contains("occupied"), "{error:#}");
     assert_eq!(
-        replay.receipt_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+        store.recorded_version(
+            &root
+                .object_path_for_uri(&first.objects[0].uri)
+                .expect("catalog object path")
+        ),
+        Some((
+            first.objects[0].version_id.clone(),
+            Some(first.objects[0].e_tag.clone())
+        )),
+        "the rejected replay must not replace the original immutable object"
     );
-    assert_eq!(
-        replay.objects[0].create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    assert!(
+        store.exact_version_get_attempts().is_empty(),
+        "fresh publication must not read an occupied object into success"
     );
 }
 
 #[tokio::test]
-async fn catalog_publication_recovers_lost_receipt_ack_via_exact_version() {
+async fn catalog_publication_stops_on_a_lost_receipt_ack_without_recovery() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = catalog_dispatch("projection-lost-receipt-ack");
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -2563,167 +2507,6 @@ async fn catalog_publication_recovers_lost_receipt_ack_via_exact_version() {
         )
         .expect("receipt path");
     let store = VersionedCatalogStore::new().with_lost_put_ack(receipt_path.clone());
-
-    let persisted = persist_catalog_projection_for_source_binding_guarded(
-        &store,
-        &root,
-        &root.emulate_bucket_versioning_enabled_for_contract_test(),
-        &dispatch,
-        "binary-official",
-        MarketStructureFixture::BinaryOption,
-        temp.path(),
-        &physical_manifest,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect("lost receipt acknowledgement is reconciled exactly");
-
-    let (recorded_version, recorded_e_tag) = store
-        .recorded_version(&receipt_path)
-        .expect("receipt version was committed before acknowledgement was lost");
-    let recorded_e_tag = recorded_e_tag.expect("receipt must have a nonempty ETag");
-    assert_eq!(persisted.receipt_version_id, recorded_version);
-    assert_eq!(persisted.receipt_e_tag, recorded_e_tag);
-    assert_eq!(
-        persisted.receipt_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
-    );
-    assert_eq!(
-        store
-            .put_attempts()
-            .iter()
-            .filter(|path| *path == &receipt_path)
-            .count(),
-        1,
-        "reconciliation must never retry the terminal create"
-    );
-    assert_eq!(
-        store
-            .exact_version_get_attempts()
-            .into_iter()
-            .filter(|(path, _, _)| path == &receipt_path)
-            .collect::<Vec<_>>(),
-        vec![(receipt_path, recorded_version, Some(recorded_e_tag))],
-        "lost acknowledgement recovery must bind the current HEAD to one exact-version GET"
-    );
-}
-
-#[tokio::test]
-async fn lost_ack_reconciliation_reads_historical_version_after_current_overwrite() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = catalog_dispatch("projection-head-overwrite-race");
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
-    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
-    let receipt_path = root
-        .object_path_for_uri(
-            &root.catalog_projection_manifest_object_uri("projection-head-overwrite-race"),
-        )
-        .expect("receipt path");
-    let store = VersionedCatalogStore::new()
-        .with_lost_put_ack(receipt_path.clone())
-        .with_current_overwrite_after_head(receipt_path.clone(), b"new-current".to_vec());
-
-    let persisted = persist_catalog_projection_for_source_binding_guarded(
-        &store,
-        &root,
-        &root.emulate_bucket_versioning_enabled_for_contract_test(),
-        &dispatch,
-        "binary-official",
-        MarketStructureFixture::BinaryOption,
-        temp.path(),
-        &physical_manifest,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect("exact-version reconciliation survives a current overwrite after HEAD");
-
-    let historical = store
-        .get_opts(
-            &receipt_path,
-            GetOptions {
-                version: Some(persisted.receipt_version_id.clone()),
-                ..GetOptions::default()
-            },
-        )
-        .await
-        .expect("historical receipt version")
-        .bytes()
-        .await
-        .expect("historical receipt bytes");
-    assert_eq!(sha256_hex(&historical), persisted.receipt_sha256);
-    let current = store
-        .get(&receipt_path)
-        .await
-        .expect("overwritten current receipt")
-        .bytes()
-        .await
-        .expect("overwritten current bytes");
-    assert_eq!(current.as_ref(), b"new-current");
-}
-
-#[tokio::test]
-async fn lost_ack_reconciliation_reads_historical_version_after_current_delete() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = catalog_dispatch("projection-head-delete-race");
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
-    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
-    let receipt_path = root
-        .object_path_for_uri(
-            &root.catalog_projection_manifest_object_uri("projection-head-delete-race"),
-        )
-        .expect("receipt path");
-    let store = VersionedCatalogStore::new()
-        .with_lost_put_ack(receipt_path.clone())
-        .with_current_delete_after_head(receipt_path.clone());
-
-    let persisted = persist_catalog_projection_for_source_binding_guarded(
-        &store,
-        &root,
-        &root.emulate_bucket_versioning_enabled_for_contract_test(),
-        &dispatch,
-        "binary-official",
-        MarketStructureFixture::BinaryOption,
-        temp.path(),
-        &physical_manifest,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect("exact-version reconciliation survives current deletion after HEAD");
-
-    assert!(store.head(&receipt_path).await.is_err());
-    let historical = store
-        .get_opts(
-            &receipt_path,
-            GetOptions {
-                version: Some(persisted.receipt_version_id),
-                ..GetOptions::default()
-            },
-        )
-        .await
-        .expect("deleted current retains historical receipt version")
-        .bytes()
-        .await
-        .expect("historical receipt bytes");
-    assert_eq!(sha256_hex(&historical), persisted.receipt_sha256);
-}
-
-#[tokio::test]
-async fn catalog_publication_surfaces_typed_indeterminate_after_lost_ack_and_failed_confirmation() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = catalog_dispatch("projection-indeterminate-receipt");
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
-    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
-    let receipt_path = root
-        .object_path_for_uri(
-            &root.catalog_projection_manifest_object_uri("projection-indeterminate-receipt"),
-        )
-        .expect("receipt path");
-    let store = VersionedCatalogStore::new()
-        .with_lost_put_ack(receipt_path.clone())
-        .with_failed_exact_version_get(receipt_path.clone());
 
     let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
@@ -2737,9 +2520,13 @@ async fn catalog_publication_surfaces_typed_indeterminate_after_lost_ack_and_fai
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("unconfirmed lost acknowledgement must be typed indeterminate");
+    .expect_err("lost receipt acknowledgement must stop as indeterminate");
 
     assert!(is_terminal_create_indeterminate(&error), "{error:#}");
+    assert!(
+        store.recorded_version(&receipt_path).is_some(),
+        "the synthetic store committed before dropping the acknowledgement"
+    );
     assert_eq!(
         store
             .put_attempts()
@@ -2750,16 +2537,11 @@ async fn catalog_publication_surfaces_typed_indeterminate_after_lost_ack_and_fai
         "an indeterminate terminal create must never be retried"
     );
     assert!(
-        store.inner.head(&receipt_path).await.is_ok(),
-        "the synthetic store committed before dropping the acknowledgement"
-    );
-    assert_eq!(
         store
             .exact_version_get_attempts()
             .iter()
-            .filter(|(path, _, _)| path == &receipt_path)
-            .count(),
-        1
+            .all(|(path, _, _)| path != &receipt_path),
+        "fresh publication must not reconcile an indeterminate acknowledgement"
     );
 }
 
@@ -3697,7 +3479,7 @@ async fn catalog_publication_requires_object_version_id() {
 }
 
 #[tokio::test]
-async fn catalog_publication_reconciles_missing_receipt_version_exactly() {
+async fn catalog_publication_rejects_a_missing_receipt_version_without_recovery() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = catalog_dispatch("projection-receipt-version");
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -3710,7 +3492,7 @@ async fn catalog_publication_reconciles_missing_receipt_version_exactly() {
         .expect("receipt path");
     let store = VersionedCatalogStore::new().with_omitted_version(receipt_path.clone());
 
-    let persisted = persist_catalog_projection_for_source_binding_guarded(
+    let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
         &root,
         &root.emulate_bucket_versioning_enabled_for_contract_test(),
@@ -3722,12 +3504,9 @@ async fn catalog_publication_reconciles_missing_receipt_version_exactly() {
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("missing acknowledgement version is reconciled through HEAD and exact GET");
+    .expect_err("missing acknowledgement version must stop as indeterminate");
 
-    assert_eq!(
-        persisted.receipt_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
-    );
+    assert!(is_terminal_create_indeterminate(&error), "{error:#}");
     assert_eq!(
         store
             .put_attempts()
@@ -3742,12 +3521,13 @@ async fn catalog_publication_reconciles_missing_receipt_version_exactly() {
             .iter()
             .filter(|(path, _, _)| path == &receipt_path)
             .count(),
-        1
+        0,
+        "strict publication must not recover an unusable acknowledgement"
     );
 }
 
 #[tokio::test]
-async fn catalog_publication_reconciles_unusable_put_etag_only_through_exact_identity() {
+async fn catalog_publication_rejects_an_unusable_put_etag_without_recovery() {
     let root = artifact_config().resolve().expect("valid artifact root");
 
     for (projection_id, blank_put_etag) in [
@@ -3767,69 +3547,6 @@ async fn catalog_publication_reconciles_unusable_put_etag_only_through_exact_ide
             VersionedCatalogStore::new().with_omitted_put_e_tag(receipt_path.clone())
         };
 
-        let persisted = persist_catalog_projection_for_source_binding_guarded(
-            &store,
-            &root,
-            &root.emulate_bucket_versioning_enabled_for_contract_test(),
-            &dispatch,
-            "binary-official",
-            MarketStructureFixture::BinaryOption,
-            temp.path(),
-            &physical_manifest,
-            &OperatorWorkBudgetGuard::unbounded(),
-        )
-        .await
-        .expect("unusable PUT ETag is reconciled only through independent exact identity");
-
-        let (recorded_version, recorded_e_tag) = store
-            .recorded_version(&receipt_path)
-            .expect("receipt version was independently recorded");
-        let recorded_e_tag = recorded_e_tag.expect("independent HEAD ETag is nonempty");
-        assert_eq!(
-            persisted.receipt_create_only_write,
-            CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
-            "an unusable PUT acknowledgement must never be accepted as Created"
-        );
-        assert_eq!(persisted.receipt_version_id, recorded_version);
-        assert_eq!(persisted.receipt_e_tag, recorded_e_tag);
-        assert_eq!(
-            store
-                .exact_version_get_attempts()
-                .into_iter()
-                .filter(|(path, _, _)| path == &receipt_path)
-                .collect::<Vec<_>>(),
-            vec![(receipt_path, recorded_version, Some(recorded_e_tag))],
-            "reconciliation must bind the independently observed ETag as If-Match"
-        );
-    }
-}
-
-#[tokio::test]
-async fn unusable_put_etag_with_missing_or_blank_head_etag_is_indeterminate() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-
-    for (projection_id, blank_etag) in [
-        ("projection-missing-head-etag", false),
-        ("projection-blank-head-etag", true),
-    ] {
-        let dispatch = catalog_dispatch(projection_id);
-        let temp = tempfile::TempDir::new().expect("temp dir");
-        write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
-        let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
-        let receipt_path = root
-            .object_path_for_uri(&root.catalog_projection_manifest_object_uri(projection_id))
-            .expect("receipt path");
-        let store = if blank_etag {
-            VersionedCatalogStore::new().with_blank_put_e_tag(receipt_path.clone())
-        } else {
-            VersionedCatalogStore::new().with_omitted_put_e_tag(receipt_path.clone())
-        };
-        if blank_etag {
-            store.blank_current_e_tag_once(receipt_path.clone());
-        } else {
-            store.omit_current_e_tag_once(receipt_path.clone());
-        }
-
         let error = persist_catalog_projection_for_source_binding_guarded(
             &store,
             &root,
@@ -3842,7 +3559,7 @@ async fn unusable_put_etag_with_missing_or_blank_head_etag_is_indeterminate() {
             &OperatorWorkBudgetGuard::unbounded(),
         )
         .await
-        .expect_err("an unusable PUT ETag cannot converge without an independent HEAD ETag");
+        .expect_err("unusable PUT ETag must stop as indeterminate");
 
         assert!(is_terminal_create_indeterminate(&error), "{error:#}");
         assert!(format!("{error:#}").contains("ETag"), "{error:#}");
@@ -3851,27 +3568,24 @@ async fn unusable_put_etag_with_missing_or_blank_head_etag_is_indeterminate() {
                 .exact_version_get_attempts()
                 .iter()
                 .all(|(path, _, _)| path != &receipt_path),
-            "missing or blank HEAD ETag must fail before exact GET"
+            "strict publication must not recover an unusable acknowledgement"
         );
     }
 }
 
 #[tokio::test]
-async fn unusable_put_etag_with_mismatched_exact_response_etag_is_indeterminate() {
+async fn catalog_publication_rejects_a_null_receipt_version_without_recovery() {
     let root = artifact_config().resolve().expect("valid artifact root");
-    let projection_id = "projection-mismatched-confirmation-etag";
-    let dispatch = catalog_dispatch(projection_id);
+    let dispatch = catalog_dispatch("projection-null-receipt-version");
     let temp = tempfile::TempDir::new().expect("temp dir");
     write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
     let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
     let receipt_path = root
-        .object_path_for_uri(&root.catalog_projection_manifest_object_uri(projection_id))
+        .object_path_for_uri(
+            &root.catalog_projection_manifest_object_uri("projection-null-receipt-version"),
+        )
         .expect("receipt path");
-    let store = VersionedCatalogStore::new().with_omitted_put_e_tag(receipt_path.clone());
-    store.replace_exact_get_e_tag_once(
-        receipt_path.clone(),
-        "mismatched-exact-response-etag".to_string(),
-    );
+    let store = VersionedCatalogStore::new().with_null_version(receipt_path.clone());
 
     let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
@@ -3885,130 +3599,22 @@ async fn unusable_put_etag_with_mismatched_exact_response_etag_is_indeterminate(
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("mismatched exact response ETag cannot confirm an unusable PUT acknowledgement");
+    .expect_err("null acknowledgement version must stop as indeterminate");
 
     assert!(is_terminal_create_indeterminate(&error), "{error:#}");
-    assert!(
-        format!("{error:#}").contains("response metadata mismatch"),
-        "{error:#}"
-    );
-    let (_, independently_observed_e_tag) = store
-        .recorded_version(&receipt_path)
-        .expect("receipt version was independently observed");
-    let independently_observed_e_tag =
-        independently_observed_e_tag.expect("independent HEAD ETag is nonempty");
-    assert!(
-        store
-            .exact_version_get_attempts()
-            .last()
-            .is_some_and(|(path, _, if_match)| path == &receipt_path
-                && if_match.as_deref() == Some(independently_observed_e_tag.as_str())),
-        "confirmation must send the independently observed ETag as If-Match"
-    );
-}
-
-#[tokio::test]
-async fn catalog_receipt_recovery_requires_nonempty_head_etag_before_exact_get() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = catalog_dispatch("projection-recovery-head-etag");
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
-    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
-    let receipt_path = root
-        .object_path_for_uri(
-            &root.catalog_projection_manifest_object_uri("projection-recovery-head-etag"),
-        )
-        .expect("receipt path");
-    let store = VersionedCatalogStore::new();
-    let versioning = root.emulate_bucket_versioning_enabled_for_contract_test();
-
-    persist_catalog_projection_for_source_binding_guarded(
-        &store,
-        &root,
-        &versioning,
-        &dispatch,
-        "binary-official",
-        MarketStructureFixture::BinaryOption,
-        temp.path(),
-        &physical_manifest,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect("publish recovery fixture");
-
-    for blank_etag in [false, true] {
-        if blank_etag {
-            store.blank_current_e_tag_once(receipt_path.clone());
-        } else {
-            store.omit_current_e_tag_once(receipt_path.clone());
-        }
-        let exact_gets_before = store.exact_version_get_attempts().len();
-        let error = recover_catalog_projection_from_current_receipt_guarded(
-            &store,
-            &root,
-            &versioning,
-            &dispatch,
-            "binary-official",
-            MarketStructureFixture::BinaryOption,
-            &physical_manifest,
-            &OperatorWorkBudgetGuard::unbounded(),
-        )
-        .await
-        .expect_err("catalog receipt recovery requires a nonempty current ETag");
-
-        assert!(format!("{error:#}").contains("ETag"), "{error:#}");
-        assert_eq!(
-            store.exact_version_get_attempts().len(),
-            exact_gets_before,
-            "missing or blank receipt discovery ETag must fail before exact GET"
-        );
-    }
-}
-
-#[tokio::test]
-async fn catalog_publication_reconciles_null_receipt_version_exactly() {
-    let root = artifact_config().resolve().expect("valid artifact root");
-    let dispatch = catalog_dispatch("projection-null-receipt-version");
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    write_catalog_file(temp.path(), "part-000.parquet", b"catalog");
-    let physical_manifest = catalog_physical_manifest(&[("part-000.parquet", b"catalog")]);
-    let receipt_path = root
-        .object_path_for_uri(
-            &root.catalog_projection_manifest_object_uri("projection-null-receipt-version"),
-        )
-        .expect("receipt path");
-    let store = VersionedCatalogStore::new().with_null_version(receipt_path.clone());
-
-    let persisted = persist_catalog_projection_for_source_binding_guarded(
-        &store,
-        &root,
-        &root.emulate_bucket_versioning_enabled_for_contract_test(),
-        &dispatch,
-        "binary-official",
-        MarketStructureFixture::BinaryOption,
-        temp.path(),
-        &physical_manifest,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect("null acknowledgement version is reconciled through HEAD and exact GET");
-
-    assert_eq!(
-        persisted.receipt_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
-    );
     assert_eq!(
         store
             .exact_version_get_attempts()
             .iter()
             .filter(|(path, _, _)| path == &receipt_path)
             .count(),
-        1
+        0,
+        "strict publication must not recover an unusable acknowledgement"
     );
 }
 
 #[tokio::test]
-async fn empty_receipt_version_with_unprovable_exact_identity_is_typed_indeterminate() {
+async fn empty_receipt_version_is_typed_indeterminate_without_recovery() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = catalog_dispatch("projection-empty-receipt-version");
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -4019,9 +3625,7 @@ async fn empty_receipt_version_with_unprovable_exact_identity_is_typed_indetermi
             &root.catalog_projection_manifest_object_uri("projection-empty-receipt-version"),
         )
         .expect("receipt path");
-    let store = VersionedCatalogStore::new()
-        .with_empty_version(receipt_path.clone())
-        .with_failed_exact_version_get(receipt_path.clone());
+    let store = VersionedCatalogStore::new().with_empty_version(receipt_path.clone());
 
     let error = persist_catalog_projection_for_source_binding_guarded(
         &store,
@@ -4052,7 +3656,8 @@ async fn empty_receipt_version_with_unprovable_exact_identity_is_typed_indetermi
             .iter()
             .filter(|(path, _, _)| path == &receipt_path)
             .count(),
-        1
+        0,
+        "strict publication must not recover an unusable acknowledgement"
     );
 }
 
@@ -4196,6 +3801,51 @@ async fn operator_artifact_store_path_rejects_artifact_store_region_mismatch_bef
 }
 
 #[tokio::test]
+async fn operator_artifact_store_path_rejects_legacy_storage_options_before_local_work() {
+    let gz = gzip(SAMPLE_CSV);
+    let mut spec = committed_run_spec_for(&gz);
+    let configured_region = spec
+        .required_artifact_store()
+        .expect("artifact-store config")
+        .s3
+        .region
+        .clone();
+    spec.manifest
+        .artifact_store
+        .storage_options
+        .insert("region".to_string(), configured_region);
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+    let store = InMemory::new();
+    let artifact_root = spec
+        .required_artifact_store()
+        .expect("artifact-store config")
+        .resolve()
+        .expect("artifact root");
+    let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
+    let work_budget = OperatorWorkBudgetGuard::unbounded();
+
+    let error = run_from_run_spec_with_artifact_store_guarded(
+        &spec,
+        gz,
+        output_dir.path(),
+        &store,
+        &versioning,
+        &work_budget,
+    )
+    .await
+    .expect_err("legacy storage_options must not remain an alternate durable config authority");
+
+    assert!(
+        error.to_string().contains("storage_options is retired"),
+        "{error:#}"
+    );
+    assert!(
+        !output_dir.path().join(CONVERSION_MANIFEST_FILE).exists(),
+        "legacy storage_options must fail before local conversion work"
+    );
+}
+
+#[tokio::test]
 async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch_before_local_work()
 {
     let gz = gzip(SAMPLE_CSV);
@@ -4286,9 +3936,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let terminal_put_observed_candidate_for_hook = Arc::clone(&terminal_put_observed_candidate);
     let completion_path_for_hook = completion_path.clone();
     let candidate_path_for_hook = candidate_path.clone();
-    let store = VersionedCatalogStore::new()
-        .with_lost_put_ack(completion_path.clone())
-        .with_after_successful_put(Arc::new(move |path, _| {
+    let store = VersionedCatalogStore::new().with_after_successful_put(Arc::new(move |path, _| {
             if path == &completion_path_for_hook {
                 assert!(
                     candidate_path_for_hook.is_file(),
@@ -4316,7 +3964,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
     let source_bindings = VerifiedSourceBindingRegistry::from_run_spec(&spec)
         .expect("snapshot source bindings for durable discovery");
-    let legacy_only_discovery = discover_current_durable_completion_with_artifact_store_guarded(
+    assert_current_durable_completion_absent_with_artifact_store_guarded(
         &spec,
         &store,
         &versioning,
@@ -4324,11 +3972,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("legacy v3 key must not interfere with v4 discovery");
-    assert!(
-        legacy_only_discovery.is_none(),
-        "a preexisting v3 terminal must not be discovered as a v4 terminal"
-    );
+    .expect("legacy v3 key must not interfere with the v4 absence check");
 
     let work_budget = OperatorWorkBudgetGuard::unbounded();
     let outcome = run_from_run_spec_with_artifact_store_guarded(
@@ -4379,8 +4023,8 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .iter()
             .filter(|(path, _, _)| path == &completion_path)
             .count(),
-        1,
-        "durable completion lost-ack recovery must use one exact-version GET"
+        0,
+        "fresh durable completion publication must accept only its direct create acknowledgement"
     );
     let artifacts = executed_durable_artifacts(outcome);
 
@@ -4592,8 +4236,9 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         persisted_projection.physical_manifest_sha256
     );
 
-    let put_count_before_discovery = store.put_attempts().len();
-    let discovered = discover_current_durable_completion_with_artifact_store_guarded(
+    let put_count_before_absence_check = store.put_attempts().len();
+    let exact_gets_before_absence_check = store.exact_version_get_attempts().len();
+    let error = assert_current_durable_completion_absent_with_artifact_store_guarded(
         &spec,
         &store,
         &versioning,
@@ -4601,174 +4246,122 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("discover exact current terminal")
-    .expect("current terminal exists");
-    assert_eq!(discovered.completion, completion_locator);
-    assert_eq!(
-        discovered.completion.object.uri, completion_uri,
-        "publication and discovery must use the same v4 terminal key"
+    .expect_err("fresh execution must reject an existing current terminal");
+    assert!(
+        format!("{error:#}").contains("refuses existing completion object"),
+        "{error:#}"
     );
+    assert_eq!(store.put_attempts().len(), put_count_before_absence_check);
     assert_eq!(
-        discovered.execution_attestation, original_execution_attestation,
-        "exact-version discovery must recover the original process-isolated worker attestation"
+        store.exact_version_get_attempts().len(),
+        exact_gets_before_absence_check,
+        "completion-absence admission must never GET or deserialize terminal bytes"
     );
-    assert_eq!(store.put_attempts().len(), put_count_before_discovery);
 
     let first_candidate_bytes = fs::read(&candidate_path).expect("read first attempt candidate");
     let second_output_dir = tempfile::TempDir::new().expect("second attempt temp dir");
     let second_candidate_path = second_output_dir
         .path()
         .join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
-    let second_spec = spec.clone();
-    let work_budget = OperatorWorkBudgetGuard::unbounded();
-    let second = run_from_run_spec_with_artifact_store_guarded(
-        &second_spec,
+    let puts_before_rerun = store.put_attempts().len();
+    let exact_gets_before_rerun = store.exact_version_get_attempts().len();
+    let error = run_from_run_spec_with_artifact_store_guarded(
+        &spec,
         gz,
         second_output_dir.path(),
         &store,
         &versioning,
-        &work_budget,
+        &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect("operator artifact-store rerun replays idempotently");
-    let second = executed_durable_artifacts(second);
+    .expect_err("operator execution must reject an occupied durable catalog");
+    assert!(format!("{error:#}").contains("occupied"), "{error:#}");
     assert_eq!(
         fs::read(&candidate_path).expect("reread first attempt candidate"),
         first_candidate_bytes,
         "a new attempt must not mutate the first immutable local candidate"
     );
     assert!(
-        second_candidate_path.is_file(),
-        "the idempotent remote retry must seal its distinct local attempt"
+        !second_candidate_path.exists(),
+        "a rejected fresh execution must not seal a local success candidate"
     );
     assert_eq!(
-        second.canonical_catalog_uri.as_deref(),
-        Some(expected_catalog_root.as_str())
-    );
-    assert!(
-        second.catalog_root.is_dir(),
-        "artifact-store rerun retains the identity-owned projection for deterministic retry and audit"
-    );
-    assert_eq!(second.output.catalog_run_view_authority.roots.len(), 1);
-    assert_eq!(
-        second.output.catalog_run_view_authority.roots[0].physical_manifest_sha256,
-        second
-            .persisted_catalog_projection
-            .as_ref()
-            .expect("second persisted projection")
-            .physical_manifest_sha256,
-        "rerun local projection and reused immutable S3 receipt must bind the same physical manifest"
-    );
-    assert_eq!(
-        second
-            .persisted_catalog_projection
-            .as_ref()
-            .expect("second persisted projection")
-            .receipt_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
-    );
-    assert!(
-        second
-            .persisted_catalog_objects
-            .iter()
-            .all(|object| object.create_only_write
-                == CreateOnlyWriteDisposition::AlreadyExistedSamePayload),
-        "artifact-store rerun must idempotently reuse durable catalog objects"
-    );
-    let second_contract: BacktestResultContract = serde_json::from_str(
-        &fs::read_to_string(&second.contract_path).expect("second durable contract json"),
-    )
-    .expect("second durable contract parses");
-    assert_eq!(
-        second_contract
-            .artifact_uris
-            .nt_catalog_manifest_uri
-            .as_deref(),
-        Some(persisted_projection.receipt_uri.as_str())
-    );
-
-    let exact_gets_before_missing_response_etag = store.exact_version_get_attempts().len();
-    store.omit_exact_get_e_tag_once(completion_path.clone());
-    let error = discover_current_durable_completion_with_artifact_store_guarded(
-        &spec,
-        &store,
-        &versioning,
-        &source_bindings,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect_err("exact-version response without an ETag must fail closed");
-    assert!(
-        format!("{error:#}").contains("exact-version ETag mismatch"),
-        "{error:#}"
+        store.put_attempts().len(),
+        puts_before_rerun + 1,
+        "fresh execution issues one strict create attempt and stops on the first occupied object"
     );
     assert_eq!(
         store.exact_version_get_attempts().len(),
-        exact_gets_before_missing_response_etag + 1
+        exact_gets_before_rerun,
+        "execution must not convert an occupied object into read-side recovery"
+    );
+
+    assert_eq!(
+        store.exact_version_get_attempts().len(),
+        exact_gets_before_absence_check,
+        "fresh rerun rejection must not recover through an exact-version GET"
+    );
+}
+
+#[tokio::test]
+async fn operator_completion_lost_ack_is_indeterminate_without_recovery() {
+    let gz = gzip(SAMPLE_CSV);
+    let spec = committed_run_spec_for(&gz);
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+    let artifact_root = spec
+        .required_artifact_store()
+        .expect("artifact-store config")
+        .resolve()
+        .expect("artifact root");
+    let completion_uri = format!(
+        "{}/{}",
+        spec.manifest.output_prefix.trim_end_matches('/'),
+        DURABLE_COMPLETION_MANIFEST_FILE
+    );
+    let completion_path = artifact_root
+        .object_path_for_uri(&completion_uri)
+        .expect("durable completion path");
+    let store = VersionedCatalogStore::new().with_lost_put_ack(completion_path.clone());
+    let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
+
+    let error = run_from_run_spec_with_artifact_store_guarded(
+        &spec,
+        gz,
+        output_dir.path(),
+        &store,
+        &versioning,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("lost completion acknowledgement must stop as indeterminate");
+
+    assert!(is_terminal_create_indeterminate(&error), "{error:#}");
+    assert!(
+        output_dir
+            .path()
+            .join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE)
+            .is_file(),
+        "the inert local candidate must precede the terminal create attempt"
+    );
+    assert!(
+        store.recorded_version(&completion_path).is_some(),
+        "the synthetic store committed before dropping the acknowledgement"
+    );
+    assert_eq!(
+        store
+            .put_attempts()
+            .iter()
+            .filter(|path| *path == &completion_path)
+            .count(),
+        1,
+        "an indeterminate completion create must never be retried"
     );
     assert!(
         store
             .exact_version_get_attempts()
-            .last()
-            .is_some_and(|(path, _, if_match)| path == &completion_path
-                && if_match.as_deref() == Some(completion_locator.object.e_tag.as_str())),
-        "every durable exact-version GET must carry the committed ETag as If-Match"
-    );
-
-    store.replace_exact_get_e_tag_once(
-        completion_path.clone(),
-        "different-response-etag".to_string(),
-    );
-    let error = discover_current_durable_completion_with_artifact_store_guarded(
-        &spec,
-        &store,
-        &versioning,
-        &source_bindings,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect_err("mismatched exact-version response ETag must fail closed");
-    assert!(
-        format!("{error:#}").contains("exact-version ETag mismatch"),
-        "{error:#}"
-    );
-
-    let exact_gets_before_missing_discovery_etag = store.exact_version_get_attempts().len();
-    store.omit_current_e_tag_once(completion_path.clone());
-    let error = discover_current_durable_completion_with_artifact_store_guarded(
-        &spec,
-        &store,
-        &versioning,
-        &source_bindings,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect_err("current durable completion without an ETag must fail before exact GET");
-    assert!(format!("{error:#}").contains("nonempty ETag"), "{error:#}");
-    assert_eq!(
-        store.exact_version_get_attempts().len(),
-        exact_gets_before_missing_discovery_etag,
-        "missing discovery ETag must fail before any exact-version GET"
-    );
-
-    let put_count_before_failed_discovery = store.put_attempts().len();
-    store.fail_exact_version_get(completion_path);
-    let error = discover_current_durable_completion_with_artifact_store_guarded(
-        &spec,
-        &store,
-        &versioning,
-        &source_bindings,
-        &OperatorWorkBudgetGuard::unbounded(),
-    )
-    .await
-    .expect_err("exact-current discovery must fail closed when its pinned version is unreadable");
-    assert!(
-        format!("{error:#}").contains("exact-version GET failure"),
-        "{error:#}"
-    );
-    assert_eq!(
-        store.put_attempts().len(),
-        put_count_before_failed_discovery
+            .iter()
+            .all(|(path, _, _)| path != &completion_path),
+        "operator execution must not recover an indeterminate completion acknowledgement"
     );
 }
 
@@ -4830,7 +4423,7 @@ async fn conversion_generations_publish_and_discover_independent_terminal_keys()
     for spec in [&generation_a.spec, &generation_b] {
         let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)
             .expect("snapshot generation registry");
-        discover_current_durable_completion_with_artifact_store_guarded(
+        assert_current_durable_completion_absent_with_artifact_store_guarded(
             spec,
             &store,
             &versioning,
@@ -4838,8 +4431,7 @@ async fn conversion_generations_publish_and_discover_independent_terminal_keys()
             &OperatorWorkBudgetGuard::unbounded(),
         )
         .await
-        .expect("discover generation terminal")
-        .expect("generation terminal exists");
+        .expect_err("each published generation must fail the fresh-execution absence check");
     }
 
     let mut mismatched = generation_b.clone();
@@ -4899,7 +4491,7 @@ fn terminal_keys_have_one_root_bound_preparation_and_create_route() {
             "{label} must have exactly one root-bound terminal preparation route"
         );
         assert_eq!(
-            source.matches(".create_or_confirm_terminal(").count(),
+            source.matches(".create_terminal_strict(").count(),
             1,
             "{label} must have exactly one terminal create route"
         );
@@ -5110,7 +4702,7 @@ async fn artifact_index_writes_events_snapshots_and_latest_pointer_conditionally
     writer
         .put_event(&root, &event)
         .await
-        .expect("same event payload is idempotent");
+        .expect_err("same event payload must fail strict creation");
 
     let snapshot = ArtifactIndexSnapshot::new(
         "snapshot-001",

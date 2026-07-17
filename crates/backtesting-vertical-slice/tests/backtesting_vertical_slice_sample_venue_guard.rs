@@ -31,6 +31,31 @@ const SAMPLE_VENUE_NEEDLES: [&str; 15] = [
     "fx_quote",
     "token_mapping",
 ];
+// The production-source graph below transcribes rustc's private
+// `DirOwnership` resolver states. A toolchain bump must deliberately
+// re-verify that model instead of silently inheriting old assumptions.
+const MODELED_RUSTC_MODULE_RESOLUTION_TOOLCHAIN: &str = "1.96.0";
+
+#[test]
+fn production_source_graph_model_is_coupled_to_the_reviewed_rustc_pin() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = crate_root
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate is nested below repository root");
+    let toolchain_source = fs::read_to_string(repo_root.join("rust-toolchain.toml"))
+        .expect("read repository rust-toolchain.toml");
+    let toolchain: toml::Value =
+        toml::from_str(&toolchain_source).expect("parse repository rust-toolchain.toml");
+    assert_eq!(
+        toolchain
+            .get("toolchain")
+            .and_then(|value| value.get("channel"))
+            .and_then(toml::Value::as_str),
+        Some(MODELED_RUSTC_MODULE_RESOLUTION_TOOLCHAIN),
+        "a Rust toolchain pin change must re-verify the production-source graph against rustc module resolution"
+    );
+}
 
 #[test]
 fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
@@ -465,11 +490,14 @@ fn production_source_graph(
     match roots {
         Ok(roots) => {
             for root in roots {
-                let module_dir = root
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| crate_root.to_path_buf());
-                graph.visit_file(&root, &module_dir, false, MacroAuthorities::default());
+                let module_context = ProductionModuleContext {
+                    dir_path: root
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| crate_root.to_path_buf()),
+                    ownership: ProductionDirOwnership::Owned { relative: None },
+                };
+                graph.visit_file(&root, &module_context, MacroAuthorities::default());
             }
         }
         Err(errors) => graph.errors.extend(errors),
@@ -477,10 +505,22 @@ fn production_source_graph(
     (graph.sources, graph.errors)
 }
 
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+enum ProductionDirOwnership {
+    Owned { relative: Option<String> },
+    UnownedViaBlock,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ProductionModuleContext {
+    dir_path: PathBuf,
+    ownership: ProductionDirOwnership,
+}
+
 struct ProductionSourceGraph {
     crate_root: PathBuf,
     sources: BTreeMap<PathBuf, String>,
-    visited_contexts: BTreeSet<(PathBuf, PathBuf, bool, MacroAuthorities)>,
+    visited_contexts: BTreeSet<(PathBuf, ProductionModuleContext, MacroAuthorities)>,
     errors: Vec<String>,
 }
 
@@ -503,8 +543,7 @@ impl ProductionSourceGraph {
     fn visit_file(
         &mut self,
         unresolved_path: &Path,
-        unresolved_module_dir: &Path,
-        inside_inline_context: bool,
+        unresolved_module_context: &ProductionModuleContext,
         inherited_macros: MacroAuthorities,
     ) {
         let path = match fs::canonicalize(unresolved_path) {
@@ -525,19 +564,21 @@ impl ProductionSourceGraph {
             ));
             return;
         }
-        let module_dir = lexical_absolute(unresolved_module_dir, &self.crate_root);
-        if !module_dir.starts_with(&self.crate_root) {
+        let module_context = ProductionModuleContext {
+            dir_path: lexical_absolute(&unresolved_module_context.dir_path, &self.crate_root),
+            ownership: unresolved_module_context.ownership.clone(),
+        };
+        if !module_context.dir_path.starts_with(&self.crate_root) {
             self.errors.push(format!(
                 "production module context {} escapes canonical crate root {}",
-                module_dir.display(),
+                module_context.dir_path.display(),
                 self.crate_root.display()
             ));
             return;
         }
         let context = (
             path.clone(),
-            module_dir.clone(),
-            inside_inline_context,
+            module_context.clone(),
             inherited_macros.clone(),
         );
         if !self.visited_contexts.insert(context) {
@@ -571,25 +612,60 @@ impl ProductionSourceGraph {
         pruner.visit_file_mut(&mut file);
         self.sources.entry(path.clone()).or_insert(source);
 
-        let mut modules = ProductionModuleCollector::new(
-            &path,
-            &module_dir,
-            inside_inline_context,
-            inherited_macros.clone(),
-        );
+        let mut modules = ProductionModuleCollector::new(module_context, inherited_macros.clone());
         modules.visit_file(&file);
         for error in modules.errors {
             self.errors.push(format!("{}: {error}", path.display()));
         }
         for module in modules.references {
-            let (target, explicit_path) = if let Some(explicit_path) = module.explicit_path {
-                (module.path_base.join(explicit_path), true)
+            let (target, child_context) = if let Some(explicit_path) = module.explicit_path {
+                let target = module.context.dir_path.join(explicit_path);
+                let child_context = ProductionModuleContext {
+                    dir_path: target
+                        .parent()
+                        .expect("explicit module source parent")
+                        .to_path_buf(),
+                    ownership: ProductionDirOwnership::Owned { relative: None },
+                };
+                (target, child_context)
             } else {
-                let flat = module.default_base.join(format!("{}.rs", module.ident));
-                let nested = module.default_base.join(&module.ident).join("mod.rs");
+                let ProductionDirOwnership::Owned { relative } = &module.context.ownership else {
+                    self.errors.push(format!(
+                        "{} outlined production module {} in a block requires explicit #[path]",
+                        path.display(),
+                        module.ident
+                    ));
+                    continue;
+                };
+                let mut default_base = module.context.dir_path.clone();
+                if let Some(relative) = relative {
+                    default_base.push(relative);
+                }
+                let flat = default_base.join(format!("{}.rs", module.ident));
+                let nested = default_base.join(&module.ident).join("mod.rs");
                 match (flat.is_file(), nested.is_file()) {
-                    (true, false) => (flat, false),
-                    (false, true) => (nested, false),
+                    (true, false) => {
+                        let child_context = ProductionModuleContext {
+                            dir_path: flat
+                                .parent()
+                                .expect("flat module source parent")
+                                .to_path_buf(),
+                            ownership: ProductionDirOwnership::Owned {
+                                relative: Some(module.ident.clone()),
+                            },
+                        };
+                        (flat, child_context)
+                    }
+                    (false, true) => {
+                        let child_context = ProductionModuleContext {
+                            dir_path: nested
+                                .parent()
+                                .expect("nested module source parent")
+                                .to_path_buf(),
+                            ownership: ProductionDirOwnership::Owned { relative: None },
+                        };
+                        (nested, child_context)
+                    }
                     (true, true) => {
                         self.errors.push(format!(
                             "{} module {} has ambiguous production sources {} and {}",
@@ -610,23 +686,10 @@ impl ProductionSourceGraph {
                     }
                 }
             };
-            let child_module_dir = if explicit_path {
-                target
-                    .parent()
-                    .expect("explicit module source parent")
-                    .to_path_buf()
-            } else {
-                module_directory_for_file(&target)
-            };
-            self.visit_file(&target, &child_module_dir, false, module.textual_macros);
+            self.visit_file(&target, &child_context, module.textual_macros);
         }
 
-        let mut includes = ProductionIncludeCollector::new(
-            inherited_macros,
-            &path,
-            &module_dir,
-            inside_inline_context,
-        );
+        let mut includes = ProductionIncludeCollector::new(inherited_macros);
         includes.visit_file(&file);
         for error in includes.errors {
             self.errors.push(format!("{}: {error}", path.display()));
@@ -641,12 +704,14 @@ impl ProductionSourceGraph {
                             .expect("production source parent")
                             .join(include_path)
                     };
-                    self.visit_file(
-                        &target,
-                        target.parent().expect("included production source parent"),
-                        false,
-                        include.textual_macros,
-                    );
+                    let child_context = ProductionModuleContext {
+                        dir_path: target
+                            .parent()
+                            .expect("included production source parent")
+                            .to_path_buf(),
+                        ownership: ProductionDirOwnership::Owned { relative: None },
+                    };
+                    self.visit_file(&target, &child_context, include.textual_macros);
                 }
                 Err(error) => self.errors.push(format!(
                     "{} contains unresolved production include!: {error}",
@@ -660,50 +725,29 @@ impl ProductionSourceGraph {
 struct ProductionModuleReference {
     ident: String,
     explicit_path: Option<PathBuf>,
-    path_base: PathBuf,
-    default_base: PathBuf,
+    context: ProductionModuleContext,
     textual_macros: MacroAuthorities,
 }
 
-struct ProductionModuleCollector<'a> {
-    source_path: &'a Path,
-    current_module_dir: PathBuf,
-    inline_depth: usize,
+struct ProductionModuleCollector {
+    context: ProductionModuleContext,
     textual_macros: MacroAuthorities,
     references: Vec<ProductionModuleReference>,
     errors: Vec<String>,
 }
 
-impl<'a> ProductionModuleCollector<'a> {
-    fn new(
-        source_path: &'a Path,
-        module_dir: &Path,
-        inside_inline_context: bool,
-        textual_macros: MacroAuthorities,
-    ) -> Self {
+impl ProductionModuleCollector {
+    fn new(context: ProductionModuleContext, textual_macros: MacroAuthorities) -> Self {
         Self {
-            source_path,
-            current_module_dir: module_dir.to_path_buf(),
-            inline_depth: usize::from(inside_inline_context),
+            context,
             textual_macros,
             references: Vec::new(),
             errors: Vec::new(),
         }
     }
-
-    fn path_base(&self) -> PathBuf {
-        if self.inline_depth == 0 {
-            self.source_path
-                .parent()
-                .expect("production source parent")
-                .to_path_buf()
-        } else {
-            self.current_module_dir.clone()
-        }
-    }
 }
 
-impl<'ast> Visit<'ast> for ProductionModuleCollector<'_> {
+impl<'ast> Visit<'ast> for ProductionModuleCollector {
     fn visit_file(&mut self, file: &'ast syn::File) {
         register_item_use_authorities(&mut self.textual_macros, &file.items);
         visit::visit_file(self, file);
@@ -711,8 +755,11 @@ impl<'ast> Visit<'ast> for ProductionModuleCollector<'_> {
 
     fn visit_block(&mut self, block: &'ast syn::Block) {
         let inherited = self.textual_macros.clone();
+        let inherited_ownership = self.context.ownership.clone();
         register_statement_use_authorities(&mut self.textual_macros, &block.stmts);
+        self.context.ownership = ProductionDirOwnership::UnownedViaBlock;
         visit::visit_block(self, block);
+        self.context.ownership = inherited_ownership;
         self.textual_macros = inherited;
     }
 
@@ -747,32 +794,39 @@ impl<'ast> Visit<'ast> for ProductionModuleCollector<'_> {
                 return;
             }
         };
-        let path_base = self.path_base();
         if module.content.is_none() {
             self.references.push(ProductionModuleReference {
                 ident: module.ident.to_string(),
                 explicit_path,
-                path_base,
-                default_base: self.current_module_dir.clone(),
+                context: self.context.clone(),
                 textual_macros: self.textual_macros.child_module_scope(),
             });
             return;
         }
 
-        let previous_module_dir = self.current_module_dir.clone();
+        let previous_context = self.context.clone();
         let inherited_macros = self.textual_macros.clone();
         self.textual_macros = self.textual_macros.child_module_scope();
         if let Some((_, items)) = &module.content {
             register_item_use_authorities(&mut self.textual_macros, items);
         }
-        self.current_module_dir = explicit_path.map_or_else(
-            || previous_module_dir.join(module.ident.to_string()),
-            |path| path_base.join(path),
-        );
-        self.inline_depth += 1;
+        self.context = if let Some(path) = explicit_path {
+            ProductionModuleContext {
+                dir_path: previous_context.dir_path.join(path),
+                ownership: ProductionDirOwnership::Owned { relative: None },
+            }
+        } else {
+            let mut context = previous_context.clone();
+            if let ProductionDirOwnership::Owned { relative } = &mut context.ownership
+                && let Some(relative) = relative.take()
+            {
+                context.dir_path.push(relative);
+            }
+            context.dir_path.push(module.ident.to_string());
+            context
+        };
         visit::visit_item_mod(self, module);
-        self.inline_depth -= 1;
-        self.current_module_dir = previous_module_dir;
+        self.context = previous_context;
         self.textual_macros = inherited_macros;
     }
 }
@@ -796,19 +850,6 @@ fn lexical_absolute(path: &Path, crate_root: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-fn module_directory_for_file(path: &Path) -> PathBuf {
-    let parent = path.parent().expect("module source parent");
-    if path.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
-        parent.to_path_buf()
-    } else {
-        parent.join(
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .expect("UTF-8 module source stem"),
-        )
-    }
 }
 
 fn module_path_attribute(module: &syn::ItemMod) -> Result<Option<PathBuf>, String> {
@@ -879,9 +920,6 @@ fn cfg_attr_arguments_can_set_production_path(
 
 struct ProductionIncludeCollector {
     macros: MacroAuthorities,
-    source_path: PathBuf,
-    current_module_dir: PathBuf,
-    inline_depth: usize,
     references: Vec<ProductionIncludeReference>,
     errors: Vec<String>,
 }
@@ -892,17 +930,9 @@ struct ProductionIncludeReference {
 }
 
 impl ProductionIncludeCollector {
-    fn new(
-        macros: MacroAuthorities,
-        source_path: &Path,
-        module_dir: &Path,
-        inside_inline_context: bool,
-    ) -> Self {
+    fn new(macros: MacroAuthorities) -> Self {
         Self {
             macros,
-            source_path: source_path.to_path_buf(),
-            current_module_dir: module_dir.to_path_buf(),
-            inline_depth: usize::from(inside_inline_context),
             references: Vec::new(),
             errors: Vec::new(),
         }
@@ -945,17 +975,6 @@ impl ProductionIncludeCollector {
             node.path.to_token_stream()
         ));
     }
-
-    fn path_base(&self) -> PathBuf {
-        if self.inline_depth == 0 {
-            self.source_path
-                .parent()
-                .expect("production include source parent")
-                .to_path_buf()
-        } else {
-            self.current_module_dir.clone()
-        }
-    }
 }
 
 impl<'ast> Visit<'ast> for ProductionIncludeCollector {
@@ -975,25 +994,12 @@ impl<'ast> Visit<'ast> for ProductionIncludeCollector {
         if module.content.is_none() {
             return;
         }
-        let explicit_path = match module_path_attribute(module) {
-            Ok(path) => path,
-            Err(_) => return,
-        };
-        let previous_module_dir = self.current_module_dir.clone();
         let inherited_macros = self.macros.clone();
         self.macros = self.macros.child_module_scope();
         if let Some((_, items)) = &module.content {
             register_item_use_authorities(&mut self.macros, items);
         }
-        let path_base = self.path_base();
-        self.current_module_dir = explicit_path.map_or_else(
-            || previous_module_dir.join(module.ident.to_string()),
-            |path| path_base.join(path),
-        );
-        self.inline_depth += 1;
         visit::visit_item_mod(self, module);
-        self.inline_depth -= 1;
-        self.current_module_dir = previous_module_dir;
         self.macros = inherited_macros;
     }
 
@@ -1832,24 +1838,138 @@ mod inline_scope {
 }
 
 #[test]
-fn block_local_module_items_are_part_of_the_production_source_graph() {
+fn block_context_resets_pending_relative_module_resolution_like_rustc() {
+    let fixture = tempfile::tempdir().expect("temporary crate");
+    let crate_root = fixture.path().join("crate");
+    write_synthetic_source(&crate_root, "src/lib.rs", "mod a;\n");
+    write_synthetic_source(
+        &crate_root,
+        "src/a.rs",
+        r#"
+fn production_scope() {
+    mod inner {
+        #[path = "y.rs"]
+        mod y;
+    }
+}
+"#,
+    );
+    write_synthetic_source(
+        &crate_root,
+        "src/inner/y.rs",
+        "const LEAKED_VENUE: &str = \"bybit\";\n",
+    );
+    write_synthetic_source(
+        &crate_root,
+        "src/a/inner/y.rs",
+        "const OWNED_CONTEXT_DECOY: &str = \"synthetic\";\n",
+    );
+    let (sources, errors) = production_source_graph(&crate_root, &synthetic_manifest());
+    assert!(
+        errors.is_empty(),
+        "block-reset module graph errors: {errors:?}"
+    );
+    let failures = sample_venue_violations(&crate_root, &sources);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("inner/y.rs") && failure.contains("bybit")),
+        "block ownership must reset the pending a.rs module prefix: {failures:?}"
+    );
+    assert!(
+        !sources.contains_key(
+            &fs::canonicalize(crate_root.join("src/a/inner/y.rs"))
+                .expect("canonical owned-context decoy")
+        )
+    );
+}
+
+#[test]
+fn owned_context_consumes_pending_relative_module_resolution_like_rustc() {
+    let fixture = tempfile::tempdir().expect("temporary crate");
+    let crate_root = fixture.path().join("crate");
+    write_synthetic_source(&crate_root, "src/lib.rs", "mod a;\n");
+    write_synthetic_source(
+        &crate_root,
+        "src/a.rs",
+        r#"
+mod inner {
+    #[path = "y.rs"]
+    mod y;
+}
+"#,
+    );
+    write_synthetic_source(
+        &crate_root,
+        "src/a/inner/y.rs",
+        "const LEAKED_VENUE: &str = \"bybit\";\n",
+    );
+    write_synthetic_source(
+        &crate_root,
+        "src/inner/y.rs",
+        "const BLOCK_CONTEXT_DECOY: &str = \"synthetic\";\n",
+    );
+    let (sources, errors) = production_source_graph(&crate_root, &synthetic_manifest());
+    assert!(errors.is_empty(), "owned module graph errors: {errors:?}");
+    let failures = sample_venue_violations(&crate_root, &sources);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("a/inner/y.rs") && failure.contains("bybit")),
+        "owned context must consume the pending a.rs module prefix: {failures:?}"
+    );
+    assert!(
+        !sources.contains_key(
+            &fs::canonicalize(crate_root.join("src/inner/y.rs"))
+                .expect("canonical block-context decoy")
+        )
+    );
+}
+
+#[test]
+fn unpathed_outlined_module_in_a_block_fails_closed() {
+    let fixture = tempfile::tempdir().expect("temporary crate");
+    let crate_root = fixture.path().join("crate");
+    write_synthetic_source(
+        &crate_root,
+        "src/lib.rs",
+        "fn production_scope() { mod block_default; }\n",
+    );
+    write_synthetic_source(
+        &crate_root,
+        "src/block_default.rs",
+        "const DECOY: &str = \"synthetic\";\n",
+    );
+    let (sources, errors) = production_source_graph(&crate_root, &synthetic_manifest());
+    assert!(
+        errors.iter().any(|error| {
+            error.contains(
+                "outlined production module block_default in a block requires explicit #[path]",
+            )
+        }),
+        "invalid unpathed block module must fail closed: {errors:?}"
+    );
+    assert!(
+        !sources.contains_key(
+            &fs::canonicalize(crate_root.join("src/block_default.rs"))
+                .expect("canonical unpathed block decoy")
+        )
+    );
+}
+
+#[test]
+fn explicit_block_local_module_path_is_scanned() {
     let fixture = tempfile::tempdir().expect("temporary crate");
     let crate_root = fixture.path().join("crate");
     write_synthetic_source(
         &crate_root,
         "src/lib.rs",
         r#"
-fn default_module() { mod block_default; }
-fn attributed_module() {
+fn production_scope() {
     #[path = "../tests/fixtures/block_path.rs"]
     mod block_path;
 }
 "#,
-    );
-    write_synthetic_source(
-        &crate_root,
-        "src/block_default.rs",
-        "const LEAKED_VENUE: &str = \"binance\";\n",
     );
     write_synthetic_source(
         &crate_root,
@@ -1859,20 +1979,15 @@ fn attributed_module() {
     let (sources, errors) = production_source_graph(&crate_root, &synthetic_manifest());
     assert!(
         errors.is_empty(),
-        "block-local module graph errors: {errors:?}"
+        "explicit block-local module graph errors: {errors:?}"
     );
     let failures = sample_venue_violations(&crate_root, &sources);
-    for (path, needle) in [
-        ("block_default.rs", "binance"),
-        ("block_path.rs", "public_archive"),
-    ] {
-        assert!(
-            failures
-                .iter()
-                .any(|failure| failure.contains(path) && failure.contains(needle)),
-            "block-local module {path} must be scanned for {needle}: {failures:?}"
-        );
-    }
+    assert!(
+        failures.iter().any(|failure| {
+            failure.contains("block_path.rs") && failure.contains("public_archive")
+        }),
+        "explicit block-local module must be scanned: {failures:?}"
+    );
 }
 
 #[test]
@@ -2177,9 +2292,6 @@ fn needle_allowed_in_production_path(needle: &str, path: &Path, crate_root: &Pat
         .strip_prefix(&crate_root)
         .expect("canonical crate-relative path");
     let relative = relative.to_str().expect("UTF-8 source path");
-    if relative == "src/retired_backfill_provenance.rs" {
-        return matches!(needle, "binance" | "bybit" | "bnbusdc");
-    }
     if relative == "src/reference_fixture_index.rs" {
         return matches!(needle, "binance" | "bybit" | "pmxt" | "polymarket");
     }
@@ -2199,33 +2311,20 @@ fn needle_allowed_in_production_path(needle: &str, path: &Path, crate_root: &Pat
 }
 
 #[test]
-fn retired_backfill_provenance_allowlist_is_exact_and_path_scoped() {
+fn retired_backfill_runtime_has_no_sample_venue_allowlist() {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let src = crate_root.join("src");
-    let provenance = fs::canonicalize(src.join("retired_backfill_provenance.rs"))
-        .expect("canonical provenance source");
     let generic_runtime = fs::canonicalize(src.join("retired_backfill_evidence.rs"))
         .expect("canonical generic source");
 
     for needle in ["binance", "bybit", "bnbusdc"] {
-        assert!(needle_allowed_in_production_path(
-            needle,
-            &provenance,
-            crate_root
-        ));
         assert!(!needle_allowed_in_production_path(
             needle,
             &generic_runtime,
             crate_root
         ));
     }
-    for needle in ["pmxt", "polymarket", "public_archive"] {
-        assert!(!needle_allowed_in_production_path(
-            needle,
-            &provenance,
-            crate_root
-        ));
-    }
+    assert!(!src.join("retired_backfill_provenance.rs").exists());
 }
 
 #[test]

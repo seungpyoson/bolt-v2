@@ -18,7 +18,6 @@ import sys
 import tempfile
 import textwrap
 import time
-import tomllib
 from typing import Callable
 
 from ci_test_manifest import CiTestManifest
@@ -5437,42 +5436,169 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
     verifier = load_verifier()
     workflow_name = ".github/workflows/backtester-ci.yml"
     workflow = repo_workflow_text(workflow_name)
+    for required in (
+        "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+        'echo "revision=$trusted_revision"',
+        "trusted_revision: ${{ steps.policy_base.outputs.revision }}",
+        'TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}',
+        '--pull-request-author-id "$PR_AUTHOR_ID"',
+        '--config "$verdict_config"',
+    ):
+        if required not in workflow:
+            raise AssertionError(
+                f"backtester-ci must use one explicit trusted policy revision ({required})"
+            )
+    for forbidden in (
+        'if [[ -z "$policy_script" ]]',
+        'policy_script="scripts/ci_provenance.py"',
+        'if [[ -z "$policy_config" ]]',
+        'policy_config="ci/github-actions-runners.toml"',
+        'ci-policy --help',
+        "author_args=()",
+        'if [[ -z "$verdict_script" ]]',
+        'verdict_script="scripts/ci_provenance.py"',
+    ):
+        if forbidden in workflow:
+            raise AssertionError(
+                f"backtester-ci must not retain trusted-policy fallbacks ({forbidden})"
+            )
     errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
     if any("backtester iteration policy" in error for error in errors):
         raise AssertionError(f"backtester-ci workflow must satisfy iteration policy, got: {errors}")
 
-    missing_tracer_decision_validation = replace_once(
+    for marker, replacement in (
+        (
+            "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            "REPOSITORY_DEFAULT_BRANCH: ''",
+        ),
+        (
+            'echo "revision=$trusted_revision"',
+            'echo "revision="',
+        ),
+        (
+            "TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}",
+            "TRUSTED_REVISION: ''",
+        ),
+        (
+            '--config "$verdict_config"',
+            "",
+        ),
+    ):
+        mutated = replace_once(workflow, marker, replacement)
+        mutated_errors = verifier.verify_repo_automation_texts({workflow_name: mutated})
+        if not any("backtester iteration policy" in error for error in mutated_errors):
+            raise AssertionError(
+                f"backtester-ci must reject missing trusted-policy binding {marker}: "
+                f"{mutated_errors}"
+            )
+
+    policy_fallback = replace_once(
         workflow,
-        '          tracer_required_counts="$(awk -F= \'$1 == "ra001a_durable_tracer_required" { all += 1; if ($2 == "true" || $2 == "false") valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"\n',
-        "",
+        '          readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+        (
+            '          policy_script="${{ steps.policy_base.outputs.script }}"\n'
+            '          if [[ -z "$policy_script" ]]; then\n'
+            '            policy_script="scripts/ci_provenance.py"\n'
+            "          fi"
+        ),
     )
-    missing_tracer_decision_validation_errors = verifier.verify_repo_automation_texts(
-        {workflow_name: missing_tracer_decision_validation}
+    policy_fallback_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: policy_fallback}
     )
     if not any(
-        "ci-policy job must fail closed on missing or malformed timeout outputs" in error
-        for error in missing_tracer_decision_validation_errors
+        "must not retain trusted-policy fallbacks" in error
+        for error in policy_fallback_errors
     ):
         raise AssertionError(
-            "backtester-ci workflow must reject a missing tracer-decision validation, got: "
-            f"{missing_tracer_decision_validation_errors}"
+            "backtester-ci must reject a local policy-script fallback, got: "
+            f"{policy_fallback_errors}"
         )
 
-    hardcoded_false_tracer_decision = replace_once(
+    for marker, replacement, expected_error in (
+        (
+            'readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+            (
+                "readonly policy_script=\"${{ steps.policy_base.outputs.script "
+                "|| 'scripts/ci_provenance.py' }}\""
+            ),
+            "must bind each trusted policy capability exactly once without fallback",
+        ),
+        (
+            'readonly policy_config="${{ steps.policy_base.outputs.config }}"',
+            (
+                "readonly policy_config=\"${{ steps.policy_base.outputs.config "
+                "|| 'ci/github-actions-runners.toml' }}\""
+            ),
+            "must bind each trusted policy capability exactly once without fallback",
+        ),
+        (
+            'trusted_branch="$PR_BASE_REF"',
+            'trusted_branch="${PR_BASE_REF:-$REPOSITORY_DEFAULT_BRANCH}"',
+            "must select one event-scoped trusted branch without fallback",
+        ),
+        (
+            'readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+            (
+                "readonly verdict_script=\"${{ steps.verdict_base.outputs.script "
+                "|| 'scripts/ci_provenance.py' }}\""
+            ),
+            "must bind each trusted verdict capability exactly once without fallback",
+        ),
+        (
+            'readonly verdict_config="${{ steps.verdict_base.outputs.config }}"',
+            (
+                "readonly verdict_config=\"${{ steps.verdict_base.outputs.config "
+                "|| 'ci/github-actions-runners.toml' }}\""
+            ),
+            "must bind each trusted verdict capability exactly once without fallback",
+        ),
+    ):
+        mutated = replace_once(workflow, marker, replacement)
+        mutated_errors = verifier.verify_repo_automation_texts({workflow_name: mutated})
+        if not any(expected_error in error for error in mutated_errors):
+            raise AssertionError(
+                f"backtester-ci must reject conditional capability fallback {marker}: "
+                f"{mutated_errors}"
+            )
+
+    help_probe = replace_once(
         workflow,
-        '[[ "$tracer_required" == "$RA001A_DURABLE_TRACER_REQUESTED" ]]',
-        '[[ "$tracer_required" == "false" ]]',
+        '            --pull-request-author-id "$PR_AUTHOR_ID" \\',
+        (
+            '            $(python3 "$policy_script" ci-policy --help | '
+            'grep -q -- "--pull-request-author-id" && '
+            'echo --pull-request-author-id "$PR_AUTHOR_ID") \\'
+        ),
     )
-    hardcoded_false_tracer_decision_errors = verifier.verify_repo_automation_texts(
-        {workflow_name: hardcoded_false_tracer_decision}
-    )
+    help_probe_errors = verifier.verify_repo_automation_texts({workflow_name: help_probe})
     if not any(
-        "ci-policy job must fail closed on missing or malformed timeout outputs" in error
-        for error in hardcoded_false_tracer_decision_errors
+        "must not retain trusted-policy fallbacks" in error
+        for error in help_probe_errors
     ):
         raise AssertionError(
-            "backtester-ci workflow must reject a hardcoded-false tracer decision, got: "
-            f"{hardcoded_false_tracer_decision_errors}"
+            f"backtester-ci must reject ci-policy capability probes, got: {help_probe_errors}"
+        )
+
+    verdict_fallback = replace_once(
+        workflow,
+        '          readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+        (
+            '          verdict_script="${{ steps.verdict_base.outputs.script }}"\n'
+            '          if [[ -z "$verdict_script" ]]; then\n'
+            '            verdict_script="scripts/ci_provenance.py"\n'
+            "          fi"
+        ),
+    )
+    verdict_fallback_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: verdict_fallback}
+    )
+    if not any(
+        "must not retain trusted-verdict fallbacks" in error
+        for error in verdict_fallback_errors
+    ):
+        raise AssertionError(
+            "backtester-ci must reject a local verdict-script fallback, got: "
+            f"{verdict_fallback_errors}"
         )
 
     missing_required_gate_note = replace_once(
@@ -5533,8 +5659,8 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
 
     missing_shared_gate = replace_once(
         workflow,
-        '          python3 "$verdict_script" check-backtester-gate \\\n',
-        '          python3 "$verdict_script" check-not-backtester-gate \\\n',
+        'python3 "$verdict_script" check-backtester-gate',
+        'python3 "$verdict_script" check-not-backtester-gate',
     )
     missing_shared_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_shared_gate})
     if not any("backtester iteration policy gate must use trusted base-tree check-backtester-gate verdict" in error for error in missing_shared_gate_errors):
@@ -5544,9 +5670,8 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
 
     carry_forward_reintroduced = replace_once(
         workflow,
-        '          python3 "$verdict_script" check-backtester-gate \\\n',
-        '          python3 "$verdict_script" resolve-gate-carry-forward\n'
-        '          python3 "$verdict_script" check-backtester-gate \\\n',
+        'python3 "$verdict_script" check-backtester-gate',
+        'python3 "$verdict_script" resolve-gate-carry-forward\n          python3 "$verdict_script" check-backtester-gate',
     )
     missing_carry_forward_errors = verifier.verify_repo_automation_texts({workflow_name: carry_forward_reintroduced})
     if not any(
@@ -8085,6 +8210,21 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
             'artifact_class = "capture-provenance"\nretention_days_expression = "${{ steps.provenance.outputs.retention_days }}"\nretention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
             1,
         ),
+        "lookback_required must be a boolean": config_text.replace(
+            "lookback_required = true",
+            'lookback_required = "true"',
+            1,
+        ),
+        "workflow expressions must bind both artifact name and retention-days": config_text.replace(
+            'retention_days_workflow_expression = "${{ needs.policy.outputs.ra001a_receipt_retention_days }}"\n',
+            "",
+            1,
+        ),
+        "artifact_name_workflow_expression must be a non-empty string": config_text.replace(
+            'artifact_name_workflow_expression = "${{ needs.policy.outputs.ra001a_receipt_artifact_name }}"',
+            'artifact_name_workflow_expression = "   "',
+            1,
+        ),
         "retention_days_config_file must be a non-empty string": config_text.replace(
             'retention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"',
             'retention_days_config_file = "   "',
@@ -8162,6 +8302,14 @@ lookback_ref = "ci_provenance.merge_readiness.poll_seconds"
     additional_cases = [
         (
             binding_coverage_error,
+            config_text.replace(
+                '[artifact_retention.uploads.".github/workflows/ra001a-durable-tracer.yml::execute::upload-ra001a-durable-tracer-receipt"]\nlookback_required = false',
+                '[artifact_retention.uploads.".github/workflows/ra001a-durable-tracer.yml::execute::upload-ra001a-durable-tracer-receipt"]\nlookback_required = true',
+                1,
+            ),
+        ),
+        (
+            binding_coverage_error,
             config_text
         + """
 [artifact_retention.lookback_bindings.duplicate_build]
@@ -8205,149 +8353,7 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
                 "artifact retention binding must reject lookback windows longer than external retention"
             )
 
-def assert_ra001a_aggregate_limits_config_contract() -> None:
-    verifier = load_verifier()
-    provenance = load_provenance()
-    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(
-        encoding="utf-8"
-    )
-    config = tomllib.loads(config_text)["backtester"]["ra001a_durable_tracer"]
-    cases = (
-        (
-            "missing max_registry_packs",
-            re.sub(r"^max_registry_packs = [0-9]+\n", "", config_text, count=1, flags=re.MULTILINE),
-        ),
-        (
-            "zero max_total_selected_object_bytes",
-            re.sub(
-                r"^max_total_selected_object_bytes = [0-9]+$",
-                "max_total_selected_object_bytes = 0",
-                config_text,
-                count=1,
-                flags=re.MULTILINE,
-            ),
-        ),
-        (
-            "outer timeout does not exceed wall plus grace",
-            re.sub(
-                r"^termination_grace_seconds = [0-9]+$",
-                f'termination_grace_seconds = {config["max_wall_seconds"]}',
-                config_text,
-                count=1,
-                flags=re.MULTILINE,
-            ),
-        ),
-        (
-            "unsorted ignored roots",
-            config_text.replace(
-                '  ".nextest-archive/",\n  ".rust-verification/",',
-                '  ".rust-verification/",\n  ".nextest-archive/",',
-                1,
-            ),
-        ),
-        (
-            "empty ignored roots",
-            re.sub(
-                r"allowed_ignored_runtime_roots = \[(?:\n  .*?)*\n\]",
-                "allowed_ignored_runtime_roots = []",
-                config_text,
-                count=1,
-            ),
-        ),
-        (
-            "zero ignored-entry byte limit",
-            config_text.replace("max_ignored_entry_bytes = 4096", "max_ignored_entry_bytes = 0", 1),
-        ),
-        (
-            "boolean ignored-entry count limit",
-            config_text.replace("max_ignored_entries = 128", "max_ignored_entries = true", 1),
-        ),
-        (
-            "comma-smuggled ignored root",
-            config_text.replace('  "target/",', '  "target/,elsewhere/",', 1),
-        ),
-        (
-            "absolute ignored root",
-            config_text.replace('  "target/",', '  "/target/",', 1),
-        ),
-        (
-            "ignored root without trailing slash",
-            config_text.replace('  "target/",', '  "target",', 1),
-        ),
-        (
-            "duplicate ignored root",
-            config_text.replace(
-                '  "scripts/__pycache__/",\n  "target/",',
-                '  "scripts/__pycache__/",\n  "scripts/__pycache__/",\n  "target/",',
-                1,
-            ),
-        ),
-        (
-            "ignored root with empty component",
-            config_text.replace('  "target/",', '  "target//nested/",', 1),
-        ),
-    )
-    parsed = tomllib.loads(config_text)
-    trusted_config = provenance.load_backtester_test_archive_timeout_config(
-        parsed,
-        required=True,
-    )
-    verifier_config = verifier.validate_ra001a_durable_tracer_config(parsed)
-    if dataclasses.asdict(trusted_config) != dataclasses.asdict(verifier_config):
-        raise AssertionError(
-            "RA-001a verifier config must be the trusted typed resolver result"
-        )
-    loaded_runner_config = verifier.load_github_actions_runners_config()
-    receipt_upload = loaded_runner_config["artifact_retention"].uploads[
-        ".github/workflows/backtester-ci.yml::test-archive::upload-ra001a-durable-tracer-receipt"
-    ]
-    configured_upload_if = config.get("artifact_upload_if")
-    if not isinstance(configured_upload_if, str) or not configured_upload_if:
-        raise AssertionError("RA-001a receipt upload condition must be TOML-owned")
-    if receipt_upload.required_if != configured_upload_if:
-        raise AssertionError(
-            "RA-001a artifact-retention policy must require the TOML-owned success condition"
-        )
-    with tempfile.TemporaryDirectory() as tmp:
-        for label, mutated in cases:
-            mutated_data = tomllib.loads(mutated)
-            try:
-                provenance.load_backtester_test_archive_timeout_config(
-                    mutated_data,
-                    required=True,
-                )
-            except provenance.ProvenanceError as exc:
-                trusted_error = str(exc)
-            else:
-                raise AssertionError(
-                    f"trusted RA-001a resolver accepted {label}"
-                )
-            try:
-                verifier.validate_ra001a_durable_tracer_config(mutated_data)
-            except ValueError as exc:
-                verifier_error = str(exc)
-            else:
-                raise AssertionError(
-                    f"workflow verifier accepted {label}"
-                )
-            if verifier_error != trusted_error:
-                raise AssertionError(
-                    f"RA-001a resolver parity drift for {label}: "
-                    f"trusted={trusted_error!r}, verifier={verifier_error!r}"
-                )
-            config_path = write_temp_runner_config(pathlib.Path(tmp), mutated)
-            try:
-                verifier.load_github_actions_runners_config(config_path)
-            except ValueError as exc:
-                if str(exc) != trusted_error:
-                    raise AssertionError(
-                        f"runner config loader parity drift for {label}: "
-                        f"trusted={trusted_error!r}, loader={str(exc)!r}"
-                    ) from exc
-            else:
-                raise AssertionError(
-                    f"RA-001a aggregate config mutation did not fail: {label}"
-                )
+
 
 
 def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
@@ -8847,19 +8853,14 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
     env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
       NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
       NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
       NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
       NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
-      - name: Route BVS transient outputs outside checkout
-        run: |
-          {
-            echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"
-            echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-nextest-archive.tar.zst"
-            echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-bin-sidecars.tar.gz"
-          } >> "$GITHUB_ENV"
       - name: Compute BVS artifact input hash
         id: bvs_artifact_inputs
         run: |
@@ -9021,7 +9022,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         run: |
           python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
-          tar --null -czf "$BVS_BIN_SIDECARS_PATH" --files-from -
+          tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Print sccache stats
         if: always()
         uses: ./.github/actions/sccache-stats
@@ -9055,7 +9056,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: List scoped BVS archive tests
-        run: nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH"
+        run: nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"
       - name: Setup BVS MinIO S3 smoke
         uses: ./.github/actions/setup-bvs-minio-s3-smoke
       - name: test
@@ -9085,7 +9086,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
   issue_789:
     name: bvs-test issue-789
     needs: [ci-policy, detect, gate]
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.issue_789 == true && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.issue_789 == 'true' && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
     env:
       BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst
       BOLT_ISSUE_789_RESULT_PATH: result.json
@@ -10872,6 +10873,162 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
     redundant = 'test -x "$HOME/.cargo/bin/cargo-zigbuild" && true'
     if redundant in workflow:
         raise AssertionError("cargo-zigbuild executable probe must not use redundant && true")
+
+
+def assert_ra001a_durable_tracer_is_one_linear_workflow() -> None:
+    verifier = load_verifier()
+    provenance = load_provenance()
+    workflows = verifier.repo_workflow_texts()
+    workflow_path = ".github/workflows/ra001a-durable-tracer.yml"
+    workflow = workflows[workflow_path]
+    baseline_errors = verifier.verify_ra001a_durable_tracer_workflow(workflows)
+    assert not baseline_errors, baseline_errors
+
+    def assert_mapping_mutation_rejected(label: str, mutated: str) -> None:
+        changed = dict(workflows)
+        changed[workflow_path] = mutated
+        errors = verifier.verify_ra001a_durable_tracer_workflow(changed)
+        assert errors, f"RA-001a hygiene accepted {label} mutation"
+
+    policy_fields = tuple(
+        field.name for field in dataclasses.fields(provenance.Ra001aPolicyResult)
+    )
+    assert policy_fields, "RA-001a policy result must declare governed outputs"
+    for index, field in enumerate(policy_fields):
+        other = policy_fields[(index + 1) % len(policy_fields)]
+        output_line = (
+            f"      {field}: "
+            f"${{{{ steps.policy.outputs.{field} }}}}\n"
+        )
+        assert_mapping_mutation_rejected(
+            f"literal policy-job output for {field}",
+            replace_once(workflow, output_line, f"      {field}: 1\n"),
+        )
+        assert_mapping_mutation_rejected(
+            f"wrong policy-job output for {field}",
+            replace_once(
+                workflow,
+                output_line,
+                f"      {field}: ${{{{ steps.policy.outputs.{other} }}}}\n",
+            ),
+        )
+        assert_mapping_mutation_rejected(
+            f"missing policy-job output for {field}",
+            replace_once(workflow, output_line, ""),
+        )
+        assert_mapping_mutation_rejected(
+            f"duplicate policy-job output for {field}",
+            replace_once(workflow, output_line, output_line + output_line),
+        )
+
+        runtime_expression = f"needs.policy.outputs.{field}"
+        runtime_lines = [
+            line
+            for line in workflow.splitlines(keepends=True)
+            if runtime_expression in line
+        ]
+        assert runtime_lines, f"RA-001a policy field {field} has no runtime consumer"
+        runtime_line = runtime_lines[0]
+        assert_mapping_mutation_rejected(
+            f"literal runtime mapping for {field}",
+            replace_once(
+                workflow,
+                runtime_line,
+                runtime_line.replace(runtime_expression, "1"),
+            ),
+        )
+        assert_mapping_mutation_rejected(
+            f"wrong runtime mapping for {field}",
+            replace_once(
+                workflow,
+                runtime_line,
+                runtime_line.replace(
+                    runtime_expression,
+                    f"needs.policy.outputs.{other}",
+                ),
+            ),
+        )
+        assert_mapping_mutation_rejected(
+            f"missing runtime mapping for {field}",
+            replace_once(workflow, runtime_line, ""),
+        )
+        assert_mapping_mutation_rejected(
+            f"duplicate runtime mapping for {field}",
+            replace_once(workflow, runtime_line, runtime_line + runtime_line),
+        )
+
+    first_field = policy_fields[0]
+    assert_mapping_mutation_rejected(
+        "extra policy-job mapping",
+        replace_once(
+            workflow,
+            f"      {first_field}: ${{{{ steps.policy.outputs.{first_field} }}}}\n",
+            (
+                f"      {first_field}: ${{{{ steps.policy.outputs.{first_field} }}}}\n"
+                f"      ra001a_shadow: ${{{{ steps.policy.outputs.{first_field} }}}}\n"
+            ),
+        ),
+    )
+    tracer_run_line = (
+        "          RA001A_TERMINATION_GRACE_SECONDS: "
+        "${{ needs.policy.outputs.ra001a_termination_grace_seconds }}\n"
+        "        run: |\n"
+    )
+    assert_mapping_mutation_rejected(
+        "extra tracer runtime mapping",
+        replace_once(
+            workflow,
+            tracer_run_line,
+            (
+                f"          BOLT_RA001A_SHADOW: "
+                f"${{{{ needs.policy.outputs.{first_field} }}}}\n"
+                + tracer_run_line
+            ),
+        ),
+    )
+
+    mutations = {
+        "enable input": workflow.replace(
+            "  workflow_dispatch:\n",
+            "  workflow_dispatch:\n    inputs:\n      enabled:\n        type: boolean\n",
+            1,
+        ),
+        "conditional mode": workflow.replace(
+            "      - name: Run the sole registry-complete RA-001a tracer\n",
+            "      - name: Run the sole registry-complete RA-001a tracer\n        if: ${{ inputs.enabled }}\n",
+            1,
+        ),
+        "cache restore": workflow.replace(
+            "      - name: Install cargo-nextest\n",
+            "      - uses: actions/cache/restore@deadbeef\n      - name: Install cargo-nextest\n",
+            1,
+        ),
+        "compatibility probe": workflow.replace(
+            "          python3 scripts/ci_provenance.py ra001a-policy \\\n",
+            "          python3 scripts/ci_provenance.py ra001a-policy --help\n          python3 scripts/ci_provenance.py ra001a-policy \\\n",
+            1,
+        ),
+        "missing receipt guard": workflow.replace(
+            "test ! -L \"$BOLT_RA001A_RECEIPT_PATH\"",
+            "test -e \"$BOLT_RA001A_RECEIPT_PATH\"",
+            1,
+        ),
+        "second build": workflow.replace(
+            "          test -f \"$BVS_NEXTEST_ARCHIVE_PATH\"",
+            "          just bte-test-archive \"$BVS_NEXTEST_ARCHIVE_PATH\"\n          test -f \"$BVS_NEXTEST_ARCHIVE_PATH\"",
+            1,
+        ),
+    }
+    for label, mutated in mutations.items():
+        changed = dict(workflows)
+        changed[workflow_path] = mutated
+        errors = verifier.verify_ra001a_durable_tracer_workflow(changed)
+        assert errors, f"RA-001a hygiene accepted {label} mutation"
+
+    duplicate_owner = dict(workflows)
+    duplicate_owner[".github/workflows/ra001a-shadow.yml"] = workflow
+    duplicate_errors = verifier.verify_ra001a_durable_tracer_workflow(duplicate_owner)
+    assert any("must be owned only" in error for error in duplicate_errors), duplicate_errors
 
 
 def main() -> int:
@@ -13558,7 +13715,6 @@ def main() -> int:
     assert_v6_red_workflow_policy_gaps()
     assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported()
     assert_ci_provenance_config_contract()
-    assert_ra001a_aggregate_limits_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_deleted_ai_review_model_freshness_workflow_is_unmapped()
@@ -13630,6 +13786,7 @@ def main() -> int:
     assert_merge_readiness_finalizer_gaps_are_reported()
     assert_coverage_enforcer_workflow_gaps_are_reported()
     assert_coverage_enforcer_bootstrap_marker_matches_script()
+    assert_ra001a_durable_tracer_is_one_linear_workflow()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

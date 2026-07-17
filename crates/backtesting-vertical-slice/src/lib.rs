@@ -67,7 +67,6 @@ pub mod research_analytics;
 pub mod research_reader;
 pub mod result_contract;
 pub mod retired_backfill_evidence;
-mod retired_backfill_provenance;
 pub mod run_manifest;
 pub mod runner;
 pub mod seeded_l2_quotes;

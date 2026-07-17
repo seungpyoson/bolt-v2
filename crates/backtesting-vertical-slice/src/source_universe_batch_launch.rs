@@ -232,50 +232,58 @@ impl CommittedPackReadLease {
 
 fn inventory_committed_registry_scopes(
     registry: &PinnedDirectoryLease,
+    max_registry_packs: usize,
 ) -> Result<Vec<CommittedRegistryScopeSnapshot>> {
+    ensure!(
+        max_registry_packs > 0,
+        "worktree registry inspection max_registry_packs must be positive"
+    );
     registry.revalidate()?;
-    let mut scopes = fs::read_dir(&registry.canonical_path)
-        .with_context(|| {
+    let entries = fs::read_dir(&registry.canonical_path).with_context(|| {
+        format!(
+            "read committed source-universe execution-pack registry {}",
+            registry.canonical_path.display()
+        )
+    })?;
+    let mut scopes = Vec::new();
+    for entry in entries {
+        ensure!(
+            scopes.len() < max_registry_packs,
+            "worktree registry inspection exceeds max_registry_packs {max_registry_packs}"
+        );
+        let entry = entry.with_context(|| {
             format!(
-                "read committed source-universe execution-pack registry {}",
+                "read entry in registry {}",
                 registry.canonical_path.display()
             )
-        })?
-        .map(|entry| {
-            let entry = entry.with_context(|| {
-                format!(
-                    "read entry in registry {}",
-                    registry.canonical_path.display()
-                )
-            })?;
-            let name = entry.file_name().into_string().map_err(|_| {
-                anyhow::anyhow!("committed execution-pack scope name must be UTF-8")
-            })?;
-            validate_portable_path_component("committed_execution_pack_scope", &name)?;
-            let path = entry.path();
-            let metadata = fs::symlink_metadata(&path).with_context(|| {
-                format!("lstat committed execution-pack scope {}", path.display())
-            })?;
-            let identity = DirectoryIdentitySnapshot::capture(&path, &metadata)?;
-            let canonical_path = path.canonicalize().with_context(|| {
-                format!(
-                    "canonicalize committed execution-pack scope {}",
-                    path.display()
-                )
-            })?;
-            ensure!(
-                canonical_path.starts_with(&registry.canonical_path),
-                "committed execution-pack scope {} resolves outside registry root {}",
-                canonical_path.display(),
-                registry.canonical_path.display()
-            );
-            Ok(CommittedRegistryScopeSnapshot {
-                name,
-                path,
-                identity,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+        })?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("committed execution-pack scope name must be UTF-8"))?;
+        validate_portable_path_component("committed_execution_pack_scope", &name)?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("lstat committed execution-pack scope {}", path.display()))?;
+        let identity = DirectoryIdentitySnapshot::capture(&path, &metadata)?;
+        let canonical_path = path.canonicalize().with_context(|| {
+            format!(
+                "canonicalize committed execution-pack scope {}",
+                path.display()
+            )
+        })?;
+        ensure!(
+            canonical_path.starts_with(&registry.canonical_path),
+            "committed execution-pack scope {} resolves outside registry root {}",
+            canonical_path.display(),
+            registry.canonical_path.display()
+        );
+        scopes.push(CommittedRegistryScopeSnapshot {
+            name,
+            path,
+            identity,
+        });
+    }
     scopes.sort_by(|left, right| left.name.cmp(&right.name));
     ensure!(
         !scopes.is_empty(),
@@ -500,32 +508,45 @@ impl SourceUniverseBatchTransportSpec {
     }
 }
 
-/// Discover the complete, committed execution-pack registry below `repo_root`.
-///
-/// Discovery is intentionally validation, not launch: callers still execute
-/// exactly one explicitly selected TOML launch spec. Every immediate registry
-/// child must be one self-contained, immutable pack entry; an invalid child
-/// makes the whole registry unusable.
+/// Inspect mutable-worktree membership for tests and completeness checks only.
+/// This never parses or admits a pack. The caller supplies a strict cap which
+/// is enforced while iterating, before the result can grow past that bound.
+#[doc(hidden)]
+pub fn inspect_worktree_source_universe_execution_pack_scope_names(
+    repo_root: &Path,
+    max_registry_packs: usize,
+) -> Result<Vec<String>> {
+    let canonical_repo_root = repo_root
+        .canonicalize()
+        .with_context(|| format!("canonicalize repository root {}", repo_root.display()))?;
+    let registry_root = repo_root.join(COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT);
+    let registry_lease = PinnedDirectoryLease::open(&registry_root, None)?;
+    ensure!(
+        registry_lease
+            .canonical_path
+            .starts_with(&canonical_repo_root),
+        "committed source-universe execution-pack registry {} resolves outside repository root {}",
+        registry_lease.canonical_path.display(),
+        canonical_repo_root.display()
+    );
+    let initial = inventory_committed_registry_scopes(&registry_lease, max_registry_packs)?;
+    let final_scopes = inventory_committed_registry_scopes(&registry_lease, max_registry_packs)?;
+    ensure!(
+        final_scopes == initial,
+        "committed source-universe execution-pack registry membership changed during inspection"
+    );
+    Ok(initial.into_iter().map(|scope| scope.name).collect())
+}
+
+/// Load only immutable membership named by an exact source revision. This is
+/// the sole pack-discovery authority; mutable-worktree inspection above can
+/// provide test evidence but cannot admit a pack.
 pub fn discover_committed_source_universe_execution_packs(
     repo_root: &Path,
-) -> Result<Vec<CommittedSourceUniverseExecutionPack>> {
-    discover_committed_source_universe_execution_packs_with_scopes(repo_root, None)
-}
-
-/// Discover only the immutable membership named by an exact source revision.
-/// Additional mutable-worktree entries are deliberately inert and cannot join
-/// an already admitted registry snapshot.
-pub(crate) fn discover_committed_source_universe_execution_packs_from_scope_names(
-    repo_root: &Path,
     scope_names: &[String],
+    trusted_bootstrap_limits: SourceUniverseBatchBootstrapLimits,
 ) -> Result<Vec<CommittedSourceUniverseExecutionPack>> {
-    discover_committed_source_universe_execution_packs_with_scopes(repo_root, Some(scope_names))
-}
-
-fn discover_committed_source_universe_execution_packs_with_scopes(
-    repo_root: &Path,
-    authoritative_scope_names: Option<&[String]>,
-) -> Result<Vec<CommittedSourceUniverseExecutionPack>> {
+    trusted_bootstrap_limits.validate()?;
     let repo_root_metadata = fs::symlink_metadata(repo_root)
         .with_context(|| format!("stat repository root {}", repo_root.display()))?;
     ensure!(
@@ -547,10 +568,7 @@ fn discover_committed_source_universe_execution_packs_with_scopes(
         registry_lease.canonical_path.display(),
         canonical_repo_root.display()
     );
-    let initial_scopes = match authoritative_scope_names {
-        Some(scope_names) => pin_authoritative_registry_scopes(&registry_lease, scope_names)?,
-        None => inventory_committed_registry_scopes(&registry_lease)?,
-    };
+    let initial_scopes = pin_authoritative_registry_scopes(&registry_lease, scope_names)?;
 
     let mut pack_ids = BTreeSet::new();
     let mut summary_paths = BTreeSet::new();
@@ -601,6 +619,7 @@ fn discover_committed_source_universe_execution_packs_with_scopes(
             &generator_spec_path,
             "execution-pack generator spec",
             (&canonical_scope_dir, &scope_lease.metadata),
+            trusted_bootstrap_limits.max_control_artifact_bytes,
         )?;
         let generator_sha256 = sha256_hex(&generator_bytes);
         let generator_spec: SourceUniverseExecutionPackSpec = toml::from_slice(&generator_bytes)
@@ -637,10 +656,29 @@ fn discover_committed_source_universe_execution_packs_with_scopes(
             &launch_path,
             "batch launch spec",
             (&canonical_scope_dir, &scope_lease.metadata),
+            trusted_bootstrap_limits.max_launch_artifact_bytes,
         )?;
         let launch_sha256 = sha256_hex(&launch_bytes);
         let launch_spec =
             SourceUniverseBatchLaunchSpec::from_toml_bytes(&launch_path, &launch_bytes)?;
+        ensure!(
+            launch_spec.bootstrap_limits.max_launch_artifact_bytes
+                <= trusted_bootstrap_limits.max_launch_artifact_bytes
+                && launch_spec.bootstrap_limits.max_control_artifact_bytes
+                    <= trusted_bootstrap_limits.max_control_artifact_bytes
+                && launch_spec
+                    .bootstrap_limits
+                    .max_retained_control_input_bytes
+                    <= trusted_bootstrap_limits.max_retained_control_input_bytes,
+            "batch launch spec {} exceeds trusted pre-parse control limits",
+            launch_path.display()
+        );
+        ensure!(
+            launch_spec.execution_pack.bytes
+                <= trusted_bootstrap_limits.max_control_artifact_bytes,
+            "batch launch spec {} execution-pack bytes exceed the trusted control-artifact ceiling",
+            launch_path.display()
+        );
         let expected_summary_identity = Path::new(SOURCE_UNIVERSE_EXECUTION_PACK_OUTPUT_DIR)
             .join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
         ensure!(
@@ -754,10 +792,7 @@ fn discover_committed_source_universe_execution_packs_with_scopes(
     for lease in &read_leases {
         lease.revalidate()?;
     }
-    let final_scopes = match authoritative_scope_names {
-        Some(scope_names) => pin_authoritative_registry_scopes(&registry_lease, scope_names)?,
-        None => inventory_committed_registry_scopes(&registry_lease)?,
-    };
+    let final_scopes = pin_authoritative_registry_scopes(&registry_lease, scope_names)?;
     ensure!(
         final_scopes == initial_scopes,
         "committed source-universe execution-pack registry membership changed during discovery"
@@ -798,10 +833,17 @@ fn read_pinned_regular_file(
     path: &Path,
     label: &str,
     expected_parent: (&Path, &fs::Metadata),
+    max_bytes: u64,
 ) -> Result<(Vec<u8>, fs::File, PinnedRegularFileIdentity)> {
     let (mut file, identity) = open_pinned_regular_file(path)
         .with_context(|| format!("pin {label} {}", path.display()))?;
     identity.revalidate_expected_parent(expected_parent.0, expected_parent.1)?;
+    ensure!(
+        identity.byte_len <= max_bytes,
+        "pinned {label} {} byte length {} exceeds trusted pre-parse ceiling {max_bytes}",
+        path.display(),
+        identity.byte_len
+    );
     let bytes = read_exact_pinned_file(&mut file, path, identity.byte_len)
         .with_context(|| format!("read pinned {label} {}", path.display()))?;
     identity
@@ -831,11 +873,12 @@ mod tests {
         COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT, PinnedDirectoryLease,
         SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_FILE, SOURCE_UNIVERSE_EXECUTION_PACK_GENERATOR_SPEC_FILE,
         discover_committed_source_universe_execution_packs,
-        discover_committed_source_universe_execution_packs_from_scope_names,
+        inspect_worktree_source_universe_execution_pack_scope_names,
         inventory_committed_registry_scopes,
     };
     use crate::{
-        hashing::sha256_hex, source_universe_execution_pack::SOURCE_UNIVERSE_EXECUTION_PACK_FILE,
+        hashing::sha256_hex, source_universe_batch_execution::SourceUniverseBatchBootstrapLimits,
+        source_universe_execution_pack::SOURCE_UNIVERSE_EXECUTION_PACK_FILE,
     };
 
     struct SyntheticCommittedPack {
@@ -847,6 +890,29 @@ mod tests {
 
     fn registry_root(repo_root: &Path) -> std::path::PathBuf {
         repo_root.join(COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT)
+    }
+
+    fn trusted_bootstrap_limits() -> SourceUniverseBatchBootstrapLimits {
+        SourceUniverseBatchBootstrapLimits {
+            max_launch_artifact_bytes: 65_536,
+            max_control_artifact_bytes: 65_536,
+            max_retained_control_input_bytes: 262_144,
+        }
+    }
+
+    fn discover_worktree_test_packs(
+        repo_root: &Path,
+        max_registry_packs: usize,
+    ) -> anyhow::Result<Vec<super::CommittedSourceUniverseExecutionPack>> {
+        let scope_names = inspect_worktree_source_universe_execution_pack_scope_names(
+            repo_root,
+            max_registry_packs,
+        )?;
+        discover_committed_source_universe_execution_packs(
+            repo_root,
+            &scope_names,
+            trusted_bootstrap_limits(),
+        )
     }
 
     fn summary_value(pack_id: &str) -> Value {
@@ -1041,7 +1107,7 @@ max_lifecycle_cleanup_depth = 64
     fn error_text(repo_root: &Path) -> String {
         format!(
             "{:#}",
-            discover_committed_source_universe_execution_packs(repo_root)
+            discover_worktree_test_packs(repo_root, 2)
                 .expect_err("registry must fail closed")
         )
     }
@@ -1052,8 +1118,8 @@ max_lifecycle_cleanup_depth = 64
         write_committed_pack(repo.path(), "zeta-scope", "pack-zeta");
         write_committed_pack(repo.path(), "alpha-scope", "pack-alpha");
 
-        let packs = discover_committed_source_universe_execution_packs(repo.path())
-            .expect("discover committed packs");
+        let packs =
+            discover_worktree_test_packs(repo.path(), 2).expect("discover committed packs");
 
         assert_eq!(
             packs
@@ -1089,13 +1155,77 @@ max_lifecycle_cleanup_depth = 64
 
         write_committed_pack(repo.path(), "late-worktree-scope", "late-worktree-pack");
 
-        let packs = discover_committed_source_universe_execution_packs_from_scope_names(
+        let packs = discover_committed_source_universe_execution_packs(
             repo.path(),
             &admitted_names,
+            trusted_bootstrap_limits(),
         )
         .expect("discover only source-revision-authoritative membership");
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].pack_id, "committed-pack");
+    }
+
+    #[test]
+    fn trusted_scope_discovery_bounds_every_preparse_control() {
+        let repo = TempDir::new().expect("temporary repository");
+        let pack = write_committed_pack(repo.path(), "committed-scope", "committed-pack");
+        let admitted_names = vec!["committed-scope".to_string()];
+
+        let mut generator_limit = trusted_bootstrap_limits();
+        generator_limit.max_control_artifact_bytes = pack
+            .generator_spec_path
+            .metadata()
+            .expect("stat generator fixture")
+            .len()
+            - 1;
+        let error = discover_committed_source_universe_execution_packs(
+            repo.path(),
+            &admitted_names,
+            generator_limit,
+        )
+        .expect_err("generator above trusted control ceiling must reject before parse");
+        assert!(
+            format!("{error:#}").contains("trusted pre-parse ceiling"),
+            "{error:#}"
+        );
+
+        let mut launch_limit = trusted_bootstrap_limits();
+        launch_limit.max_launch_artifact_bytes = pack
+            .launch_path
+            .metadata()
+            .expect("stat launch fixture")
+            .len()
+            - 1;
+        let error = discover_committed_source_universe_execution_packs(
+            repo.path(),
+            &admitted_names,
+            launch_limit,
+        )
+        .expect_err("launch above trusted launch ceiling must reject before parse");
+        assert!(
+            format!("{error:#}").contains("trusted pre-parse ceiling"),
+            "{error:#}"
+        );
+
+        let summary_bytes = fs::read(&pack.summary_path).expect("read summary fixture");
+        let declared_bytes = trusted_bootstrap_limits().max_control_artifact_bytes + 1;
+        write_launch_spec(
+            &pack.launch_path,
+            Path::new("execution-pack/source-universe-execution-pack.json"),
+            &summary_bytes,
+            declared_bytes,
+            &sha256_hex(&summary_bytes),
+        );
+        let error = discover_committed_source_universe_execution_packs(
+            repo.path(),
+            &admitted_names,
+            trusted_bootstrap_limits(),
+        )
+        .expect_err("declared summary above trusted control ceiling must reject before read");
+        assert!(
+            format!("{error:#}").contains("execution-pack bytes exceed"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -1128,7 +1258,8 @@ max_lifecycle_cleanup_depth = 64
         write_committed_pack(repo.path(), "stable-scope", "stable-pack");
         let registry_path = registry_root(repo.path());
         let registry = PinnedDirectoryLease::open(&registry_path, None).expect("pin registry");
-        let initial = inventory_committed_registry_scopes(&registry).expect("inventory registry");
+        let initial =
+            inventory_committed_registry_scopes(&registry, 1).expect("inventory registry");
         let displaced = repo.path().join("displaced-registry");
         fs::rename(&registry_path, &displaced).expect("displace registry");
         fs::create_dir(&registry_path).expect("create replacement registry");

@@ -1,0 +1,274 @@
+name: RA-001a durable tracer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ra001a-durable-tracer
+  cancel-in-progress: false
+
+env:
+  JUST_VERSION: "1.49.0"
+
+jobs:
+  policy:
+    name: ra001a-policy
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    outputs:
+      source_revision: ${{ steps.policy.outputs.source_revision }}
+      policy_sha256: ${{ steps.policy.outputs.policy_sha256 }}
+      ra001a_max_job_minutes: ${{ steps.policy.outputs.ra001a_max_job_minutes }}
+      ra001a_max_registry_packs: ${{ steps.policy.outputs.ra001a_max_registry_packs }}
+      ra001a_max_total_selected_object_bytes: ${{ steps.policy.outputs.ra001a_max_total_selected_object_bytes }}
+      ra001a_git_executable_path: ${{ steps.policy.outputs.ra001a_git_executable_path }}
+      ra001a_max_git_executable_bytes: ${{ steps.policy.outputs.ra001a_max_git_executable_bytes }}
+      ra001a_aws_role_arn: ${{ steps.policy.outputs.ra001a_aws_role_arn }}
+      ra001a_aws_region: ${{ steps.policy.outputs.ra001a_aws_region }}
+      ra001a_receipt_artifact_name: ${{ steps.policy.outputs.ra001a_receipt_artifact_name }}
+      ra001a_receipt_retention_days: ${{ steps.policy.outputs.ra001a_receipt_retention_days }}
+      ra001a_max_worker_executable_bytes: ${{ steps.policy.outputs.ra001a_max_worker_executable_bytes }}
+      ra001a_max_fetch_timeout_seconds: ${{ steps.policy.outputs.ra001a_max_fetch_timeout_seconds }}
+      ra001a_max_worker_virtual_memory_bytes: ${{ steps.policy.outputs.ra001a_max_worker_virtual_memory_bytes }}
+      ra001a_min_worker_reserved_overhead_bytes: ${{ steps.policy.outputs.ra001a_min_worker_reserved_overhead_bytes }}
+      ra001a_max_worker_termination_grace_seconds: ${{ steps.policy.outputs.ra001a_max_worker_termination_grace_seconds }}
+      ra001a_max_decoded_bytes: ${{ steps.policy.outputs.ra001a_max_decoded_bytes }}
+      ra001a_max_source_rows: ${{ steps.policy.outputs.ra001a_max_source_rows }}
+      ra001a_max_projected_row_groups: ${{ steps.policy.outputs.ra001a_max_projected_row_groups }}
+      ra001a_max_operator_wall_seconds: ${{ steps.policy.outputs.ra001a_max_operator_wall_seconds }}
+      ra001a_max_terminal_commit_timeout_seconds: ${{ steps.policy.outputs.ra001a_max_terminal_commit_timeout_seconds }}
+      ra001a_max_launch_artifact_bytes: ${{ steps.policy.outputs.ra001a_max_launch_artifact_bytes }}
+      ra001a_max_control_artifact_bytes: ${{ steps.policy.outputs.ra001a_max_control_artifact_bytes }}
+      ra001a_max_retained_control_input_bytes: ${{ steps.policy.outputs.ra001a_max_retained_control_input_bytes }}
+      ra001a_max_final_object_bytes: ${{ steps.policy.outputs.ra001a_max_final_object_bytes }}
+      ra001a_max_workspace_bytes: ${{ steps.policy.outputs.ra001a_max_workspace_bytes }}
+      ra001a_max_cache_bytes: ${{ steps.policy.outputs.ra001a_max_cache_bytes }}
+      ra001a_min_free_space_reserve_bytes: ${{ steps.policy.outputs.ra001a_min_free_space_reserve_bytes }}
+      ra001a_min_one_record_worst_case_bytes: ${{ steps.policy.outputs.ra001a_min_one_record_worst_case_bytes }}
+      ra001a_cache_retention_age_seconds: ${{ steps.policy.outputs.ra001a_cache_retention_age_seconds }}
+      ra001a_candidate_retention_age_seconds: ${{ steps.policy.outputs.ra001a_candidate_retention_age_seconds }}
+      ra001a_max_lifecycle_cleanup_entries: ${{ steps.policy.outputs.ra001a_max_lifecycle_cleanup_entries }}
+      ra001a_max_lifecycle_cleanup_depth: ${{ steps.policy.outputs.ra001a_max_lifecycle_cleanup_depth }}
+      ra001a_max_wall_seconds: ${{ steps.policy.outputs.ra001a_max_wall_seconds }}
+      ra001a_termination_grace_seconds: ${{ steps.policy.outputs.ra001a_termination_grace_seconds }}
+      ra001a_allowed_ignored_runtime_roots: ${{ steps.policy.outputs.ra001a_allowed_ignored_runtime_roots }}
+      ra001a_max_ignored_entry_bytes: ${{ steps.policy.outputs.ra001a_max_ignored_entry_bytes }}
+      ra001a_max_ignored_entries: ${{ steps.policy.outputs.ra001a_max_ignored_entries }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the sole RA-001a policy
+        id: policy
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          readonly checked_out_revision="$GITHUB_SHA"
+          [[ "$checked_out_revision" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "RA-001a dispatched revision is invalid" >&2
+            exit 1
+          }
+          readonly policy_output="$(mktemp "$RUNNER_TEMP/ra001a-policy.XXXXXX")"
+          python3 scripts/ci_provenance.py ra001a-policy \
+            --config ci/github-actions-runners.toml \
+            --event-name "$EVENT_NAME" \
+            --ref "$EVENT_REF" \
+            --repository-default-branch "$DEFAULT_BRANCH" \
+            > "$policy_output"
+          readonly policy_sha256="$(sha256sum "$policy_output" | cut -d ' ' -f 1)"
+          [[ "$policy_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "RA-001a policy digest is invalid" >&2
+            exit 1
+          }
+          printf 'source_revision=%s\n' "$checked_out_revision" >> "$GITHUB_OUTPUT"
+          printf 'policy_sha256=%s\n' "$policy_sha256" >> "$GITHUB_OUTPUT"
+          cat "$policy_output" >> "$GITHUB_OUTPUT"
+
+  execute:
+    name: ra001a-execute
+    needs: policy
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    timeout-minutes: ${{ fromJSON(needs.policy.outputs.ra001a_max_job_minutes) }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: ${{ runner.temp }}/ra001a-nextest-archive.tar.zst
+      BOLT_RA001A_RECEIPT_PATH: ${{ runner.temp }}/ra001a-durable-tracer-receipt.json
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.policy.outputs.source_revision }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+          build-jobs-key: ra001a_durable_tracer.execute
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Build and seal the reviewed RA-001a worker input
+        id: build
+        shell: bash
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          GIT_EXECUTABLE: ${{ needs.policy.outputs.ra001a_git_executable_path }}
+          MAX_GIT_BYTES: ${{ needs.policy.outputs.ra001a_max_git_executable_bytes }}
+          MAX_WORKER_BYTES: ${{ needs.policy.outputs.ra001a_max_worker_executable_bytes }}
+        run: |
+          set -euo pipefail
+          [[ "$GIT_EXECUTABLE" == /* ]] && test -f "$GIT_EXECUTABLE" && test ! -L "$GIT_EXECUTABLE" && test -x "$GIT_EXECUTABLE" || {
+            echo "RA-001a Git executable is not one explicit absolute regular executable" >&2
+            exit 1
+          }
+          readonly git_bytes="$(wc -c < "$GIT_EXECUTABLE" | tr -d ' ')"
+          [[ "$git_bytes" =~ ^[1-9][0-9]*$ ]] && (( git_bytes <= MAX_GIT_BYTES )) || {
+            echo "RA-001a Git executable exceeds its trusted byte ceiling" >&2
+            exit 1
+          }
+          readonly git_sha256="$(sha256sum "$GIT_EXECUTABLE" | cut -d ' ' -f 1)"
+          [[ "$git_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "RA-001a Git executable digest is invalid" >&2
+            exit 1
+          }
+          test ! -e "$BVS_NEXTEST_ARCHIVE_PATH" || {
+            echo "RA-001a archive path is not fresh" >&2
+            exit 1
+          }
+          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" \
+            --test backtesting_vertical_slice_tests \
+            --bin source_universe_batch_execution
+          test -f "$BVS_NEXTEST_ARCHIVE_PATH" && test ! -L "$BVS_NEXTEST_ARCHIVE_PATH" && test -s "$BVS_NEXTEST_ARCHIVE_PATH" || {
+            echo "RA-001a fresh nextest archive is missing, symlinked, or empty" >&2
+            exit 1
+          }
+          readonly target_dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
+          readonly worker="$target_dir/debug/source_universe_batch_execution"
+          test -f "$worker" && test ! -L "$worker" && test -x "$worker" || {
+            echo "RA-001a worker is missing, symlinked, or not executable" >&2
+            exit 1
+          }
+          readonly worker_bytes="$(wc -c < "$worker" | tr -d ' ')"
+          [[ "$worker_bytes" =~ ^[1-9][0-9]*$ ]] && (( worker_bytes <= MAX_WORKER_BYTES )) || {
+            echo "RA-001a worker exceeds its trusted byte ceiling" >&2
+            exit 1
+          }
+          readonly worker_sha256="$(sha256sum "$worker" | cut -d ' ' -f 1)"
+          [[ "$worker_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "RA-001a worker digest is invalid" >&2
+            exit 1
+          }
+          test ! -e "$BOLT_RA001A_RECEIPT_PATH" || {
+            echo "RA-001a receipt path is not fresh" >&2
+            exit 1
+          }
+          printf 'worker=%s\n' "$worker" >> "$GITHUB_OUTPUT"
+          printf 'worker_bytes=%s\n' "$worker_bytes" >> "$GITHUB_OUTPUT"
+          printf 'worker_sha256=%s\n' "$worker_sha256" >> "$GITHUB_OUTPUT"
+          printf 'git_executable=%s\n' "$GIT_EXECUTABLE" >> "$GITHUB_OUTPUT"
+          printf 'git_bytes=%s\n' "$git_bytes" >> "$GITHUB_OUTPUT"
+          printf 'git_sha256=%s\n' "$git_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Configure RA-001a AWS credentials
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ needs.policy.outputs.ra001a_aws_role_arn }}
+          aws-region: ${{ needs.policy.outputs.ra001a_aws_region }}
+
+      - name: Run the sole registry-complete RA-001a tracer
+        id: tracer
+        shell: bash
+        env:
+          BOLT_RA001A_SOURCE_REVISION: ${{ needs.policy.outputs.source_revision }}
+          BOLT_RA001A_GIT_EXECUTABLE: ${{ steps.build.outputs.git_executable }}
+          BOLT_RA001A_GIT_SHA256: ${{ steps.build.outputs.git_sha256 }}
+          BOLT_RA001A_GIT_BYTES: ${{ steps.build.outputs.git_bytes }}
+          BOLT_RA001A_WORKER_SHA256: ${{ steps.build.outputs.worker_sha256 }}
+          BOLT_RA001A_WORKER_BYTES: ${{ steps.build.outputs.worker_bytes }}
+          BOLT_RA001A_MAX_REGISTRY_PACKS: ${{ needs.policy.outputs.ra001a_max_registry_packs }}
+          BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: ${{ needs.policy.outputs.ra001a_max_total_selected_object_bytes }}
+          BOLT_RA001A_MAX_WORKER_EXECUTABLE_BYTES: ${{ needs.policy.outputs.ra001a_max_worker_executable_bytes }}
+          BOLT_RA001A_MAX_GIT_EXECUTABLE_BYTES: ${{ needs.policy.outputs.ra001a_max_git_executable_bytes }}
+          BOLT_RA001A_AWS_ROLE_ARN: ${{ needs.policy.outputs.ra001a_aws_role_arn }}
+          BOLT_RA001A_AWS_REGION: ${{ needs.policy.outputs.ra001a_aws_region }}
+          BOLT_RA001A_MAX_FETCH_TIMEOUT_SECONDS: ${{ needs.policy.outputs.ra001a_max_fetch_timeout_seconds }}
+          BOLT_RA001A_MAX_WORKER_VIRTUAL_MEMORY_BYTES: ${{ needs.policy.outputs.ra001a_max_worker_virtual_memory_bytes }}
+          BOLT_RA001A_MIN_WORKER_RESERVED_OVERHEAD_BYTES: ${{ needs.policy.outputs.ra001a_min_worker_reserved_overhead_bytes }}
+          BOLT_RA001A_MAX_WORKER_TERMINATION_GRACE_SECONDS: ${{ needs.policy.outputs.ra001a_max_worker_termination_grace_seconds }}
+          BOLT_RA001A_MAX_DECODED_BYTES: ${{ needs.policy.outputs.ra001a_max_decoded_bytes }}
+          BOLT_RA001A_MAX_SOURCE_ROWS: ${{ needs.policy.outputs.ra001a_max_source_rows }}
+          BOLT_RA001A_MAX_PROJECTED_ROW_GROUPS: ${{ needs.policy.outputs.ra001a_max_projected_row_groups }}
+          BOLT_RA001A_MAX_OPERATOR_WALL_SECONDS: ${{ needs.policy.outputs.ra001a_max_operator_wall_seconds }}
+          BOLT_RA001A_MAX_TERMINAL_COMMIT_TIMEOUT_SECONDS: ${{ needs.policy.outputs.ra001a_max_terminal_commit_timeout_seconds }}
+          BOLT_RA001A_MAX_LAUNCH_ARTIFACT_BYTES: ${{ needs.policy.outputs.ra001a_max_launch_artifact_bytes }}
+          BOLT_RA001A_MAX_CONTROL_ARTIFACT_BYTES: ${{ needs.policy.outputs.ra001a_max_control_artifact_bytes }}
+          BOLT_RA001A_MAX_RETAINED_CONTROL_INPUT_BYTES: ${{ needs.policy.outputs.ra001a_max_retained_control_input_bytes }}
+          BOLT_RA001A_MAX_FINAL_OBJECT_BYTES: ${{ needs.policy.outputs.ra001a_max_final_object_bytes }}
+          BOLT_RA001A_MAX_WORKSPACE_BYTES: ${{ needs.policy.outputs.ra001a_max_workspace_bytes }}
+          BOLT_RA001A_MAX_CACHE_BYTES: ${{ needs.policy.outputs.ra001a_max_cache_bytes }}
+          BOLT_RA001A_MIN_FREE_SPACE_RESERVE_BYTES: ${{ needs.policy.outputs.ra001a_min_free_space_reserve_bytes }}
+          BOLT_RA001A_MIN_ONE_RECORD_WORST_CASE_BYTES: ${{ needs.policy.outputs.ra001a_min_one_record_worst_case_bytes }}
+          BOLT_RA001A_CACHE_RETENTION_AGE_SECONDS: ${{ needs.policy.outputs.ra001a_cache_retention_age_seconds }}
+          BOLT_RA001A_CANDIDATE_RETENTION_AGE_SECONDS: ${{ needs.policy.outputs.ra001a_candidate_retention_age_seconds }}
+          BOLT_RA001A_MAX_LIFECYCLE_CLEANUP_ENTRIES: ${{ needs.policy.outputs.ra001a_max_lifecycle_cleanup_entries }}
+          BOLT_RA001A_MAX_LIFECYCLE_CLEANUP_DEPTH: ${{ needs.policy.outputs.ra001a_max_lifecycle_cleanup_depth }}
+          BOLT_RA001A_TRUSTED_POLICY_OUTPUT_SHA256: ${{ needs.policy.outputs.policy_sha256 }}
+          BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS: ${{ needs.policy.outputs.ra001a_allowed_ignored_runtime_roots }}
+          BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES: ${{ needs.policy.outputs.ra001a_max_ignored_entry_bytes }}
+          BOLT_RA001A_MAX_IGNORED_ENTRIES: ${{ needs.policy.outputs.ra001a_max_ignored_entries }}
+          RA001A_MAX_WALL_SECONDS: ${{ needs.policy.outputs.ra001a_max_wall_seconds }}
+          RA001A_TERMINATION_GRACE_SECONDS: ${{ needs.policy.outputs.ra001a_termination_grace_seconds }}
+        run: |
+          set -euo pipefail
+          readonly extract_root="$RUNNER_TEMP/ra001a-nextest-extract"
+          test ! -e "$extract_root"
+          timeout --signal=TERM --kill-after="${RA001A_TERMINATION_GRACE_SECONDS}s" "${RA001A_MAX_WALL_SECONDS}s" \
+            just bte-test-archive-run \
+            "$BVS_NEXTEST_ARCHIVE_PATH" \
+            "$extract_root" \
+            --run-ignored ignored-only \
+            --no-tests=fail \
+            -E 'binary(=backtesting_vertical_slice_tests) & test(=backtesting_vertical_slice_source_universe_durable_tracer::registry_complete_ra001a_live_tracer_runs_every_committed_pack)'
+          test -f "$BOLT_RA001A_RECEIPT_PATH" && test ! -L "$BOLT_RA001A_RECEIPT_PATH" && test -s "$BOLT_RA001A_RECEIPT_PATH" || {
+            echo "RA-001a receipt is missing, symlinked, or empty" >&2
+            exit 1
+          }
+          readonly receipt_bytes="$(wc -c < "$BOLT_RA001A_RECEIPT_PATH" | tr -d ' ')"
+          readonly receipt_sha256="$(sha256sum "$BOLT_RA001A_RECEIPT_PATH" | cut -d ' ' -f 1)"
+          [[ "$receipt_bytes" =~ ^[1-9][0-9]*$ ]]
+          [[ "$receipt_sha256" =~ ^[0-9a-f]{64}$ ]]
+          printf 'receipt_path=%s\n' "$BOLT_RA001A_RECEIPT_PATH" >> "$GITHUB_OUTPUT"
+          printf 'receipt_bytes=%s\n' "$receipt_bytes" >> "$GITHUB_OUTPUT"
+          printf 'receipt_sha256=%s\n' "$receipt_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload RA-001a durable tracer receipt
+        id: upload-ra001a-durable-tracer-receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.policy.outputs.ra001a_receipt_artifact_name }}
+          path: ${{ steps.tracer.outputs.receipt_path }}
+          if-no-files-found: error
+          retention-days: ${{ needs.policy.outputs.ra001a_receipt_retention_days }}

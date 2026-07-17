@@ -18,8 +18,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
 use object_store::{
-    Error as ObjectStoreError, GetOptions, ObjectStore, ObjectStoreExt, PutMode, UpdateVersion,
-    path::Path as ObjectPath,
+    GetOptions, ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Path as ObjectPath,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1718,7 +1717,6 @@ fn validate_private_catalog_root_permissions(_path: &Path, _metadata: &fs::Metad
 #[serde(rename_all = "snake_case")]
 pub enum CreateOnlyWriteDisposition {
     Created,
-    AlreadyExistedSamePayload,
 }
 
 /// One non-cloneable terminal create prepared completely before the caller
@@ -1726,24 +1724,21 @@ pub enum CreateOnlyWriteDisposition {
 pub(crate) struct PreparedTerminalCreate {
     path: ObjectPath,
     payload: Bytes,
-    byte_len: u64,
     object_label: String,
 }
 
-/// Fully acknowledged or exact-version-confirmed terminal object identity.
+/// Fully acknowledged identity for one freshly created terminal object.
 ///
-/// A PUT response without both fields is never accepted directly. It is an
-/// unusable acknowledgement which may converge only through an independent
-/// current HEAD followed by an exact-version, ETag-conditional payload read.
-pub(crate) struct ConfirmedTerminalCreate {
+/// Only the direct create response can construct this value. A conflict,
+/// missing version ID, or missing ETag is never reconciled into success.
+pub(crate) struct CreatedTerminalObject {
     pub(crate) version_id: String,
     pub(crate) e_tag: String,
-    pub(crate) disposition: CreateOnlyWriteDisposition,
 }
 
-/// The create request may have committed, but exact-version discovery could
-/// not prove either outcome. Callers must stop; automatic retry or cleanup is
-/// forbidden.
+/// The create request may have committed, but its direct acknowledgement did
+/// not prove a complete immutable identity. Callers must stop; automatic
+/// retry, discovery-based success, or cleanup is forbidden.
 #[derive(Debug)]
 pub struct TerminalCreateIndeterminate {
     detail: String,
@@ -1768,11 +1763,6 @@ pub fn is_terminal_create_indeterminate(error: &anyhow::Error) -> bool {
             .downcast_ref::<TerminalCreateIndeterminate>()
             .is_some()
     })
-}
-
-enum TerminalCreateConfirmationFailure {
-    Conflict(anyhow::Error),
-    Indeterminate(anyhow::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1869,142 +1859,6 @@ pub async fn persist_catalog_projection_for_source_binding_guarded(
         local_catalog_root,
     )
     .await
-}
-
-/// Recover a fully committed catalog publication from the current receipt
-/// without attempting any catalog-object PUT.
-///
-/// The current lookup is used only for discovery. The returned locator pins
-/// the exact non-`null` receipt version and every subsequent read uses exact
-/// versions. The receipt must also reproduce the caller's independently
-/// sealed physical manifest and configured source binding byte-for-byte.
-// Recovery has the same explicit authority boundary as publication, plus no
-// local catalog path that could be grouped with the sealed remote inputs.
-#[allow(clippy::too_many_arguments)]
-pub async fn recover_catalog_projection_from_current_receipt_guarded(
-    store: &dyn ObjectStore,
-    artifact_root: &ResolvedArtifactRoot,
-    versioning_enabled: &BucketVersioningEnabled,
-    dispatch: &CatalogDispatchConfig,
-    source_binding: &str,
-    expected_market_structure_fixture: MarketStructureFixture,
-    expected_physical_manifest: &CatalogProjectionManifestDocument,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<Option<PersistedCatalogProjection>> {
-    artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
-    let stage = OperatorWorkBudgetStage::Publish;
-    let binding = dispatch
-        .binding_for(source_binding, expected_market_structure_fixture)?
-        .clone();
-    let catalog_root_uri = artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id);
-    let receipt_uri =
-        artifact_root.catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
-    let receipt_path = artifact_root.object_path_for_uri(&receipt_uri)?;
-    let current =
-        match guarded_async_operation_outcome(work_budget, stage, store.head(&receipt_path)).await?
-        {
-            Ok(current) => current,
-            Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("discover catalog publication receipt {receipt_uri}")
-                });
-            }
-        };
-    ensure!(
-        current.location == receipt_path,
-        "discovered catalog publication receipt location mismatch"
-    );
-    let receipt_byte_len = current.size;
-    ensure!(
-        receipt_byte_len > 0,
-        "discovered catalog publication receipt is empty"
-    );
-    enforce_final_object_byte_cap(
-        "discovered catalog publication receipt",
-        receipt_byte_len,
-        artifact_root.max_final_object_bytes,
-    )?;
-    let receipt_version_id = current.version.clone().with_context(|| {
-        format!("catalog publication receipt {receipt_uri} has no S3 version ID")
-    })?;
-    ensure_immutable_s3_version_id(
-        "discovered catalog publication receipt S3 version ID",
-        &receipt_version_id,
-    )?;
-    let receipt_e_tag = current
-        .e_tag
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .context("discovered catalog publication receipt has no nonempty ETag")?;
-    let get = get_exact_version_guarded(
-        store,
-        &receipt_path,
-        &receipt_version_id,
-        &receipt_e_tag,
-        work_budget,
-        stage,
-        "discovered catalog publication receipt",
-    )
-    .await?;
-    validate_versioned_get_metadata(
-        &get,
-        &receipt_path,
-        receipt_byte_len,
-        &receipt_version_id,
-        &receipt_e_tag,
-        "discovered catalog publication receipt",
-    )?;
-    let receipt_bytes = collect_exact_get_result_guarded(
-        get,
-        receipt_byte_len,
-        work_budget,
-        stage,
-        "discovered catalog publication receipt",
-    )
-    .await?;
-    let receipt_sha256 = sha256_hex_with_budget(&receipt_bytes, work_budget, stage)?;
-    let receipt = CatalogProjectionPublicationReceipt::parse_and_validate_guarded(
-        &receipt_bytes,
-        &receipt_sha256,
-        work_budget,
-        stage,
-    )?;
-    let expected_physical_manifest_sha256 = expected_physical_manifest
-        .manifest_sha256_guarded(work_budget, stage)
-        .context("hash caller-sealed physical manifest for receipt recovery")?;
-    ensure!(
-        receipt.catalog_root_uri == catalog_root_uri
-            && receipt.binding == binding
-            && receipt.physical_manifest == *expected_physical_manifest
-            && receipt.physical_manifest_sha256 == expected_physical_manifest_sha256,
-        "discovered catalog publication receipt does not match the caller-sealed projection"
-    );
-    let objects = receipt
-        .objects
-        .into_iter()
-        .map(|object| PersistedCatalogProjectionObject {
-            relative_path: object.relative_path,
-            uri: object.uri,
-            sha256: object.sha256,
-            byte_len: object.byte_len,
-            version_id: object.version_id,
-            e_tag: object.e_tag,
-            create_only_write: CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
-        })
-        .collect();
-    Ok(Some(PersistedCatalogProjection {
-        catalog_root_uri,
-        receipt_uri,
-        receipt_byte_len,
-        physical_manifest_sha256: expected_physical_manifest_sha256,
-        receipt_sha256,
-        receipt_version_id,
-        receipt_e_tag,
-        receipt_create_only_write: CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
-        binding,
-        objects,
-    }))
 }
 
 struct CatalogProjectionPublicationRequest<'a> {
@@ -2186,8 +2040,8 @@ async fn catalog_projection_for_source_binding_guarded(
             work_budget,
             OperatorWorkBudgetStage::Publish,
         )?;
-        let (version, create_only_write) = writer
-            .put_create_idempotent_with_disposition_guarded(&object_path, payload, work_budget)
+        let created = writer
+            .put_create_strict_guarded(&object_path, payload, work_budget)
             .await
             .with_context(|| format!("persist catalog object {uri}"))?;
         identity.revalidate_path(&file_path).with_context(|| {
@@ -2196,8 +2050,8 @@ async fn catalog_projection_for_source_binding_guarded(
                 expected_object.relative_path
             )
         })?;
-        let (version_id, e_tag) =
-            required_versioned_create_result(version, &format!("catalog projection object {uri}"))?;
+        let version_id = created.version_id;
+        let e_tag = created.e_tag;
         let current_retained_metadata = catalog_publication_retained_metadata_bytes(
             expected_physical_manifest,
             &binding,
@@ -2246,7 +2100,7 @@ async fn catalog_projection_for_source_binding_guarded(
             byte_len: expected_object.byte_len,
             version_id,
             e_tag,
-            create_only_write,
+            create_only_write: CreateOnlyWriteDisposition::Created,
         });
         let retained_metadata = catalog_publication_retained_metadata_bytes(
             expected_physical_manifest,
@@ -2330,8 +2184,8 @@ async fn catalog_projection_for_source_binding_guarded(
         format!("catalog projection publication receipt {receipt_uri}"),
     )?;
     let permit = work_budget.authorize_commit(OperatorWorkBudgetStage::Publish)?;
-    let confirmed_receipt = writer
-        .create_or_confirm_terminal(prepared_receipt, permit)
+    let created_receipt = writer
+        .create_terminal_strict(prepared_receipt, permit)
         .await
         .with_context(|| format!("persist catalog projection publication receipt {receipt_uri}"))?;
     Ok(PersistedCatalogProjection {
@@ -2340,9 +2194,9 @@ async fn catalog_projection_for_source_binding_guarded(
         receipt_byte_len: receipt_payload_bytes,
         physical_manifest_sha256,
         receipt_sha256,
-        receipt_version_id: confirmed_receipt.version_id,
-        receipt_e_tag: confirmed_receipt.e_tag,
-        receipt_create_only_write: confirmed_receipt.disposition,
+        receipt_version_id: created_receipt.version_id,
+        receipt_e_tag: created_receipt.e_tag,
+        receipt_create_only_write: CreateOnlyWriteDisposition::Created,
         binding,
         objects,
     })
@@ -3614,12 +3468,9 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             "terminal create object label must not be empty"
         );
         self.enforce_payload_cap(&object_label, &payload)?;
-        let byte_len = u64::try_from(payload.len())
-            .with_context(|| format!("{object_label} byte length does not fit u64"))?;
         Ok(PreparedTerminalCreate {
             path: path.clone(),
             payload: Bytes::from(payload),
-            byte_len,
             object_label,
         })
     }
@@ -3639,16 +3490,17 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         self.prepare_terminal_create(&path, payload, object_label)
     }
 
-    /// Issue one create-only terminal mutation, then converge any lost or
-    /// failed acknowledgement through current-version discovery followed by
-    /// an exact-version, exact-payload read. Once `permit` is consumed this
-    /// function never converts an ambiguous provider outcome into an ordinary
-    /// non-commit error.
-    pub(crate) async fn create_or_confirm_terminal(
+    /// Issue exactly one create-only terminal mutation.
+    ///
+    /// Success requires a complete immutable identity in the direct create
+    /// response. An occupied key is a conflict, and any other failed or
+    /// incomplete acknowledgement is indeterminate. This write path never
+    /// discovers or reuses a current object.
+    pub(crate) async fn create_terminal_strict(
         &self,
         prepared: PreparedTerminalCreate,
         permit: OperatorWorkBudgetCommitPermit,
-    ) -> Result<ConfirmedTerminalCreate> {
+    ) -> Result<CreatedTerminalObject> {
         ensure!(
             permit.stage() == OperatorWorkBudgetStage::Publish,
             "terminal object create requires a publish-stage commit permit"
@@ -3662,14 +3514,14 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             });
         match tokio::time::timeout(
             remaining_wall_time,
-            self.create_or_confirm_terminal_inner(&prepared),
+            self.create_terminal_strict_inner(&prepared),
         )
         .await
         {
             Ok(result) => result,
             Err(_) => Err(TerminalCreateIndeterminate {
                 detail: format!(
-                    "{} at {}: exact commit/confirmation did not finish within the effective terminal timeout {remaining_wall_time:?}; the request may have committed",
+                    "{} at {}: create acknowledgement did not finish within the effective terminal timeout {remaining_wall_time:?}; the request may have committed",
                     prepared.object_label, prepared.path
                 ),
             }
@@ -3677,11 +3529,11 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         }
     }
 
-    async fn create_or_confirm_terminal_inner(
+    async fn create_terminal_strict_inner(
         &self,
         prepared: &PreparedTerminalCreate,
-    ) -> Result<ConfirmedTerminalCreate> {
-        let (put_failure, acknowledged_with_unusable_identity) = match self
+    ) -> Result<CreatedTerminalObject> {
+        match self
             .store
             .put_opts(
                 &prepared.path,
@@ -3693,143 +3545,31 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             Ok(result) => {
                 let version: UpdateVersion = result.into();
                 match required_versioned_create_result(version, &prepared.object_label) {
-                    Ok((version_id, e_tag)) => {
-                        return Ok(ConfirmedTerminalCreate {
-                            version_id,
-                            e_tag,
-                            disposition: CreateOnlyWriteDisposition::Created,
-                        });
+                    Ok((version_id, e_tag)) => Ok(CreatedTerminalObject { version_id, e_tag }),
+                    Err(error) => Err(TerminalCreateIndeterminate {
+                        detail: format!(
+                            "{} at {}: create succeeded with an unusable immutable identity ({error:#})",
+                            prepared.object_label, prepared.path
+                        ),
                     }
-                    // A successful mutation without a complete immutable
-                    // identity is not publication evidence. Reconciliation
-                    // below must independently discover a nonempty ETag and
-                    // bind it together with the exact version, size, and
-                    // payload bytes before this create can be confirmed.
-                    Err(error) => (
-                        error.context("terminal create acknowledged an unusable S3 identity"),
-                        true,
-                    ),
+                    .into()),
                 }
             }
-            Err(error) => (
-                anyhow::Error::new(error).context("terminal create request failed"),
-                false,
-            ),
-        };
-
-        match self.confirm_current_terminal_create(prepared).await {
-            Ok((version_id, e_tag)) => Ok(ConfirmedTerminalCreate {
-                version_id,
-                e_tag,
-                disposition: CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
-            }),
-            Err(TerminalCreateConfirmationFailure::Conflict(error))
-                if acknowledged_with_unusable_identity => Err(TerminalCreateIndeterminate {
-                    detail: format!(
-                        "{} at {}: create succeeded with unusable immutable identity ({put_failure:#}); current exact-version reconciliation found a conflict and cannot prove the acknowledged version ({error:#})",
-                        prepared.object_label, prepared.path
-                    ),
-                }
-                .into()),
-            Err(TerminalCreateConfirmationFailure::Conflict(error)) => {
-                Err(error.context(format!(
-                    "{} conflicts with an occupied terminal key after create attempt failed: {put_failure:#}",
-                    prepared.object_label
-                )))
-            }
-            Err(TerminalCreateConfirmationFailure::Indeterminate(confirmation_error)) => {
-                Err(TerminalCreateIndeterminate {
-                    detail: format!(
-                        "{} at {}: create acknowledgement failed ({put_failure:#}); exact current-version confirmation failed ({confirmation_error:#})",
-                        prepared.object_label, prepared.path
-                    ),
-                }
-                .into())
-            }
-        }
-    }
-
-    async fn confirm_current_terminal_create(
-        &self,
-        prepared: &PreparedTerminalCreate,
-    ) -> std::result::Result<(String, String), TerminalCreateConfirmationFailure> {
-        let current = self.store.head(&prepared.path).await.map_err(|error| {
-            TerminalCreateConfirmationFailure::Indeterminate(
-                anyhow::Error::new(error).context("discover current terminal object"),
-            )
-        })?;
-        if current.location != prepared.path {
-            return Err(TerminalCreateConfirmationFailure::Indeterminate(
-                anyhow::anyhow!("current terminal object location mismatch"),
-            ));
-        }
-        if current.size != prepared.byte_len {
-            return Err(TerminalCreateConfirmationFailure::Conflict(
-                anyhow::anyhow!(
-                    "{} already exists with byte length {}, expected {}",
-                    prepared.object_label,
-                    current.size,
-                    prepared.byte_len
+            Err(error) if is_object_store_create_only_conflict(&error) => Err(error)
+                .with_context(|| {
+                    format!(
+                        "{} conflicts with an occupied terminal key",
+                        prepared.object_label
+                    )
+                }),
+            Err(error) => Err(TerminalCreateIndeterminate {
+                detail: format!(
+                    "{} at {}: create request failed and may have committed ({error})",
+                    prepared.object_label, prepared.path
                 ),
-            ));
+            }
+            .into()),
         }
-        let version_id = current.version.clone().ok_or_else(|| {
-            TerminalCreateConfirmationFailure::Indeterminate(anyhow::anyhow!(
-                "current terminal object has no S3 version ID"
-            ))
-        })?;
-        ensure_immutable_s3_version_id("current terminal object S3 version ID", &version_id)
-            .map_err(TerminalCreateConfirmationFailure::Indeterminate)?;
-        let e_tag = current
-            .e_tag
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                TerminalCreateConfirmationFailure::Indeterminate(anyhow::anyhow!(
-                    "current terminal object has no nonempty ETag"
-                ))
-            })?;
-        let options = GetOptions {
-            version: Some(version_id.clone()),
-            if_match: Some(e_tag.clone()),
-            ..GetOptions::default()
-        };
-        let exact = self
-            .store
-            .get_opts(&prepared.path, options)
-            .await
-            .map_err(|error| {
-                TerminalCreateConfirmationFailure::Indeterminate(
-                    anyhow::Error::new(error).context("read exact terminal object version"),
-                )
-            })?;
-        if exact.meta.location != prepared.path
-            || exact.meta.size != prepared.byte_len
-            || exact.range.start != 0
-            || exact.range.end != prepared.byte_len
-            || exact.meta.version.as_deref() != Some(version_id.as_str())
-            || exact.meta.e_tag.as_deref() != Some(e_tag.as_str())
-        {
-            return Err(TerminalCreateConfirmationFailure::Indeterminate(
-                anyhow::anyhow!("exact terminal object response metadata mismatch"),
-            ));
-        }
-        let payload_matches = stream_matches_prepared_terminal_payload(
-            exact,
-            &prepared.payload,
-            &prepared.object_label,
-        )
-        .await
-        .map_err(TerminalCreateConfirmationFailure::Indeterminate)?;
-        if !payload_matches {
-            return Err(TerminalCreateConfirmationFailure::Conflict(
-                anyhow::anyhow!(
-                    "{} already exists with different payload",
-                    prepared.object_label
-                ),
-            ));
-        }
-        Ok((version_id, e_tag))
     }
 
     /// # Errors
@@ -3843,6 +3583,47 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             .await
             .with_context(|| format!("create-only put {path}"))?;
         Ok(())
+    }
+
+    /// Perform one strict create-only publication and accept only the direct
+    /// response's complete immutable identity. No occupied object is read or
+    /// reused, even when it contains identical bytes.
+    pub(crate) async fn put_create_strict_guarded(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<CreatedTerminalObject> {
+        let object_label = format!("strict create-only object {path}");
+        self.enforce_payload_cap(&object_label, &payload)?;
+        let put_outcome = guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            self.store
+                .put_opts(path, payload.into(), PutMode::Create.into()),
+        )
+        .await
+        .map_err(|error| TerminalCreateIndeterminate {
+            detail: format!("{object_label}: create outcome is unknown ({error:#})"),
+        })?;
+        match put_outcome {
+            Ok(result) => {
+                let version: UpdateVersion = result.into();
+                let (version_id, e_tag) = required_versioned_create_result(version, &object_label)
+                    .map_err(|error| TerminalCreateIndeterminate {
+                        detail: format!(
+                            "{object_label}: create succeeded with an unusable immutable identity ({error:#})"
+                        ),
+                    })?;
+                Ok(CreatedTerminalObject { version_id, e_tag })
+            }
+            Err(error) if is_object_store_create_only_conflict(&error) => Err(error)
+                .with_context(|| format!("{object_label} conflicts with an occupied key")),
+            Err(error) => Err(TerminalCreateIndeterminate {
+                detail: format!("{object_label}: create request failed and may have committed ({error})"),
+            }
+            .into()),
+        }
     }
 
     /// Execute the create-only capability probe under the shared operator
@@ -3869,7 +3650,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                 Ok((probe_uri, path, probe_id.as_bytes().to_vec()))
             },
         )??;
-        self.put_create_idempotent_guarded(&path, payload.clone(), work_budget)
+        self.put_create_strict_guarded(&path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe setup write {probe_uri}"))?;
 
@@ -3882,7 +3663,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         {
             Ok(()) => bail!("create-only probe accepted duplicate write to {probe_uri}"),
             Err(err) if is_create_only_conflict(&err) => {
-                self.verify_existing_create_payload(
+                self.verify_existing_probe_payload(
                     &path,
                     &payload,
                     Some(work_budget),
@@ -3914,10 +3695,10 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                     ))
                 },
             )??;
-        self.put_create_idempotent_guarded(&copy_source_path, payload.clone(), work_budget)
+        self.put_create_strict_guarded(&copy_source_path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe copy source setup {copy_source_uri}"))?;
-        self.copy_if_not_exists_idempotent(
+        self.copy_if_not_exists_strict(
             &copy_source_path,
             &copy_dest_path,
             payload.as_slice(),
@@ -3937,7 +3718,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         {
             Ok(()) => bail!("create-only probe accepted duplicate copy to {copy_dest_uri}"),
             Err(err) if is_object_store_create_only_conflict(&err) => {
-                self.verify_existing_create_payload(
+                self.verify_existing_probe_payload(
                     &copy_dest_path,
                     &payload,
                     Some(work_budget),
@@ -3962,7 +3743,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         }
     }
 
-    async fn copy_if_not_exists_idempotent(
+    async fn copy_if_not_exists_strict(
         &self,
         copy_source_path: &ObjectPath,
         copy_dest_path: &ObjectPath,
@@ -3975,89 +3756,48 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             &format!("create-only copy destination {copy_dest_uri}"),
             expected_payload,
         )?;
-        match guarded_async_operation_outcome(
+        guarded_async_operation_outcome(
             work_budget,
             OperatorWorkBudgetStage::Publish,
             self.store
                 .copy_if_not_exists(copy_source_path, copy_dest_path),
         )
         .await?
-        {
-            Ok(()) => Ok(()),
-            Err(err) if is_object_store_create_only_conflict(&err) => {
-                self.verify_existing_create_payload(
-                    copy_dest_path,
-                    expected_payload,
-                    Some(work_budget),
-                    &format!("create-only probe copy destination {copy_dest_uri}"),
-                )
-                .await?;
-                Ok(())
-            }
-            Err(err) => Err(err).with_context(|| {
-                format!(
-                    "create-only probe copy-if-not-exists setup {copy_source_uri} -> {copy_dest_uri}"
-                )
-            }),
-        }
+        .with_context(|| {
+            format!(
+                "strict create-only probe copy setup {copy_source_uri} -> {copy_dest_uri}"
+            )
+        })
     }
 
     /// # Errors
     ///
-    /// Returns an error if the object exists with different bytes or the object
-    /// store rejects create-only semantics.
-    async fn put_create_idempotent(
+    /// Returns an error if the object already exists or the object store
+    /// rejects create-only semantics.
+    async fn put_create_strict(
         &self,
         path: &ObjectPath,
         payload: Vec<u8>,
     ) -> Result<UpdateVersion> {
-        let (version, _disposition) = self
-            .put_create_idempotent_with_disposition(path, payload)
-            .await?;
-        Ok(version)
+        self.put_create_strict_inner(path, payload, None).await
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the object exists with different bytes or the object
-    /// store rejects create-only semantics.
-    async fn put_create_idempotent_with_disposition(
-        &self,
-        path: &ObjectPath,
-        payload: Vec<u8>,
-    ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
-        self.put_create_idempotent_with_disposition_inner(path, payload, None)
-            .await
-    }
-
-    pub(crate) async fn put_create_idempotent_guarded(
+    pub(crate) async fn put_create_strict_guarded(
         &self,
         path: &ObjectPath,
         payload: Vec<u8>,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<UpdateVersion> {
-        let (version, _disposition) = self
-            .put_create_idempotent_with_disposition_guarded(path, payload, work_budget)
-            .await?;
-        Ok(version)
-    }
-
-    async fn put_create_idempotent_with_disposition_guarded(
-        &self,
-        path: &ObjectPath,
-        payload: Vec<u8>,
-        work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
-        self.put_create_idempotent_with_disposition_inner(path, payload, Some(work_budget))
+        self.put_create_strict_inner(path, payload, Some(work_budget))
             .await
     }
 
-    async fn put_create_idempotent_with_disposition_inner(
+    async fn put_create_strict_inner(
         &self,
         path: &ObjectPath,
         payload: Vec<u8>,
         work_budget: Option<&OperatorWorkBudgetGuard>,
-    ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
+    ) -> Result<UpdateVersion> {
         self.enforce_payload_cap(&format!("create-only object {path}"), &payload)?;
         // Convert once before the remote operation. Cloning `Bytes` for the
         // create attempt is O(1), including on the terminal manifest path
@@ -4075,27 +3815,12 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                 .put_opts(path, payload.clone().into(), PutMode::Create.into())
                 .await
         };
-        match put_outcome {
-            Ok(result) => Ok((result.into(), CreateOnlyWriteDisposition::Created)),
-            Err(err) if is_object_store_create_only_conflict(&err) => {
-                let version = self
-                    .verify_existing_create_payload(
-                        path,
-                        payload.as_ref(),
-                        work_budget,
-                        &format!("create-only object {path}"),
-                    )
-                    .await?;
-                Ok((
-                    version,
-                    CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
-                ))
-            }
-            Err(err) => Err(err).with_context(|| format!("create-only put {path}")),
-        }
+        put_outcome
+            .map(Into::into)
+            .with_context(|| format!("strict create-only put {path}"))
     }
 
-    async fn verify_existing_create_payload(
+    async fn verify_existing_probe_payload(
         &self,
         path: &ObjectPath,
         expected_payload: &[u8],
@@ -4103,13 +3828,13 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         object_label: &str,
     ) -> Result<UpdateVersion> {
         let existing = if let Some(work_budget) = work_budget {
-            let outcome = guarded_async_operation_outcome(
+            guarded_async_operation_outcome(
                 work_budget,
                 OperatorWorkBudgetStage::Publish,
                 self.store.get(path),
             )
-            .await?;
-            outcome.with_context(|| format!("read existing {object_label}"))?
+            .await?
+            .with_context(|| format!("read existing {object_label}"))?
         } else {
             self.store
                 .get(path)
@@ -4118,39 +3843,6 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         };
         verify_create_conflict_payload(existing, expected_payload, work_budget, object_label).await
     }
-}
-
-async fn stream_matches_prepared_terminal_payload(
-    existing: object_store::GetResult,
-    expected_payload: &Bytes,
-    object_label: &str,
-) -> Result<bool> {
-    let mut compared = 0_usize;
-    let mut stream = existing.into_stream();
-    while let Some(chunk) = stream
-        .next()
-        .await
-        .transpose()
-        .with_context(|| format!("stream exact-version {object_label} body"))?
-    {
-        let end = compared
-            .checked_add(chunk.len())
-            .with_context(|| format!("{object_label} streamed byte count overflow"))?;
-        ensure!(
-            end <= expected_payload.len(),
-            "{object_label} streamed more than its exact expected byte length"
-        );
-        if chunk.as_ref() != &expected_payload[compared..end] {
-            return Ok(false);
-        }
-        compared = end;
-    }
-    ensure!(
-        compared == expected_payload.len(),
-        "{object_label} streamed {compared} bytes, expected exactly {}",
-        expected_payload.len()
-    );
-    Ok(true)
 }
 
 async fn verify_create_conflict_payload(
@@ -4710,7 +4402,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         let path = artifact_root.object_path_for_uri(&uri)?;
         let payload = serde_json::to_vec(event).context("serialize artifact index event")?;
         CreateOnlyArtifactWriter::new(self.store, artifact_root)
-            .put_create_idempotent(&path, payload)
+            .put_create_strict(&path, payload)
             .await
     }
 
@@ -4727,7 +4419,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         let uri = snapshot.snapshot_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
         CreateOnlyArtifactWriter::new(self.store, artifact_root)
-            .put_create_idempotent(&path, snapshot.bytes()?)
+            .put_create_strict(&path, snapshot.bytes()?)
             .await
     }
 
@@ -4841,7 +4533,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         let uri = audit_epoch.audit_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
         CreateOnlyArtifactWriter::new(self.store, artifact_root)
-            .put_create_idempotent(&path, audit_epoch.bytes()?)
+            .put_create_strict(&path, audit_epoch.bytes()?)
             .await?;
         Ok(uri)
     }

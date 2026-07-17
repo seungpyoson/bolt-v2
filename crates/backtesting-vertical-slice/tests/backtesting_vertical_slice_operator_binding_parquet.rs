@@ -595,16 +595,14 @@ fn parquet_event_stream_run_spec_end_to_end_dual_emission() {
         "primary catalog input is the delta table"
     );
 
-    // Second run reuses the completed output and re-verifies the tables index.
+    // A fresh second run must reject the occupied output without changing it.
     let contract_bytes = fs::read(&artifacts.contract_path).expect("read contract");
-    let rerun = assert_multi(
-        run_operator_from_run_spec(&spec, &object_bytes, &output_dir).expect("idempotent rerun"),
-    );
-    assert!(rerun.conversion_tables_path.is_some());
+    run_operator_from_run_spec(&spec, &object_bytes, &output_dir)
+        .expect_err("fresh rerun must reject occupied output");
     assert_eq!(
-        fs::read(&rerun.contract_path).expect("read rerun contract"),
+        fs::read(&artifacts.contract_path).expect("read preserved contract"),
         contract_bytes,
-        "result contract must stay byte-identical across reruns"
+        "result contract must stay byte-identical after rejection"
     );
 }
 

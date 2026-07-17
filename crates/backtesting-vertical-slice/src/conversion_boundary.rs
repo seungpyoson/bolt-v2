@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    atomic_artifact_write::atomic_file_create_or_verify_guarded,
+    atomic_artifact_write::atomic_file_create_strict_guarded,
     operator_work_budget::{
         CooperativeDeadlineWriter, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
     },
@@ -47,7 +47,7 @@ pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v4";
 // remains indirect through the embedded manifest/checkpoint hashes.
 pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v3";
 
-/// Converter identity fields that must match before output can be reused.
+/// Complete identity of one conversion generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversionFingerprint {
     pub source_proof_id: String,
@@ -56,7 +56,7 @@ pub struct ConversionFingerprint {
     /// Portable identity of the source-control artifact whose exact bytes
     /// authorized this conversion (for RunSpec flows, the source-bindings
     /// registry). This is deliberately generic so non-RunSpec conversions
-    /// bind their own authoritative control artifact through the same reuse
+    /// bind their own authoritative control artifact through the same generation
     /// contract.
     pub control_artifact_path: String,
     pub control_artifact_sha256: String,
@@ -64,7 +64,7 @@ pub struct ConversionFingerprint {
     pub converter_version: String,
     pub converter_config_hash: String,
     /// Canonical digest of the explicit NT Parquet encoding configuration.
-    /// Completed output is reusable only when this identity is unchanged.
+    /// A generation is valid only when this identity is unchanged.
     pub catalog_encoding_hash: String,
     /// Canonical digest of this path's conversion semantics. RA-001a RunSpec
     /// paths conservatively hash the normalized full RunSpec, removing only
@@ -139,7 +139,7 @@ impl ConversionFingerprint {
 
     /// Canonical identity of one conversion generation.
     ///
-    /// The fingerprint is the complete conversion-reuse identity. Hashing its
+    /// The fingerprint is the complete conversion-generation identity. Hashing its
     /// canonical JSON representation gives durable publication a deterministic
     /// namespace without adding a separately configurable identity field.
     pub fn conversion_generation_sha256(&self) -> Result<String> {
@@ -1105,7 +1105,7 @@ fn write_immutable_conversion_artifact_guarded<T: Serialize>(
             .context("immutable conversion artifact length does not fit u64")?,
         stage,
     )?;
-    atomic_file_create_or_verify_guarded(path, work_budget, stage, |file| {
+    atomic_file_create_strict_guarded(path, work_budget, stage, |file| {
         let mut writer = CooperativeDeadlineWriter::new(file, work_budget, stage);
         writer
             .write_all(&bytes)

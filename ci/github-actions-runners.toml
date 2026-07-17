@@ -56,9 +56,12 @@ test-archive = "managed_heavy"
 issue_789 = "managed_heavy"
 gate = "github_hosted"
 
+[workflows.ra001a_durable_tracer]
+policy = "managed_light"
+execute = "managed_heavy"
+
 [backtester.test_archive_timeout]
 ordinary_max_job_minutes = 360
-ra001a_durable_tracer_max_job_minutes = 120
 
 [workflows.flaky_test_detection]
 flaky-detection-rust-root = "managed_heavy"
@@ -92,6 +95,9 @@ test-archive = 3
 [cargo_build_jobs.backtester_ci]
 clippy = 3
 test-archive = 3
+
+[cargo_build_jobs.ra001a_durable_tracer]
+execute = 3
 
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3
@@ -178,6 +184,7 @@ debug_workflow = "ci_runner_debug"
 included_workflows = [
   "ci",
   "backtester_ci",
+  "ra001a_durable_tracer",
   "coverage_enforcer",
   "flaky_test_detection",
   "flaky_test_smoke",
@@ -213,19 +220,29 @@ run_id = "${{ github.run_id }}"
 run_attempt = "${{ github.run_attempt }}"
 
 [backtester.ra001a_durable_tracer]
-artifact_name_template = "ra001a-durable-tracer-{run_id}-{run_attempt}"
-artifact_upload_if = "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}"
+max_job_minutes = 120
 max_registry_packs = 64
 max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
+receipt_artifact_name = "ra001a-durable-tracer-receipt"
+receipt_retention_days = 7
+
+[backtester.ra001a_durable_tracer.git_executable]
+path = "/usr/bin/git"
+max_bytes = 67108864
+
+[backtester.ra001a_durable_tracer.aws]
+role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
+region = "eu-west-2"
 
 # Trusted-default-branch bounds checked against every committed pack before
 # worker capture. `max_*` values are ceilings; `min_*` values are safety floors;
 # unprefixed retention ages are exact because either direction changes cost.
 [backtester.ra001a_durable_tracer.pack_limits]
 max_fetch_timeout_seconds = 300
+max_worker_termination_grace_seconds = 30
 max_worker_virtual_memory_bytes = 2147483648
 min_worker_reserved_overhead_bytes = 536870912
 max_decoded_bytes = 1073741824
@@ -255,10 +272,6 @@ allowed_ignored_runtime_roots = [
 ]
 max_ignored_entry_bytes = 4096
 max_ignored_entries = 128
-
-[backtester.ra001a_durable_tracer.artifact_name_template_vars]
-run_id = "${{ github.run_id }}"
-run_attempt = "${{ github.run_attempt }}"
 
 [ci_provenance.full_ci]
 required_jobs = [
@@ -432,12 +445,14 @@ max_retention_days = 14
 max_retention_days = 7
 
 [artifact_retention.uploads.".github/workflows/ci.yml::nextest-fingerprint::upload-nextest-fingerprint"]
+lookback_required = true
 artifact_name = "${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}"
 artifact_class = "reuse-bound"
 retention_days_config_file = "ci/github-actions-runners.toml"
 retention_days_config_ref = "ci_provenance.artifacts.retention_days"
 
 [artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]
+lookback_required = true
 artifact_name_config_file = "ci/github-actions-runners.toml"
 artifact_name_config_ref = "ci_provenance.deploy.artifact_name"
 artifact_class = "deployable"
@@ -447,6 +462,7 @@ required_if_config_file = "ci/github-actions-runners.toml"
 required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"
 
 [artifact_retention.uploads.".github/workflows/ci.yml::ci-provenance-emit::upload-ci-provenance"]
+lookback_required = true
 artifact_name_template_config_file = "ci/github-actions-runners.toml"
 artifact_name_template_config_ref = "ci_provenance.artifact_name_template"
 artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
@@ -456,12 +472,14 @@ retention_days_config_file = "ci/github-actions-runners.toml"
 retention_days_config_ref = "ci_provenance.artifacts.retention_days"
 
 [artifact_retention.uploads.".github/workflows/ci.yml::capture::upload-capture-artifact"]
+lookback_required = true
 artifact_name = "${{ steps.provenance.outputs.artifact_name }}"
 artifact_class = "capture-provenance"
 retention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"
 retention_days_config_ref = "ci_provenance.artifacts.retention_days"
 
 [artifact_retention.uploads.".github/workflows/backtester-ci.yml::issue_789::upload-issue-789-first-pl"]
+lookback_required = false
 artifact_name_template_config_file = "ci/github-actions-runners.toml"
 artifact_name_template_config_ref = "backtester.issue_789.artifact_name_template"
 artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
@@ -469,17 +487,18 @@ artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_tem
 artifact_class = "transient"
 retention_days = 7
 
-[artifact_retention.uploads.".github/workflows/backtester-ci.yml::test-archive::upload-ra001a-durable-tracer-receipt"]
-artifact_name_template_config_file = "ci/github-actions-runners.toml"
-artifact_name_template_config_ref = "backtester.ra001a_durable_tracer.artifact_name_template"
-artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
-artifact_name_template_vars_config_ref = "backtester.ra001a_durable_tracer.artifact_name_template_vars"
+[artifact_retention.uploads.".github/workflows/ra001a-durable-tracer.yml::execute::upload-ra001a-durable-tracer-receipt"]
+lookback_required = false
+artifact_name_config_file = "ci/github-actions-runners.toml"
+artifact_name_config_ref = "backtester.ra001a_durable_tracer.receipt_artifact_name"
+artifact_name_workflow_expression = "${{ needs.policy.outputs.ra001a_receipt_artifact_name }}"
 artifact_class = "transient"
-retention_days = 7
-required_if_config_file = "ci/github-actions-runners.toml"
-required_if_config_ref = "backtester.ra001a_durable_tracer.artifact_upload_if"
+retention_days_config_file = "ci/github-actions-runners.toml"
+retention_days_config_ref = "backtester.ra001a_durable_tracer.receipt_retention_days"
+retention_days_workflow_expression = "${{ needs.policy.outputs.ra001a_receipt_retention_days }}"
 
 [artifact_retention.uploads.".github/workflows/ci-storage-cleanup-alert.yml::cleanup-alert::upload-cleanup-feasibility-json"]
+lookback_required = false
 artifact_name = "ci-storage-cleanup-feasibility"
 artifact_class = "transient"
 retention_days = 7
@@ -616,10 +635,8 @@ keep_reason = "nextest archive is retained until it expires"
 [[storage_audit.cleanup_feasibility.classes]]
 id = "backtester_payload"
 name_equals = ["bvs-test-payload"]
-name_prefixes_from_templates = [
-  "backtester.issue_789.artifact_name_template",
-  "backtester.ra001a_durable_tracer.artifact_name_template",
-]
+name_equals_from = ["backtester.ra001a_durable_tracer.receipt_artifact_name"]
+name_prefixes_from_templates = ["backtester.issue_789.artifact_name_template"]
 expired_decision = "DELETE-CANDIDATE"
 candidate_reason = "expired backtester test payload outside protected refs"
 keep_reason = "backtester test payload is retained until it expires"

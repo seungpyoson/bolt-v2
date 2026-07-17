@@ -127,6 +127,34 @@ pub fn atomic_file_create_or_verify_guarded<T>(
     }
 }
 
+/// Build one immutable local artifact and publish it exactly once.
+///
+/// Unlike [`atomic_file_create_or_verify_guarded`], an occupied destination is
+/// always an error. The existing name is never opened, hashed, or accepted as
+/// the result of the current publication attempt.
+#[cfg(target_os = "linux")]
+pub fn atomic_file_create_strict_guarded<T>(
+    path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    write_temp: impl FnOnce(File) -> Result<T>,
+) -> Result<T> {
+    work_budget.check_deadline(stage)?;
+    let temp = OwnedAnonymousTempFile::create_guarded(path, work_budget, stage)
+        .with_context(|| format!("create anonymous temp artifact for {}", path.display()))?;
+    let callback_file = temp
+        .callback_file()
+        .context("clone anonymous temp artifact handle")?;
+    let value = match guarded_operation_outcome(work_budget, stage, || write_temp(callback_file)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => return Err(error),
+        Err(error) => return Err(error),
+    };
+    temp.publish_guarded(work_budget, stage)
+        .with_context(|| format!("strict create-only publish anonymous artifact to {}", path.display()))?;
+    Ok(value)
+}
+
 #[cfg(target_os = "linux")]
 fn verify_anonymous_candidate_matches_existing_guarded(
     candidate: &OwnedAnonymousTempFile,
@@ -216,6 +244,17 @@ pub fn atomic_file_create_or_verify_guarded<T>(
 ) -> Result<T> {
     let _ = (path, work_budget, stage, write_temp);
     anyhow::bail!("fd-bound guarded create-or-verify publication requires Linux O_TMPFILE/linkat")
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn atomic_file_create_strict_guarded<T>(
+    path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    write_temp: impl FnOnce(File) -> Result<T>,
+) -> Result<T> {
+    let _ = (path, work_budget, stage, write_temp);
+    anyhow::bail!("fd-bound guarded strict create-only publication requires Linux O_TMPFILE/linkat")
 }
 
 /// Result of a directory staging attempt. A successful rename only stages the

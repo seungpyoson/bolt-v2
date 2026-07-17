@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 import difflib
 import hashlib
@@ -23,7 +24,6 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from workflow_expression_analysis import (
-    BACKTESTER_RA001A_SAFE_CANCEL_FORM,
     ELSE_RE,
     FI_RE,
     GATE_NAME_OUTPUT,
@@ -310,15 +310,15 @@ from merge_queue_preflight import (
 )
 
 from ci_provenance import (
-    BacktesterTestArchiveTimeoutConfig,
     GATE_NAME_KEYS,
     MERGIFY_CONFIG_EXPECTATIONS,
     MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
     POLICY_ROWS,
     POLICY_VALUES,
     REUSE_RELEVANT_WORKFLOW_ENV_KEYS,
-    CiPolicyResult as ProvenanceCiPolicyResult,
     ProvenanceError,
+    CiPolicyResult as ProvenanceCiPolicyResult,
+    Ra001aPolicyResult,
     check_lookback_le_retention,
     gate_name_collision_errors,
     github_actions_output_safe_check_name,
@@ -327,7 +327,6 @@ from ci_provenance import (
     docs_safe_path_contract_errors,
     ProvenanceConfig,
     load_config,
-    load_backtester_test_archive_timeout_config,
     mergify_temp_pr_matches,
     reuse_scoped_env_value_uses_single_line_scalar,
     top_level_block_lines,
@@ -394,6 +393,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci.yml": "ci",
     "backtester-ci.yml": "backtester_ci",
     ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "ra001a-durable-tracer.yml": "ra001a_durable_tracer",
+    ".github/workflows/ra001a-durable-tracer.yml": "ra001a_durable_tracer",
     "flaky-test-detection.yml": "flaky_test_detection",
     ".github/workflows/flaky-test-detection.yml": "flaky_test_detection",
     "flaky-test-smoke.yml": "flaky_test_smoke",
@@ -481,11 +482,14 @@ class ArtifactRetentionClass(NamedTuple):
 
 class ArtifactRetentionUploadSite(NamedTuple):
     artifact_name: str
+    artifact_name_workflow_expression: str | None
     artifact_class: str
     retention_days: int
+    retention_days_workflow_expression: str | None
     retention_config_file: str | None
     retention_config_ref: str | None
     required_if: str | None
+    lookback_required: bool
 
 
 class ArtifactRetentionLookbackBinding(NamedTuple):
@@ -1278,7 +1282,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "f96f89d9c96da2f09df90f6dba0c4288c05d06a1a03a06ceb3daeda926801203"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "28c6de24916fdedb70617280a973cda65f727b9fd6303f09e5fb80c835bab703"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -1821,8 +1825,6 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "&& !(github.event.changes.base.ref.from && true || false))) "
     "&& format('bvs-pr-{0}-iteration', github.event.number) || github.event_name == 'pull_request' "
     "&& format('bvs-pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
-    "&& inputs.ra001a_durable_tracer == true "
-    "&& format('bvs-ra001a-tracer-{0}', github.sha) || github.event_name == 'workflow_dispatch' "
     "&& format('bvs-{0}-dispatch-iteration', github.ref_name) "
     "|| github.event_name == 'merge_group' && format('bvs-mq-{0}', github.ref) "
     "|| format('bvs-{0}-{1}', github.ref_name, github.sha) }}",
@@ -2928,6 +2930,33 @@ def mapping_child_block(lines: list[str], name: str) -> list[str]:
     return []
 
 
+def immediate_mapping_items(lines: list[str]) -> dict[str, str] | None:
+    """Parse one strict YAML mapping level, rejecting nesting and duplicates."""
+
+    item_indent: int | None = None
+    items: dict[str, str] = {}
+    for line in lines:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if item_indent is None:
+            item_indent = indent
+        if indent != item_indent:
+            return None
+        item_match = re.fullmatch(
+            rf"\s{{{item_indent}}}({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*",
+            clean,
+        )
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
 def block_input_value(block: list[str], name: str) -> str | None:
     for item_name, item_value in block_input_items(block):
         if item_name == name:
@@ -2955,10 +2984,13 @@ def block_step_id(block: list[str]) -> str | None:
 
 
 def artifact_retention_upload_matches(site: ArtifactRetentionUploadSite, artifact_name: str) -> bool:
-    return artifact_name == site.artifact_name
+    expected = site.artifact_name_workflow_expression or site.artifact_name
+    return artifact_name == expected
 
 
 def artifact_retention_upload_name_expectation(site: ArtifactRetentionUploadSite) -> str:
+    if site.artifact_name_workflow_expression is not None:
+        return f"configured name binding {site.artifact_name_workflow_expression}"
     return f"configured name {site.artifact_name}"
 
 
@@ -3028,23 +3060,31 @@ def upload_artifact_retention_errors(
         if len(retention_values) != 1:
             errors.append(f"{label} must set exactly one retention-days")
             continue
-        try:
-            retention_days = int(retention_values[0])
-        except ValueError:
-            errors.append(f"{label} retention-days must be a positive integer")
-            continue
-        if retention_days <= 0:
-            errors.append(f"{label} retention-days must be a positive integer")
-            continue
-        if retention_values[0] != str(site.retention_days):
+        if site.retention_days_workflow_expression is None:
+            try:
+                retention_days = int(retention_values[0])
+            except ValueError:
+                errors.append(f"{label} retention-days must be a positive integer")
+                continue
+            if retention_days <= 0:
+                errors.append(f"{label} retention-days must be a positive integer")
+                continue
+            expected_retention = str(site.retention_days)
+            if retention_values[0] != expected_retention:
+                errors.append(
+                    f"{label} retention-days {retention_values[0]} "
+                    f"does not match configured retention-days {site.retention_days}"
+                )
+                continue
+        elif retention_values[0] != site.retention_days_workflow_expression:
             errors.append(
-                f"{label} retention-days {retention_values[0]} "
-                f"does not match configured retention-days {site.retention_days}"
+                f"{label} retention-days {retention_values[0]} does not match configured "
+                f"retention binding {site.retention_days_workflow_expression}"
             )
             continue
-        if retention_days > class_policy.max_retention_days:
+        if site.retention_days > class_policy.max_retention_days:
             errors.append(
-                f"{label} retention-days {retention_days} "
+                f"{label} retention-days {site.retention_days} "
                 f"exceeds configured max {class_policy.max_retention_days}"
             )
     return errors
@@ -8558,11 +8598,8 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
 
     archive_fragments = [
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
-        ("backtester bvs-test archive must route transient outputs outside checkout", "name: Route BVS transient outputs outside checkout"),
-        ("backtester bvs-test archive must keep its Rust target outside the checkout", 'echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"'),
-        ("backtester bvs-test archive must declare external archive path", 'echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-nextest-archive.tar.zst"'),
-        ("backtester bvs-test archive must declare external sidecar path", 'echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-bin-sidecars.tar.gz"'),
-        ("backtester bvs-test archive must export transient paths", '} >> "$GITHUB_ENV"'),
+        ("backtester bvs-test archive must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
+        ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
         ("backtester bvs-test archive must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
         (
             "backtester bvs-test archive must expose nextest artifact S3 kill switch",
@@ -8678,7 +8715,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must pack only required sidecars",
-            'tar --null -czf "$BVS_BIN_SIDECARS_PATH" --files-from -',
+            'tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -',
         ),
         (
             "backtester bvs-test archive must save binary sidecar cache",
@@ -8722,7 +8759,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must list scoped archive tests",
-            'nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH"',
+            'nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"',
         ),
         (
             "backtester bvs-test archive must create archive extract root",
@@ -8749,7 +8786,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test issue-789 must require explicit issue_789 input",
-            "inputs.issue_789 == true",
+            "github.event.inputs.issue_789 == 'true'",
         ),
         (
             "backtester bvs-test issue-789 must run only on iteration policy",
@@ -8899,28 +8936,12 @@ BACKTESTER_REQUIRED_GATE_COMMENT = (
     "# Ready reopen/content proof paths publish `backtester-gate`; PRs that do not touch\n"
     "# the crate still pass through the explicit no-crate proof."
 )
-BACKTESTER_RA001A_TRACER_GROUP_ARM = (
-    "github.event_name == 'workflow_dispatch' "
-    "&& inputs.ra001a_durable_tracer == true "
-    "&& format('bvs-ra001a-tracer-{0}', github.sha)"
-)
-BACKTESTER_RA001A_TRACER_REQUIRED_EXPR = (
-    "needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true'"
-)
-
 def has_backtester_full_proof_guard(job_text: str) -> bool:
     return (
         "needs.ci-policy.outputs.full_ci_required == 'true'" in job_text
         and "needs.detect.outputs.bvs_changed == 'true'" in job_text
         and "needs.ci-policy.outputs.ci_policy_path == 'noop'" not in job_text
         and "needs.ci-policy.outputs.full_ci_deferred" not in job_text
-    )
-
-
-def has_backtester_test_archive_guard(job_text: str) -> bool:
-    return (
-        has_backtester_full_proof_guard(job_text)
-        and BACKTESTER_RA001A_TRACER_REQUIRED_EXPR in job_text
     )
 
 
@@ -8948,45 +8969,6 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
         return []
     jobs = parse_jobs(text)
     errors: list[str] = []
-    dispatch_lines = workflow_trigger_block(text, "workflow_dispatch")
-    for input_name in ("issue_789", "ra001a_durable_tracer"):
-        input_marker = f"      {input_name}:"
-        try:
-            input_start = dispatch_lines.index(input_marker)
-        except ValueError:
-            errors.append(
-                f"backtester workflow_dispatch must define typed boolean input {input_name}"
-            )
-            continue
-        input_end = next(
-            (
-                index
-                for index in range(input_start + 1, len(dispatch_lines))
-                if dispatch_lines[index].startswith("      ")
-                and not dispatch_lines[index].startswith("        ")
-            ),
-            len(dispatch_lines),
-        )
-        input_block = dispatch_lines[input_start:input_end]
-        if "        type: boolean" not in input_block:
-            errors.append(
-                f"backtester workflow_dispatch input {input_name} must be boolean"
-            )
-        default_lines = [
-            line for line in input_block if line.startswith("        default:")
-        ]
-        if default_lines != ["        default: false"]:
-            errors.append(
-                f"backtester workflow_dispatch input {input_name} must default false"
-            )
-    uncommented_workflow = uncommented_text(text.splitlines())
-    if (
-        "github.event.inputs.issue_789" in uncommented_workflow
-        or "github.event.inputs.ra001a_durable_tracer" in uncommented_workflow
-    ):
-        errors.append(
-            "backtester dispatch inputs must use typed inputs context and env-mediated shell access"
-        )
     if BACKTESTER_REQUIRED_GATE_COMMENT not in workflow_header_text(text):
         errors.append("backtester iteration policy must document that only backtester-gate should be required")
     policy = jobs.get("ci-policy")
@@ -8998,29 +8980,19 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
         policy_text = uncommented_text(policy)
         for required in [
             "full_ci_required: ${{ steps.policy.outputs.full_ci_required }}",
-            "backtester_test_archive_timeout_minutes: ${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}",
-            "backtester_issue_789_timeout_minutes: ${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}",
-            "ra001a_durable_tracer_required: ${{ steps.policy.outputs.ra001a_durable_tracer_required }}",
-            "ra001a_max_registry_packs: ${{ steps.policy.outputs.ra001a_max_registry_packs }}",
-            "ra001a_max_total_selected_object_bytes: ${{ steps.policy.outputs.ra001a_max_total_selected_object_bytes }}",
-            "ra001a_max_worker_executable_bytes: ${{ steps.policy.outputs.ra001a_max_worker_executable_bytes }}",
-            "ra001a_trusted_policy_output_sha256: ${{ steps.policy.outputs.ra001a_trusted_policy_output_sha256 }}",
-            "ra001a_max_wall_seconds: ${{ steps.policy.outputs.ra001a_max_wall_seconds }}",
-            "ra001a_termination_grace_seconds: ${{ steps.policy.outputs.ra001a_termination_grace_seconds }}",
-            "ra001a_allowed_ignored_runtime_roots: ${{ steps.policy.outputs.ra001a_allowed_ignored_runtime_roots }}",
-            "ra001a_max_ignored_entry_bytes: ${{ steps.policy.outputs.ra001a_max_ignored_entry_bytes }}",
-            "ra001a_max_ignored_entries: ${{ steps.policy.outputs.ra001a_max_ignored_entries }}",
             "gate_name: ${{ steps.policy.outputs.gate_name }}",
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
-            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'",
-            "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
-            'elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then',
-            'base_branch="$DEFAULT_BRANCH"',
+            "trusted_revision: ${{ steps.policy_base.outputs.revision }}",
             "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-            'git check-ref-format "refs/heads/$base_branch"',
-            "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+            "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            '[[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]',
+            'git check-ref-format "refs/heads/$trusted_branch"',
+            'trusted_revision="$(git rev-parse --verify "${trusted_ref}^{commit}")"',
+            'git archive "$trusted_revision" scripts/ ci/github-actions-runners.toml',
+            'echo "revision=$trusted_revision"',
             "steps.policy_base.outputs.script",
+            "steps.policy_base.outputs.config",
             'python3 "$policy_script" ci-policy',
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
@@ -9028,263 +9000,53 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
             '--pull-request-head-ref "$PR_HEAD_REF"',
             "PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}",
-            "author_args=()",
-            'python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"',
-            'author_args=(--pull-request-author-id "$PR_AUTHOR_ID")',
-            '"${author_args[@]}"',
+            '--pull-request-author-id "$PR_AUTHOR_ID"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
-            "tracer_args=()",
-            'python3 "$policy_script" ci-policy --help | grep -q -- "--ra001a-durable-tracer-requested"',
-            'ISSUE_789_REQUESTED: ${{ inputs.issue_789 || false }}',
-            'RA001A_DURABLE_TRACER_REQUESTED: ${{ inputs.ra001a_durable_tracer || false }}',
-            'tracer_args=(--ra001a-durable-tracer-requested "$RA001A_DURABLE_TRACER_REQUESTED")',
-            'trusted policy resolver does not support the requested RA-001a tracer',
-            'RA001A_TRACER_ROLE_ARN: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}',
-            'RA001A_TRACER_REGION: ${{ vars.AWS_RA001A_TRACER_REGION }}',
-            'issue #789 and the RA-001a durable tracer are mutually exclusive managed-heavy requests',
-            'test -n "$RA001A_TRACER_ROLE_ARN"',
-            'test -n "$RA001A_TRACER_REGION"',
-            '"${tracer_args[@]}"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:
                 errors.append(f"backtester iteration policy ci-policy job must include {required}")
-        timeout_capture_requirements = (
-            'readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"',
-            'test ! -e "$policy_output"',
-            '| tee "$policy_output"',
-            'policy_output_sha256="$(sha256sum "$policy_output" | cut -d \' \' -f 1)"',
-            "readonly policy_output_sha256",
-            '[[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]]',
-        )
-        if any(required not in policy_text for required in timeout_capture_requirements):
-            errors.append(
-                "ci-policy job must capture trusted policy output before publication"
-            )
-        timeout_validation_requirements = (
-            "for positive_policy_key in \\",
-            "backtester_test_archive_timeout_minutes \\",
-            "backtester_issue_789_timeout_minutes \\",
-            "ra001a_max_registry_packs \\",
-            "ra001a_max_total_selected_object_bytes \\",
-            "ra001a_max_worker_executable_bytes \\",
-            "ra001a_max_wall_seconds \\",
-            "ra001a_termination_grace_seconds \\",
-            "ra001a_max_ignored_entry_bytes \\",
-            "ra001a_max_ignored_entries; do",
-            'value_counts="$(awk -F= -v key="$positive_policy_key" \'$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
-            '[[ "$value_counts" == "1:1" ]]',
-            "trusted policy resolver must emit exactly one positive ${positive_policy_key}",
-            'ignored_roots_counts="$(awk -F= \'$1 == "ra001a_allowed_ignored_runtime_roots" { all += 1; if ($2 ~ /^[-A-Za-z0-9._\\/]+(,[-A-Za-z0-9._\\/]+)*$/) valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
-            '[[ "$ignored_roots_counts" == "1:1" ]]',
-            "trusted policy resolver must emit exactly one normalized ignored-runtime root list",
-            'tracer_required_counts="$(awk -F= \'$1 == "ra001a_durable_tracer_required" { all += 1; if ($2 == "true" || $2 == "false") valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
-            '[[ "$tracer_required_counts" == "1:1" ]]',
-            "trusted policy resolver must emit exactly one boolean ra001a_durable_tracer_required",
-            'tracer_required="$(awk -F= \'$1 == "ra001a_durable_tracer_required" { print $2 }\' "$policy_output")"',
-            '[[ "$tracer_required" == "$RA001A_DURABLE_TRACER_REQUESTED" ]]',
-            "trusted policy resolver tracer decision does not match the dispatch request",
-            'cat "$policy_output" >> "$GITHUB_OUTPUT"',
-            "printf 'ra001a_trusted_policy_output_sha256=%s\\n' \"$policy_output_sha256\" >> \"$GITHUB_OUTPUT\"",
-        )
-        if any(required not in policy_text for required in timeout_validation_requirements):
-            errors.append(
-                "ci-policy job must fail closed on missing or malformed timeout outputs"
-            )
-        timeout_capture_marker = '| tee "$policy_output"'
-        timeout_validation_marker = "for positive_policy_key in \\"
-        timeout_publish_marker = 'cat "$policy_output" >> "$GITHUB_OUTPUT"'
-        if (
-            policy_text.count(timeout_capture_marker) != 1
-            or policy_text.count(timeout_validation_marker) != 1
-            or policy_text.count(timeout_publish_marker) != 1
-            or not (
-                policy_text.find(timeout_capture_marker)
-                < policy_text.find(timeout_validation_marker)
-                < policy_text.find(timeout_publish_marker)
-            )
-            or 'tee -a "$GITHUB_OUTPUT"' in policy_text
+        for forbidden in (
+            'if [[ -z "$policy_script" ]]',
+            'policy_script="scripts/ci_provenance.py"',
+            'if [[ -z "$policy_config" ]]',
+            'policy_config="ci/github-actions-runners.toml"',
+            "ci-policy --help",
+            "author_args=()",
         ):
-            errors.append(
-                "ci-policy job must validate timeout outputs before publishing them"
-            )
-        if "python3 -c" in policy_text or "tomllib.loads" in policy_text:
-            errors.append(
-                "ci-policy job must use the typed trusted resolver instead of an inline policy parser"
-            )
-        policy_step = named_step_block(policy, "Compute Backtester CI policy")
-        policy_shell_commands = (
-            top_level_shell_commands(block_run_body_lines(policy_step))
-            if policy_step is not None
-            else []
-        )
-        policy_assignment_lines = (
-            'policy_script="${{ steps.policy_base.outputs.script }}"',
-            'policy_config="${{ steps.policy_base.outputs.config }}"',
-        )
-        policy_readonly_line = "readonly policy_script policy_config"
-        policy_guard_lines = (
-            'test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }',
-            'test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }',
-        )
-        policy_use_positions = [
-            index
-            for index, line in enumerate(policy_shell_commands)
-            if line.startswith('python3 "$policy_script" ci-policy ')
-            and '--config "$policy_config"' in line
-        ]
-        policy_command_positions: list[int] = []
-        for command in (
-            *policy_assignment_lines,
-            policy_readonly_line,
-            *policy_guard_lines,
-        ):
-            positions = [
-                index
-                for index, line in enumerate(policy_shell_commands)
-                if line == command
-            ]
-            if len(positions) != 1:
-                policy_command_positions = []
-                break
-            policy_command_positions.append(positions[0])
-        if (
-            not policy_command_positions
-            or policy_command_positions != sorted(policy_command_positions)
-            or len(policy_use_positions) != 1
-            or policy_command_positions[-1] >= policy_use_positions[0]
-        ):
-            errors.append(
-                "ci-policy job must execute each trusted policy path guard exactly once after binding and before use"
-            )
-
-        policy_run_lines = (
-            [strip_comment(line).strip() for line in block_run_body_lines(policy_step)]
-            if policy_step is not None
-            else []
-        )
-        assignment_census = {
-            "policy_script": (
-                'policy_script="${{ steps.policy_base.outputs.script }}"',
-                'policy_script="scripts/ci_provenance.py"',
-            ),
-            "policy_config": (
-                'policy_config="${{ steps.policy_base.outputs.config }}"',
-                'policy_config="ci/github-actions-runners.toml"',
-            ),
-            "policy_output": (
-                'readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"',
-            ),
-            "policy_output_sha256": (
-                'policy_output_sha256="$(sha256sum "$policy_output" | cut -d \' \' -f 1)"',
-            ),
-        }
-        assignment_census_valid = True
-        for variable, expected_assignments in assignment_census.items():
-            assignment_pattern = re.compile(
-                rf"^(?:readonly\s+)?{re.escape(variable)}="
-            )
-            actual_assignments = tuple(
-                line for line in policy_run_lines if assignment_pattern.match(line)
-            )
-            if actual_assignments != expected_assignments:
-                assignment_census_valid = False
-                break
-
-        resolver_positions = policy_use_positions
-        output_declaration_command = (
-            'readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"'
-        )
-        output_absence_command = (
-            'test ! -e "$policy_output" || { echo "trusted policy output path already '
-            'exists" >&2; exit 1; }'
-        )
-        output_declaration_positions = [
-            index
-            for index, line in enumerate(policy_shell_commands)
-            if line == output_declaration_command
-        ]
-        output_absence_positions = [
-            index
-            for index, line in enumerate(policy_shell_commands)
-            if line == output_absence_command
-        ]
-        output_chain_commands = (
-            'policy_output_sha256="$(sha256sum "$policy_output" | cut -d \' \' -f 1)"',
-            "readonly policy_output_sha256",
-            '[[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }',
-        )
-        output_chain_positions: list[int] = []
-        for command in output_chain_commands:
-            positions = [
-                index
-                for index, line in enumerate(policy_shell_commands)
-                if line == command
-            ]
-            if len(positions) != 1:
-                output_chain_positions = []
-                break
-            output_chain_positions.append(positions[0])
-        rehash_command = (
-            '[[ "$(sha256sum "$policy_output" | cut -d \' \' -f 1)" == '
-            '"$policy_output_sha256" ]] || { echo "trusted policy output changed after '
-            'validation" >&2; exit 1; }'
-        )
-        publish_command = 'cat "$policy_output" >> "$GITHUB_OUTPUT"'
-        policy_digest_publish_command = (
-            "printf 'ra001a_trusted_policy_output_sha256=%s\\n' "
-            '"$policy_output_sha256" >> "$GITHUB_OUTPUT"'
-        )
-        rehash_positions = [
-            index
-            for index, line in enumerate(policy_shell_commands)
-            if line == rehash_command
-        ]
-        publish_positions = [
-            index
-            for index, line in enumerate(policy_shell_commands)
-            if line == publish_command
-        ]
-        policy_digest_publish_positions = [
-            index
-            for index, line in enumerate(policy_shell_commands)
-            if line == policy_digest_publish_command
-        ]
-        forbidden_output_mutation = any(
-            re.match(r"^(?:command\s+)?(?:sed|rm|mv)\b", command)
-            and (
-                "$policy_output" in command
-                or "backtester-ci-policy-output" in command
-            )
-            for command in policy_shell_commands
-        )
-        if (
-            not assignment_census_valid
-            or policy_shell_commands.count(policy_readonly_line) != 1
-            or len(resolver_positions) != 1
-            or len(output_declaration_positions) != 1
-            or len(output_absence_positions) != 1
-            or output_declaration_positions[0] + 1
-            != output_absence_positions[0]
-            or output_absence_positions[0] + 1 != resolver_positions[0]
-            or not output_chain_positions
-            or output_chain_positions
-            != list(
-                range(
-                    resolver_positions[0] + 1,
-                    resolver_positions[0] + 1 + len(output_chain_commands),
+            if forbidden in policy_text:
+                errors.append(
+                    "backtester iteration policy must not retain trusted-policy "
+                    f"fallbacks ({forbidden})"
                 )
-            )
-            or len(rehash_positions) != 1
-            or len(publish_positions) != 1
-            or rehash_positions[0] + 1 != publish_positions[0]
-            or len(policy_digest_publish_positions) != 1
-            or publish_positions[0] + 1 != policy_digest_publish_positions[0]
-            or forbidden_output_mutation
-        ):
+        policy_binding_lines = [
+            line.strip()
+            for line in policy_text.splitlines()
+            if re.match(r"^(?:readonly\s+)?policy_(?:script|config)=", line.strip())
+        ]
+        if policy_binding_lines != [
+            'readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+            'readonly policy_config="${{ steps.policy_base.outputs.config }}"',
+        ]:
             errors.append(
-                "ci-policy job must seal trusted paths and policy output against rebinding or post-validation mutation"
+                "backtester iteration policy must bind each trusted policy capability "
+                "exactly once without fallback"
+            )
+        trusted_branch_assignment_lines = [
+            line.strip()
+            for line in policy_text.splitlines()
+            if line.strip().startswith("trusted_branch=")
+        ]
+        if trusted_branch_assignment_lines != [
+            'trusted_branch="$PR_BASE_REF"',
+            'trusted_branch="${merge_group_base#refs/heads/}"',
+            'trusted_branch="$merge_group_base"',
+            'trusted_branch="$REPOSITORY_DEFAULT_BRANCH"',
+        ]:
+            errors.append(
+                "backtester iteration policy must select one event-scoped trusted branch "
+                "without fallback"
             )
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
@@ -9295,293 +9057,8 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
         needs = extract_needs(job)
         if "ci-policy" not in needs:
             errors.append(f"backtester iteration policy managed-heavy job {heavy_job} must need ci-policy")
-        job_guard = job_if_value(job)
-        if not has_backtester_full_proof_guard(job_guard):
+        if not has_backtester_full_proof_guard(uncommented_text(job)):
             errors.append("backtester iteration policy managed-heavy jobs must require full CI policy")
-        if heavy_job == "test-archive" and not has_backtester_test_archive_guard(job_guard):
-            errors.append(
-                "RA-001a tracer dispatch must reach test-archive through governed policy output"
-            )
-
-    test_archive = jobs.get("test-archive")
-    if test_archive is not None:
-        test_archive_items = job_top_level_items(test_archive)
-        if test_archive_items is None or "continue-on-error" in test_archive_items:
-            errors.append(
-                "RA-001a test-archive job must fail closed without job-level continue-on-error"
-            )
-        expected_test_archive_timeout = (
-            "    timeout-minutes: "
-            "${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}"
-        )
-        test_archive_timeout_lines = [
-            line for line in test_archive if line.startswith("    timeout-minutes:")
-        ]
-        if test_archive_timeout_lines != [expected_test_archive_timeout]:
-            errors.append(
-                "backtester test-archive timeout-minutes must use the trusted ci-policy output"
-            )
-        test_archive_text = "\n".join(test_archive)
-        transient_output_block = named_step_block(
-            test_archive, "Route BVS transient outputs outside checkout"
-        )
-        transient_output_text = (
-            uncommented_text(transient_output_block)
-            if transient_output_block is not None
-            else ""
-        )
-        if (
-            'echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"'
-            not in transient_output_text
-        ):
-            errors.append(
-                "RA-001a tracer test-archive Rust target must remain outside the checkout"
-            )
-        if (
-            'echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/'
-            'bvs-nextest-archive.tar.zst"'
-            not in transient_output_text
-            or 'echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/'
-            'bvs-bin-sidecars.tar.gz"'
-            not in transient_output_text
-        ):
-            errors.append(
-                "RA-001a tracer archive payloads must remain outside the checkout"
-            )
-        if transient_output_block is None or '} >> "$GITHUB_ENV"' not in transient_output_text:
-            errors.append(
-                "RA-001a tracer output routing must export through GITHUB_ENV"
-            )
-        if (
-            "      - name: test\n"
-            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}"
-            not in test_archive_text
-        ):
-            errors.append(
-                "RA-001a tracer-only dispatch must skip the unrelated partition suite"
-            )
-        for step_name in ("Setup BVS MinIO S3 smoke", "test BVS MinIO S3 smoke"):
-            step = named_step_block(test_archive, step_name)
-            step_text = uncommented_text(step) if step is not None else ""
-            if (
-                "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}"
-                not in step_text
-            ):
-                errors.append(
-                    "RA-001a tracer-only dispatch must skip the unrelated MinIO smoke"
-                )
-        stop_minio = named_step_block(test_archive, "Stop BVS MinIO S3 smoke container")
-        stop_minio_text = uncommented_text(stop_minio) if stop_minio is not None else ""
-        if (
-            "if: ${{ always() && needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}"
-            not in stop_minio_text
-        ):
-            errors.append(
-                "RA-001a tracer-only dispatch must skip unrelated MinIO cleanup"
-            )
-        tracer_step_contracts = (
-            (
-                "Configure AWS credentials for RA-001a durable tracer",
-                frozenset({"name", "if", "uses", "with"}),
-                {
-                    "name": "Configure AWS credentials for RA-001a durable tracer",
-                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
-                    "uses": "aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
-                    "with": "",
-                },
-                {
-                    "with": {
-                        "role-to-assume": "${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}",
-                        "aws-region": "${{ vars.AWS_RA001A_TRACER_REGION }}",
-                    }
-                },
-                "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
-            ),
-            (
-                "Resolve RA-001a durable tracer inputs",
-                frozenset({"name", "id", "if", "shell", "env", "run"}),
-                {
-                    "name": "Resolve RA-001a durable tracer inputs",
-                    "id": "ra001a-durable-tracer-inputs",
-                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
-                    "shell": "bash",
-                    "env": "",
-                    "run": "|",
-                },
-                {
-                    "env": {
-                        "WORKER_EXECUTABLE": "${{ steps.crate_target.outputs.dir }}/debug/source_universe_batch_execution",
-                        "RECEIPT_PATH": "${{ runner.temp }}/ra001a-durable-tracer/receipt-set.json",
-                    }
-                },
-                "RA-001a tracer inputs must bind an executable worker and a fresh receipt path",
-            ),
-            (
-                "Run RA-001a registry-complete durable tracer",
-                frozenset({"name", "id", "if", "shell", "env", "run"}),
-                {
-                    "name": "Run RA-001a registry-complete durable tracer",
-                    "id": "ra001a-durable-tracer",
-                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
-                    "shell": "bash",
-                    "env": "",
-                    "run": "|",
-                },
-                {
-                    "env": {
-                        "BOLT_RA001A_SOURCE_REVISION": "${{ github.sha }}",
-                        "BOLT_RA001A_WORKER_SHA256": "${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}",
-                        "BOLT_RA001A_WORKER_BYTES": "${{ steps.ra001a-durable-tracer-inputs.outputs.worker_bytes }}",
-                        "BOLT_RA001A_RECEIPT_PATH": "${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
-                        "BOLT_RA001A_MAX_REGISTRY_PACKS": "${{ needs.ci-policy.outputs.ra001a_max_registry_packs }}",
-                        "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}",
-                        "BOLT_RA001A_MAX_WORKER_EXECUTABLE_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_worker_executable_bytes }}",
-                        "BOLT_RA001A_TRUSTED_POLICY_OUTPUT_SHA256": "${{ needs.ci-policy.outputs.ra001a_trusted_policy_output_sha256 }}",
-                        "BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS": "${{ needs.ci-policy.outputs.ra001a_allowed_ignored_runtime_roots }}",
-                        "BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_ignored_entry_bytes }}",
-                        "BOLT_RA001A_MAX_IGNORED_ENTRIES": "${{ needs.ci-policy.outputs.ra001a_max_ignored_entries }}",
-                        "RA001A_MAX_WALL_SECONDS": "${{ needs.ci-policy.outputs.ra001a_max_wall_seconds }}",
-                        "RA001A_TERMINATION_GRACE_SECONDS": "${{ needs.ci-policy.outputs.ra001a_termination_grace_seconds }}",
-                    }
-                },
-                "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
-            ),
-            (
-                "Upload RA-001a durable tracer receipt",
-                frozenset({"name", "id", "if", "uses", "with"}),
-                {
-                    "name": "Upload RA-001a durable tracer receipt",
-                    "id": "upload-ra001a-durable-tracer-receipt",
-                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}",
-                    "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-                    "with": "",
-                },
-                {
-                    "with": {
-                        "name": "ra001a-durable-tracer-${{ github.run_id }}-${{ github.run_attempt }}",
-                        "path": "${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
-                        "if-no-files-found": "error",
-                        "retention-days": "7",
-                    }
-                },
-                "RA-001a receipt upload must require successful evidence production and fail on absence",
-            ),
-        )
-        for (
-            step_name,
-            allowed_keys,
-            required_scalars,
-            nested_mappings,
-            error_message,
-        ) in tracer_step_contracts:
-            step = named_step_block(test_archive, step_name)
-            if step is None or not block_has_canonical_step_envelope(
-                step,
-                allowed_keys,
-                required_scalars,
-                nested_mappings,
-            ):
-                errors.append(error_message)
-
-        resolve_inputs_step = named_step_block(
-            test_archive, "Resolve RA-001a durable tracer inputs"
-        )
-        resolve_shell_commands = (
-            top_level_shell_commands(block_run_body_lines(resolve_inputs_step))
-            if resolve_inputs_step is not None
-            else []
-        )
-        resolve_commands = (
-            'test -x "$WORKER_EXECUTABLE" || { echo "RA-001a worker sidecar is missing or not executable"; exit 1; }',
-            'mkdir -p "$(dirname "$RECEIPT_PATH")"',
-            'test ! -e "$RECEIPT_PATH" || { echo "RA-001a receipt path already exists"; exit 1; }',
-            'worker_sha256="$(sha256sum "$WORKER_EXECUTABLE" | cut -d \' \' -f 1)"',
-            '[[ "$worker_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "RA-001a worker SHA-256 is invalid"; exit 1; }',
-            'worker_bytes="$(stat -c \'%s\' "$WORKER_EXECUTABLE")"',
-            '[[ "$worker_bytes" =~ ^[1-9][0-9]*$ ]] || { echo "RA-001a worker byte length is invalid"; exit 1; }',
-            'echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"',
-            'echo "worker_bytes=$worker_bytes" >> "$GITHUB_OUTPUT"',
-            'echo "receipt_path=$RECEIPT_PATH" >> "$GITHUB_OUTPUT"',
-        )
-        resolve_positions: list[int] = []
-        for command in resolve_commands:
-            positions = [
-                index
-                for index, line in enumerate(resolve_shell_commands)
-                if line == command
-            ]
-            if len(positions) != 1:
-                resolve_positions = []
-                break
-            resolve_positions.append(positions[0])
-        if (
-            not resolve_positions
-            or resolve_positions
-            != list(
-                range(
-                    resolve_positions[0],
-                    resolve_positions[0] + len(resolve_positions),
-                )
-            )
-        ):
-            errors.append(
-                "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order"
-            )
-
-        tracer_step = named_step_block(
-            test_archive, "Run RA-001a registry-complete durable tracer"
-        )
-        tracer_shell_commands = (
-            top_level_shell_commands(block_run_body_lines(tracer_step))
-            if tracer_step is not None
-            else []
-        )
-        exact_tracer_command = (
-            'timeout --signal=TERM --kill-after="${RA001A_TERMINATION_GRACE_SECONDS}s" '
-            '"${RA001A_MAX_WALL_SECONDS}s" \\ just bte-test-archive-run \\ '
-            '"$BVS_NEXTEST_ARCHIVE_PATH" \\ '
-            '"$RUNNER_TEMP/bvs-nextest-archive-extract-ra001a" \\ '
-            "--run-ignored ignored-only \\ --no-tests=fail \\ "
-            "-E 'binary(=backtesting_vertical_slice_tests) & "
-            "test(=backtesting_vertical_slice_source_universe_durable_tracer::"
-            "registry_complete_ra001a_live_tracer_runs_every_committed_pack)'"
-        )
-        receipt_guard = (
-            'test -s "$BOLT_RA001A_RECEIPT_PATH" || { '
-            'echo "RA-001a receipt is missing or empty"; exit 1; }'
-        )
-        tracer_command_positions = [
-            index
-            for index, line in enumerate(tracer_shell_commands)
-            if line == exact_tracer_command
-        ]
-        receipt_guard_positions = [
-            index
-            for index, line in enumerate(tracer_shell_commands)
-            if line == receipt_guard
-        ]
-        if (
-            len(tracer_command_positions) != 1
-            or len(receipt_guard_positions) != 1
-            or tracer_command_positions[0] + 1 != receipt_guard_positions[0]
-        ):
-            errors.append(
-                "RA-001a tracer must execute its exact selector before exactly one live non-empty receipt guard"
-            )
-
-    issue_789 = jobs.get("issue_789")
-    if issue_789 is not None:
-        expected_issue_789_timeout = (
-            "    timeout-minutes: "
-            "${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}"
-        )
-        issue_789_timeout_lines = [
-            line for line in issue_789 if line.startswith("    timeout-minutes:")
-        ]
-        if issue_789_timeout_lines != [expected_issue_789_timeout]:
-            errors.append(
-                "backtester issue_789 timeout-minutes must use the trusted ci-policy output"
-            )
 
     gate = jobs.get("gate")
     if gate is None:
@@ -9592,35 +9069,44 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             errors.append("backtester iteration policy gate name must come from ci-policy backtester_gate_name output")
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester iteration policy gate must need ci-policy")
-        tracer_verdict_requirements = (
-            "tracer_verdict_args=()",
-            'python3 "$verdict_script" check-backtester-gate --help | grep -q -- '
-            '"--ra001a-durable-tracer-required"',
-            'tracer_verdict_args=(--ra001a-durable-tracer-required '
-            '"${{ needs.ci-policy.outputs.ra001a_durable_tracer_required || \'false\' }}")',
-            "trusted verdict resolver does not support the requested RA-001a tracer",
-            '"${tracer_verdict_args[@]}"',
-        )
-        if any(required not in gate_text for required in tracer_verdict_requirements):
-            errors.append(
-                "RA-001a tracer intent must reach the backtester gate verdict"
-            )
         for required in (
-            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
-            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-            'git check-ref-format "refs/heads/$base_branch"',
-            "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+            "TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}",
+            'git fetch --no-tags origin "+${TRUSTED_REVISION}:${trusted_ref}"',
+            'git archive "$TRUSTED_REVISION" scripts/ ci/github-actions-runners.toml',
             "steps.verdict_base.outputs.script",
-            '          python3 "$verdict_script" check-backtester-gate \\',
+            "steps.verdict_base.outputs.config",
+            'python3 "$verdict_script" check-backtester-gate',
+            '--config "$verdict_config"',
         ):
             if required not in gate_text:
                 errors.append(
                     f"backtester iteration policy gate must use trusted base-tree check-backtester-gate verdict ({required})"
                 )
+        for forbidden in (
+            'if [[ -z "$verdict_script" ]]',
+            'verdict_script="scripts/ci_provenance.py"',
+        ):
+            if forbidden in gate_text:
+                errors.append(
+                    "backtester iteration policy gate must not retain trusted-verdict "
+                    f"fallbacks ({forbidden})"
+                )
+        verdict_binding_lines = [
+            line.strip()
+            for line in gate_text.splitlines()
+            if re.match(r"^(?:readonly\s+)?verdict_(?:script|config)=", line.strip())
+        ]
+        if verdict_binding_lines != [
+            'readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+            'readonly verdict_config="${{ steps.verdict_base.outputs.config }}"',
+        ]:
+            errors.append(
+                "backtester iteration policy gate must bind each trusted verdict capability "
+                "exactly once without fallback"
+            )
         for required in (
             "--policy-path \"${{ needs.ci-policy.outputs.ci_policy_path }}\"",
             "--expected-event-class \"${{ needs.ci-policy.outputs.expected_event_class }}\"",
-            '"${tracer_verdict_args[@]}"',
             "--bvs-changed \"${{ needs.detect.outputs.bvs_changed || 'false' }}\"",
             "--job ci-policy=${{ needs.ci-policy.result }}",
             "--job detect=${{ needs.detect.result }}",
@@ -9646,19 +9132,6 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
 
     group_text = backtester_concurrency_group_text(text)
-    normalized_group_text = _normalize_concurrency_text(group_text)
-    if normalized_group_text.count(BACKTESTER_RA001A_TRACER_GROUP_ARM) != 1:
-        errors.append("RA-001a tracer dispatches must use exact-head source-SHA concurrency")
-    concurrency = concurrency_group_and_cancel(text)
-    if concurrency is None:
-        errors.append("RA-001a tracer dispatches require explicit cancellation governance")
-    else:
-        _, cancel_text = concurrency
-        normalized_cancel = _normalize_concurrency_text(
-            _cancel_in_progress_value(cancel_text)
-        )
-        if normalized_cancel != BACKTESTER_RA001A_SAFE_CANCEL_FORM:
-            errors.append("RA-001a tracer dispatches must not be cancelled")
     if "format('bvs-pr-{0}-iteration', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:
         errors.append("backtester iteration policy concurrency must split iteration PR runs from full proof runs")
     if "format('bvs-pr-{0}-noop', github.event.number)" in group_text or "format('bvs-pr-{0}-deferred', github.event.number)" in group_text:
@@ -10550,12 +10023,15 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
                 "artifact_name_template_config_ref",
                 "artifact_name_template_vars_config_file",
                 "artifact_name_template_vars_config_ref",
+                "artifact_name_workflow_expression",
                 "artifact_class",
                 "retention_days",
                 "retention_days_config_file",
                 "retention_days_config_ref",
+                "retention_days_workflow_expression",
                 "required_if_config_file",
                 "required_if_config_ref",
+                "lookback_required",
             },
             prefix,
         )
@@ -10568,6 +10044,11 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
         artifact_name = artifact_name_resolver(data, config_path, raw_upload, prefix)
         if not isinstance(artifact_name, str):
             raise ValueError(f"{prefix} artifact name source resolved invalid type")
+        raw_name_expression = raw_upload.get("artifact_name_workflow_expression")
+        if raw_name_expression is not None and (
+            not isinstance(raw_name_expression, str) or not raw_name_expression.strip()
+        ):
+            raise ValueError(f"{prefix}.artifact_name_workflow_expression must be a non-empty string")
         artifact_class = require_config_string(raw_upload, "artifact_class", prefix)
         if artifact_class not in classes:
             raise ValueError(f"{prefix}.artifact_class must reference a configured class")
@@ -10580,7 +10061,17 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
         retention = retention_resolver(data, config_path, raw_upload, prefix)
         if not isinstance(retention, ArtifactRetentionResolvedInt):
             raise ValueError(f"{prefix} retention-days source resolved invalid type")
+        raw_retention_expression = raw_upload.get("retention_days_workflow_expression")
+        if raw_retention_expression is not None and (
+            not isinstance(raw_retention_expression, str) or not raw_retention_expression.strip()
+        ):
+            raise ValueError(f"{prefix}.retention_days_workflow_expression must be a non-empty string")
+        if (raw_name_expression is None) != (raw_retention_expression is None):
+            raise ValueError(
+                f"{prefix} workflow expressions must bind both artifact name and retention-days"
+            )
         required_if = artifact_retention_optional_required_if(data, config_path, raw_upload, prefix)
+        lookback_required = require_config_bool(raw_upload, "lookback_required", prefix)
         if artifact_class == DEPLOYABLE_ARTIFACT_CLASS and required_if is None:
             raise ValueError(f"{prefix} deployable uploads must define required_if")
         if upload_key == DEPLOY_ARTIFACT_UPLOAD_KEY:
@@ -10600,11 +10091,14 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
                 raise ValueError(f"{prefix}.required_if_config_ref must be {DEPLOY_ARTIFACT_REQUIRED_IF_REF}")
         uploads[upload_key] = ArtifactRetentionUploadSite(
             artifact_name=artifact_name,
+            artifact_name_workflow_expression=raw_name_expression,
             artifact_class=artifact_class,
             retention_days=retention.value,
+            retention_days_workflow_expression=raw_retention_expression,
             retention_config_file=retention.config_file,
             retention_config_ref=retention.config_ref,
             required_if=required_if,
+            lookback_required=lookback_required,
         )
 
     used_classes = {site.artifact_class for site in uploads.values()}
@@ -10649,7 +10143,7 @@ def validate_artifact_retention_config(data: dict[str, object], config_path: pat
     required_binding_uploads = sorted(
         upload_key
         for upload_key, site in uploads.items()
-        if site.retention_config_file is not None and site.retention_config_ref is not None
+        if site.lookback_required
     )
     declared_binding_uploads = sorted(binding.upload for binding in lookback_bindings.values())
     if declared_binding_uploads != required_binding_uploads:
@@ -10974,7 +10468,6 @@ def load_github_actions_runners_config(
     dispatch_cancel = validate_dispatch_cancel_config(data)
     jules_advisory = validate_jules_advisory_config(data)
     cargo_build_jobs = validate_cargo_build_jobs_config(data)
-    ra001a_durable_tracer = validate_ra001a_durable_tracer_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -11026,7 +10519,6 @@ def load_github_actions_runners_config(
         "dispatch_cancel": dispatch_cancel,
         "jules_advisory": jules_advisory,
         "cargo_build_jobs": cargo_build_jobs,
-        "ra001a_durable_tracer": ra001a_durable_tracer,
     }
 
 
@@ -11101,19 +10593,6 @@ def validate_cargo_build_jobs_config(data: dict[str, object]) -> dict[str, dict[
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"cargo_build_jobs.{workflow_key}.{job} must be a positive integer")
             config[workflow_key][job] = value
-    return config
-
-
-def validate_ra001a_durable_tracer_config(
-    data: dict[str, object],
-) -> BacktesterTestArchiveTimeoutConfig:
-    """Delegate tracer-policy validation to the trusted typed resolver."""
-    try:
-        config = load_backtester_test_archive_timeout_config(data, required=True)
-    except ProvenanceError as exc:
-        raise ValueError(str(exc)) from exc
-    if config is None:  # required=True makes this unreachable; retain fail-closed typing.
-        raise ValueError("backtester RA-001a durable tracer policy is required")
     return config
 
 
@@ -12210,6 +11689,343 @@ def self_authorizing_governance_cli(argv: list[str]) -> int:
     return 0
 
 
+def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[str]:
+    """Require one linear manual RA workflow and no ordinary-CI RA route."""
+
+    path = ".github/workflows/ra001a-durable-tracer.yml"
+    workflow = workflows.get(path)
+    if workflow is None:
+        return [f"{path} is required"]
+
+    errors: list[str] = []
+    ordinary = workflows.get(".github/workflows/backtester-ci.yml", "")
+    for marker in (
+        "ra001a",
+        "RA001A",
+        "RA-001a",
+        "registry_complete_ra001a_live_tracer_runs_every_committed_pack",
+    ):
+        if marker in ordinary:
+            errors.append(
+                f"backtester-ci.yml must not contain the dedicated RA-001a marker {marker!r}"
+            )
+
+    policy_fields = tuple(field.name for field in dataclasses.fields(Ra001aPolicyResult))
+
+    def policy_output(field: str) -> str:
+        return f"${{{{ steps.policy.outputs.{field} }}}}"
+
+    def consumed_policy_output(field: str) -> str:
+        return f"${{{{ needs.policy.outputs.{field} }}}}"
+
+    jobs = parse_jobs(workflow)
+    policy_job = jobs.get("policy")
+    execute_job = jobs.get("execute")
+    if policy_job is None:
+        errors.append(f"{path} must define policy job")
+    else:
+        actual_outputs = immediate_mapping_items(mapping_child_block(policy_job, "outputs"))
+        expected_outputs = {
+            "source_revision": policy_output("source_revision"),
+            "policy_sha256": policy_output("policy_sha256"),
+            **{field: policy_output(field) for field in policy_fields},
+        }
+        if actual_outputs != expected_outputs:
+            errors.append(
+                f"{path} policy outputs must be the exact typed RA-001a policy projection"
+            )
+        actual_policy_step_references = Counter(
+            re.findall(r"steps\.policy\.outputs\.([A-Za-z0-9_]+)", uncommented_text(policy_job))
+        )
+        if actual_policy_step_references != Counter(expected_outputs.keys()):
+            errors.append(
+                f"{path} policy job must reference every typed policy output exactly once"
+            )
+
+    if execute_job is None:
+        errors.append(f"{path} must define execute job")
+    else:
+        execute_items = job_top_level_items(execute_job)
+        expected_timeout = (
+            f"${{{{ fromJSON(needs.policy.outputs.ra001a_max_job_minutes) }}}}"
+        )
+        if execute_items is None or execute_items.get("timeout-minutes") != expected_timeout:
+            errors.append(f"{path} execute timeout must use the sole typed policy output")
+
+        build_step = named_step_block(
+            execute_job, "Build and seal the reviewed RA-001a worker input"
+        )
+        expected_build_env = {
+            "CARGO_PROFILE_TEST_DEBUG": "0",
+            "CARGO_PROFILE_DEV_DEBUG": "0",
+            "GIT_EXECUTABLE": consumed_policy_output("ra001a_git_executable_path"),
+            "MAX_GIT_BYTES": consumed_policy_output("ra001a_max_git_executable_bytes"),
+            "MAX_WORKER_BYTES": consumed_policy_output(
+                "ra001a_max_worker_executable_bytes"
+            ),
+        }
+        if (
+            build_step is None
+            or block_nested_mapping_items(build_step, "env") != expected_build_env
+        ):
+            errors.append(f"{path} worker build env must match the exact RA-001a policy mapping")
+
+        aws_step = named_step_block(execute_job, "Configure RA-001a AWS credentials")
+        expected_aws_inputs = {
+            "role-to-assume": consumed_policy_output("ra001a_aws_role_arn"),
+            "aws-region": consumed_policy_output("ra001a_aws_region"),
+        }
+        if (
+            aws_step is None
+            or block_nested_mapping_items(aws_step, "with") != expected_aws_inputs
+        ):
+            errors.append(f"{path} AWS action inputs must match the exact RA-001a policy mapping")
+
+        tracer_step = named_step_block(
+            execute_job, "Run the sole registry-complete RA-001a tracer"
+        )
+        expected_tracer_env = {
+            "BOLT_RA001A_SOURCE_REVISION": consumed_policy_output("source_revision"),
+            "BOLT_RA001A_GIT_EXECUTABLE": "${{ steps.build.outputs.git_executable }}",
+            "BOLT_RA001A_GIT_SHA256": "${{ steps.build.outputs.git_sha256 }}",
+            "BOLT_RA001A_GIT_BYTES": "${{ steps.build.outputs.git_bytes }}",
+            "BOLT_RA001A_WORKER_SHA256": "${{ steps.build.outputs.worker_sha256 }}",
+            "BOLT_RA001A_WORKER_BYTES": "${{ steps.build.outputs.worker_bytes }}",
+            "BOLT_RA001A_MAX_REGISTRY_PACKS": consumed_policy_output(
+                "ra001a_max_registry_packs"
+            ),
+            "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES": consumed_policy_output(
+                "ra001a_max_total_selected_object_bytes"
+            ),
+            "BOLT_RA001A_MAX_WORKER_EXECUTABLE_BYTES": consumed_policy_output(
+                "ra001a_max_worker_executable_bytes"
+            ),
+            "BOLT_RA001A_MAX_GIT_EXECUTABLE_BYTES": consumed_policy_output(
+                "ra001a_max_git_executable_bytes"
+            ),
+            "BOLT_RA001A_AWS_ROLE_ARN": consumed_policy_output("ra001a_aws_role_arn"),
+            "BOLT_RA001A_AWS_REGION": consumed_policy_output("ra001a_aws_region"),
+            "BOLT_RA001A_MAX_FETCH_TIMEOUT_SECONDS": consumed_policy_output(
+                "ra001a_max_fetch_timeout_seconds"
+            ),
+            "BOLT_RA001A_MAX_WORKER_VIRTUAL_MEMORY_BYTES": consumed_policy_output(
+                "ra001a_max_worker_virtual_memory_bytes"
+            ),
+            "BOLT_RA001A_MIN_WORKER_RESERVED_OVERHEAD_BYTES": consumed_policy_output(
+                "ra001a_min_worker_reserved_overhead_bytes"
+            ),
+            "BOLT_RA001A_MAX_WORKER_TERMINATION_GRACE_SECONDS": consumed_policy_output(
+                "ra001a_max_worker_termination_grace_seconds"
+            ),
+            "BOLT_RA001A_MAX_DECODED_BYTES": consumed_policy_output(
+                "ra001a_max_decoded_bytes"
+            ),
+            "BOLT_RA001A_MAX_SOURCE_ROWS": consumed_policy_output("ra001a_max_source_rows"),
+            "BOLT_RA001A_MAX_PROJECTED_ROW_GROUPS": consumed_policy_output(
+                "ra001a_max_projected_row_groups"
+            ),
+            "BOLT_RA001A_MAX_OPERATOR_WALL_SECONDS": consumed_policy_output(
+                "ra001a_max_operator_wall_seconds"
+            ),
+            "BOLT_RA001A_MAX_TERMINAL_COMMIT_TIMEOUT_SECONDS": consumed_policy_output(
+                "ra001a_max_terminal_commit_timeout_seconds"
+            ),
+            "BOLT_RA001A_MAX_LAUNCH_ARTIFACT_BYTES": consumed_policy_output(
+                "ra001a_max_launch_artifact_bytes"
+            ),
+            "BOLT_RA001A_MAX_CONTROL_ARTIFACT_BYTES": consumed_policy_output(
+                "ra001a_max_control_artifact_bytes"
+            ),
+            "BOLT_RA001A_MAX_RETAINED_CONTROL_INPUT_BYTES": consumed_policy_output(
+                "ra001a_max_retained_control_input_bytes"
+            ),
+            "BOLT_RA001A_MAX_FINAL_OBJECT_BYTES": consumed_policy_output(
+                "ra001a_max_final_object_bytes"
+            ),
+            "BOLT_RA001A_MAX_WORKSPACE_BYTES": consumed_policy_output(
+                "ra001a_max_workspace_bytes"
+            ),
+            "BOLT_RA001A_MAX_CACHE_BYTES": consumed_policy_output("ra001a_max_cache_bytes"),
+            "BOLT_RA001A_MIN_FREE_SPACE_RESERVE_BYTES": consumed_policy_output(
+                "ra001a_min_free_space_reserve_bytes"
+            ),
+            "BOLT_RA001A_MIN_ONE_RECORD_WORST_CASE_BYTES": consumed_policy_output(
+                "ra001a_min_one_record_worst_case_bytes"
+            ),
+            "BOLT_RA001A_CACHE_RETENTION_AGE_SECONDS": consumed_policy_output(
+                "ra001a_cache_retention_age_seconds"
+            ),
+            "BOLT_RA001A_CANDIDATE_RETENTION_AGE_SECONDS": consumed_policy_output(
+                "ra001a_candidate_retention_age_seconds"
+            ),
+            "BOLT_RA001A_MAX_LIFECYCLE_CLEANUP_ENTRIES": consumed_policy_output(
+                "ra001a_max_lifecycle_cleanup_entries"
+            ),
+            "BOLT_RA001A_MAX_LIFECYCLE_CLEANUP_DEPTH": consumed_policy_output(
+                "ra001a_max_lifecycle_cleanup_depth"
+            ),
+            "BOLT_RA001A_TRUSTED_POLICY_OUTPUT_SHA256": consumed_policy_output(
+                "policy_sha256"
+            ),
+            "BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS": consumed_policy_output(
+                "ra001a_allowed_ignored_runtime_roots"
+            ),
+            "BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES": consumed_policy_output(
+                "ra001a_max_ignored_entry_bytes"
+            ),
+            "BOLT_RA001A_MAX_IGNORED_ENTRIES": consumed_policy_output(
+                "ra001a_max_ignored_entries"
+            ),
+            "RA001A_MAX_WALL_SECONDS": consumed_policy_output("ra001a_max_wall_seconds"),
+            "RA001A_TERMINATION_GRACE_SECONDS": consumed_policy_output(
+                "ra001a_termination_grace_seconds"
+            ),
+        }
+        if (
+            tracer_step is None
+            or block_nested_mapping_items(tracer_step, "env") != expected_tracer_env
+        ):
+            errors.append(f"{path} tracer env must match the exact RA-001a policy mapping")
+
+        upload_step = named_step_block(execute_job, "Upload RA-001a durable tracer receipt")
+        expected_upload_inputs = {
+            "name": consumed_policy_output("ra001a_receipt_artifact_name"),
+            "path": "${{ steps.tracer.outputs.receipt_path }}",
+            "if-no-files-found": "error",
+            "retention-days": consumed_policy_output("ra001a_receipt_retention_days"),
+        }
+        if (
+            upload_step is None
+            or block_nested_mapping_items(upload_step, "with") != expected_upload_inputs
+        ):
+            errors.append(f"{path} receipt upload must match the exact RA-001a policy mapping")
+
+        checkout_steps = [
+            block
+            for block in step_blocks(execute_job)
+            if "uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+            in uncommented_text(block)
+        ]
+        expected_checkout_inputs = {
+            "ref": consumed_policy_output("source_revision"),
+            "fetch-depth": "1",
+            "persist-credentials": "false",
+        }
+        if (
+            len(checkout_steps) != 1
+            or block_nested_mapping_items(checkout_steps[0], "with")
+            != expected_checkout_inputs
+        ):
+            errors.append(f"{path} execute checkout must use the sole exact source revision")
+
+        expected_consumed_values = [
+            expected_timeout,
+            *expected_build_env.values(),
+            *expected_aws_inputs.values(),
+            *expected_tracer_env.values(),
+            *expected_upload_inputs.values(),
+            *expected_checkout_inputs.values(),
+        ]
+        expected_policy_references = Counter(
+            reference
+            for value in expected_consumed_values
+            for reference in re.findall(r"needs\.policy\.outputs\.([A-Za-z0-9_]+)", value)
+        )
+        classified_policy_fields = {
+            field for field in expected_policy_references if field.startswith("ra001a_")
+        }
+        if classified_policy_fields != set(policy_fields):
+            errors.append(
+                f"{path} verifier must classify every typed RA-001a policy field exactly once"
+            )
+        actual_policy_references = Counter(
+            re.findall(
+                r"needs\.policy\.outputs\.([A-Za-z0-9_]+)",
+                uncommented_text(execute_job),
+            )
+        )
+        if actual_policy_references != expected_policy_references:
+            errors.append(
+                f"{path} execute job must consume only the exact governed policy mapping"
+            )
+
+    required_fragments = (
+        "  workflow_dispatch:\n",
+        "  group: ra001a-durable-tracer\n",
+        "  cancel-in-progress: false\n",
+        "  policy:\n",
+        "  execute:\n",
+        "python3 scripts/ci_provenance.py ra001a-policy",
+        "--repository-default-branch \"$DEFAULT_BRANCH\"",
+        "timeout-minutes: ${{ fromJSON(needs.policy.outputs.ra001a_max_job_minutes) }}",
+        "just bte-test-archive \"$BVS_NEXTEST_ARCHIVE_PATH\"",
+        "--bin source_universe_batch_execution",
+        "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
+        "just bte-test-archive-run",
+        "registry_complete_ra001a_live_tracer_runs_every_committed_pack",
+        "test ! -L \"$BOLT_RA001A_RECEIPT_PATH\"",
+        "id: upload-ra001a-durable-tracer-receipt",
+        "if-no-files-found: error",
+    )
+    for fragment in required_fragments:
+        if fragment not in workflow:
+            errors.append(f"{path} is missing required linear-path fragment {fragment!r}")
+
+    exact_once = (
+        "python3 scripts/ci_provenance.py ra001a-policy",
+        "just bte-test-archive \"$BVS_NEXTEST_ARCHIVE_PATH\"",
+        "just bte-test-archive-run",
+        "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
+        "id: upload-ra001a-durable-tracer-receipt",
+    )
+    for fragment in exact_once:
+        count = workflow.count(fragment)
+        if count != 1:
+            errors.append(f"{path} must contain {fragment!r} exactly once; found {count}")
+
+    forbidden_fragments = (
+        "    inputs:\n",
+        "ci_policy_path",
+        "continue-on-error:",
+        "actions/cache/",
+        "actions/download-artifact",
+        "Swatinem/rust-cache",
+        "sccache-setup",
+        "cache-hit",
+        "restore-keys:",
+        "if: ${{",
+        "|| true",
+        "--help",
+    )
+    for fragment in forbidden_fragments:
+        if fragment in workflow:
+            errors.append(f"{path} contains forbidden alternate-path fragment {fragment!r}")
+
+    ordered_fragments = (
+        "python3 scripts/ci_provenance.py ra001a-policy",
+        "just bte-test-archive \"$BVS_NEXTEST_ARCHIVE_PATH\"",
+        "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
+        "just bte-test-archive-run",
+        "id: upload-ra001a-durable-tracer-receipt",
+    )
+    positions = [workflow.find(fragment) for fragment in ordered_fragments]
+    if all(position >= 0 for position in positions) and positions != sorted(positions):
+        errors.append(
+            f"{path} must remain policy -> build -> AWS -> tracer -> receipt-upload"
+        )
+
+    exclusive_markers = (
+        "ra001a_aws_role_arn",
+        "registry_complete_ra001a_live_tracer_runs_every_committed_pack",
+        "upload-ra001a-durable-tracer-receipt",
+    )
+    for marker in exclusive_markers:
+        owners = sorted(name for name, text in workflows.items() if marker in text)
+        if owners != [path]:
+            errors.append(f"RA-001a marker {marker!r} must be owned only by {path}; found {owners}")
+    return errors
+
+
 def main() -> int:
     workflow_texts = repo_workflow_texts()
     action_text = DEFAULT_SETUP_ACTION.read_text()
@@ -12237,6 +12053,7 @@ def main() -> int:
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
     errors.extend(verify_artifact_retention_policy(workflow_texts, composite_action_texts))
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
+    errors.extend(verify_ra001a_durable_tracer_workflow(workflow_texts))
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
     errors.extend(
         verify_debug_test_workflow(

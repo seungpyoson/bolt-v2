@@ -40,20 +40,12 @@ def _normalize_concurrency_text(text: str) -> str:
 SAFE_CANCEL_EVENT_RE = re.compile(
     r"github\.event_name\s*==\s*(['\"])(pull_request|workflow_dispatch)\1"
 )
-BACKTESTER_RA001A_SAFE_CANCEL_FORM = (
-    "${{ github.event_name == 'pull_request' "
-    "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
-    "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "|| (github.event_name == 'workflow_dispatch' "
-    "&& inputs.ra001a_durable_tracer != true) }}"
-)
 KNOWN_SAFE_CANCEL_FORMS = frozenset(
     {
         "${{ github.event_name == 'pull_request' "
         "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
         "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
         "|| github.event_name == 'workflow_dispatch' }}",
-        BACKTESTER_RA001A_SAFE_CANCEL_FORM,
         "${{ github.event_name == 'pull_request' "
         "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
         "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",

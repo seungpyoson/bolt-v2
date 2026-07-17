@@ -12,7 +12,12 @@ use backtesting_vertical_slice::reference_fixture_index::{
     repo_root_from_manifest_dir,
 };
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-use backtesting_vertical_slice::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
+use backtesting_vertical_slice::source_universe_batch_launch::{
+    discover_committed_source_universe_execution_packs,
+    inspect_worktree_source_universe_execution_pack_scope_names,
+};
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+use backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchBootstrapLimits;
 use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
 use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_execution_acceptance::{
@@ -22,6 +27,15 @@ use backtesting_vertical_slice::source_universe_execution_acceptance::{
     write_source_universe_execution_acceptance_ledger_from_spec_file,
 };
 use backtesting_vertical_slice::source_universe_operator_inputs::SOURCE_UNIVERSE_OPERATOR_INPUTS_SCHEMA_VERSION;
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn test_registry_bootstrap_limits() -> SourceUniverseBatchBootstrapLimits {
+    SourceUniverseBatchBootstrapLimits {
+        max_launch_artifact_bytes: 65_536,
+        max_control_artifact_bytes: 65_536,
+        max_retained_control_input_bytes: 262_144,
+    }
+}
 
 fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
     let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
@@ -477,7 +491,13 @@ fn committed_execution_pack_registry_and_acceptance_ledger_are_an_exact_set() {
     let repo_root = repo_root_from_manifest_dir()
         .canonicalize()
         .expect("repository root canonicalizes");
-    let registry_summary_paths = discover_committed_source_universe_execution_packs(&repo_root)
+    let scope_names = inspect_worktree_source_universe_execution_pack_scope_names(&repo_root, 64)
+        .expect("inspect committed execution-pack registry");
+    let registry_summary_paths = discover_committed_source_universe_execution_packs(
+        &repo_root,
+        &scope_names,
+        test_registry_bootstrap_limits(),
+    )
         .expect("discover committed execution-pack registry")
         .into_iter()
         .map(|pack| pack.summary_path)

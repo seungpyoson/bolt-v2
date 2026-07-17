@@ -45,7 +45,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     artifact_store::{CatalogCompression, CatalogEncodingConfig},
-    atomic_artifact_write::atomic_file_create_or_verify_guarded,
+    atomic_artifact_write::atomic_file_create_strict_guarded,
     operator_work_budget::{
         CooperativeDeadlineReader, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
         guarded_operation_outcome,
@@ -3305,7 +3305,7 @@ pub(crate) fn write_canonical_parquet_guarded<R>(
         &row_materialized_bytes,
     )?;
 
-    atomic_file_create_or_verify_guarded(
+    atomic_file_create_strict_guarded(
         path,
         work_budget,
         OperatorWorkBudgetStage::CanonicalWrite,
@@ -3621,7 +3621,7 @@ impl CanonicalTradesTable {
     }
 
     /// Read a completed canonical artifact through the same cooperative guard
-    /// that owns reuse, projection, and replay.
+    /// that owns validation, projection, and replay.
     pub(crate) fn read_parquet_guarded(
         path: &Path,
         accepted: &AcceptedDataset,
@@ -5234,7 +5234,7 @@ seller_side_values = ["Sell"]
         let guard = expiring_guard(8);
 
         let error = CanonicalTradesTable::read_parquet_guarded(&path, &accepted, &guard)
-            .expect_err("completed-output reuse must remain deadline guarded");
+            .expect_err("completed Parquet reads must remain deadline guarded");
 
         assert!(error.to_string().contains("max_wall_seconds"), "{error:#}");
     }

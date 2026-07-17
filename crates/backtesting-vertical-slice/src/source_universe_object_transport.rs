@@ -38,23 +38,24 @@ struct StagedS3ReadPlan {
 /// the configured canonical S3 artifact store.
 pub struct StagedS3SourceUniverseObjectFetcher {
     runtime: tokio::runtime::Runtime,
-    fetch_timeout: Option<Duration>,
+    fetch_timeout: Duration,
 }
 
 impl StagedS3SourceUniverseObjectFetcher {
-    /// Construct one staged-S3 reader. A configured timeout must be positive
-    /// and bounds SSM preparation plus the complete S3 read.
-    pub fn new(fetch_timeout_seconds: Option<u64>) -> Result<Self> {
-        if let Some(seconds) = fetch_timeout_seconds {
-            ensure!(seconds > 0, "fetch_timeout_seconds must be positive");
-        }
+    /// Construct one staged-S3 reader. The mandatory positive timeout bounds
+    /// SSM preparation plus the complete S3 read.
+    pub fn new(fetch_timeout_seconds: u64) -> Result<Self> {
+        ensure!(
+            fetch_timeout_seconds > 0,
+            "fetch_timeout_seconds must be positive"
+        );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("create staged-S3 fetch runtime")?;
         Ok(Self {
             runtime,
-            fetch_timeout: fetch_timeout_seconds.map(Duration::from_secs),
+            fetch_timeout: Duration::from_secs(fetch_timeout_seconds),
         })
     }
 }
@@ -64,22 +65,21 @@ impl SourceUniverseObjectFetcher for StagedS3SourceUniverseObjectFetcher {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         run_spec: &RunSpec,
+        _attempt_identity: &str,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<VerifiedSourceObject> {
         let plan = staged_s3_read_plan(record, run_spec)?;
         let operation = fetch_staged_s3_exact_current_version(record, plan, work_budget);
-        let result = match self.fetch_timeout {
-            Some(timeout) => self.runtime.block_on(async {
-                tokio::time::timeout(timeout, operation)
-                    .await
-                    .map_err(|_| {
-                        anyhow::anyhow!(
-                            "fetch_timeout_seconds exhausted after {timeout:?} while reading staged S3 source"
-                        )
-                    })?
-            }),
-            None => self.runtime.block_on(operation),
-        };
+        let timeout = self.fetch_timeout;
+        let result = self.runtime.block_on(async {
+            tokio::time::timeout(timeout, operation)
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "fetch_timeout_seconds exhausted after {timeout:?} while reading staged S3 source"
+                    )
+                })?
+        });
         work_budget.check_deadline(OperatorWorkBudgetStage::Fetch)?;
         let bytes = result?;
         VerifiedSourceObject::verify(record, bytes, work_budget)
@@ -267,11 +267,39 @@ mod tests {
 
     use super::{read_staged_s3_exact_current_version, staged_s3_read_plan};
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    use crate::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
+    use crate::source_universe_batch_launch::{
+        discover_committed_source_universe_execution_packs,
+        inspect_worktree_source_universe_execution_pack_scope_names,
+    };
     use crate::{
         operator::RunSpec, operator_work_budget::OperatorWorkBudgetGuard,
+        source_universe_batch_execution::SourceUniverseBatchBootstrapLimits,
         source_universe_execution_pack::SourceUniverseExecutionPack,
     };
+
+    fn test_bootstrap_limits() -> SourceUniverseBatchBootstrapLimits {
+        SourceUniverseBatchBootstrapLimits {
+            max_launch_artifact_bytes: 65_536,
+            max_control_artifact_bytes: 65_536,
+            max_retained_control_input_bytes: 262_144,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    fn discover_test_packs(
+        repository_root: &std::path::Path,
+    ) -> anyhow::Result<Vec<crate::source_universe_batch_launch::CommittedSourceUniverseExecutionPack>>
+    {
+        let scope_names = inspect_worktree_source_universe_execution_pack_scope_names(
+            repository_root,
+            64,
+        )?;
+        discover_committed_source_universe_execution_packs(
+            repository_root,
+            &scope_names,
+            test_bootstrap_limits(),
+        )
+    }
 
     #[derive(Debug)]
     struct ExactVersionReadStore {
@@ -546,8 +574,8 @@ mod tests {
     #[test]
     fn committed_tracers_plan_only_their_staged_s3_object() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let committed_packs = discover_committed_source_universe_execution_packs(&repository_root)
-            .expect("discover committed execution packs");
+        let committed_packs =
+            discover_test_packs(&repository_root).expect("discover committed execution packs");
         for committed_pack in committed_packs {
             let pack: SourceUniverseExecutionPack = serde_json::from_slice(
                 &fs::read(&committed_pack.summary_path).unwrap_or_else(|error| {

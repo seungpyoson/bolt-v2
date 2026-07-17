@@ -1683,7 +1683,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
+                        .expect("capital admission rejection reason must be set when outcome is RejectedCapitalAdmission"),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
@@ -1926,7 +1926,7 @@ impl BoltV3SubmitAdmissionState {
         let snapshot = inner.loss_snapshot.as_ref();
         let stale_reason = match snapshot {
             Some(snapshot) => loss_snapshot_stale_reason(loss_policy, snapshot, now_ns)
-                .unwrap_or(BoltV3StaleLossReason::MissingSnapshot),
+                .expect("loss_snapshot_stale_reason must return a reason when stale"),
             None => BoltV3StaleLossReason::MissingSnapshot,
         };
         let source_for_key = snapshot
@@ -2031,7 +2031,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
+                        .expect("capital admission rejection reason must be set when outcome is RejectedCapitalAdmission"),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {

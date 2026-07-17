@@ -79,7 +79,13 @@ def clean_files(root: Path) -> None:
         "Cargo.toml",
         "[dependencies]\n"
         f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
-        f'nautilus-network = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+        f'nautilus-network = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n\n'
+        "[[test]]\n"
+        'name = "binance_sbe_schema_v5_decode"\n'
+        'path = "tests/binance_sbe_schema_v5_decode.rs"\n\n'
+        "[[test]]\n"
+        'name = "binance_sbe_quote_timestamps"\n'
+        'path = "tests/binance_sbe_quote_timestamps.rs"\n'
     )
     write(
         root,
@@ -162,7 +168,17 @@ def clean_files(root: Path) -> None:
         f'revision = "{EXPECTED_NT_REV}"\n\n'
         "[binance_spot]\n"
         "sbe_schema_3_5 = true\n"
-        "adapter_receive_timestamps = true\n",
+        "adapter_receive_timestamps = true\n\n"
+        "[[evidence]]\n"
+        'capability = "binance_spot.sbe_schema_3_5"\n'
+        'cargo_test_target = "binance_sbe_schema_v5_decode"\n'
+        'path = "tests/binance_sbe_schema_v5_decode.rs"\n'
+        'sha256 = "dc350f971d8c2eb3eeecfa962c72d65c7f2427e07e8c5028ae95bd38adc3603b"\n\n'
+        "[[evidence]]\n"
+        'capability = "binance_spot.adapter_receive_timestamps"\n'
+        'cargo_test_target = "binance_sbe_quote_timestamps"\n'
+        'path = "tests/binance_sbe_quote_timestamps.rs"\n'
+        'sha256 = "1cce271229a01b4d391c5dc6c6c5e324957bcc2e4c57b7359bf3a0d4ff4e39b3"\n',
     )
     write(
         root,
@@ -178,6 +194,20 @@ def clean_files(root: Path) -> None:
         "src/nautilus_source_capabilities.rs",
         "pub struct NautilusSourceCapabilityRegistry;\n"
         'include!(concat!(env!("OUT_DIR"), "/nautilus_source_capabilities.rs"));\n',
+    )
+    write(
+        root,
+        "tests/binance_sbe_schema_v5_decode.rs",
+        (REPO_ROOT / "tests/binance_sbe_schema_v5_decode.rs").read_text(
+            encoding="utf-8"
+        ),
+    )
+    write(
+        root,
+        "tests/binance_sbe_quote_timestamps.rs",
+        (REPO_ROOT / "tests/binance_sbe_quote_timestamps.rs").read_text(
+            encoding="utf-8"
+        ),
     )
     write(
         root,
@@ -494,8 +524,9 @@ def test_capability_manifest_rejects_false_selected_source_facts() -> None:
 
         assert_finding(
             scan_temp(mutate),
-            f"ci/nautilus-source-capabilities.toml: NautilusTrader pin census "
-            f"selected official pin must record binance_spot.{capability} = true",
+            "ci/nautilus-source-capabilities.toml: NautilusTrader pin census "
+            "selected official pin must record every declared capability as true; "
+            f"false or invalid: binance_spot.{capability}",
         )
 
 
@@ -503,7 +534,10 @@ def test_capability_manifest_rejects_unregistered_facts() -> None:
     def mutate(root: Path) -> None:
         path = root / "ci/nautilus-source-capabilities.toml"
         path.write_text(
-            path.read_text(encoding="utf-8") + "fallback_provider = true\n",
+            path.read_text(encoding="utf-8").replace(
+                "adapter_receive_timestamps = true\n",
+                "adapter_receive_timestamps = true\nfallback_provider = true\n",
+            ),
             encoding="utf-8",
         )
 
@@ -511,6 +545,88 @@ def test_capability_manifest_rejects_unregistered_facts() -> None:
         scan_temp(mutate),
         "ci/nautilus-source-capabilities.toml: NautilusTrader pin census "
         "binance_spot must contain exactly",
+    )
+
+
+def test_capability_manifest_rejects_unregistered_root_facts() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "ci/nautilus-source-capabilities.toml"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "\n[binance_spot]", "\nfallback_provider = true\n\n[binance_spot]"
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "ci/nautilus-source-capabilities.toml: NautilusTrader pin census "
+        "capability manifest root must contain exactly",
+    )
+
+
+def test_capability_manifest_rejects_missing_root_revision() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "ci/nautilus-source-capabilities.toml"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.split("\n", 1)[1], encoding="utf-8")
+
+    assert_finding(
+        scan_temp(mutate),
+        "ci/nautilus-source-capabilities.toml: NautilusTrader pin census "
+        "capability manifest root must contain exactly",
+    )
+
+
+def test_source_evidence_requires_registered_cargo_target() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "Cargo.toml"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                'name = "binance_sbe_quote_timestamps"',
+                'name = "renamed_timestamp_proof"',
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "NautilusTrader source evidence evidence[1] must bind exactly one Cargo test target",
+    )
+
+
+def test_source_evidence_rejects_artifact_symbol_mutation() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "tests/binance_sbe_quote_timestamps.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps(",
+                "fn renamed_bbo_timestamp_proof(",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "NautilusTrader source evidence evidence[1] artifact SHA-256 must be",
+    )
+
+
+def test_source_evidence_rejects_assertion_erosion() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "tests/binance_sbe_quote_timestamps.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "    ::core::assert_ne!(expected_ts_event, adapter_ts_init);\n",
+                "",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "NautilusTrader source evidence evidence[1] artifact SHA-256 must be",
     )
 
 
@@ -660,6 +776,14 @@ nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git
 [target.'cfg(unix)'.dependencies.nautilus-network]
 git = "https://github.com/nautechsystems/nautilus_trader.git"
 rev = "{EXPECTED_NT_REV}"
+
+[[test]]
+name = "binance_sbe_schema_v5_decode"
+path = "tests/binance_sbe_schema_v5_decode.rs"
+
+[[test]]
+name = "binance_sbe_quote_timestamps"
+path = "tests/binance_sbe_quote_timestamps.rs"
 '''
 
     def mutate(root: Path) -> None:

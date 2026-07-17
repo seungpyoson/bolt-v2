@@ -1,7 +1,6 @@
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
-    rc::Rc,
     str::FromStr,
 };
 
@@ -18,7 +17,6 @@ use nautilus_model::{
     orders::Order,
     types::{Currency, Price, Quantity},
 };
-use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, StrategyNative};
 use rust_decimal::{
     Decimal,
@@ -123,7 +121,7 @@ use crate::{
     bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
-    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
+    strategies::registry::{StrategyBuilder, ValidationError},
 };
 
 #[cfg(test)]
@@ -7989,13 +7987,11 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
     }
 });
 
-impl crate::strategies::registry::FillVoidGuardedStrategyBuilder for BinaryOracleEdgeTakerBuilder {
-    type Strategy = BinaryOracleEdgeTaker;
-}
-
 pub const KEY: &str = stringify!(binary_oracle_edge_taker);
 
 impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
+    type Strategy = BinaryOracleEdgeTaker;
+
     fn kind() -> &'static str {
         KEY
     }
@@ -8014,19 +8010,8 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
         Self::validate_table(table, field_prefix, errors);
     }
 
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(Self::build_strategy(raw, context)?))
-    }
-
-    fn register(
-        raw: &Value,
-        context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId> {
-        let strategy = BinaryOracleEdgeTaker::new(Self::parse_config(raw)?, context.clone());
-        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-        trader.borrow_mut().add_strategy(strategy)?;
-        Ok(strategy_id)
+    fn build_typed(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy> {
+        Self::build_strategy(raw, context)
     }
 }
 

@@ -1,10 +1,13 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use anyhow::{Context, Result};
-use nautilus_common::{actor::DataActor, component::Component};
+use nautilus_common::{
+    actor::{DataActor, DataActorNative},
+    component::Component,
+};
 use nautilus_model::identifiers::StrategyId;
 use nautilus_system::trader::Trader;
-use nautilus_trading::Strategy;
+use nautilus_trading::{Strategy, StrategyNative};
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
@@ -41,18 +44,31 @@ impl<T> RuntimeStrategy for T where T: Strategy + DataActor + Component + std::f
 pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 
 pub trait StrategyBuilder: Send + Sync + 'static {
+    type Strategy: Strategy
+        + StrategyNative
+        + DataActor
+        + DataActorNative
+        + Component
+        + std::fmt::Debug;
+
     fn kind() -> &'static str;
     fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>);
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy>;
+    fn build_typed(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy>;
+
+    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+        Ok(Box::new(Self::build_typed(raw, context)?))
+    }
+
     fn register(
         raw: &Value,
         context: &StrategyBuildContext,
         trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId>;
-}
-
-pub(crate) trait FillVoidGuardedStrategyBuilder: StrategyBuilder {
-    type Strategy: super::FillVoidPolicyGuard;
+    ) -> Result<StrategyId> {
+        let strategy = Self::build_typed(raw, context)?;
+        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
+        trader.borrow_mut().add_strategy(strategy)?;
+        Ok(strategy_id)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,7 +142,10 @@ impl StrategyRegistry {
         Ok(())
     }
 
-    pub(crate) fn register_guarded<B: FillVoidGuardedStrategyBuilder>(&mut self) -> Result<()> {
+    pub(crate) fn register_guarded<B: StrategyBuilder>(&mut self) -> Result<()>
+    where
+        B::Strategy: super::FillVoidPolicyGuard,
+    {
         self.register::<B>()
     }
 
@@ -342,6 +361,8 @@ mod tests {
     struct AlphaBuilder;
 
     impl StrategyBuilder for AlphaBuilder {
+        type Strategy = TestStrategy;
+
         fn kind() -> &'static str {
             "alpha_runtime"
         }
@@ -356,48 +377,27 @@ mod tests {
             }
         }
 
-        fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+        fn build_typed(raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
             let strategy_id = raw
                 .get("strategy_id")
                 .and_then(Value::as_str)
                 .context("alpha builder requires strategy_id")?;
-            Ok(Box::new(TestStrategy::new(strategy_id)))
-        }
-
-        fn register(
-            raw: &Value,
-            _context: &StrategyBuildContext,
-            trader: &Rc<RefCell<Trader>>,
-        ) -> Result<StrategyId> {
-            let strategy_id = raw
-                .get("strategy_id")
-                .and_then(Value::as_str)
-                .context("alpha builder requires strategy_id")?;
-            let strategy = TestStrategy::new(strategy_id);
-            let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-            trader.borrow_mut().add_strategy(strategy)?;
-            Ok(strategy_id)
+            Ok(TestStrategy::new(strategy_id))
         }
     }
 
     struct BetaBuilder;
 
     impl StrategyBuilder for BetaBuilder {
+        type Strategy = TestStrategy;
+
         fn kind() -> &'static str {
             "beta_runtime"
         }
 
         fn validate_config(_raw: &Value, _field_prefix: &str, _errors: &mut Vec<ValidationError>) {}
 
-        fn build(_raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-            Err(anyhow!("beta builder is test-only"))
-        }
-
-        fn register(
-            _raw: &Value,
-            _context: &StrategyBuildContext,
-            _trader: &Rc<RefCell<Trader>>,
-        ) -> Result<StrategyId> {
+        fn build_typed(_raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
             Err(anyhow!("beta builder is test-only"))
         }
     }

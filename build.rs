@@ -52,6 +52,14 @@ struct NautilusSourceCapabilities {
     revision: String,
     binance_spot_sbe_schema_3_5: bool,
     binance_adapter_receive_timestamps: bool,
+    evidence: Vec<NautilusSourceCapabilityEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NautilusSourceCapabilityEvidence {
+    capability: String,
+    cargo_test_target: String,
+    path: String,
 }
 
 /// Generate immutable Nautilus source-capability facts from the governed CI
@@ -73,6 +81,9 @@ fn emit_nautilus_source_capabilities(manifest_dir: &Path) {
     });
     let capabilities = parse_nautilus_source_capabilities(&capability_text, &capability_path);
     validate_nautilus_manifest_binding(&capabilities, &cargo_path);
+    for evidence in &capabilities.evidence {
+        println!("cargo:rerun-if-changed={}", evidence.path);
+    }
     assert!(
         capabilities.binance_spot_sbe_schema_3_5,
         "{}: the direct Binance runtime path requires official schema 3:5 support; a false fact requires an explicit affected-new-risk admission blocker",
@@ -96,7 +107,12 @@ fn emit_nautilus_source_capabilities(manifest_dir: &Path) {
 fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSourceCapabilities {
     let document = toml::from_str::<toml::Table>(text)
         .unwrap_or_else(|error| panic!("parsing {} should succeed: {error}", path.display()));
-    assert_exact_keys(&document, &["revision", "binance_spot"], path, "root");
+    assert_exact_keys(
+        &document,
+        &["revision", "binance_spot", "evidence"],
+        path,
+        "root",
+    );
 
     let revision = required_toml_string(&document, "revision", path, "root");
     assert!(
@@ -114,6 +130,62 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
         path,
         "binance_spot",
     );
+    let evidence = document
+        .get("evidence")
+        .and_then(toml::Value::as_array)
+        .unwrap_or_else(|| panic!("{}: evidence must be an array of tables", path.display()))
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let owner = format!("evidence[{index}]");
+            let table = value
+                .as_table()
+                .unwrap_or_else(|| panic!("{}: {owner} must be a TOML table", path.display()));
+            assert_exact_keys(
+                table,
+                &["capability", "cargo_test_target", "path", "sha256"],
+                path,
+                &owner,
+            );
+            let artifact_path = required_toml_string(table, "path", path, &owner);
+            assert!(
+                is_safe_repo_relative_path(&artifact_path),
+                "{}: {owner}.path must be a safe repository-relative path",
+                path.display()
+            );
+            let sha256 = required_toml_string(table, "sha256", path, &owner);
+            assert!(
+                is_lower_hex_sha256(&sha256),
+                "{}: {owner}.sha256 must be lowercase 64-character hex",
+                path.display()
+            );
+            NautilusSourceCapabilityEvidence {
+                capability: required_toml_string(table, "capability", path, &owner),
+                cargo_test_target: required_toml_string(table, "cargo_test_target", path, &owner),
+                path: artifact_path,
+            }
+        })
+        .collect::<Vec<_>>();
+    let expected_evidence_capabilities = binance_spot
+        .keys()
+        .map(|key| format!("binance_spot.{key}"))
+        .collect::<BTreeSet<_>>();
+    let actual_evidence_capabilities = evidence
+        .iter()
+        .map(|entry| entry.capability.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        evidence.len(),
+        actual_evidence_capabilities.len(),
+        "{}: evidence capability keys must be unique",
+        path.display()
+    );
+    assert_eq!(
+        actual_evidence_capabilities,
+        expected_evidence_capabilities,
+        "{}: evidence must bind every declared source capability exactly once",
+        path.display()
+    );
 
     NautilusSourceCapabilities {
         revision,
@@ -129,6 +201,7 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
             path,
             "binance_spot",
         ),
+        evidence,
     }
 }
 
@@ -174,6 +247,42 @@ fn validate_nautilus_manifest_binding(
         NAUTILUS_SOURCE_CAPABILITIES_MANIFEST,
         cargo_path.display()
     );
+    let test_targets = cargo
+        .get("test")
+        .and_then(toml::Value::as_array)
+        .unwrap_or_else(|| panic!("{}: test targets must be an array", cargo_path.display()));
+    for evidence in &capabilities.evidence {
+        let registrations = test_targets
+            .iter()
+            .filter_map(toml::Value::as_table)
+            .filter(|target| {
+                target.get("name").and_then(toml::Value::as_str)
+                    == Some(evidence.cargo_test_target.as_str())
+                    && target.get("path").and_then(toml::Value::as_str)
+                        == Some(evidence.path.as_str())
+            })
+            .count();
+        assert_eq!(
+            registrations,
+            1,
+            "{}: capability {} evidence must bind exactly one Cargo test target {} at {}",
+            cargo_path.display(),
+            evidence.capability,
+            evidence.cargo_test_target,
+            evidence.path
+        );
+        assert!(
+            cargo_path
+                .parent()
+                .expect("Cargo.toml must have a parent")
+                .join(&evidence.path)
+                .is_file(),
+            "{}: capability {} evidence artifact {} must exist",
+            cargo_path.display(),
+            evidence.capability,
+            evidence.path
+        );
+    }
 }
 
 fn assert_exact_keys(table: &toml::Table, expected: &[&str], path: &Path, owner: &str) {
@@ -506,4 +615,20 @@ fn is_git_head_sha(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_lower_hex_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_safe_repo_relative_path(value: &str) -> bool {
+    let path = Path::new(value);
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }

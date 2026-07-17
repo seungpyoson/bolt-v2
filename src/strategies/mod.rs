@@ -13,13 +13,18 @@ macro_rules! nautilus_strategy_with_fill_void_guard {
             }
         });
 
+        impl $crate::strategies::fill_void_policy_guard_sealed::Sealed for $strategy {}
         impl $crate::strategies::FillVoidPolicyGuard for $strategy {}
     };
 }
 
 pub(crate) use nautilus_strategy_with_fill_void_guard;
 
-pub(crate) trait FillVoidPolicyGuard {}
+mod fill_void_policy_guard_sealed {
+    pub trait Sealed {}
+}
+
+pub(crate) trait FillVoidPolicyGuard: fill_void_policy_guard_sealed::Sealed {}
 
 pub mod binary_oracle_edge_taker;
 pub mod binary_oracle_maker;

@@ -6,3 +6,15 @@ revision = "d81be0bcc7a473c45d2dc8a8885638336073a218"
 [binance_spot]
 sbe_schema_3_5 = true
 adapter_receive_timestamps = true
+
+[[evidence]]
+capability = "binance_spot.sbe_schema_3_5"
+cargo_test_target = "binance_sbe_schema_v5_decode"
+path = "tests/binance_sbe_schema_v5_decode.rs"
+sha256 = "dc350f971d8c2eb3eeecfa962c72d65c7f2427e07e8c5028ae95bd38adc3603b"
+
+[[evidence]]
+capability = "binance_spot.adapter_receive_timestamps"
+cargo_test_target = "binance_sbe_quote_timestamps"
+path = "tests/binance_sbe_quote_timestamps.rs"
+sha256 = "1cce271229a01b4d391c5dc6c6c5e324957bcc2e4c57b7359bf3a0d4ff4e39b3"

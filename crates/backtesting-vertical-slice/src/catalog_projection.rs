@@ -437,13 +437,18 @@ fn parse_optional_decimal(value: Option<&str>, label: &str) -> Result<Option<Dec
 }
 
 fn parse_money(value: &str, currency: Currency, label: &str) -> Result<Money> {
-    Money::new_checked(
-        value
-            .parse()
-            .with_context(|| format!("invalid {label} {value:?}"))?,
+    let mut decimal = Decimal::from_str(value)
+        .with_context(|| format!("invalid {label} {value:?}"))?;
+    decimal.normalize_assign();
+    ensure!(
+        decimal.scale() <= u32::from(currency.precision),
+        "invalid {label} {value:?}: normalized scale {} exceeds {} precision {}",
+        decimal.scale(),
         currency,
-    )
-    .map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
+        currency.precision
+    );
+    Money::from_decimal(decimal, currency)
+        .map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
 }
 
 fn parse_optional_money(
@@ -1012,6 +1017,22 @@ pub fn canonical_rows_to_trade_ticks<I: Instrument + ?Sized>(
         .collect()
 }
 
+fn ensure_canonical_row_instrument_ids<'a>(
+    instrument_id: &InstrumentId,
+    row_instrument_ids: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<()> {
+    let instrument_id_text = instrument_id.to_string();
+    for (index, row_instrument_id) in row_instrument_ids.into_iter().enumerate() {
+        let row_instrument_id = row_instrument_id
+            .with_context(|| format!("row {index}: canonical row missing nt_instrument_id"))?;
+        ensure!(
+            instrument_id_text == row_instrument_id,
+            "row {index}: instrument id {instrument_id} does not match canonical rows {row_instrument_id}"
+        );
+    }
+    Ok(())
+}
+
 /// Project a canonical trades table into a NautilusTrader `ParquetDataCatalog`.
 ///
 /// Writes the venue instrument and the `TradeTick` projection under
@@ -1034,15 +1055,13 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     // actual prints; widen precision to the data before binding and writing.
     let instrument = widen_instrument_precision_for_data(instrument, table)?;
     let instrument_id = instrument.id();
-    let row_instrument_id = table.rows[0]
-        .nt_instrument_id
-        .as_deref()
-        .context("canonical row missing nt_instrument_id")?;
-    ensure!(
-        instrument_id.to_string() == row_instrument_id,
-        "instrument id {instrument_id} does not match canonical rows {}",
-        row_instrument_id
-    );
+    ensure_canonical_row_instrument_ids(
+        &instrument_id,
+        table
+            .rows
+            .iter()
+            .map(|row| row.nt_instrument_id.as_deref()),
+    )?;
     let ticks = canonical_rows_to_trade_ticks(table, &instrument)?;
     let trade_count = ticks.len();
 
@@ -1255,15 +1274,13 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
     // actual prints; widen precision to the data before binding and writing.
     let instrument = widen_instrument_precision_for_data(instrument, table)?;
     let instrument_id = instrument.id();
-    let row_instrument_id = table.rows[0]
-        .nt_instrument_id
-        .as_deref()
-        .context("canonical row missing nt_instrument_id")?;
-    ensure!(
-        instrument_id.to_string() == row_instrument_id,
-        "instrument id {instrument_id} does not match canonical rows {}",
-        row_instrument_id
-    );
+    ensure_canonical_row_instrument_ids(
+        &instrument_id,
+        table
+            .rows
+            .iter()
+            .map(|row| row.nt_instrument_id.as_deref()),
+    )?;
     let deltas = canonical_rows_to_order_book_deltas(table, &instrument)?;
     let delta_count = deltas.len();
 
@@ -1403,15 +1420,13 @@ pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     // actual prints; widen precision to the data before binding and writing.
     let instrument = widen_instrument_precision_for_data(instrument, table)?;
     let instrument_id = instrument.id();
-    let row_instrument_id = table.rows[0]
-        .nt_instrument_id
-        .as_deref()
-        .context("canonical row missing nt_instrument_id")?;
-    ensure!(
-        instrument_id.to_string() == row_instrument_id,
-        "instrument id {instrument_id} does not match canonical rows {}",
-        row_instrument_id
-    );
+    ensure_canonical_row_instrument_ids(
+        &instrument_id,
+        table
+            .rows
+            .iter()
+            .map(|row| row.nt_instrument_id.as_deref()),
+    )?;
     let ticks = canonical_rows_to_quote_ticks(table, &instrument)?;
     let quote_count = ticks.len();
 
@@ -1522,15 +1537,13 @@ pub fn project_canonical_index_to_catalog<S: CatalogInstrumentSpecSource + ?Size
     // actual prints; widen precision to the data before binding and writing.
     let instrument = widen_instrument_precision_for_data(instrument, table)?;
     let instrument_id = instrument.id();
-    let row_instrument_id = table.rows[0]
-        .nt_instrument_id
-        .as_deref()
-        .context("canonical row missing nt_instrument_id")?;
-    ensure!(
-        instrument_id.to_string() == row_instrument_id,
-        "instrument id {instrument_id} does not match canonical rows {}",
-        row_instrument_id
-    );
+    ensure_canonical_row_instrument_ids(
+        &instrument_id,
+        table
+            .rows
+            .iter()
+            .map(|row| row.nt_instrument_id.as_deref()),
+    )?;
     let updates = canonical_rows_to_index_price_updates(table, &instrument)?;
     let count = updates.len();
 
@@ -1657,15 +1670,13 @@ pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     // actual prints; widen precision to the data before binding and writing.
     let instrument = widen_instrument_precision_for_data(instrument, table)?;
     let instrument_id = instrument.id();
-    let row_instrument_id = table.rows[0]
-        .nt_instrument_id
-        .as_deref()
-        .context("canonical row missing nt_instrument_id")?;
-    ensure!(
-        instrument_id.to_string() == row_instrument_id,
-        "instrument id {instrument_id} does not match canonical rows {}",
-        row_instrument_id
-    );
+    ensure_canonical_row_instrument_ids(
+        &instrument_id,
+        table
+            .rows
+            .iter()
+            .map(|row| row.nt_instrument_id.as_deref()),
+    )?;
     let updates = canonical_rows_to_mark_price_updates(table, &instrument)?;
     let count = updates.len();
 
@@ -1791,18 +1802,13 @@ pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource
     table.validate()?;
     let instrument = spec.build_instrument_any()?;
     let instrument_id = instrument.id();
-    let instrument_id_text = instrument_id.to_string();
-    for (index, row) in table.rows.iter().enumerate() {
-        let row_instrument_id = row
-            .nt_instrument_id
-            .as_deref()
-            .with_context(|| format!("row {index}: canonical row missing nt_instrument_id"))?;
-        ensure!(
-            instrument_id_text == row_instrument_id,
-            "row {index}: instrument id {instrument_id} does not match canonical rows {}",
-            row_instrument_id
-        );
-    }
+    ensure_canonical_row_instrument_ids(
+        &instrument_id,
+        table
+            .rows
+            .iter()
+            .map(|row| row.nt_instrument_id.as_deref()),
+    )?;
     let updates = canonical_rows_to_funding_rate_updates(table, &instrument)?;
     let count = updates.len();
 
@@ -1946,15 +1952,13 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     // actual prints; widen precision to the data before binding and writing.
     let instrument = widen_instrument_precision_for_data(instrument, table)?;
     let instrument_id = instrument.id();
-    let row_instrument_id = table.rows[0]
-        .nt_instrument_id
-        .as_deref()
-        .context("canonical row missing nt_instrument_id")?;
-    ensure!(
-        instrument_id.to_string() == row_instrument_id,
-        "instrument id {instrument_id} does not match canonical rows {}",
-        row_instrument_id
-    );
+    ensure_canonical_row_instrument_ids(
+        &instrument_id,
+        table
+            .rows
+            .iter()
+            .map(|row| row.nt_instrument_id.as_deref()),
+    )?;
     let bars = canonical_rows_to_bars(table, &instrument)?;
     let bar_count = bars.len();
 
@@ -3239,11 +3243,52 @@ mod tests {
 
     #[test]
     fn build_currency_pair_rejects_out_of_range_notional() {
-        // A notional that parses as an f64 but exceeds NautilusTrader's Money
-        // range must surface as an error, never a panic, on the accepted-data path.
+        // An out-of-range decimal must surface as an error, never a panic, on
+        // the accepted-data path.
         let mut spec = spec();
         spec.max_notional = "1e40".to_string();
         assert!(build_currency_pair(&spec).is_err());
+    }
+
+    #[test]
+    fn parse_money_rejects_precision_loss_before_nt_construction() {
+        let error = parse_money("100.005", Currency::USD(), "max_notional")
+            .expect_err("currency-scale overflow must fail instead of rounding");
+        assert!(error.to_string().contains("exceeds USD precision 2"), "{error}");
+    }
+
+    #[test]
+    fn parse_money_accepts_insignificant_trailing_zeroes() {
+        let money = parse_money("100.000", Currency::USD(), "max_notional")
+            .expect("normalized scale fits currency precision");
+        assert_eq!(money, Money::from("100.00 USD"));
+    }
+
+    #[test]
+    fn canonical_row_identity_guard_rejects_later_row_mismatch() {
+        let instrument_id = InstrumentId::from("BNBUSDC.BYBIT");
+        let error = ensure_canonical_row_instrument_ids(
+            &instrument_id,
+            [Some("BNBUSDC.BYBIT"), Some("ETHUSDC.BYBIT")],
+        )
+        .expect_err("later cross-instrument row must fail before projection");
+        assert!(error.to_string().contains("row 1"), "{error}");
+        assert!(
+            error.to_string().contains("does not match canonical rows"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn canonical_row_identity_guard_rejects_later_missing_identity() {
+        let instrument_id = InstrumentId::from("BNBUSDC.BYBIT");
+        let error = ensure_canonical_row_instrument_ids(
+            &instrument_id,
+            [Some("BNBUSDC.BYBIT"), None],
+        )
+        .expect_err("later missing identity must fail before projection");
+        assert!(error.to_string().contains("row 1"), "{error}");
+        assert!(error.to_string().contains("missing nt_instrument_id"), "{error}");
     }
 
     #[test]
@@ -3610,6 +3655,15 @@ mod tests {
         let mut spec = binary_option_inner();
         spec.max_notional = Some("1e40".to_string());
         assert!(build_binary_option(&spec).is_err());
+    }
+
+    #[test]
+    fn build_binary_option_rejects_notional_beyond_currency_precision() {
+        let mut spec = binary_option_inner();
+        spec.max_notional = Some("100.000000001".to_string());
+        let error = build_binary_option(&spec)
+            .expect_err("USDC precision overflow must fail instead of rounding");
+        assert!(error.to_string().contains("exceeds USDC precision 8"), "{error}");
     }
 
     #[test]

@@ -213,7 +213,7 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         polymarket_fixture_path = (
             tests_dir
             / "fixtures"
-            / "nt_polymarket_query_post_order_params_d81be0bc.txt"
+            / f"nt_polymarket_query_post_order_params_{self.PINNED_REV[:8]}.txt"
         )
 
         surfaces_path.write_text(VERIFIER.yaml.safe_dump(fixture["surfaces"]), encoding="utf-8")
@@ -269,6 +269,27 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assertEqual([], VERIFIER.collect_failures())
 
+    def test_polymarket_fixture_filename_must_match_pinned_revision(self) -> None:
+        self.write_fixture()
+        fixture_path = VERIFIER.POLYMARKET_QUERY_FIXTURE_PATH
+        mislabeled_path = fixture_path.with_name(
+            "nt_polymarket_query_post_order_params_00000000.txt"
+        )
+        fixture_path.rename(mislabeled_path)
+        self.patch_verifier_attr("POLYMARKET_QUERY_FIXTURE_PATH", mislabeled_path)
+
+        failures = VERIFIER.collect_failures()
+
+        self.assertIn(
+            "13.polymarket_fixture_provenance",
+            [check_id for check_id, _ in failures],
+            failures,
+        )
+        self.assertTrue(
+            any("fixture filename must be" in message for _, message in failures),
+            failures,
+        )
+
     def test_polymarket_fixture_uses_committed_blob_when_checkout_is_dirty(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -308,7 +329,9 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             b"upstream line 130", b"dirty line 130"
         )
         query_path.write_bytes(dirty_source)
-        fixture_path = checkout / "fixture.txt"
+        fixture_path = checkout / (
+            f"nt_polymarket_query_post_order_params_{revision[:8]}.txt"
+        )
         fixture_path.write_bytes(polymarket_fixture(revision, dirty_source))
         self.patch_verifier_attr("POLYMARKET_QUERY_FIXTURE_PATH", fixture_path)
         self.patch_verifier_attr(

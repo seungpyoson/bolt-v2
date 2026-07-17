@@ -499,6 +499,16 @@ def verify_polymarket_query_fixture(
     upstream_path: Path,
 ) -> None:
     check_id = "13.polymarket_fixture_provenance"
+    expected_fixture_name = (
+        f"nt_polymarket_query_post_order_params_{nautilus_revision[:8]}.txt"
+    )
+    if POLYMARKET_QUERY_FIXTURE_PATH.name != expected_fixture_name:
+        findings.append(
+            (
+                check_id,
+                f"Polymarket fixture filename must be {expected_fixture_name}",
+            )
+        )
     upstream = read_pinned_nt_polymarket_query_blob(
         findings, nautilus_revision, upstream_path
     )

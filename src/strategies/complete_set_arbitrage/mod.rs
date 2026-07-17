@@ -6,7 +6,7 @@
 
 pub mod archetype;
 
-use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
+use std::{collections::BTreeMap, fmt};
 
 use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component};
@@ -15,7 +15,6 @@ use nautilus_model::{
     events::{OrderAccepted, OrderCancelRejected, OrderFilled},
     identifiers::{InstrumentId, StrategyId},
 };
-use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -30,7 +29,7 @@ use crate::{
         COMPLETE_SET_ARBITRAGE_KEY, CompleteSetSubmitMode, submit_mode_contract,
     },
     bolt_v3_strategy_context::StrategyBuildContext,
-    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
+    strategies::registry::{StrategyBuilder, ValidationError},
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
@@ -236,10 +235,6 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(CompleteSetArbitrage,
         }
     }
 });
-
-impl crate::strategies::registry::FillVoidGuardedStrategyBuilder for CompleteSetArbitrageBuilder {
-    type Strategy = CompleteSetArbitrage;
-}
 
 impl CompleteSetNtEventForwarder {
     fn new(strategy_id: impl Into<String>, execution_client_id: impl Into<String>) -> Self {
@@ -471,6 +466,8 @@ impl CompleteSetArbitrageBuilder {
 }
 
 impl StrategyBuilder for CompleteSetArbitrageBuilder {
+    type Strategy = CompleteSetArbitrage;
+
     fn kind() -> &'static str {
         KEY
     }
@@ -493,22 +490,8 @@ impl StrategyBuilder for CompleteSetArbitrageBuilder {
         }
     }
 
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(CompleteSetArbitrage::new(
-            Self::parse_config(raw)?,
-            context.clone(),
-        )?))
-    }
-
-    fn register(
-        raw: &Value,
-        context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId> {
-        let strategy = CompleteSetArbitrage::new(Self::parse_config(raw)?, context.clone())?;
-        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-        trader.borrow_mut().add_strategy(strategy)?;
-        Ok(strategy_id)
+    fn build_typed(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy> {
+        CompleteSetArbitrage::new(Self::parse_config(raw)?, context.clone())
     }
 }
 

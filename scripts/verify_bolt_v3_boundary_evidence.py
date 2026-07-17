@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ci_test_manifest import _mask_rust_non_code
 from verify_bolt_v3_provider_leaks import production_text
 from verifier_io import require_nonempty
 
@@ -1019,7 +1019,14 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
             scan_runtime_contract_pin(surface, text, findings, expected_revision)
             continue
         if surface == NT_SOURCE_CAPABILITIES_SURFACE:
-            scan_nt_source_capabilities(surface, text, findings, expected_revision)
+            scan_nt_source_capabilities(
+                root,
+                surface,
+                text,
+                root_manifest,
+                findings,
+                expected_revision,
+            )
             continue
         pattern_revisions = [
             [match.group(1) for match in pattern.finditer(text)]
@@ -1036,8 +1043,10 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
 
 
 def scan_nt_source_capabilities(
+    root: Path,
     surface: Path,
     text: str,
+    cargo_manifest_text: str,
     findings: list[str],
     expected_revision: str,
 ) -> None:
@@ -1048,9 +1057,10 @@ def scan_nt_source_capabilities(
         findings.append(f"{prefix} capability manifest is not valid TOML: {error}")
         return
 
-    if set(document) != {"revision", "binance_spot"}:
+    if set(document) != {"revision", "binance_spot", "evidence"}:
         findings.append(
-            f"{prefix} capability manifest root must contain exactly revision and binance_spot"
+            f"{prefix} capability manifest root must contain exactly revision, binance_spot, "
+            "and evidence"
         )
         return
     if document.get("revision") != expected_revision:
@@ -1068,18 +1078,106 @@ def scan_nt_source_capabilities(
             "adapter_receive_timestamps"
         )
         return
-    if binance_spot.get("sbe_schema_3_5") is not True:
+    false_capabilities = sorted(
+        f"binance_spot.{key}" for key, value in binance_spot.items() if value is not True
+    )
+    if false_capabilities:
         findings.append(
-            f"{prefix} selected official pin must record binance_spot.sbe_schema_3_5 = true"
+            f"{prefix} selected official pin must record every declared capability as true; "
+            f"false or invalid: {', '.join(false_capabilities)}"
         )
-    if binance_spot.get("adapter_receive_timestamps") is not True:
+    scan_source_capability_evidence(
+        root,
+        surface,
+        document,
+        cargo_manifest_text,
+        findings,
+    )
+
+
+def scan_source_capability_evidence(
+    root: Path,
+    surface: Path,
+    document: dict[str, object],
+    cargo_manifest_text: str,
+    findings: list[str],
+) -> None:
+    prefix = f"{surface}: NautilusTrader source evidence"
+    evidence = document.get("evidence")
+    if not isinstance(evidence, list):
+        findings.append(f"{prefix} must be an array of tables")
+        return
+    try:
+        cargo_manifest = tomllib.loads(cargo_manifest_text)
+    except tomllib.TOMLDecodeError:
+        return
+    cargo_targets = cargo_manifest.get("test", [])
+    expected_capabilities = {
+        f"binance_spot.{key}"
+        for key in document["binance_spot"]
+    }
+    observed_capabilities: list[str] = []
+    expected_keys = {"capability", "cargo_test_target", "path", "sha256"}
+    for index, entry in enumerate(evidence):
+        owner = f"evidence[{index}]"
+        if not isinstance(entry, dict) or set(entry) != expected_keys:
+            findings.append(f"{prefix} {owner} must contain exactly {sorted(expected_keys)}")
+            continue
+        capability = entry["capability"]
+        target_name = entry["cargo_test_target"]
+        artifact_name = entry["path"]
+        expected_sha256 = entry["sha256"]
+        if not all(
+            isinstance(value, str)
+            for value in (capability, target_name, artifact_name, expected_sha256)
+        ):
+            findings.append(f"{prefix} {owner} values must all be strings")
+            continue
+        observed_capabilities.append(capability)
+        artifact_path = Path(artifact_name)
+        if (
+            artifact_path.is_absolute()
+            or not artifact_path.parts
+            or ".." in artifact_path.parts
+        ):
+            findings.append(f"{prefix} {owner}.path must be repository-relative and safe")
+            continue
+        matching_targets = [
+            target
+            for target in cargo_targets
+            if isinstance(target, dict)
+            and target.get("name") == target_name
+            and target.get("path") == artifact_name
+        ]
+        if len(matching_targets) != 1:
+            findings.append(
+                f"{prefix} {owner} must bind exactly one Cargo test target "
+                f"{target_name} at {artifact_name}"
+            )
+        try:
+            artifact = (root / artifact_path).read_bytes()
+        except OSError as error:
+            findings.append(f"{prefix} {owner} artifact could not be read: {error}")
+            continue
+        actual_sha256 = hashlib.sha256(artifact).hexdigest()
+        if actual_sha256 != expected_sha256:
+            findings.append(
+                f"{prefix} {owner} artifact SHA-256 must be {expected_sha256}, "
+                f"found {actual_sha256}"
+            )
+    if len(observed_capabilities) != len(set(observed_capabilities)):
+        findings.append(f"{prefix} capability bindings must be unique")
+    if set(observed_capabilities) != expected_capabilities:
         findings.append(
-            f"{prefix} selected official pin must record "
-            "binance_spot.adapter_receive_timestamps = true"
+            f"{prefix} must bind every declared capability exactly once; expected "
+            f"{sorted(expected_capabilities)}, found {sorted(set(observed_capabilities))}"
         )
 
 
-def scan_nt_source_capability_generation(root: Path, findings: list[str]) -> None:
+def scan_nt_source_capability_generation(
+    root: Path,
+    findings: list[str],
+) -> None:
     build_text = read_required_pin_surface(
         root, NT_SOURCE_CAPABILITIES_BUILD_SURFACE, findings
     )
@@ -1108,6 +1206,7 @@ def scan_nt_source_capability_generation(root: Path, findings: list[str]) -> Non
                     f"{NT_SOURCE_CAPABILITIES_RUST_SURFACE}: NautilusTrader "
                     f"capability-registry Rust wiring missing {required}"
                 )
+
 
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     if today is None:

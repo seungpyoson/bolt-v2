@@ -150,7 +150,6 @@ impl StrategyRegistrationRuntimeResources {
 
 #[derive(Clone)]
 pub struct StrategyRegistrationContext<'a> {
-    pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
     pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
@@ -158,21 +157,86 @@ pub struct StrategyRegistrationContext<'a> {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
+    preparation_config: Arc<StrategyPreparationConfig>,
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
-    client_routes: StrategyRegistrationClientRoutes,
+    client_routes: PreparedStrategyClientRoutes,
     execution_venue: Venue,
     fee_provider: Arc<dyn FeeProvider>,
     settlement: Option<StrategyRegistrationSettlementResources>,
 }
 
 #[derive(Clone)]
-struct StrategyRegistrationClientRoutes {
+pub struct PreparedStrategyClientRoutes {
     venues_by_client_id: BTreeMap<ClientId, Venue>,
 }
 
-impl StrategyRegistrationClientRoutes {
-    fn venue(&self, client_id: &ClientId) -> Option<Venue> {
+impl PreparedStrategyClientRoutes {
+    pub fn venue(&self, client_id: &ClientId) -> Option<Venue> {
         self.venues_by_client_id.get(client_id).copied()
+    }
+}
+
+struct ResolvedStrategyClientRoutes<'a> {
+    prepared: PreparedStrategyClientRoutes,
+    execution_client: &'a ClientBlock,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StrategyPreparationConfig {
+    realized_volatility_max_source_age_ms: BTreeMap<String, u64>,
+    gate_provider_max_age_ms: BTreeMap<String, u64>,
+    chainlink_feed_instrument_ids: BTreeSet<String>,
+}
+
+impl StrategyPreparationConfig {
+    pub fn from_root(root: &BoltV3RootConfig) -> Self {
+        let realized_volatility_max_source_age_ms = root
+            .realized_volatility_surfaces
+            .as_ref()
+            .into_iter()
+            .flat_map(|surfaces| surfaces.iter())
+            .map(|(id, surface)| (id.clone(), surface.policy.max_source_age_ms))
+            .collect();
+        let gate_provider_max_age_ms = root
+            .gate_providers
+            .as_ref()
+            .into_iter()
+            .flat_map(|providers| providers.iter())
+            .filter_map(|(id, provider)| {
+                provider
+                    .freshness
+                    .as_ref()?
+                    .max_age_ms
+                    .map(|age| (id.clone(), age))
+            })
+            .collect();
+        let chainlink_feed_instrument_ids = root
+            .chainlink_data_streams
+            .as_ref()
+            .into_iter()
+            .flat_map(|catalog| catalog.feed_bindings.iter())
+            .filter_map(toml::Value::as_table)
+            .filter_map(|binding| binding.get(stringify!(instrument_id)))
+            .filter_map(toml::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        Self {
+            realized_volatility_max_source_age_ms,
+            gate_provider_max_age_ms,
+            chainlink_feed_instrument_ids,
+        }
+    }
+
+    pub fn realized_volatility_max_source_age_ms(&self, id: &str) -> Option<u64> {
+        self.realized_volatility_max_source_age_ms.get(id).copied()
+    }
+
+    pub fn gate_provider_max_age_ms(&self, id: &str) -> Option<u64> {
+        self.gate_provider_max_age_ms.get(id).copied()
+    }
+
+    pub fn has_chainlink_feed_binding(&self, instrument_id: &str) -> bool {
+        self.chainlink_feed_instrument_ids.contains(instrument_id)
     }
 }
 
@@ -210,11 +274,12 @@ impl StrategyRegistrationSettlementIdentityError {
 
 impl<'a> StrategyRegistrationContext<'a> {
     pub fn new(
-        loaded: &'a LoadedBoltV3Config,
+        loaded: &LoadedBoltV3Config,
         strategy: &'a LoadedStrategy,
         strategy_kind: &'static str,
         capabilities: StrategyRuntimeCapabilities,
-        resolved: &'a ResolvedBoltV3Secrets,
+        resolved: &ResolvedBoltV3Secrets,
+        preparation_config: Arc<StrategyPreparationConfig>,
         runtime_resources: StrategyRegistrationRuntimeResources,
     ) -> Result<Self, BoltV3StrategyRegistrationError> {
         let StrategyRegistrationRuntimeResources {
@@ -234,7 +299,10 @@ impl<'a> StrategyRegistrationContext<'a> {
             .realized_volatility
             .then_some(realized_volatility_runtime);
         let execution_client_id = strategy.config.execution_client_id.as_str();
-        let (client_routes, execution_client) = resolve_strategy_client_routes(loaded, strategy)?;
+        let ResolvedStrategyClientRoutes {
+            prepared: client_routes,
+            execution_client,
+        } = resolve_strategy_client_routes(loaded, strategy)?;
         let execution_venue = client_routes
             .venue(&strategy.config.execution_client_id)
             .ok_or_else(|| {
@@ -267,7 +335,6 @@ impl<'a> StrategyRegistrationContext<'a> {
         .map_err(|error| binding_error(strategy, error.to_string()))?;
 
         Ok(Self {
-            loaded,
             strategy,
             strategy_kind,
             capabilities,
@@ -275,6 +342,7 @@ impl<'a> StrategyRegistrationContext<'a> {
             submit_admission,
             iv_query_handles,
             order_execution_policy,
+            preparation_config,
             realized_volatility_runtime,
             client_routes,
             execution_venue,
@@ -283,15 +351,19 @@ impl<'a> StrategyRegistrationContext<'a> {
         })
     }
 
-    pub(crate) fn prepared_client_venue(&self, client_id: &ClientId) -> Option<Venue> {
-        self.client_routes.venue(client_id)
+    pub(crate) fn preparation_config(&self) -> &StrategyPreparationConfig {
+        &self.preparation_config
+    }
+
+    pub(crate) fn prepared_client_routes(&self) -> &PreparedStrategyClientRoutes {
+        &self.client_routes
     }
 }
 
 fn resolve_strategy_client_routes<'a>(
     loaded: &'a LoadedBoltV3Config,
     strategy: &LoadedStrategy,
-) -> Result<(StrategyRegistrationClientRoutes, &'a ClientBlock), BoltV3StrategyRegistrationError> {
+) -> Result<ResolvedStrategyClientRoutes<'a>, BoltV3StrategyRegistrationError> {
     let mut roles_by_client_id = BTreeMap::<ClientId, BTreeSet<String>>::new();
     roles_by_client_id
         .entry(strategy.config.execution_client_id)
@@ -341,12 +413,19 @@ fn resolve_strategy_client_routes<'a>(
                 "prepared client routes did not retain the configured execution client",
             )
         })?;
-    Ok((
-        StrategyRegistrationClientRoutes {
+    Ok(ResolvedStrategyClientRoutes {
+        prepared: PreparedStrategyClientRoutes {
             venues_by_client_id,
         },
         execution_client,
-    ))
+    })
+}
+
+pub fn prepare_strategy_client_routes(
+    loaded: &LoadedBoltV3Config,
+    strategy: &LoadedStrategy,
+) -> Result<PreparedStrategyClientRoutes, BoltV3StrategyRegistrationError> {
+    Ok(resolve_strategy_client_routes(loaded, strategy)?.prepared)
 }
 
 fn resolve_settlement_capability(
@@ -810,6 +889,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
         realized_volatility_runtime,
         execution_controls,
     );
+    let preparation_config = Arc::new(StrategyPreparationConfig::from_root(&loaded.root));
 
     let contexts = loaded
         .strategies
@@ -827,6 +907,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 binding.strategy_kind,
                 binding.capabilities,
                 resolved,
+                preparation_config.clone(),
                 runtime_resources.clone(),
             )?;
             Ok((binding, context))

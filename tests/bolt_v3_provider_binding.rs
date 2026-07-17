@@ -198,6 +198,11 @@ fn try_assembly_context<'a>(
         "test_strategy",
         capabilities,
         resolved,
+        Arc::new(
+            bolt_v2::bolt_v3_strategy_registration::StrategyPreparationConfig::from_root(
+                &loaded.root,
+            ),
+        ),
         StrategyRegistrationRuntimeResources::new(
             decision_evidence,
             Arc::new(BoltV3IvQueryHandleRegistry::empty()),
@@ -421,6 +426,19 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
         .map(|(fields, _)| fields)
         .expect("strategy registration context should remain inspectable");
+    for forbidden_capability in [
+        "LoadedBoltV3Config",
+        "BoltV3RootConfig",
+        "ClientBlock",
+        "ResolvedBoltV3Secrets",
+        "loaded:",
+        "resolved:",
+    ] {
+        assert!(
+            !context_fields.contains(forbidden_capability),
+            "strategy registration context retained raw capability `{forbidden_capability}`"
+        );
+    }
     assert!(
         context_fields.contains("execution_venue: Venue"),
         "strategy registration context must cache the configured execution venue"
@@ -430,7 +448,7 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         "strategy registration context must cache the preflight-built fee provider"
     );
     assert!(
-        context_fields.contains("client_routes: StrategyRegistrationClientRoutes"),
+        context_fields.contains("client_routes: PreparedStrategyClientRoutes"),
         "strategy registration context must retain the preflight-resolved client routes"
     );
     let settlement_resources = source

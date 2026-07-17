@@ -61,7 +61,8 @@ use crate::{
         resolution_oracle_client_http_timeout_secs,
     },
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyRegistrationContext,
+        BoltV3StrategyRegistrationError, PreparedStrategyClientRoutes,
+        PreparedStrategyRegistration, StrategyPreparationConfig, StrategyRegistrationContext,
         StrategyRuntimeBinding, StrategyRuntimeCapabilities, assemble_strategy_build_context,
         execution_account_id, settlement_currency_for_execution_account, venue_for_client,
     },
@@ -440,9 +441,11 @@ impl std::error::Error for BinaryOracleEdgeTakerRuntimeConfigError {}
 pub fn prepare_runtime_strategy(
     context: StrategyRegistrationContext<'_>,
 ) -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError> {
-    let raw = raw_taker_config(context.strategy, context.loaded, |client_id| {
-        context.prepared_client_venue(client_id)
-    })
+    let raw = raw_taker_config(
+        context.strategy,
+        context.preparation_config(),
+        context.prepared_client_routes(),
+    )
     .map_err(|error| binding_error(&context, error))?;
     let build_context = assemble_strategy_build_context(&context)?;
     let registry = production_strategy_registry()
@@ -558,8 +561,8 @@ mod tests {
 
 pub fn raw_taker_config(
     strategy: &LoadedStrategy,
-    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
-    prepared_client_venue: impl Fn(&ClientId) -> Option<Venue>,
+    preparation_config: &StrategyPreparationConfig,
+    client_routes: &PreparedStrategyClientRoutes,
 ) -> Result<Value, BinaryOracleEdgeTakerRuntimeConfigError> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(BinaryOracleEdgeTakerRuntimeConfigError::WrongArchetype {
@@ -584,26 +587,14 @@ pub fn raw_taker_config(
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: "config.realized_volatility_surface_id is required".to_string(),
         })?;
-    let realized_volatility_surfaces = loaded
-        .root
-        .realized_volatility_surfaces
-        .as_ref()
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "realized_volatility_surfaces is absent; configured surface `{realized_volatility_surface_id}` cannot be resolved"
-            ),
-        })?;
-    let realized_volatility_max_source_age_ms = realized_volatility_surfaces
-        .get(realized_volatility_surface_id)
+    let realized_volatility_max_source_age_ms = preparation_config
+        .realized_volatility_max_source_age_ms(realized_volatility_surface_id)
         .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
                 "configured surface `{realized_volatility_surface_id}` is not present in realized_volatility_surfaces"
             ),
-        })?
-        .policy
-        .max_source_age_ms;
+        })?;
     if realized_volatility_max_source_age_ms == 0 {
         return Err(BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
@@ -622,31 +613,30 @@ pub fn raw_taker_config(
         })?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
-    prepared_client_venue(&signal_data.data_client_id).ok_or_else(|| {
-        BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+    client_routes
+        .venue(&signal_data.data_client_id)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
                 "signal_data data_client_id `{}` is not present in loaded clients",
                 signal_data.data_client_id
             ),
-        }
-    })?;
+        })?;
     let resolution_data = configured_resolution_data(strategy);
     if let Some(resolution_data) = resolution_data {
-        let resolution_venue =
-            prepared_client_venue(&resolution_data.data_client_id).ok_or_else(|| {
-                BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
-                    strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-                    message: format!(
-                        "resolution_data data_client_id `{}` is not present in loaded clients",
-                        resolution_data.data_client_id
-                    ),
-                }
+        let resolution_venue = client_routes
+            .venue(&resolution_data.data_client_id)
+            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: format!(
+                    "resolution_data data_client_id `{}` is not present in loaded clients",
+                    resolution_data.data_client_id
+                ),
             })?;
         validate_resolution_data_binding(
             strategy,
             resolution_data,
-            &loaded.root,
+            preparation_config,
             resolution_venue,
             &target.underlying_asset,
         )?;
@@ -671,11 +661,15 @@ pub fn raw_taker_config(
         price_to_beat_source_from_target(strategy_instance_id, &strategy.config.target)?;
     let resolution_provider_id =
         resolution_gate_provider_id_from_target(strategy_instance_id, &strategy.config.target)?;
-    let forced_flat_stale_reference_ms = forced_flat_stale_reference_ms_from_gate_provider(
-        strategy_instance_id,
-        loaded,
-        &resolution_provider_id,
-    )?;
+    let forced_flat_stale_reference_ms = preparation_config
+        .gate_provider_max_age_ms(&resolution_provider_id)
+        .filter(|value| *value != 0)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!(
+                "gate_providers.{resolution_provider_id}.freshness.max_age_ms is required for forced_flat_stale_reference_ms"
+            ),
+        })?;
 
     let mut table = Map::new();
     insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);
@@ -1129,27 +1123,6 @@ fn resolution_subscription_table<'a>(
         })
 }
 
-fn forced_flat_stale_reference_ms_from_gate_provider(
-    strategy_instance_id: &str,
-    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
-    provider_id: &str,
-) -> Result<u64, BinaryOracleEdgeTakerRuntimeConfigError> {
-    loaded
-        .root
-        .gate_providers
-        .as_ref()
-        .and_then(|providers| providers.get(provider_id))
-        .and_then(|provider| provider.freshness.as_ref())
-        .and_then(|freshness| freshness.max_age_ms)
-        .filter(|value| *value != 0)
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
-            strategy_instance_id: strategy_instance_id.to_string(),
-            message: format!(
-                "gate_providers.{provider_id}.freshness.max_age_ms is required for forced_flat_stale_reference_ms"
-            ),
-        })
-}
-
 fn nt_strategy_id(
     strategy: &LoadedStrategy,
 ) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
@@ -1539,7 +1512,7 @@ fn configured_resolution_data(
 fn validate_resolution_data_binding(
     strategy: &LoadedStrategy,
     resolution_data: &crate::bolt_v3_config::DataInstrumentBlock,
-    root: &BoltV3RootConfig,
+    preparation_config: &StrategyPreparationConfig,
     resolution_venue: Venue,
     underlying_asset: &str,
 ) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
@@ -1570,16 +1543,7 @@ fn validate_resolution_data_binding(
 
     // (c) instrument must have a root-owned feed_binding.
     let instrument_id = resolution_data.instrument_id.to_string();
-    let has_feed_binding = root.chainlink_data_streams.as_ref().is_some_and(|catalog| {
-        catalog.feed_bindings.iter().any(|binding| {
-            binding
-                .as_table()
-                .and_then(|binding| binding.get("instrument_id"))
-                .and_then(toml::Value::as_str)
-                == Some(instrument_id.as_str())
-        })
-    });
-    if !has_feed_binding {
+    if !preparation_config.has_chainlink_feed_binding(&instrument_id) {
         return Err(reject(format!(
             "instrument_id `{}` has no matching feed_binding in root chainlink_data_streams.feed_bindings for client `{}`",
             resolution_data.instrument_id, resolution_data.data_client_id

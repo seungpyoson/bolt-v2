@@ -81,9 +81,17 @@ fn prod_btc_5m_startup_derivations_match_composed_config() {
                 == crate::strategies::binary_oracle_edge_taker::archetype::KEY
         })
         .expect("composed profile should include the binary oracle taker strategy");
+    let preparation_config =
+        crate::bolt_v3_strategy_registration::StrategyPreparationConfig::from_root(&loaded.root);
+    let client_routes = crate::bolt_v3_strategy_registration::prepare_strategy_client_routes(
+        &loaded,
+        loaded_strategy,
+    )
+    .expect("composed strategy client routes should prepare");
     let raw = crate::strategies::binary_oracle_edge_taker::archetype::raw_taker_config(
         loaded_strategy,
-        &loaded,
+        &preparation_config,
+        &client_routes,
     )
     .expect("composed binary oracle strategy should map through the taker archetype");
     let strategy = BinaryOracleEdgeTakerBuilder::build_strategy(

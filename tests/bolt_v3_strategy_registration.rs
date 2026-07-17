@@ -49,13 +49,16 @@ fn raw_edge_taker_config(
     loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
 ) -> Result<toml::Value, binary_oracle_edge_taker_archetype::BinaryOracleEdgeTakerRuntimeConfigError>
 {
-    binary_oracle_edge_taker_archetype::raw_taker_config(strategy, loaded, |client_id| {
-        loaded
-            .root
-            .clients
-            .get(client_id.as_str())
-            .map(|client| client.venue)
-    })
+    let preparation_config =
+        bolt_v2::bolt_v3_strategy_registration::StrategyPreparationConfig::from_root(&loaded.root);
+    let client_routes =
+        bolt_v2::bolt_v3_strategy_registration::prepare_strategy_client_routes(loaded, strategy)
+            .expect("test strategy client routes should prepare");
+    binary_oracle_edge_taker_archetype::raw_taker_config(
+        strategy,
+        &preparation_config,
+        &client_routes,
+    )
 }
 
 fn strategy_registration_test_runtime(
@@ -1125,6 +1128,29 @@ fn invalid_second_signal_client_fails_before_any_strategy_is_registered() {
     assert!(
         registered_strategy_ids.is_empty(),
         "deterministic preparation failure must precede every NT registration"
+    );
+}
+
+#[test]
+fn invalid_second_resolution_client_fails_before_any_strategy_is_registered() {
+    let (error, registered_strategy_ids) =
+        production_registration_error_with_invalid_second_edge_strategy(|invalid| {
+            invalid.config.resolution_data = invalid.config.signal_data.values().next().cloned();
+            invalid
+                .config
+                .resolution_data
+                .as_mut()
+                .expect("copied signal data must provide a resolution fixture")
+                .data_client_id = ClientId::from("missing_resolution");
+        });
+
+    assert!(
+        error.to_string().contains("missing_resolution"),
+        "registration error must identify the missing configured resolution client: {error}"
+    );
+    assert!(
+        registered_strategy_ids.is_empty(),
+        "resolution-client preparation failure must precede every NT registration"
     );
 }
 

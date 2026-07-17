@@ -7551,14 +7551,6 @@ reason = "This is the standard zero padding byte for HMAC keys shorter than the 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
-literal = '''"instrument_id"'''
-context = '''.and_then(|binding| binding.get("instrument_id"))'''
-classification = "strategy_archetype_resolution_schema_field"
-reason = "Binary-oracle resolution-data binding schema/config field name read from the configured bolt-v3 TOML target, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
-kind = "string"
 literal = '''"resolution_client_id"'''
 context = '''"resolution_client_id",'''
 classification = "strategy_archetype_resolution_schema_field"

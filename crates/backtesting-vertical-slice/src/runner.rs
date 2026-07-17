@@ -39,6 +39,9 @@ use bolt_v2::{
     bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_strategy_context::StrategyBuildContext,
+    bolt_v3_strategy_registration::{
+        StrategyPreparationConfig, prepare_strategy_client_routes,
+    },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::binary_oracle_edge_taker::archetype::raw_taker_config,
     strategies::production_strategy_registry,
@@ -842,7 +845,14 @@ fn add_manifest_strategy(
                             overlay.override_delta.strategy_instance_id
                         )
                     })?;
-                let raw_config = raw_taker_config(loaded_strategy, &loaded)
+                let preparation_config = StrategyPreparationConfig::from_root(&loaded.root);
+                let client_routes = prepare_strategy_client_routes(&loaded, loaded_strategy)
+                    .context("prepare configured strategy client routes")?;
+                let raw_config = raw_taker_config(
+                    loaded_strategy,
+                    &preparation_config,
+                    &client_routes,
+                )
                     .context("build raw taker config from overlaid production config")?;
                 let runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
                     .map_err(|error| anyhow::anyhow!("{error}"))
@@ -4366,7 +4376,10 @@ mod tests {
                 strategy.config.strategy_instance_id == overlay.override_delta.strategy_instance_id
             })
             .context("issue #789 overlaid strategy is missing")?;
-        let raw = raw_taker_config(loaded_strategy, &loaded)
+        let preparation_config = StrategyPreparationConfig::from_root(&loaded.root);
+        let client_routes = prepare_strategy_client_routes(&loaded, loaded_strategy)
+            .context("prepare configured strategy client routes")?;
+        let raw = raw_taker_config(loaded_strategy, &preparation_config, &client_routes)
             .context("resolve issue #789 canonical taker config")?;
         let resolved_config_bytes = canonical_resolved_taker_config_bytes(
             &raw,

@@ -70,6 +70,7 @@ pub const SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
 #[serde(deny_unknown_fields)]
 pub struct BoltV3RootConfig {
     pub schema_version: u32,
+    pub economics: crate::bolt_v3_economics_config::EconomicsRootConfig,
     pub trader_id: TraderId,
     pub strategy_files: Vec<String>,
     pub runtime: RuntimeBlock,

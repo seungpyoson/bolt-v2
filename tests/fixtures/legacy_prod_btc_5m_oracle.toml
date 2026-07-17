@@ -48,6 +48,10 @@ strategy_files = [
   "strategies/binary_oracle_btc.toml",
 ]
 
+[economics.reporting]
+policy_id = "primary-pnl"
+pnl_currency = "USD"
+
 [realized_volatility_surfaces.btc_usdt_midpoint_rv]
 canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
@@ -339,6 +343,23 @@ fee_cache_ttl_secs = 300
 venue_truth_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
+
+[clients.polymarket_main.execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[clients.polymarket_main.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "polymarket-market-info"
+
+[clients.polymarket_main.execution.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[clients.polymarket_main.execution.economics.valuation.routes]
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket/private-key"

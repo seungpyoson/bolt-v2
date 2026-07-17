@@ -117,6 +117,8 @@ pub enum EconomicsConfigError {
     InvalidRefreshMargin,
     EmptyEdgeBasisMapping,
     MissingEdgeBasisPolicy { surface: String, policy_id: String },
+    MissingProductSurface { surface: String },
+    UnexpectedProductSurface { surface: String },
     ZeroCarryHorizon,
     WrongTerminalCurrency { route_id: String },
     DuplicateValuationAuthority { from: String, to: String },
@@ -164,10 +166,12 @@ impl ExecutionEconomicsConfig {
         {
             errors.push(EconomicsConfigError::InvalidQuoteWindow);
         }
-        let max_age_ms = self.quote_max_age_secs.checked_mul(MILLIS_PER_SECOND_U64);
-        if is_zero(self.quote_validity_ms)
-            || max_age_ms.is_none_or(|max_age_ms| self.quote_validity_ms > max_age_ms)
-        {
+        let validity_within_max_age =
+            match self.quote_max_age_secs.checked_mul(MILLIS_PER_SECOND_U64) {
+                Some(max_age_ms) => self.quote_validity_ms <= max_age_ms,
+                None => false,
+            };
+        if is_zero(self.quote_validity_ms) || !validity_within_max_age {
             errors.push(EconomicsConfigError::InvalidQuoteWindow);
         }
         if is_zero(self.resting_order_refresh_margin_ms)
@@ -223,6 +227,30 @@ impl ExecutionEconomicsConfig {
                 &mut errors,
             );
         }
+        errors
+    }
+
+    pub fn validate_product_surfaces<'a>(
+        &self,
+        configured_surfaces: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<EconomicsConfigError> {
+        let configured = configured_surfaces.into_iter().collect::<BTreeSet<_>>();
+        let declared = self
+            .product_surface_policies
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let mut errors = configured
+            .difference(&declared)
+            .map(|surface| EconomicsConfigError::MissingProductSurface {
+                surface: (*surface).to_string(),
+            })
+            .collect::<Vec<_>>();
+        errors.extend(declared.difference(&configured).map(|surface| {
+            EconomicsConfigError::UnexpectedProductSurface {
+                surface: (*surface).to_string(),
+            }
+        }));
         errors
     }
 }

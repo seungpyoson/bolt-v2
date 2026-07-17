@@ -192,6 +192,9 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_settlement_sink_recovery_evidence(root));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(root));
+    errors.extend(crate::bolt_v3_providers::validate_economics_configuration(
+        root,
+    ));
     errors.extend(validate_realized_volatility_surfaces(root));
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));

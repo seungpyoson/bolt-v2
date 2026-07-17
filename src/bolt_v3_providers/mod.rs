@@ -593,6 +593,10 @@ const IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS: ProviderMarketExitOrderConst
     };
 
 pub(crate) type NtReconnectBudgetLoader = fn(&toml::Value) -> Result<u64, toml::de::Error>;
+type ExecutionEconomicsLoader =
+    fn(
+        &toml::Value,
+    ) -> Result<crate::bolt_v3_economics_config::ExecutionEconomicsConfig, toml::de::Error>;
 
 #[derive(Clone, Copy)]
 pub(crate) enum NtReconnectBudgetCapability {
@@ -604,6 +608,7 @@ pub struct ProviderBinding {
     pub key: &'static str,
     pub(crate) nt_reconnect_budget: NtReconnectBudgetCapability,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
+    execution_economics: Option<ExecutionEconomicsLoader>,
     pub supported_market_families: &'static [&'static str],
     pub market_exit_order_constraints: ProviderMarketExitOrderConstraints,
     pub metadata_refresh_interval_mins: Option<MetadataRefreshIntervalLoader>,
@@ -775,6 +780,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: polymarket::KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,
+        execution_economics: Some(polymarket::execution_economics_config),
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(polymarket::metadata_refresh_interval_mins),
@@ -796,6 +802,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: binance::KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: binance::validate_client,
+        execution_economics: None,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -817,6 +824,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: hyperliquid::KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: hyperliquid::validate_client,
+        execution_economics: Some(hyperliquid::execution_economics_config),
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(hyperliquid::metadata_refresh_interval_mins),
@@ -840,6 +848,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::BITMEX_KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bitmex_client,
+        execution_economics: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -861,6 +870,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::BYBIT_KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bybit_client,
+        execution_economics: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -882,6 +892,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::COINBASE_KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_coinbase_client,
+        execution_economics: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -903,6 +914,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::DERIBIT_KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_deribit_client,
+        execution_economics: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -924,6 +936,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::OKX_KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_okx_client,
+        execution_economics: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -945,6 +958,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::KRAKEN_KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_kraken_client,
+        execution_economics: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -966,6 +980,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: chainlink::KEY,
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: chainlink::validate_client,
+        execution_economics: None,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -989,6 +1004,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
             chainlink_reference::reconnect_timeout_ms_for_nt_connect_budget,
         ),
         validate_client: chainlink_reference::validate_client,
+        execution_economics: None,
         supported_market_families: chainlink_reference::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -1012,6 +1028,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
             polyresearch::reconnect_timeout_ms_for_nt_connect_budget,
         ),
         validate_client: polyresearch::validate_client,
+        execution_economics: None,
         supported_market_families: polyresearch::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -1153,6 +1170,45 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 /// binding, which deserializes the concrete client config block shape.
 pub fn validate_resolution_oracle_client_consistency(root: &BoltV3RootConfig) -> Vec<String> {
     chainlink::validate_client_gate_provider_consistency(root)
+}
+
+pub fn validate_economics_configuration(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = root
+        .economics
+        .validate()
+        .into_iter()
+        .map(|error| format!("economics: {error:?}"))
+        .collect::<Vec<_>>();
+    let active_data_clients = root
+        .clients
+        .iter()
+        .filter_map(|(client_id, client)| client.data.as_ref().map(|_| client_id.clone()))
+        .collect();
+
+    for (client_id, client) in &root.clients {
+        let binding = binding_for_provider_key(client.venue.as_str());
+        match (
+            &client.execution,
+            binding.and_then(|value| value.execution_economics),
+        ) {
+            (None, _) => {}
+            (Some(_), None) => errors.push(format!(
+                "clients.{client_id}.execution has no registered economics configuration binding"
+            )),
+            (Some(execution), Some(load)) => match load(execution) {
+                Err(error) => errors.push(format!(
+                    "clients.{client_id}.execution economics configuration is invalid: {error}"
+                )),
+                Ok(config) => errors.extend(
+                    config
+                        .validate(&root.economics.reporting, &active_data_clients)
+                        .into_iter()
+                        .map(|error| format!("clients.{client_id}.execution.economics: {error:?}")),
+                ),
+            },
+        }
+    }
+    errors
 }
 
 pub(crate) fn resolution_oracle_client_http_timeout_secs(

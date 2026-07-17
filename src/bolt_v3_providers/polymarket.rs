@@ -100,6 +100,7 @@ use crate::{
 use self::fees::PolymarketClobFeeProvider;
 
 pub const KEY: &str = "POLYMARKET";
+const ECONOMICS_PRODUCT_SURFACE: &str = "binary_outcome";
 /// Per-minute REST egress ceiling for the Polymarket HTTP clients, taken from
 /// the NT adapter's own quota constant so bolt-v3 and NT share one source of
 /// truth for the venue capability.
@@ -223,6 +224,7 @@ where
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PolymarketExecutionConfig {
+    pub economics: crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
     #[serde(deserialize_with = "deserialize_account_id")]
     pub account_id: AccountId,
     pub signature_type: PolymarketSignatureType,
@@ -244,6 +246,15 @@ pub struct PolymarketExecutionConfig {
     pub venue_truth_poll_interval_ms: Option<u64>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
+}
+
+pub fn execution_economics_config(
+    execution: &toml::Value,
+) -> Result<crate::bolt_v3_economics_config::ExecutionEconomicsConfig, toml::de::Error> {
+    execution
+        .clone()
+        .try_into::<PolymarketExecutionConfig>()
+        .map(|config| config.economics)
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -359,6 +370,13 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
                 errors.extend(validate_funder(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
                 errors.extend(validate_on_chain_collateral(key, &parsed));
+                errors.extend(
+                    parsed
+                        .economics
+                        .validate_product_surfaces([ECONOMICS_PRODUCT_SURFACE])
+                        .into_iter()
+                        .map(|error| format!("clients.{key}.execution.economics: {error:?}")),
+                );
             }
             Err(message) => {
                 errors.push(format!("clients.{key}.execution: {message}"));

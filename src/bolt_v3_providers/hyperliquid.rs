@@ -132,6 +132,7 @@ pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidExecutionConfig {
+    pub economics: crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
     #[serde(deserialize_with = "deserialize_account_id")]
     pub account_id: AccountId,
     pub environment: HyperliquidEnvironment,
@@ -153,6 +154,15 @@ pub struct HyperliquidExecutionConfig {
     pub ws_post_timeout_secs: u64,
     pub outcome_settlement_poll_secs: u64,
     pub latency_profile: Option<HyperliquidLatencyProfileConfig>,
+}
+
+pub fn execution_economics_config(
+    execution: &toml::Value,
+) -> Result<crate::bolt_v3_economics_config::ExecutionEconomicsConfig, toml::de::Error> {
+    execution
+        .clone()
+        .try_into::<HyperliquidExecutionConfig>()
+        .map(|config| config.economics)
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -199,6 +209,17 @@ pub enum HyperliquidProductSurface {
     Spot,
     Hip3BuilderPerps,
     Hip4Outcomes,
+}
+
+impl HyperliquidProductSurface {
+    const fn economics_name(self) -> &'static str {
+        match self {
+            Self::StandardPerps => "standard_perps",
+            Self::Spot => "spot",
+            Self::Hip3BuilderPerps => "hip3_builder_perps",
+            Self::Hip4Outcomes => "hip4_outcomes",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -453,6 +474,18 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         match execution.clone().try_into::<HyperliquidExecutionConfig>() {
             Ok(parsed) => {
                 errors.extend(validate_execution_config(key, &parsed));
+                errors.extend(
+                    parsed
+                        .economics
+                        .validate_product_surfaces(
+                            parsed
+                                .product_surfaces
+                                .iter()
+                                .map(|surface| surface.economics_name()),
+                        )
+                        .into_iter()
+                        .map(|error| format!("clients.{key}.execution.economics: {error:?}")),
+                );
                 Some(parsed)
             }
             Err(message) => {

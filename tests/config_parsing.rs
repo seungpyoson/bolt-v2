@@ -193,6 +193,23 @@ retry_delay_max_ms = 2000
 ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
+
+[economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "polymarket-market-info"
+
+[economics.product_surface_policies]
+binary_outcome = "primary"
+
+[economics.valuation.routes]
 "#;
     let parsed: PolymarketExecutionConfig =
         toml::from_str(exec_toml).expect("polymarket execution block should parse");
@@ -5706,6 +5723,10 @@ schema_version = 2
 trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
+[economics.reporting]
+policy_id = "primary-pnl"
+pnl_currency = "USD"
+
 [runtime]
 mode = "Live"
 order_execution_mode = "live"
@@ -5825,6 +5846,23 @@ retry_delay_max_ms = 2000
 ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
+
+[clients.polymarket_main.execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[clients.polymarket_main.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "polymarket-market-info"
+
+[clients.polymarket_main.execution.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[clients.polymarket_main.execution.economics.valuation.routes]
 "#;
 
     let root: BoltV3RootConfig =
@@ -6133,6 +6171,10 @@ schema_version = 2
 trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
+[economics.reporting]
+policy_id = "primary-pnl"
+pnl_currency = "USD"
+
 [runtime]
 mode = "Live"
 order_execution_mode = "live"
@@ -6275,6 +6317,23 @@ retry_delay_max_ms = 0
 ack_timeout_secs = 0
 fee_cache_ttl_secs = 0
 transport_backend = "sockudo"
+
+[clients.polymarket_main.execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[clients.polymarket_main.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "polymarket-market-info"
+
+[clients.polymarket_main.execution.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[clients.polymarket_main.execution.economics.valuation.routes]
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket/private-key"

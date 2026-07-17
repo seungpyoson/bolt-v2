@@ -100,3 +100,20 @@ ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 venue_truth_poll_interval_ms = 1000
 transport_backend = "sockudo"
+
+[client_execution.polymarket_main.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[client_execution.polymarket_main.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "polymarket-market-info"
+
+[client_execution.polymarket_main.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[client_execution.polymarket_main.economics.valuation.routes]

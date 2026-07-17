@@ -5,6 +5,10 @@ strategy_files = [
   "strategies/binary_oracle_btc.toml",
 ]
 
+[economics.reporting]
+policy_id = "primary-pnl"
+pnl_currency = "USD"
+
 [realized_volatility_surfaces.btc_usdt_midpoint_rv]
 canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
@@ -280,6 +284,23 @@ venue_truth_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
 
+[clients.polymarket_main.execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+
+[clients.polymarket_main.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "polymarket-market-info"
+
+[clients.polymarket_main.execution.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[clients.polymarket_main.execution.economics.valuation.routes]
+
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket/private-key"
 api_key_ssm_path = "/bolt/polymarket/api-key"
@@ -537,45 +558,25 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 30
 
-[clients.hyperliquid_execution.execution.live_submit.standard_perps]
-approval_id = "hl-standard-perps-mainnet-001"
-approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json"
-approval_artifact_max_bytes = 65536
-max_order_count = 1
-max_order_notional = "10.00"
-product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json"
-product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-product_proof_artifact_max_bytes = 65536
+[clients.hyperliquid_execution.execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
 
-[clients.hyperliquid_execution.execution.live_submit.spot]
-approval_id = "hl-spot-mainnet-001"
-approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json"
-approval_artifact_max_bytes = 65536
-max_order_count = 1
-max_order_notional = "10.00"
-product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json"
-product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-product_proof_artifact_max_bytes = 65536
+[clients.hyperliquid_execution.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
 
-[clients.hyperliquid_execution.execution.live_submit.hip3_builder_perps]
-approval_id = "hl-hip3-builder-perps-mainnet-001"
-approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json"
-approval_artifact_max_bytes = 65536
-max_order_count = 1
-max_order_notional = "10.00"
-product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json"
-product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-product_proof_artifact_max_bytes = 65536
+[clients.hyperliquid_execution.execution.economics.product_surface_policies]
+standard_perps = "primary"
+spot = "primary"
+hip3_builder_perps = "primary"
+hip4_outcomes = "primary"
 
-[clients.hyperliquid_execution.execution.live_submit.hip4_outcomes]
-approval_id = "hl-hip4-outcomes-mainnet-001"
-approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json"
-approval_artifact_max_bytes = 65536
-max_order_count = 1
-max_order_notional = "10.00"
-product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json"
-product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-product_proof_artifact_max_bytes = 65536
+[clients.hyperliquid_execution.execution.economics.valuation.routes]
 
 [clients.hyperliquid_execution.secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"

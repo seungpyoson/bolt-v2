@@ -124,7 +124,6 @@ MERGIFY_QUEUE_RULE_KEYS = frozenset(
         "merge_method",
     }
 )
-MERGIFY_DYNAMIC_BATCH_KEYS = frozenset({"min", "max"})
 MERGIFY_PRIORITY_RULE_KEYS = frozenset({"name", "conditions", "priority", "allow_checks_interruption"})
 MERGIFY_YAML_PARSER_RUBY = r"""
 require "yaml"
@@ -365,17 +364,7 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
             expect_scalar(rule.get(key), expected, config_name, f"{rule_name} {key}", errors)
         expected_batch_size = expectation["batch_size"]
         batch_size = rule.get("batch_size")
-        if isinstance(expected_batch_size, dict):
-            batch_size_mapping = mergify_mapping(batch_size, config_name, f"{rule_name} batch_size", errors)
-            if batch_size_mapping is None:
-                continue
-            for key in unsupported_mapping_keys(batch_size_mapping, MERGIFY_DYNAMIC_BATCH_KEYS):
-                errors.append(f"{config_name} {rule_name} batch_size must not define unsupported key {key}")
-            if batch_size_mapping != expected_batch_size:
-                errors.append(
-                    f"{config_name} {rule_name} batch_size must be min {expected_batch_size['min']} max {expected_batch_size['max']}"
-                )
-        elif not scalar_equals(batch_size, expected_batch_size):
+        if not scalar_equals(batch_size, expected_batch_size):
             errors.append(f"{config_name} {rule_name} batch_size must be {expected_batch_size}")
 
     priority_by_name = named_mergify_rules(
@@ -490,8 +479,8 @@ MERGIFY_CONFIG_FIELD_HANDLING = {
     "queue_rules[].queue_conditions": "effective_pr_to_queue_routing",
     "queue_rules[].merge_conditions": "required_reviewer_evidence",
     "queue_rules[].branch_protection_injection_mode": "explicit_support_or_inconclusive",
-    "queue_rules[].batch_size": "batch_min_max_scalar_model",
-    "queue_rules[].batch_max_wait_time": "below_min_wait_model",
+    "queue_rules[].batch_size": "scalar_single_pr_model",
+    "queue_rules[].batch_max_wait_time": "explicit_support_or_inconclusive",
     "queue_rules[].batch_max_failure_resolution_attempts": "explicit_support_or_inconclusive",
     "queue_rules[].checks_timeout": "residual_proof_time_risk",
     "queue_rules[].draft_bot_account": "explicit_support_or_inconclusive",
@@ -1136,17 +1125,7 @@ def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mappi
 
 
 def mergify_queue_batch_max(rule: Mapping[str, object]) -> int:
-    batch_size = rule["batch_size"]
-    if isinstance(batch_size, Mapping):
-        return int(batch_size["max"])
-    return int(batch_size)
-
-
-def mergify_queue_batch_min(rule: Mapping[str, object]) -> int:
-    batch_size = rule["batch_size"]
-    if isinstance(batch_size, Mapping):
-        return int(batch_size["min"])
-    return int(batch_size)
+    return int(rule["batch_size"])
 
 
 def mergify_queue_batch_above_max_finding(
@@ -1170,29 +1149,6 @@ def mergify_queue_batch_above_max_finding(
     }
 
 
-def mergify_queue_batch_below_min_finding(
-    *,
-    queue_rule: str,
-    prs: Sequence[int],
-    min_batch_size: int,
-    batch_max_wait_time: object,
-) -> dict[str, object]:
-    return {
-        "lane": LANE_MERGIFY_CONFIG,
-        "scope": "queue",
-        "status": STATUS_READY,
-        "reason_code": "mergify_queue_batch_below_min_wait",
-        "message": f"Mergify queue rule {queue_rule} selected {len(prs)} PRs below min batch size {min_batch_size}",
-        "evidence": {
-            "queue_rule": queue_rule,
-            "prs": list(prs),
-            "selected_count": len(prs),
-            "min_batch_size": min_batch_size,
-            "batch_max_wait_time": batch_max_wait_time,
-        },
-    }
-
-
 def mergify_queue_batch_size_findings(
     *,
     config: Mapping[str, object],
@@ -1203,7 +1159,6 @@ def mergify_queue_batch_size_findings(
     findings: list[dict[str, object]] = []
     for queue_rule, prs in groups.items():
         rule = rules_by_name[queue_rule]
-        min_batch_size = mergify_queue_batch_min(rule)
         max_batch_size = mergify_queue_batch_max(rule)
         if len(prs) > max_batch_size:
             findings.append(
@@ -1211,15 +1166,6 @@ def mergify_queue_batch_size_findings(
                     queue_rule=queue_rule,
                     prs=prs,
                     max_batch_size=max_batch_size,
-                )
-            )
-        if len(prs) < min_batch_size:
-            findings.append(
-                mergify_queue_batch_below_min_finding(
-                    queue_rule=queue_rule,
-                    prs=prs,
-                    min_batch_size=min_batch_size,
-                    batch_max_wait_time=rule["batch_max_wait_time"],
                 )
             )
     return tuple(findings)

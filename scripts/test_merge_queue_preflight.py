@@ -47,10 +47,7 @@ EXPECTED_RESIDUAL_RISKS = [
 ]
 EXPECTED_RESIDUAL_RISK_MESSAGES: dict[str, str] = {}
 def mergify_queue_max_batch_size(queue_rule: str) -> int:
-    batch_size = ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["batch_size"]
-    if isinstance(batch_size, dict):
-        return batch_size["max"]
-    return batch_size
+    return ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["batch_size"]
 
 
 def mergify_queue_conditions(queue_rule: str) -> list[str]:
@@ -574,8 +571,8 @@ def assert_mergify_config_field_handling_is_declarative() -> None:
         "queue_rules[].queue_conditions": "effective_pr_to_queue_routing",
         "queue_rules[].merge_conditions": "required_reviewer_evidence",
         "queue_rules[].branch_protection_injection_mode": "explicit_support_or_inconclusive",
-        "queue_rules[].batch_size": "batch_min_max_scalar_model",
-        "queue_rules[].batch_max_wait_time": "below_min_wait_model",
+        "queue_rules[].batch_size": "scalar_single_pr_model",
+        "queue_rules[].batch_max_wait_time": "explicit_support_or_inconclusive",
         "queue_rules[].batch_max_failure_resolution_attempts": "explicit_support_or_inconclusive",
         "queue_rules[].checks_timeout": "residual_proof_time_risk",
         "queue_rules[].draft_bot_account": "explicit_support_or_inconclusive",
@@ -1947,8 +1944,6 @@ def mergify_scalar_line(indent: str, key: str, value: object) -> str:
     return f"{indent}{key}: {yaml_scalar_literal(value)}\n"
 
 def mergify_queue_batch_size_error(queue_name: str, batch_size: object) -> str:
-    if isinstance(batch_size, dict):
-        return f"{queue_name} batch_size must be min {batch_size['min']} max {batch_size['max']}"
     return f"{queue_name} batch_size must be {batch_size}"
 
 def assert_mergify_config_gaps_are_reported() -> None:

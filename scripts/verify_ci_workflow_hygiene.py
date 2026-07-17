@@ -282,7 +282,6 @@ from governance_diff_analysis import (
     yaml_permissions_scoped_grants,
 )
 from merge_queue_preflight import (
-    MERGIFY_DYNAMIC_BATCH_KEYS,
     MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS,
     MERGIFY_MERGE_QUEUE_KEYS,
     MERGIFY_PRIORITY_RULE_KEYS,

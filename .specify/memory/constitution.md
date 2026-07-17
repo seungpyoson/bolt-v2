@@ -1,10 +1,9 @@
 <!--
 Sync Impact Report
 Version change: 2.1.0 -> 2.1.1
-Modified principles: III. Single Path And Config-Controlled Runtime adds the one immutable install/launch path;
-IV. Evidence-Driven Verification Gates removes staged CI and queue authority from the approved combined cutover;
+Modified principles: IV. Evidence-Driven Verification Gates removes staged CI and queue authority from the approved combined cutover;
 V. Evidence Before Claims keeps exact-head evidence risk-based without granting CI merge authority
-Additional Constraints: live proof boundary clarified for exact installed bytes and fresh in-process readiness
+Additional Constraints: unchanged
 Added sections: v2.1.1 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
@@ -12,7 +11,7 @@ Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/tasks-template.md - no update needed;
 .specify/templates/constitution-template.md - no update needed;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md documents the repository-only JULES_API_KEY advisory carve-out
+Runtime guidance updated: AGENTS.md removes staged CI authority and states the final admission contract
 Follow-up items: none
 -->
 

@@ -6379,7 +6379,6 @@ def assert_relocated_symbols_keep_legacy_exports() -> None:
         "MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS",
         "MERGIFY_MERGE_QUEUE_KEYS",
         "MERGIFY_QUEUE_RULE_KEYS",
-        "MERGIFY_DYNAMIC_BATCH_KEYS",
         "MERGIFY_PRIORITY_RULE_KEYS",
         "MERGIFY_YAML_PARSER_RUBY",
         "parse_mergify_yaml",

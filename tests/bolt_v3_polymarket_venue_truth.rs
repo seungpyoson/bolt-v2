@@ -1875,6 +1875,7 @@ fn order_filled_event_with_price_and_optional_fee(
         false,
         None,
         fee,
+        None,
     )
 }
 

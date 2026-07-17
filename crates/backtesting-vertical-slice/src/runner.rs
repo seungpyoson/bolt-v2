@@ -1315,7 +1315,7 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalR
                     .events()
                     .iter()
                     .filter_map(|event| match event {
-                        OrderEventAny::Filled(fill) => Some(*fill),
+                        OrderEventAny::Filled(fill) => Some(fill.clone()),
                         _ => None,
                     })
                     .collect(),
@@ -2790,7 +2790,7 @@ mod tests {
         let no = maker_smoke_binary_option(MAKER_SMOKE_NO_INSTRUMENT, "No");
         let yes_id = yes.id();
         let no_id = no.id();
-        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
         catalog
             .write_instruments(vec![yes, no])
             .context("write maker smoke instruments")?;
@@ -2821,7 +2821,7 @@ mod tests {
     fn write_execution_contract_smoke_catalog(catalog_root: &Path) -> Result<()> {
         let instrument = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
         let instrument_id = instrument.id();
-        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
         catalog
             .write_instruments(vec![instrument])
             .context("write execution-contract smoke instrument")?;
@@ -3469,7 +3469,7 @@ mod tests {
             .fills
             .iter()
             .filter(|fill| fill.ts_event < settlement_ts)
-            .copied()
+            .cloned()
             .collect();
         ensure!(
             !entry_fills.is_empty(),

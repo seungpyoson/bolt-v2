@@ -587,6 +587,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     false,
                     Some(PositionId::from("P-001")),
                     Some(Money::new(0.01, Currency::USD())),
+                    None,
                 ));
                 publish_order_event(switchboard::get_event_order_topic(strategy_id), &fill_event);
 

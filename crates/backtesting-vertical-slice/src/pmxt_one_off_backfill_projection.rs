@@ -31,6 +31,7 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_polymarket::{
     common::enums::PolymarketOrderSide,
+    config::PolymarketDataClientConfig,
     http::{
         models::GammaMarket,
         parse::{create_instrument_from_def, parse_gamma_market},
@@ -950,6 +951,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     bids: row.bids.into_iter().map(Into::into).collect(),
                     asks: row.asks.into_iter().map(Into::into).collect(),
                     timestamp: row.timestamp_ms,
+                    hash: None,
                 };
                 let parsed = parse_book_snapshot(
                     &snapshot,
@@ -991,6 +993,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     instrument_id,
                     price_precision,
                     size_precision,
+                    PolymarketDataClientConfig::default().drop_quotes_missing_side,
                     quote_ticks.last(),
                     ts_event,
                     row.ts_init,

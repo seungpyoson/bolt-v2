@@ -16,15 +16,12 @@ use crate::{
         COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock, CompleteSetSubmitMode,
         submit_mode_contract,
     },
-    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
         StrategyRuntimeCapabilities, assemble_strategy_build_context,
     },
-    strategies::{
-        complete_set_arbitrage::CompleteSetArbitrageBuilder, production_strategy_registry,
-        registry::StrategyBuilder,
-    },
+    strategies::production_strategy_registry,
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
@@ -254,7 +251,6 @@ impl std::error::Error for CompleteSetArbitrageRuntimeConfigError {}
 
 pub fn raw_complete_set_config(
     strategy: &LoadedStrategy,
-    loaded: &LoadedBoltV3Config,
 ) -> Result<Value, CompleteSetArbitrageRuntimeConfigError> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(CompleteSetArbitrageRuntimeConfigError::WrongArchetype {
@@ -382,7 +378,7 @@ pub fn register_runtime_strategy(
     node: &mut LiveNode,
     context: StrategyRegistrationContext<'_>,
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
-    let raw = raw_complete_set_config(context.strategy, context.loaded)
+    let raw = raw_complete_set_config(context.strategy)
         .map_err(|error| binding_message(&context, error.to_string()))?;
     let build_context = assemble_strategy_build_context(&context)?;
     let registry = production_strategy_registry()

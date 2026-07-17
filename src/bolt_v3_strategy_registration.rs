@@ -255,9 +255,9 @@ pub fn assemble_strategy_build_context(
     Ok(build_context)
 }
 
-fn settlement_resources_for_context(
-    context: &StrategyRegistrationContext<'_>,
-) -> Option<&StrategyRegistrationSettlementResources> {
+fn settlement_resources_for_context<'a>(
+    context: &'a StrategyRegistrationContext<'_>,
+) -> Option<&'a StrategyRegistrationSettlementResources> {
     context.settlement.as_ref()
 }
 

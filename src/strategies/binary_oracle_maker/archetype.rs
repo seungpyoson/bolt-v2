@@ -1405,8 +1405,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_binding_strategy_kind_matches_key() {
-        assert_eq!(RUNTIME_BINDING.strategy_kind, KEY);
+    fn runtime_binding_strategy_kind_matches_builder_kind() {
+        assert_eq!(
+            RUNTIME_BINDING.strategy_kind,
+            BinaryOracleMakerBuilder::kind()
+        );
     }
 
     #[test]

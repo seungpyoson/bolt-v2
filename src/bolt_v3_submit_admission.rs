@@ -3045,6 +3045,11 @@ impl OrderValuationContext<'_> {
         }
     }
 
+    /// Preserves the historical valuation contract for quote-present unsided
+    /// market-style orders: without a Buy or Sell side, no quote price is
+    /// usable and this helper must not substitute the last trade. Submit
+    /// admission separately rejects every unsided quote-quantity market-style
+    /// order before valuation.
     pub fn prices_for_order(&self, order: &OrderAny) -> (Option<Price>, Option<Price>) {
         let uses_submitted_notional = order.is_quote_quantity()
             && matches!(order, OrderAny::Market(_))

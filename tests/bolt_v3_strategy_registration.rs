@@ -1191,7 +1191,7 @@ fn complete_set_runtime_mapping_produces_strategy_shell_raw_config() {
         .first()
         .expect("complete-set fixture should include one strategy");
 
-    let raw = complete_set_arbitrage::raw_complete_set_config(strategy, &loaded)
+    let raw = complete_set_arbitrage::raw_complete_set_config(strategy)
         .expect("complete-set strategy should map into concrete raw config");
 
     let mut errors: Vec<ValidationError> = Vec::new();

@@ -473,6 +473,12 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         !source.contains("fn execution_venue_for_context("),
         "strategy assembly must not retain a late venue lookup path"
     );
+    assert!(
+        source.contains(
+            "fn settlement_resources_for_context<'a>(\n    context: &'a StrategyRegistrationContext<'_>,\n) -> Option<&'a StrategyRegistrationSettlementResources>"
+        ),
+        "settlement-resource output must borrow from the outer context reference"
+    );
     assert_eq!(
         source.matches("resolve_settlement_capability(").count(),
         2,
@@ -527,6 +533,10 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     assert!(
         !raw_complete.contains("venue_for_client("),
         "raw complete-set config must not repeat execution-client venue resolution"
+    );
+    assert!(
+        !raw_complete.contains("LoadedBoltV3Config"),
+        "raw complete-set config must not retain an unused loaded-config parameter"
     );
 }
 

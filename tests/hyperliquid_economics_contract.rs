@@ -44,17 +44,20 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
 }
 
 fn user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
-    user_fees_with_discounts(maker_rate, "0", "0")
+    user_fees_with_discounts(maker_rate, "0", "0", "0.00045", "0.0007", "0.0004")
 }
 
 fn official_user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
-    user_fees_with_discounts(maker_rate, "0.04", "0.3")
+    user_fees_with_discounts(maker_rate, "0.04", "0.3", "0.000315", "0.00049", "0.00028")
 }
 
 fn user_fees_with_discounts(
     maker_rate: &str,
     referral_discount: &str,
     staking_discount: &str,
+    perp_taker_rate: &str,
+    spot_taker_rate: &str,
+    spot_maker_rate: &str,
 ) -> HyperliquidUserFeesSnapshot {
     HyperliquidUserFeesSnapshot::from_wire_json(
         HyperliquidSnapshotMetadata {
@@ -79,7 +82,10 @@ fn user_fees_with_discounts(
                     "spotAdd":"0.0004",
                     "tiers":{{
                         "vip":[],
-                        "mm":[{{"makerFractionCutoff":"0.005","add":"-0.00001"}}]
+                        "mm":[
+                            {{"makerFractionCutoff":"0.005","add":"-0.00001"}},
+                            {{"makerFractionCutoff":"0.01","add":"0"}}
+                        ]
                     }},
                     "referralDiscount":"0.04",
                     "stakingDiscountTiers":[
@@ -87,10 +93,10 @@ fn user_fees_with_discounts(
                         {{"bpsOfMaxSupply":"4.7577998927","discount":"{staking_discount}"}}
                     ]
                 }},
-                "userCrossRate":"0.000315",
+                "userCrossRate":"{perp_taker_rate}",
                 "userAddRate":"{maker_rate}",
-                "userSpotCrossRate":"0.00049",
-                "userSpotAddRate":"0.00028",
+                "userSpotCrossRate":"{spot_taker_rate}",
+                "userSpotAddRate":"{spot_maker_rate}",
                 "activeReferralDiscount":"{referral_discount}",
                 "trial":null,
                 "feeTrialReward":"0",
@@ -423,5 +429,94 @@ fn user_fees_parser_requires_complete_account_surface() {
             incomplete,
         ),
         Err(HyperliquidEconomicsError::InvalidUserFees)
+    );
+}
+
+#[test]
+fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
+    let json = serde_json::to_string(&serde_json::json!({
+        "dailyUserVlm": [{
+            "date": "2026-07-18",
+            "userCross": "100000",
+            "userAdd": "50000",
+            "exchange": "1000000"
+        }],
+        "feeSchedule": {
+            "cross": "0.00045",
+            "add": "0.00015",
+            "spotCross": "0.0007",
+            "spotAdd": "0.0004",
+            "tiers": {"vip": [], "mm": []},
+            "referralDiscount": "0.04",
+            "stakingDiscountTiers": [
+                {"bpsOfMaxSupply": "0", "discount": "0"},
+                {"bpsOfMaxSupply": "4.7577998927", "discount": "0.3"}
+            ]
+        },
+        "userCrossRate": "0.000314",
+        "userAddRate": "0.000105",
+        "userSpotCrossRate": "0.00049",
+        "userSpotAddRate": "0.00028",
+        "activeReferralDiscount": "0.04",
+        "trial": null,
+        "feeTrialReward": "0",
+        "nextTrialAvailableTimestamp": null,
+        "stakingLink": null,
+        "activeStakingDiscount": {
+            "bpsOfMaxSupply": "4.7577998927",
+            "discount": "0.3"
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(
+        HyperliquidUserFeesSnapshot::from_wire_json(
+            HyperliquidSnapshotMetadata {
+                snapshot_id: "user-fees-snapshot".to_string(),
+                source_at_ns: 90,
+                fetched_at_ns: 95,
+                valid_until_ns: 110,
+            },
+            "account",
+            &json,
+        ),
+        Err(HyperliquidEconomicsError::InvalidUserFees)
+    );
+}
+
+#[test]
+fn contradictory_product_kind_flags_fail_closed() {
+    let spot_hip3 = HyperliquidProductEconomicsSnapshot::from_json(
+        r#"{
+            "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
+            "validUntilNs":110,"productKind":"spot","stablePair":false,
+            "baseUnit":"BTC","quoteUnit":"USDC",
+            "alignedQuoteOrCollateral":false,"hip3":true,"deployerScale":0.5,
+            "growthMode":false,"builderProfileId":"builder-profile",
+            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "spotDustAuthorityComplete":true
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        HyperliquidEconomicsAdapter::try_new(config(), user_fees("0"), spot_hip3).err(),
+        Some(HyperliquidEconomicsError::InvalidFeeSurface)
+    );
+
+    let perp_stable = HyperliquidProductEconomicsSnapshot::from_json(
+        r#"{
+            "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
+            "validUntilNs":110,"productKind":"perp","stablePair":true,
+            "baseUnit":"BTC","quoteUnit":"USDC",
+            "alignedQuoteOrCollateral":false,"hip3":false,"deployerScale":0,
+            "growthMode":false,"builderProfileId":"builder-profile",
+            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "spotDustAuthorityComplete":false
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        HyperliquidEconomicsAdapter::try_new(config(), user_fees("0"), perp_stable).err(),
+        Some(HyperliquidEconomicsError::InvalidFeeSurface)
     );
 }

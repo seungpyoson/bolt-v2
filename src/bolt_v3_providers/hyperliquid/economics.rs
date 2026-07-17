@@ -203,16 +203,35 @@ impl HyperliquidUserFeesSnapshot {
 fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
     let schedule = &wire.fee_schedule;
     let unit_interval = |value: Decimal| (Decimal::ZERO..=Decimal::ONE).contains(&value);
+    let staking_scale = Decimal::ONE - wire.active_staking_discount.discount;
     let nonnegative_rates = schedule.cross >= Decimal::ZERO
         && schedule.add >= Decimal::ZERO
         && schedule.spot_cross >= Decimal::ZERO
         && schedule.spot_add >= Decimal::ZERO
         && wire.user_cross_rate >= Decimal::ZERO
         && wire.user_spot_cross_rate >= Decimal::ZERO;
-    let effective_within_base = wire.user_cross_rate <= schedule.cross
-        && wire.user_spot_cross_rate <= schedule.spot_cross
-        && wire.user_add_rate <= schedule.add
-        && wire.user_spot_add_rate <= schedule.spot_add;
+    let perp_taker_rates =
+        std::iter::once(schedule.cross).chain(schedule.tiers.vip.iter().map(|tier| tier.cross));
+    let perp_maker_rates = std::iter::once(schedule.add)
+        .chain(schedule.tiers.vip.iter().map(|tier| tier.add))
+        .chain(schedule.tiers.mm.iter().map(|tier| tier.add));
+    let spot_taker_rates = std::iter::once(schedule.spot_cross)
+        .chain(schedule.tiers.vip.iter().map(|tier| tier.spot_cross));
+    let spot_maker_rates = std::iter::once(schedule.spot_add)
+        .chain(schedule.tiers.vip.iter().map(|tier| tier.spot_add));
+    let effective_rates_consistent =
+        effective_rate_matches_schedule(wire.user_cross_rate, perp_taker_rates, staking_scale)
+            && effective_rate_matches_schedule(wire.user_add_rate, perp_maker_rates, staking_scale)
+            && effective_rate_matches_schedule(
+                wire.user_spot_cross_rate,
+                spot_taker_rates,
+                staking_scale,
+            )
+            && effective_rate_matches_schedule(
+                wire.user_spot_add_rate,
+                spot_maker_rates,
+                staking_scale,
+            );
     let tier_rates_valid = schedule.tiers.vip.iter().all(|tier| {
         tier.ntl_cutoff >= Decimal::ZERO
             && tier.cross >= Decimal::ZERO
@@ -232,13 +251,13 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
         && schedule
             .staking_discount_tiers
             .iter()
-            .any(|tier| tier.discount == wire.active_staking_discount.discount);
+            .any(|tier| tier == &wire.active_staking_discount);
     let staking_link_valid = wire
         .staking_link
         .as_ref()
         .is_none_or(|link| !link.r#type.trim().is_empty() && !link.staking_user.trim().is_empty());
     nonnegative_rates
-        && effective_within_base
+        && effective_rates_consistent
         && tier_rates_valid
         && staking_valid
         && staking_link_valid
@@ -248,6 +267,21 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
         && wire.active_referral_discount <= schedule.referral_discount
         && wire.active_staking_discount.bps_of_max_supply >= Decimal::ZERO
         && unit_interval(wire.active_staking_discount.discount)
+}
+
+fn effective_rate_matches_schedule(
+    effective: Decimal,
+    schedule_rates: impl Iterator<Item = Decimal>,
+    staking_scale: Decimal,
+) -> bool {
+    schedule_rates.into_iter().any(|scheduled| {
+        let expected = if scheduled < Decimal::ZERO {
+            scheduled
+        } else {
+            scheduled * staking_scale
+        };
+        effective == expected
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -347,7 +381,18 @@ impl HyperliquidEconomicsAdapter {
         product: HyperliquidProductEconomicsSnapshot,
     ) -> Result<Self, HyperliquidEconomicsError> {
         validate_authority_snapshots(&user_fees, &product)?;
-        if product.deployer_scale < Decimal::ZERO {
+        let product_flags_valid = match product.product_kind {
+            HyperliquidProductKind::Spot => !product.hip3 && !product.growth_mode,
+            HyperliquidProductKind::Perp => !product.stable_pair,
+        };
+        if product.deployer_scale < Decimal::ZERO
+            || !product_flags_valid
+            || config.formula.stable_pair_scale < Decimal::ZERO
+            || config.formula.growth_mode_scale < Decimal::ZERO
+            || config.formula.hip3_scale_threshold < Decimal::ZERO
+            || config.formula.hip3_below_threshold_base < Decimal::ZERO
+            || config.formula.hip3_at_or_above_threshold_multiplier < Decimal::ZERO
+        {
             return Err(HyperliquidEconomicsError::InvalidFeeSurface);
         }
         let base_rates = match product.product_kind {

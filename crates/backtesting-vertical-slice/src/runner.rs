@@ -40,8 +40,7 @@ use bolt_v2::{
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_strategy_registration::{
-        StrategyPreparationConfig, prepare_strategy_client_routes,
-        register_prepared_strategy_batch,
+        StrategyPreparationConfig, prepare_strategy_client_routes, register_prepared_strategy_batch,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::binary_oracle_edge_taker::archetype::raw_taker_config,
@@ -846,12 +845,9 @@ fn add_manifest_strategy(
                 let preparation_config = StrategyPreparationConfig::from_root(&loaded.root);
                 let client_routes = prepare_strategy_client_routes(&loaded, loaded_strategy)
                     .context("prepare configured strategy client routes")?;
-                let raw_config = raw_taker_config(
-                    loaded_strategy,
-                    &preparation_config,
-                    &client_routes,
-                )
-                    .context("build raw taker config from overlaid production config")?;
+                let raw_config =
+                    raw_taker_config(loaded_strategy, &preparation_config, &client_routes)
+                        .context("build raw taker config from overlaid production config")?;
                 let runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
                     .map_err(|error| anyhow::anyhow!("{error}"))
                     .context("build realized-volatility runtime from overlaid config")?;
@@ -908,9 +904,7 @@ fn add_manifest_strategy(
                     &raw_config,
                     &build_context,
                 )
-                .context(
-                    "prepare binary_oracle_edge_taker strategy through production registry",
-                )?;
+                .context("prepare binary_oracle_edge_taker strategy through production registry")?;
             register_prepared_strategy_batch(engine.kernel().trader(), vec![prepared])
                 .context("register binary_oracle_edge_taker prepared strategy batch")?;
             Ok(AddedManifestStrategy {

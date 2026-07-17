@@ -39,7 +39,7 @@ use toml::{Value, map::Map};
 
 use nautilus_model::{
     enums::{OrderSide, OrderType, PositionSide, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::{ClientId, InstrumentId, StrategyId, Venue},
+    identifiers::{InstrumentId, StrategyId, Venue},
 };
 
 use crate::{

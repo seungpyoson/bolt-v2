@@ -93,11 +93,9 @@ impl PreparedStrategyRegistration {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("prepared strategy at batch index {failed_index} failed: {source}")]
+#[derive(Debug)]
 pub struct PreparedStrategyBatchError {
     failed_index: usize,
-    #[source]
     source: anyhow::Error,
 }
 
@@ -111,6 +109,22 @@ impl PreparedStrategyBatchError {
 
     pub fn failed_index(&self) -> usize {
         self.failed_index
+    }
+}
+
+impl std::fmt::Display for PreparedStrategyBatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "prepared strategy at batch index {} failed: {}",
+            self.failed_index, self.source
+        )
+    }
+}
+
+impl std::error::Error for PreparedStrategyBatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
     }
 }
 

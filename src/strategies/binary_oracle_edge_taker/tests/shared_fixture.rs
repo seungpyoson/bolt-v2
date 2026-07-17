@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+use std::{cell::RefCell, rc::Rc};
+
 use super::*;
 use nautilus_common::{
     actor::DataActorNative,

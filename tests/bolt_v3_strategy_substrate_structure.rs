@@ -32,6 +32,7 @@ const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
     "submit_order",
     "submit_order_list",
     "modify_order",
+    "modify_orders",
     "cancel_order",
     "cancel_orders",
     "cancel_all_orders",
@@ -76,6 +77,9 @@ const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
     "SubmitOrder",
     "SubmitOrderList",
     "ModifyOrder",
+    "ModifyOrders",
+    "BatchModifyOrders",
+    "BatchCancelOrders",
     "CancelOrder",
     "CancelOrders",
     "CancelAllOrders",
@@ -180,8 +184,9 @@ fn production_tokens(source: &str) -> Vec<Token> {
     while cursor < tokens.len() {
         if !protected_token_tree[cursor]
             && let Some(attribute_end) = cfg_test_attribute_end(&tokens, cursor)
+            && let Some(item_end) = cfg_gated_item_end(&tokens, attribute_end)
         {
-            cursor = cfg_gated_item_end(&tokens, attribute_end);
+            cursor = item_end;
         } else {
             production.push(tokens[cursor].clone());
             cursor += 1;
@@ -245,39 +250,91 @@ fn cfg_test_attribute_end(tokens: &[Token], start: usize) -> Option<usize> {
         .then_some(start + CFG_TEST_ATTRIBUTE.len())
 }
 
-fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> usize {
+fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
     // Stop at the first complete construct boundary and never cross an enclosing brace. For a
     // structured match-arm pattern, the first balanced brace can precede the gated body; retaining
     // that body is an intentional fail-closed over-match rather than hiding a production sibling.
     // Angle brackets are likewise not treated as structural depth because `<` is also an operator;
     // a comma in a test-only generic may retain its tail, but cannot hide production code.
-    let mut parentheses = 0usize;
-    let mut brackets = 0usize;
-    let mut braces = 0usize;
+    let mut delimiters: Vec<&str> = Vec::new();
+    let mut brace_terminates_construct = false;
+    let mut saw_item_or_expression_body = false;
+    let mut saw_match_arrow = false;
+    let mut can_start_item_or_macro = true;
     while cursor < tokens.len() {
         match tokens[cursor].text.as_str() {
-            "(" => parentheses += 1,
-            ")" => parentheses = parentheses.saturating_sub(1),
-            "[" => brackets += 1,
-            "]" => brackets = brackets.saturating_sub(1),
-            "{" if parentheses == 0 && brackets == 0 => braces += 1,
-            "}" if parentheses == 0 && brackets == 0 => {
-                if braces == 0 {
-                    return cursor;
+            token
+                if delimiters.is_empty()
+                    && can_start_item_or_macro
+                    && matches!(
+                        token,
+                        "fn" | "mod"
+                            | "struct"
+                            | "enum"
+                            | "union"
+                            | "impl"
+                            | "trait"
+                            | "extern"
+                            | "if"
+                            | "match"
+                            | "loop"
+                            | "while"
+                            | "for"
+                    ) =>
+            {
+                saw_item_or_expression_body = true;
+            }
+            "!" if delimiters.is_empty() && can_start_item_or_macro => {
+                saw_item_or_expression_body = true;
+            }
+            "=" if delimiters.is_empty()
+                && tokens
+                    .get(cursor + 1)
+                    .is_some_and(|token| token.text == ">") =>
+            {
+                saw_match_arrow = true;
+            }
+            ":" | "=" if delimiters.is_empty() => can_start_item_or_macro = false,
+            "(" | "[" | "{" => {
+                if delimiters.is_empty() && tokens[cursor].text == "{" {
+                    brace_terminates_construct = saw_item_or_expression_body || saw_match_arrow;
                 }
-                braces -= 1;
-                if braces == 0 {
-                    return cursor + 1;
+                delimiters.push(match tokens[cursor].text.as_str() {
+                    "(" => ")",
+                    "[" => "]",
+                    "{" => "}",
+                    _ => unreachable!(),
+                });
+            }
+            ")" | "]" | "}" => {
+                let Some(expected) = delimiters.pop() else {
+                    return (tokens[cursor].text == "}").then_some(cursor);
+                };
+                if expected != tokens[cursor].text {
+                    return None;
+                }
+                if delimiters.is_empty() && tokens[cursor].text == "}" && brace_terminates_construct
+                {
+                    return Some(cursor + 1);
+                }
+                if delimiters.is_empty()
+                    && tokens[cursor].text == "}"
+                    && !brace_terminates_construct
+                    && !tokens
+                        .get(cursor + 1)
+                        .is_some_and(|next| matches!(next.text.as_str(), "," | ";" | "="))
+                {
+                    return None;
                 }
             }
-            ";" | "," if parentheses == 0 && brackets == 0 && braces == 0 => {
-                return cursor + 1;
+            ";" | "," if delimiters.is_empty() => {
+                return Some(cursor + 1);
             }
             _ => {}
         }
         cursor += 1;
     }
-    cursor
+    None
 }
 
 fn ident_start(byte: u8) -> bool {
@@ -486,7 +543,6 @@ fn production_strategy_files() -> Vec<PathBuf> {
 
 fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
     let actual = texts(tokens);
-    let local_enum_variants = local_enum_variants(&actual);
     let mut violations: Vec<&str> = STRATEGY_MUTATION_AUTHORITY_NAMES
         .iter()
         .copied()
@@ -496,7 +552,7 @@ fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
         NT_TRADING_COMMAND_SURFACE_NAMES
             .iter()
             .copied()
-            .filter(|name| command_surface_reference(&actual, name, &local_enum_variants)),
+            .filter(|name| command_surface_reference(&actual, name)),
     );
     violations.extend(
         NT_VENUE_MUTATION_METHOD_NAMES
@@ -521,96 +577,17 @@ fn direct_method_reference(tokens: &[&str], name: &str) -> bool {
     })
 }
 
-fn command_surface_reference(
-    tokens: &[&str],
-    name: &str,
-    local_enum_variants: &[LocalEnumVariant<'_>],
-) -> bool {
-    tokens.iter().enumerate().any(|(index, token)| {
-        if *token != name {
-            return false;
-        }
-        let is_declaration = local_enum_variants
-            .iter()
-            .any(|variant| variant.declaration_index == index);
-        let is_local_reference = index >= 2
-            && tokens[index - 1] == "::"
-            && local_enum_variants.iter().any(|variant| {
-                variant.enum_name == tokens[index - 2] && variant.variant_name == name
-            });
-        !is_declaration && !is_local_reference
-    })
-}
-
-fn bare_function_reference(tokens: &[&str], name: &str) -> bool {
+fn command_surface_reference(tokens: &[&str], name: &str) -> bool {
+    // Exact NT command-surface names are reserved by this interim lexical fence. That intentionally
+    // rejects same-named local intent enums until the #1407 crate boundary makes NT authority
+    // structurally unnameable without relying on source-level resolution.
     tokens.contains(&name)
 }
 
-#[derive(Debug)]
-struct LocalEnumVariant<'a> {
-    enum_name: &'a str,
-    variant_name: &'a str,
-    declaration_index: usize,
-}
-
-fn local_enum_variants<'a>(tokens: &[&'a str]) -> Vec<LocalEnumVariant<'a>> {
-    let mut variants = Vec::new();
-    let mut cursor = 0;
-    while cursor + 2 < tokens.len() {
-        if tokens[cursor] != "enum" {
-            cursor += 1;
-            continue;
-        }
-        let enum_name = tokens[cursor + 1];
-        let Some(body_start) = tokens[cursor + 2..]
-            .iter()
-            .position(|token| *token == "{")
-            .map(|offset| cursor + 2 + offset)
-        else {
-            break;
-        };
-        let mut braces = 1usize;
-        let mut parentheses = 0usize;
-        let mut brackets = 0usize;
-        let mut expect_variant = true;
-        cursor = body_start + 1;
-        while cursor < tokens.len() && braces > 0 {
-            match tokens[cursor] {
-                "{" => braces += 1,
-                "}" => braces -= 1,
-                "(" => parentheses += 1,
-                ")" => parentheses = parentheses.saturating_sub(1),
-                "[" => brackets += 1,
-                "]" => brackets = brackets.saturating_sub(1),
-                "," if braces == 1 && parentheses == 0 && brackets == 0 => {
-                    expect_variant = true;
-                }
-                token
-                    if braces == 1
-                        && parentheses == 0
-                        && brackets == 0
-                        && expect_variant
-                        && token
-                            .as_bytes()
-                            .first()
-                            .is_some_and(|byte| ident_start(*byte))
-                        && tokens
-                            .get(cursor + 1)
-                            .is_some_and(|next| matches!(*next, "(" | "{" | "=" | "," | "}")) =>
-                {
-                    variants.push(LocalEnumVariant {
-                        enum_name,
-                        variant_name: token,
-                        declaration_index: cursor,
-                    });
-                    expect_variant = false;
-                }
-                _ => {}
-            }
-            cursor += 1;
-        }
-    }
-    variants
+fn bare_function_reference(tokens: &[&str], name: &str) -> bool {
+    // Raw transport names are likewise reserved exact tokens. The conservative false-positive
+    // direction avoids alias, cast, field, and function-pointer escapes.
+    tokens.contains(&name)
 }
 
 fn trait_method_names<'a>(tokens: &'a [Token], trait_name: &str) -> Vec<&'a str> {
@@ -980,6 +957,7 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
         "struct State { #[cfg(test)] fixture: Wrapper<(CancelOrder>, production: SubmitOrder, } fn production_after() {}",
         "struct State { #[cfg(test)] fixture: Wrapper<[CancelOrder>, production: SubmitOrder, } fn production_after() {}",
         "struct State { #[cfg(test)] fixture: Wrapper<{CancelOrder>, production: SubmitOrder, } fn production_after() {}",
+        "struct State { #[cfg(test)] fixture: Wrapper<fn(CancelOrder) { production: SubmitOrder, } fn production_after() {}",
     ] {
         let tokens = production_tokens(source);
         assert!(contains_sequence(

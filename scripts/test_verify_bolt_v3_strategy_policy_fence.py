@@ -412,6 +412,20 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "the pinned NT batch-modification surface must remain fenced",
         )
 
+    def test_reserves_exact_nt_command_names_for_local_intent_enums(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            enum ExitAction { CancelOrder }
+            let action = ExitAction::CancelOrder;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            1,
+            "the interim lexical fence deliberately reserves exact NT command names",
+        )
+
     def test_detects_strategy_local_execution_policy_construction(self) -> None:
         labels = self.labels_for(
             """

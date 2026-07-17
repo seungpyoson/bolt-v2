@@ -49,7 +49,7 @@ FORBIDDEN_RULES = (
         "NT venue-mutating lifecycle API",
         re.compile(
             r"(?:\.|::)\s*(?:r#)?"
-            r"(?P<api>market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
+            r"(?P<api>market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_orders|modify_order|exit_market|market_exit)"
             r"(?![A-Za-z0-9_])"
         ),
     ),

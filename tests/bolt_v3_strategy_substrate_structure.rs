@@ -15,6 +15,76 @@ const STRATEGY_MUTATION_AUTHORITY_NAMES: &[&str] = &[
     "with_order_execution_policy",
 ];
 
+const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
+    "core_mut",
+    "order_manager",
+    "send_risk_command",
+    "send_exec_command",
+    "send_emulator_command",
+    "send_algo_command",
+    "send_trading_command",
+    "send_any",
+    "send_any_value",
+    "risk_engine_queue_execute",
+    "exec_engine_queue_execute",
+    "emulator_queue_execute",
+    "algo_engine_queue_execute",
+    "submit_order",
+    "submit_order_list",
+    "modify_order",
+    "cancel_order",
+    "cancel_orders",
+    "cancel_all_orders",
+    "close_position",
+    "close_all_positions",
+    "submit_order_via_nt",
+    "cancel_order_via_nt",
+    "cancel_all_orders_via_nt",
+    "submit_order_with_params",
+    "submit_order_list_with_params",
+    "modify_order_with_params",
+    "cancel_order_with_params",
+    "cancel_orders_with_params",
+    "cancel_all_orders_with_params",
+    "modify_order_in_place",
+    "expire_gtd_order",
+    "reactivate_gtd_timers",
+    "set_gtd_expiry",
+    "cancel_gtd_expiry",
+    "finalize_market_exit",
+    "cancel_market_exit",
+    "deny_order",
+    "deny_order_list",
+    "market_exit_strategy",
+    "exit_market",
+    "market_exit",
+];
+
+const NT_VENUE_MUTATION_BARE_NAMES: &[&str] = &[
+    "send_trading_command",
+    "send_any",
+    "send_any_value",
+    "risk_engine_queue_execute",
+    "exec_engine_queue_execute",
+    "emulator_queue_execute",
+    "algo_engine_queue_execute",
+];
+
+const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
+    "TradingCommand",
+    "SubmitOrder",
+    "SubmitOrderList",
+    "ModifyOrder",
+    "CancelOrder",
+    "CancelOrders",
+    "CancelAllOrders",
+    "ClosePosition",
+    "CloseAllPositions",
+    "DenyOrder",
+    "DenyOrderList",
+    "ExitMarket",
+];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Token {
     text: String,
@@ -99,6 +169,50 @@ fn tokenize(source: &str) -> Vec<Token> {
         index += 1;
     }
     tokens
+}
+
+fn production_tokens(source: &str) -> Vec<Token> {
+    let tokens = tokenize(source);
+    let mut production = Vec::with_capacity(tokens.len());
+    let mut cursor = 0;
+    while cursor < tokens.len() {
+        if let Some(attribute_end) = cfg_test_attribute_end(&tokens, cursor) {
+            cursor = cfg_gated_item_end(&tokens, attribute_end);
+        } else {
+            production.push(tokens[cursor].clone());
+            cursor += 1;
+        }
+    }
+    production
+}
+
+fn cfg_test_attribute_end(tokens: &[Token], start: usize) -> Option<usize> {
+    const CFG_TEST_ATTRIBUTE: &[&str] = &["#", "[", "cfg", "(", "test", ")", "]"];
+    (texts(tokens.get(start..start + CFG_TEST_ATTRIBUTE.len())?) == CFG_TEST_ATTRIBUTE)
+        .then_some(start + CFG_TEST_ATTRIBUTE.len())
+}
+
+fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> usize {
+    while cursor < tokens.len() {
+        match tokens[cursor].text.as_str() {
+            ";" => return cursor + 1,
+            "{" => {
+                let mut depth = 1usize;
+                cursor += 1;
+                while cursor < tokens.len() && depth != 0 {
+                    match tokens[cursor].text.as_str() {
+                        "{" => depth += 1,
+                        "}" => depth -= 1,
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+                return cursor;
+            }
+            _ => cursor += 1,
+        }
+    }
+    cursor
 }
 
 fn ident_start(byte: u8) -> bool {
@@ -305,13 +419,49 @@ fn production_strategy_files() -> Vec<PathBuf> {
         .collect()
 }
 
-fn named_strategy_mutation_authorities(tokens: &[Token]) -> Vec<&str> {
+fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
     let actual = texts(tokens);
-    STRATEGY_MUTATION_AUTHORITY_NAMES
+    let mut violations: Vec<&str> = STRATEGY_MUTATION_AUTHORITY_NAMES
         .iter()
+        .chain(NT_TRADING_COMMAND_SURFACE_NAMES)
         .copied()
         .filter(|name| actual.contains(name))
-        .collect()
+        .collect();
+    violations.extend(
+        NT_VENUE_MUTATION_METHOD_NAMES
+            .iter()
+            .copied()
+            .filter(|name| direct_method_reference(&actual, name)),
+    );
+    violations.extend(
+        NT_VENUE_MUTATION_BARE_NAMES
+            .iter()
+            .copied()
+            .filter(|name| bare_function_reference(&actual, name)),
+    );
+    violations.sort_unstable();
+    violations.dedup();
+    violations
+}
+
+fn direct_method_reference(tokens: &[&str], name: &str) -> bool {
+    tokens.iter().enumerate().any(|(index, token)| {
+        *token == name
+            && index > 0
+            && matches!(tokens[index - 1], "." | "::")
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| matches!(*next, "(" | "::" | "<" | ";" | "," | ")"))
+    })
+}
+
+fn bare_function_reference(tokens: &[&str], name: &str) -> bool {
+    tokens.iter().enumerate().any(|(index, token)| {
+        *token == name
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| matches!(*next, "(" | "::" | "<" | ";" | "," | ")"))
+    })
 }
 
 fn workspace_crate_files() -> Vec<PathBuf> {
@@ -459,15 +609,55 @@ fn retired_registry_matcher_covers_direct_and_grouped_paths_only() {
 }
 
 #[test]
-fn strategy_mutation_authority_matcher_has_positive_and_negative_controls() {
-    let forbidden = tokenize(
-        "use crate::bolt_v3_order_execution::BoltV3NtVenueMutationSink;",
+fn production_tokenizer_excludes_inline_test_items_only() {
+    let tokens = production_tokens(
+        r#"
+        fn production() { emit_order_intent(); }
+        #[cfg(test)]
+        mod tests {
+            fn fixture() { self.submit_order(order); }
+        }
+        #[cfg(not(test))]
+        fn retained() { self.cancel_order(order_id); }
+        "#,
     );
-    assert_eq!(
-        named_strategy_mutation_authorities(&forbidden),
-        vec!["BoltV3NtVenueMutationSink"]
+    assert_eq!(count_sequence(&tokens, &["emit_order_intent", "("]), 1);
+    assert_eq!(count_sequence(&tokens, &["submit_order", "("]), 0);
+    assert_eq!(count_sequence(&tokens, &["cancel_order", "("]), 1);
+}
+
+#[test]
+fn strategy_mutation_surface_matcher_has_complete_controls() {
+    for authority in STRATEGY_MUTATION_AUTHORITY_NAMES {
+        let tokens = tokenize(&format!("use boundary::{authority};"));
+        assert_eq!(named_strategy_mutation_surfaces(&tokens), vec![*authority]);
+    }
+    for method in NT_VENUE_MUTATION_METHOD_NAMES {
+        let tokens = tokenize(&format!("self.{method}(command);"));
+        assert!(
+            named_strategy_mutation_surfaces(&tokens).contains(method),
+            "direct method matcher must retain {method}"
+        );
+    }
+    for function in NT_VENUE_MUTATION_BARE_NAMES {
+        let tokens = tokenize(&format!("{function}(command);"));
+        assert!(
+            named_strategy_mutation_surfaces(&tokens).contains(function),
+            "bare transport matcher must retain {function}"
+        );
+    }
+    for command in NT_TRADING_COMMAND_SURFACE_NAMES {
+        let tokens = tokenize(&format!("use nt::{command};"));
+        assert!(
+            named_strategy_mutation_surfaces(&tokens).contains(command),
+            "command-surface matcher must retain {command}"
+        );
+    }
+    assert!(named_strategy_mutation_surfaces(&tokenize("emit_order_intent();")).is_empty());
+    assert!(
+        named_strategy_mutation_surfaces(&tokenize("submit_order_intent();")).is_empty(),
+        "near-neighbor intent helper must not trip the exact mutation fence"
     );
-    assert!(named_strategy_mutation_authorities(&tokenize("emit_order_intent();")).is_empty());
 }
 
 #[test]
@@ -513,9 +703,9 @@ fn production_strategy_modules_do_not_name_nt_mutation_authority() {
     let mut violations = Vec::new();
     for path in production_strategy_files() {
         let source = std::fs::read_to_string(&path).expect("strategy source should be readable");
-        let tokens = tokenize(&source);
-        for authority in named_strategy_mutation_authorities(&tokens) {
-            violations.push(format!("{}: {authority}", relative(&path)));
+        let tokens = production_tokens(&source);
+        for surface in named_strategy_mutation_surfaces(&tokens) {
+            violations.push(format!("{}: {surface}", relative(&path)));
         }
     }
     assert!(

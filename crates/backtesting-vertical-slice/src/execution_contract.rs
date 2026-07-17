@@ -302,10 +302,7 @@ mod tests {
     }
 
     fn reconcile_position_accounting(fixture: &mut Fixture) {
-        let mut position = Position::new(
-            &fixture.instrument,
-            fixture.position_fills[0].clone(),
-        );
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         for fill in &fixture.position_fills[1..] {
             position.apply(fill);
         }
@@ -446,10 +443,7 @@ mod tests {
         let mut fixture = fixture();
         fixture.position_fills[0].last_qty = Quantity::from("1.71");
         fixture.position_fills[1].last_qty = Quantity::from("1.71");
-        let mut position = Position::new(
-            &fixture.instrument,
-            fixture.position_fills[0].clone(),
-        );
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         position.apply(&fixture.position_fills[1]);
         fixture.realized_pnl = position
             .realized_pnl
@@ -468,10 +462,7 @@ mod tests {
         extra_entry.trade_id = nautilus_model::identifiers::TradeId::from("extra-entry");
         fixture.position_fills.insert(1, extra_entry);
         fixture.position_fills[2].last_qty = Quantity::from("5.42");
-        let mut position = Position::new(
-            &fixture.instrument,
-            fixture.position_fills[0].clone(),
-        );
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         for fill in &fixture.position_fills[1..] {
             position.apply(fill);
         }
@@ -560,10 +551,7 @@ mod tests {
         let commission = Money::from("0.01 USDC");
         fixture.fills[0].commission = Some(commission);
         fixture.position_fills[0] = fixture.fills[0].clone();
-        let mut position = Position::new(
-            &fixture.instrument,
-            fixture.position_fills[0].clone(),
-        );
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         position.apply(&fixture.position_fills[1]);
         fixture.realized_pnl = position
             .realized_pnl

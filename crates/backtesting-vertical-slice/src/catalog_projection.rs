@@ -1158,20 +1158,16 @@ pub(crate) fn order_book_delta_at_precision(
     price_precision: u8,
     size_precision: u8,
 ) -> Result<OrderBookDelta> {
-    let original_price = delta.order.price.as_decimal();
-    let original_size = delta.order.size.as_decimal();
-    let price = Price::from_decimal_dp(original_price, price_precision)
+    let price_value = delta.order.price.as_decimal().to_string();
+    let price_value = rescaled(&price_value, price_precision)
         .context("represent order-book delta price at instrument precision")?;
-    let size = Quantity::from_decimal_dp(original_size, size_precision)
+    let price = Price::from_str(&price_value)
+        .with_context(|| format!("parse order-book delta price {price_value:?}"))?;
+    let size_value = delta.order.size.as_decimal().to_string();
+    let size_value = rescaled(&size_value, size_precision)
         .context("represent order-book delta size at instrument precision")?;
-    ensure!(
-        price.as_decimal() == original_price,
-        "order-book delta price {original_price} exceeds instrument precision {price_precision}"
-    );
-    ensure!(
-        size.as_decimal() == original_size,
-        "order-book delta size {original_size} exceeds instrument precision {size_precision}"
-    );
+    let size = Quantity::from_str(&size_value)
+        .with_context(|| format!("parse order-book delta size {size_value:?}"))?;
     OrderBookDelta::new_checked(
         delta.instrument_id,
         delta.action,
@@ -5207,19 +5203,12 @@ max_notional = "200000"
     #[test]
     fn order_book_delta_precision_normalization_rejects_rounding() {
         let instrument_id = InstrumentId::from("YES.TESTVENUE");
-        for (price, size, expected_field) in [
-            ("0.491", "1.23", "price"),
-            ("0.49", "1.234", "size"),
-        ] {
+        for (price, size, expected_field) in [("0.491", "1.23", "price"), ("0.49", "1.234", "size")]
+        {
             let delta = OrderBookDelta::new_checked(
                 instrument_id,
                 BookAction::Add,
-                BookOrder::new(
-                    OrderSide::Buy,
-                    Price::from(price),
-                    Quantity::from(size),
-                    1,
-                ),
+                BookOrder::new(OrderSide::Buy, Price::from(price), Quantity::from(size), 1),
                 0,
                 0,
                 UnixNanos::from(1_u64),

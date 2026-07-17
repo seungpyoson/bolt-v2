@@ -102,7 +102,7 @@ fn user_fees_with_discounts(
                 "userSpotAddRate":"{spot_maker_rate}",
                 "activeReferralDiscount":"{referral_discount}",
                 "trial":null,
-                "feeTrialReward":"0",
+                "feeTrialEscrow":"0",
                 "nextTrialAvailableTimestamp":null,
                 "stakingLink":{{
                     "type":"tradingUser",
@@ -134,6 +134,7 @@ fn product(
             "growthMode":false,"builderProfileId":"builder-profile",
             "builderRateBps":{builder_rate_bps},"builderApprovedMaxBps":{builder_max_bps},
             "spotDustAuthorityComplete":{dust_complete},
+            "carryOraclePrice":100,
             "carryPointRatePerNs":0.000000001,
             "carryDebitRateBoundPerNs":0.000000002
         }}"#
@@ -248,6 +249,7 @@ fn negative_maker_rate_bypasses_referral_and_hip3_scaling() {
             "growthMode":false,"builderProfileId":"builder-profile",
             "builderRateBps":0,"builderApprovedMaxBps":0,
             "spotDustAuthorityComplete":false,
+            "carryOraclePrice":100,
             "carryPointRatePerNs":0.000000001,
             "carryDebitRateBoundPerNs":0.000000002
         }"#,
@@ -341,6 +343,7 @@ fn perp_without_horizon_or_debit_bound_fails_closed() {
             "builderRateBps": 0,
             "builderApprovedMaxBps": 0,
             "spotDustAuthorityComplete": false,
+            "carryOraclePrice": 100,
             "carryPointRatePerNs": 0.000000001
         }))
         .unwrap(),
@@ -436,6 +439,29 @@ fn user_fees_parser_requires_complete_account_surface() {
 }
 
 #[test]
+fn governed_live_hyperliquid_quote_authority_captures_parse() {
+    let metadata = HyperliquidSnapshotMetadata {
+        snapshot_id: "governed-live-user-fees".to_string(),
+        source_at_ns: 90,
+        fetched_at_ns: 95,
+        valid_until_ns: 110,
+    };
+    HyperliquidUserFeesSnapshot::from_wire_json(
+        metadata.clone(),
+        "governed-public-fixture-account",
+        include_str!("fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"),
+    )
+    .unwrap();
+    HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
+        metadata,
+        include_bytes!("fixtures/bolt_v3/boundary_evidence/hyperliquid-meta-and-asset-ctxs.json"),
+        "BTC",
+        config().carry.as_ref().unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
     let json = serde_json::to_string(&serde_json::json!({
         "dailyUserVlm": [{
@@ -462,7 +488,7 @@ fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
         "userSpotAddRate": "0.00028",
         "activeReferralDiscount": "0.04",
         "trial": null,
-        "feeTrialReward": "0",
+        "feeTrialEscrow": "0",
         "nextTrialAvailableTimestamp": null,
         "stakingLink": null,
         "activeStakingDiscount": {

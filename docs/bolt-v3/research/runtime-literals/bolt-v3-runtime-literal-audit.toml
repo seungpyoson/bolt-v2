@@ -21603,42 +21603,10 @@ reason = "Stable checked-time diagnostic; quote validity remains TOML-owned."
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
 kind = "string"
-literal = '''"Hyperliquid product metadata/context cardinality mismatch"'''
-context = '''"Hyperliquid product metadata/context cardinality mismatch"'''
-classification = "diagnostic_template"
-reason = "Stable fail-closed provider-boundary consistency diagnostic."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"Hyperliquid instrument is absent from authoritative product metadata"'''
-context = '''.context("Hyperliquid instrument is absent from authoritative product metadata")?;'''
-classification = "diagnostic_template"
-reason = "Stable fail-closed provider-boundary lookup diagnostic; the instrument remains configuration and runtime-data owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
 literal = '''"Hyperliquid perp surface has no carry policy"'''
 context = '''.context("Hyperliquid perp surface has no carry policy")?;'''
 classification = "diagnostic_template"
 reason = "Stable fail-closed missing-policy diagnostic; carry policy remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"Hyperliquid product has no current funding rate"'''
-context = '''.context("Hyperliquid product has no current funding rate")?'''
-classification = "diagnostic_template"
-reason = "Stable fail-closed missing-authority diagnostic; no zero-rate fallback is supplied."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"enabled"'''
-context = '''growth_mode: product.growth_mode.as_deref() == Some("enabled"),'''
-classification = "hyperliquid_product_wire_discriminator"
-reason = "Versioned provider product-metadata discriminator; it is parsed only from authoritative wire evidence."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
@@ -21655,6 +21623,30 @@ literal = '''"builder"'''
 context = '''!= BTreeSet::from(["builder", "protocol"])'''
 classification = "hyperliquid_economics_component_schema_key"
 reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| carry.funding_interval_ns == 0'''
+classification = "invalid_sentinel"
+reason = "Zero is the invalid sentinel for a mandatory positive TOML-derived funding interval."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| product.max_leverage == 0'''
+classification = "invalid_wire_sentinel"
+reason = "Zero is rejected as an impossible provider-advertised leverage limit before the product can become quote authority."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "number"
+literal = '''0'''
+context = '''.0'''
+classification = "tuple_field_index"
+reason = "Compile-time tuple field selection for the sole validated product-surface map entry; it is not a runtime policy value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"

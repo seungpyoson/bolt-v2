@@ -1,0 +1,20 @@
+schema_version = 1
+adapter_id = "HYPERLIQUID"
+class = "HttpResponseBody"
+feeder = "EconomicsQuoteAuthority"
+captured_at = "2026-07-18"
+source_url = "https://api.hyperliquid.xyz/info"
+source_method = "POST"
+
+[[captures]]
+kind = "user_fees"
+request_type = "userFees"
+request_account = "0x54c049d9c7d3c92c2462bf3d28e083f3d6805061"
+fixture = "hyperliquid-user-fees.json"
+fixture_sha256 = "a57ff40425c69e468025bf5445b5db3b376625004bce151a45cf8c5406ab66f6"
+
+[[captures]]
+kind = "perp_meta_and_asset_contexts"
+request_type = "metaAndAssetCtxs"
+fixture = "hyperliquid-meta-and-asset-ctxs.json"
+fixture_sha256 = "d32a50f87d16ac54590bd86b8afc5ddbf178241c3902771ebe29e8116488a516"

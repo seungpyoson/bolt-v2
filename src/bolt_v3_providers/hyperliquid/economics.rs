@@ -13,7 +13,6 @@ use crate::{
 use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
-use nautilus_hyperliquid::http::models::PerpMetaAndCtxs;
 use nautilus_model::{
     identifiers::Venue,
     instruments::{Instrument, InstrumentAny},
@@ -182,7 +181,7 @@ pub struct HyperliquidUserFeesSnapshot {
     daily_user_volume: Decimal,
     active_referral_discount: Decimal,
     active_staking_discount: Decimal,
-    trial_credits: Decimal,
+    trial_escrow: Decimal,
     perp_taker_rate: Decimal,
     perp_maker_rate: Decimal,
     spot_taker_rate: Decimal,
@@ -208,7 +207,7 @@ struct HyperliquidUserFeesWire {
     user_spot_add_rate: Decimal,
     active_referral_discount: Decimal,
     trial: Option<serde_json::Value>,
-    fee_trial_reward: Decimal,
+    fee_trial_escrow: Decimal,
     #[serde(rename = "nextTrialAvailableTimestamp")]
     _next_trial_available_timestamp: Option<u64>,
     staking_link: Option<HyperliquidStakingLinkWire>,
@@ -274,6 +273,65 @@ struct HyperliquidStakingLinkWire {
     staking_user: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(transparent)]
+#[allow(dead_code)]
+struct RequiredNullable<T>(Option<T>);
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[allow(dead_code)]
+struct HyperliquidPerpMetaWire {
+    universe: Vec<HyperliquidPerpProductWire>,
+    margin_tables: Vec<(u32, HyperliquidMarginTableWire)>,
+    collateral_token: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[allow(dead_code)]
+struct HyperliquidPerpProductWire {
+    name: String,
+    sz_decimals: u32,
+    max_leverage: u32,
+    margin_table_id: u32,
+    is_delisted: Option<bool>,
+    margin_mode: Option<String>,
+    only_isolated: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[allow(dead_code)]
+struct HyperliquidMarginTableWire {
+    description: String,
+    margin_tiers: Vec<HyperliquidMarginTierWire>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[allow(dead_code)]
+struct HyperliquidMarginTierWire {
+    lower_bound: Decimal,
+    max_leverage: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[allow(dead_code)]
+struct HyperliquidAssetContextWire {
+    funding: Decimal,
+    open_interest: Decimal,
+    prev_day_px: Decimal,
+    day_ntl_vlm: Decimal,
+    premium: RequiredNullable<Decimal>,
+    oracle_px: Decimal,
+    mark_px: Decimal,
+    mid_px: RequiredNullable<Decimal>,
+    impact_pxs: RequiredNullable<Vec<Decimal>>,
+    day_base_vlm: Decimal,
+}
+
 impl HyperliquidUserFeesSnapshot {
     pub fn from_wire_json(
         metadata: HyperliquidSnapshotMetadata,
@@ -314,7 +372,7 @@ impl HyperliquidUserFeesSnapshot {
             daily_user_volume,
             active_referral_discount: wire.active_referral_discount,
             active_staking_discount: wire.active_staking_discount.discount,
-            trial_credits: wire.fee_trial_reward,
+            trial_escrow: wire.fee_trial_escrow,
             perp_taker_rate: wire.user_cross_rate,
             perp_maker_rate: wire.user_add_rate,
             spot_taker_rate: wire.user_spot_cross_rate,
@@ -384,7 +442,7 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
         && tier_rates_valid
         && staking_valid
         && staking_link_valid
-        && wire.fee_trial_reward >= Decimal::ZERO
+        && wire.fee_trial_escrow >= Decimal::ZERO
         && unit_interval(schedule.referral_discount)
         && unit_interval(wire.active_referral_discount)
         && wire.active_referral_discount <= schedule.referral_discount
@@ -426,6 +484,7 @@ pub struct HyperliquidProductEconomicsSnapshot {
     builder_rate_bps: Option<Decimal>,
     builder_approved_max_bps: Option<Decimal>,
     spot_dust_authority_complete: bool,
+    carry_oracle_price: Option<Decimal>,
     carry_point_rate_per_ns: Option<Decimal>,
     carry_debit_rate_bound_per_ns: Option<Decimal>,
 }
@@ -433,6 +492,76 @@ pub struct HyperliquidProductEconomicsSnapshot {
 impl HyperliquidProductEconomicsSnapshot {
     pub fn from_json(json: &str) -> Result<Self, HyperliquidEconomicsError> {
         serde_json::from_str(json).map_err(|_| HyperliquidEconomicsError::InvalidProductMetadata)
+    }
+
+    pub fn from_perp_meta_wire(
+        metadata: HyperliquidSnapshotMetadata,
+        json: &[u8],
+        raw_symbol: &str,
+        carry: &HyperliquidCarryPolicy,
+    ) -> Result<Self, HyperliquidEconomicsError> {
+        let (meta, contexts): (HyperliquidPerpMetaWire, Vec<HyperliquidAssetContextWire>) =
+            serde_json::from_slice(json)
+                .map_err(|_| HyperliquidEconomicsError::InvalidProductMetadata)?;
+        if metadata.snapshot_id.trim().is_empty()
+            || metadata.source_at_ns > metadata.fetched_at_ns
+            || metadata.fetched_at_ns > metadata.valid_until_ns
+            || meta.universe.is_empty()
+            || meta.margin_tables.is_empty()
+            || meta.universe.len() != contexts.len()
+            || carry.funding_interval_ns == 0
+            || carry.venue_rate_cap_fraction <= Decimal::ZERO
+        {
+            return Err(HyperliquidEconomicsError::InvalidProductMetadata);
+        }
+        let (product, context) = meta
+            .universe
+            .iter()
+            .zip(contexts.iter())
+            .find(|(product, _)| product.name == raw_symbol)
+            .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
+        if product.is_delisted.is_some()
+            || product.margin_mode.is_some()
+            || product.only_isolated.is_some()
+            || product.max_leverage == 0
+            || !meta
+                .margin_tables
+                .iter()
+                .any(|(table_id, _)| *table_id == product.margin_table_id)
+            || context.oracle_px <= Decimal::ZERO
+            || context.mark_px <= Decimal::ZERO
+        {
+            return Err(HyperliquidEconomicsError::InvalidProductMetadata);
+        }
+        let point_rate = context
+            .funding
+            .checked_div(Decimal::from(carry.funding_interval_ns))
+            .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
+        let bound_rate = carry
+            .venue_rate_cap_fraction
+            .checked_div(Decimal::from(carry.funding_interval_ns))
+            .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
+        Ok(Self {
+            snapshot_id: metadata.snapshot_id,
+            source_at_ns: metadata.source_at_ns,
+            fetched_at_ns: metadata.fetched_at_ns,
+            valid_until_ns: metadata.valid_until_ns,
+            product_kind: HyperliquidProductKind::Perp,
+            base_unit: None,
+            quote_unit: None,
+            stable_pair: false,
+            aligned_quote_or_collateral: false,
+            hip3: false,
+            deployer_scale: Decimal::ZERO,
+            growth_mode: false,
+            builder_profile_id: None,
+            builder_rate_bps: None,
+            builder_approved_max_bps: None,
+            spot_dust_authority_complete: false,
+            carry_oracle_price: Some(context.oracle_px),
+            carry_point_rate_per_ns: Some(point_rate),
+            carry_debit_rate_bound_per_ns: Some(bound_rate),
+        })
     }
 }
 
@@ -497,15 +626,18 @@ impl HyperliquidEconomicsAuthority {
         let adapter_config =
             HyperliquidEconomicsAdapterConfig::from_execution_config(&execution.economics)
                 .map_err(|error| anyhow::anyhow!("invalid economics adapter config: {error:?}"))?;
-        let [(product_surface_id, _)] = execution
+        anyhow::ensure!(
+            execution.economics.product_surface_policies.len() == 1,
+            "Hyperliquid economics requires exactly one configured product surface"
+        );
+        let product_surface_id = execution
             .economics
             .product_surface_policies
             .iter()
-            .collect::<Vec<_>>()
-            .as_slice()
-        else {
-            anyhow::bail!("Hyperliquid economics requires exactly one configured product surface");
-        };
+            .next()
+            .context("Hyperliquid economics product surface is missing")?
+            .0
+            .clone();
         let http_client = HttpClient::new(
             HashMap::from([
                 (USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string()),
@@ -525,7 +657,7 @@ impl HyperliquidEconomicsAuthority {
             venue,
             economics: execution.economics,
             adapter_config,
-            product_surface_id: (*product_surface_id).clone(),
+            product_surface_id,
             base_url_http: execution.base_url_http,
             http_timeout_secs: execution.http_timeout_secs,
             http_client,
@@ -550,7 +682,7 @@ impl HyperliquidEconomicsAuthority {
             "Hyperliquid economics info request returned HTTP status {}",
             response.status.as_u16()
         );
-        Ok(response.body)
+        Ok(response.body.to_vec())
     }
 }
 
@@ -609,55 +741,26 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
                 .context("Hyperliquid userFees response was not UTF-8 JSON")?,
         )
         .map_err(|error| anyhow::anyhow!("invalid Hyperliquid userFees response: {error:?}"))?;
-        let PerpMetaAndCtxs::Payload(payload) = serde_json::from_slice(&product_body)
-            .context("invalid Hyperliquid metaAndAssetCtxs response")?;
-        let (meta, contexts) = *payload;
-        anyhow::ensure!(
-            meta.universe.len() == contexts.len(),
-            "Hyperliquid product metadata/context cardinality mismatch"
-        );
         let raw_symbol = instrument.raw_symbol();
-        let product_index = meta
-            .universe
-            .iter()
-            .position(|product| product.name == raw_symbol.as_str())
-            .context("Hyperliquid instrument is absent from authoritative product metadata")?;
-        let product = &meta.universe[product_index];
-        let product_context = &contexts[product_index];
         let carry = self
             .adapter_config
             .carry
             .as_ref()
             .context("Hyperliquid perp surface has no carry policy")?;
-        let point_rate = product_context
-            .funding
-            .context("Hyperliquid product has no current funding rate")?
-            .checked_div(Decimal::from(carry.funding_interval_ns))
-            .context("Hyperliquid funding point-rate conversion failed")?;
-        let bound_rate = carry
-            .venue_rate_cap_fraction
-            .checked_div(Decimal::from(carry.funding_interval_ns))
-            .context("Hyperliquid funding bound-rate conversion failed")?;
-        let product_snapshot = HyperliquidProductEconomicsSnapshot {
-            snapshot_id: product_snapshot_id.clone(),
-            source_at_ns: refreshed_at_ns,
-            fetched_at_ns: refreshed_at_ns,
-            valid_until_ns,
-            product_kind: HyperliquidProductKind::Perp,
-            base_unit: None,
-            quote_unit: None,
-            stable_pair: false,
-            aligned_quote_or_collateral: false,
-            hip3: false,
-            deployer_scale: self.adapter_config.formula.hip3_below_threshold_base,
-            growth_mode: product.growth_mode.as_deref() == Some("enabled"),
-            builder_profile_id: None,
-            builder_rate_bps: None,
-            builder_approved_max_bps: None,
-            spot_dust_authority_complete: false,
-            carry_point_rate_per_ns: Some(point_rate),
-            carry_debit_rate_bound_per_ns: Some(bound_rate),
-        };
+        let product_snapshot = HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
+            HyperliquidSnapshotMetadata {
+                snapshot_id: product_snapshot_id.clone(),
+                source_at_ns: refreshed_at_ns,
+                fetched_at_ns: refreshed_at_ns,
+                valid_until_ns,
+            },
+            &product_body,
+            raw_symbol.as_str(),
+            carry,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!("invalid Hyperliquid metaAndAssetCtxs response: {error:?}")
+        })?;
         let adapter = HyperliquidEconomicsAdapter::try_new(
             self.adapter_config.clone(),
             user_fees,
@@ -981,14 +1084,17 @@ impl HyperliquidEconomicsAdapter {
         if bound_rate <= Decimal::ZERO || point_rate.is_zero() {
             return Err(HyperliquidEconomicsError::InvalidCarryBound);
         }
-        let average_price = self
-            .notional(request)?
-            .checked_div(self.quantity(request)?)
-            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        let oracle_price = self
+            .product
+            .carry_oracle_price
+            .ok_or(HyperliquidEconomicsError::MissingCarryPolicy)?;
+        if oracle_price <= Decimal::ZERO {
+            return Err(HyperliquidEconomicsError::InvalidCarryBound);
+        }
         let horizon = Decimal::from(position.holding_horizon_ns);
         let position_notional = position
             .quantity
-            .checked_mul(average_price)
+            .checked_mul(oracle_price)
             .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
         let stressed_position_notional = position_notional
             .checked_mul(policy.standard_price_stress_multiplier)
@@ -1050,7 +1156,7 @@ impl HyperliquidEconomicsAdapter {
                 },
                 CalculationFactor {
                     factor_id: policy.stress_fixture_id.clone(),
-                    value: average_price,
+                    value: oracle_price,
                 },
             ],
             formula_id: policy.formula_id.clone(),
@@ -1123,7 +1229,7 @@ fn validate_authority_snapshots(
     let user_fees_valid = user_fees.source_at_ns <= user_fees.fetched_at_ns
         && user_fees.fetched_at_ns <= user_fees.valid_until_ns
         && user_fees.daily_user_volume >= Decimal::ZERO
-        && user_fees.trial_credits >= Decimal::ZERO
+        && user_fees.trial_escrow >= Decimal::ZERO
         && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_referral_discount)
         && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_staking_discount)
         && user_fees.perp_taker_rate >= Decimal::ZERO

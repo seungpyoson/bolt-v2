@@ -255,6 +255,7 @@ pub enum BoundaryFeeder {
     DeployTargetHostFacts,
     SecretResolution,
     PolymarketVenueTruthRuntime,
+    EconomicsQuoteAuthority,
 }
 pub struct BoundaryRegistryEntry {
     pub adapter_id: &'static str,
@@ -271,6 +272,8 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry { adapter_id: IMDS_METADATA_ADAPTER_ID, class: BoundaryEvidenceClass::ImdsMetadata, feeder: BoundaryFeeder::DeployTargetHostFacts },
     BoundaryRegistryEntry { adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID, class: BoundaryEvidenceClass::AwsSdkResponse, feeder: BoundaryFeeder::SecretResolution },
     BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketVenueTruthRuntime },
+    BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::EconomicsQuoteAuthority },
+    BoundaryRegistryEntry { adapter_id: hyperliquid::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::EconomicsQuoteAuthority },
 ];
 """,
     )
@@ -402,6 +405,51 @@ jobs:
     steps:
       - run: echo capture-gate
 """,
+    )
+    fixture_root = "tests/fixtures/bolt_v3/boundary_evidence"
+    for fixture in (
+        "polymarket-fee-bearing.json",
+        "polymarket-fee-free.json",
+        "hyperliquid-user-fees.json",
+        "hyperliquid-meta.json",
+    ):
+        write(root, f"{fixture_root}/{fixture}", "{}")
+    fixture_sha = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    write(
+        root,
+        f"{fixture_root}/polymarket-market-info-captures.toml",
+        f'''schema_version = 1
+adapter_id = "POLYMARKET"
+class = "HttpResponseBody"
+feeder = "EconomicsQuoteAuthority"
+captured_at = "2026-06-25"
+[[captures]]
+kind = "fee_bearing"
+fixture = "polymarket-fee-bearing.json"
+fixture_sha256 = "{fixture_sha}"
+[[captures]]
+kind = "fee_free"
+fixture = "polymarket-fee-free.json"
+fixture_sha256 = "{fixture_sha}"
+''',
+    )
+    write(
+        root,
+        f"{fixture_root}/hyperliquid-economics-captures.toml",
+        f'''schema_version = 1
+adapter_id = "HYPERLIQUID"
+class = "HttpResponseBody"
+feeder = "EconomicsQuoteAuthority"
+captured_at = "2026-06-25"
+[[captures]]
+kind = "user_fees"
+fixture = "hyperliquid-user-fees.json"
+fixture_sha256 = "{fixture_sha}"
+[[captures]]
+kind = "perp_meta_and_asset_contexts"
+fixture = "hyperliquid-meta.json"
+fixture_sha256 = "{fixture_sha}"
+''',
     )
     initialize_fixture_repo(root)
 

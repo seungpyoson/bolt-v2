@@ -296,15 +296,18 @@ impl PolymarketEconomicsAuthority {
         let adapter_config =
             PolymarketEconomicsAdapterConfig::from_execution_config(&execution.economics)
                 .map_err(|error| anyhow::anyhow!("invalid economics adapter config: {error:?}"))?;
-        let [(product_surface_id, edge_basis_policy_id)] = execution
+        anyhow::ensure!(
+            execution.economics.product_surface_policies.len() == 1,
+            "Polymarket economics requires exactly one configured product surface"
+        );
+        let (product_surface_id, edge_basis_policy_id) = execution
             .economics
             .product_surface_policies
             .iter()
-            .collect::<Vec<_>>()
-            .as_slice()
-        else {
-            anyhow::bail!("Polymarket economics requires exactly one configured product surface");
-        };
+            .next()
+            .context("Polymarket economics product surface is missing")?;
+        let product_surface_id = product_surface_id.clone();
+        let edge_basis_policy_id = edge_basis_policy_id.clone();
         let base_url = Url::parse(&execution.base_url_http)
             .context("invalid configured Polymarket HTTP base URL")?;
         let http_client = HttpClient::new(
@@ -321,8 +324,8 @@ impl PolymarketEconomicsAuthority {
             venue,
             economics: execution.economics,
             adapter_config,
-            product_surface_id: (*product_surface_id).clone(),
-            edge_basis_policy_id: (*edge_basis_policy_id).clone(),
+            product_surface_id,
+            edge_basis_policy_id,
             base_url,
             http_timeout_secs: execution.http_timeout_secs,
             http_client,

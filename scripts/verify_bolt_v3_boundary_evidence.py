@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -306,11 +307,23 @@ REQUIRED_NON_WS_REGISTRY_ENTRIES = {
     ("IMDS_METADATA_ADAPTER_ID", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
     ("polymarket::KEY", "HttpResponseBody", "PolymarketVenueTruthRuntime"),
+    ("polymarket::KEY", "HttpResponseBody", "EconomicsQuoteAuthority"),
+    ("hyperliquid::KEY", "HttpResponseBody", "EconomicsQuoteAuthority"),
 }
 REQUIRED_NON_WS_EXEMPTIONS = {
     ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AwsSsmSecretSource", "AwsSdkResponse", "SecretResolution"),
     ("POLYMARKET", "HttpResponseBody", "PolymarketVenueTruthRuntime"),
+}
+ECONOMICS_CAPTURE_MANIFESTS = {
+    Path("tests/fixtures/bolt_v3/boundary_evidence/polymarket-market-info-captures.toml"): {
+        "adapter_id": "POLYMARKET",
+        "required_kinds": {"fee_bearing", "fee_free"},
+    },
+    Path("tests/fixtures/bolt_v3/boundary_evidence/hyperliquid-economics-captures.toml"): {
+        "adapter_id": "HYPERLIQUID",
+        "required_kinds": {"user_fees", "perp_meta_and_asset_contexts"},
+    },
 }
 RUST_VISIBILITY_PREFIX = r"(?:pub(?:\s+|\s*\([^)]*\)\s*)?)?"
 FORBIDDEN_NT_WIRE_PATH_PATTERNS = {
@@ -631,6 +644,66 @@ def scan_exemption_issue_state(root: Path, findings: list[str]) -> None:
             continue
         if state != "open":
             findings.append(f"{EXEMPTIONS}: issue #{issue} is {state}; remove or replace the deferral")
+
+
+def scan_economics_capture_evidence(
+    root: Path, findings: list[str], *, today: dt.date
+) -> None:
+    for manifest_path, contract in ECONOMICS_CAPTURE_MANIFESTS.items():
+        try:
+            manifest = tomllib.loads(read(root, manifest_path))
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            findings.append(f"{manifest_path}: unreadable economics capture manifest: {error}")
+            continue
+        if manifest.get("schema_version") != 1:
+            findings.append(f"{manifest_path}: schema_version must be 1")
+        for key, expected in {
+            "adapter_id": contract["adapter_id"],
+            "class": "HttpResponseBody",
+            "feeder": "EconomicsQuoteAuthority",
+        }.items():
+            if manifest.get(key) != expected:
+                findings.append(f"{manifest_path}: {key} must equal {expected!r}")
+        try:
+            captured_at = dt.date.fromisoformat(str(manifest.get("captured_at")))
+        except ValueError:
+            findings.append(f"{manifest_path}: captured_at must be an ISO date")
+            captured_at = None
+        if captured_at is not None and captured_at > today:
+            findings.append(f"{manifest_path}: captured_at cannot be in the future")
+        captures = manifest.get("captures")
+        if not isinstance(captures, list):
+            findings.append(f"{manifest_path}: captures must be an array of tables")
+            continue
+        kinds = {str(capture.get("kind")) for capture in captures}
+        if kinds != contract["required_kinds"]:
+            findings.append(
+                f"{manifest_path}: capture kinds must equal {sorted(contract['required_kinds'])}"
+            )
+        fixture_dir = root / manifest_path.parent
+        seen_fixtures: set[str] = set()
+        for capture in captures:
+            fixture_name = capture.get("fixture")
+            expected_sha = capture.get("fixture_sha256")
+            if (
+                not isinstance(fixture_name, str)
+                or Path(fixture_name).name != fixture_name
+                or fixture_name in seen_fixtures
+            ):
+                findings.append(f"{manifest_path}: every fixture must be a unique basename")
+                continue
+            seen_fixtures.add(fixture_name)
+            fixture_path = fixture_dir / fixture_name
+            try:
+                payload = fixture_path.read_bytes()
+            except OSError as error:
+                findings.append(f"{fixture_path.relative_to(root)}: unreadable fixture: {error}")
+                continue
+            actual_sha = hashlib.sha256(payload).hexdigest()
+            if not isinstance(expected_sha, str) or expected_sha != actual_sha:
+                findings.append(
+                    f"{fixture_path.relative_to(root)}: SHA-256 mismatch; expected {expected_sha!r}, actual {actual_sha}"
+                )
 
 
 def boundary_source_paths(root: Path) -> list[Path]:
@@ -2242,6 +2315,7 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     entries = scan_registry(root, findings)
     scan_exemptions(root, entries, findings, today=today)
     scan_exemption_issue_state(root, findings)
+    scan_economics_capture_evidence(root, findings, today=today)
     scan_wire_boundary(root, findings, source_paths)
     scan_static_wiring(root, findings)
     scan_binance_timestamp_behavioral_contract(root, findings)

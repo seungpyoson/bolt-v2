@@ -1250,7 +1250,7 @@ impl BoltV3LiveNodeRuntime {
                                         }
                                         if let Err(error) = inputs.publish(
                                             authority.execution_client_id(),
-                                            instrument_id.as_str(),
+                                            &instrument_id.to_string(),
                                             &snapshot.product_surface_id,
                                             crate::bolt_v3_economics_runtime::AuthoritativeEconomicsQuoteDependencies {
                                                 provider_key: authority.provider_key().to_string(),

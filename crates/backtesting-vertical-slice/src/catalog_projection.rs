@@ -429,8 +429,8 @@ fn parse_optional_decimal(value: Option<&str>, label: &str) -> Result<Option<Dec
 }
 
 fn parse_money(value: &str, currency: Currency, label: &str) -> Result<Money> {
-    let mut decimal = Decimal::from_str(value)
-        .with_context(|| format!("invalid {label} {value:?}"))?;
+    let mut decimal =
+        Decimal::from_str(value).with_context(|| format!("invalid {label} {value:?}"))?;
     decimal.normalize_assign();
     ensure!(
         decimal.scale() <= u32::from(currency.precision),
@@ -1049,10 +1049,7 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     let instrument_id = instrument.id();
     ensure_canonical_row_instrument_ids(
         &instrument_id,
-        table
-            .rows
-            .iter()
-            .map(|row| row.nt_instrument_id.as_deref()),
+        table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
     let ticks = canonical_rows_to_trade_ticks(table, &instrument)?;
     let trade_count = ticks.len();
@@ -1268,10 +1265,7 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
     let instrument_id = instrument.id();
     ensure_canonical_row_instrument_ids(
         &instrument_id,
-        table
-            .rows
-            .iter()
-            .map(|row| row.nt_instrument_id.as_deref()),
+        table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
     let deltas = canonical_rows_to_order_book_deltas(table, &instrument)?;
     let delta_count = deltas.len();
@@ -1414,10 +1408,7 @@ pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     let instrument_id = instrument.id();
     ensure_canonical_row_instrument_ids(
         &instrument_id,
-        table
-            .rows
-            .iter()
-            .map(|row| row.nt_instrument_id.as_deref()),
+        table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
     let ticks = canonical_rows_to_quote_ticks(table, &instrument)?;
     let quote_count = ticks.len();
@@ -1531,10 +1522,7 @@ pub fn project_canonical_index_to_catalog<S: CatalogInstrumentSpecSource + ?Size
     let instrument_id = instrument.id();
     ensure_canonical_row_instrument_ids(
         &instrument_id,
-        table
-            .rows
-            .iter()
-            .map(|row| row.nt_instrument_id.as_deref()),
+        table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
     let updates = canonical_rows_to_index_price_updates(table, &instrument)?;
     let count = updates.len();
@@ -1664,10 +1652,7 @@ pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     let instrument_id = instrument.id();
     ensure_canonical_row_instrument_ids(
         &instrument_id,
-        table
-            .rows
-            .iter()
-            .map(|row| row.nt_instrument_id.as_deref()),
+        table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
     let updates = canonical_rows_to_mark_price_updates(table, &instrument)?;
     let count = updates.len();
@@ -1796,10 +1781,7 @@ pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource
     let instrument_id = instrument.id();
     ensure_canonical_row_instrument_ids(
         &instrument_id,
-        table
-            .rows
-            .iter()
-            .map(|row| row.nt_instrument_id.as_deref()),
+        table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
     let updates = canonical_rows_to_funding_rate_updates(table, &instrument)?;
     let count = updates.len();
@@ -1946,10 +1928,7 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     let instrument_id = instrument.id();
     ensure_canonical_row_instrument_ids(
         &instrument_id,
-        table
-            .rows
-            .iter()
-            .map(|row| row.nt_instrument_id.as_deref()),
+        table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
     let bars = canonical_rows_to_bars(table, &instrument)?;
     let bar_count = bars.len();
@@ -3249,14 +3228,20 @@ mod tests {
         spec.max_notional = "100.005".to_string();
         let error = build_currency_pair(&spec)
             .expect_err("USD precision overflow must fail instead of rounding");
-        assert!(error.to_string().contains("exceeds USD precision 2"), "{error}");
+        assert!(
+            error.to_string().contains("exceeds USD precision 2"),
+            "{error}"
+        );
     }
 
     #[test]
     fn parse_money_rejects_precision_loss_before_nt_construction() {
         let error = parse_money("100.005", Currency::USD(), "max_notional")
             .expect_err("currency-scale overflow must fail instead of rounding");
-        assert!(error.to_string().contains("exceeds USD precision 2"), "{error}");
+        assert!(
+            error.to_string().contains("exceeds USD precision 2"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -3284,13 +3269,14 @@ mod tests {
     #[test]
     fn canonical_row_identity_guard_rejects_later_missing_identity() {
         let instrument_id = InstrumentId::from("BNBUSDC.BYBIT");
-        let error = ensure_canonical_row_instrument_ids(
-            &instrument_id,
-            [Some("BNBUSDC.BYBIT"), None],
-        )
-        .expect_err("later missing identity must fail before projection");
+        let error =
+            ensure_canonical_row_instrument_ids(&instrument_id, [Some("BNBUSDC.BYBIT"), None])
+                .expect_err("later missing identity must fail before projection");
         assert!(error.to_string().contains("row 1"), "{error}");
-        assert!(error.to_string().contains("missing nt_instrument_id"), "{error}");
+        assert!(
+            error.to_string().contains("missing nt_instrument_id"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -3665,7 +3651,10 @@ mod tests {
         spec.max_notional = Some("100.000000001".to_string());
         let error = build_binary_option(&spec)
             .expect_err("USDC precision overflow must fail instead of rounding");
-        assert!(error.to_string().contains("exceeds USDC precision 8"), "{error}");
+        assert!(
+            error.to_string().contains("exceeds USDC precision 8"),
+            "{error}"
+        );
     }
 
     #[test]

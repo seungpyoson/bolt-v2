@@ -4837,8 +4837,7 @@ mod tests {
             "shadow".to_string(),
         )]);
         manifest.strategy.config_overlay = Some(binary_oracle_config_overlay());
-        manifest.economics_snapshots =
-            vec![replay_economics_snapshot("polymarket_main", "pUSD")];
+        manifest.economics_snapshots = vec![replay_economics_snapshot("polymarket_main", "pUSD")];
         manifest.strategy_config_hash =
             "2222222222222222222222222222222222222222222222222222222222222222".to_string();
         manifest
@@ -4889,10 +4888,8 @@ mod tests {
                 "shadow".to_string(),
             ),
         ]);
-        manifest.economics_snapshots = vec![replay_economics_snapshot(
-            "maker_execution_client",
-            "pUSD",
-        )];
+        manifest.economics_snapshots =
+            vec![replay_economics_snapshot("maker_execution_client", "pUSD")];
         manifest.strategy_config_hash =
             "3333333333333333333333333333333333333333333333333333333333333333".to_string();
         manifest

@@ -104,39 +104,28 @@ class RiskClosureWorkspaceAuthorityVerifierTests(unittest.TestCase):
             )
         )
 
-    def test_rejects_missing_or_non_table_canonical_authority(self) -> None:
+    def test_rejects_missing_canonical_authority(self) -> None:
+        source = self.root / "config" / "risk-closure-workspaces.toml"
+        source.write_text(
+            "schema_version = 1\nproduction_activation_enabled = false\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(errors)
+
+    def test_authority_census_defers_schema_validation_to_generator(self) -> None:
         source = self.root / "config" / "risk-closure-workspaces.toml"
         for text in (
-            "schema_version = 1\nproduction_activation_enabled = false\n",
             "risk_closure_workspaces = 10\n",
+            "[risk_closure_workspaces]\narena_bytes = 0\nslot_bytes = 16\n",
+            "[risk_closure_workspaces]\narena_bytes = 160\nslot_bytes = false\n",
         ):
             with self.subTest(text=text):
                 source.write_text(text, encoding="utf-8")
 
-                errors = verifier.authority_errors(self.root)
-
-                self.assertTrue(errors)
-
-    def test_rejects_non_positive_geometry_values(self) -> None:
-        source = self.root / "config" / "risk-closure-workspaces.toml"
-        for arena_bytes, slot_bytes in ((0, 16), (160, 0), (True, 16)):
-            with self.subTest(
-                arena_bytes=arena_bytes,
-                slot_bytes=slot_bytes,
-            ):
-                arena = str(arena_bytes).lower()
-                source.write_text(
-                    "[risk_closure_workspaces]\n"
-                    f"arena_bytes = {arena}\n"
-                    f"slot_bytes = {slot_bytes}\n",
-                    encoding="utf-8",
-                )
-
-                errors = verifier.authority_errors(self.root)
-
-                self.assertTrue(
-                    any("must be a positive integer" in error for error in errors)
-                )
+                self.assertEqual(verifier.authority_errors(self.root), [])
 
     def test_toml_key_path_rendering_is_unambiguous(self) -> None:
         self.assertNotEqual(
@@ -220,6 +209,42 @@ slot_bytes = 16
 
         with self.assertRaisesRegex(generator.ConfigError, "evenly divide"):
             generator.load_config(source)
+
+    def test_rejects_non_table_workspace_config(self) -> None:
+        source = self.write_source(
+            """
+schema_version = 1
+production_activation_enabled = false
+risk_closure_workspaces = 10
+"""
+        )
+
+        with self.assertRaisesRegex(generator.ConfigError, "must be a table"):
+            generator.load_config(source)
+
+    def test_rejects_non_positive_geometry_values(self) -> None:
+        for arena_bytes, slot_bytes in (
+            ("0", "16"),
+            ("160", "0"),
+            ("true", "16"),
+        ):
+            with self.subTest(
+                arena_bytes=arena_bytes,
+                slot_bytes=slot_bytes,
+            ):
+                source = self.write_source(
+                    f"""
+schema_version = 1
+production_activation_enabled = false
+
+[risk_closure_workspaces]
+arena_bytes = {arena_bytes}
+slot_bytes = {slot_bytes}
+"""
+                )
+
+                with self.assertRaisesRegex(generator.ConfigError, "positive integer"):
+                    generator.load_config(source)
 
     def test_rejects_enabled_production_activation(self) -> None:
         source = self.write_source(

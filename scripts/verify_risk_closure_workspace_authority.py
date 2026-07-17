@@ -25,12 +25,6 @@ def _repository_toml_sources(root: pathlib.Path) -> list[pathlib.Path]:
     )
 
 
-def _positive_integer(value: object) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return None
-
-
 def _toml_key_paths(
     value: object,
     target: str,
@@ -75,21 +69,6 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         relative = path.relative_to(root)
         for key_path in _toml_key_paths(document, "risk_closure_workspaces"):
             authorities.append((relative, key_path))
-            if relative != SOURCE or key_path != ("risk_closure_workspaces",):
-                continue
-
-            workspace = document["risk_closure_workspaces"]
-            if not isinstance(workspace, dict):
-                errors.append(f"{SOURCE} risk_closure_workspaces must be a table")
-                continue
-            if _positive_integer(workspace.get("arena_bytes")) is None:
-                errors.append(
-                    f"{SOURCE} risk_closure_workspaces.arena_bytes must be a positive integer"
-                )
-            if _positive_integer(workspace.get("slot_bytes")) is None:
-                errors.append(
-                    f"{SOURCE} risk_closure_workspaces.slot_bytes must be a positive integer"
-                )
 
     expected_authority = [(SOURCE, ("risk_closure_workspaces",))]
     if authorities != expected_authority:

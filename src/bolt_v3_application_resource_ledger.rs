@@ -80,6 +80,18 @@ mod tests {
     }
 
     #[test]
+    fn application_resource_ledger_is_not_clone() {
+        trait AmbiguousIfClone<A> {
+            fn check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Clone> AmbiguousIfClone<Invalid> for T {}
+
+        let _ = <ApplicationResourceLedger as AmbiguousIfClone<_>>::check;
+    }
+
+    #[test]
     fn handles_share_configured_capacity_and_preserve_retained_recovery() {
         let ledger = ApplicationResourceLedger::new_disabled().unwrap();
         let first_new_risk = ledger.new_risk_workspace_handle();

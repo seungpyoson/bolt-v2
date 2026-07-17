@@ -301,6 +301,18 @@ fn bypass(_: RiskClosureWorkspaceAuthority) {}
 }
 
 #[test]
+fn raw_workspace_authority_cannot_be_imported_from_ledger_root() {
+    assert_compile_fails(
+        "raw_workspace_authority_cannot_be_imported_from_ledger_root",
+        r#"
+use application_resource_ledger::RiskClosureWorkspaceAuthority;
+fn bypass(_: RiskClosureWorkspaceAuthority) {}
+"#,
+        ExpectedDiagnostic::ErrorCode("E0603"),
+    );
+}
+
+#[test]
 fn application_resource_ledger_cannot_be_constructed() {
     assert_compile_fails(
         "application_resource_ledger_cannot_be_constructed",

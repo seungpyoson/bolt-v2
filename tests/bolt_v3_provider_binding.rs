@@ -197,6 +197,8 @@ fn assembly_context<'a>(
         settlement_runtime_sink: None,
         settlement_recovery: None,
         settlement_health_transition_emitter: None,
+        economics_inputs:
+            bolt_v2::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
     }
 }
 
@@ -219,6 +221,7 @@ fn shared_strategy_assembly_installs_polymarket_rv_and_settlement_capabilities()
 
     assert_eq!(assembled.execution_venue(), Venue::from("POLYMARKET"));
     assert!(assembled.realized_volatility_capability().is_some());
+    assert!(assembled.order_routing().is_ok());
     assert!(assembled.settlement_capability().is_some());
     assert_eq!(assembled.settlement_account_id(), Some("POLYMARKET-001"));
     assert_eq!(
@@ -254,6 +257,7 @@ fn shared_strategy_assembly_supports_inline_hyperliquid_without_settlement_capab
 
     assert_eq!(assembled.execution_venue(), Venue::from("HYPERLIQUID"));
     assert!(assembled.realized_volatility_capability().is_some());
+    assert!(assembled.order_routing().is_ok());
     assert!(assembled.settlement_capability().is_none());
     assert_eq!(assembled.settlement_account_id(), None);
     assert_eq!(assembled.settlement_currency(), None);
@@ -425,6 +429,33 @@ include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
+
+[execution.economics]
+economics_slice = "quote_only"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+carry_surfaces = ["standard_perps"]
+
+[execution.economics.carry]
+holding_horizon_secs = 3600
+component_id = "funding-carry"
+formula_id = "funding-rate-bound"
+point_rate_factor_id = "funding-point-rate"
+bound_rate_factor_id = "funding-bound-rate"
+risk_policy_id = "funding-risk-policy"
+stress_fixture_id = "funding-standard-stress"
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes]
 
 [secrets]
 {secret_fields}

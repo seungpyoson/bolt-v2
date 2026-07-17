@@ -5269,7 +5269,6 @@ impl BinaryOracleEdgeTaker {
                 .quote_admission(BoltV3OrderEconomicsIntent {
                     request: &admission_input,
                     planned_fill_legs,
-                    position: None,
                     liquidity_role: LiquidityRoleAssumption::Taker,
                     lifecycle_path: LifecyclePath::PlannedExit,
                     requested_at_ns: order.ts_init().as_u64(),

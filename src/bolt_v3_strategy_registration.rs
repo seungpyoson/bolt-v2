@@ -8,14 +8,20 @@ use crate::bolt_v3_config::{
     BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
+use crate::bolt_v3_economics_runtime::{
+    AuthoritativeEconomicsInputStore, ConfiguredEconomicsAdmissionSource,
+};
 use crate::bolt_v3_iv::{
     config::IvProfile,
     query::{IvQueryHandle, IvStrategyQueryHandle},
     runtime::{IvRuntimeEngine, runtime_derived_inputs_from_profile},
     store::{IvRetentionPolicy, IvStore},
 };
+use crate::bolt_v3_numeric::{MILLIS_PER_SECOND_U64, NANOS_PER_MILLI_U64};
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
+use crate::bolt_v3_order_execution::{BoltV3CarryPlan, BoltV3OrderRoutingHandle};
+use crate::bolt_v3_providers::binding_for_provider_key;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::{
     BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
@@ -56,6 +62,7 @@ pub struct BoltV3StrategyExecutionControls {
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
     pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+    pub economics_inputs: AuthoritativeEconomicsInputStore,
 }
 
 #[derive(Clone)]
@@ -73,6 +80,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
     pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+    pub economics_inputs: AuthoritativeEconomicsInputStore,
 }
 
 pub fn assemble_strategy_build_context(
@@ -93,7 +101,8 @@ pub fn assemble_strategy_build_context(
         context.submit_admission.clone(),
         context.order_execution_policy,
         execution_venue,
-    );
+    )
+    .with_order_routing(build_order_routing_handle(context, execution_client_id)?);
     if context.capabilities.realized_volatility {
         build_context = build_context
             .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
@@ -118,6 +127,116 @@ pub fn assemble_strategy_build_context(
             );
     }
     Ok(build_context)
+}
+
+fn build_order_routing_handle(
+    context: &StrategyRegistrationContext<'_>,
+    execution_client_id: &str,
+) -> Result<BoltV3OrderRoutingHandle, BoltV3StrategyRegistrationError> {
+    let client = context
+        .loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .ok_or_else(|| binding_message(context, "execution client is missing".to_string()))?;
+    let execution = client.execution.as_ref().ok_or_else(|| {
+        binding_message(
+            context,
+            "execution client has no execution block".to_string(),
+        )
+    })?;
+    let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+        binding_message(
+            context,
+            "execution client has no provider registry binding".to_string(),
+        )
+    })?;
+    let load_economics = binding.execution_economics.ok_or_else(|| {
+        binding_message(
+            context,
+            "execution client has no economics registry binding".to_string(),
+        )
+    })?;
+    let economics = load_economics(execution).map_err(|error| {
+        binding_message(
+            context,
+            format!("execution economics configuration is invalid: {error}"),
+        )
+    })?;
+    let mut surface_policies = economics.product_surface_policies.iter();
+    let (product_surface_id, edge_basis_policy_id) = surface_policies.next().ok_or_else(|| {
+        binding_message(
+            context,
+            "execution economics has no product surface".to_string(),
+        )
+    })?;
+    if surface_policies.next().is_some() {
+        return Err(binding_message(
+            context,
+            "strategy execution client must select exactly one economics product surface"
+                .to_string(),
+        ));
+    }
+    let quote_validity_ns = economics
+        .quote_validity_ms
+        .checked_mul(NANOS_PER_MILLI_U64)
+        .ok_or_else(|| {
+            binding_message(
+                context,
+                "execution economics quote validity overflows nanoseconds".to_string(),
+            )
+        })?;
+    let carry_plan = if economics.carry_surfaces.contains(product_surface_id) {
+        let carry = economics.carry.as_ref().ok_or_else(|| {
+            binding_message(
+                context,
+                "carry-bearing product surface has no carry policy".to_string(),
+            )
+        })?;
+        let holding_horizon_ns = carry
+            .holding_horizon_secs
+            .checked_mul(MILLIS_PER_SECOND_U64)
+            .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
+            .ok_or_else(|| {
+                binding_message(
+                    context,
+                    "carry holding horizon overflows nanoseconds".to_string(),
+                )
+            })?;
+        BoltV3CarryPlan::Required { holding_horizon_ns }
+    } else {
+        BoltV3CarryPlan::NoCarry
+    };
+    let source = ConfiguredEconomicsAdmissionSource::new(
+        client.venue.as_str(),
+        context.economics_inputs.clone(),
+        quote_validity_ns,
+    )
+    .map_err(|error| binding_message(context, format!("economics source: {error}")))?;
+    let account_id =
+        execution_account_id(&context.loaded.root, execution_client_id).ok_or_else(|| {
+            binding_message(
+                context,
+                "execution economics requires a configured account_id".to_string(),
+            )
+        })?;
+    BoltV3OrderRoutingHandle::new(
+        Arc::new(source),
+        execution_client_id,
+        account_id,
+        product_surface_id,
+        economics.reporting_policy.as_str(),
+        context
+            .loaded
+            .root
+            .economics
+            .reporting
+            .pnl_currency
+            .as_str(),
+        edge_basis_policy_id,
+        carry_plan,
+    )
+    .map_err(|error| binding_message(context, format!("economics routing: {error:#}")))
 }
 
 /// Neutral client-table venue lookup for execution and data client ids alike, so
@@ -534,6 +653,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 settlement_health_transition_emitter: execution_controls
                     .settlement_health_transition_emitter
                     .clone(),
+                economics_inputs: execution_controls.economics_inputs.clone(),
             },
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {

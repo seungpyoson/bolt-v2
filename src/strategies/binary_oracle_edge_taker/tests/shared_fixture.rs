@@ -1046,6 +1046,7 @@ pub(super) fn fixture_order_routing(
         "test-reporting-policy",
         reporting_unit.code.as_str(),
         "test-edge-basis-policy",
+        crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
     )
     .expect("test economics routing should build")
 }

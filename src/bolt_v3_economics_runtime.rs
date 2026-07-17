@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
 
 use rust_decimal::Decimal;
 
@@ -27,6 +30,114 @@ pub trait EconomicsAdmissionSource: Send + Sync {
         &self,
         intent: EconomicsAdmissionQuoteIntent,
     ) -> Result<EconomicsAdmission, EconomicsUnavailable>;
+}
+
+#[derive(Clone)]
+pub struct AuthoritativeEconomicsQuoteDependencies {
+    pub provider_key: String,
+    pub adapter: Arc<dyn VenueEconomicsAdapter>,
+    pub edge_basis: EdgeBasisEvidence,
+    pub valuations: Vec<ValuationEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AuthoritativeEconomicsKey {
+    execution_client_id: String,
+    instrument_id: String,
+    product_surface_id: String,
+}
+
+#[derive(Clone, Default)]
+pub struct AuthoritativeEconomicsInputStore {
+    entries:
+        Arc<RwLock<BTreeMap<AuthoritativeEconomicsKey, AuthoritativeEconomicsQuoteDependencies>>>,
+}
+
+impl AuthoritativeEconomicsInputStore {
+    pub fn publish(
+        &self,
+        execution_client_id: &str,
+        instrument_id: &str,
+        product_surface_id: &str,
+        dependencies: AuthoritativeEconomicsQuoteDependencies,
+    ) -> Result<(), EconomicsUnavailable> {
+        let key = AuthoritativeEconomicsKey {
+            execution_client_id: crate::economics::ExecutionClientId::new(execution_client_id)?
+                .as_str()
+                .to_string(),
+            instrument_id: crate::economics::InstrumentId::new(instrument_id)?
+                .as_str()
+                .to_string(),
+            product_surface_id: crate::economics::ProductSurfaceId::new(product_surface_id)?
+                .as_str()
+                .to_string(),
+        };
+        self.entries
+            .write()
+            .map_err(|_| EconomicsUnavailable::AmbiguousQuoteAuthority)?
+            .insert(key, dependencies);
+        Ok(())
+    }
+
+    fn dependencies(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<AuthoritativeEconomicsQuoteDependencies, EconomicsUnavailable> {
+        let key = AuthoritativeEconomicsKey {
+            execution_client_id: request.execution_client_id.as_str().to_string(),
+            instrument_id: request.instrument_id.as_str().to_string(),
+            product_surface_id: request.product_surface_id.as_str().to_string(),
+        };
+        self.entries
+            .read()
+            .map_err(|_| EconomicsUnavailable::AmbiguousQuoteAuthority)?
+            .get(&key)
+            .cloned()
+            .ok_or(EconomicsUnavailable::MissingQuoteAuthority)
+    }
+}
+
+pub struct ConfiguredEconomicsAdmissionSource {
+    provider_key: String,
+    inputs: AuthoritativeEconomicsInputStore,
+    quote_validity_ns: u64,
+}
+
+impl ConfiguredEconomicsAdmissionSource {
+    pub fn new(
+        provider_key: &str,
+        inputs: AuthoritativeEconomicsInputStore,
+        quote_validity_ns: u64,
+    ) -> Result<Self, EconomicsUnavailable> {
+        if provider_key.trim().is_empty() || quote_validity_ns == 0 {
+            return Err(EconomicsUnavailable::InvalidQuoteValidityPolicy);
+        }
+        Ok(Self {
+            provider_key: provider_key.to_string(),
+            inputs,
+            quote_validity_ns,
+        })
+    }
+}
+
+impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
+    fn quote_admission(
+        &self,
+        intent: EconomicsAdmissionQuoteIntent,
+    ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
+        let dependencies = self.inputs.dependencies(&intent.request)?;
+        if dependencies.provider_key != self.provider_key {
+            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+        }
+        BoltV3EconomicsRuntime::from_offline_adapter(dependencies.adapter, self.quote_validity_ns)?
+            .quote_admission(EconomicsAdmissionIntent {
+                request: intent.request,
+                gross_expected_value: intent.gross_expected_value,
+                edge_basis: dependencies.edge_basis,
+                valuations: dependencies.valuations,
+                base_reservation_notional: intent.base_reservation_notional,
+            })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -345,6 +456,7 @@ pub(crate) fn test_order_routing_handle(
         "test-reporting-policy",
         "test-reporting-unit",
         "test-edge-policy",
+        crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
     )
     .expect("test order routing handle should build")
 }

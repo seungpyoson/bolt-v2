@@ -1165,9 +1165,11 @@ pub fn validate_economics_configuration(root: &BoltV3RootConfig) -> Vec<String> 
                         .chain(
                             root.runtime
                                 .requests_live_order_execution()
-                                .then_some(
-                                    crate::bolt_v3_economics_config::EconomicsConfigError::LiveSubmissionDisabled,
-                                ),
+                                .then_some(config.economics_slice)
+                                .filter(|slice| slice.blocks_live_submission())
+                                .map(|_| {
+                                    crate::bolt_v3_economics_config::EconomicsConfigError::LiveSubmissionDisabled
+                                }),
                         )
                         .map(|error| format!("clients.{client_id}.execution.economics: {error:?}")),
                 ),

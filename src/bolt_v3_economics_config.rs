@@ -23,6 +23,14 @@ pub enum EconomicsSliceConfig {
     QuoteOnly,
 }
 
+impl EconomicsSliceConfig {
+    pub const fn blocks_live_submission(self) -> bool {
+        match self {
+            Self::QuoteOnly => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionEconomicsConfig {
@@ -34,6 +42,7 @@ pub struct ExecutionEconomicsConfig {
     pub resting_order_refresh_margin_ms: u64,
     pub edge_basis: BTreeMap<String, EdgeBasisResolverConfig>,
     pub product_surface_policies: BTreeMap<String, String>,
+    pub carry_surfaces: BTreeSet<String>,
     pub valuation: ValuationConfig,
     pub carry: Option<CarryQuotePolicyConfig>,
 }
@@ -86,6 +95,10 @@ pub enum ValuationOrientation {
 #[serde(deny_unknown_fields)]
 pub struct CarryQuotePolicyConfig {
     pub holding_horizon_secs: u64,
+    pub component_id: String,
+    pub formula_id: String,
+    pub point_rate_factor_id: String,
+    pub bound_rate_factor_id: String,
     pub risk_policy_id: String,
     pub stress_fixture_id: String,
 }
@@ -101,6 +114,10 @@ pub enum EconomicsConfigField {
     EdgeBasisMetadataSource,
     CarryRiskPolicyId,
     CarryStressFixtureId,
+    CarryComponentId,
+    CarryFormulaId,
+    CarryPointRateFactorId,
+    CarryBoundRateFactorId,
     ValuationRouteId,
     ValuationFromUnit,
     ValuationDestination,
@@ -119,6 +136,8 @@ pub enum EconomicsConfigError {
     MissingEdgeBasisPolicy { surface: String, policy_id: String },
     MissingProductSurface { surface: String },
     UnexpectedProductSurface { surface: String },
+    CarrySurfaceMissingProductPolicy { surface: String },
+    CarrySurfaceMissingPolicy,
     ZeroCarryHorizon,
     WrongTerminalCurrency { route_id: String },
     DuplicateValuationAuthority { from: String, to: String },
@@ -192,6 +211,17 @@ impl ExecutionEconomicsConfig {
                 });
             }
         }
+        for surface in &self.carry_surfaces {
+            require_text(surface, EconomicsConfigField::ProductSurface, &mut errors);
+            if !self.product_surface_policies.contains_key(surface) {
+                errors.push(EconomicsConfigError::CarrySurfaceMissingProductPolicy {
+                    surface: surface.clone(),
+                });
+            }
+        }
+        if !self.carry_surfaces.is_empty() && self.carry.is_none() {
+            errors.push(EconomicsConfigError::CarrySurfaceMissingPolicy);
+        }
         for (policy_id, resolver) in &self.edge_basis {
             require_text(
                 policy_id,
@@ -217,6 +247,26 @@ impl ExecutionEconomicsConfig {
             if is_zero(carry.holding_horizon_secs) {
                 errors.push(EconomicsConfigError::ZeroCarryHorizon);
             }
+            require_text(
+                &carry.component_id,
+                EconomicsConfigField::CarryComponentId,
+                &mut errors,
+            );
+            require_text(
+                &carry.formula_id,
+                EconomicsConfigField::CarryFormulaId,
+                &mut errors,
+            );
+            require_text(
+                &carry.point_rate_factor_id,
+                EconomicsConfigField::CarryPointRateFactorId,
+                &mut errors,
+            );
+            require_text(
+                &carry.bound_rate_factor_id,
+                EconomicsConfigField::CarryBoundRateFactorId,
+                &mut errors,
+            );
             require_text(
                 &carry.risk_policy_id,
                 EconomicsConfigField::CarryRiskPolicyId,

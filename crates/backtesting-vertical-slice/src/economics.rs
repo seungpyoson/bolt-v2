@@ -134,6 +134,7 @@ impl ReplayEconomicsAdmissionSource {
             &authority.reporting_policy_id,
             &authority.reporting_unit,
             &authority.edge_basis.policy_id,
+            bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
         )
         .map_err(|_| EconomicsUnavailable::InvalidIdentifier {
             kind: "ReplayEconomicsAdmissionSource",

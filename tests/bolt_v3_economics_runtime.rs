@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
 use bolt_v2::{
-    bolt_v3_economics_runtime::{BoltV3EconomicsRuntime, EconomicsAdmissionIntent},
+    bolt_v3_economics_runtime::{
+        AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,
+        BoltV3EconomicsRuntime, ConfiguredEconomicsAdmissionSource, EconomicsAdmissionIntent,
+        EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
+    },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, SnapshotId,
         VenueEconomicsAdapter, VenueQuoteEstimate,
@@ -92,6 +96,49 @@ fn configured_quote_validity_caps_authoritative_source_window() {
     let admission = runtime.quote_admission(intent(request)).unwrap();
 
     assert_eq!(admission.quote().valid_until_ns(), 105);
+}
+
+#[test]
+fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surface() {
+    let request = canonical_fixture_request();
+    let component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    let authority = component.source.clone();
+    let inputs = AuthoritativeEconomicsInputStore::default();
+    inputs
+        .publish(
+            request.execution_client_id.as_str(),
+            request.instrument_id.as_str(),
+            request.product_surface_id.as_str(),
+            AuthoritativeEconomicsQuoteDependencies {
+                provider_key: "configured-provider".to_string(),
+                adapter: Arc::new(FixedVenue(VenueQuoteEstimate {
+                    authority,
+                    dependency_sources: Vec::new(),
+                    components: vec![component],
+                })),
+                edge_basis: intent(request.clone()).edge_basis,
+                valuations: Vec::new(),
+            },
+        )
+        .unwrap();
+    let source = ConfiguredEconomicsAdmissionSource::new("configured-provider", inputs, 5)
+        .expect("configured source should build");
+
+    let admission = source
+        .quote_admission(EconomicsAdmissionQuoteIntent {
+            request,
+            gross_expected_value: decimal("2"),
+            base_reservation_notional: decimal("5"),
+        })
+        .expect("exact authoritative dependencies should quote");
+
+    assert_eq!(admission.quote().valid_until_ns(), 105);
+    assert_eq!(admission.reservation_notional(), decimal("5.25"));
 }
 
 #[test]

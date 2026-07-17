@@ -218,6 +218,7 @@ quote_refresh_secs = 30
 quote_max_age_secs = 60
 quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
+carry_surfaces = []
 
 [economics.edge_basis.primary]
 resolver_id = "product-metadata"
@@ -5869,6 +5870,7 @@ quote_refresh_secs = 30
 quote_max_age_secs = 60
 quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
+carry_surfaces = []
 
 [clients.polymarket_main.execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"
@@ -6339,6 +6341,7 @@ quote_refresh_secs = 30
 quote_max_age_secs = 60
 quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
+carry_surfaces = []
 
 [clients.polymarket_main.execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"

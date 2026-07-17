@@ -1887,14 +1887,6 @@ reason = "This label names the Polymarket data auto-load max retry-delay config 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = '''"fee_cache_ttl_secs"'''
-context = '''("fee_cache_ttl_secs", execution.fee_cache_ttl_secs),'''
-classification = "validation_field_label"
-reason = "This label names the Polymarket execution config field being validated in a positive-integer check; the value itself is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
 literal = '''"http_timeout_secs"'''
 context = '''("http_timeout_secs", data.http_timeout_secs),'''
 classification = "validation_field_label"
@@ -8475,14 +8467,6 @@ literal = '''"fill or kill"'''
 context = '''|| reason.contains("fill or kill"))'''
 classification = "strategy_entry_reject_reason_classifier_needle"
 reason = "Best-effort substring used only to classify delivered venue/NT reject text as unfillable so unchanged-book FOK entry resubmission is debounced."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "string"
-literal = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})"'''
-context = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",'''
-classification = "diagnostic_template"
-reason = "Fail-closed diagnostic for an inverse quote-quantity order; the interpolated client_order_id is computed from the typed order, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -21031,3 +21015,123 @@ literal = '''"binary_oracle_edge_taker gross exit intent: strategy_id={} market_
 context = '''"binary_oracle_edge_taker gross exit intent: strategy_id={} market_id={:?} exit_decision={:?} hold_ev_bps={:?} exit_ev_bps={:?} submission_blocked_reason={:?}",'''
 classification = "strategy_diagnostic_template"
 reason = "Stable diagnostic template for gross strategy intent; it contains no economic rate, coefficient, or runtime selection."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "number"
+literal = "0"
+context = "holding_horizon_ns: 0"
+classification = "invalid_zero_sentinel"
+reason = "Fail-closed validation pattern rejecting a zero TOML-derived carry horizon; it is not a configured horizon or fallback."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"economics planned fill notional overflow"'''
+context = '''.context("economics planned fill notional overflow")?'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed arithmetic diagnostic; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"economics planned fill level exceeds the final order limit"'''
+context = '''"economics planned fill level exceeds the final order limit"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed quote-to-order binding diagnostic; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"execution client has no execution block"'''
+context = '''"execution client has no execution block".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable missing-config diagnostic; execution selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"execution client has no provider registry binding"'''
+context = '''"execution client has no provider registry binding".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable missing-registry diagnostic; it does not select a provider."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"execution client has no economics registry binding"'''
+context = '''"execution client has no economics registry binding".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable missing-capability diagnostic; it does not select an economics implementation."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"execution economics has no product surface"'''
+context = '''"execution economics has no product surface".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable missing-config diagnostic; product surfaces remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"execution economics quote validity overflows nanoseconds"'''
+context = '''"execution economics quote validity overflows nanoseconds".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable checked-conversion diagnostic; quote validity remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"carry-bearing product surface has no carry policy"'''
+context = '''"carry-bearing product surface has no carry policy".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed missing-policy diagnostic; surface and carry policy remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"carry holding horizon overflows nanoseconds"'''
+context = '''"carry holding horizon overflows nanoseconds".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable checked-conversion diagnostic; holding horizon remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_economics_order_mismatch"'''
+context = '''"rejected_economics_order_mismatch"'''
+classification = "evidence_enum_label"
+reason = "Stable serialized evidence label for a typed fail-closed admission outcome."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission cannot derive authoritative quote-quantity notional for client_order_id={}"'''
+context = '''"bolt-v3 submit admission cannot derive authoritative quote-quantity notional for client_order_id={}",'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed valuation diagnostic; it provides no notional fallback."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 economics admission planned fill quantity overflow"'''
+context = '''.context("bolt-v3 economics admission planned fill quantity overflow")?;'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed arithmetic diagnostic; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 economics admission planned fill exceeds final order limit"'''
+context = '''"bolt-v3 economics admission planned fill exceeds final order limit"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed quote-to-order binding diagnostic; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission final order no longer matches its sealed economics quote"'''
+context = '''"bolt-v3 submit admission final order no longer matches its sealed economics quote"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed seal-mismatch diagnostic; it supplies no runtime value."

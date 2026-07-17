@@ -493,6 +493,8 @@ pub(super) fn test_registration_controls(
         settlement_runtime_sink: None,
         settlement_recovery: None,
         settlement_health_transition_emitter: None,
+        economics_inputs:
+            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
     }
 }
 

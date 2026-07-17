@@ -126,6 +126,7 @@ pub fn sample_order_routing_handle(
         "test-reporting-policy",
         "test-reporting-unit",
         "test-edge-policy",
+        bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
     )
     .expect("sample order routing handle should build")
 }

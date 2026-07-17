@@ -23,6 +23,7 @@ quote_refresh_secs = 5
 quote_max_age_secs = 10
 quote_validity_ms = 4000
 resting_order_refresh_margin_ms = 500
+carry_surfaces = ["perp"]
 product_surface_policies = { perp = "default" }
 
 [edge_basis.default]
@@ -34,6 +35,10 @@ routes = {}
 
 [carry]
 holding_horizon_secs = 3600
+component_id = "funding-carry"
+formula_id = "funding-rate-bound"
+point_rate_factor_id = "funding-point-rate"
+bound_rate_factor_id = "funding-bound-rate"
 risk_policy_id = "funding-bound"
 stress_fixture_id = "funding-stress-v1"
 "#

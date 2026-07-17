@@ -3260,6 +3260,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         settlement_runtime_sink,
         settlement_recovery,
         settlement_health_transition_emitter: Some(settlement_health_transition_emitter),
+        economics_inputs:
+            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
     };
     let iv_runtime = loaded
         .root

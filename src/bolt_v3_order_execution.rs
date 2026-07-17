@@ -66,12 +66,18 @@ pub struct BoltV3OrderRoutingHandle {
     reporting_policy_id: ReportingPolicyId,
     reporting_unit: NativeUnitId,
     edge_basis_policy_id: EdgeBasisPolicyId,
+    carry_plan: BoltV3CarryPlan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoltV3CarryPlan {
+    NoCarry,
+    Required { holding_horizon_ns: u64 },
 }
 
 pub struct BoltV3OrderEconomicsIntent<'a> {
     pub request: &'a BoltV3SubmitAdmissionRequestInput<'a>,
     pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
-    pub position: Option<PositionContext>,
     pub liquidity_role: LiquidityRoleAssumption,
     pub lifecycle_path: LifecyclePath,
     pub requested_at_ns: u64,
@@ -94,7 +100,16 @@ impl BoltV3OrderRoutingHandle {
         reporting_policy_id: &str,
         reporting_unit: &str,
         edge_basis_policy_id: &str,
+        carry_plan: BoltV3CarryPlan,
     ) -> anyhow::Result<Self> {
+        if matches!(
+            carry_plan,
+            BoltV3CarryPlan::Required {
+                holding_horizon_ns: 0
+            }
+        ) {
+            anyhow::bail!("economics carry holding horizon must be positive");
+        }
         Ok(Self {
             source,
             execution_client_id: EconomicsExecutionClientId::new(execution_client_id)?,
@@ -103,6 +118,7 @@ impl BoltV3OrderRoutingHandle {
             reporting_policy_id: ReportingPolicyId::new(reporting_policy_id)?,
             reporting_unit: NativeUnitId::new(reporting_unit)?,
             edge_basis_policy_id: EdgeBasisPolicyId::new(edge_basis_policy_id)?,
+            carry_plan,
         })
     }
 
@@ -122,6 +138,20 @@ impl BoltV3OrderRoutingHandle {
         };
         let planned_fill_legs =
             normalize_planned_fill_legs(intent.request.order, facts, intent.planned_fill_legs)?;
+        let position = match self.carry_plan {
+            BoltV3CarryPlan::NoCarry => None,
+            BoltV3CarryPlan::Required { holding_horizon_ns } => Some(PositionContext {
+                side: match order_side {
+                    EconomicsOrderSide::Buy => crate::economics::PositionSide::Long,
+                    EconomicsOrderSide::Sell => crate::economics::PositionSide::Short,
+                },
+                quantity: planned_fill_legs
+                    .iter()
+                    .try_fold(Decimal::ZERO, |total, leg| total.checked_add(leg.quantity))
+                    .ok_or_else(|| anyhow::anyhow!("planned carry quantity overflow"))?,
+                holding_horizon_ns,
+            }),
+        };
         let request = EconomicQuoteRequest {
             execution_client_id: self.execution_client_id.clone(),
             account_id: self.account_id.clone(),
@@ -141,7 +171,7 @@ impl BoltV3OrderRoutingHandle {
             routing: RoutingContext {
                 attached_charge: None,
             },
-            position: intent.position,
+            position,
             lifecycle_path: intent.lifecycle_path,
             reporting_policy_id: self.reporting_policy_id.clone(),
             reporting_unit: self.reporting_unit.clone(),
@@ -816,7 +846,6 @@ where
                         quantity: facts.planned_fill_quantity,
                     }]
                 },
-                position: None,
                 liquidity_role: LiquidityRoleAssumption::Taker,
                 lifecycle_path: LifecyclePath::PlannedExit,
                 requested_at_ns: order.ts_init().as_u64(),
@@ -1118,7 +1147,6 @@ where
                             quantity: facts.planned_fill_quantity,
                         }]
                     },
-                    position: None,
                     liquidity_role: LiquidityRoleAssumption::GuaranteedMaker,
                     lifecycle_path: LifecyclePath::PlannedExit,
                     requested_at_ns: order.ts_init().as_u64(),

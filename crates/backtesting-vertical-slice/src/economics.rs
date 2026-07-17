@@ -169,15 +169,13 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
             std::sync::Arc::new(adapter),
             quote_validity_ns,
         )?
-        .quote_admission(
-            EconomicsAdmissionIntent {
-                request: intent.request,
-                gross_expected_value: intent.gross_expected_value,
-                edge_basis,
-                valuations: Vec::new(),
-                base_reservation_notional: intent.base_reservation_notional,
-            },
-        )
+        .quote_admission(EconomicsAdmissionIntent {
+            request: intent.request,
+            gross_expected_value: intent.gross_expected_value,
+            edge_basis,
+            valuations: Vec::new(),
+            base_reservation_notional: intent.base_reservation_notional,
+        })
     }
 }
 

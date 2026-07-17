@@ -167,8 +167,13 @@ class RequiredCheckConfig:
 class BacktesterTestArchiveTimeoutConfig:
     ordinary_max_job_minutes: int
     ra001a_durable_tracer_max_job_minutes: int
+    ra001a_durable_tracer_max_registry_packs: int
+    ra001a_durable_tracer_max_total_selected_object_bytes: int
     ra001a_durable_tracer_max_wall_seconds: int
     ra001a_durable_tracer_termination_grace_seconds: int
+    ra001a_allowed_ignored_runtime_roots: tuple[str, ...]
+    ra001a_max_ignored_entry_bytes: int
+    ra001a_max_ignored_entries: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -224,6 +229,13 @@ class CiPolicyResult:
     backtester_gate_name: str
     backtester_test_archive_timeout_minutes: int
     backtester_issue_789_timeout_minutes: int
+    ra001a_max_registry_packs: int
+    ra001a_max_total_selected_object_bytes: int
+    ra001a_max_wall_seconds: int
+    ra001a_termination_grace_seconds: int
+    ra001a_allowed_ignored_runtime_roots: str
+    ra001a_max_ignored_entry_bytes: int
+    ra001a_max_ignored_entries: int
     expected_event_class: str
     reason: str
 
@@ -330,11 +342,56 @@ def load_backtester_test_archive_timeout_config(
         "ra001a_durable_tracer_max_job_minutes",
         timeout_prefix,
     )
+    max_registry_packs = require_positive_int(tracer, "max_registry_packs", tracer_prefix)
+    max_total_selected_object_bytes = require_positive_int(
+        tracer,
+        "max_total_selected_object_bytes",
+        tracer_prefix,
+    )
     max_wall_seconds = require_positive_int(tracer, "max_wall_seconds", tracer_prefix)
     termination_grace_seconds = require_positive_int(
         tracer,
         "termination_grace_seconds",
         tracer_prefix,
+    )
+    checkout_prefix = f"{tracer_prefix}.checkout"
+    checkout = require_table(tracer, "checkout", tracer_prefix)
+    allowed_ignored_runtime_roots = require_string_list(
+        checkout,
+        "allowed_ignored_runtime_roots",
+        checkout_prefix,
+    )
+    if not allowed_ignored_runtime_roots:
+        raise ProvenanceError(
+            f"{checkout_prefix}.allowed_ignored_runtime_roots must not be empty"
+        )
+    if allowed_ignored_runtime_roots != tuple(sorted(set(allowed_ignored_runtime_roots))):
+        raise ProvenanceError(
+            f"{checkout_prefix}.allowed_ignored_runtime_roots must be sorted and unique"
+        )
+    for root in allowed_ignored_runtime_roots:
+        components = root.removesuffix("/").split("/")
+        if (
+            root.startswith("/")
+            or not root.endswith("/")
+            or "\\" in root
+            or re.fullmatch(r"[A-Za-z0-9._/-]+", root) is None
+            or any(character in root for character in ("\0", "\r", "\n", ","))
+            or any(not component or component in {".", ".."} for component in components)
+        ):
+            raise ProvenanceError(
+                f"{checkout_prefix}.allowed_ignored_runtime_roots must contain normalized "
+                "repository-relative directories"
+            )
+    max_ignored_entry_bytes = require_positive_int(
+        checkout,
+        "max_ignored_entry_bytes",
+        checkout_prefix,
+    )
+    max_ignored_entries = require_positive_int(
+        checkout,
+        "max_ignored_entries",
+        checkout_prefix,
     )
     for key, value in (
         ("ordinary_max_job_minutes", ordinary_minutes),
@@ -353,8 +410,13 @@ def load_backtester_test_archive_timeout_config(
     return BacktesterTestArchiveTimeoutConfig(
         ordinary_max_job_minutes=ordinary_minutes,
         ra001a_durable_tracer_max_job_minutes=tracer_minutes,
+        ra001a_durable_tracer_max_registry_packs=max_registry_packs,
+        ra001a_durable_tracer_max_total_selected_object_bytes=max_total_selected_object_bytes,
         ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
         ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
+        ra001a_allowed_ignored_runtime_roots=allowed_ignored_runtime_roots,
+        ra001a_max_ignored_entry_bytes=max_ignored_entry_bytes,
+        ra001a_max_ignored_entries=max_ignored_entries,
     )
 
 
@@ -1597,6 +1659,19 @@ def evaluate_ci_policy(
         backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
         backtester_test_archive_timeout_minutes=archive_timeout_minutes,
         backtester_issue_789_timeout_minutes=issue_789_timeout_minutes,
+        ra001a_max_registry_packs=timeout.ra001a_durable_tracer_max_registry_packs,
+        ra001a_max_total_selected_object_bytes=(
+            timeout.ra001a_durable_tracer_max_total_selected_object_bytes
+        ),
+        ra001a_max_wall_seconds=timeout.ra001a_durable_tracer_max_wall_seconds,
+        ra001a_termination_grace_seconds=(
+            timeout.ra001a_durable_tracer_termination_grace_seconds
+        ),
+        ra001a_allowed_ignored_runtime_roots=",".join(
+            timeout.ra001a_allowed_ignored_runtime_roots
+        ),
+        ra001a_max_ignored_entry_bytes=timeout.ra001a_max_ignored_entry_bytes,
+        ra001a_max_ignored_entries=timeout.ra001a_max_ignored_entries,
         expected_event_class=expected_event_class_for(reason, path),
         reason=reason,
     )
@@ -3708,6 +3783,25 @@ def main(argv: list[str] | None = None) -> int:
                 "backtester_issue_789_timeout_minutes="
                 f"{result.backtester_issue_789_timeout_minutes}"
             )
+            print(f"ra001a_max_registry_packs={result.ra001a_max_registry_packs}")
+            print(
+                "ra001a_max_total_selected_object_bytes="
+                f"{result.ra001a_max_total_selected_object_bytes}"
+            )
+            print(f"ra001a_max_wall_seconds={result.ra001a_max_wall_seconds}")
+            print(
+                "ra001a_termination_grace_seconds="
+                f"{result.ra001a_termination_grace_seconds}"
+            )
+            print(
+                "ra001a_allowed_ignored_runtime_roots="
+                f"{result.ra001a_allowed_ignored_runtime_roots}"
+            )
+            print(
+                "ra001a_max_ignored_entry_bytes="
+                f"{result.ra001a_max_ignored_entry_bytes}"
+            )
+            print(f"ra001a_max_ignored_entries={result.ra001a_max_ignored_entries}")
             print(f"expected_event_class={result.expected_event_class}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")

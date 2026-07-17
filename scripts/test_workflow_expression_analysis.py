@@ -31,7 +31,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     backtester_workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
     tracer_group_arm = (
         "        || github.event_name == 'workflow_dispatch'\n"
-        "        && github.event.inputs.ra001a_durable_tracer == 'true'\n"
+        "        && inputs.ra001a_durable_tracer == true\n"
         "        && format('bvs-ra001a-tracer-{0}', github.sha)\n"
     )
     if tracer_group_arm not in backtester_workflow:
@@ -58,6 +58,68 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError(
             f"real backtester-ci.yml must be merge_group-clean, got: {backtester_baseline}"
         )
+
+    tracer_string_input = replace_once(
+        backtester_workflow,
+        '      ra001a_durable_tracer:\n'
+        '        description: "Run the non-required RA-001a registry-complete durable tracer"\n'
+        "        type: boolean\n",
+        '      ra001a_durable_tracer:\n'
+        '        description: "Run the non-required RA-001a registry-complete durable tracer"\n'
+        "        type: string\n",
+    )
+    tracer_string_input_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": tracer_string_input}
+    )
+    if not any(
+        "workflow_dispatch input ra001a_durable_tracer must be boolean" in error
+        for error in tracer_string_input_errors
+    ):
+        raise AssertionError("backtester governance must reject an untyped tracer dispatch input")
+
+    dispatch_uses_head_policy = replace_once(
+        backtester_workflow,
+        "if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'",
+        "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+    )
+    dispatch_uses_head_policy_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": dispatch_uses_head_policy}
+    )
+    if not any(
+        "Prepare trusted base policy tree" in error
+        or "workflow_dispatch" in error and "ci-policy job must include" in error
+        for error in dispatch_uses_head_policy_errors
+    ):
+        raise AssertionError("backtester governance must reject head-authorized dispatch policy")
+
+    inline_policy_parser = replace_once(
+        backtester_workflow,
+        "          tracer_args=()\n",
+        "          tracer_args=()\n"
+        "          python3 -c 'import tomllib; tomllib.loads(\"\")'\n",
+    )
+    inline_policy_parser_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": inline_policy_parser}
+    )
+    if not any(
+        "typed trusted resolver instead of an inline policy parser" in error
+        for error in inline_policy_parser_errors
+    ):
+        raise AssertionError("backtester governance must reject an alternate inline policy parser")
+
+    interpolated_dispatch_input = replace_once(
+        backtester_workflow,
+        '&& "$RA001A_DURABLE_TRACER_REQUESTED" == "true" ]]; then',
+        '&& "${{ github.event.inputs.ra001a_durable_tracer }}" == "true" ]]; then',
+    )
+    interpolated_dispatch_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": interpolated_dispatch_input}
+    )
+    if not any(
+        "typed inputs context and env-mediated shell access" in error
+        for error in interpolated_dispatch_errors
+    ):
+        raise AssertionError("backtester governance must reject shell-interpolated dispatch inputs")
 
     backtester_shared_tracer_group = replace_once(
         backtester_workflow,
@@ -94,7 +156,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     backtester_cancels_tracer_dispatch = replace_once(
         backtester_workflow,
         "        || (github.event_name == 'workflow_dispatch'\n"
-        "            && github.event.inputs.ra001a_durable_tracer != 'true') }}",
+        "            && inputs.ra001a_durable_tracer != true) }}",
         "        || github.event_name == 'workflow_dispatch' }}",
     )
     cancels_tracer_errors = verifier.verify_repo_automation_texts(
@@ -123,8 +185,8 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     tracer_policy_probe = (
         "          tracer_args=()\n"
         "          if python3 \"$policy_script\" ci-policy --help | grep -q -- \"--ra001a-durable-tracer-requested\"; then\n"
-        "            tracer_args=(--ra001a-durable-tracer-requested \"${{ github.event.inputs.ra001a_durable_tracer || 'false' }}\")\n"
-        "          elif [[ \"${{ github.event.inputs.ra001a_durable_tracer || 'false' }}\" == \"true\" ]]; then\n"
+        "            tracer_args=(--ra001a-durable-tracer-requested \"$RA001A_DURABLE_TRACER_REQUESTED\")\n"
+        "          elif [[ \"$RA001A_DURABLE_TRACER_REQUESTED\" == \"true\" ]]; then\n"
         "            echo \"trusted policy resolver does not support the requested RA-001a tracer\" >&2\n"
         "            exit 1\n"
         "          fi\n"
@@ -145,7 +207,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     unprobed_policy_workflow = replace_once(
         backtester_workflow,
         tracer_policy_probe,
-        "          tracer_args=(--ra001a-durable-tracer-requested \"${{ github.event.inputs.ra001a_durable_tracer || 'false' }}\")\n",
+        "          tracer_args=(--ra001a-durable-tracer-requested \"$RA001A_DURABLE_TRACER_REQUESTED\")\n",
     )
     unprobed_policy_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": unprobed_policy_workflow}
@@ -182,6 +244,18 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "          BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: "
         "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}\n"
     )
+    tracer_checkout_policy_env = (
+        "          BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS: "
+        "${{ needs.ci-policy.outputs.ra001a_allowed_ignored_runtime_roots }}\n"
+        "          BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES: "
+        "${{ needs.ci-policy.outputs.ra001a_max_ignored_entry_bytes }}\n"
+        "          BOLT_RA001A_MAX_IGNORED_ENTRIES: "
+        "${{ needs.ci-policy.outputs.ra001a_max_ignored_entries }}\n"
+    )
+    tracer_no_tests_fail = (
+        "            --run-ignored ignored-only \\\n"
+        "            --no-tests=fail \\\n"
+    )
     archive_job_timeout = (
         "    timeout-minutes: "
         "${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}\n"
@@ -195,19 +269,34 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         '          test ! -e "$policy_output" || { echo "trusted policy output path already exists" >&2; exit 1; }\n'
     )
     timeout_output_validation = (
-        "          for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do\n"
-        "            timeout_counts=\"$(awk -F= -v key=\"$timeout_key\" '$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf \"%d:%d\", all, valid }' \"$policy_output\")\"\n"
-        "            [[ \"$timeout_counts\" == \"1:1\" ]] || {\n"
-        "              echo \"trusted policy resolver must emit exactly one positive ${timeout_key}\" >&2\n"
+        "          for positive_policy_key in \\\n"
+        "            backtester_test_archive_timeout_minutes \\\n"
+        "            backtester_issue_789_timeout_minutes \\\n"
+        "            ra001a_max_registry_packs \\\n"
+        "            ra001a_max_total_selected_object_bytes \\\n"
+        "            ra001a_max_wall_seconds \\\n"
+        "            ra001a_termination_grace_seconds \\\n"
+        "            ra001a_max_ignored_entry_bytes \\\n"
+        "            ra001a_max_ignored_entries; do\n"
+        "            value_counts=\"$(awk -F= -v key=\"$positive_policy_key\" '$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf \"%d:%d\", all, valid }' \"$policy_output\")\"\n"
+        "            [[ \"$value_counts\" == \"1:1\" ]] || {\n"
+        "              echo \"trusted policy resolver must emit exactly one positive ${positive_policy_key}\" >&2\n"
         "              exit 1\n"
         "            }\n"
         "          done\n"
+        "          ignored_roots_counts=\"$(awk -F= '$1 == \"ra001a_allowed_ignored_runtime_roots\" { all += 1; if ($2 ~ /^[-A-Za-z0-9._\\/]+(,[-A-Za-z0-9._\\/]+)*$/) valid += 1 } END { printf \"%d:%d\", all, valid }' \"$policy_output\")\"\n"
+        "          [[ \"$ignored_roots_counts\" == \"1:1\" ]] || {\n"
+        "            echo \"trusted policy resolver must emit exactly one normalized ignored-runtime root list\" >&2\n"
+        "            exit 1\n"
+        "          }\n"
         "          cat \"$policy_output\" >> \"$GITHUB_OUTPUT\"\n"
     )
     for label, fragment in (
         ("partition-suite skip", tracer_test_skip),
         ("aggregate wall timeout", tracer_timeout),
         ("aggregate source-byte limit", tracer_byte_env),
+        ("checkout cleanliness policy", tracer_checkout_policy_env),
+        ("empty-selection failure", tracer_no_tests_fail),
         ("whole archive job timeout", archive_job_timeout),
         ("whole issue #789 job timeout", issue_789_job_timeout),
         ("trusted timeout output capture", timeout_output_capture),
@@ -217,9 +306,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             raise AssertionError(f"RA-001a tracer {label} is missing from the real workflow")
 
     tracer_dual_request_guard = (
-        '          if [[ "${{ github.event_name }}" == "workflow_dispatch" \\\n'
-        '            && "${{ github.event.inputs.issue_789 || \'false\' }}" == "true" \\\n'
-        '            && "${{ github.event.inputs.ra001a_durable_tracer || \'false\' }}" == "true" ]]; then\n'
+        '          if [[ "$EVENT_NAME" == "workflow_dispatch" \\\n'
+        '            && "$ISSUE_789_REQUESTED" == "true" \\\n'
+        '            && "$RA001A_DURABLE_TRACER_REQUESTED" == "true" ]]; then\n'
         '            echo "issue #789 and the RA-001a durable tracer are mutually exclusive managed-heavy requests" >&2\n'
         "            exit 1\n"
         "          fi\n"
@@ -304,6 +393,16 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n',
             "ci-policy job must fail closed on missing or malformed timeout outputs",
         ),
+        (
+            tracer_checkout_policy_env,
+            "",
+            "RA-001a checkout cleanliness policy must come from trusted TOML outputs",
+        ),
+        (
+            tracer_no_tests_fail,
+            "            --run-ignored ignored-only \\\n",
+            "RA-001a tracer must fail when its exact ignored test selection is empty",
+        ),
     ):
         mutated = replace_once(backtester_workflow, fragment, replacement)
         mutation_errors = verifier.verify_repo_automation_texts(
@@ -333,10 +432,10 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     early_timeout_publication = replace_once(
         backtester_workflow,
         '          | tee "$policy_output"\n'
-        "          for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do\n",
+        "          for positive_policy_key in \\\n",
         '          | tee "$policy_output"\n'
         '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n'
-        "          for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do\n",
+        "          for positive_policy_key in \\\n",
     )
     early_timeout_publication_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": early_timeout_publication}
@@ -661,9 +760,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     backtester_cancelling_merge_group = replace_once(
         backtester_workflow,
         "        || (github.event_name == 'workflow_dispatch'\n"
-        "            && github.event.inputs.ra001a_durable_tracer != 'true') }}",
+        "            && inputs.ra001a_durable_tracer != true) }}",
         "        || (github.event_name == 'workflow_dispatch'\n"
-        "            && github.event.inputs.ra001a_durable_tracer != 'true')\n"
+        "            && inputs.ra001a_durable_tracer != true)\n"
         "        || github.event_name == 'merge_group' }}",
     )
     backtester_cancel_errors = verifier.verify_repo_automation_texts(
@@ -2343,7 +2442,7 @@ def assert_ra001a_dispatch_cancel_guard_is_fail_closed() -> None:
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))))
         || (github.event_name == 'workflow_dispatch'
-            && github.event.inputs.ra001a_durable_tracer != 'true') }}"""
+            && inputs.ra001a_durable_tracer != true) }}"""
     if not verifier.cancel_in_progress_is_merge_group_safe(guarded_cancel):
         raise AssertionError(
             "the RA-001a dispatch opt-out is event-guarded and must preserve merge_group runs"

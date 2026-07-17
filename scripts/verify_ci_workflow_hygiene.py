@@ -1276,7 +1276,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "8324341815250be53bc52b84c008d87e8ccdff52839050fa6e17ddfd3aae2838"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "07dd02777be5a140b7cf4412610dfe54a4e0771a9984fccec9ce6df6fdb34d03"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -1817,7 +1817,7 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))) "
     "&& format('bvs-pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& format('bvs-pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
-    "&& github.event.inputs.ra001a_durable_tracer == 'true' "
+    "&& inputs.ra001a_durable_tracer == true "
     "&& format('bvs-ra001a-tracer-{0}', github.sha) || github.event_name == 'workflow_dispatch' "
     "&& format('bvs-{0}-dispatch-iteration', github.ref_name) "
     "|| github.event_name == 'merge_group' && format('bvs-mq-{0}', github.ref) "
@@ -2194,16 +2194,10 @@ def evaluate_ci_policy(
         base_config,
         policy={key: str(value) for key, value in policy.items() if key != "override"},
         gate_names=dict(gate_names),
-        mergify_temp_pr_head_ref_prefix=(
-            mergify_temp_pr_head_ref_prefix
-            if mergify_temp_pr_head_ref_prefix
-            else base_config.mergify_temp_pr_head_ref_prefix
-        ),
-        mergify_temp_pr_actor_id=(
-            mergify_temp_pr_actor_id
-            if mergify_temp_pr_actor_id > 0
-            else base_config.mergify_temp_pr_actor_id
-        ),
+        # The defaults are deliberate never-match sentinels for synthetic policy
+        # rows. Tests that exercise Mergify identity must opt in explicitly.
+        mergify_temp_pr_head_ref_prefix=mergify_temp_pr_head_ref_prefix,
+        mergify_temp_pr_actor_id=mergify_temp_pr_actor_id,
         force_full_ci=force_full_ci,
     )
     try:
@@ -8744,7 +8738,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test issue-789 must require explicit issue_789 input",
-            "github.event.inputs.issue_789 == 'true'",
+            "inputs.issue_789 == true",
         ),
         (
             "backtester bvs-test issue-789 must run only on iteration policy",
@@ -8914,7 +8908,7 @@ BACKTESTER_POLICY_DEFER_ACTIONS = {
 }
 BACKTESTER_RA001A_TRACER_GROUP_ARM = (
     "github.event_name == 'workflow_dispatch' "
-    "&& github.event.inputs.ra001a_durable_tracer == 'true' "
+    "&& inputs.ra001a_durable_tracer == true "
     "&& format('bvs-ra001a-tracer-{0}', github.sha)"
 )
 BACKTESTER_RA001A_TRACER_REQUIRED_EXPR = (
@@ -8979,6 +8973,38 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         return []
     jobs = parse_jobs(text)
     errors: list[str] = []
+    dispatch_lines = workflow_trigger_block(text, "workflow_dispatch")
+    for input_name in ("issue_789", "ra001a_durable_tracer"):
+        input_marker = f"      {input_name}:"
+        try:
+            input_start = dispatch_lines.index(input_marker)
+        except ValueError:
+            errors.append(
+                f"backtester workflow_dispatch must define typed boolean input {input_name}"
+            )
+            continue
+        input_end = next(
+            (
+                index
+                for index in range(input_start + 1, len(dispatch_lines))
+                if dispatch_lines[index].startswith("      ")
+                and not dispatch_lines[index].startswith("        ")
+            ),
+            len(dispatch_lines),
+        )
+        input_block = dispatch_lines[input_start:input_end]
+        if "        type: boolean" not in input_block:
+            errors.append(
+                f"backtester workflow_dispatch input {input_name} must be boolean"
+            )
+    uncommented_workflow = uncommented_text(text.splitlines())
+    if (
+        "github.event.inputs.issue_789" in uncommented_workflow
+        or "github.event.inputs.ra001a_durable_tracer" in uncommented_workflow
+    ):
+        errors.append(
+            "backtester dispatch inputs must use typed inputs context and env-mediated shell access"
+        )
     if BACKTESTER_REQUIRED_GATE_COMMENT not in workflow_header_text(text):
         errors.append("backtester draft deferral must document that only backtester-gate should be required")
     policy = jobs.get("ci-policy")
@@ -8998,10 +9024,16 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "ra001a_max_total_selected_object_bytes: ${{ steps.policy.outputs.ra001a_max_total_selected_object_bytes }}",
             "ra001a_max_wall_seconds: ${{ steps.policy.outputs.ra001a_max_wall_seconds }}",
             "ra001a_termination_grace_seconds: ${{ steps.policy.outputs.ra001a_termination_grace_seconds }}",
+            "ra001a_allowed_ignored_runtime_roots: ${{ steps.policy.outputs.ra001a_allowed_ignored_runtime_roots }}",
+            "ra001a_max_ignored_entry_bytes: ${{ steps.policy.outputs.ra001a_max_ignored_entry_bytes }}",
+            "ra001a_max_ignored_entries: ${{ steps.policy.outputs.ra001a_max_ignored_entries }}",
             "gate_name: ${{ steps.policy.outputs.gate_name }}",
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
-            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'",
+            "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            'elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then',
+            'base_branch="$DEFAULT_BRANCH"',
             "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
             'git check-ref-format "refs/heads/$base_branch"',
             "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
@@ -9020,7 +9052,9 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             "tracer_args=()",
             'python3 "$policy_script" ci-policy --help | grep -q -- "--ra001a-durable-tracer-requested"',
-            'tracer_args=(--ra001a-durable-tracer-requested "${{ github.event.inputs.ra001a_durable_tracer || \'false\' }}")',
+            'ISSUE_789_REQUESTED: ${{ inputs.issue_789 || false }}',
+            'RA001A_DURABLE_TRACER_REQUESTED: ${{ inputs.ra001a_durable_tracer || false }}',
+            'tracer_args=(--ra001a-durable-tracer-requested "$RA001A_DURABLE_TRACER_REQUESTED")',
             'trusted policy resolver does not support the requested RA-001a tracer',
             'RA001A_TRACER_ROLE_ARN: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}',
             'RA001A_TRACER_REGION: ${{ vars.AWS_RA001A_TRACER_REGION }}',
@@ -9028,10 +9062,6 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             'test -n "$RA001A_TRACER_ROLE_ARN"',
             'test -n "$RA001A_TRACER_REGION"',
             '"${tracer_args[@]}"',
-            'section = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["backtester"]["ra001a_durable_tracer"]',
-            '"max_registry_packs", "max_total_selected_object_bytes", "max_wall_seconds", "termination_grace_seconds"',
-            'print(f"ra001a_{key}={values[key]}")',
-            '\' "$policy_config" >> "$GITHUB_OUTPUT"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
@@ -9047,10 +9077,27 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
                 "ci-policy job must capture trusted policy output before publication"
             )
         timeout_validation_requirements = (
-            "for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do",
-            'timeout_counts="$(awk -F= -v key="$timeout_key" \'$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
-            '[[ "$timeout_counts" == "1:1" ]]',
-            "trusted policy resolver must emit exactly one positive ${timeout_key}",
+            "for positive_policy_key in \\",
+            "backtester_test_archive_timeout_minutes \\",
+            "backtester_issue_789_timeout_minutes \\",
+            "ra001a_max_registry_packs \\",
+            "ra001a_max_total_selected_object_bytes \\",
+            "ra001a_max_wall_seconds \\",
+            "ra001a_termination_grace_seconds \\",
+            "ra001a_max_ignored_entry_bytes \\",
+            "ra001a_max_ignored_entries; do",
+            'value_counts="$(awk -F= -v key="$positive_policy_key" \'$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
+            '[[ "$value_counts" == "1:1" ]]',
+            "trusted policy resolver must emit exactly one positive ${positive_policy_key}",
+            'ignored_roots_counts="$(awk -F= \'$1 == "ra001a_allowed_ignored_runtime_roots" { all += 1; if ($2 ~ /^[-A-Za-z0-9._\\/]+(,[-A-Za-z0-9._\\/]+)*$/) valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
+            '[[ "$ignored_roots_counts" == "1:1" ]]',
+            "trusted policy resolver must emit exactly one normalized ignored-runtime root list",
+            'tracer_required_counts="$(awk -F= \'$1 == "ra001a_durable_tracer_required" { all += 1; if ($2 == "true" || $2 == "false") valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
+            '[[ "$tracer_required_counts" == "1:1" ]]',
+            "trusted policy resolver must emit exactly one boolean ra001a_durable_tracer_required",
+            'tracer_required="$(awk -F= \'$1 == "ra001a_durable_tracer_required" { print $2 }\' "$policy_output")"',
+            '[[ "$tracer_required" == "$RA001A_DURABLE_TRACER_REQUESTED" ]]',
+            "trusted policy resolver tracer decision does not match the dispatch request",
             'cat "$policy_output" >> "$GITHUB_OUTPUT"',
         )
         if any(required not in policy_text for required in timeout_validation_requirements):
@@ -9058,10 +9105,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
                 "ci-policy job must fail closed on missing or malformed timeout outputs"
             )
         timeout_capture_marker = '| tee "$policy_output"'
-        timeout_validation_marker = (
-            "for timeout_key in backtester_test_archive_timeout_minutes "
-            "backtester_issue_789_timeout_minutes; do"
-        )
+        timeout_validation_marker = "for positive_policy_key in \\"
         timeout_publish_marker = 'cat "$policy_output" >> "$GITHUB_OUTPUT"'
         if (
             policy_text.count(timeout_capture_marker) != 1
@@ -9076,6 +9120,10 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         ):
             errors.append(
                 "ci-policy job must validate timeout outputs before publishing them"
+            )
+        if "python3 -c" in policy_text or "tomllib.loads" in policy_text:
+            errors.append(
+                "ci-policy job must use the typed trusted resolver instead of an inline policy parser"
             )
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
@@ -9172,6 +9220,10 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             errors.append(
                 "RA-001a tracer must enforce its TOML-owned aggregate wall-time envelope"
             )
+        if "--run-ignored ignored-only \\\n            --no-tests=fail \\" not in test_archive_text:
+            errors.append(
+                "RA-001a tracer must fail when its exact ignored test selection is empty"
+            )
         if (
             "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: "
             "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}"
@@ -9180,6 +9232,18 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             errors.append(
                 "RA-001a tracer must receive its TOML-owned aggregate source-byte envelope"
             )
+        for output_name, env_name in (
+            ("ra001a_allowed_ignored_runtime_roots", "BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS"),
+            ("ra001a_max_ignored_entry_bytes", "BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES"),
+            ("ra001a_max_ignored_entries", "BOLT_RA001A_MAX_IGNORED_ENTRIES"),
+        ):
+            if (
+                f"{env_name}: ${{{{ needs.ci-policy.outputs.{output_name} }}}}"
+                not in test_archive_text
+            ):
+                errors.append(
+                    "RA-001a checkout cleanliness policy must come from trusted TOML outputs"
+                )
 
     issue_789 = jobs.get("issue_789")
     if issue_789 is not None:
@@ -10723,7 +10787,7 @@ def validate_cargo_build_jobs_config(data: dict[str, object]) -> dict[str, dict[
     return config
 
 
-def validate_ra001a_durable_tracer_config(data: dict[str, object]) -> dict[str, int]:
+def validate_ra001a_durable_tracer_config(data: dict[str, object]) -> dict[str, object]:
     backtester = data.get("backtester")
     if not isinstance(backtester, dict):
         raise ValueError("ci/github-actions-runners.toml must define [backtester]")
@@ -10738,7 +10802,7 @@ def validate_ra001a_durable_tracer_config(data: dict[str, object]) -> dict[str, 
         "max_wall_seconds",
         "termination_grace_seconds",
     )
-    result: dict[str, int] = {}
+    result: dict[str, object] = {}
     for key in keys:
         value = section.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -10750,6 +10814,51 @@ def validate_ra001a_durable_tracer_config(data: dict[str, object]) -> dict[str, 
         raise ValueError(
             "backtester.ra001a_durable_tracer.termination_grace_seconds must be shorter than max_wall_seconds"
         )
+    checkout = section.get("checkout")
+    if not isinstance(checkout, dict):
+        raise ValueError(
+            "backtester.ra001a_durable_tracer.checkout must be a table"
+        )
+    roots = checkout.get("allowed_ignored_runtime_roots")
+    if not isinstance(roots, list) or not all(
+        isinstance(root, str) and root for root in roots
+    ):
+        raise ValueError(
+            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+            "must be a non-empty string list"
+        )
+    if not roots:
+        raise ValueError(
+            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+            "must not be empty"
+        )
+    if tuple(roots) != tuple(sorted(set(roots))):
+        raise ValueError(
+            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+            "must be sorted and unique"
+        )
+    for root in roots:
+        components = root.removesuffix("/").split("/")
+        if (
+            root.startswith("/")
+            or not root.endswith("/")
+            or "\\" in root
+            or re.fullmatch(r"[A-Za-z0-9._/-]+", root) is None
+            or any(character in root for character in ("\0", "\r", "\n", ","))
+            or any(not component or component in {".", ".."} for component in components)
+        ):
+            raise ValueError(
+                "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+                "must contain normalized repository-relative directories"
+            )
+    result["allowed_ignored_runtime_roots"] = tuple(roots)
+    for key in ("max_ignored_entry_bytes", "max_ignored_entries"):
+        value = checkout.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(
+                f"backtester.ra001a_durable_tracer.checkout.{key} must be a positive integer"
+            )
+        result[key] = value
     return result
 
 

@@ -1189,6 +1189,24 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
 
+    sentinel_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        event_sender_id=actor_id,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if sentinel_result.reason == "mergify_temp_pr" or sentinel_result.ci_policy_path != "iteration":
+        raise AssertionError(
+            "omitted Mergify identity overrides must preserve never-match sentinels: "
+            f"{sentinel_result}"
+        )
+
     mergify_sync_result = verifier.evaluate_ci_policy(
         policy,
         gate_names,
@@ -5507,6 +5525,40 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
     if any("backtester draft deferral" in error for error in errors):
         raise AssertionError(f"backtester-ci workflow must satisfy draft deferral policy, got: {errors}")
 
+    missing_tracer_decision_validation = replace_once(
+        workflow,
+        '          tracer_required_counts="$(awk -F= \'$1 == "ra001a_durable_tracer_required" { all += 1; if ($2 == "true" || $2 == "false") valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"\n',
+        "",
+    )
+    missing_tracer_decision_validation_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: missing_tracer_decision_validation}
+    )
+    if not any(
+        "ci-policy job must fail closed on missing or malformed timeout outputs" in error
+        for error in missing_tracer_decision_validation_errors
+    ):
+        raise AssertionError(
+            "backtester-ci workflow must reject a missing tracer-decision validation, got: "
+            f"{missing_tracer_decision_validation_errors}"
+        )
+
+    hardcoded_false_tracer_decision = replace_once(
+        workflow,
+        '[[ "$tracer_required" == "$RA001A_DURABLE_TRACER_REQUESTED" ]]',
+        '[[ "$tracer_required" == "false" ]]',
+    )
+    hardcoded_false_tracer_decision_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: hardcoded_false_tracer_decision}
+    )
+    if not any(
+        "ci-policy job must fail closed on missing or malformed timeout outputs" in error
+        for error in hardcoded_false_tracer_decision_errors
+    ):
+        raise AssertionError(
+            "backtester-ci workflow must reject a hardcoded-false tracer decision, got: "
+            f"{hardcoded_false_tracer_decision_errors}"
+        )
+
     missing_required_gate_note = replace_once(
         workflow,
         verifier.BACKTESTER_REQUIRED_GATE_COMMENT,
@@ -8297,6 +8349,31 @@ def assert_ra001a_aggregate_limits_config_contract() -> None:
                 flags=re.MULTILINE,
             ),
         ),
+        (
+            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must be sorted and unique",
+            config_text.replace(
+                '  ".nextest-archive/",\n  ".rust-verification/",',
+                '  ".rust-verification/",\n  ".nextest-archive/",',
+                1,
+            ),
+        ),
+        (
+            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must not be empty",
+            re.sub(
+                r"allowed_ignored_runtime_roots = \[(?:\n  .*?)*\n\]",
+                "allowed_ignored_runtime_roots = []",
+                config_text,
+                count=1,
+            ),
+        ),
+        (
+            "backtester.ra001a_durable_tracer.checkout.max_ignored_entry_bytes must be a positive integer",
+            config_text.replace("max_ignored_entry_bytes = 4096", "max_ignored_entry_bytes = 0", 1),
+        ),
+        (
+            "backtester.ra001a_durable_tracer.checkout.max_ignored_entries must be a positive integer",
+            config_text.replace("max_ignored_entries = 128", "max_ignored_entries = true", 1),
+        ),
     )
     with tempfile.TemporaryDirectory() as tmp:
         for expected, mutated in cases:
@@ -9045,7 +9122,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
   issue_789:
     name: bvs-test issue-789
     needs: [ci-policy, detect, gate]
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.issue_789 == 'true' && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.issue_789 == true && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
     env:
       BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst
       BOLT_ISSUE_789_RESULT_PATH: result.json

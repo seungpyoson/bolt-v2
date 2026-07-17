@@ -10,8 +10,8 @@ use backtesting_vertical_slice::{
     source_universe_batch_execution::SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE,
     source_universe_batch_launch::discover_committed_source_universe_execution_packs,
     source_universe_durable_tracer::{
-        SourceUniverseDurableTracerAggregateLimits, SourceUniverseDurableTracerReportInput,
-        build_source_universe_durable_tracer_receipt_set,
+        SourceUniverseDurableTracerAggregateLimits, SourceUniverseDurableTracerCheckoutPolicy,
+        SourceUniverseDurableTracerReportInput, build_source_universe_durable_tracer_receipt_set,
         read_and_validate_source_universe_durable_tracer_receipt_set,
         validate_source_universe_durable_tracer_aggregate_limits,
         verify_source_universe_durable_tracer_checkout,
@@ -24,6 +24,9 @@ const WORKER_SHA256_ENV: &str = "BOLT_RA001A_WORKER_SHA256";
 const RECEIPT_PATH_ENV: &str = "BOLT_RA001A_RECEIPT_PATH";
 const MAX_REGISTRY_PACKS_ENV: &str = "BOLT_RA001A_MAX_REGISTRY_PACKS";
 const MAX_TOTAL_SELECTED_OBJECT_BYTES_ENV: &str = "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES";
+const ALLOWED_IGNORED_RUNTIME_ROOTS_ENV: &str = "BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS";
+const MAX_IGNORED_ENTRY_BYTES_ENV: &str = "BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES";
+const MAX_IGNORED_ENTRIES_ENV: &str = "BOLT_RA001A_MAX_IGNORED_ENTRIES";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -66,6 +69,22 @@ fn required_positive_u64_env(name: &str) -> u64 {
     value
 }
 
+fn required_checkout_policy() -> SourceUniverseDurableTracerCheckoutPolicy {
+    let roots = required_utf8_env(ALLOWED_IGNORED_RUNTIME_ROOTS_ENV)
+        .split(',')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(
+        roots.iter().all(|root| !root.is_empty()),
+        "required {ALLOWED_IGNORED_RUNTIME_ROOTS_ENV} must not contain empty roots"
+    );
+    SourceUniverseDurableTracerCheckoutPolicy {
+        allowed_ignored_runtime_roots: roots,
+        max_ignored_entry_bytes: required_positive_u64_env(MAX_IGNORED_ENTRY_BYTES_ENV),
+        max_ignored_entries: required_positive_u64_env(MAX_IGNORED_ENTRIES_ENV),
+    }
+}
+
 #[test]
 #[ignore = "requires the protected RA-001a AWS role and creates exact-version durable objects"]
 fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
@@ -73,7 +92,8 @@ fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
     let expected_worker_sha256 = required_utf8_env(WORKER_SHA256_ENV);
     let receipt_path = required_absolute_path_env(RECEIPT_PATH_ENV);
     let repo_root = repo_root();
-    verify_source_universe_durable_tracer_checkout(&repo_root, &source_revision)
+    let checkout_policy = required_checkout_policy();
+    verify_source_universe_durable_tracer_checkout(&repo_root, &source_revision, &checkout_policy)
         .expect("bind RA-001a proof to exact clean checkout before pack execution");
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_source_universe_batch_execution"));
     assert!(
@@ -142,7 +162,7 @@ fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
         });
     }
 
-    verify_source_universe_durable_tracer_checkout(&repo_root, &source_revision)
+    verify_source_universe_durable_tracer_checkout(&repo_root, &source_revision, &checkout_policy)
         .expect("revalidate exact clean checkout before receipt generation");
     let receipt_set = build_source_universe_durable_tracer_receipt_set(
         &repo_root,

@@ -47,7 +47,7 @@ BACKTESTER_RA001A_SAFE_CANCEL_FORM = (
     "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
     "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))) "
     "|| (github.event_name == 'workflow_dispatch' "
-    "&& github.event.inputs.ra001a_durable_tracer != 'true') }}"
+    "&& inputs.ra001a_durable_tracer != true) }}"
 )
 KNOWN_SAFE_CANCEL_FORMS = frozenset(
     {

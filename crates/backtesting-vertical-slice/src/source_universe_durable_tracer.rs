@@ -110,6 +110,50 @@ pub struct SourceUniverseDurableTracerAggregateEnvelope {
     pub total_selected_object_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceUniverseDurableTracerCheckoutPolicy {
+    pub allowed_ignored_runtime_roots: Vec<String>,
+    pub max_ignored_entry_bytes: u64,
+    pub max_ignored_entries: u64,
+}
+
+impl SourceUniverseDurableTracerCheckoutPolicy {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.allowed_ignored_runtime_roots.is_empty(),
+            "RA-001a allowed ignored-runtime roots must not be empty"
+        );
+        ensure!(
+            self.max_ignored_entry_bytes > 0 && self.max_ignored_entries > 0,
+            "RA-001a ignored-path inventory limits must be positive"
+        );
+        let mut roots = BTreeSet::new();
+        for root in &self.allowed_ignored_runtime_roots {
+            ensure!(
+                !root.starts_with('/')
+                    && root.ends_with('/')
+                    && !root.contains('\\')
+                    && root.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-')
+                    })
+                    && !root.bytes().any(|byte| matches!(byte, 0 | b'\r' | b'\n'))
+                    && root
+                        .trim_end_matches('/')
+                        .split('/')
+                        .all(|component| !component.is_empty()
+                            && component != "."
+                            && component != ".."),
+                "RA-001a ignored-runtime root {root:?} must be one normalized repository-relative directory"
+            );
+            ensure!(
+                roots.insert(root.as_str()),
+                "RA-001a ignored-runtime roots must be unique"
+            );
+        }
+        Ok(())
+    }
+}
+
 struct PinnedArtifact {
     bytes: Vec<u8>,
     pin: SourceUniverseDurableTracerArtifactPin,
@@ -626,24 +670,23 @@ fn ensure_git_checkout_has_no_changes(git_executable: &Path, repo_root: &Path) -
     Ok(())
 }
 
-fn is_allowed_ignored_runtime_output(path: &[u8]) -> bool {
-    const ALLOWED_ROOTS: [&[u8]; 4] = [
-        b"target/",
-        b".nextest-archive/",
-        b".rust-verification/",
-        b"scripts/__pycache__/",
-    ];
-    ALLOWED_ROOTS
+fn is_allowed_ignored_runtime_output(
+    path: &[u8],
+    policy: &SourceUniverseDurableTracerCheckoutPolicy,
+) -> bool {
+    policy
+        .allowed_ignored_runtime_roots
         .iter()
-        .any(|root| path == *root || path.starts_with(root))
+        .map(String::as_bytes)
+        .any(|root| path == root || path.starts_with(root))
 }
 
 fn ensure_git_ignored_entries_are_runtime_outputs(
     git_executable: &Path,
     repo_root: &Path,
+    policy: &SourceUniverseDurableTracerCheckoutPolicy,
 ) -> Result<()> {
-    const MAX_IGNORED_ENTRY_BYTES: usize = 4096;
-    const MAX_IGNORED_ENTRIES: u64 = 128;
+    policy.validate()?;
 
     let mut command = git_checkout_command(git_executable, repo_root);
     command
@@ -697,10 +740,12 @@ fn ensure_git_ignored_entries_are_runtime_outputs(
         entries = entries
             .checked_add(1)
             .context("git ignored-path inventory count overflow")?;
+        let entry_bytes = u64::try_from(entry.len())
+            .context("git ignored-path inventory entry length overflow")?;
         if entry.is_empty()
-            || entry.len() > MAX_IGNORED_ENTRY_BYTES
-            || entries > MAX_IGNORED_ENTRIES
-            || !is_allowed_ignored_runtime_output(&entry)
+            || entry_bytes > policy.max_ignored_entry_bytes
+            || entries > policy.max_ignored_entries
+            || !is_allowed_ignored_runtime_output(&entry, policy)
         {
             let _ = child.kill();
             let _ = child.wait();
@@ -744,8 +789,10 @@ fn parse_single_git_line(bytes: Vec<u8>, label: &str) -> Result<String> {
 pub fn verify_source_universe_durable_tracer_checkout(
     repo_root: &Path,
     expected_source_revision: &str,
+    policy: &SourceUniverseDurableTracerCheckoutPolicy,
 ) -> Result<()> {
     validate_source_revision(expected_source_revision)?;
+    policy.validate()?;
     ensure!(
         repo_root.is_absolute(),
         "RA-001a repository root must be absolute"
@@ -804,7 +851,7 @@ pub fn verify_source_universe_durable_tracer_checkout(
     );
     ensure_git_index_has_no_hidden_paths(&git_executable, &canonical_root)?;
     ensure_git_checkout_has_no_changes(&git_executable, &canonical_root)?;
-    ensure_git_ignored_entries_are_runtime_outputs(&git_executable, &canonical_root)?;
+    ensure_git_ignored_entries_are_runtime_outputs(&git_executable, &canonical_root, policy)?;
     let head_after_status = read_head()?;
     ensure!(
         head_after_status == expected_source_revision,
@@ -1201,8 +1248,8 @@ mod tests {
     };
 
     use super::{
-        SourceUniverseDurableTracerAggregateLimits, SourceUniverseDurableTracerReportInput,
-        build_source_universe_durable_tracer_receipt_set,
+        SourceUniverseDurableTracerAggregateLimits, SourceUniverseDurableTracerCheckoutPolicy,
+        SourceUniverseDurableTracerReportInput, build_source_universe_durable_tracer_receipt_set,
         parse_and_validate_source_universe_durable_tracer_receipt_set,
         read_and_validate_source_universe_durable_tracer_receipt_set,
         validate_source_universe_durable_tracer_aggregate_limits,
@@ -1217,6 +1264,19 @@ mod tests {
     const CATALOG_SHA256: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const COMPLETION_SHA256: &str =
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    fn checkout_policy() -> SourceUniverseDurableTracerCheckoutPolicy {
+        SourceUniverseDurableTracerCheckoutPolicy {
+            allowed_ignored_runtime_roots: vec![
+                "target/".to_string(),
+                ".nextest-archive/".to_string(),
+                ".rust-verification/".to_string(),
+                "scripts/__pycache__/".to_string(),
+            ],
+            max_ignored_entry_bytes: 4096,
+            max_ignored_entries: 128,
+        }
+    }
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1273,8 +1333,31 @@ mod tests {
     fn checkout_verifier_accepts_exact_clean_revision() {
         let (temp, head) = initialized_git_repo();
 
-        verify_source_universe_durable_tracer_checkout(temp.path(), &head)
+        verify_source_universe_durable_tracer_checkout(temp.path(), &head, &checkout_policy())
             .expect("accept exact clean checkout");
+    }
+
+    #[test]
+    fn checkout_verifier_rejects_invalid_configured_cleanliness_policy() {
+        let (temp, head) = initialized_git_repo();
+        let mut invalid_root = checkout_policy();
+        invalid_root.allowed_ignored_runtime_roots = vec!["../target/".to_string()];
+        let root_error =
+            verify_source_universe_durable_tracer_checkout(temp.path(), &head, &invalid_root)
+                .expect_err("reject a non-normalized ignored-runtime root");
+        assert!(
+            root_error
+                .to_string()
+                .contains("normalized repository-relative"),
+            "{root_error:#}"
+        );
+
+        let mut zero_limit = checkout_policy();
+        zero_limit.max_ignored_entries = 0;
+        let limit_error =
+            verify_source_universe_durable_tracer_checkout(temp.path(), &head, &zero_limit)
+                .expect_err("reject a zero ignored-path inventory limit");
+        assert!(limit_error.to_string().contains("must be positive"));
     }
 
     #[test]
@@ -1284,6 +1367,7 @@ mod tests {
         let error = verify_source_universe_durable_tracer_checkout(
             temp.path(),
             "2222222222222222222222222222222222222222",
+            &checkout_policy(),
         )
         .expect_err("reject caller revision that is not checkout HEAD");
 
@@ -1299,8 +1383,9 @@ mod tests {
         let (temp, head) = initialized_git_repo();
         fs::write(temp.path().join("tracked.txt"), b"modified\n").expect("modify tracked fixture");
 
-        let error = verify_source_universe_durable_tracer_checkout(temp.path(), &head)
-            .expect_err("reject tracked checkout change");
+        let error =
+            verify_source_universe_durable_tracer_checkout(temp.path(), &head, &checkout_policy())
+                .expect_err("reject tracked checkout change");
 
         assert!(error.to_string().contains("tracked or untracked changes"));
     }
@@ -1311,8 +1396,9 @@ mod tests {
         fs::write(temp.path().join("untracked.txt"), b"untracked\n")
             .expect("write untracked fixture");
 
-        let error = verify_source_universe_durable_tracer_checkout(temp.path(), &head)
-            .expect_err("reject untracked checkout change");
+        let error =
+            verify_source_universe_durable_tracer_checkout(temp.path(), &head, &checkout_policy())
+                .expect_err("reject untracked checkout change");
 
         assert!(error.to_string().contains("tracked or untracked changes"));
     }
@@ -1325,8 +1411,9 @@ mod tests {
         fs::write(temp.path().join("build.rs"), b"fn main() {}\n")
             .expect("write ignored build script");
 
-        let error = verify_source_universe_durable_tracer_checkout(temp.path(), &head)
-            .expect_err("reject ignored source-affecting path");
+        let error =
+            verify_source_universe_durable_tracer_checkout(temp.path(), &head, &checkout_policy())
+                .expect_err("reject ignored source-affecting path");
 
         assert!(
             error
@@ -1354,7 +1441,7 @@ mod tests {
             fs::write(path, b"generated").expect("write generated output");
         }
 
-        verify_source_universe_durable_tracer_checkout(temp.path(), &head)
+        verify_source_universe_durable_tracer_checkout(temp.path(), &head, &checkout_policy())
             .expect("accept only governed ignored runtime output roots");
     }
 
@@ -1368,8 +1455,9 @@ mod tests {
         fs::write(temp.path().join("tracked.txt"), b"hidden modification\n")
             .expect("modify assume-unchanged fixture");
 
-        let error = verify_source_universe_durable_tracer_checkout(temp.path(), &head)
-            .expect_err("reject index flag that can hide a tracked checkout change");
+        let error =
+            verify_source_universe_durable_tracer_checkout(temp.path(), &head, &checkout_policy())
+                .expect_err("reject index flag that can hide a tracked checkout change");
 
         assert!(
             error

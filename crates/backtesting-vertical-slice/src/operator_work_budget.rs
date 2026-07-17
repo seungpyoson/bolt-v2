@@ -2128,9 +2128,33 @@ mod tests {
                 "the direct CLI must not expose durable execution through {forbidden}"
             );
         }
+        assert_eq!(
+            OPERATOR_SOURCE
+                .matches("pub(crate) struct DurableRunDispatcher")
+                .count(),
+            1,
+            "the sole production durable dispatcher must remain crate-private"
+        );
         assert!(!OPERATOR_SOURCE.contains("pub struct DurableRunDispatcher"));
+        assert_eq!(
+            OPERATOR_SOURCE
+                .matches(
+                    "#[cfg(test)]\npub(crate) async fn run_from_run_spec_with_artifact_store_guarded",
+                )
+                .count(),
+            1,
+            "the direct artifact-store durable-write seam must remain test-only and crate-private"
+        );
+        assert_eq!(
+            OPERATOR_SOURCE
+                .matches("\nasync fn run_from_run_spec_with_verified_registry_guarded(")
+                .count(),
+            1,
+            "the registry-pinned durable-write implementation must remain module-private"
+        );
         assert!(
-            !OPERATOR_SOURCE.contains("pub async fn run_from_run_spec_with_artifact_store_guarded")
+            !OPERATOR_SOURCE
+                .contains("pub(crate) async fn run_from_run_spec_with_verified_registry_guarded")
         );
         assert!(
             !OPERATOR_SOURCE

@@ -1206,6 +1206,10 @@ fn apply_http_request_timeout(
     }
 }
 
+fn source_object_http_error(error: reqwest::Error, operation: &str) -> anyhow::Error {
+    anyhow::anyhow!("{operation}: {}", error.without_url())
+}
+
 impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
     fn fetch(
         &mut self,
@@ -1219,32 +1223,29 @@ impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
         let request_timeout = effective_http_request_timeout(self.fetch_timeout, remaining);
         let request = apply_http_request_timeout(client.get(source_url), request_timeout)
             .build()
-            .with_context(|| format!("build GET request for {}", record.source_url))?;
+            .map_err(|error| source_object_http_error(error, "build source-object GET request"))?;
         let bytes = self.runtime.block_on(guarded_async_operation_outcome(
             work_budget,
             OperatorWorkBudgetStage::Fetch,
             async {
-                let mut response = client
-                    .execute(request)
-                    .await
-                    .with_context(|| format!("GET {}", record.source_url))?;
-                response = response
-                    .error_for_status()
-                    .with_context(|| format!("HTTP status for {}", record.source_url))?;
+                let mut response = client.execute(request).await.map_err(|error| {
+                    source_object_http_error(error, "execute source-object GET request")
+                })?;
+                response = response.error_for_status().map_err(|error| {
+                    source_object_http_error(error, "validate source-object HTTP status")
+                })?;
                 if let Some(content_length) = response.content_length() {
                     ensure!(
                         content_length == record.selected_object_bytes,
-                        "HTTP Content-Length {content_length} does not match pinned object size {} for {}",
-                        record.selected_object_bytes,
-                        record.source_url
+                        "HTTP Content-Length {content_length} does not match pinned object size {}",
+                        record.selected_object_bytes
                     );
                 }
                 let mut output = ExactSizedObjectBuffer::new(record.selected_object_bytes)?;
                 loop {
-                    let chunk = response
-                        .chunk()
-                        .await
-                        .with_context(|| format!("stream response body {}", record.source_url))?;
+                    let chunk = response.chunk().await.map_err(|error| {
+                        source_object_http_error(error, "stream source-object response body")
+                    })?;
                     let Some(chunk) = chunk else { break };
                     output.push(&chunk, work_budget, OperatorWorkBudgetStage::Fetch)?;
                 }
@@ -9877,14 +9878,36 @@ mod tests {
             "{error:#}"
         );
     }
+
+    #[test]
+    fn http_source_url_rejects_credentials_without_disclosing_them() {
+        for source_url in [
+            "https://operator:credential-value@example.invalid/object.csv.gz",
+            "https://operator@example.invalid/object.csv.gz",
+            "https://example.invalid/object.csv.gz?token=credential-value",
+            "https://operator:credential-value@",
+        ] {
+            let error = validated_http_source_url(source_url)
+                .expect_err("source URLs carrying credentials must fail closed");
+            let rendered = format!("{error:#}");
+            assert!(
+                !rendered.contains("credential-value") && !rendered.contains("operator"),
+                "source URL validation errors must not disclose URL credentials: {rendered}"
+            );
+        }
+    }
 }
 
 fn validated_http_source_url(source_url: &str) -> Result<reqwest::Url> {
-    let parsed_url = reqwest::Url::parse(source_url)
-        .with_context(|| format!("parse source_url for batch execution: {source_url}"))?;
+    let parsed_url =
+        reqwest::Url::parse(source_url).context("parse source_url for batch execution")?;
     ensure!(
         parsed_url.scheme() == "https",
-        "source_url must be HTTPS for batch execution: {source_url}"
+        "source_url must be HTTPS for batch execution"
+    );
+    ensure!(
+        parsed_url.username().is_empty() && parsed_url.password().is_none(),
+        "source_url must not include credentials"
     );
     ensure!(
         parsed_url
@@ -9895,11 +9918,11 @@ fn validated_http_source_url(source_url: &str) -> Result<reqwest::Url> {
     );
     ensure!(
         !parsed_url.path().trim_start_matches('/').trim().is_empty(),
-        "source_url missing object path: {source_url}"
+        "source_url missing object path"
     );
     ensure!(
         parsed_url.query().is_none() && parsed_url.fragment().is_none(),
-        "source_url query and fragment components are not supported: {source_url}"
+        "source_url query and fragment components are not supported"
     );
     Ok(parsed_url)
 }

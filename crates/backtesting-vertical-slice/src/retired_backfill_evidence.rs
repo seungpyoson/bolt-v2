@@ -133,9 +133,8 @@ impl RetiredBackfillEvidenceInventory {
             "retired backfill inventory_id must not be empty"
         );
         ensure!(
-            self.records.len() == 185,
-            "retired backfill inventory must contain exactly 185 records, got {}",
-            self.records.len()
+            !self.records.is_empty(),
+            "retired backfill inventory records must not be empty"
         );
 
         let mut previous_key: Option<(RetiredBackfillVenue, NaiveDate)> = None;

@@ -45,8 +45,15 @@ ordinary_max_job_minutes = 360
 ra001a_durable_tracer_max_job_minutes = 120
 
 [backtester.ra001a_durable_tracer]
+max_registry_packs = 64
+max_total_selected_object_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
+
+[backtester.ra001a_durable_tracer.checkout]
+allowed_ignored_runtime_roots = [".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]
+max_ignored_entry_bytes = 4096
+max_ignored_entries = 128
 
 [backtester.issue_789]
 max_job_minutes = 120
@@ -269,6 +276,13 @@ host-health = "github_hosted"
 [backtester.ra001a_durable_tracer]
 termination_grace_seconds = 30
 max_wall_seconds = 3600
+max_total_selected_object_bytes = 1073741824
+max_registry_packs = 64
+
+[backtester.ra001a_durable_tracer.checkout]
+max_ignored_entries = 128
+max_ignored_entry_bytes = 4096
+allowed_ignored_runtime_roots = [".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]
 
 [backtester.test_archive_timeout]
 ra001a_durable_tracer_max_job_minutes = 120
@@ -894,6 +908,16 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "max_wall_seconds = true",
             1,
         ),
+        "backtester.ra001a_durable_tracer.max_registry_packs must be a positive integer": CONFIG_TOML.replace(
+            "max_registry_packs = 64",
+            "max_registry_packs = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_total_selected_object_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_total_selected_object_bytes = 1073741824",
+            "max_total_selected_object_bytes = true",
+            1,
+        ),
         "backtester.ra001a_durable_tracer.termination_grace_seconds must be a positive integer": CONFIG_TOML.replace(
             "termination_grace_seconds = 30",
             "termination_grace_seconds = 0",
@@ -904,6 +928,31 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "ra001a_durable_tracer_max_job_minutes = 60",
             1,
         ).replace("max_wall_seconds = 3600", "max_wall_seconds = 3570", 1),
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must be sorted and unique": CONFIG_TOML.replace(
+            '[".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]',
+            '["target/", ".nextest-archive/"]',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must not be empty": CONFIG_TOML.replace(
+            '[".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]',
+            "[]",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must contain normalized repository-relative directories": CONFIG_TOML.replace(
+            '".nextest-archive/"',
+            '".nextest-archive/../bad/"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.max_ignored_entry_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_ignored_entry_bytes = 4096",
+            "max_ignored_entry_bytes = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.max_ignored_entries must be a positive integer": CONFIG_TOML.replace(
+            "max_ignored_entries = 128",
+            "max_ignored_entries = true",
+            1,
+        ),
     }
     issue_789_cases = [
         (
@@ -964,10 +1013,25 @@ def assert_backtester_timeout_configs_load_limits() -> None:
     actual = (
         timeout.ordinary_max_job_minutes,
         timeout.ra001a_durable_tracer_max_job_minutes,
+        timeout.ra001a_durable_tracer_max_registry_packs,
+        timeout.ra001a_durable_tracer_max_total_selected_object_bytes,
         timeout.ra001a_durable_tracer_max_wall_seconds,
         timeout.ra001a_durable_tracer_termination_grace_seconds,
+        timeout.ra001a_allowed_ignored_runtime_roots,
+        timeout.ra001a_max_ignored_entry_bytes,
+        timeout.ra001a_max_ignored_entries,
     )
-    if actual != (360, 120, 3600, 30):
+    if actual != (
+        360,
+        120,
+        64,
+        1073741824,
+        3600,
+        30,
+        (".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"),
+        4096,
+        128,
+    ):
         raise AssertionError(f"backtester test-archive timeout config drifted: {actual}")
     if loaded.backtester_issue_789_timeout_minutes != 120:
         raise AssertionError(
@@ -2767,6 +2831,26 @@ def assert_ci_policy_exposes_ra001a_tracer_request_without_promoting_full_ci() -
             raise AssertionError(
                 f"issue #789 timeout output drifted while resolving RA-001a: {result}"
             )
+        expected_limits = (
+            64,
+            1073741824,
+            3600,
+            30,
+            ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
+            4096,
+            128,
+        )
+        actual_limits = (
+            result.ra001a_max_registry_packs,
+            result.ra001a_max_total_selected_object_bytes,
+            result.ra001a_max_wall_seconds,
+            result.ra001a_termination_grace_seconds,
+            result.ra001a_allowed_ignored_runtime_roots,
+            result.ra001a_max_ignored_entry_bytes,
+            result.ra001a_max_ignored_entries,
+        )
+        if actual_limits != expected_limits:
+            raise AssertionError(f"RA-001a trusted aggregate limits drifted: {actual_limits}")
 
         assert_raises(
             "only valid for workflow_dispatch",
@@ -2802,10 +2886,28 @@ def assert_ci_policy_exposes_ra001a_tracer_request_without_promoting_full_ci() -
             raise AssertionError(
                 f"RA-001a ci-policy CLI must expose the trusted tracer timeout: {output}"
             )
+        for key, expected in {
+            "ra001a_allowed_ignored_runtime_roots": ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
+            "ra001a_max_ignored_entry_bytes": "4096",
+            "ra001a_max_ignored_entries": "128",
+        }.items():
+            if output.get(key) != expected:
+                raise AssertionError(f"RA-001a ci-policy CLI output {key} drifted: {output}")
         if output.get("backtester_issue_789_timeout_minutes") != "120":
             raise AssertionError(
                 f"RA-001a ci-policy CLI must expose the trusted issue #789 timeout: {output}"
             )
+        expected_output_limits = {
+            "ra001a_max_registry_packs": "64",
+            "ra001a_max_total_selected_object_bytes": "1073741824",
+            "ra001a_max_wall_seconds": "3600",
+            "ra001a_termination_grace_seconds": "30",
+        }
+        for key, expected_value in expected_output_limits.items():
+            if output.get(key) != expected_value:
+                raise AssertionError(
+                    f"RA-001a ci-policy CLI must expose trusted {key}={expected_value}: {output}"
+                )
 
 
 def assert_ci_policy_outputs_matrix() -> None:
@@ -2912,6 +3014,17 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"ci-policy must expose the trusted ordinary timeout: {output}")
             if output.get("backtester_issue_789_timeout_minutes") != "120":
                 raise AssertionError(f"ci-policy must expose the trusted issue #789 timeout: {output}")
+            expected_ra001a_limits = {
+                "ra001a_max_registry_packs": "64",
+                "ra001a_max_total_selected_object_bytes": "1073741824",
+                "ra001a_max_wall_seconds": "3600",
+                "ra001a_termination_grace_seconds": "30",
+            }
+            for key, expected_value in expected_ra001a_limits.items():
+                if output.get(key) != expected_value:
+                    raise AssertionError(
+                        f"ci-policy must expose trusted {key}={expected_value}: {output}"
+                    )
 
         code, stdout, stderr = run_cli_with_event_sender(
             [

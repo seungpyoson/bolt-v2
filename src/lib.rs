@@ -107,7 +107,6 @@ mod bounded_config_read;
 pub mod execution_state;
 pub mod lake_batch;
 pub mod log_sweep;
-pub mod nautilus_source_capabilities;
 pub mod nt_runtime_capture;
 pub mod raw_types;
 pub mod secrets;

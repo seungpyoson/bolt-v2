@@ -1384,17 +1384,6 @@ capturing one local clock value per decoded message and supplying it to
 private BBO handler arm. This NT-owned path feeds both
 `RealizedVolatilityObservation` and `StrategySignalObservation`.
 
-`ci/nautilus-source-capabilities.toml` records the two official-source facts
-for this exact revision. `build.rs` requires its revision to equal the official
-`nautilus-binance` Cargo pin and emits the immutable
-`NautilusSourceCapabilityRegistry` value `NAUTILUS_SOURCE_CAPABILITIES`; neither
-fact is exposed through operator TOML. Both facts are true at this pin, so the
-production runtime has one direct Binance path. It does not contain a runtime
-capability branch, timestamp substitution, or fallback provider. A later pin
-with either fact false must first add an issue-bound affected-new-risk blocker;
-the current build and source fence reject a false fact instead of silently
-using the direct path.
-
 Bolt's `binance_sbe_quote_timestamps` harness exercises only the public parser
 contract: unequal venue-event and adapter-initialization stamps across every
 trade in a multi-trade message, the BBO quote, and both aggregate and inner

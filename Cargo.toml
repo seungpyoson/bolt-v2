@@ -126,9 +126,6 @@ tokio-tungstenite = "=0.29.0"
 # composed runtime config's TOML structure (e.g. deterministic key ordering, #768).
 toml = "1.1"
 
-[build-dependencies]
-toml = "1.1"
-
 [profile.release]
 lto = "thin"
 strip = true

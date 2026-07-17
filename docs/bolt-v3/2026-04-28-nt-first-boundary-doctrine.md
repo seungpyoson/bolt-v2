@@ -128,10 +128,6 @@ compatibility slice:
   slice's declared compatibility scope is the NT 0.61 migration, the governed Binance
   boundary evidence, and required exact-head tests. It does not re-audit all
   NT-owned behaviors cited by this doctrine.
-- `ci/nautilus-source-capabilities.toml` binds the selected official revision
-  to its Binance Spot schema 3:5 and adapter receive-timestamp facts. `build.rs`
-  generates the immutable Rust registry and rejects revision drift or a false
-  fact; operator TOML cannot override either capability.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
   remains open until live signing, order, fill, collateral, and fee behavior are

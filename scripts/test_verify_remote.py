@@ -820,7 +820,7 @@ def assert_verify_remote_waits_then_passes() -> None:
         raise AssertionError((result, output))
 
 
-def assert_verify_remote_uses_latest_full_run_over_stale_deferred_run() -> None:
+def assert_verify_remote_uses_latest_full_run_over_older_failed_run() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -846,7 +846,7 @@ def assert_verify_remote_uses_latest_full_run_over_stale_deferred_run() -> None:
                         "status": "completed",
                         "conclusion": "failure",
                         "createdAt": "2026-06-13T00:00:00Z",
-                        "url": "https://example.invalid/stale-deferred",
+                        "url": "https://example.invalid/older-failed-run",
                     },
                     {
                         "databaseId": 202,
@@ -1045,7 +1045,7 @@ def assert_verify_remote_reports_failing_full_ci_run() -> None:
                                 "status": "completed",
                                 "conclusion": "failure",
                                 "createdAt": "2026-06-13T00:00:00Z",
-                                "url": "https://example.invalid/stale-deferred",
+                                "url": "https://example.invalid/older-failed-run",
                             }
                         ],
                         None,
@@ -1059,7 +1059,7 @@ def assert_verify_remote_reports_failing_full_ci_run() -> None:
                                 "status": "completed",
                                 "conclusion": "failure",
                                 "createdAt": "2026-06-13T00:00:00Z",
-                                "url": "https://example.invalid/stale-deferred",
+                                "url": "https://example.invalid/older-failed-run",
                             },
                             {
                                 "databaseId": 401,
@@ -1118,7 +1118,7 @@ def assert_verify_remote_rechecks_head_before_reporting_failed_run() -> None:
                                 "status": "completed",
                                 "conclusion": "failure",
                                 "createdAt": "2026-06-13T00:00:00Z",
-                                "url": "https://example.invalid/stale-deferred",
+                                "url": "https://example.invalid/older-failed-run",
                             }
                         ],
                         None,
@@ -1132,7 +1132,7 @@ def assert_verify_remote_rechecks_head_before_reporting_failed_run() -> None:
                                 "status": "completed",
                                 "conclusion": "failure",
                                 "createdAt": "2026-06-13T00:00:00Z",
-                                "url": "https://example.invalid/stale-deferred",
+                                "url": "https://example.invalid/older-failed-run",
                             },
                             {
                                 "databaseId": 501,
@@ -1751,7 +1751,7 @@ def main() -> int:
     assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()
     assert_verify_remote_waits_then_passes()
-    assert_verify_remote_uses_latest_full_run_over_stale_deferred_run()
+    assert_verify_remote_uses_latest_full_run_over_older_failed_run()
     assert_verify_remote_ready_pr_requires_required_gate_job()
     assert_verify_remote_rejects_unknown_success_event()
     assert_verify_remote_draft_pr_rejects_manual_full_ci()

@@ -550,17 +550,29 @@ def _protected_struct_public_fields(text: str) -> list[tuple[str, str]]:
         "NewRiskWorkspaceHandle",
         "RecoveryWorkspaceHandle",
     ):
-        match = re.search(rf"\bstruct\s+(?:r#)?{type_name}\b[^{{;]*\{{", text)
-        if match is None:
+        declaration = re.search(rf"\bstruct\s+(?:r#)?{type_name}\b", text)
+        if declaration is None:
             continue
-        opening = text.find("{", match.start(), match.end())
+        delimiters = [
+            index
+            for delimiter in ("{", "(", ";")
+            if (index := text.find(delimiter, declaration.end())) != -1
+        ]
+        if not delimiters:
+            fields.append((type_name, "<unclosed>"))
+            continue
+        opening = min(delimiters)
+        if text[opening] == ";":
+            continue
         closing = _matching_delimiter_end(text, opening)
         if closing is None:
             fields.append((type_name, "<unclosed>"))
             continue
         for start, end in _top_level_segments(text, opening + 1, closing):
             field = text[start:end].strip()
-            if re.match(r"(?:#\[[^\]]+\]\s*)*pub(?:\([^)]*\))?\b", field):
+            if re.match(
+                r"(?:#\[[^\]]+\]\s*)*pub(?:\([^)]*\))?(?:\s|$)", field
+            ):
                 fields.append((type_name, _normalize_rust_fragment(field)))
     return fields
 

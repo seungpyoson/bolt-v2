@@ -495,6 +495,34 @@ impl RecoveryWorkspaceHandle {
 
         self.assertTrue(any("exact public capability surface" in error for error in errors))
 
+    def test_rejects_public_tuple_capability_field(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8").replace(
+                "pub struct RecoveryWorkspaceHandle;",
+                "pub struct RecoveryWorkspaceHandle(pub NewRiskWorkspaceHandle);",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("exact public capability surface" in error for error in errors))
+
+    def test_rejects_crate_visible_tuple_capability_field(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8").replace(
+                "pub struct RecoveryWorkspaceHandle;",
+                "pub struct RecoveryWorkspaceHandle(pub(crate) NewRiskWorkspaceHandle);",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("exact public capability surface" in error for error in errors))
+
     def test_rejects_public_capability_function_pointer(self) -> None:
         ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
         ledger.write_text(

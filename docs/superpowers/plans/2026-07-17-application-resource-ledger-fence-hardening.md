@@ -195,11 +195,11 @@ ledger.write_text(
 )
 ```
 
-Name the tests `test_rejects_public_capability_field`, `test_rejects_public_capability_function_pointer`, and `test_rejects_raw_identifier_public_capability_method`.
+Name the tests `test_rejects_public_capability_field`, `test_rejects_public_capability_function_pointer`, and `test_rejects_raw_identifier_public_capability_method`. During final adversarial replay, add `test_rejects_public_tuple_capability_field` and `test_rejects_crate_visible_tuple_capability_field` with `pub NewRiskWorkspaceHandle` and `pub(crate) NewRiskWorkspaceHandle` tuple fields respectively.
 
-- [ ] **Step 2: Run the three tests and verify RED**
+- [ ] **Step 2: Run the five tests and verify RED**
 
-Run their fully qualified unittest names. Expected: all three fail because none of the mutations enters the current ordinary-function census.
+Run their fully qualified unittest names. Expected: all five fail because none of the mutations enters the current ordinary-function or named-field census.
 
 - [ ] **Step 3: Implement raw-aware and non-function surface scanning**
 
@@ -219,17 +219,29 @@ def _protected_struct_public_fields(text: str) -> list[tuple[str, str]]:
         "NewRiskWorkspaceHandle",
         "RecoveryWorkspaceHandle",
     ):
-        match = re.search(rf"\bstruct\s+(?:r#)?{type_name}\b[^{{;]*\{{", text)
-        if match is None:
+        declaration = re.search(rf"\bstruct\s+(?:r#)?{type_name}\b", text)
+        if declaration is None:
             continue
-        opening = text.find("{", match.start(), match.end())
+        delimiters = [
+            index
+            for delimiter in ("{", "(", ";")
+            if (index := text.find(delimiter, declaration.end())) != -1
+        ]
+        if not delimiters:
+            fields.append((type_name, "<unclosed>"))
+            continue
+        opening = min(delimiters)
+        if text[opening] == ";":
+            continue
         closing = _matching_delimiter_end(text, opening)
         if closing is None:
             fields.append((type_name, "<unclosed>"))
             continue
         for start, end in _top_level_segments(text, opening + 1, closing):
             field = text[start:end].strip()
-            if re.match(r"(?:#\[[^\]]+\]\s*)*pub(?:\([^)]*\))?\b", field):
+            if re.match(
+                r"(?:#\[[^\]]+\]\s*)*pub(?:\([^)]*\))?(?:\s|$)", field
+            ):
                 fields.append((type_name, _normalize_rust_fragment(field)))
     return fields
 
@@ -254,11 +266,11 @@ def _unexpected_public_items(text: str) -> list[str]:
 
 Append the existing exact-surface error if either helper returns entries.
 
-- [ ] **Step 4: Run all six public-surface tests and verify GREEN**
+- [ ] **Step 4: Run all eight public-surface tests and verify GREEN**
 
-Run the three new names together with `test_rejects_public_opaque_raw_authority_accessor`, `test_rejects_qualified_public_function_modifiers`, and `test_rejects_public_function_without_explicit_return_type`.
+Run the five new names together with `test_rejects_public_opaque_raw_authority_accessor`, `test_rejects_qualified_public_function_modifiers`, and `test_rejects_public_function_without_explicit_return_type`.
 
-Expected: six tests pass.
+Expected: eight tests pass.
 
 - [ ] **Step 5: Commit Task 2**
 

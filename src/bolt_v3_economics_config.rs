@@ -128,7 +128,6 @@ pub enum ValuationOrientation {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CarryQuotePolicyConfig {
-    pub holding_horizon_secs: u64,
     pub funding_interval_secs: u64,
     pub funding_venue_rate_cap_bps_per_hour: String,
     pub funding_standard_price_stress_multiplier: String,
@@ -390,18 +389,18 @@ impl ExecutionEconomicsConfig {
                 .validate(&reporting.pnl_currency, active_data_clients),
         );
         if let Some(carry) = &self.carry {
-            if is_zero(carry.holding_horizon_secs) || is_zero(carry.funding_interval_secs) {
+            if is_zero(carry.funding_interval_secs) {
                 errors.push(EconomicsConfigError::ZeroCarryHorizon);
             }
             for value in [
                 &carry.funding_venue_rate_cap_bps_per_hour,
                 &carry.funding_standard_price_stress_multiplier,
             ] {
-                if value
-                    .parse::<rust_decimal::Decimal>()
-                    .map(|value| value <= rust_decimal::Decimal::ZERO)
-                    .unwrap_or(true)
-                {
+                let Ok(value) = value.parse::<rust_decimal::Decimal>() else {
+                    errors.push(EconomicsConfigError::InvalidQuoteWindow);
+                    continue;
+                };
+                if value <= rust_decimal::Decimal::ZERO {
                     errors.push(EconomicsConfigError::InvalidQuoteWindow);
                 }
             }

@@ -192,35 +192,18 @@ fn build_order_routing_handle(
                 "execution economics resting refresh margin overflows nanoseconds".to_string(),
             )
         })?;
-    let carry_horizon_ns = economics
-        .carry
-        .as_ref()
-        .map(|carry| {
-            carry
-                .holding_horizon_secs
-                .checked_mul(MILLIS_PER_SECOND_U64)
-                .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
-                .ok_or_else(|| {
-                    binding_message(
-                        context,
-                        "carry holding horizon overflows nanoseconds".to_string(),
-                    )
-                })
-        })
-        .transpose()?;
     let product_surface_routes = economics
         .product_surface_policies
         .iter()
         .map(|(product_surface_id, edge_basis_policy_id)| {
             let carry_plan = if economics.carry_surfaces.contains(product_surface_id) {
-                BoltV3CarryPlan::Required {
-                    holding_horizon_ns: carry_horizon_ns.ok_or_else(|| {
-                        binding_message(
-                            context,
-                            "carry-bearing product surface has no carry policy".to_string(),
-                        )
-                    })?,
-                }
+                economics.carry.as_ref().ok_or_else(|| {
+                    binding_message(
+                        context,
+                        "carry-bearing product surface has no carry policy".to_string(),
+                    )
+                })?;
+                BoltV3CarryPlan::Required
             } else {
                 BoltV3CarryPlan::NoCarry
             };

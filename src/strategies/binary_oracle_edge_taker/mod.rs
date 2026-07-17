@@ -51,7 +51,7 @@ use crate::{
     },
     bolt_v3_executable_cost::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
-        price_exact_size_vwap,
+        price_exact_quantity_vwap, price_exact_size_vwap,
     },
     bolt_v3_fair_value_pricing::{RealizedVolGateClassification, classify_rv_gate},
     bolt_v3_loss_protection::{PositionRealizedPnlObservation, RealizedPnlObservation},
@@ -5336,6 +5336,7 @@ impl BinaryOracleEdgeTaker {
                     request: &admission_input,
                     planned_fill_legs,
                     liquidity_role: LiquidityRoleAssumption::Taker,
+                    position: None,
                     lifecycle_path: LifecyclePath::PlannedExit,
                     requested_at_ns: order.ts_init().as_u64(),
                     decision_correlation_id: order.client_order_id().as_str(),
@@ -6008,7 +6009,41 @@ impl BinaryOracleEdgeTaker {
         };
         quantity = normalized_quantity;
         decision.quantity = Some(quantity);
-        let price = Price::new(raw_price, instrument.price_precision());
+        let Some(managed_position) = self.managed_position().cloned() else {
+            anyhow::bail!("exit submit requires managed position state");
+        };
+        let (planned_exit_price, planned_fill_legs) = if order_config.order_template.is_post_only {
+            let price = Decimal::from_f64(raw_price)
+                .ok_or_else(|| anyhow::anyhow!("exit maker price is not representable"))?;
+            let quantity = Decimal::from_str(&quantity.to_string())
+                .context("exit maker quantity is not representable")?;
+            (raw_price, vec![BoltV3PlannedFillLeg { price, quantity }])
+        } else {
+            let sweep = price_exact_quantity_vwap(
+                &executable_book_quote(&managed_position.position.book),
+                order_side,
+                quantity.as_f64(),
+                self.config.vwap_depth_limit_bps,
+            )
+            .map_err(|reason| anyhow::anyhow!("exit fill plan is unavailable: {reason}"))?;
+            let legs = sweep
+                .fill_legs
+                .into_iter()
+                .map(|leg| {
+                    Ok(BoltV3PlannedFillLeg {
+                        price: Decimal::from_f64(leg.price).ok_or_else(|| {
+                            anyhow::anyhow!("exit fill price is not representable")
+                        })?,
+                        quantity: Decimal::from_f64(leg.quantity).ok_or_else(|| {
+                            anyhow::anyhow!("exit fill quantity is not representable")
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (sweep.limit_price, legs)
+        };
+        decision.price = Some(planned_exit_price);
+        let price = Price::new(planned_exit_price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
         self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
@@ -6023,9 +6058,6 @@ impl BinaryOracleEdgeTaker {
         )?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
-        let Some(managed_position) = self.managed_position().cloned() else {
-            anyhow::bail!("exit submit requires managed position state");
-        };
         if !decision.forced_flat_reasons.is_empty()
             && let Some(pending_entry) = managed_position.pending_entry.as_ref()
         {
@@ -6072,14 +6104,23 @@ impl BinaryOracleEdgeTaker {
             .filter(|value| is_positive_finite(*value))
             .and_then(Decimal::from_f64)
             .ok_or_else(|| anyhow::anyhow!("exit economics requires a valid entry cost basis"))?;
-        let exit_price = Decimal::from_str(&price.to_string())
-            .context("exit economics price is not representable as Decimal")?;
         let exit_quantity = Decimal::from_str(&quantity.to_string())
             .context("exit economics quantity is not representable as Decimal")?;
-        let gross_expected_value = exit_price
-            .checked_sub(entry_cost)
-            .and_then(|per_unit_value| per_unit_value.checked_mul(exit_quantity))
-            .ok_or_else(|| anyhow::anyhow!("exit gross value arithmetic overflow"))?;
+        let planned_fill_notional = planned_fill_legs
+            .iter()
+            .try_fold(Decimal::ZERO, |total, leg| {
+                total.checked_add(leg.price.checked_mul(leg.quantity)?)
+            })
+            .ok_or_else(|| anyhow::anyhow!("exit planned-fill notional overflow"))?;
+        let entry_notional = entry_cost
+            .checked_mul(exit_quantity)
+            .ok_or_else(|| anyhow::anyhow!("exit entry notional overflow"))?;
+        let gross_expected_value = match order_side {
+            OrderSide::Sell => planned_fill_notional.checked_sub(entry_notional),
+            OrderSide::Buy => entry_notional.checked_sub(planned_fill_notional),
+            _ => None,
+        }
+        .ok_or_else(|| anyhow::anyhow!("exit gross value arithmetic overflow"))?;
 
         match self.submit_order_with_decision_evidence_and_fill_plan(
             intent,
@@ -6089,10 +6130,7 @@ impl BinaryOracleEdgeTaker {
                 managed_position.position.position_id,
             ),
             gross_expected_value,
-            vec![BoltV3PlannedFillLeg {
-                price: exit_price,
-                quantity: exit_quantity,
-            }],
+            planned_fill_legs,
         ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {}

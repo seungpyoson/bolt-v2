@@ -70,13 +70,14 @@ pub struct BoltV3OrderRoutingHandle {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BoltV3CarryPlan {
     NoCarry,
-    Required { holding_horizon_ns: u64 },
+    Required,
 }
 
 pub struct BoltV3OrderEconomicsIntent<'a> {
     pub request: &'a BoltV3SubmitAdmissionRequestInput<'a>,
     pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
     pub liquidity_role: LiquidityRoleAssumption,
+    pub position: Option<PositionContext>,
     pub lifecycle_path: LifecyclePath,
     pub requested_at_ns: u64,
     pub decision_correlation_id: &'a str,
@@ -140,14 +141,6 @@ impl BoltV3OrderRoutingHandle {
     ) -> anyhow::Result<Self> {
         let mut product_surface_routes = BTreeMap::new();
         for route in config.product_surface_routes {
-            if matches!(
-                route.carry_plan,
-                BoltV3CarryPlan::Required {
-                    holding_horizon_ns: 0
-                }
-            ) {
-                anyhow::bail!("economics carry holding horizon must be positive");
-            }
             let product_surface_id = ProductSurfaceId::new(route.product_surface_id)?;
             let edge_basis_policy_id = EdgeBasisPolicyId::new(route.edge_basis_policy_id)?;
             anyhow::ensure!(
@@ -204,18 +197,18 @@ impl BoltV3OrderRoutingHandle {
             .get(&product_surface_id)
             .ok_or_else(|| anyhow::anyhow!("economics source selected an unconfigured surface"))?;
         let position = match carry_plan {
-            BoltV3CarryPlan::NoCarry => None,
-            BoltV3CarryPlan::Required { holding_horizon_ns } => Some(PositionContext {
-                side: match order_side {
-                    EconomicsOrderSide::Buy => crate::economics::PositionSide::Long,
-                    EconomicsOrderSide::Sell => crate::economics::PositionSide::Short,
-                },
-                quantity: planned_fill_legs
-                    .iter()
-                    .try_fold(Decimal::ZERO, |total, leg| total.checked_add(leg.quantity))
-                    .ok_or_else(|| anyhow::anyhow!("planned carry quantity overflow"))?,
-                holding_horizon_ns: *holding_horizon_ns,
-            }),
+            BoltV3CarryPlan::NoCarry => {
+                anyhow::ensure!(
+                    intent.position.is_none(),
+                    "non-carry product surface rejects position carry context"
+                );
+                None
+            }
+            BoltV3CarryPlan::Required => Some(intent.position.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "carry product surface requires strategy-declared position and horizon"
+                )
+            })?),
         };
         let request = EconomicQuoteRequest {
             execution_client_id: self.execution_client_id.clone(),
@@ -910,6 +903,7 @@ where
                     }]
                 },
                 liquidity_role: LiquidityRoleAssumption::Taker,
+                position: None,
                 lifecycle_path: LifecyclePath::PlannedExit,
                 requested_at_ns: order.ts_init().as_u64(),
                 decision_correlation_id: order.client_order_id().as_str(),
@@ -1211,6 +1205,7 @@ where
                         }]
                     },
                     liquidity_role: LiquidityRoleAssumption::GuaranteedMaker,
+                    position: None,
                     lifecycle_path: LifecyclePath::PlannedExit,
                     requested_at_ns: order.ts_init().as_u64(),
                     decision_correlation_id: order.client_order_id().as_str(),

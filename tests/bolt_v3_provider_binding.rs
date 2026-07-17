@@ -468,7 +468,6 @@ identity_kind = "currency"
 evidence_fixture_id = "hyperliquid-settlement-fixture"
 
 [execution.economics.carry]
-holding_horizon_secs = 3600
 funding_interval_secs = 3600
 funding_venue_rate_cap_bps_per_hour = "400"
 funding_standard_price_stress_multiplier = "1.5"

@@ -21234,14 +21234,6 @@ reason = "Stable diagnostic template for gross strategy intent; it contains no e
 
 [[allowed]]
 path = "src/bolt_v3_order_execution.rs"
-kind = "number"
-literal = "0"
-context = "holding_horizon_ns: 0"
-classification = "invalid_zero_sentinel"
-reason = "Fail-closed validation pattern rejecting a zero TOML-derived carry horizon; it is not a configured horizon or fallback."
-
-[[allowed]]
-path = "src/bolt_v3_order_execution.rs"
 kind = "string"
 literal = '''"economics product surface route is duplicated"'''
 context = '''"economics product surface route is duplicated"'''
@@ -21345,14 +21337,6 @@ classification = "diagnostic_template"
 reason = "Stable fail-closed missing-policy diagnostic; surface and carry policy remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_strategy_registration.rs"
-kind = "string"
-literal = '''"carry holding horizon overflows nanoseconds"'''
-context = '''"carry holding horizon overflows nanoseconds".to_string(),'''
-classification = "diagnostic_template"
-reason = "Stable checked-conversion diagnostic; holding horizon remains TOML-owned."
-
-[[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"rejected_economics_order_mismatch"'''
@@ -21391,6 +21375,14 @@ literal = '''"bolt-v3 submit admission final order no longer matches its sealed 
 context = '''"bolt-v3 submit admission final order no longer matches its sealed economics quote"'''
 classification = "diagnostic_template"
 reason = "Stable fail-closed seal-mismatch diagnostic; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"non-carry product surface rejects position carry context"'''
+context = '''"non-carry product surface rejects position carry context"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed request-shape diagnostic preventing carry state from being accepted by a non-carry configured surface."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"

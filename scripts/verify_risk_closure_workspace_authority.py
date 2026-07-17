@@ -38,11 +38,12 @@ LEDGER_DISTRIBUTION = re.compile(
     r"\b(?:ApplicationResourceLedger|NewRiskWorkspaceHandle|RecoveryWorkspaceHandle|"
     r"new_risk_workspace_handle|recovery_workspace_handle)\b"
 )
+RUST_IDENT = r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*"
 FUNCTION_HEADER = re.compile(
     r"(?P<attributes>(?:#\[[^\]]+\]\s*)*)"
     r"(?P<visibility>pub\s*(?:\([^)]*\))?\s+)?"
     r"(?P<qualifiers>(?:(?:const|async|unsafe|extern)\s+)*)"
-    r"fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    rf"fn\s+(?P<name>{RUST_IDENT})\s*\(",
     re.MULTILINE,
 )
 ATTRIBUTE_HEADER = re.compile(r"#\s*\[\s*(?P<name>path|cfg_attr)\b")
@@ -56,7 +57,7 @@ RAW_AUTHORITY_CHILD_MODULE_DECLARATION = re.compile(
 LEDGER_MODULE_DECLARATION = re.compile(
     r"\b(?:pub(?:\([^)]*\))?\s+)?mod\s+bolt_v3_application_resource_ledger\s*;"
 )
-RUST_PATH = r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*"
+RUST_PATH = rf"{RUST_IDENT}(?:::{RUST_IDENT})*"
 TYPE_ALIAS = re.compile(
     rf"\btype\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)"
     rf"(?:\s*<[^;={{}}]*>)?\s*=\s*(?P<target>{RUST_PATH})"
@@ -448,12 +449,53 @@ def _public_function_surface(text: str) -> list[tuple[str, str, str, str, str]]:
             (
                 visibility,
                 qualifiers,
-                name,
+                name.removeprefix("r#"),
                 _normalize_rust_fragment(arguments),
                 _normalize_rust_fragment(returns),
             )
         )
     return surface
+
+
+def _protected_struct_public_fields(text: str) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    for type_name in (
+        "ApplicationResourceLedger",
+        "NewRiskWorkspaceHandle",
+        "RecoveryWorkspaceHandle",
+    ):
+        match = re.search(rf"\bstruct\s+(?:r#)?{type_name}\b[^{{;]*\{{", text)
+        if match is None:
+            continue
+        opening = text.find("{", match.start(), match.end())
+        closing = _matching_delimiter_end(text, opening)
+        if closing is None:
+            fields.append((type_name, "<unclosed>"))
+            continue
+        for start, end in _top_level_segments(text, opening + 1, closing):
+            field = text[start:end].strip()
+            if re.match(r"(?:#\[[^\]]+\]\s*)*pub(?:\([^)]*\))?\b", field):
+                fields.append((type_name, _normalize_rust_fragment(field)))
+    return fields
+
+
+def _unexpected_public_items(text: str) -> list[str]:
+    allowed_structs = {
+        "ApplicationResourceLedger",
+        "NewRiskWorkspaceHandle",
+        "RecoveryWorkspaceHandle",
+    }
+    unexpected: list[str] = []
+    for match in re.finditer(
+        r"\bpub(?:\([^)]*\))?\s+"
+        r"(?P<kind>const|static|type|enum|trait|mod|struct|union)\s+"
+        r"(?P<name>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)",
+        text,
+    ):
+        item_name = match.group("name").removeprefix("r#")
+        if match.group("kind") != "struct" or item_name not in allowed_structs:
+            unexpected.append(match.group(0).strip())
+    return unexpected
 
 
 def _has_protected_trait_impl(
@@ -645,9 +687,17 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         ),
     ]
     public_surface = _public_function_surface(ledger_production_code)
-    if public_surface != expected_public_surface:
+    public_fields = _protected_struct_public_fields(ledger_production_code)
+    unexpected_public_items = _unexpected_public_items(ledger_production_code)
+    if (
+        public_surface != expected_public_surface
+        or public_fields
+        or unexpected_public_items
+    ):
         errors.append(
-            f"{LEDGER} must expose the exact public capability surface; found {public_surface}"
+            f"{LEDGER} must expose the exact public capability surface; "
+            f"found functions={public_surface}, fields={public_fields}, "
+            f"other_items={unexpected_public_items}"
         )
     protected_ledger_names = set().union(
         *(

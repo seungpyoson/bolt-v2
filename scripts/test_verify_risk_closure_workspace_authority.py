@@ -407,6 +407,50 @@ impl RecoveryWorkspaceHandle {
 
         self.assertTrue(any("exact public capability surface" in error for error in errors))
 
+    def test_rejects_public_capability_field(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8").replace(
+                "pub struct RecoveryWorkspaceHandle;",
+                "pub struct RecoveryWorkspaceHandle {\n"
+                "    pub new_risk: NewRiskWorkspaceHandle,\n"
+                "}",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("exact public capability surface" in error for error in errors))
+
+    def test_rejects_public_capability_function_pointer(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8")
+            + "\nfn escalate(_: RecoveryWorkspaceHandle) -> NewRiskWorkspaceHandle { panic!() }\n"
+            + "pub static ESCALATE_RECOVERY: "
+            + "fn(RecoveryWorkspaceHandle) -> NewRiskWorkspaceHandle = escalate;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("exact public capability surface" in error for error in errors))
+
+    def test_rejects_raw_identifier_public_capability_method(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8")
+            + "\nimpl RecoveryWorkspaceHandle {\n"
+            + "    pub fn r#escalate(&self) -> NewRiskWorkspaceHandle { panic!() }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("exact public capability surface" in error for error in errors))
+
     def test_rejects_duplicate_application_ledger_module_loader(self) -> None:
         (self.root / "src" / "consumer.rs").write_text(
             '#[path = "bolt_v3_application_resource_ledger.rs"]\nmod shadow_ledger;\n',

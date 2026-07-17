@@ -3427,6 +3427,7 @@ fn order_filled_event_with_reconciliation(
         reconciliation,
         Some(PositionId::from("position-1")),
         None,
+        None,
     )
 }
 

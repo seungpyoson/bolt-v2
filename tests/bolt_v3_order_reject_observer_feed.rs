@@ -450,5 +450,6 @@ fn order_filled_event(
         false,
         Some(PositionId::from("position-1")),
         None,
+        None,
     )
 }

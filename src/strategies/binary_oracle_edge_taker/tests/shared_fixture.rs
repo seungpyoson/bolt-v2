@@ -2417,6 +2417,7 @@ pub(super) fn order_filled_event_with_details(
             0.0,
             nautilus_model::types::Currency::USDC(),
         )),
+        None,
     );
     fill.position_id = position_id;
     fill

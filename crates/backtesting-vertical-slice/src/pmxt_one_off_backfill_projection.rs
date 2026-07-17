@@ -86,6 +86,7 @@ pub const PMXT_ONE_OFF_RESULT_CONTRACT_FILE: &str = "backtest-result-contract.js
 pub struct PmxtOneOffProjectionRequest {
     pub source_binding: String,
     pub usage_scope: SourceProofUsageScope,
+    pub drop_quotes_missing_side: bool,
     pub selected_condition_id: String,
     pub selected_token_id: String,
     pub gamma_markets: Vec<GammaMarket>,
@@ -96,6 +97,7 @@ pub struct PmxtOneOffProjectionRequest {
 pub struct PmxtSelectedSourceProjectionSpec {
     pub source_binding: String,
     pub usage_scope: SourceProofUsageScope,
+    pub drop_quotes_missing_side: bool,
     pub selected_condition_id: String,
     pub selected_token_id: String,
     pub gamma_markets: Vec<GammaMarket>,
@@ -330,6 +332,7 @@ pub struct PmxtOneOffArtifactRootRunTomlSpec {
 pub struct PmxtSelectedSourceProjectionTomlSpec {
     pub source_binding: String,
     pub usage_scope: SourceProofUsageScope,
+    pub drop_quotes_missing_side: bool,
     pub selected_condition_id: String,
     pub selected_token_id: String,
     pub gamma_markets_json_path: PathBuf,
@@ -427,6 +430,7 @@ fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
             selected_source: PmxtSelectedSourceProjectionSpec {
                 source_binding: spec.selected_source.source_binding,
                 usage_scope: spec.selected_source.usage_scope,
+                drop_quotes_missing_side: spec.selected_source.drop_quotes_missing_side,
                 selected_condition_id: spec.selected_source.selected_condition_id,
                 selected_token_id: spec.selected_source.selected_token_id,
                 gamma_markets,
@@ -546,6 +550,7 @@ fn project_pmxt_selected_source_parquet_to_nt_with_base(
     let projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
         source_binding: spec.source_binding,
         usage_scope: spec.usage_scope,
+        drop_quotes_missing_side: spec.drop_quotes_missing_side,
         selected_condition_id: spec.selected_condition_id,
         selected_token_id: spec.selected_token_id,
         gamma_markets: spec.gamma_markets,
@@ -950,6 +955,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     bids: row.bids.into_iter().map(Into::into).collect(),
                     asks: row.asks.into_iter().map(Into::into).collect(),
                     timestamp: row.timestamp_ms,
+                    hash: None,
                 };
                 let parsed = parse_book_snapshot(
                     &snapshot,
@@ -991,6 +997,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     instrument_id,
                     price_precision,
                     size_precision,
+                    request.drop_quotes_missing_side,
                     quote_ticks.last(),
                     ts_event,
                     row.ts_init,

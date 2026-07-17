@@ -95,13 +95,11 @@ fn exit_fill_keeps_pending_exit_until_position_closed() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    strategy
-        .on_order_filled(&order_filled_event(
-            exit_client_order_id,
-            instrument_id,
-            position_id,
-        ))
-        .expect("exit fill bookkeeping should succeed");
+    strategy.on_order_filled(&order_filled_event(
+        exit_client_order_id,
+        instrument_id,
+        position_id,
+    ));
 
     assert_eq!(
         pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
@@ -267,9 +265,7 @@ fn exit_pending_state_clears_on_cancel_reject_and_expire() {
         false,
         ManagedPositionOrigin::StrategyEntry,
     );
-    canceled
-        .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
-        .expect("exit cancel bookkeeping should succeed");
+    canceled.on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id));
     assert!(pending_exit_ref(&canceled).is_none());
     assert!(canceled.managed_position().is_some());
 
@@ -336,9 +332,7 @@ fn filled_exit_pending_ignores_stale_cancel_until_position_close() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    strategy
-        .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
-        .expect("stale cancel should not clear filled exit pending");
+    strategy.on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id));
     assert_eq!(
         pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
         Some(exit_client_order_id)
@@ -451,9 +445,7 @@ fn partial_exit_fill_then_expire_restores_managed_residual_position() {
         OrderSide::Sell,
     );
     fill.last_qty = Quantity::new(4.0, 2);
-    strategy
-        .on_order_filled(&fill)
-        .expect("partial exit fill bookkeeping should succeed");
+    strategy.on_order_filled(&fill);
     strategy.materialize_position_from_event(
         PositionMaterializationSpec {
             instrument_id,
@@ -502,13 +494,11 @@ fn exit_fill_quarantines_foreign_venue_client_order_id_collision() {
     );
     let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
 
-    strategy
-        .on_order_filled(&order_filled_event(
-            exit_client_order_id,
-            foreign_instrument_id,
-            position_id,
-        ))
-        .expect("foreign-venue exit fill should fail closed");
+    strategy.on_order_filled(&order_filled_event(
+        exit_client_order_id,
+        foreign_instrument_id,
+        position_id,
+    ));
 
     assert_foreign_venue_blind_recovery(&strategy);
 }
@@ -537,14 +527,12 @@ fn managed_entry_fill_quarantines_foreign_venue_client_order_id_collision() {
     );
     let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
 
-    strategy
-        .on_order_filled(&order_filled_event_with_details(
-            entry_client_order_id,
-            foreign_instrument_id,
-            Some(PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL")),
-            OrderSide::Buy,
-        ))
-        .expect("foreign-venue managed entry fill should fail closed");
+    strategy.on_order_filled(&order_filled_event_with_details(
+        entry_client_order_id,
+        foreign_instrument_id,
+        Some(PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL")),
+        OrderSide::Buy,
+    ));
 
     assert_foreign_venue_blind_recovery(&strategy);
 }
@@ -558,12 +546,10 @@ fn pending_entry_terminal_quarantines_foreign_venue_client_order_id_collision() 
     set_pending_entry(&mut strategy, pending_entry);
     let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
 
-    strategy
-        .on_order_canceled(&order_canceled_event(
-            entry_client_order_id,
-            foreign_instrument_id,
-        ))
-        .expect("foreign-venue entry cancel should fail closed");
+    strategy.on_order_canceled(&order_canceled_event(
+        entry_client_order_id,
+        foreign_instrument_id,
+    ));
 
     assert_foreign_venue_blind_recovery(&strategy);
 }
@@ -591,12 +577,10 @@ fn managed_pending_entry_terminal_quarantines_foreign_venue_client_order_id_coll
     );
     let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
 
-    strategy
-        .on_order_canceled(&order_canceled_event(
-            entry_client_order_id,
-            foreign_instrument_id,
-        ))
-        .expect("foreign-venue managed entry cancel should fail closed");
+    strategy.on_order_canceled(&order_canceled_event(
+        entry_client_order_id,
+        foreign_instrument_id,
+    ));
 
     assert_foreign_venue_blind_recovery(&strategy);
 }
@@ -624,12 +608,10 @@ fn exit_terminal_quarantines_foreign_venue_client_order_id_collision() {
     );
     let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
 
-    strategy
-        .on_order_canceled(&order_canceled_event(
-            exit_client_order_id,
-            foreign_instrument_id,
-        ))
-        .expect("foreign-venue exit cancel should fail closed");
+    strategy.on_order_canceled(&order_canceled_event(
+        exit_client_order_id,
+        foreign_instrument_id,
+    ));
 
     assert_foreign_venue_blind_recovery(&strategy);
 }
@@ -711,13 +693,11 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
     set_pending_entry(&mut strategy, pending);
 
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
-    strategy
-        .on_order_filled(&order_filled_event(
-            entry_client_order_id,
-            instrument_a,
-            position_id,
-        ))
-        .expect("fill bookkeeping should succeed");
+    strategy.on_order_filled(&order_filled_event(
+        entry_client_order_id,
+        instrument_a,
+        position_id,
+    ));
 
     assert_eq!(
         managed_position_ref(&strategy).and_then(|p| p.book.best_bid),
@@ -779,9 +759,7 @@ fn maker_entry_partial_fills_keep_entry_fill_accounting_without_overwriting_posi
 
     let mut first_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
     first_fill.last_qty = Quantity::new(4.0, 2);
-    strategy
-        .on_order_filled(&first_fill)
-        .expect("first maker partial fill should be recorded");
+    strategy.on_order_filled(&first_fill);
     strategy.on_position_opened(position_opened_event(
         instrument_id,
         position_id,
@@ -791,9 +769,7 @@ fn maker_entry_partial_fills_keep_entry_fill_accounting_without_overwriting_posi
 
     let mut second_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
     second_fill.last_qty = Quantity::new(6.0, 2);
-    strategy
-        .on_order_filled(&second_fill)
-        .expect("later maker partial fill for same order should be recorded");
+    strategy.on_order_filled(&second_fill);
 
     assert_eq!(strategy.market_churn_count("MKT-1"), 2);
     assert_eq!(
@@ -1010,21 +986,17 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             "forced-flat exit should still submit after the entry cancel request: {instrument_id}"
         );
 
-        strategy
-            .on_order_filled(&order_filled_event(
-                entry_client_order_id,
-                instrument_id,
-                position_id,
-            ))
-            .expect("racing entry fill should be handled while exit is pending");
-        strategy
-            .on_order_filled(&order_filled_event_with_details(
-                exit_client_order_id,
-                instrument_id,
-                Some(position_id),
-                OrderSide::Sell,
-            ))
-            .expect("exit fill should be handled");
+        strategy.on_order_filled(&order_filled_event(
+            entry_client_order_id,
+            instrument_id,
+            position_id,
+        ));
+        strategy.on_order_filled(&order_filled_event_with_details(
+            exit_client_order_id,
+            instrument_id,
+            Some(position_id),
+            OrderSide::Sell,
+        ));
         strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
 
         assert!(
@@ -1062,13 +1034,11 @@ fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
         .add_order(order, None, Some(ClientId::from("POLYMARKET")), true)
         .expect("test cache should accept entry order");
 
-    strategy
-        .on_order_filled(&order_filled_event(
-            entry_client_order_id,
-            instrument_id,
-            position_id,
-        ))
-        .expect("IOC entry fill should materialize a managed position");
+    strategy.on_order_filled(&order_filled_event(
+        entry_client_order_id,
+        instrument_id,
+        position_id,
+    ));
 
     assert_eq!(
         strategy
@@ -1091,14 +1061,12 @@ fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives
     let original_book = pending.book.clone();
     set_pending_entry(&mut strategy, pending);
 
-    strategy
-        .on_order_filled(&order_filled_event_with_details(
-            entry_client_order_id,
-            instrument_id,
-            None,
-            OrderSide::Buy,
-        ))
-        .expect("fill without position id should not wedge");
+    strategy.on_order_filled(&order_filled_event_with_details(
+        entry_client_order_id,
+        instrument_id,
+        None,
+        OrderSide::Buy,
+    ));
 
     assert!(strategy.exposure.is_recovering());
     assert!(strategy.managed_position().is_none());
@@ -1155,12 +1123,10 @@ fn late_zero_fill_entry_terminal_events_resolve_entry_reconcile_to_flat() {
         canceled_pending,
         EntryReconcileReason::UnresolvedAtSelectionBoundary,
     );
-    canceled
-        .on_order_canceled(&order_canceled_event(
-            entry_client_order_id,
-            canceled_instrument_id,
-        ))
-        .expect("zero-fill cancel should resolve reconcile state");
+    canceled.on_order_canceled(&order_canceled_event(
+        entry_client_order_id,
+        canceled_instrument_id,
+    ));
     assert!(matches!(canceled.exposure, ExposureState::Flat));
     assert!(
         evidence.events().into_iter().any(|event| matches!(
@@ -1738,12 +1704,10 @@ fn late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_clos
         EntryReconcileReason::AwaitingPositionMaterialization,
         Quantity::new(2.0, 2),
     );
-    canceled
-        .on_order_canceled(&order_canceled_event(
-            entry_client_order_id,
-            canceled_instrument_id,
-        ))
-        .expect("fill-observed cancel should preserve fail-closed reconcile state");
+    canceled.on_order_canceled(&order_canceled_event(
+        entry_client_order_id,
+        canceled_instrument_id,
+    ));
     assert!(matches!(
         canceled.exposure,
         ExposureState::EntryReconcilePending {
@@ -2189,9 +2153,7 @@ fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
     ));
     assert!(strategy.pending_entry().is_some());
 
-    strategy
-        .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
-        .expect("entry cancel should clear retained pending-entry context");
+    strategy.on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id));
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(strategy.pending_entry().is_none());
 }
@@ -2515,14 +2477,12 @@ fn sell_fill_enters_recovery_without_materializing_position() {
     let instrument_id = pending.instrument_id;
     set_pending_entry(&mut strategy, pending);
 
-    strategy
-        .on_order_filled(&order_filled_event_with_details(
-            entry_client_order_id,
-            instrument_id,
-            Some(PositionId::from("P-SHORT")),
-            OrderSide::Sell,
-        ))
-        .expect("sell fill should fail closed into recovery");
+    strategy.on_order_filled(&order_filled_event_with_details(
+        entry_client_order_id,
+        instrument_id,
+        Some(PositionId::from("P-SHORT")),
+        OrderSide::Sell,
+    ));
 
     assert!(strategy.exposure.is_recovering());
     assert!(strategy.managed_position().is_none());
@@ -2559,9 +2519,7 @@ fn entry_fill_reconcile_branches_record_lifecycle_evidence() {
         order_filled_event_with_details(entry_client_order_id, instrument_id, None, OrderSide::Buy);
     fill.last_qty = Quantity::new(2.0, 2);
 
-    awaiting
-        .on_order_filled(&fill)
-        .expect("entry fill without position id should enter reconcile state");
+    awaiting.on_order_filled(&fill);
 
     assert!(matches!(
         awaiting.exposure,
@@ -2591,9 +2549,7 @@ fn entry_fill_reconcile_branches_record_lifecycle_evidence() {
     );
     fill.last_qty = Quantity::new(3.0, 2);
 
-    unsupported
-        .on_order_filled(&fill)
-        .expect("entry fill with unsupported side should enter reconcile state");
+    unsupported.on_order_filled(&fill);
 
     assert!(matches!(
         unsupported.exposure,
@@ -2647,14 +2603,12 @@ fn unsupported_entry_fill_without_matching_context_keeps_unknown_side_absent() {
     let fill_instrument_id = configured_instrument_except(&strategy, pending_instrument_id);
     set_pending_entry(&mut strategy, pending);
 
-    strategy
-        .on_order_filled(&order_filled_event_with_details(
-            entry_client_order_id,
-            fill_instrument_id,
-            Some(PositionId::from("P-MISMATCHED-FILL")),
-            OrderSide::Sell,
-        ))
-        .expect("unsupported mismatched fill should fail closed");
+    strategy.on_order_filled(&order_filled_event_with_details(
+        entry_client_order_id,
+        fill_instrument_id,
+        Some(PositionId::from("P-MISMATCHED-FILL")),
+        OrderSide::Sell,
+    ));
 
     let ExposureState::BlindRecovery(recovery) = &strategy.exposure else {
         panic!("expected blind recovery, got {:?}", strategy.exposure);
@@ -2784,14 +2738,12 @@ fn order_fill_entry_quarantines_foreign_venue_position() {
         "foreign fill must be on a non-execution venue",
     );
 
-    strategy
-        .on_order_filled(&order_filled_event_with_details(
-            entry_client_order_id,
-            foreign_instrument_id,
-            Some(PositionId::from("P-FOREIGN-FILL")),
-            OrderSide::Buy,
-        ))
-        .expect("foreign-venue entry fill must not wedge the strategy");
+    strategy.on_order_filled(&order_filled_event_with_details(
+        entry_client_order_id,
+        foreign_instrument_id,
+        Some(PositionId::from("P-FOREIGN-FILL")),
+        OrderSide::Buy,
+    ));
 
     // Observable exposure: quarantined to blind recovery, never adopted into Managed.
     assert!(
@@ -3761,9 +3713,7 @@ fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidenc
     };
     set_pending_entry(&mut strategy, pending);
 
-    strategy
-        .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
-        .expect("entry cancel should clear pending entry before rematerialization");
+    strategy.on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id));
     assert!(matches!(strategy.exposure, ExposureState::Flat));
 
     strategy.on_position_opened(position_opened_event(
@@ -3972,13 +3922,11 @@ fn live_entered_and_pending_adopted_positions_retain_interval_end_boundary() {
                 .expect("live pending entry must inherit the selected market interval end"),
         )
     };
-    fill_strategy
-        .on_order_filled(&order_filled_event(
-            fill_client_order_id,
-            fill_instrument_id,
-            PositionId::from("P-LIVE-ENTRY-INTERVAL-PIN"),
-        ))
-        .expect("live entry fill should materialize managed exposure");
+    fill_strategy.on_order_filled(&order_filled_event(
+        fill_client_order_id,
+        fill_instrument_id,
+        PositionId::from("P-LIVE-ENTRY-INTERVAL-PIN"),
+    ));
     assert_eq!(
         managed_position_ref(&fill_strategy)
             .and_then(|position| position.lifecycle.interval_end_ms()),
@@ -4030,13 +3978,11 @@ fn direct_entry_fill_materialization_clears_stale_flat_terminal_override() {
     );
     set_pending_entry(&mut strategy, fill_pending.clone());
 
-    strategy
-        .on_order_filled(&order_filled_event(
-            fill_pending.client_order_id,
-            instrument_id,
-            PositionId::from("P-DIRECT-CLEAR-001"),
-        ))
-        .expect("direct entry fill materialization should succeed");
+    strategy.on_order_filled(&order_filled_event(
+        fill_pending.client_order_id,
+        instrument_id,
+        PositionId::from("P-DIRECT-CLEAR-001"),
+    ));
 
     assert!(
         strategy.last_flat_terminal_entry_override.is_none(),

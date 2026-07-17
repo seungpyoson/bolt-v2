@@ -406,6 +406,7 @@ fn filled(client_order_id: &str, venue_order_id: &str, quantity: &str, price: &s
         false,
         None,
         None,
+        None,
     )
 }
 

@@ -227,9 +227,7 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
         OrderSide::Sell,
     );
     fill.last_qty = Quantity::new(4.0, 2);
-    strategy
-        .on_order_filled(&fill)
-        .expect("partial exit fill bookkeeping should not error");
+    strategy.on_order_filled(&fill);
     strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
 
     // halt-loudly is deliberately NOT an acceptable terminal for partial-fill
@@ -333,18 +331,12 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
         "{RESTART_OPEN_EXIT_PINNED_FAILURE}: bootstrap must adopt the open exit order before a subsequent fill can be attributed"
     );
 
-    strategy
-        .on_order_filled(&order_filled_event_with_details(
-            exit_client_order_id,
-            instrument_id,
-            Some(position_id),
-            OrderSide::Sell,
-        ))
-        .unwrap_or_else(|error| {
-            panic!(
-                "{RESTART_OPEN_EXIT_PINNED_FAILURE}: replayed exit fill should be attributable after bootstrap: {error:?}"
-            )
-        });
+    strategy.on_order_filled(&order_filled_event_with_details(
+        exit_client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    ));
     assert_eq!(
         pending_exit_ref(&strategy).map(|pending| pending.fill_received),
         Some(true),
@@ -415,9 +407,7 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
         .active
         .interval_end_ms
         .expect("fixture should configure market close");
-    strategy
-        .check_resolution_feed_outage_at_market_end(close_ms)
-        .expect("feed outage check should dispatch the first close fetch");
+    strategy.check_resolution_feed_outage_at_market_end(close_ms);
 
     let events = evidence.events();
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);

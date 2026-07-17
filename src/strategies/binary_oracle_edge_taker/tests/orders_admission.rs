@@ -2820,13 +2820,11 @@ fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
     set_pending_entry(&mut strategy, pending);
 
     fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
-    strategy
-        .on_order_filled(&order_filled_event(
-            client_order_id,
-            instrument_id,
-            PositionId::from("P-HIST-FEE-001"),
-        ))
-        .expect("entry fill should materialize position for exit EV test");
+    strategy.on_order_filled(&order_filled_event(
+        client_order_id,
+        instrument_id,
+        PositionId::from("P-HIST-FEE-001"),
+    ));
 
     let order_config = strategy
         .normal_exit_order_execution_config()
@@ -2855,13 +2853,11 @@ fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
     set_pending_entry(&mut strategy, pending);
 
     fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
-    strategy
-        .on_order_filled(&order_filled_event(
-            client_order_id,
-            instrument_id,
-            PositionId::from("P-HIST-LOG-001"),
-        ))
-        .expect("entry fill should materialize position for log test");
+    strategy.on_order_filled(&order_filled_event(
+        client_order_id,
+        instrument_id,
+        PositionId::from("P-HIST-LOG-001"),
+    ));
 
     let decision = strategy.exit_submission_decision_at(1_200);
     let fields = strategy.exit_evaluation_log_fields_at(

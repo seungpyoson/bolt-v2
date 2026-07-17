@@ -42,6 +42,7 @@ type QuoteParser = fn(
     InstrumentId,
     u8,
     u8,
+    bool,
     Option<&QuoteTick>,
     UnixNanos,
     UnixNanos,

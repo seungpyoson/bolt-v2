@@ -2,7 +2,7 @@ schema_version = 1
 adapter_id = "POLYMARKET"
 class = "HttpResponseBody"
 feeder = "EconomicsQuoteAuthority"
-captured_at = "2026-07-18"
+captured_at = "2026-07-17"
 source_method = "GET"
 
 [[captures]]

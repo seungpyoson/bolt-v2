@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use bolt_v2::bolt_v3_economics_runtime::{
     BoltV3EconomicsRuntime, EconomicsAdmission, EconomicsAdmissionIntent,
@@ -11,7 +11,8 @@ use bolt_v2::economics::{
     InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderId, OrderSide,
     PlannedFillLeg, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingContext,
     SignedNativeEffect, SnapshotId, SourceId, SourceValidity, ValuationEvidence,
-    VenueEconomicsAdapter, VenueQuoteEstimate,
+    ValuationProvider, ValuationRequest, VenueEconomicsAdapter, VenueQuoteEstimate,
+    value_with_route,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -97,6 +98,68 @@ pub struct ReplayEconomicsAdmissionSource {
     snapshots: Vec<HistoricalEconomicsSnapshot>,
 }
 
+struct ReplayValuationProvider {
+    evidence: Vec<ValuationEvidence>,
+}
+
+impl ReplayValuationProvider {
+    fn from_snapshot(
+        snapshot: &HistoricalEconomicsSnapshot,
+    ) -> Result<Self, EconomicsUnavailable> {
+        let evidence = snapshot
+            .components
+            .iter()
+            .filter_map(|component| {
+                component.valuation.as_ref().map(|valuation| {
+                    let effect = SignedNativeEffect::currency(
+                        decimal(&component.native_amount)?,
+                        NativeUnitId::new(component.native_unit.clone())?,
+                    )?;
+                    canonical_valuation(&effect, valuation)
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { evidence })
+    }
+}
+
+impl ValuationProvider for ReplayValuationProvider {
+    fn value(
+        &self,
+        effect: &SignedNativeEffect,
+        request: &ValuationRequest,
+    ) -> Result<ValuationEvidence, EconomicsUnavailable> {
+        if effect.unit() == &request.reporting_unit {
+            return value_with_route(
+                effect,
+                &request.reporting_unit,
+                None,
+                request.requested_at_ns,
+            );
+        }
+        let mut candidates = self.evidence.iter().filter(|evidence| {
+            evidence.native_effect == *effect
+                && evidence.reporting_unit == request.reporting_unit
+                && evidence.valued_at_ns <= request.requested_at_ns
+                && evidence
+                    .valid_until_ns
+                    .is_none_or(|valid_until_ns| valid_until_ns >= request.requested_at_ns)
+        });
+        let evidence = candidates
+            .next()
+            .cloned()
+            .ok_or_else(|| EconomicsUnavailable::MissingValuation {
+                unit: effect.unit().clone(),
+            })?;
+        if candidates.next().is_some() {
+            return Err(EconomicsUnavailable::AmbiguousValuation {
+                unit: effect.unit().clone(),
+            });
+        }
+        Ok(evidence)
+    }
+}
+
 impl ReplayEconomicsAdmissionSource {
     pub fn from_snapshots(
         snapshots: Vec<HistoricalEconomicsSnapshot>,
@@ -164,6 +227,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         };
         let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
         let edge_basis = adapter.edge_basis(&intent.request)?;
+        let valuation_provider = Arc::new(ReplayValuationProvider::from_snapshot(snapshot)?);
         let quote_validity_ns = snapshot
             .valid_until_ns
             .checked_sub(intent.request.requested_at_ns)
@@ -176,7 +240,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
             request: intent.request,
             gross_expected_value: intent.gross_expected_value,
             edge_basis,
-            valuations: Vec::new(),
+            valuation_provider,
             base_reservation_notional: intent.base_reservation_notional,
         })
     }
@@ -309,11 +373,6 @@ fn canonical_component(
         .transpose()?
         .map(|amount| SignedNativeEffect::currency(amount, native_unit.clone()))
         .transpose()?;
-    let normalized = component
-        .valuation
-        .as_ref()
-        .map(|valuation| canonical_valuation(&point_effect, valuation))
-        .transpose()?;
     Ok(EstimatedEconomicComponent {
         component_id: EconomicComponentId::new(component.component_id.clone())?,
         class,
@@ -333,7 +392,7 @@ fn canonical_component(
             component.fetched_at_ns,
             component.valid_until_ns,
         )?,
-        normalized,
+        normalized: None,
     })
 }
 

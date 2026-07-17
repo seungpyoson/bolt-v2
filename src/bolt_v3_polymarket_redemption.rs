@@ -95,6 +95,10 @@ pub enum AttemptKind {
     Fence,
 }
 
+pub struct RedemptionPreparationPermit {
+    private: (),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RedemptionRequestInput {
     pub market_kind: RedemptionMarketKind,
@@ -261,6 +265,7 @@ fn validate_secret(field: &'static str, value: &str) -> Result<(), RedemptionPre
 }
 
 pub fn prepare_redemption_request(
+    permit: RedemptionPreparationPermit,
     lease: &mut RiskClosureWorkspaceLease,
     config: &RedemptionPreparationConfig,
     credentials: &ResolvedRedemptionCredentials,
@@ -268,6 +273,7 @@ pub fn prepare_redemption_request(
     attempt: AttemptKind,
     use_prepared: impl for<'request> FnOnce(PreparedRequest<'request>),
 ) -> Result<(), RedemptionPreparationError> {
+    let RedemptionPreparationPermit { private: () } = permit;
     validate_config(config)?;
     credentials.validate()?;
     validate_nonce(input.safe_nonce, config.maximum_safe_nonce_decimal_digits)?;
@@ -862,6 +868,10 @@ mod tests {
         }
     }
 
+    fn test_preparation_permit() -> RedemptionPreparationPermit {
+        RedemptionPreparationPermit { private: () }
+    }
+
     #[test]
     fn standard_v2_calldata_and_request_match_independent_golden() {
         let config = test_config();
@@ -869,6 +879,7 @@ mod tests {
         let mut lease = recovery_lease(GOLDEN_STANDARD_REQUEST.len(), "golden-standard");
 
         prepare_redemption_request(
+            test_preparation_permit(),
             &mut lease,
             &config,
             &credentials,
@@ -890,6 +901,7 @@ mod tests {
         let mut lease = recovery_lease(GOLDEN_NEGATIVE_RISK_REQUEST.len(), "golden-negative-risk");
 
         prepare_redemption_request(
+            test_preparation_permit(),
             &mut lease,
             &config,
             &credentials,
@@ -912,6 +924,7 @@ mod tests {
         let mut fence_lease = recovery_lease(GOLDEN_FENCE_REQUEST.len(), "nonce-fence");
 
         prepare_redemption_request(
+            test_preparation_permit(),
             &mut original_lease,
             &config,
             &credentials,
@@ -919,6 +932,7 @@ mod tests {
             AttemptKind::Original,
             |original| {
                 prepare_redemption_request(
+                    test_preparation_permit(),
                     &mut fence_lease,
                     &config,
                     &credentials,
@@ -947,6 +961,7 @@ mod tests {
         let mut second_lease = recovery_lease(GOLDEN_STANDARD_REQUEST.len(), "retry-second");
 
         prepare_redemption_request(
+            test_preparation_permit(),
             &mut first_lease,
             &config,
             &credentials,
@@ -954,6 +969,7 @@ mod tests {
             AttemptKind::Original,
             |first| {
                 prepare_redemption_request(
+                    test_preparation_permit(),
                     &mut second_lease,
                     &config,
                     &credentials,
@@ -1020,6 +1036,7 @@ mod tests {
                 safe_nonce: nonce,
             };
             prepare_redemption_request(
+                test_preparation_permit(),
                 &mut lease,
                 &config,
                 &credentials,
@@ -1054,6 +1071,7 @@ mod tests {
         let called = Cell::new(false);
 
         let error = prepare_redemption_request(
+            test_preparation_permit(),
             &mut lease,
             &config,
             &credentials,
@@ -1083,6 +1101,7 @@ mod tests {
         let mut lease = recovery_lease(GOLDEN_STANDARD_REQUEST.len(), "success-clears");
 
         prepare_redemption_request(
+            test_preparation_permit(),
             &mut lease,
             &config,
             &credentials,
@@ -1176,6 +1195,7 @@ mod tests {
         let called = Cell::new(false);
 
         let error = prepare_redemption_request(
+            test_preparation_permit(),
             &mut lease,
             &config,
             &credentials,
@@ -1243,6 +1263,7 @@ mod tests {
 
         let mut lease = recovery_lease(GOLDEN_STANDARD_REQUEST.len(), "secret-evidence");
         prepare_redemption_request(
+            test_preparation_permit(),
             &mut lease,
             &config,
             &credentials,

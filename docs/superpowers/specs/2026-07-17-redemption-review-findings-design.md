@@ -2,36 +2,44 @@
 
 ## Scope
 
-Address the three internal adversarial-review findings on the disabled Polymarket redemption-preparation slice without activating redemption, adding a caller, changing request semantics, or introducing another secret source.
+Address the internal adversarial-review findings on the disabled Polymarket redemption-preparation slice without activating redemption, adding a production caller, changing request semantics, or introducing another secret source.
 
-## Design
+## Decisions
+
+### Compiler-enforced disabled boundary
+
+`prepare_redemption_request` consumes a public `RedemptionPreparationPermit` by value. The permit has a private field, implements neither `Clone` nor `Copy`, and has no production constructor or issuer. Safe Rust outside the owning module can name the type but cannot create a value, so it cannot call request preparation.
+
+The owner module's tests construct the private permit and call the same production entrypoint. No runtime feature flag can issue the permit or activate the boundary, and there is no fallback entrypoint, compatibility adapter, source scan, caller allowlist, or inferred test/production path. The existing false-only configuration remains a fail-closed invariant. Future activation requires an explicit governed code change that adds the one permit issuer.
+
+Compile-fail cases prove that external code cannot construct the permit, cannot clone it, cannot substitute a new-risk reservation for the recovery lease, cannot let prepared bytes escape the callback, and cannot serialize resolved credentials.
 
 ### Zeroizing signer-key decode
 
-Replace `PrivateKeySigner::from_str` with an explicit decode into `Zeroizing<[u8; 32]>`. Use `alloy_primitives::hex::decode_to_slice` so the accepted optional `0x` prefix remains unchanged, then construct the signer with `PrivateKeySigner::from_slice`. Map both decoding and signer-construction failures to the existing redacted `InvalidSigningKey` error. The static fence positively requires the ordered decode-to-zeroizing-buffer and `from_slice` structure in `prepare_redemption_request`, and also rejects equivalent `FromStr` and `.parse::<PrivateKeySigner>` paths.
+The signer key is decoded directly into `Zeroizing<[u8; 32]>` and passed to `PrivateKeySigner::from_slice`. Decode and signer-construction failures remain mapped to the redacted `InvalidSigningKey` error. Verification uses Rust behavior tests, direct diff inspection, and internal adversarial review; it does not infer safety from source spelling.
 
-### Complete production-caller inspection
+### Deterministic static verification only
 
-Conservatively inspect Rust code in every repository `.rs` file outside source-control worktrees and build-output directories. Do not infer test-only status from a `tests` path, and do not exempt generated or dormant source. Lexically ignore comments and string/character literals so embedded compile-fail fixtures are not mistaken for callers.
+The Python verifier parses TOML and compares structured values, pinned source-evidence hashes, exact dependency versions, and the declared compile-fail test target. It also invokes the existing generator in check mode. It does not parse, lex, search, or classify Rust source.
 
-The redemption owner remains the sole exception: its production prefix may contain the one declaration. Its single `#[cfg(test)] mod tests` item must be structurally valid and final, with no later production items. All other Rust code rejects any reference to `prepare_redemption_request`, covering nested packages, custom target layouts, `src/**/tests/`, and generated source without path-specific caller exemptions.
+TOML authority checks walk parsed key trees. Comments, whitespace, file layout, macro spelling, aliases, generated includes, and source paths cannot affect the result. No regular expression is used.
 
-### Secret-output sinks
+### Secret-output finding
 
-Extend the existing forbidden-observability surface with `dbg!`, `print!`, and `eprint!`. These are prohibited in the production portion of the redemption owner because direct formatting of an inner `Zeroizing<String>` exposes its value despite the containing credential type's redacted `Debug` implementation.
+Resolved credentials retain private fields, zeroizing storage, a redacted `Debug` implementation, and no serialization implementation. The implementation contains no logging or output sink. Evidence is direct inspection plus compile-fail serialization proof and internal adversarial review, not a predictive macro-name scanner.
 
 ## Evidence
 
-Use the existing Python mutation-test harness for test-first evidence:
-
-1. Add regressions for unsafe signer-parser spellings and missing positive decode structure; owner, nested-package, test-named-directory, post-test, custom-target-descendant, and generated callers; and each missing output macro.
-2. Run the focused tests before implementation and confirm they fail for the missing fences.
-3. Implement the smallest verifier and signer-decode changes that make those regressions pass.
-4. Run the full redemption verifier tests, the verifier against the repository, formatting, and permitted static/source-fence gates.
-5. Use exact-head remote Rust verification for compile and behavior evidence; do not run local compile-heavy Rust commands.
+1. A Python regression first demonstrates that arbitrary Rust text is outside the verifier's authority.
+2. Focused Python tests cover parsed configuration authority, pinned evidence, dependency pins, and compile-fail target wiring.
+3. Rust compile-fail tests prove the capability and borrow boundaries at exact head.
+4. Existing Rust behavior tests exercise the same preparation entrypoint with the owner-only test permit.
+5. Permitted local formatting and source-fence gates run before internal adversarial review.
+6. Exact-head remote Rust verification supplies compiler and behavior evidence; no local compile-heavy Rust command is used.
 
 ## Non-goals
 
-- No redemption activation, network submission, durable authority, or production caller.
-- No new configuration fields, secret sources, dependencies, or compatibility paths.
+- No redemption activation, submission, durable authority, or production caller.
+- No new runtime configuration, secret source, dependency, or compatibility path.
 - No changes to calldata, signing-domain, signature-packing, retry, lease, callback, or identity semantics.
+- No attempt to reproduce Rust compiler semantics in Python.

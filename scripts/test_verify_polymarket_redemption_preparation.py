@@ -8,60 +8,6 @@ import unittest
 import verify_polymarket_redemption_preparation as verifier
 
 
-OWNER = """\
-use crate::{
-    bolt_v3_risk_closure_workspace::RiskClosureWorkspaceLease,
-    secrets::SsmResolverSession,
-};
-
-pub enum AttemptKind { Original, Fence }
-pub struct PreparedRequest<'request> { bytes: &'request [u8] }
-pub struct ResolvedRedemptionCredentials { signer_private_key: zeroize::Zeroizing<String> }
-pub struct RedemptionPreparationConfig;
-pub struct RedemptionRequestInput;
-
-pub fn resolve_redemption_credentials(
-    session: &SsmResolverSession,
-    config: &RedemptionPreparationConfig,
-) { session.resolve("region", "path"); let _ = config; }
-
-fn resolve_redemption_credentials_from<E>(
-    config: &RedemptionPreparationConfig,
-    resolver: impl FnMut(&str, &str) -> Result<String, E>,
-) { let _ = (config, resolver); }
-
-pub fn prepare_redemption_request(
-    lease: &mut RiskClosureWorkspaceLease,
-    config: &RedemptionPreparationConfig,
-    credentials: &ResolvedRedemptionCredentials,
-    input: RedemptionRequestInput,
-    attempt: AttemptKind,
-    use_prepared: impl for<'request> FnOnce(PreparedRequest<'request>),
-) {
-    let mut signer_private_key = Zeroizing::new(B256::ZERO.into_array());
-    hex::decode_to_slice(
-        credentials.signer_private_key.as_bytes(),
-        signer_private_key.as_mut(),
-    ).unwrap();
-    let _signer = PrivateKeySigner::from_slice(signer_private_key.as_ref()).unwrap();
-    let _ = (config, credentials, input, attempt);
-    lease.with_workspace_mut(|workspace| {
-        let prepared = PreparedRequest { bytes: workspace };
-        use_prepared(prepared);
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bolt_v3_risk_closure_workspace::RiskClosureWorkspaceAuthority;
-}
-"""
-
-GENERATED = """\
-pub(super) const POLYMARKET_REDEMPTION_PREPARATION_CONFIG: RedemptionPreparationConfig = RedemptionPreparationConfig;
-pub(super) const POLYMARKET_REDEMPTION_PROTOCOL: RedemptionProtocolFacts = RedemptionProtocolFacts;
-"""
-
 RUNTIME = """\
 schema_version = 1
 production_activation_enabled = false
@@ -129,44 +75,137 @@ refund_receiver = "0x0000000000000000000000000000000000000000"
 metadata = ""
 """
 
+CARGO = """\
+[package]
+name = "redemption-fence-fixture"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+alloy-signer = "=2.1.0"
+alloy-signer-local = "=2.1.0"
+[[test]]
+name = "polymarket_redemption_preparation"
+path = "tests/polymarket_redemption_preparation.rs"
+"""
+
 
 class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
     def fixture(self) -> tuple[tempfile.TemporaryDirectory[str], pathlib.Path]:
         temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(temporary.name)
-        for directory in ("src", "src/bolt_v3_polymarket_redemption", "config", "tests"):
-            (root / directory).mkdir()
-        (root / "src/bolt_v3_polymarket_redemption.rs").write_text(OWNER, encoding="utf-8")
+        for directory in (
+            "src/bolt_v3_polymarket_redemption",
+            "config",
+            "tests",
+        ):
+            (root / directory).mkdir(parents=True)
+        (root / "src/bolt_v3_polymarket_redemption.rs").write_text(
+            "// implementation is compiler-verified\n", encoding="utf-8"
+        )
         (root / "src/bolt_v3_polymarket_redemption/generated.rs").write_text(
-            GENERATED, encoding="utf-8"
+            "// generated projection\n", encoding="utf-8"
         )
-        (root / "src/lib.rs").write_text(
-            "pub mod bolt_v3_polymarket_redemption;\n", encoding="utf-8"
+        (root / "config/polymarket-redemption.toml").write_text(
+            RUNTIME, encoding="utf-8"
         )
-        (root / "src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
-        (root / "config/polymarket-redemption.toml").write_text(RUNTIME, encoding="utf-8")
         (root / "config/root.toml").write_text(ROOT_RUNTIME, encoding="utf-8")
         (root / "config/polymarket-redemption-source-evidence.toml").write_text(
             EVIDENCE, encoding="utf-8"
         )
+        (root / "tests/polymarket_redemption_preparation.rs").write_text(
+            "mod polymarket_redemption_preparation_compile_fail;\n",
+            encoding="utf-8",
+        )
         (root / "tests/polymarket_redemption_preparation_compile_fail.rs").write_text(
-            "RiskClosureWorkspaceReservation\nprepared_request_cannot_escape\nserde_json::to_string\n",
-            encoding="utf-8",
+            "// compiler evidence\n", encoding="utf-8"
         )
-        (root / "Cargo.toml").write_text(
-            '[package]\nname = "redemption-fence-fixture"\nversion = "0.0.0"\n'
-            'edition = "2024"\n[dependencies]\n'
-            'alloy-signer = "=2.1.0"\nalloy-signer-local = "=2.1.0"\n'
-            '[[test]]\nname = "polymarket_redemption_preparation"\n'
-            'path = "tests/polymarket_redemption_preparation.rs"\n',
-            encoding="utf-8",
-        )
+        (root / "Cargo.toml").write_text(CARGO, encoding="utf-8")
         return temporary, root
 
     def test_closed_fixture_passes(self) -> None:
         temporary, root = self.fixture()
         self.addCleanup(temporary.cleanup)
         self.assertEqual(verifier.boundary_errors(root), [])
+
+    def test_source_text_is_not_policy_input(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        (root / "src/main.rs").write_text(
+            "fn main() { prepare_redemption_request(); }\n", encoding="utf-8"
+        )
+        self.assertEqual(verifier.boundary_errors(root), [])
+
+    def test_missing_required_artifact_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        (root / "tests/polymarket_redemption_preparation_compile_fail.rs").unlink()
+        self.assertTrue(
+            any("missing required" in error for error in verifier.boundary_errors(root))
+        )
+
+    def test_activation_must_remain_false(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        runtime = root / "config/polymarket-redemption.toml"
+        runtime.write_text(
+            RUNTIME.replace("production_activation_enabled = false", "production_activation_enabled = true"),
+            encoding="utf-8",
+        )
+        self.assertIn(
+            "production_activation_enabled must remain false",
+            verifier.boundary_errors(root),
+        )
+
+    def test_parsed_toml_authority_is_single(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        (root / "config/duplicate.toml").write_text(
+            '[duplicate]\nstandard_adapter_target = "0x0"\n', encoding="utf-8"
+        )
+        self.assertTrue(
+            any(
+                "runtime field standard_adapter_target" in error
+                for error in verifier.boundary_errors(root)
+            )
+        )
+
+    def test_toml_comments_do_not_create_authority(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        (root / "config/comment.toml").write_text(
+            "# standard_adapter_target = \"not-a-value\"\n", encoding="utf-8"
+        )
+        self.assertEqual(verifier.boundary_errors(root), [])
+
+    def test_wallet_and_signer_runtime_duplicates_are_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        runtime = root / "config/polymarket-redemption.toml"
+        runtime.write_text(
+            RUNTIME
+            + '\nsafe_address = "0x1111111111111111111111111111111111111111"\n'
+            + 'signer_private_key_ssm_path = "/signer"\n',
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any(
+                "single-sourced from config/root.toml" in error
+                for error in verifier.boundary_errors(root)
+            )
+        )
+
+    def test_root_client_must_exist(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        runtime = root / "config/polymarket-redemption.toml"
+        runtime.write_text(
+            RUNTIME.replace('root_client = "polymarket_main"', 'root_client = "missing"'),
+            encoding="utf-8",
+        )
+        self.assertIn(
+            "wallet_authority.root_client must exist in config/root.toml",
+            verifier.boundary_errors(root),
+        )
 
     def test_deployment_fact_hash_binds_runtime_protocol_facts(self) -> None:
         mutations = (
@@ -199,8 +238,7 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                 self.addCleanup(temporary.cleanup)
                 runtime = root / "config/polymarket-redemption.toml"
                 runtime.write_text(
-                    runtime.read_text(encoding="utf-8").replace(expected, replacement),
-                    encoding="utf-8",
+                    RUNTIME.replace(expected, replacement), encoding="utf-8"
                 )
                 self.assertTrue(
                     any(
@@ -211,29 +249,26 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
 
     def test_source_evidence_paths_and_hashes_are_pinned(self) -> None:
         mutations = (
-            ("https://docs.polymarket.com/resources/contracts", "https://docs.polymarket.com/resources/other"),
+            ("https://docs.polymarket.com/resources/contracts", "https://example.invalid"),
             ("2026-07-16", "2026-07-15"),
             ("deployment_fact_format_version = 2", "deployment_fact_format_version = 1"),
-            ("7844264e5c6c456224820af716c000438d72736a5f45315ae88f4f92dc068667", "0" * 64),
-            ("src/adapters/CtfCollateralAdapter.sol", "src/adapters/Other.sol"),
-            ("f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90", "1" * 64),
-            ("src/adapters/NegRiskCtfCollateralAdapter.sol", "src/adapters/OtherNeg.sol"),
-            ("2461eb793fa5571a6902a52c5276f02a8621814fdc026cf3a7814879b1b3db76", "2" * 64),
+            (
+                "f9f85b1ac652030bf458be2130b5f977fa6670a04b2ad412241c9e9b0c444a90",
+                "1" * 64,
+            ),
             ("src/builder/safe.ts", "src/builder/other.ts"),
-            ("1142cb7fe786128361586d6fc9313a3e120e1633bdfc064169bfa78951d66cc5", "3" * 64),
-            ("src/types.ts", "src/other-types.ts"),
-            ("059c02b19a23d57e7b354df8c01d706cf508c27460067c1d57dad96cf5455ad3", "4" * 64),
-            ("src/utils/index.ts", "src/utils/other.ts"),
-            ("0a1b6036fb7e3f7d1629002a491a448974a69c7556741f449c441cb3e3af2941", "5" * 64),
+            (
+                "0a1b6036fb7e3f7d1629002a491a448974a69c7556741f449c441cb3e3af2941",
+                "5" * 64,
+            ),
         )
         for expected, replacement in mutations:
             with self.subTest(expected=expected):
                 temporary, root = self.fixture()
                 self.addCleanup(temporary.cleanup)
-                manifest = root / "config/polymarket-redemption-source-evidence.toml"
-                manifest.write_text(
-                    manifest.read_text(encoding="utf-8").replace(expected, replacement),
-                    encoding="utf-8",
+                evidence = root / "config/polymarket-redemption-source-evidence.toml"
+                evidence.write_text(
+                    EVIDENCE.replace(expected, replacement), encoding="utf-8"
                 )
                 self.assertTrue(
                     any(
@@ -242,332 +277,31 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                     )
                 )
 
-    def test_stale_adapter_deployments_are_rejected(self) -> None:
+    def test_signer_dependencies_are_exact(self) -> None:
         temporary, root = self.fixture()
         self.addCleanup(temporary.cleanup)
-        runtime = root / "config/polymarket-redemption.toml"
-        runtime.write_text(
-            runtime.read_text(encoding="utf-8").replace(
-                "0xAdA100Db00Ca00073811820692005400218FcE1f",
-                "0xADa100874d00e3331D00F2007a9c336a65009718",
-            ),
+        (root / "Cargo.toml").write_text(
+            CARGO.replace('alloy-signer = "=2.1.0"', 'alloy-signer = "2"'),
             encoding="utf-8",
         )
         self.assertTrue(
             any(
-                "deployment fact hash" in error
+                "direct signer dependency must remain exact" in error
                 for error in verifier.boundary_errors(root)
             )
         )
 
-    def test_wallet_and_signer_runtime_duplicates_are_rejected(self) -> None:
+    def test_compile_fail_target_is_structurally_wired(self) -> None:
         temporary, root = self.fixture()
         self.addCleanup(temporary.cleanup)
-        runtime = root / "config/polymarket-redemption.toml"
-        runtime.write_text(
-            runtime.read_text(encoding="utf-8")
-            + '\nsafe_address = "0x1111111111111111111111111111111111111111"\n'
-            + 'signer_private_key_ssm_path = "/signer"\n',
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any(
-                "single-sourced from config/root.toml" in error
-                for error in verifier.boundary_errors(root)
-            )
-        )
-
-    def test_new_risk_authority_in_production_owner_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            owner.read_text(encoding="utf-8").replace(
-                "pub enum AttemptKind", "use crate::bolt_v3_risk_closure_workspace::RiskClosureWorkspaceReservation;\npub enum AttemptKind"
+        (root / "Cargo.toml").write_text(
+            CARGO.replace(
+                'name = "polymarket_redemption_preparation"',
+                'name = "different_test"',
             ),
             encoding="utf-8",
         )
-        self.assertTrue(any("new-risk or authority surface" in error for error in verifier.boundary_errors(root)))
-
-    def test_network_sink_in_owner_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            owner.read_text(encoding="utf-8").replace(
-                "#[cfg(test)]", "fn sink(client: reqwest::Client) {}\n\n#[cfg(test)]", 1
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(any("network or durable sink" in error for error in verifier.boundary_errors(root)))
-
-    def test_workspace_geometry_in_owner_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            owner.read_text(encoding="utf-8").replace(
-                "#[cfg(test)]", "const SLOT_BYTES: usize = 4096;\n\n#[cfg(test)]", 1
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(any("workspace geometry" in error for error in verifier.boundary_errors(root)))
-
-    def test_unapproved_prepared_field_owners_are_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        for field_type in ("Vec<u8>", "Box<[u8]>", "std::sync::Arc<[u8]>", "std::borrow::Cow<'request, [u8]>"):
-            with self.subTest(field_type=field_type):
-                mutated = owner.read_text(encoding="utf-8").replace("bytes: &'request [u8]", f"bytes: {field_type}")
-                owner.write_text(mutated, encoding="utf-8")
-                self.assertTrue(any("borrowed slice" in error for error in verifier.boundary_errors(root)))
-                owner.write_text(OWNER, encoding="utf-8")
-
-    def test_active_caller_outside_module_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        (root / "src/main.rs").write_text("fn main() { prepare_redemption_request(); }\n", encoding="utf-8")
-        self.assertTrue(any("active production caller" in error for error in verifier.boundary_errors(root)))
-
-    def test_active_caller_in_lib_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        (root / "src/lib.rs").write_text(
-            "fn active() { prepare_redemption_request(); }\n", encoding="utf-8"
-        )
-        self.assertTrue(any("active production caller" in error for error in verifier.boundary_errors(root)))
-
-    def test_aliased_function_pointer_reference_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        (root / "src/lib.rs").write_text(
-            "use crate::bolt_v3_polymarket_redemption::prepare_redemption_request as prepare;\n"
-            "fn active() { let prepare_pointer = prepare; }\n",
-            encoding="utf-8",
-        )
-        self.assertTrue(any("active production caller" in error for error in verifier.boundary_errors(root)))
-
-    def test_active_caller_in_owner_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            owner.read_text(encoding="utf-8").replace(
-                "#[cfg(test)]",
-                "fn active() { let prepare = prepare_redemption_request; }\n\n#[cfg(test)]",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("active production caller" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_active_caller_in_nested_package_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        package = root / "crates/consumer"
-        (package / "src").mkdir(parents=True)
-        (package / "Cargo.toml").write_text(
-            '[package]\nname = "consumer"\nversion = "0.0.0"\nedition = "2024"\n',
-            encoding="utf-8",
-        )
-        (package / "src/lib.rs").write_text(
-            "fn active() {\n"
-            "    let prepare = bolt_v2::bolt_v3_polymarket_redemption::"
-            "prepare_redemption_request;\n"
-            "}\n",
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("active production caller" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_active_caller_in_test_named_source_dir_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        source = root / "src/tests/active.rs"
-        source.parent.mkdir(parents=True)
-        source.write_text(
-            "fn active() { let prepare = prepare_redemption_request; }\n",
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("active production caller" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_active_caller_after_owner_test_module_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            OWNER + "\nfn active() { let prepare = prepare_redemption_request; }\n",
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("active production caller" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_active_caller_after_non_owner_test_item_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        (root / "src/late.rs").write_text(
-            "#[cfg(test)]\nmod tests {}\n"
-            "fn active() { let prepare = prepare_redemption_request; }\n",
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("active production caller" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_active_caller_in_explicit_target_descendant_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        package = root / "crates/custom-target"
-        (package / "code").mkdir(parents=True)
-        (package / "Cargo.toml").write_text(
-            '[package]\nname = "custom-target"\nversion = "0.0.0"\nedition = "2024"\n'
-            '[lib]\npath = "code/lib.rs"\n',
-            encoding="utf-8",
-        )
-        (package / "code/lib.rs").write_text("mod caller;\n", encoding="utf-8")
-        (package / "code/caller.rs").write_text(
-            "fn active() { let prepare = prepare_redemption_request; }\n",
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("active production caller" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_active_caller_in_generated_source_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        generated = root / "src/bolt_v3_polymarket_redemption/generated.rs"
-        generated.write_text(
-            GENERATED + "\nfn active() { let prepare = prepare_redemption_request; }\n",
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("active production caller" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_direct_secret_output_macros_are_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        snippets = (
-            "fn leak(credentials: &ResolvedRedemptionCredentials) { "
-            "dbg!(&credentials.signer_private_key); }",
-            "fn leak(credentials: &ResolvedRedemptionCredentials) { "
-            'print!("{}", credentials.signer_private_key.as_str()); }',
-            "fn leak(credentials: &ResolvedRedemptionCredentials) { "
-            'eprint!("{}", credentials.signer_private_key.as_str()); }',
-        )
-        for snippet in snippets:
-            with self.subTest(snippet=snippet):
-                owner.write_text(
-                    OWNER.replace("#[cfg(test)]", f"{snippet}\n\n#[cfg(test)]", 1),
-                    encoding="utf-8",
-                )
-                self.assertTrue(
-                    any(
-                        "forbidden logging or observability sink" in error
-                        for error in verifier.boundary_errors(root)
-                    )
-                )
-
-    def test_nonzeroizing_signer_parser_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            OWNER.replace(
-                "#[cfg(test)]",
-                "fn parse(credentials: &ResolvedRedemptionCredentials) {\n"
-                "    let _ = PrivateKeySigner::from_str("
-                "credentials.signer_private_key.as_str());\n"
-                "}\n\n#[cfg(test)]",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any(
-                "zeroizing signer-key decode" in error
-                for error in verifier.boundary_errors(root)
-            )
-        )
-
-    def test_zeroizing_signer_decode_shape_is_required(self) -> None:
-        mutations = (
-            (
-                "PrivateKeySigner::from_slice(signer_private_key.as_ref())",
-                "credentials.signer_private_key.parse::<PrivateKeySigner>()",
-            ),
-            (
-                "PrivateKeySigner::from_slice(signer_private_key.as_ref())",
-                "<PrivateKeySigner as std::str::FromStr>::from_str("
-                "credentials.signer_private_key.as_str())",
-            ),
-            (
-                "PrivateKeySigner::from_slice(signer_private_key.as_ref())",
-                "{ type Signer = PrivateKeySigner; "
-                "credentials.signer_private_key.parse::<Signer>() }\n"
-                "    // PrivateKeySigner::from_slice(signer_private_key.as_ref())\n    ",
-            ),
-            (
-                "Zeroizing::new(B256::ZERO.into_array())",
-                "B256::ZERO.into_array()",
-            ),
-        )
-        for expected, replacement in mutations:
-            with self.subTest(replacement=replacement):
-                temporary, root = self.fixture()
-                self.addCleanup(temporary.cleanup)
-                owner = root / "src/bolt_v3_polymarket_redemption.rs"
-                owner.write_text(
-                    owner.read_text(encoding="utf-8").replace(expected, replacement, 1),
-                    encoding="utf-8",
-                )
-                self.assertTrue(
-                    any(
-                        "zeroizing signer-key decode" in error
-                        for error in verifier.boundary_errors(root)
-                    )
-                )
-
-    def test_public_injectable_secret_resolver_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            owner.read_text(encoding="utf-8").replace(
-                "fn resolve_redemption_credentials_from<E>",
-                "pub fn resolve_redemption_credentials_from<E>",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            any("injectable secret resolver" in error for error in verifier.boundary_errors(root))
-        )
-
-    def test_second_session_or_secret_backend_is_rejected(self) -> None:
-        temporary, root = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        owner = root / "src/bolt_v3_polymarket_redemption.rs"
-        owner.write_text(
-            owner.read_text(encoding="utf-8").replace(
-                "#[cfg(test)]",
-                'fn bad() { SsmResolverSession::new(); std::env::var("SECRET"); }\n\n#[cfg(test)]',
-                1,
-            ),
-            encoding="utf-8",
-        )
-        errors = verifier.boundary_errors(root)
-        self.assertTrue(any("second SSM session" in error for error in errors))
-        self.assertTrue(any("alternate secret backend" in error for error in errors))
+        self.assertIn("compile-fail test target is not wired", verifier.boundary_errors(root))
 
 
 if __name__ == "__main__":

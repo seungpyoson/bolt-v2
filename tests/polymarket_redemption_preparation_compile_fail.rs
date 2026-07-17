@@ -60,7 +60,8 @@ const PRELUDE: &str = r#"
 use bolt_v2::{
     bolt_v3_polymarket_redemption::{
         AttemptKind, RedemptionPreparationConfig, RedemptionRequestInput,
-        ResolvedRedemptionCredentials, prepare_redemption_request,
+        RedemptionPreparationPermit, ResolvedRedemptionCredentials,
+        prepare_redemption_request,
     },
     bolt_v3_risk_closure_workspace::{
         RiskClosureWorkspaceLease, RiskClosureWorkspaceReservation,
@@ -73,8 +74,39 @@ fn compile_fail_harness_positive_control() {
     assert_compiles(
         "redemption_compile_positive_control",
         &format!(
-            "{PRELUDE}\nfn accepts(_: &mut RiskClosureWorkspaceLease, _: &RedemptionPreparationConfig, _: &ResolvedRedemptionCredentials, _: RedemptionRequestInput, _: AttemptKind) {{}}\nfn main() {{}}\n"
+            "{PRELUDE}\nfn accepts(_: RedemptionPreparationPermit, _: &mut RiskClosureWorkspaceLease, _: &RedemptionPreparationConfig, _: &ResolvedRedemptionCredentials, _: RedemptionRequestInput, _: AttemptKind) {{}}\nfn main() {{}}\n"
         ),
+    );
+}
+
+#[test]
+fn external_code_cannot_construct_preparation_permit() {
+    assert_compile_fails(
+        "redemption_permit_cannot_construct",
+        &format!(
+            r#"{PRELUDE}
+fn main() {{
+    let _permit = RedemptionPreparationPermit {{ private: () }};
+}}
+"#,
+        ),
+        &["field `private`", "private field"],
+    );
+}
+
+#[test]
+fn preparation_permit_cannot_be_cloned() {
+    assert_compile_fails(
+        "redemption_permit_cannot_clone",
+        &format!(
+            r#"{PRELUDE}
+fn forbidden(permit: RedemptionPreparationPermit) {{
+    let _duplicate = permit.clone();
+}}
+fn main() {{}}
+"#,
+        ),
+        &["no method named `clone`", "method `clone` not found"],
     );
 }
 
@@ -85,12 +117,14 @@ fn new_risk_reservation_cannot_call_request_preparation() {
         &format!(
             r#"{PRELUDE}
 fn forbidden(
+    permit: RedemptionPreparationPermit,
     reservation: &mut RiskClosureWorkspaceReservation,
     config: &RedemptionPreparationConfig,
     credentials: &ResolvedRedemptionCredentials,
     input: RedemptionRequestInput,
 ) {{
     prepare_redemption_request(
+        permit,
         reservation,
         config,
         credentials,
@@ -116,6 +150,7 @@ fn prepared_request_borrow_cannot_escape_callback() {
         &format!(
             r#"{PRELUDE}
 fn forbidden<'a>(
+    permit: RedemptionPreparationPermit,
     lease: &'a mut RiskClosureWorkspaceLease,
     config: &RedemptionPreparationConfig,
     credentials: &ResolvedRedemptionCredentials,
@@ -123,6 +158,7 @@ fn forbidden<'a>(
 ) -> &'a [u8] {{
     let mut escaped: Option<&'a [u8]> = None;
     prepare_redemption_request(
+        permit,
         lease,
         config,
         credentials,

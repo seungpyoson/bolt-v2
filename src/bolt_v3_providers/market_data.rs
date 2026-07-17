@@ -199,6 +199,11 @@ const OKX_DATA_FIELDS: &[&str] = &[
     "vip_level",
     "transport_backend",
 ];
+const OKX_REQUIRED_DATA_FIELDS: &[&str] = &[
+    "book_stale_check_interval_secs",
+    "book_stale_threshold_secs",
+    "book_snapshot_timeout_secs",
+];
 const KRAKEN_DATA_FIELDS: &[&str] = &[
     "api_key",
     "api_secret",
@@ -268,7 +273,23 @@ pub fn validate_deribit_client(key: &str, client: &ClientBlock) -> Vec<String> {
 }
 
 pub fn validate_okx_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<OKXDataClientConfig>(OKX_KEY, key, client, OKX_DATA_FIELDS, None)
+    let mut errors = validate_data_only_client::<OKXDataClientConfig>(
+        OKX_KEY,
+        key,
+        client,
+        OKX_DATA_FIELDS,
+        None,
+    );
+    if let Some(data) = &client.data {
+        errors.extend(missing_data_fields(data, OKX_REQUIRED_DATA_FIELDS).into_iter().map(
+            |field| {
+                format!(
+                    "clients.{key}.data.{field} must be explicitly configured for provider={OKX_KEY}"
+                )
+            },
+        ));
+    }
+    errors
 }
 
 pub fn validate_kraken_client(key: &str, client: &ClientBlock) -> Vec<String> {
@@ -383,6 +404,17 @@ fn unknown_data_fields(data: &toml::Value, allowed_fields: &[&str]) -> Vec<Strin
     fields
 }
 
+fn missing_data_fields(data: &toml::Value, required_fields: &[&str]) -> Vec<String> {
+    let Some(table) = data.as_table() else {
+        return required_fields.iter().map(ToString::to_string).collect();
+    };
+    required_fields
+        .iter()
+        .filter(|field| !table.contains_key(**field))
+        .map(ToString::to_string)
+        .collect()
+}
+
 pub fn resolve_unsupported_secrets(
     context: ProviderSecretResolveContext<'_>,
     _resolver: &mut dyn SsmSecretResolver,
@@ -461,12 +493,40 @@ pub fn map_deribit_adapters(
 pub fn map_okx_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
+    if let Some(value) = &context.client.data {
+        reject_missing_data_fields_for_mapping(
+            context.client_key,
+            OKX_KEY,
+            value,
+            OKX_REQUIRED_DATA_FIELDS,
+        )?;
+    }
     map_data_only_adapters::<OKXDataClientConfig, _>(
         context,
         OKXDataClientFactory::new(),
         OKX_KEY,
         OKX_DATA_FIELDS,
     )
+}
+
+fn reject_missing_data_fields_for_mapping(
+    client_key: &str,
+    provider_key: &'static str,
+    value: &toml::Value,
+    required_fields: &[&str],
+) -> Result<(), BoltV3AdapterMappingError> {
+    let missing_fields = missing_data_fields(value, required_fields);
+    if missing_fields.is_empty() {
+        Ok(())
+    } else {
+        Err(BoltV3AdapterMappingError::SchemaParse {
+            client_key: client_key.to_string(),
+            block: "data",
+            message: format!(
+                "provider {provider_key} data config is missing required field(s): {missing_fields:?}"
+            ),
+        })
+    }
 }
 
 pub fn map_kraken_adapters(

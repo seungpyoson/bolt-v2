@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::{
     enums::{OmsType as NtOmsType, TimeInForce},
-    events::{OrderAccepted, OrderCancelRejected, OrderFilled},
+    events::{OrderAccepted, OrderCancelRejected, OrderFillVoided, OrderFilled},
     identifiers::{InstrumentId, StrategyId},
 };
 use nautilus_system::trader::Trader;
@@ -29,6 +29,7 @@ use crate::{
     bolt_v3_complete_set_contract::{
         COMPLETE_SET_ARBITRAGE_KEY, CompleteSetSubmitMode, submit_mode_contract,
     },
+    bolt_v3_order_execution::fail_closed_on_order_fill_voided,
     bolt_v3_strategy_context::StrategyBuildContext,
     strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
 };
@@ -216,6 +217,10 @@ nautilus_strategy!(CompleteSetArbitrage, {
         self.event_forwarder
             .forward_order_filled(event)
             .expect("complete-set fill event forwarding must succeed");
+    }
+
+    fn on_order_fill_voided(&mut self, event: &OrderFillVoided) {
+        fail_closed_on_order_fill_voided(event);
     }
 
     fn on_order_accepted(&mut self, event: OrderAccepted) {

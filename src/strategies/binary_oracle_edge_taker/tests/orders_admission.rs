@@ -2358,7 +2358,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     assert_eq!(exit_order.order_type(), OrderType::TrailingStopMarket);
     assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
     assert_eq!(exit_order.price(), None);
-    assert_eq!(exit_order.trigger_price(), None);
+    assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
     assert_eq!(exit_order.activation_price(), Some(Price::new(0.48, 2)));
     // The fixture instrument declares max_price = 0.999 (the production NT
     // Polymarket adapter's ceiling), so the market-style exit cap is valued

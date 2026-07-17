@@ -73,6 +73,7 @@ use bolt_v2::{
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
+use nautilus_okx::config::OKXDataClientConfig;
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
@@ -134,6 +135,7 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             }),
         );
     }
+
     clients.insert(
         "hyperliquid_perps".to_string(),
         Arc::new(ResolvedBoltV3HyperliquidSecrets {
@@ -169,6 +171,47 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         }),
     );
     ResolvedBoltV3Secrets { clients }
+}
+
+#[test]
+fn okx_monitor_compatibility_fields_are_required_at_validation_and_mapping_boundaries() {
+    for field in [
+        "book_stale_check_interval_secs",
+        "book_stale_threshold_secs",
+        "book_snapshot_timeout_secs",
+    ] {
+        let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+        let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+        add_requested_market_data_clients(&mut loaded);
+        let client = loaded
+            .root
+            .clients
+            .get_mut("okx_data")
+            .expect("okx_data should be configured");
+        client
+            .data
+            .as_mut()
+            .expect("okx_data should include [data]")
+            .as_table_mut()
+            .expect("okx_data [data] should be a table")
+            .remove(field);
+
+        let validation = validate_client_block("okx_data", client).join("\n");
+        assert!(
+            validation.contains(field),
+            "startup validation must reject missing OKX field {field}: {validation}"
+        );
+
+        let resolved = fixture_resolved_secrets();
+        let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+        let error =
+            map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+                .expect_err("mapping must reject a missing OKX compatibility field");
+        assert!(
+            error.to_string().contains(field),
+            "mapping error must name missing OKX field {field}: {error}"
+        );
+    }
 }
 
 fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
@@ -701,7 +744,7 @@ contract_types = ["linear", "inverse"]
 load_spreads = true
 environment = "demo"
 book_stale_check_interval_secs = 0
-book_stale_threshold_secs = 30
+book_stale_threshold_secs = 0
 book_snapshot_timeout_secs = 3
 transport_backend = "sockudo"
 "#,
@@ -1917,6 +1960,19 @@ fn requested_market_data_clients_map_as_data_only_and_execution_stays_config_own
         mapped_execution_clients, expected_execution_clients,
         "adapter mapping must preserve exactly the execution clients declared by TOML [execution] blocks"
     );
+
+    let okx = configs
+        .clients
+        .get("okx_data")
+        .expect("OKX client must be present in mapper output")
+        .data
+        .as_ref()
+        .expect("OKX [data] block must produce an NT data config")
+        .config_as::<OKXDataClientConfig>()
+        .expect("OKX data should downcast to NT OKXDataClientConfig");
+    assert_eq!(okx.book_stale_check_interval_secs, 0);
+    assert_eq!(okx.book_stale_threshold_secs, 0);
+    assert_eq!(okx.book_snapshot_timeout_secs, 3);
 }
 
 #[test]

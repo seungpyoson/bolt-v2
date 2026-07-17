@@ -7786,6 +7786,10 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
         self.handle_order_filled(event);
     }
 
+    fn on_order_fill_voided(&mut self, event: &nautilus_model::events::OrderFillVoided) {
+        crate::bolt_v3_order_execution::fail_closed_on_order_fill_voided(event);
+    }
+
     fn on_order_canceled(&mut self, event: &nautilus_model::events::OrderCanceled) {
         self.handle_order_canceled(event);
     }

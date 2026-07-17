@@ -251,6 +251,8 @@ fn hook_ownership_and_shadow_prohibition_remain_explicit() {
         !strategy_hooks
             .contains("if let Err(error) = self.event_forwarder.forward_order_filled(event)")
     );
+    assert!(strategy_hooks.contains("fn on_order_fill_voided"));
+    assert!(strategy_hooks.contains("fail_closed_on_order_fill_voided(event)"));
     assert!(strategy_hooks.contains("fn on_order_accepted"));
     assert!(strategy_hooks.contains("fn on_order_cancel_rejected"));
 

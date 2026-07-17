@@ -277,7 +277,7 @@ pub fn prepare_redemption_request(
     validate_config(config)?;
     credentials.validate()?;
     validate_nonce(input.safe_nonce, config.maximum_safe_nonce_decimal_digits)?;
-    let mut signer_private_key = Zeroizing::new(B256::ZERO.into_array());
+    let mut signer_private_key = Zeroizing::new(B256::ZERO.as_slice().to_vec());
     hex::decode_to_slice(
         credentials.signer_private_key.as_bytes(),
         signer_private_key.as_mut(),

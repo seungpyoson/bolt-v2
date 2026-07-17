@@ -61,10 +61,11 @@ use crate::{
         resolution_oracle_client_http_timeout_secs,
     },
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, PreparedStrategyClientRoutes,
-        PreparedStrategyRegistration, StrategyPreparationConfig, StrategyRegistrationContext,
-        StrategyRuntimeBinding, StrategyRuntimeCapabilities, assemble_strategy_build_context,
-        execution_account_id, settlement_currency_for_execution_account, venue_for_client,
+        BoltV3StrategyRegistrationError, PreparedRealizedVolatilitySurface,
+        PreparedStrategyClientRoutes, PreparedStrategyRegistration, StrategyPreparationConfig,
+        StrategyRegistrationContext, StrategyRuntimeBinding, StrategyRuntimeCapabilities,
+        assemble_strategy_build_context, execution_account_id,
+        settlement_currency_for_execution_account, venue_for_client,
     },
     strategies::{
         binary_oracle_edge_taker::{BinaryOracleEdgeTakerBuilder, KEY as STRATEGY_KIND},
@@ -587,14 +588,27 @@ pub fn raw_taker_config(
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: "config.realized_volatility_surface_id is required".to_string(),
         })?;
-    let realized_volatility_max_source_age_ms = preparation_config
-        .realized_volatility_max_source_age_ms(realized_volatility_surface_id)
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "configured surface `{realized_volatility_surface_id}` is not present in realized_volatility_surfaces"
-            ),
-        })?;
+    let realized_volatility_max_source_age_ms = match preparation_config
+        .realized_volatility_surface(realized_volatility_surface_id)
+    {
+        PreparedRealizedVolatilitySurface::SurfacesAbsent => {
+            return Err(BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: format!(
+                    "realized_volatility_surfaces is absent; configured surface `{realized_volatility_surface_id}` cannot be resolved"
+                ),
+            });
+        }
+        PreparedRealizedVolatilitySurface::SurfaceUnknown => {
+            return Err(BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: format!(
+                    "configured surface `{realized_volatility_surface_id}` is not present in realized_volatility_surfaces"
+                ),
+            });
+        }
+        PreparedRealizedVolatilitySurface::Resolved { max_source_age_ms } => max_source_age_ms,
+    };
     if realized_volatility_max_source_age_ms == 0 {
         return Err(BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),

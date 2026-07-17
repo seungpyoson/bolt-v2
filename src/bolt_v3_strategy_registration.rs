@@ -256,20 +256,27 @@ struct ResolvedStrategyClientRoutes<'a> {
 
 #[derive(Clone, Debug, Default)]
 pub struct StrategyPreparationConfig {
-    realized_volatility_max_source_age_ms: BTreeMap<String, u64>,
+    realized_volatility_max_source_age_ms: Option<BTreeMap<String, u64>>,
     gate_provider_max_age_ms: BTreeMap<String, u64>,
     chainlink_feed_instrument_ids: BTreeSet<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparedRealizedVolatilitySurface {
+    SurfacesAbsent,
+    SurfaceUnknown,
+    Resolved { max_source_age_ms: u64 },
+}
+
 impl StrategyPreparationConfig {
     pub fn from_root(root: &BoltV3RootConfig) -> Self {
-        let realized_volatility_max_source_age_ms = root
-            .realized_volatility_surfaces
-            .as_ref()
-            .into_iter()
-            .flat_map(|surfaces| surfaces.iter())
-            .map(|(id, surface)| (id.clone(), surface.policy.max_source_age_ms))
-            .collect();
+        let realized_volatility_max_source_age_ms =
+            root.realized_volatility_surfaces.as_ref().map(|surfaces| {
+                surfaces
+                    .iter()
+                    .map(|(id, surface)| (id.clone(), surface.policy.max_source_age_ms))
+                    .collect()
+            });
         let gate_provider_max_age_ms = root
             .gate_providers
             .as_ref()
@@ -300,8 +307,16 @@ impl StrategyPreparationConfig {
         }
     }
 
-    pub fn realized_volatility_max_source_age_ms(&self, id: &str) -> Option<u64> {
-        self.realized_volatility_max_source_age_ms.get(id).copied()
+    pub fn realized_volatility_surface(&self, id: &str) -> PreparedRealizedVolatilitySurface {
+        let Some(surfaces) = self.realized_volatility_max_source_age_ms.as_ref() else {
+            return PreparedRealizedVolatilitySurface::SurfacesAbsent;
+        };
+        match surfaces.get(id).copied() {
+            Some(max_source_age_ms) => {
+                PreparedRealizedVolatilitySurface::Resolved { max_source_age_ms }
+            }
+            None => PreparedRealizedVolatilitySurface::SurfaceUnknown,
+        }
     }
 
     pub fn gate_provider_max_age_ms(&self, id: &str) -> Option<u64> {

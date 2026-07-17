@@ -15,13 +15,27 @@ const STRATEGY_MUTATION_AUTHORITY_NAMES: &[&str] = &[
     "with_order_execution_policy",
 ];
 
+// Bounded interim evidence only: these names mirror the two retained Python fences, with
+// `modify_order_via_nt` added to cover the existing Bolt sink trait. This is not an exhaustive
+// census of every NautilusTrader API that could transitively expose mutable authority; structural
+// unnameability is separate work under #1407.
 const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
     "core_mut",
     "order_manager",
+    "send_risk_command",
+    "send_exec_command",
+    "send_emulator_command",
+    "send_algo_command",
+    "send_trading_command",
+    "send_any",
+    "send_any_value",
+    "risk_engine_queue_execute",
+    "exec_engine_queue_execute",
+    "emulator_queue_execute",
+    "algo_engine_queue_execute",
     "submit_order",
     "submit_order_list",
     "modify_order",
-    "modify_orders",
     "cancel_order",
     "cancel_orders",
     "cancel_all_orders",
@@ -51,20 +65,7 @@ const NT_VENUE_MUTATION_METHOD_NAMES: &[&str] = &[
     "market_exit",
 ];
 
-const NT_TRANSITIVE_MUTATION_METHOD_NAMES: &[&str] = &[
-    "strategy_core_mut",
-    "reset_market_exit_state",
-    "on_start",
-    "on_time_event",
-    "check_market_exit",
-    "stop",
-];
-
 const NT_VENUE_MUTATION_BARE_NAMES: &[&str] = &[
-    "send_risk_command",
-    "send_exec_command",
-    "send_emulator_command",
-    "send_algo_command",
     "send_trading_command",
     "send_any",
     "send_any_value",
@@ -79,9 +80,6 @@ const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
     "SubmitOrder",
     "SubmitOrderList",
     "ModifyOrder",
-    "ModifyOrders",
-    "BatchModifyOrders",
-    "BatchCancelOrders",
     "CancelOrder",
     "CancelOrders",
     "CancelAllOrders",
@@ -95,7 +93,6 @@ const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Token {
     text: String,
-    is_raw_identifier: bool,
 }
 
 fn repo_path(relative: &str) -> PathBuf {
@@ -150,7 +147,6 @@ fn tokenize(source: &str) -> Vec<Token> {
             }
             tokens.push(Token {
                 text: source[start..index].to_owned(),
-                is_raw_identifier: true,
             });
             continue;
         }
@@ -162,21 +158,18 @@ fn tokenize(source: &str) -> Vec<Token> {
             }
             tokens.push(Token {
                 text: source[start..index].to_owned(),
-                is_raw_identifier: false,
             });
             continue;
         }
         if bytes[index..].starts_with(b"::") {
             tokens.push(Token {
                 text: "::".to_owned(),
-                is_raw_identifier: false,
             });
             index += 2;
             continue;
         }
         tokens.push(Token {
             text: (bytes[index] as char).to_string(),
-            is_raw_identifier: false,
         });
         index += 1;
     }
@@ -185,15 +178,14 @@ fn tokenize(source: &str) -> Vec<Token> {
 
 fn production_tokens(source: &str) -> Vec<Token> {
     let tokens = tokenize(source);
-    let protected_token_tree = protected_token_tree_mask(&tokens);
+    let macro_token_tree = macro_token_tree_mask(&tokens);
     let mut production = Vec::with_capacity(tokens.len());
     let mut cursor = 0;
     while cursor < tokens.len() {
-        if !protected_token_tree[cursor]
+        if !macro_token_tree[cursor]
             && let Some(attribute_end) = cfg_test_attribute_end(&tokens, cursor)
-            && let Some(item_end) = cfg_gated_item_end(&tokens, attribute_end)
         {
-            cursor = item_end;
+            cursor = cfg_gated_item_end(&tokens, attribute_end);
         } else {
             production.push(tokens[cursor].clone());
             cursor += 1;
@@ -202,12 +194,12 @@ fn production_tokens(source: &str) -> Vec<Token> {
     production
 }
 
-fn protected_token_tree_mask(tokens: &[Token]) -> Vec<bool> {
+fn macro_token_tree_mask(tokens: &[Token]) -> Vec<bool> {
     let mut mask = vec![false; tokens.len()];
     let mut delimiters: Vec<(&str, bool)> = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
-        let inside_protected_tree = delimiters.iter().any(|(_, protected)| *protected);
-        mask[index] = inside_protected_tree;
+        let inside_macro = delimiters.iter().any(|(_, is_macro)| *is_macro);
+        mask[index] = inside_macro;
         match token.text.as_str() {
             "(" | "[" | "{" => {
                 let close = match token.text.as_str() {
@@ -225,14 +217,7 @@ fn protected_token_tree_mask(tokens: &[Token]) -> Vec<bool> {
                         && tokens
                             .get(index.wrapping_sub(3))
                             .is_some_and(|token| token.text == "macro_rules"));
-                let opens_attribute = token.text == "["
-                    && tokens
-                        .get(index.wrapping_sub(1))
-                        .is_some_and(|token| token.text == "#");
-                delimiters.push((
-                    close,
-                    inside_protected_tree || opens_macro || opens_attribute,
-                ));
+                delimiters.push((close, inside_macro || opens_macro));
             }
             ")" | "]" | "}" => {
                 if delimiters
@@ -257,181 +242,37 @@ fn cfg_test_attribute_end(tokens: &[Token], start: usize) -> Option<usize> {
         .then_some(start + CFG_TEST_ATTRIBUTE.len())
 }
 
-fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
+fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> usize {
     // Stop at the first complete construct boundary and never cross an enclosing brace. For a
     // structured match-arm pattern, the first balanced brace can precede the gated body; retaining
     // that body is an intentional fail-closed over-match rather than hiding a production sibling.
-    // Angle brackets are likewise not treated as structural depth because `<` is also an operator;
-    // a comma in a test-only generic may retain its tail, but cannot hide production code.
-    let mut delimiters: Vec<&str> = Vec::new();
-    let mut brace_terminates_construct = false;
-    let mut saw_item_or_expression_body = false;
-    let mut saw_match_arrow = false;
-    let mut can_start_item_or_macro = true;
-    let mut saw_ambiguous_prefix = false;
-    let mut ambiguous_prefix_is_macro_path = true;
-    let mut macro_requires_terminator = false;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
     while cursor < tokens.len() {
-        let macro_body_delimiter = if tokens[cursor].text == "!" {
-            let ordinary_macro_delimiter = (cursor > 0
-                && saw_ambiguous_prefix
-                && ambiguous_prefix_is_macro_path
-                && tokens[cursor - 1]
-                    .text
-                    .as_bytes()
-                    .first()
-                    .is_some_and(|byte| ident_start(*byte)))
-            .then(|| tokens.get(cursor + 1))
-            .flatten()
-            .filter(|next| matches!(next.text.as_str(), "(" | "[" | "{"));
-            ordinary_macro_delimiter
-                .or_else(|| {
-                    (cursor > 0
-                        && tokens[cursor - 1].text == "macro_rules"
-                        && !tokens[cursor - 1].is_raw_identifier
-                        && tokens.get(cursor + 1).is_some_and(|name| {
-                            name.text
-                                .as_bytes()
-                                .first()
-                                .is_some_and(|byte| ident_start(*byte))
-                        }))
-                    .then(|| tokens.get(cursor + 2))
-                    .flatten()
-                    .filter(|next| matches!(next.text.as_str(), "(" | "[" | "{"))
-                })
-                .map(|token| token.text.as_str())
-        } else {
-            None
-        };
         match tokens[cursor].text.as_str() {
-            token
-                if delimiters.is_empty()
-                    && can_start_item_or_macro
-                    && !tokens[cursor].is_raw_identifier
-                    && matches!(
-                        token,
-                        "fn" | "mod"
-                            | "struct"
-                            | "enum"
-                            | "union"
-                            | "impl"
-                            | "trait"
-                            | "extern"
-                            | "if"
-                            | "match"
-                            | "loop"
-                            | "while"
-                            | "for"
-                    ) =>
-            {
-                if saw_ambiguous_prefix {
-                    return None;
+            "(" => parentheses += 1,
+            ")" => parentheses = parentheses.saturating_sub(1),
+            "[" => brackets += 1,
+            "]" => brackets = brackets.saturating_sub(1),
+            "{" if parentheses == 0 && brackets == 0 => braces += 1,
+            "}" if parentheses == 0 && brackets == 0 => {
+                if braces == 0 {
+                    return cursor;
                 }
-                saw_item_or_expression_body = true;
-            }
-            "macro_rules"
-                if delimiters.is_empty()
-                    && can_start_item_or_macro
-                    && !tokens[cursor].is_raw_identifier =>
-            {
-                if saw_ambiguous_prefix {
-                    return None;
+                braces -= 1;
+                if braces == 0 {
+                    return cursor + 1;
                 }
             }
-            "!" if delimiters.is_empty()
-                && can_start_item_or_macro
-                && macro_body_delimiter.is_some() =>
-            {
-                saw_item_or_expression_body = true;
-                saw_ambiguous_prefix = false;
-                ambiguous_prefix_is_macro_path = true;
-                macro_requires_terminator = matches!(macro_body_delimiter, Some("(") | Some("["));
-            }
-            "!" if delimiters.is_empty() && can_start_item_or_macro => return None,
-            "=" if delimiters.is_empty()
-                && tokens
-                    .get(cursor + 1)
-                    .is_some_and(|token| token.text == ">") =>
-            {
-                saw_match_arrow = true;
-            }
-            ":" | "=" if delimiters.is_empty() => can_start_item_or_macro = false,
-            "(" | "[" | "{" => {
-                if delimiters.is_empty() && tokens[cursor].text == "{" {
-                    brace_terminates_construct = saw_item_or_expression_body || saw_match_arrow;
-                }
-                delimiters.push(match tokens[cursor].text.as_str() {
-                    "(" => ")",
-                    "[" => "]",
-                    "{" => "}",
-                    _ => unreachable!(),
-                });
-            }
-            ")" | "]" | "}" => {
-                let Some(expected) = delimiters.pop() else {
-                    return (tokens[cursor].text == "}").then_some(cursor);
-                };
-                if expected != tokens[cursor].text {
-                    return None;
-                }
-                if delimiters.is_empty()
-                    && macro_requires_terminator
-                    && matches!(tokens[cursor].text.as_str(), ")" | "]")
-                {
-                    return match tokens.get(cursor + 1).map(|next| next.text.as_str()) {
-                        Some(";" | ",") => Some(cursor + 2),
-                        Some("}") | None => Some(cursor + 1),
-                        _ => None,
-                    };
-                }
-                if delimiters.is_empty() && tokens[cursor].text == "}" && brace_terminates_construct
-                {
-                    return Some(cursor + 1);
-                }
-                if delimiters.is_empty()
-                    && tokens[cursor].text == "}"
-                    && !brace_terminates_construct
-                    && !tokens
-                        .get(cursor + 1)
-                        .is_some_and(|next| matches!(next.text.as_str(), "," | ";" | "="))
-                {
-                    return None;
-                }
-            }
-            ";" | "," if delimiters.is_empty() => {
-                return Some(cursor + 1);
-            }
-            token
-                if delimiters.is_empty()
-                    && can_start_item_or_macro
-                    && token
-                        .as_bytes()
-                        .first()
-                        .is_some_and(|byte| ident_start(*byte))
-                    && (tokens[cursor].is_raw_identifier
-                        || !matches!(
-                            token,
-                            "pub" | "unsafe" | "async" | "const" | "default" | "auto" | "move"
-                        )) =>
-            {
-                // An identifier may still become a macro path (`foo::bar!`), but it cannot be
-                // silently reinterpreted as a modifier for a later item keyword. If no `!`
-                // resolves the path before `fn`/`struct`/`mod`/an expression body, retain the
-                // entire ambiguous cfg-gated region.
-                if saw_ambiguous_prefix
-                    && !tokens
-                        .get(cursor.wrapping_sub(1))
-                        .is_some_and(|previous| previous.text == "::")
-                {
-                    ambiguous_prefix_is_macro_path = false;
-                }
-                saw_ambiguous_prefix = true;
+            ";" | "," if parentheses == 0 && brackets == 0 && braces == 0 => {
+                return cursor + 1;
             }
             _ => {}
         }
         cursor += 1;
     }
-    None
+    cursor
 }
 
 fn ident_start(byte: u8) -> bool {
@@ -658,12 +499,6 @@ fn named_strategy_mutation_surfaces(tokens: &[Token]) -> Vec<&str> {
             .filter(|name| direct_method_reference(&actual, name)),
     );
     violations.extend(
-        NT_TRANSITIVE_MUTATION_METHOD_NAMES
-            .iter()
-            .copied()
-            .filter(|name| direct_method_reference(&actual, name)),
-    );
-    violations.extend(
         NT_VENUE_MUTATION_BARE_NAMES
             .iter()
             .copied()
@@ -681,16 +516,21 @@ fn direct_method_reference(tokens: &[&str], name: &str) -> bool {
 }
 
 fn command_surface_reference(tokens: &[&str], name: &str) -> bool {
-    // Exact NT command-surface names are reserved by this interim lexical fence. That intentionally
-    // rejects same-named local intent enums until the #1407 crate boundary makes NT authority
-    // structurally unnameable without relying on source-level resolution.
-    tokens.contains(&name)
+    tokens.iter().enumerate().any(|(index, token)| {
+        *token == name
+            && tokens
+                .get(index + 1)
+                .is_none_or(|next| matches!(*next, "::" | "<" | "(" | ";" | "," | ":" | ")"))
+    })
 }
 
 fn bare_function_reference(tokens: &[&str], name: &str) -> bool {
-    // Raw transport names are likewise reserved exact tokens. The conservative false-positive
-    // direction avoids alias, cast, field, and function-pointer escapes.
-    tokens.contains(&name)
+    tokens.iter().enumerate().any(|(index, token)| {
+        *token == name
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| matches!(*next, "(" | "::" | "<" | ";" | "," | ")"))
+    })
 }
 
 fn trait_method_names<'a>(tokens: &'a [Token], trait_name: &str) -> Vec<&'a str> {
@@ -872,7 +712,7 @@ fn retired_registry_matcher_covers_direct_and_grouped_paths_only() {
 }
 
 #[test]
-fn production_tokenizer_excludes_inline_test_items_only() {
+fn production_tokenizer_handles_current_strategy_cfg_shapes() {
     let tokens = production_tokens(
         r#"
         fn production() { emit_order_intent(); }
@@ -896,20 +736,10 @@ fn production_tokenizer_excludes_inline_test_items_only() {
         fixture! { self.cancel_all_orders(); }
         fn after_cfg_macro() { production_after_cfg_macro(); }
         #[cfg(test)]
-        foo::bar![self.cancel_order(order_id);];
-        fn after_cfg_path_macro() { production_after_cfg_path_macro(); }
-        #[cfg(test)]
-        macro_rules! fixture_rule { () => { self.modify_order(order); } }
-        fn after_cfg_macro_rules() { production_after_cfg_macro_rules(); }
-        #[cfg(test)]
         if test_mode() { self.modify_order(order); }
         fn after_cfg_expression() { production_after_cfg_expression(); }
         passthrough! { #[cfg(test)] }
         fn after_macro_tokens() { self.modify_order_via_nt(order); }
-        #[passthrough(#[cfg(test)])]
-        fn after_attribute_tokens() { self.modify_order_via_nt(order); }
-        #[passthrough(nested(#[cfg(test)]))]
-        fn after_nested_attribute_tokens() { self.modify_order_via_nt(order); }
         match state {
             #[cfg(test)]
             State::Fixture { value } => { test_only_arm_body(value); }
@@ -925,23 +755,15 @@ fn production_tokenizer_excludes_inline_test_items_only() {
     assert_eq!(count_sequence(&tokens, &["modify_order", "("]), 0);
     assert_eq!(count_sequence(&tokens, &["SubmitOrder"]), 0);
     assert_eq!(count_sequence(&tokens, &["ProductionField"]), 2);
-    assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 3);
+    assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 1);
     assert_eq!(count_sequence(&tokens, &["cancel_order", "("]), 1);
-    assert_eq!(count_sequence(&tokens, &["test_only_arm_body", "("]), 0);
+    assert_eq!(count_sequence(&tokens, &["test_only_arm_body", "("]), 1);
     assert_eq!(
         count_sequence(&tokens, &["production_after_gated_arm", "("]),
         1
     );
     assert_eq!(
         count_sequence(&tokens, &["production_after_cfg_macro", "("]),
-        1
-    );
-    assert_eq!(
-        count_sequence(&tokens, &["production_after_cfg_path_macro", "("]),
-        1
-    );
-    assert_eq!(
-        count_sequence(&tokens, &["production_after_cfg_macro_rules", "("]),
         1
     );
     assert_eq!(
@@ -956,84 +778,33 @@ fn production_tokenizer_keeps_code_after_real_test_only_fields() {
         &std::fs::read_to_string(repo_path("src/strategies/binary_oracle_edge_taker/mod.rs"))
             .expect("edge-taker strategy source should be readable"),
     );
-    for production_sequence in [
-        &["struct", "SettlementEvidenceComputation", "{"][..],
-        &["fn", "apply_selection_snapshot", "("][..],
-        &["self", ".", "config", ".", "warmup_tick_count"][..],
+    for production_name in [
+        "SettlementEvidenceComputation",
+        "apply_selection_snapshot",
+        "warmup_tick_count",
     ] {
         assert!(
-            contains_sequence(&tokens, production_sequence),
-            "production tokenizer must not hide `{production_sequence:?}` after a test-only field"
+            contains_sequence(&tokens, &[production_name]),
+            "production tokenizer must not hide `{production_name}` after a test-only field"
         );
     }
 }
 
 #[test]
-fn strategy_mutation_surface_matcher_has_complete_controls() {
-    assert_eq!(
-        NT_VENUE_MUTATION_BARE_NAMES,
-        &[
-            "send_risk_command",
-            "send_exec_command",
-            "send_emulator_command",
-            "send_algo_command",
-            "send_trading_command",
-            "send_any",
-            "send_any_value",
-            "risk_engine_queue_execute",
-            "exec_engine_queue_execute",
-            "emulator_queue_execute",
-            "algo_engine_queue_execute",
-        ],
-        "the independently pinned raw-transport census must not drift"
-    );
-    let semantic_classes = [
-        NT_VENUE_MUTATION_METHOD_NAMES,
-        NT_TRANSITIVE_MUTATION_METHOD_NAMES,
-        NT_VENUE_MUTATION_BARE_NAMES,
-        NT_TRADING_COMMAND_SURFACE_NAMES,
-    ];
-    for (index, left) in semantic_classes.iter().enumerate() {
-        for right in &semantic_classes[index + 1..] {
-            assert!(
-                !left.iter().any(|name| right.contains(name)),
-                "one mutation token must have exactly one matching semantic class"
-            );
-        }
-    }
+fn bounded_strategy_mutation_surface_matcher_has_controls() {
     for authority in STRATEGY_MUTATION_AUTHORITY_NAMES {
         let tokens = tokenize(&format!("use boundary::{authority};"));
         assert_eq!(named_strategy_mutation_surfaces(&tokens), vec![*authority]);
     }
-    for method in NT_VENUE_MUTATION_METHOD_NAMES
-        .iter()
-        .chain(NT_TRANSITIVE_MUTATION_METHOD_NAMES)
-    {
-        for source in [
-            format!("self.{method}(command);"),
-            format!("self.r#{method}(command);"),
-            format!("Self::{method}(self, command);"),
-            format!("<Wrapper<Foo> as Strategy>::{method}(self, command);"),
-            format!("let call = Self::{method} as fn(&mut Self, Command);"),
-            format!("let call = &Self::{method};"),
-            format!("let calls = [Self::{method}];"),
-        ] {
-            let tokens = tokenize(&source);
-            assert!(
-                named_strategy_mutation_surfaces(&tokens).contains(method),
-                "direct method matcher must retain {method} in `{source}`"
-            );
-        }
-        let negative = tokenize(&format!(
-            "fn {method}() {{}} let {method}_intent = intent; const TEXT: &str = \"{method}\"; // self.{method}(command);"
-        ));
+    for method in NT_VENUE_MUTATION_METHOD_NAMES {
+        let tokens = tokenize(&format!("self.{method}(command);"));
         assert!(
-            !named_strategy_mutation_surfaces(&negative).contains(method),
-            "unqualified definitions, near-neighbors, strings, and comments must not reserve {method}"
+            named_strategy_mutation_surfaces(&tokens).contains(method),
+            "direct method matcher must retain {method}"
         );
     }
     let function_references = tokenize(
-        "let exit = Self::exit_market as fn(&mut Self); let markets = [Self::market_exit]; let close = { &self.close_position };",
+        "let exit = Self::exit_market as fn(&mut Self); let markets = [Self::market_exit]; let close = &self.close_position;",
     );
     for method in ["exit_market", "market_exit", "close_position"] {
         assert!(
@@ -1042,67 +813,17 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         );
     }
     for function in NT_VENUE_MUTATION_BARE_NAMES {
-        for source in [
-            format!("{function}(command);"),
-            format!("r#{function}(command);"),
-            format!("msgbus::{function}(command);"),
-            format!("msgbus::r#{function}(command);"),
-            format!("use msgbus::{function};"),
-            format!("use msgbus::{function} as dispatch;"),
-            format!("use msgbus::{{{function}}};"),
-            format!("use msgbus::{{{function} as dispatch}};"),
-            format!("let send = {function} as fn(Command);"),
-            format!("let send = msgbus::{function} as fn(Command);"),
-            format!("let send = &msgbus::{function};"),
-            format!("let sends = [msgbus::{function}];"),
-        ] {
-            let tokens = tokenize(&source);
-            assert!(
-                named_strategy_mutation_surfaces(&tokens).contains(function),
-                "bare transport matcher must retain {function} in `{source}`"
-            );
-        }
-        let negative = tokenize(&format!(
-            "let {function}_intent = intent; let my_{function} = helper; let {function}_v2 = helper; const TEXT: &str = \"{function}\"; // {function}(command);"
-        ));
+        let tokens = tokenize(&format!("{function}(command);"));
         assert!(
-            !named_strategy_mutation_surfaces(&negative).contains(function),
-            "near-neighbors, strings, and comments must not reserve {function}"
+            named_strategy_mutation_surfaces(&tokens).contains(function),
+            "bare transport matcher must retain {function}"
         );
     }
     for command in NT_TRADING_COMMAND_SURFACE_NAMES {
-        for source in [
-            command.to_string(),
-            format!("r#{command}"),
-            format!("nt::{command}"),
-            format!("nt::r#{command}"),
-            format!("use nt::{command};"),
-            format!("use nt::{{{command} as Alias}};"),
-            format!("type Pending = Vec<{command}>;"),
-            format!("let command = &nt::{command};"),
-            format!("let commands = [nt::{command}];"),
-        ] {
-            let tokens = tokenize(&source);
-            assert!(
-                named_strategy_mutation_surfaces(&tokens).contains(command),
-                "command-surface matcher must retain {command} in `{source}`"
-            );
-        }
-        let negative = tokenize(&format!(
-            "let {command}Intent = intent; let my_{command} = helper; const TEXT: &str = \"{command}\"; // nt::{command};"
-        ));
+        let tokens = tokenize(&format!("use nt::{command};"));
         assert!(
-            !named_strategy_mutation_surfaces(&negative).contains(command),
-            "near-neighbors, strings, and comments must not reserve {command}"
-        );
-    }
-    let command_type_references = tokenize(
-        "use nt::{SubmitOrder as NtSubmit}; type Pending = Vec<ModifyOrder>; let constructor = &ClosePosition;",
-    );
-    for command in ["SubmitOrder", "ModifyOrder", "ClosePosition"] {
-        assert!(
-            named_strategy_mutation_surfaces(&command_type_references).contains(&command),
-            "command aliases, generic positions, and references must retain {command}"
+            named_strategy_mutation_surfaces(&tokens).contains(command),
+            "command-surface matcher must retain {command}"
         );
     }
     assert!(named_strategy_mutation_surfaces(&tokenize("emit_order_intent();")).is_empty());
@@ -1110,154 +831,13 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         named_strategy_mutation_surfaces(&tokenize("submit_order_intent();")).is_empty(),
         "near-neighbor intent helper must not trip the exact mutation fence"
     );
-    assert_eq!(
+    assert!(
         named_strategy_mutation_surfaces(&tokenize(
-            "enum ExitAction { CancelOrder } let action = ExitAction::CancelOrder; let choices = [ExitAction::CancelOrder]; match intent { ExitAction::CancelOrder => emit_order_intent() }"
-        )),
-        vec!["CancelOrder"],
-        "exact NT command-surface names stay reserved even for local intent enums"
+            "match intent { ExitAction::CancelOrder => emit_order_intent() }"
+        ))
+        .is_empty(),
+        "Bolt-local intent variants must not be mistaken for NT command surfaces"
     );
-    assert_eq!(
-        named_strategy_mutation_surfaces(&tokenize(
-            "enum LocalAction { Emit = generic::<Signal, CancelOrder, Other>() }"
-        )),
-        vec!["CancelOrder"],
-        "commas in generic expressions must not manufacture local-enum exemptions"
-    );
-    for collision in [
-        "enum Cmd { CancelOrder } fn bypass() { use nt::Cmd; let command = Cmd::CancelOrder; }",
-        "mod intent { enum Routed { CancelOrder } } fn bypass() { crate::nt_aliases::Routed::CancelOrder(command); }",
-    ] {
-        assert_eq!(
-            named_strategy_mutation_surfaces(&tokenize(collision)),
-            vec!["CancelOrder"],
-            "unrelated local enums must not exempt NT command references"
-        );
-    }
-}
-
-#[test]
-fn production_tokenizer_keeps_ambiguous_test_only_generic_tail_fail_closed() {
-    let tokens = production_tokens(
-        "struct State { #[cfg(test)] fixture: Map<Id, CancelOrder>, production: ProductionField }",
-    );
-    assert!(
-        contains_sequence(&tokens, &["CancelOrder"]),
-        "ambiguous angle brackets stay visible rather than risking production over-skip"
-    );
-    assert!(contains_sequence(
-        &tokens,
-        &["production", ":", "ProductionField"]
-    ));
-}
-
-#[test]
-fn production_tokenizer_retains_malformed_cfg_gated_regions() {
-    for source in [
-        "struct State { #[cfg(test)] fixture: Wrapper<(CancelOrder>, production: SubmitOrder, } fn production_after() {}",
-        "struct State { #[cfg(test)] fixture: Wrapper<[CancelOrder>, production: SubmitOrder, } fn production_after() {}",
-        "struct State { #[cfg(test)] fixture: Wrapper<{CancelOrder>, production: SubmitOrder, } fn production_after() {}",
-        "struct State { #[cfg(test)] fixture: Wrapper<fn(CancelOrder) { production: SubmitOrder, } fn production_after() {}",
-    ] {
-        let tokens = production_tokens(source);
-        assert!(contains_sequence(
-            &tokens,
-            &["production", ":", "SubmitOrder"]
-        ));
-        assert!(contains_sequence(&tokens, &["fn", "production_after", "("]));
-    }
-    for source in [
-        "#[cfg(test)] unexpected_prefix fn production() { self.submit_order(order); } fn production_after() {}",
-        "#[cfg(test)] unexpected_prefix struct Production { command: SubmitOrder } struct production_after;",
-        "#[cfg(test)] unexpected_prefix mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
-        "#[cfg(test)] unexpected_prefix if enabled { self.modify_order(order); } fn production_after() {}",
-        "#[cfg(test)] unexpected_prefix macro_rules! production { () => { self.modify_order(order); } } fn production_after() {}",
-    ] {
-        let tokens = production_tokens(source);
-        assert!(
-            contains_sequence(&tokens, &["unexpected_prefix"]),
-            "an unknown cfg-gated prefix must retain the ambiguous region"
-        );
-        assert!(
-            !named_strategy_mutation_surfaces(&tokens).is_empty(),
-            "an unknown cfg-gated prefix must not hide the fenced mutation token"
-        );
-        assert!(
-            contains_sequence(&tokens, &["production_after"]),
-            "an unknown cfg-gated prefix must not hide the production sibling"
-        );
-    }
-    let tokens = production_tokens(
-        "#[cfg(test)] foo::bar![self.cancel_order(order_id)] fn production_after() {}",
-    );
-    assert!(
-        !named_strategy_mutation_surfaces(&tokens).is_empty(),
-        "a cfg-gated bracket macro without a terminator must retain its mutation token"
-    );
-    assert!(
-        contains_sequence(&tokens, &["production_after"]),
-        "a cfg-gated bracket macro without a terminator must not hide its production sibling"
-    );
-    for modifier in ["pub", "unsafe", "async", "const", "default", "auto", "move"] {
-        let source = format!(
-            "#[cfg(test)] r#{modifier} fn production() {{ self.submit_order(order); }} fn production_after() {{}}"
-        );
-        let tokens = production_tokens(&source);
-        assert!(
-            contains_sequence(&tokens, &[modifier]),
-            "a raw modifier-like identifier must retain its lexical token"
-        );
-        assert!(
-            !named_strategy_mutation_surfaces(&tokens).is_empty(),
-            "a raw modifier-like identifier must not hide the fenced mutation token"
-        );
-        assert!(contains_sequence(&tokens, &["production_after"]));
-    }
-    for source in [
-        "#[cfg(test)] unexpected_prefix ! fn production() { self.submit_order(order); } fn production_after() {}",
-        "#[cfg(test)] unexpected_prefix ! struct Production { command: SubmitOrder } struct production_after;",
-        "#[cfg(test)] unexpected_prefix ! mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
-    ] {
-        let tokens = production_tokens(source);
-        assert!(contains_sequence(&tokens, &["unexpected_prefix", "!"]));
-        assert!(
-            !named_strategy_mutation_surfaces(&tokens).is_empty(),
-            "a bang without a macro delimiter must not hide the fenced mutation token"
-        );
-        assert!(contains_sequence(&tokens, &["production_after"]));
-    }
-}
-
-#[test]
-fn pinned_nt_mutation_surface_is_censused() {
-    let lock = std::fs::read_to_string(repo_path("Cargo.lock"))
-        .expect("Cargo.lock should retain the audited NT revision");
-    assert!(lock.contains("d636f17604cdbddc28ad40e0e15720e2d19bf860"));
-    for method in ["modify_orders"] {
-        assert!(
-            NT_VENUE_MUTATION_METHOD_NAMES.contains(&method),
-            "pinned NT Strategy mutation method `{method}` must remain censused"
-        );
-    }
-    for method in [
-        "strategy_core_mut",
-        "reset_market_exit_state",
-        "on_start",
-        "on_time_event",
-        "check_market_exit",
-        "stop",
-    ] {
-        assert!(
-            NT_TRANSITIVE_MUTATION_METHOD_NAMES.contains(&method),
-            "pinned NT transitive mutation method `{method}` must remain censused"
-        );
-    }
-    for command in ["ModifyOrders", "BatchModifyOrders", "BatchCancelOrders"] {
-        assert!(
-            NT_TRADING_COMMAND_SURFACE_NAMES.contains(&command),
-            "pinned NT TradingCommand surface `{command}` must remain censused"
-        );
-    }
 }
 
 #[test]

@@ -2460,7 +2460,7 @@ impl BoltV3SubmitAdmissionState {
     pub fn reject_episode_count(&self) -> usize {
         self.reject_episodes
             .lock()
-            .expect("submit admission state mutex should not be poisoned")
+            .expect("submit admission reject episodes mutex should not be poisoned")
             .len()
     }
 

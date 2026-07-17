@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,
-        BoltV3EconomicsRuntime, ConfiguredEconomicsAdmissionSource,
+        AuthoritativeEdgeBasis, BoltV3EconomicsRuntime, ConfiguredEconomicsAdmissionSource,
         ConfiguredEconomicsSourcePolicy, EconomicsAdmissionIntent, EconomicsAdmissionQuoteIntent,
         EconomicsAdmissionSource,
     },
@@ -123,7 +123,11 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
                     dependency_sources: Vec::new(),
                     components: vec![component],
                 })),
-                edge_basis: intent(request.clone()).edge_basis,
+                edge_basis: AuthoritativeEdgeBasis {
+                    policy_version: 1,
+                    source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
+                    valid_until_ns: request.requested_at_ns + 5,
+                },
                 valuations: Vec::new(),
             },
         )
@@ -149,6 +153,13 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
 
     assert_eq!(admission.quote().valid_until_ns(), 105);
     assert_eq!(admission.reservation_notional(), decimal("5.25"));
+    assert_eq!(admission.net_edge().basis.normalized_amount, decimal("5"));
+    assert_eq!(
+        admission.net_edge().basis.scope,
+        EconomicScope::Decision {
+            decision_correlation_id: admission.quote().decision_correlation_id().clone(),
+        }
+    );
 }
 
 #[test]
@@ -175,7 +186,11 @@ fn configured_source_rejects_dependencies_past_the_refresh_deadline() {
                     dependency_sources: Vec::new(),
                     components: vec![component],
                 })),
-                edge_basis: intent(request.clone()).edge_basis,
+                edge_basis: AuthoritativeEdgeBasis {
+                    policy_version: 1,
+                    source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
+                    valid_until_ns: request.requested_at_ns + 5,
+                },
                 valuations: Vec::new(),
             },
         )
@@ -228,7 +243,11 @@ fn configured_source_rejects_maker_quote_shorter_than_resting_margin() {
                     dependency_sources: Vec::new(),
                     components: vec![component],
                 })),
-                edge_basis: intent(request.clone()).edge_basis,
+                edge_basis: AuthoritativeEdgeBasis {
+                    policy_version: 1,
+                    source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
+                    valid_until_ns: request.requested_at_ns + 5,
+                },
                 valuations: Vec::new(),
             },
         )

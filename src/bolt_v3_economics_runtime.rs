@@ -37,8 +37,15 @@ pub struct AuthoritativeEconomicsQuoteDependencies {
     pub provider_key: String,
     pub refreshed_at_ns: u64,
     pub adapter: Arc<dyn VenueEconomicsAdapter>,
-    pub edge_basis: EdgeBasisEvidence,
+    pub edge_basis: AuthoritativeEdgeBasis,
     pub valuations: Vec<ValuationEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeEdgeBasis {
+    pub policy_version: u64,
+    pub source_snapshot_ids: Vec<SnapshotId>,
+    pub valid_until_ns: u64,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -159,6 +166,16 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         let requested_at_ns = intent.request.requested_at_ns;
         let requires_resting_margin = intent.request.liquidity_role
             == crate::economics::LiquidityRoleAssumption::GuaranteedMaker;
+        let edge_basis = EdgeBasisEvidence {
+            policy_id: intent.request.edge_basis_policy_id.clone(),
+            policy_version: dependencies.edge_basis.policy_version,
+            normalized_amount: intent.base_reservation_notional,
+            scope: crate::economics::EconomicScope::Decision {
+                decision_correlation_id: intent.request.decision_correlation_id.clone(),
+            },
+            source_snapshot_ids: dependencies.edge_basis.source_snapshot_ids,
+            valid_until_ns: dependencies.edge_basis.valid_until_ns,
+        };
         let admission = BoltV3EconomicsRuntime::from_offline_adapter(
             dependencies.adapter,
             self.policy.quote_validity_ns,
@@ -166,7 +183,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         .quote_admission(EconomicsAdmissionIntent {
             request: intent.request,
             gross_expected_value: intent.gross_expected_value,
-            edge_basis: dependencies.edge_basis,
+            edge_basis,
             valuations: dependencies.valuations,
             base_reservation_notional: intent.base_reservation_notional,
         })?;

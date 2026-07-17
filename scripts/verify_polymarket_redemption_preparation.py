@@ -389,6 +389,8 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         production,
     ):
         errors.append("production owner must not expose an injectable secret resolver")
+    if "PrivateKeySigner::from_str" in production:
+        errors.append("production owner must use a zeroizing signer-key decode buffer")
 
     forbidden_observability = (
         "dbg!",

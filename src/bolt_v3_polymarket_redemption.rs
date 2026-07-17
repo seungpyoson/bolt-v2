@@ -1,6 +1,6 @@
-use std::{fmt, ops::Range, str::FromStr};
+use std::{fmt, ops::Range};
 
-use alloy_primitives::{Address, B256, Keccak256, U256, keccak256};
+use alloy_primitives::{Address, B256, Keccak256, U256, hex, keccak256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -271,7 +271,13 @@ pub fn prepare_redemption_request(
     validate_config(config)?;
     credentials.validate()?;
     validate_nonce(input.safe_nonce, config.maximum_safe_nonce_decimal_digits)?;
-    let signer = PrivateKeySigner::from_str(credentials.signer_private_key.as_str())
+    let mut signer_private_key = Zeroizing::new(B256::ZERO.into_array());
+    hex::decode_to_slice(
+        credentials.signer_private_key.as_bytes(),
+        signer_private_key.as_mut(),
+    )
+    .map_err(|_| RedemptionPreparationError::InvalidSigningKey)?;
+    let signer = PrivateKeySigner::from_slice(signer_private_key.as_ref())
         .map_err(|_| RedemptionPreparationError::InvalidSigningKey)?;
     let target = match attempt {
         AttemptKind::Original => match input.market_kind {

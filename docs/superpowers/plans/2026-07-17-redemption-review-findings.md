@@ -220,7 +220,7 @@ Expected: the unit test passes; repository verification fails on the current `Pr
 Remove `str::FromStr`, import `alloy_primitives::hex`, and replace the parser with:
 
 ```rust
-let mut signer_private_key = Zeroizing::new([0_u8; 32]);
+let mut signer_private_key = Zeroizing::new(B256::ZERO.into_array());
 hex::decode_to_slice(
     credentials.signer_private_key.as_bytes(),
     signer_private_key.as_mut(),

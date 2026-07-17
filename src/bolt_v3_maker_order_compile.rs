@@ -67,6 +67,16 @@ pub struct MakerOrderCompileDecision {
     pub blocked_by: Option<MakerOrderCompileBlockReason>,
 }
 
+struct MakerSubmitIntentFields<'a> {
+    leg: Leg,
+    instrument_id: InstrumentId,
+    order_side: nautilus_model::enums::OrderSide,
+    order_identity: &'a crate::bolt_v3_maker_event_fence::OrderIdentity,
+    price: f64,
+    quantity: f64,
+    gross_edge_per_unit: f64,
+}
+
 pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrderCompileDecision {
     match input.intent {
         MakerOrderIntent::Submit {
@@ -80,13 +90,15 @@ pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrd
             ..
         } => compile_submit(
             input,
-            *leg,
-            *instrument_id,
-            *order_side,
-            order_identity,
-            *price,
-            *quantity,
-            *gross_edge_per_unit,
+            MakerSubmitIntentFields {
+                leg: *leg,
+                instrument_id: *instrument_id,
+                order_side: *order_side,
+                order_identity,
+                price: *price,
+                quantity: *quantity,
+                gross_edge_per_unit: *gross_edge_per_unit,
+            },
         ),
         MakerOrderIntent::Cancel {
             leg,
@@ -125,14 +137,17 @@ pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrd
 
 fn compile_submit(
     input: MakerOrderCompileInput<'_>,
-    leg: Leg,
-    instrument_id: InstrumentId,
-    order_side: nautilus_model::enums::OrderSide,
-    order_identity: &crate::bolt_v3_maker_event_fence::OrderIdentity,
-    price: f64,
-    quantity: f64,
-    gross_edge_per_unit: f64,
+    submit: MakerSubmitIntentFields<'_>,
 ) -> MakerOrderCompileDecision {
+    let MakerSubmitIntentFields {
+        leg,
+        instrument_id,
+        order_side,
+        order_identity,
+        price,
+        quantity,
+        gross_edge_per_unit,
+    } = submit;
     if !maker_submit_template_is_supported(input.submit_template) {
         return blocked(MakerOrderCompileBlockReason::UnsupportedSubmitTemplate);
     }

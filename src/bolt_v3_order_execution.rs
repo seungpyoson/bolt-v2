@@ -11,7 +11,6 @@ use nautilus_core::Params;
 use nautilus_model::{
     enums::OrderSide,
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
-    instruments::InstrumentAny,
     orders::{Order, OrderAny, OrderList},
     types::{Price, Quantity},
 };
@@ -48,6 +47,9 @@ use crate::{
         ReportingPolicyId, RoutingContext,
     },
 };
+
+#[cfg(test)]
+use nautilus_model::instruments::InstrumentAny;
 
 #[cfg(test)]
 use crate::{
@@ -811,6 +813,10 @@ pub(crate) trait BoltV3NtVenueMutationSink {
 
     // Venue-native in-place modify capability retained behind the fail-closed
     // shared routing policy.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "live modify routing remains fail-closed")
+    )]
     fn modify_order_via_nt(
         &mut self,
         client_order_id: ClientOrderId,

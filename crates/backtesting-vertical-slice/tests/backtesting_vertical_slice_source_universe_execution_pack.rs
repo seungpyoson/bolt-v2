@@ -655,9 +655,7 @@ crypto_future = "MARGIN"
         "durable profile validation precedes execution-pack output"
     );
 
-    let trailing_slash_template_path = temp_dir
-        .path()
-        .join("trailing-slash-run-spec-profile.toml");
+    let trailing_slash_template_path = temp_dir.path().join("trailing-slash-run-spec-profile.toml");
     let trailing_slash_output_dir = temp_dir.path().join("trailing-slash-execution-pack");
     let trailing_slash_spec_path = temp_dir
         .path()

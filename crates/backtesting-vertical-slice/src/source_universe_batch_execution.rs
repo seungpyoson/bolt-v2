@@ -2091,9 +2091,8 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
             .executable_sha256
             .clone()
             .context("sealed worker executable is missing its cached SHA-256")?;
-        let execution_attestation = DurableExecutionAttestation::new_process_isolated(
-            worker_executable_sha256.clone(),
-        )?;
+        let execution_attestation =
+            DurableExecutionAttestation::new_process_isolated(worker_executable_sha256.clone())?;
         let output_lease = PinnedWorkerDirectoryLease::capture(output_dir)?;
         reverify_parent_held_controls(record, control_artifacts, work_budget)?;
         let request_archive = commit_worker_request_archive(
@@ -4058,7 +4057,9 @@ where
     let owned_plan = prepare_batch(batch_id, launch_artifacts, output_dir, &config)?;
     let existing_report = read_existing_batch_report_with_lease(
         &owned_plan.output_root_lease,
-        launch_artifacts.bootstrap_limits.max_retained_control_input_bytes,
+        launch_artifacts
+            .bootstrap_limits
+            .max_retained_control_input_bytes,
     )?;
     if let Some(existing) = existing_report.as_ref() {
         validate_existing_batch_report_selection(existing, batch_id, &owned_plan)?;
@@ -5798,10 +5799,8 @@ where
         .and_then(|discovered| {
             discovered
                 .map(|discovered| {
-                    let summary = durable_receipt_summary(
-                        &discovered.receipt,
-                        &control_artifacts.run_spec,
-                    )?;
+                    let summary =
+                        durable_receipt_summary(&discovered.receipt, &control_artifacts.run_spec)?;
                     Ok((discovered, summary))
                 })
                 .transpose()
@@ -6356,7 +6355,8 @@ fn read_existing_batch_report_with_lease(
         .read_to_end(&mut bytes)
         .context("read existing immutable batch report")?;
     ensure!(
-        bytes.len() == usize::try_from(initial.len()).context("batch report length exceeds usize")?,
+        bytes.len()
+            == usize::try_from(initial.len()).context("batch report length exceeds usize")?,
         "existing immutable batch report length changed while reading"
     );
     let after_read = file.metadata().context("re-stat existing batch report")?;
@@ -6434,8 +6434,7 @@ fn try_open_batch_report_at(
 
 #[cfg(target_os = "linux")]
 fn open_batch_report_at(output_root: &fs::File, name: &std::ffi::CStr) -> Result<fs::File> {
-    try_open_batch_report_at(output_root, name)?
-        .context("batch report is absent at output-root fd")
+    try_open_batch_report_at(output_root, name)?.context("batch report is absent at output-root fd")
 }
 
 #[cfg(target_os = "linux")]
@@ -9435,8 +9434,7 @@ mod tests {
             controls,
             execution_record_sha256,
         );
-        discovered.terminal_publisher_worker_sha256 =
-            discovered.attempt_worker_sha256.clone();
+        discovered.terminal_publisher_worker_sha256 = discovered.attempt_worker_sha256.clone();
         assemble_report(
             "batch",
             owned_plan,
@@ -9496,8 +9494,9 @@ mod tests {
                 attempt_worker_sha256: worker.clone(),
                 receipt: DurableRunReceipt {
                     completion: synthetic_test_durable_completion(),
-                    execution_attestation:
-                        DurableExecutionAttestation::new_process_isolated(worker)?,
+                    execution_attestation: DurableExecutionAttestation::new_process_isolated(
+                        worker,
+                    )?,
                     run_id: control_artifacts.run_spec.manifest.run_id.clone(),
                     submitted_manifest_hash: control_artifacts.run_spec.manifest.manifest_hash(),
                     canonical_rows: 7,
@@ -9583,7 +9582,9 @@ mod tests {
         .expect_err("missing exact remote terminal must fail closed");
 
         assert!(
-            error.to_string().contains("exact remote durable terminal is absent"),
+            error
+                .to_string()
+                .contains("exact remote durable terminal is absent"),
             "{error:#}"
         );
         assert_eq!(discovery_calls.load(Ordering::SeqCst), 1);
@@ -9612,12 +9613,10 @@ mod tests {
         .expect("publish immutable fresh report");
         let first_bytes = fs::read(&first.path).expect("read fresh report bytes");
 
-        let retained = read_existing_batch_report_with_lease(
-            &owned_plan.output_root_lease,
-            1024 * 1024,
-        )
-        .expect("read retained report")
-        .expect("retained report exists");
+        let retained =
+            read_existing_batch_report_with_lease(&owned_plan.output_root_lease, 1024 * 1024)
+                .expect("read retained report")
+                .expect("retained report exists");
         validate_existing_batch_report_against_remote_discovery(&retained, &discovered)
             .expect("same-worker remote discovery confirms retained report");
         write_source_universe_batch_execution_report_with_lease(
@@ -9650,7 +9649,10 @@ mod tests {
 
         let error = validate_existing_batch_report_against_remote_discovery(&retained, &discovered)
             .expect_err("older attempt worker cannot satisfy exact-current restart proof");
-        assert!(error.to_string().contains("exact-current worker"), "{error:#}");
+        assert!(
+            error.to_string().contains("exact-current worker"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -9806,7 +9808,10 @@ mod tests {
         let error = validate_source_universe_batch_execution_report(&report)
             .expect_err("executed provenance without a worker executable hash must fail closed");
 
-        assert!(error.to_string().contains("attempt_worker_sha256"), "{error:#}");
+        assert!(
+            error.to_string().contains("attempt_worker_sha256"),
+            "{error:#}"
+        );
     }
 
     #[test]

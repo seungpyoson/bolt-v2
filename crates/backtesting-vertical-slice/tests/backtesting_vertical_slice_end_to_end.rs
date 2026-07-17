@@ -608,8 +608,7 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
         catalog_encoding: &catalog_encoding(),
         conversion_control_artifact_path: "synthetic-control.toml",
         conversion_control_artifact_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
-        conversion_semantics_sha256:
-            "1111111111111111111111111111111111111111111111111111111111111111",
+        conversion_semantics_sha256: "1111111111111111111111111111111111111111111111111111111111111111",
         canonical_artifact_path: &reject_canonical,
         catalog_root: &reject_catalog,
         authoritative_output_root: &reject_catalog,

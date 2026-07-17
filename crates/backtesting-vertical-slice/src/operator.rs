@@ -86,12 +86,12 @@ use crate::{
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_GENERATION_PATH_MARKER,
-        CONVERSION_TABLES_FILE,
-        CatalogConsumptionEvidence, CatalogPublicationReceiptIdentity, ConversionCatalogMetadata,
-        ConversionCheckpoint, ConversionCheckpointStage, ConversionFingerprint, ConversionManifest,
-        ConversionOutputState, ConversionTableRecord, inspect_conversion_output,
-        validate_conversion_tables_index, write_completed_conversion_artifacts_guarded,
-        write_conversion_tables_index_guarded, write_pending_conversion_artifacts,
+        CONVERSION_TABLES_FILE, CatalogConsumptionEvidence, CatalogPublicationReceiptIdentity,
+        ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
+        ConversionFingerprint, ConversionManifest, ConversionOutputState, ConversionTableRecord,
+        inspect_conversion_output, validate_conversion_tables_index,
+        write_completed_conversion_artifacts_guarded, write_conversion_tables_index_guarded,
+        write_pending_conversion_artifacts,
     },
     hashing::is_lowercase_sha256_hex,
     nt_catalog_capability::{NtCatalogSsmCredentialResolver, NtCatalogSsmParameterRefs},
@@ -8359,9 +8359,8 @@ mod tests {
             ("identity", changed_identity),
             ("instrument_spec", changed_instrument),
         ] {
-            let changed_generation =
-                conversion_generation_sha256_for_run_spec(&changed, &registry)
-                    .unwrap_or_else(|error| panic!("derive {label} generation: {error:#}"));
+            let changed_generation = conversion_generation_sha256_for_run_spec(&changed, &registry)
+                .unwrap_or_else(|error| panic!("derive {label} generation: {error:#}"));
             assert_ne!(
                 changed_generation, base_generation,
                 "{label} must rotate the conversion generation"

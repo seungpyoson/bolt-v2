@@ -1321,8 +1321,7 @@ fn conversion_fingerprint() -> conversion_boundary::ConversionFingerprint {
         catalog_encoding_hash: "3333333333333333333333333333333333333333333333333333333333333333"
             .to_string(),
         conversion_semantics_sha256:
-            "4444444444444444444444444444444444444444444444444444444444444444"
-                .to_string(),
+            "4444444444444444444444444444444444444444444444444444444444444444".to_string(),
     }
 }
 

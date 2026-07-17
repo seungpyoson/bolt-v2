@@ -1113,15 +1113,11 @@ fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String
         toml::to_string_pretty(&value).context("serialize conversion-generation candidate TOML")?;
     let generation_candidate_run_spec: RunSpec = toml::from_str(&generation_candidate)
         .context("conversion-generation candidate run spec does not deserialize")?;
-    let output_prefix = output_prefix_with_conversion_generation(
-        &generation_candidate_run_spec,
-        verified_registry,
-    )
-    .context("derive materialized source-universe conversion generation")?;
-    required_table_mut(&mut value, &["manifest"])?.insert(
-        "output_prefix".to_string(),
-        Value::String(output_prefix),
-    );
+    let output_prefix =
+        output_prefix_with_conversion_generation(&generation_candidate_run_spec, verified_registry)
+            .context("derive materialized source-universe conversion generation")?;
+    required_table_mut(&mut value, &["manifest"])?
+        .insert("output_prefix".to_string(), Value::String(output_prefix));
 
     let materialized =
         toml::to_string_pretty(&value).context("serialize materialized run spec TOML")?;
@@ -1149,8 +1145,7 @@ fn output_prefix_with_conversion_generation(
         "source-universe execution-pack generation input output_prefix must not preconfigure a conversion generation"
     );
     ensure!(
-        run_spec.manifest.output_prefix
-            == run_spec.manifest.output_prefix.trim_end_matches('/'),
+        run_spec.manifest.output_prefix == run_spec.manifest.output_prefix.trim_end_matches('/'),
         "source-universe execution-pack generation input output_prefix must not end with a slash"
     );
     let generation = conversion_generation_sha256_for_run_spec(run_spec, verified_registry)?;

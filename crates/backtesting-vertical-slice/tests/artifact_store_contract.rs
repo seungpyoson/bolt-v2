@@ -45,8 +45,7 @@ use crate::{
     operator::{
         CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableExecutionProvenance,
         DurableRunOutcome, OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE, RunArtifacts, RunSpec,
-        VerifiedSourceBindingRegistry,
-        conversion_generation_sha256_for_run_spec,
+        VerifiedSourceBindingRegistry, conversion_generation_sha256_for_run_spec,
         discover_current_durable_completion_with_artifact_store_guarded, run_from_run_spec,
         run_from_run_spec_with_artifact_store_guarded,
     },
@@ -313,13 +312,13 @@ fn output_prefix_without_conversion_generation(output_prefix: &str) -> &str {
 }
 
 fn bind_conversion_generation(spec: &mut RunSpec) {
-    let base = output_prefix_without_conversion_generation(&spec.manifest.output_prefix).to_string();
+    let base =
+        output_prefix_without_conversion_generation(&spec.manifest.output_prefix).to_string();
     let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)
         .expect("snapshot source bindings for conversion generation");
     let generation = conversion_generation_sha256_for_run_spec(spec, &registry)
         .expect("derive conversion generation");
-    spec.manifest.output_prefix =
-        format!("{base}{CONVERSION_GENERATION_PATH_MARKER}{generation}");
+    spec.manifest.output_prefix = format!("{base}{CONVERSION_GENERATION_PATH_MARKER}{generation}");
 }
 
 fn artifact_config() -> ArtifactStoreConfig {
@@ -3754,8 +3753,7 @@ async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch
 
 #[tokio::test]
 async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
-    const LEGACY_V2_DURABLE_COMPLETION_MANIFEST_FILE: &str =
-        "durable-completion-manifest.v2.json";
+    const LEGACY_V2_DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.v2.json";
 
     assert_eq!(
         DURABLE_COMPLETION_MANIFEST_FILE, "durable-completion-manifest.v3.json",
@@ -4235,8 +4233,7 @@ async fn conversion_generations_publish_and_discover_independent_terminal_keys()
     bind_conversion_generation(&mut generation_b);
 
     assert_ne!(
-        generation_a.manifest.output_prefix,
-        generation_b.manifest.output_prefix,
+        generation_a.manifest.output_prefix, generation_b.manifest.output_prefix,
         "the control-artifact identity change must derive a new conversion generation"
     );
 
@@ -4310,7 +4307,12 @@ async fn conversion_generations_publish_and_discover_independent_terminal_keys()
     .expect_err("wrong conversion generation suffix must fail before artifact I/O");
     assert!(format!("{error:#}").contains("conversion generation suffix"));
     assert_eq!(store.put_attempts().len(), puts_before);
-    assert!(!rejected_output.path().join(CONVERSION_MANIFEST_FILE).exists());
+    assert!(
+        !rejected_output
+            .path()
+            .join(CONVERSION_MANIFEST_FILE)
+            .exists()
+    );
 }
 
 #[test]

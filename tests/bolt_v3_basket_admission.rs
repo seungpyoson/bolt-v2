@@ -460,6 +460,28 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
 }
 
 #[test]
+fn basket_submit_slots_reserve_economics_adjusted_notional() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let submit_gate = submit_state(writer, 2, dec!(1));
+    let group = fixture_group();
+    let mut claims = entry_claims(&group, dec!(0.9));
+    for claim in &mut claims {
+        claim.economics_admission =
+            support::sample_economics_admission_with_debit(dec!(0.9), dec!(0.2));
+    }
+
+    let error = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("economics-notional-cap", &group),
+        )
+        .expect_err("economics debits must be included in each basket leg reservation");
+
+    assert_eq!(error, BoltV3SubmitAdmissionError::NotionalCapExceeded);
+}
+
+#[test]
 fn basket_submit_slots_carry_capital_admission_evidence_into_shared_gate() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
@@ -1011,12 +1033,11 @@ fn entry_claims(group: &OutcomeGroup, notional: Decimal) -> Vec<BoltV3BasketSubm
         .values()
         .take(2)
         .map(|leg| BoltV3BasketSubmitSlotClaim {
-            economics_admission: support::sample_economics_admission(Decimal::ONE),
+            economics_admission: support::sample_economics_admission(notional),
             client_order_id: format!("{}-entry-order", leg.leg_id),
             instrument_id: leg.instrument_id.to_string(),
             order_side: OrderSide::Buy,
             order_quantity: dec!(1),
-            notional,
             intent_kind: BoltV3SubmitIntentKind::Entry,
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             risk_reducing_exit_proof: None,
@@ -1030,12 +1051,11 @@ fn risk_reducing_claim(
     proof: BoltV3RiskReducingExitProof,
 ) -> BoltV3BasketSubmitSlotClaim {
     BoltV3BasketSubmitSlotClaim {
-        economics_admission: support::sample_economics_admission(Decimal::ONE),
+        economics_admission: support::sample_economics_admission(dec!(0.9)),
         client_order_id: format!("{}-exit-order", leg.leg_id),
         instrument_id: leg.instrument_id.to_string(),
         order_side: OrderSide::Sell,
         order_quantity: dec!(1),
-        notional: dec!(0.9),
         intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: Some(proof),
@@ -1050,7 +1070,7 @@ fn attach_capital_admission(claims: &mut [BoltV3BasketSubmitSlotClaim]) {
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
             quantity: claim.order_quantity,
-            effective_price: claim.notional,
+            effective_price: claim.economics_admission.base_reservation_notional(),
             order_kind: BoltV3CompiledOrderKind::Limit,
             liquidity: BoltV3CompiledOrderLiquidity::Taker,
             quote_set_id: None,

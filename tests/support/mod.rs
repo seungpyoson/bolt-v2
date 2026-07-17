@@ -139,6 +139,35 @@ impl bolt_v2::economics::VenueEconomicsAdapter for SampleEconomicsAdapter {
 pub fn sample_economics_admission(
     base_reservation_notional: rust_decimal::Decimal,
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    sample_economics_admission_with_component(
+        base_reservation_notional,
+        bolt_v2::economics::EconomicClass::Credit,
+        rust_decimal::Decimal::ONE,
+        "test-core-credit",
+        "test-credit-formula",
+    )
+}
+
+pub fn sample_economics_admission_with_debit(
+    base_reservation_notional: rust_decimal::Decimal,
+    debit: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    sample_economics_admission_with_component(
+        base_reservation_notional,
+        bolt_v2::economics::EconomicClass::Debit,
+        -debit,
+        "test-core-debit",
+        "test-debit-formula",
+    )
+}
+
+fn sample_economics_admission_with_component(
+    base_reservation_notional: rust_decimal::Decimal,
+    class: bolt_v2::economics::EconomicClass,
+    point_effect: rust_decimal::Decimal,
+    component_id: &str,
+    formula_id: &str,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     use bolt_v2::economics::*;
     use rust_decimal::Decimal;
 
@@ -186,19 +215,19 @@ pub fn sample_economics_admission(
         estimate: VenueQuoteEstimate {
             authority: source.clone(),
             components: vec![EstimatedEconomicComponent {
-                component_id: EconomicComponentId::new("test-core-credit")
+                component_id: EconomicComponentId::new(component_id)
                     .expect("valid test component id"),
-                class: EconomicClass::Credit,
+                class,
                 kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
                 scope: EconomicScope::Decision {
                     decision_correlation_id: decision_correlation_id.clone(),
                 },
-                point_effect: SignedNativeEffect::currency(Decimal::ONE, reporting_unit)
+                point_effect: SignedNativeEffect::currency(point_effect, reporting_unit)
                     .expect("valid test effect"),
                 debit_risk_bound: None,
                 admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
                 calculation_factors: Vec::new(),
-                formula_id: FormulaId::new("test-credit-formula").expect("valid test formula id"),
+                formula_id: FormulaId::new(formula_id).expect("valid test formula id"),
                 source: source.clone(),
                 normalized: None,
             }],

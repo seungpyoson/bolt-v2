@@ -3029,7 +3029,6 @@ struct BoltV3CapitalAdmissionSubmitDecision {
 pub struct BoltV3BasketSubmitSlotClaim {
     pub client_order_id: String,
     pub instrument_id: String,
-    pub notional: Decimal,
     pub order_side: OrderSide,
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
@@ -3049,7 +3048,7 @@ fn basket_submit_request(
         execution_client_id: execution_client_id.to_string(),
         client_order_id: claim.client_order_id.clone(),
         instrument_id: claim.instrument_id.clone(),
-        notional: claim.notional,
+        notional: claim.economics_admission.reservation_notional(),
         order_side: claim.order_side,
         order_quantity: claim.order_quantity,
         intent_kind: claim.intent_kind,

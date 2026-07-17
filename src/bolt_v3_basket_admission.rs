@@ -325,11 +325,12 @@ impl BoltV3BasketAdmissionState {
             else {
                 return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
             };
-            if claim.notional <= Decimal::ZERO || claim.notional > scanned_notional {
+            let claim_notional = claim.economics_admission.base_reservation_notional();
+            if claim_notional <= Decimal::ZERO || claim_notional > scanned_notional {
                 return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
             }
             total_claim_notional = total_claim_notional
-                .checked_add(claim.notional)
+                .checked_add(claim_notional)
                 .ok_or(BoltV3BasketAdmissionError::BasketNotionalCapExceeded)?;
         }
 

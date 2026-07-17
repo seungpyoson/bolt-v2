@@ -213,13 +213,14 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
         && wire.user_spot_cross_rate <= schedule.spot_cross
         && wire.user_add_rate <= schedule.add
         && wire.user_spot_add_rate <= schedule.spot_add;
-    let tier_rates_valid = schedule.vip.iter().all(|tier| {
+    let tier_rates_valid = schedule.tiers.vip.iter().all(|tier| {
         tier.ntl_cutoff >= Decimal::ZERO
             && tier.cross >= Decimal::ZERO
             && tier.add >= Decimal::ZERO
             && tier.spot_cross >= Decimal::ZERO
             && tier.spot_add >= Decimal::ZERO
     }) && schedule
+        .tiers
         .mm
         .iter()
         .all(|tier| tier.maker_fraction_cutoff >= Decimal::ZERO && tier.add <= schedule.add);

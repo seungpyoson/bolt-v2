@@ -353,6 +353,23 @@ impl RecoveryWorkspaceHandle {
 
         self.assertTrue(any("must not implement construction or conversion traits" in error for error in errors))
 
+    def test_rejects_conversion_trait_through_grouped_use_aliases(self) -> None:
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8")
+            + "\nuse self::{NewRiskWorkspaceHandle as N, RecoveryWorkspaceHandle as R};\n"
+            + "impl From<N> for R {\n"
+            + "    fn from(_: N) -> Self { panic!() }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("must not implement construction or conversion traits" in error for error in errors)
+        )
+
     def test_rejects_public_opaque_raw_authority_accessor(self) -> None:
         ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
         ledger.write_text(

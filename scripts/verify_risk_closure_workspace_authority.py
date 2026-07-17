@@ -57,14 +57,10 @@ RAW_AUTHORITY_CHILD_MODULE_DECLARATION = re.compile(
 LEDGER_MODULE_DECLARATION = re.compile(
     r"\b(?:pub(?:\([^)]*\))?\s+)?mod\s+bolt_v3_application_resource_ledger\s*;"
 )
-RUST_PATH = rf"{RUST_IDENT}(?:::{RUST_IDENT})*"
+RUST_PATH = rf"(?:::)?{RUST_IDENT}(?:::{RUST_IDENT})*"
 TYPE_ALIAS = re.compile(
-    rf"\btype\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)"
+    rf"\btype\s+(?P<alias>{RUST_IDENT})"
     rf"(?:\s*<[^;={{}}]*>)?\s*=\s*(?P<target>{RUST_PATH})"
-)
-USE_ALIAS = re.compile(
-    rf"\buse\s+(?P<target>{RUST_PATH})\s+as\s+"
-    r"(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
 IMPL_HEADER = re.compile(
     rf"(?P<attributes>(?:#\[[^\]]+\]\s*)*)\bimpl(?:\s*<[^>{{}}]*>)?\s+"
@@ -347,19 +343,62 @@ def _production_cfg_attr_payloads(attributes: str) -> list[str]:
     return payloads
 
 
+def _terminal_rust_identifier(path: str) -> str:
+    return path.split("::")[-1].removeprefix("r#")
+
+
+def _use_aliases(text: str) -> list[tuple[str, str]]:
+    aliases: list[tuple[str, str]] = []
+    for match in re.finditer(r"\buse\s+(?P<tree>[^;]+);", text, re.DOTALL):
+        tree = match.group("tree").strip()
+        opening = tree.find("{")
+        if opening == -1:
+            alias = re.fullmatch(
+                rf"(?P<target>{RUST_PATH})\s+as\s+(?P<alias>{RUST_IDENT})",
+                tree,
+            )
+            if alias is not None:
+                aliases.append((alias.group("target"), alias.group("alias")))
+            continue
+        closing = _matching_delimiter_end(tree, opening)
+        if closing is None or tree[closing + 1 :].strip():
+            continue
+        prefix = tree[:opening].rstrip().removesuffix("::")
+        for start, end in _top_level_segments(tree, opening + 1, closing):
+            item = tree[start:end].strip()
+            alias = re.fullmatch(
+                rf"(?P<target>{RUST_IDENT})\s+as\s+(?P<alias>{RUST_IDENT})",
+                item,
+            )
+            if alias is not None:
+                aliases.append(
+                    (
+                        "::".join(
+                            filter(None, (prefix, alias.group("target")))
+                        ),
+                        alias.group("alias"),
+                    )
+                )
+    return aliases
+
+
 def _protected_type_names(text: str, type_name: str) -> set[str]:
     names = {type_name}
     changed = True
     while changed:
         changed = False
-        for pattern in (TYPE_ALIAS, USE_ALIAS):
-            for match in pattern.finditer(text):
-                if match.group("target").split("::")[-1] not in names:
-                    continue
-                alias = match.group("alias")
-                if alias not in names:
-                    names.add(alias)
-                    changed = True
+        alias_pairs = [
+            (match.group("target"), match.group("alias"))
+            for match in TYPE_ALIAS.finditer(text)
+        ]
+        alias_pairs.extend(_use_aliases(text))
+        for target, alias in alias_pairs:
+            if _terminal_rust_identifier(target) not in names:
+                continue
+            normalized_alias = _terminal_rust_identifier(alias)
+            if normalized_alias not in names:
+                names.add(normalized_alias)
+                changed = True
     return names
 
 
@@ -367,7 +406,7 @@ def _impl_bodies(text: str, type_name: str) -> list[tuple[str, str]]:
     protected_names = _protected_type_names(text, type_name)
     bodies: list[tuple[str, str]] = []
     for match in IMPL_HEADER.finditer(text):
-        if match.group("target").split("::")[-1] not in protected_names:
+        if _terminal_rust_identifier(match.group("target")) not in protected_names:
             continue
         body_start = match.end()
         body_end = _matching_delimiter_end(text, body_start - 1)
@@ -504,8 +543,8 @@ def _has_protected_trait_impl(
     trait_name: str | None = None,
 ) -> bool:
     for match in TRAIT_IMPL_HEADER.finditer(text):
-        target = match.group("target").split("::")[-1]
-        implemented_trait = match.group("trait").split("::")[-1]
+        target = _terminal_rust_identifier(match.group("target"))
+        implemented_trait = _terminal_rust_identifier(match.group("trait"))
         if target in protected_type_names and (
             trait_name is None or implemented_trait == trait_name
         ):

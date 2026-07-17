@@ -1,7 +1,9 @@
 use std::str::FromStr;
 
 use bolt_v2::economics::{
-    AdmissionTreatment, NativeUnitId, SignedNativeEffect,
+    ActualEconomicEntry, AdmissionTreatment, EconomicQuoteRequest, EstimatedEconomicComponent,
+    InventoryApplication, NativeUnitId, RiskBoundAuthority, SignedNativeEffect,
+    VenueEconomicsAdapter,
 };
 use rust_decimal::Decimal;
 
@@ -25,4 +27,57 @@ fn signed_currency_effect_preserves_sign_and_native_unit() {
 fn forecast_treatment_cannot_authorize_admission() {
     assert!(!AdmissionTreatment::ForecastOnly.authorizes_admission());
     assert!(AdmissionTreatment::GuaranteedConditionalOnAction.authorizes_admission());
+    assert!(
+        AdmissionTreatment::RiskBound {
+            authority: RiskBoundAuthority::VenueMaximum,
+        }
+        .authorizes_admission()
+    );
+}
+
+#[test]
+fn asset_effect_retains_inventory_application() {
+    let effect = SignedNativeEffect::asset_quantity(
+        decimal("0.50"),
+        NativeUnitId::new("asset-A").expect("native unit must be valid"),
+        InventoryApplication::ApplyOnceToCanonicalGrossFact,
+    )
+    .expect("non-zero signed effect must be valid");
+
+    assert_eq!(effect.amount(), decimal("0.50"));
+    assert_eq!(effect.unit().as_str(), "asset-A");
+    assert_eq!(
+        effect.inventory_application(),
+        Some(InventoryApplication::ApplyOnceToCanonicalGrossFact)
+    );
+}
+
+#[test]
+fn invalid_native_units_and_zero_effects_fail_closed() {
+    assert!(NativeUnitId::new("").is_err());
+    assert!(NativeUnitId::new(" pUSD").is_err());
+    assert!(NativeUnitId::new("pUSD\n").is_err());
+    assert!(
+        SignedNativeEffect::currency(
+            Decimal::ZERO,
+            NativeUnitId::new("pUSD").expect("native unit must be valid")
+        )
+        .is_err()
+    );
+}
+
+#[allow(dead_code)]
+fn estimate_and_actual_are_distinct_types(
+    actual: ActualEconomicEntry,
+    estimate: EstimatedEconomicComponent,
+) {
+    let _ = (actual, estimate);
+}
+
+#[allow(dead_code)]
+fn adapter_contract_uses_only_shared_types<T: VenueEconomicsAdapter>(
+    adapter: &T,
+    request: &EconomicQuoteRequest,
+) {
+    let _: Result<Vec<EstimatedEconomicComponent>, _> = adapter.quote(request);
 }

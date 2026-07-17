@@ -736,6 +736,8 @@ fn production_tokenizer_excludes_inline_test_items_only() {
         fn after_cfg_expression() { production_after_cfg_expression(); }
         passthrough! { #[cfg(test)] }
         fn after_macro_tokens() { self.modify_order_via_nt(order); }
+        #[passthrough(#[cfg(test)])]
+        fn after_attribute_tokens() { self.modify_order_via_nt(order); }
         match state {
             #[cfg(test)]
             State::Fixture { value } => { test_only_arm_body(value); }
@@ -751,7 +753,7 @@ fn production_tokenizer_excludes_inline_test_items_only() {
     assert_eq!(count_sequence(&tokens, &["modify_order", "("]), 0);
     assert_eq!(count_sequence(&tokens, &["SubmitOrder"]), 0);
     assert_eq!(count_sequence(&tokens, &["ProductionField"]), 2);
-    assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 1);
+    assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 2);
     assert_eq!(count_sequence(&tokens, &["cancel_order", "("]), 1);
     assert_eq!(count_sequence(&tokens, &["test_only_arm_body", "("]), 1);
     assert_eq!(
@@ -774,14 +776,14 @@ fn production_tokenizer_keeps_code_after_real_test_only_fields() {
         &std::fs::read_to_string(repo_path("src/strategies/binary_oracle_edge_taker/mod.rs"))
             .expect("edge-taker strategy source should be readable"),
     );
-    for production_name in [
-        "SettlementEvidenceComputation",
-        "apply_selection_snapshot",
-        "warmup_tick_count",
+    for production_sequence in [
+        &["struct", "SettlementEvidenceComputation", "{"][..],
+        &["fn", "apply_selection_snapshot", "("][..],
+        &["self", ".", "config", ".", "warmup_tick_count"][..],
     ] {
         assert!(
-            contains_sequence(&tokens, &[production_name]),
-            "production tokenizer must not hide `{production_name}` after a test-only field"
+            contains_sequence(&tokens, production_sequence),
+            "production tokenizer must not hide `{production_sequence:?}` after a test-only field"
         );
     }
 }
@@ -800,7 +802,7 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         );
     }
     let function_references = tokenize(
-        "let exit = Self::exit_market as fn(&mut Self); let markets = [Self::market_exit]; let close = &self.close_position;",
+        "let exit = Self::exit_market as fn(&mut Self); let markets = [Self::market_exit]; let close = { &self.close_position };",
     );
     for method in ["exit_market", "market_exit", "close_position"] {
         assert!(
@@ -815,11 +817,29 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
             "bare transport matcher must retain {function}"
         );
     }
+    let transport_aliases = tokenize(
+        "use msgbus::{send_any_value as dispatch}; let send = send_trading_command as fn(Endpoint, Command);",
+    );
+    for function in ["send_any_value", "send_trading_command"] {
+        assert!(
+            named_strategy_mutation_surfaces(&transport_aliases).contains(&function),
+            "bare transport aliases and casts must retain {function}"
+        );
+    }
     for command in NT_TRADING_COMMAND_SURFACE_NAMES {
         let tokens = tokenize(&format!("use nt::{command};"));
         assert!(
             named_strategy_mutation_surfaces(&tokens).contains(command),
             "command-surface matcher must retain {command}"
+        );
+    }
+    let command_type_references = tokenize(
+        "use nt::{SubmitOrder as NtSubmit}; type Pending = Vec<ModifyOrder>; let constructor = &ClosePosition;",
+    );
+    for command in ["SubmitOrder", "ModifyOrder", "ClosePosition"] {
+        assert!(
+            named_strategy_mutation_surfaces(&command_type_references).contains(&command),
+            "command aliases, generic positions, and references must retain {command}"
         );
     }
     assert!(named_strategy_mutation_surfaces(&tokenize("emit_order_intent();")).is_empty());
@@ -829,11 +849,26 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
     );
     assert!(
         named_strategy_mutation_surfaces(&tokenize(
-            "match intent { ExitAction::CancelOrder => emit_order_intent() }"
+            "enum ExitAction { CancelOrder } let action = ExitAction::CancelOrder; let choices = [ExitAction::CancelOrder]; match intent { ExitAction::CancelOrder => emit_order_intent() }"
         ))
         .is_empty(),
         "Bolt-local intent variants must not be mistaken for NT command surfaces"
     );
+}
+
+#[test]
+fn production_tokenizer_keeps_ambiguous_test_only_generic_tail_fail_closed() {
+    let tokens = production_tokens(
+        "struct State { #[cfg(test)] fixture: Map<Id, CancelOrder>, production: ProductionField }",
+    );
+    assert!(
+        contains_sequence(&tokens, &["CancelOrder"]),
+        "ambiguous angle brackets stay visible rather than risking production over-skip"
+    );
+    assert!(contains_sequence(
+        &tokens,
+        &["production", ":", "ProductionField"]
+    ));
 }
 
 #[test]

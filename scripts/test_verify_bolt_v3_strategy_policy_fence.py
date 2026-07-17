@@ -382,6 +382,22 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "raw msgbus trading-command injection must be fenced at the primitive layer",
         )
 
+    def test_detects_raw_transport_aliases_and_command_type_positions(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            use msgbus::{send_any_value as dispatch};
+            let send = send_trading_command as fn(Endpoint, Command);
+            use nt::{SubmitOrder as NtSubmit};
+            type Pending = Vec<ModifyOrder>;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            4,
+            "aliases, casts, and generic command types must remain fenced",
+        )
+
     def test_detects_strategy_local_execution_policy_construction(self) -> None:
         labels = self.labels_for(
             """

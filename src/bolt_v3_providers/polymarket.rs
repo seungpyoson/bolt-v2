@@ -95,7 +95,6 @@ use crate::{
 };
 
 pub const KEY: &str = "POLYMARKET";
-const ECONOMICS_PRODUCT_SURFACE: &str = "binary_outcome";
 /// Per-minute REST egress ceiling for the Polymarket HTTP clients, taken from
 /// the NT adapter's own quota constant so bolt-v3 and NT share one source of
 /// truth for the venue capability.
@@ -368,7 +367,13 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
                 errors.extend(
                     parsed
                         .economics
-                        .validate_product_surfaces([ECONOMICS_PRODUCT_SURFACE])
+                        .validate_product_surfaces(
+                            parsed
+                                .economics
+                                .product_surface_policies
+                                .keys()
+                                .map(String::as_str),
+                        )
                         .into_iter()
                         .map(|error| format!("clients.{key}.execution.economics: {error:?}")),
                 );

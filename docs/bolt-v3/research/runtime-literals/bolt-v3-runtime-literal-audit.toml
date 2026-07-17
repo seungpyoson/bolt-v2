@@ -29,14 +29,6 @@ classification = "polymarket_supported_fee_descriptor_exponent"
 reason = "The adapter supports only the exact price-shaped descriptor exponent frozen by governed protocol fixtures; it rejects every other descriptor rather than selecting another formula."
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
-literal = '''"binary_outcome"'''
-context = '''const ECONOMICS_PRODUCT_SURFACE: &str = "binary_outcome";'''
-classification = "polymarket_economics_surface_schema_key"
-reason = "Stable provider-owned product-surface discriminator used to prove exact TOML coverage; no fee or trading value is encoded by this key."
-
-[[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
 literal = '''"standard_perps"'''

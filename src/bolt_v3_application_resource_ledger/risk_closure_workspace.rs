@@ -55,12 +55,18 @@ pub enum RiskClosureWorkspaceError {
     StatePoisoned,
 }
 
-#[derive(Debug, Clone)]
-pub struct RiskClosureWorkspaceAuthority {
+#[derive(Debug)]
+pub(super) struct RiskClosureWorkspaceAuthority {
     inner: Arc<Mutex<WorkspaceState>>,
 }
 
 impl RiskClosureWorkspaceAuthority {
+    #[cfg(test)]
+    pub(super) fn for_disabled_application_resource_ledger()
+    -> Result<Self, RiskClosureWorkspaceError> {
+        Self::with_config(generated::config())
+    }
+
     #[cfg(test)]
     fn with_config(config: RiskClosureWorkspaceConfig) -> Result<Self, RiskClosureWorkspaceError> {
         Ok(Self {
@@ -68,7 +74,7 @@ impl RiskClosureWorkspaceAuthority {
         })
     }
 
-    pub fn checkout_new_risk(
+    pub(super) fn checkout_new_risk(
         &self,
     ) -> Result<RiskClosureWorkspaceReservation, RiskClosureWorkspaceError> {
         let (slot_index, lease_id) = {
@@ -96,7 +102,7 @@ impl RiskClosureWorkspaceAuthority {
         Ok(reservation)
     }
 
-    pub fn checkout_recovery(
+    pub(super) fn checkout_recovery(
         &self,
         closure_identity: &ClosureIdentity,
     ) -> Result<RiskClosureWorkspaceLease, RiskClosureWorkspaceError> {
@@ -136,13 +142,19 @@ impl RiskClosureWorkspaceAuthority {
         })
     }
 
-    pub fn reserved_bytes(&self) -> Result<usize, RiskClosureWorkspaceError> {
+    #[cfg(test)]
+    fn reserved_bytes(&self) -> Result<usize, RiskClosureWorkspaceError> {
         let state = self
             .inner
             .lock()
             .map_err(|_| RiskClosureWorkspaceError::StatePoisoned)?;
         Ok(state.storage.reserved_bytes())
     }
+}
+
+#[cfg(test)]
+pub(super) fn configured_capacity() -> usize {
+    generated::config().capacity
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +221,7 @@ impl WorkspaceState {
 #[derive(Debug)]
 struct WorkspaceStorage {
     slots: Box<[Mutex<Box<[u8]>>]>,
+    #[cfg(test)]
     reserved_bytes: usize,
 }
 
@@ -233,6 +246,7 @@ impl WorkspaceStorage {
         })
     }
 
+    #[cfg(test)]
     fn reserved_bytes(&self) -> usize {
         self.reserved_bytes
     }
@@ -290,7 +304,7 @@ enum SlotState {
 /// The reservation is intentionally neither `Clone` nor `Copy`.
 ///
 /// ```compile_fail
-/// use bolt_v2::bolt_v3_risk_closure_workspace::RiskClosureWorkspaceReservation;
+/// use bolt_v2::bolt_v3_application_resource_ledger::RiskClosureWorkspaceReservation;
 ///
 /// fn cannot_clone(reservation: RiskClosureWorkspaceReservation) {
 ///     let _duplicate = reservation.clone();
@@ -300,7 +314,7 @@ enum SlotState {
 /// Commit consumes the reservation, so it cannot be reused.
 ///
 /// ```compile_fail
-/// use bolt_v2::bolt_v3_risk_closure_workspace::{
+/// use bolt_v2::bolt_v3_application_resource_ledger::{
 ///     ClosureIdentity, RiskClosureWorkspaceReservation,
 /// };
 ///
@@ -402,7 +416,7 @@ impl Drop for RiskClosureWorkspaceReservation {
 /// Exclusive access to a workspace retained for recovery.
 ///
 /// ```compile_fail
-/// use bolt_v2::bolt_v3_risk_closure_workspace::RiskClosureWorkspaceLease;
+/// use bolt_v2::bolt_v3_application_resource_ledger::RiskClosureWorkspaceLease;
 ///
 /// fn cannot_clone(lease: RiskClosureWorkspaceLease) {
 ///     let _duplicate = lease.clone();
@@ -412,7 +426,7 @@ impl Drop for RiskClosureWorkspaceReservation {
 /// Terminal release consumes both the lease and its permit.
 ///
 /// ```compile_fail
-/// use bolt_v2::bolt_v3_risk_closure_workspace::{
+/// use bolt_v2::bolt_v3_application_resource_ledger::{
 ///     RiskClosureWorkspaceLease, TerminalReleasePermit,
 /// };
 ///
@@ -545,7 +559,7 @@ impl Drop for RiskClosureWorkspaceLease {
 /// integration is intentionally absent while production activation is disabled.
 ///
 /// ```compile_fail
-/// use bolt_v2::bolt_v3_risk_closure_workspace::TerminalReleasePermit;
+/// use bolt_v2::bolt_v3_application_resource_ledger::TerminalReleasePermit;
 ///
 /// let _forged = TerminalReleasePermit {};
 /// ```
@@ -655,6 +669,7 @@ mod tests {
         let _ = <RiskClosureWorkspaceReservation as AmbiguousIfClone<_>>::check;
         let _ = <RiskClosureWorkspaceLease as AmbiguousIfClone<_>>::check;
         let _ = <TerminalReleasePermit as AmbiguousIfClone<_>>::check;
+        let _ = <RiskClosureWorkspaceAuthority as AmbiguousIfClone<_>>::check;
 
         let _: fn(
             RiskClosureWorkspaceReservation,

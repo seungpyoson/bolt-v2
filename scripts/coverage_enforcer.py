@@ -35,7 +35,6 @@ class CoverageEnforcerError(RuntimeError):
 @dataclasses.dataclass(frozen=True)
 class DerivedWorkflowFlags:
     runs_on_tags: bool
-    supports_carry_forward: bool
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,12 +145,7 @@ def expected_registry_checks_for_policy(
             policy=config.policy,
             gate_names=config.gate_names,
         )
-        carry_forward = ci_provenance.required_check_carry_forward_event_classes(
-            check=check,
-            policy=config.policy,
-            applicable=applicable,
-        )
-        if policy_result.expected_event_class in applicable - carry_forward:
+        if policy_result.expected_event_class in applicable:
             expected.append(check)
     return tuple(expected)
 
@@ -343,28 +337,6 @@ def check_runs_on_tags(
     return not job_excludes_tag_refs(workflow_job_text(workflow_text, check.context))
 
 
-def check_supports_policy_carry_forward(
-    check: ci_provenance.RequiredCheckConfig, workflow_text: str
-) -> bool:
-    if check.context == "gate":
-        return (
-            "resolve-gate-carry-forward" in workflow_text
-            and "check-ci-gate" in workflow_text
-            and "needs.ci-policy.outputs.ci_policy_path == 'noop'" in workflow_text
-            and "needs.ci-policy.outputs.full_ci_deferred == 'true'" in workflow_text
-        )
-    if check.context == "backtester-gate":
-        # A backtester noop gate recomputes/proves the BVS lane state directly;
-        # only an explicit carry-forward resolver makes the context carry-forward capable.
-        return (
-            "resolve-gate-carry-forward" in workflow_text
-            and "check-backtester-gate" in workflow_text
-            and "needs.ci-policy.outputs.ci_policy_path == 'noop'" in workflow_text
-            and "needs.ci-policy.outputs.full_ci_deferred == 'true'" in workflow_text
-        )
-    return False
-
-
 def derive_registry_workflow_flags(
     checks: dict[str, ci_provenance.RequiredCheckConfig],
     workflow_dir: pathlib.Path = DEFAULT_WORKFLOW_DIR,
@@ -376,9 +348,6 @@ def derive_registry_workflow_flags(
         workflow_text = workflow_text_for_check(check, workflow_dir)
         derived[context] = DerivedWorkflowFlags(
             runs_on_tags=check_runs_on_tags(check, workflow_text),
-            supports_carry_forward=check_supports_policy_carry_forward(
-                check, workflow_text
-            ),
         )
     return derived
 
@@ -397,12 +366,6 @@ def registry_workflow_derivation_findings(
                 "registry/YAML derivation mismatch for "
                 f"{context}: runs_on_tags registry={check.runs_on_tags} "
                 f"derived={flags.runs_on_tags}"
-            )
-        if flags.supports_carry_forward != check.supports_carry_forward:
-            findings.append(
-                "registry/YAML derivation mismatch for "
-                f"{context}: supports_carry_forward registry={check.supports_carry_forward} "
-                f"derived={flags.supports_carry_forward}"
             )
     return tuple(findings)
 

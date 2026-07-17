@@ -87,7 +87,7 @@ pub fn validation_binding() -> ArchetypeValidationBinding {
 
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
-    strategy_kind: BinaryOracleEdgeTakerBuilder::kind,
+    strategy_kind: KEY,
     capabilities: StrategyRuntimeCapabilities {
         realized_volatility: true,
         settlement: true,

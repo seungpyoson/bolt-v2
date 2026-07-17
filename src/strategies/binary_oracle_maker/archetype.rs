@@ -61,7 +61,7 @@ const NT_BACKTEST_NODE_EXECUTION_MODEL: &str = "nt_backtest_node";
 /// `binary_oracle_maker`; `register` is this module's `register_runtime_strategy`.
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
-    strategy_kind: BinaryOracleMakerBuilder::kind,
+    strategy_kind: KEY,
     capabilities: StrategyRuntimeCapabilities {
         realized_volatility: true,
         settlement: false,
@@ -1406,7 +1406,7 @@ mod tests {
 
     #[test]
     fn runtime_binding_strategy_kind_matches_key() {
-        assert_eq!((RUNTIME_BINDING.strategy_kind)(), KEY);
+        assert_eq!(RUNTIME_BINDING.strategy_kind, KEY);
     }
 
     #[test]

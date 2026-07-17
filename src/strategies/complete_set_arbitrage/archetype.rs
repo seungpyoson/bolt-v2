@@ -32,7 +32,7 @@ pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
 /// Complete-set runtime binding assembled by the strategy-layer archetype module.
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
-    strategy_kind: CompleteSetArbitrageBuilder::kind,
+    strategy_kind: KEY,
     capabilities: StrategyRuntimeCapabilities {
         realized_volatility: true,
         settlement: false,

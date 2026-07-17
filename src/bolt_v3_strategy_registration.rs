@@ -36,7 +36,7 @@ use crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime;
 #[derive(Clone, Copy)]
 pub struct StrategyRuntimeBinding {
     pub key: &'static str,
-    pub strategy_kind: fn() -> &'static str,
+    pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
     pub register: for<'a> fn(
         &mut LiveNode,
@@ -662,27 +662,34 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
         })?,
     ));
 
-    for strategy in &loaded.strategies {
-        let binding = bindings
-            .iter()
-            .find(|binding| binding.key == strategy.config.strategy_archetype.as_str())
-            .ok_or_else(|| BoltV3StrategyRegistrationError::UnsupportedStrategy {
-                strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
-            })?;
-        let context = StrategyRegistrationContext::new(
-            loaded,
-            strategy,
-            (binding.strategy_kind)(),
-            binding.capabilities,
-            resolved,
-            decision_evidence.clone(),
-            iv_query_handles.clone(),
-            realized_volatility_runtime.clone(),
-            execution_controls.clone(),
-        );
-        if context.settlement.is_some() {
-            let _ = settlement_resources_for_context(&context)?;
-        }
+    let prepared = loaded
+        .strategies
+        .iter()
+        .map(|strategy| {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.key == strategy.config.strategy_archetype.as_str())
+                .ok_or_else(|| BoltV3StrategyRegistrationError::UnsupportedStrategy {
+                    strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
+                })?;
+            let context = StrategyRegistrationContext::new(
+                loaded,
+                strategy,
+                binding.strategy_kind,
+                binding.capabilities,
+                resolved,
+                decision_evidence.clone(),
+                iv_query_handles.clone(),
+                realized_volatility_runtime.clone(),
+                execution_controls.clone(),
+            );
+            settlement_resources_for_context(&context)?;
+            Ok((binding, context))
+        })
+        .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
+
+    for (binding, context) in prepared {
+        let strategy = context.strategy;
         let registered_strategy_id = (binding.register)(node, context)?;
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),

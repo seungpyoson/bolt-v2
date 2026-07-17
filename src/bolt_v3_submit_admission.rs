@@ -3094,6 +3094,17 @@ where
     F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
 {
     let client_order_id = input.order.client_order_id().to_string();
+    let unsided_quote_quantity_market_style = input.order.is_quote_quantity()
+        && matches!(
+            input.order,
+            OrderAny::Market(_) | OrderAny::MarketToLimit(_)
+        )
+        && !matches!(input.order.order_side(), OrderSide::Buy | OrderSide::Sell);
+    anyhow::ensure!(
+        !unsided_quote_quantity_market_style,
+        "bolt-v3 submit admission requires an explicit buy or sell side for quote-quantity market-style client_order_id={}",
+        client_order_id
+    );
     let quantity_source = input.order.quantity().to_string();
     let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
         format!(

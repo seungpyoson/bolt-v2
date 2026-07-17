@@ -477,6 +477,119 @@ fn order_valuation_context_does_not_use_trade_for_unsided_market_to_limit_with_q
 }
 
 #[test]
+fn unsided_quote_quantity_market_style_orders_fail_full_admission() {
+    let instrument_id = InstrumentId::from("INSTRUMENT.SOURCE");
+    let instrument = binary_option_with_max_price(instrument_id);
+    let quote = QuoteTick::new_checked(
+        instrument_id,
+        Price::new(0.39, 2),
+        Price::new(0.41, 2),
+        Quantity::new(10.0, 2),
+        Quantity::new(10.0, 2),
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(1_u64),
+    )
+    .expect("quote should be valid");
+    let trade = TradeTick::new_checked(
+        instrument_id,
+        Price::new(0.40, 2),
+        Quantity::new(1.0, 2),
+        AggressorSide::Buyer,
+        TradeId::from("TRADE-UNSIDED-ADMISSION-001"),
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(1_u64),
+    )
+    .expect("trade should be valid");
+    let market = OrderAny::Market(
+        MarketOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-UNSIDED-ADMISSION"),
+            OrderSide::NoOrderSide,
+            Quantity::new(2.0, 2),
+            TimeInForce::Gtc,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("unsided quote-quantity market order should construct"),
+    );
+    let market_to_limit = OrderAny::MarketToLimit(
+        MarketToLimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-UNSIDED-MTL-ADMISSION"),
+            OrderSide::NoOrderSide,
+            Quantity::new(2.0, 2),
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("unsided quote-quantity market-to-limit order should construct"),
+    );
+
+    for order in [&market, &market_to_limit] {
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            "strategy-a".to_string(),
+            BoltV3OrderIntentKind::Entry,
+            "0.50".to_string(),
+            order,
+        );
+        for (case, last_quote, last_trade) in [
+            ("quote-and-trade", Some(quote.clone()), Some(trade.clone())),
+            ("trade-only", None, Some(trade.clone())),
+        ] {
+            let error = build_submit_admission_request_from_order(
+                BoltV3SubmitAdmissionRequestInput {
+                    execution_client_id: "hyperliquid_perps",
+                    intent: &intent,
+                    order,
+                    valuation: OrderValuationContext {
+                        last_quote,
+                        last_trade,
+                        instrument: Some(&instrument),
+                    },
+                    lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+                    risk_reducing_exit_position: None,
+                },
+                |_| Ok(Decimal::ZERO),
+            )
+            .expect_err("unsided quote-quantity market-style admission must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires an explicit buy or sell side"),
+                "unexpected {case} admission error: {error}"
+            );
+        }
+    }
+}
+
+#[test]
 fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
     let instrument_id = InstrumentId::from("INSTRUMENT.HYPERLIQUID");
     let instrument = binary_option_with_max_price(instrument_id);

@@ -1196,7 +1196,7 @@ fn register_maker_strategy_core(
 
 fn maker_config() -> BinaryOracleMakerConfig {
     BinaryOracleMakerConfig {
-        strategy_id: "maker-strategy".to_string(),
+        strategy_id: "maker-strategy-001".to_string(),
         order_id_tag: "001".to_string(),
         oms_type: "netting".to_string(),
         client_id: "maker_execution_client".to_string(),

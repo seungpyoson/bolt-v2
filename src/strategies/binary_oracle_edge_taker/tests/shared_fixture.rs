@@ -1374,7 +1374,8 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
         .with_settlement_health_transition_emitter(Some(
             noop_settlement_health_transition_emitter(),
         )),
-    );
+    )
+    .expect("valid edge-taker strategy identity");
     register_test_strategy(&mut strategy);
     strategy
 }

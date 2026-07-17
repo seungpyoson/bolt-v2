@@ -1295,10 +1295,9 @@ fn configured_target_id_from_target(
 }
 
 /// Target validation entry point used by core startup validation.
-/// Returns `(metadata, errors)`: the metadata is `None` when the raw
-/// `[target]` value cannot even produce a `configured_target_id` (in
-/// which case the family-specific validator's full error set still
-/// surfaces in `errors`).
+/// Returns `(metadata, errors)`. A target that cannot produce a checked
+/// `configured_target_id` returns the central identity error immediately;
+/// family dispatch is intentionally not invoked with malformed identity.
 pub fn validate_strategy_target(
     context: &str,
     target: &toml::Value,

@@ -208,7 +208,8 @@ fn test_strategy_with_realized_volatility_surface(
         fixture_execution_venue(),
     )
     .with_realized_volatility_surfaces(surfaces);
-    let mut strategy = BinaryOracleEdgeTaker::new(config, context);
+    let mut strategy =
+        BinaryOracleEdgeTaker::new(config, context).expect("valid edge-taker strategy identity");
     register_test_strategy(&mut strategy);
     strategy
 }

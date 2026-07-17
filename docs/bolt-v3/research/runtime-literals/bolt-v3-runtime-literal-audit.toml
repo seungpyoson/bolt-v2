@@ -21240,3 +21240,19 @@ literal = '''"complete_set_arbitrage"'''
 context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
 classification = "strategy_archetype_key"
 reason = "Stable complete-set discriminator used by the shared submit-mode contract's NT order-template validation."
+
+[[allowed]]
+path = "src/bolt_v3_target_identity.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''"strategy_id",'''
+classification = "strategy_config_field_name"
+reason = "Stable field label returned by the shared checked Nautilus strategy-identity validator; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_target_identity.rs"
+kind = "string"
+literal = '''"order_id_tag"'''
+context = '''"order_id_tag",'''
+classification = "strategy_config_field_name"
+reason = "Stable field label returned by the shared checked Nautilus strategy-identity validator; the runtime value remains TOML-owned."

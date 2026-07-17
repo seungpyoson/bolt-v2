@@ -2851,7 +2851,7 @@ mod tests {
 
     fn maker_smoke_config_toml() -> String {
         r#"
-        strategy_id = "binary_oracle_maker-backtest-smoke"
+        strategy_id = "binary_oracle_maker-backtest-smoke-001"
         order_id_tag = "001"
         oms_type = "netting"
         client_id = "maker_execution_client"

@@ -4,9 +4,9 @@
 
 **Goal:** Close the remaining end-to-end identity, provider-provenance, novelty-registry, and observability gaps without weakening fail-closed trading behavior.
 
-**Architecture:** Reject missing `negRisk` at the production provider parser before an instrument exists; retain mandatory taker evidence identity. Make the novelty registry total for every strategy-produced entry-block reason and freeze each ID together with its owner and semantic state. Move canonical identity checks to construction/load boundaries and give distinct failures distinct diagnostics.
+**Architecture:** Reject missing `negRisk` at the production provider parser before an instrument exists and at every execution lookup before signing; retain mandatory taker evidence identity. Make the novelty registry total for every strategy-produced entry-block reason and freeze each ID together with its owner and semantic state. Validate the effective Nautilus strategy identity at parsing and direct-construction boundaries, and give distinct failures distinct diagnostics.
 
-**Scope:** PR #1429 / issue #1354 only: stable episode identity, provider metadata required by it, finite novelty classification, and producer diagnostics. No execution/admission changes.
+**Scope:** PR #1429 / issue #1354 only: stable episode identity, provider and execution handling of metadata required by it, finite novelty classification, and producer diagnostics. The execution change is limited to fail-closed `negRisk` lookup; no other execution/admission behavior changes.
 
 ---
 
@@ -14,15 +14,18 @@
 
 **Files (Nautilus Trader fork):**
 - Modify: `crates/adapters/polymarket/src/http/parse.rs`
+- Modify: `crates/adapters/polymarket/src/execution/lifecycle.rs`
+- Modify: `crates/adapters/polymarket/src/execution/orders.rs`
 - Modify/add tests beside the Gamma parser tests
 
 1. Add regressions proving `neg_risk: None` is rejected and `Some(false)` / `Some(true)` remain distinct.
 2. Run the smallest targeted NT test and confirm the missing-value case fails before implementation.
-3. Replace `unwrap_or(false)` with an explicit parse error for absent `negRisk`.
-4. Re-run the targeted test and relevant formatter/lint if available.
-5. Commit and publish the NT fork branch; record the immutable commit SHA.
+3. Replace provider and execution `unwrap_or(false)` fallbacks with explicit errors for absent or invalid `negRisk`.
+4. Add execution regressions proving missing or invalid metadata is denied before limit, market, and batch signing while explicit false/true remain distinct.
+5. Re-run the targeted tests and relevant formatter/lint if available.
+6. Commit and publish the NT fork branch; record the immutable commit SHA.
 
-**Evidence:** targeted NT parser tests; exact committed NT SHA.
+**Evidence:** targeted NT parser and execution tests; exact committed NT SHA.
 
 ## Task 2: Repin and prove the production boundary in bolt-v2
 
@@ -92,3 +95,19 @@
 5. Update the stable PR body, request the required native reviewer, and leave merge blocked pending governed approval.
 
 **Evidence:** clean local gates; exact pushed SHA; remote check record; required-review request.
+
+## Task 7: Close the effective Nautilus strategy identity contract
+
+**Files:**
+- Modify: `src/bolt_v3_target_identity.rs`
+- Modify: maker and edge-taker config parsing/validation
+- Modify: maker and edge-taker constructors and focused tests
+- Modify: target-validation contract documentation
+
+1. Add regressions for NT-invalid strategy IDs, mismatched order tags, and post-parse mutation through direct constructors.
+2. Centralize validation of canonical text, `StrategyId::new_checked`, and exact tag equality.
+3. Make both constructors consume the checked `StrategyId` and return errors instead of reaching NT panic paths.
+4. Correct target-validation documentation to state that malformed target identity short-circuits family dispatch.
+5. Run the governed local checks and exact-head remote Rust verification.
+
+**Evidence:** parser, direct-constructor, and shared-helper regressions; clean static gates; exact-head remote checks.

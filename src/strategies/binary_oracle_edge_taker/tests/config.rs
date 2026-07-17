@@ -174,7 +174,8 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
         fixture_execution_venue(),
     );
 
-    let strategy = BinaryOracleEdgeTaker::new(config, context);
+    let strategy =
+        BinaryOracleEdgeTaker::new(config, context).expect("valid edge-taker strategy identity");
 
     assert_eq!(strategy.core.config.oms_type, Some(NtOmsType::Hedging));
 }
@@ -545,6 +546,74 @@ fn runtime_config_parse_rejects_padded_strategy_identity_fields() {
 }
 
 #[test]
+fn runtime_config_parse_rejects_nt_invalid_strategy_identity() {
+    for strategy_id in ["Binary Oracle Edge Taker", "Bínary-001"] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("valid config must be a table")
+            .insert(
+                "strategy_id".to_string(),
+                Value::String(strategy_id.to_string()),
+            );
+
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("NT-invalid strategy identity must fail at parse-time");
+    }
+}
+
+#[test]
+fn runtime_config_parse_rejects_order_tag_mismatch() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert("order_id_tag".to_string(), Value::String("002".to_string()));
+
+    let mut errors = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "strategies[0].config.order_id_tag"),
+        "validation must reject the mismatched order tag: {errors:#?}"
+    );
+    BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("order_id_tag must match the NT strategy id tag");
+}
+
+#[test]
+fn direct_constructor_rejects_mutated_nt_invalid_strategy_identity() {
+    fn context() -> StrategyBuildContext {
+        StrategyBuildContext::new(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            fixture_execution_venue(),
+        )
+    }
+
+    let mut config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
+        .expect("valid raw config should parse");
+    config.strategy_id = "Binary Oracle Edge Taker".to_string();
+    assert!(
+        BinaryOracleEdgeTaker::new(config, context()).is_err(),
+        "direct construction must revalidate the effective NT identity"
+    );
+
+    let mut config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
+        .expect("valid raw config should parse");
+    config.order_id_tag = "002".to_string();
+    assert!(
+        BinaryOracleEdgeTaker::new(config, context()).is_err(),
+        "direct construction must reject a mismatched order tag"
+    );
+}
+
+#[test]
 fn runtime_config_parse_rejects_stale_submit_orders_switch() {
     let mut raw = valid_raw_config();
     raw.as_table_mut()
@@ -581,7 +650,8 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         ),
-    );
+    )
+    .expect("valid edge-taker strategy identity");
 
     assert!(strategy.core.config.use_uuid_client_order_ids);
     assert!(!strategy.core.config.use_hyphens_in_client_order_ids);

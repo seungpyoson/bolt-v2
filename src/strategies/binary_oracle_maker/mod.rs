@@ -255,18 +255,10 @@ impl std::fmt::Debug for BinaryOracleMaker {
 
 impl BinaryOracleMaker {
     pub fn new(config: BinaryOracleMakerConfig, context: StrategyBuildContext) -> Result<Self> {
-        anyhow::ensure!(
-            crate::bolt_v3_target_identity::stable_identity_field_is_canonical(
-                config.strategy_id.as_str()
-            ),
-            "binary_oracle_maker strategy_id must be a non-empty, unpadded string"
-        );
-        anyhow::ensure!(
-            crate::bolt_v3_target_identity::stable_identity_field_is_canonical(
-                config.order_id_tag.as_str()
-            ),
-            "binary_oracle_maker order_id_tag must be a non-empty, unpadded string"
-        );
+        let strategy_id = crate::bolt_v3_target_identity::checked_nt_strategy_id(
+            config.strategy_id.as_str(),
+            config.order_id_tag.as_str(),
+        )?;
         let oms_type = config.oms_type.parse::<OmsType>().map_err(|_| {
             anyhow::anyhow!(
                 "binary_oracle_maker oms_type is invalid: {}",
@@ -277,7 +269,7 @@ impl BinaryOracleMaker {
         Ok(Self {
             core: StrategyCore::new(
                 StrategyConfig::builder()
-                    .strategy_id(StrategyId::from(config.strategy_id.as_str()))
+                    .strategy_id(strategy_id)
                     .order_id_tag(config.order_id_tag.clone())
                     .oms_type(oms_type)
                     .build()
@@ -1329,6 +1321,25 @@ mod tests {
     fn direct_constructor_rejects_noncanonical_order_id_tag() {
         let mut config = maker_config(600, 1000, 4);
         config.order_id_tag = " 001".to_string();
+        assert!(BinaryOracleMaker::new(config, test_context()).is_err());
+    }
+
+    #[test]
+    fn direct_constructor_rejects_nt_invalid_strategy_identity() {
+        for strategy_id in ["Maker New York", "Mäker-001"] {
+            let mut config = maker_config(600, 1000, 4);
+            config.strategy_id = strategy_id.to_string();
+            assert!(
+                BinaryOracleMaker::new(config, test_context()).is_err(),
+                "accepted {strategy_id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_constructor_rejects_order_tag_mismatch() {
+        let mut config = maker_config(600, 1000, 4);
+        config.order_id_tag = "002".to_string();
         assert!(BinaryOracleMaker::new(config, test_context()).is_err());
     }
 

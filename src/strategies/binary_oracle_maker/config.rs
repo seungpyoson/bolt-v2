@@ -28,7 +28,7 @@ use crate::{
         MakerRuntimeParameterBoundInputs, maker_market_portfolio_declaration_blockers,
         maker_market_portfolio_policy_input_blockers, maker_runtime_parameter_input_blockers,
     },
-    bolt_v3_target_identity::stable_identity_field_is_canonical,
+    bolt_v3_target_identity::checked_nt_strategy_id,
     strategies::registry::ValidationError,
 };
 
@@ -209,14 +209,7 @@ pub fn parse_config(raw: &Value) -> Result<BinaryOracleMakerConfig> {
         .clone()
         .try_into()
         .context("binary_oracle_maker builder requires a valid config table")?;
-    anyhow::ensure!(
-        stable_identity_field_is_canonical(config.strategy_id.as_str()),
-        "binary_oracle_maker strategy_id must be a non-empty, unpadded string"
-    );
-    anyhow::ensure!(
-        stable_identity_field_is_canonical(config.order_id_tag.as_str()),
-        "binary_oracle_maker order_id_tag must be a non-empty, unpadded string"
-    );
+    checked_nt_strategy_id(config.strategy_id.as_str(), config.order_id_tag.as_str())?;
     Ok(config)
 }
 
@@ -268,13 +261,6 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_STRATEGY_ID_CODE,
         errors,
     );
-    validate_canonical_identity_field(
-        table,
-        field_prefix,
-        STRATEGY_ID_FIELD,
-        INVALID_STRATEGY_ID_CODE,
-        errors,
-    );
     validate_string_field(
         table,
         field_prefix,
@@ -282,13 +268,7 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_ORDER_ID_TAG_CODE,
         errors,
     );
-    validate_canonical_identity_field(
-        table,
-        field_prefix,
-        ORDER_ID_TAG_FIELD,
-        INVALID_ORDER_ID_TAG_CODE,
-        errors,
-    );
+    validate_strategy_identity(table, field_prefix, errors);
     validate_string_field(
         table,
         field_prefix,
@@ -767,21 +747,27 @@ fn field_type_matches(field_type: BinaryOracleMakerFieldType, value: &Value) -> 
     }
 }
 
-fn validate_canonical_identity_field(
+fn validate_strategy_identity(
     table: &toml::map::Map<String, Value>,
     field_prefix: &str,
-    field: &str,
-    code: &'static str,
     errors: &mut Vec<ValidationError>,
 ) {
-    let Some(value) = table.get(field).and_then(Value::as_str) else {
+    let Some(strategy_id) = table.get(STRATEGY_ID_FIELD).and_then(Value::as_str) else {
         return;
     };
-    if !stable_identity_field_is_canonical(value) {
+    let Some(order_id_tag) = table.get(ORDER_ID_TAG_FIELD).and_then(Value::as_str) else {
+        return;
+    };
+    if let Err(error) = checked_nt_strategy_id(strategy_id, order_id_tag) {
+        let field = error.field();
         errors.push(ValidationError {
             field: format!("{field_prefix}.{field}"),
-            code,
-            message: "must be a non-empty, unpadded string".to_string(),
+            code: if field == STRATEGY_ID_FIELD {
+                INVALID_STRATEGY_ID_CODE
+            } else {
+                INVALID_ORDER_ID_TAG_CODE
+            },
+            message: error.to_string(),
         });
     }
 }
@@ -929,10 +915,13 @@ mod tests {
             (STRATEGY_ID_FIELD, "   "),
             (STRATEGY_ID_FIELD, " maker"),
             (STRATEGY_ID_FIELD, "maker "),
+            (STRATEGY_ID_FIELD, "Maker New York"),
+            (STRATEGY_ID_FIELD, "Mäker-001"),
             (ORDER_ID_TAG_FIELD, ""),
             (ORDER_ID_TAG_FIELD, "   "),
             (ORDER_ID_TAG_FIELD, " 001"),
             (ORDER_ID_TAG_FIELD, "001 "),
+            (ORDER_ID_TAG_FIELD, "002"),
         ] {
             let mut raw = valid_raw();
             raw.as_table_mut()
@@ -958,7 +947,7 @@ mod tests {
         let mut raw = valid_raw();
         raw.as_table_mut().expect("config is a table").insert(
             STRATEGY_ID_FIELD.to_string(),
-            Value::String("Maker New York".to_string()),
+            Value::String("Maker New York-001".to_string()),
         );
         let mut errors = Vec::new();
         validate_config(&raw, "strategy", &mut errors);

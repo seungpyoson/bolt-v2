@@ -889,21 +889,25 @@ enum EntryRejectClass {
 }
 
 impl BinaryOracleEdgeTaker {
-    fn new(config: BinaryOracleEdgeTakerConfig, context: StrategyBuildContext) -> Self {
+    fn new(config: BinaryOracleEdgeTakerConfig, context: StrategyBuildContext) -> Result<Self> {
+        let strategy_id = crate::bolt_v3_target_identity::checked_nt_strategy_id(
+            config.strategy_id.as_str(),
+            config.order_id_tag.as_str(),
+        )?;
         let pricing = PricingState::from_config(&taker_pricing_config(&config));
         let reference_price_selector = reference_price_selector_from_config(&config);
         let reference_price_source_health = reference_price_source_health_from_config(&config);
         let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)
-            .expect("validated binary_oracle_edge_taker oms_type");
+            .context("invalid binary_oracle_edge_taker oms_type")?;
         let market_exit_time_in_force = config.forced_exit_order.time_in_force;
         let external_order_claims = config
             .external_order_claims
             .iter()
             .map(|instrument_id| InstrumentId::from(instrument_id.as_str()))
             .collect::<Vec<_>>();
-        Self {
+        Ok(Self {
             core: StrategyCore::new(StrategyConfig {
-                strategy_id: Some(StrategyId::from(config.strategy_id.as_str())),
+                strategy_id: Some(strategy_id),
                 order_id_tag: Some(config.order_id_tag.clone()),
                 use_uuid_client_order_ids: config.use_uuid_client_order_ids,
                 use_hyphens_in_client_order_ids: config.use_hyphens_in_client_order_ids,
@@ -961,7 +965,7 @@ impl BinaryOracleEdgeTaker {
             live_input_subscription_retry_events: Vec::new(),
             #[cfg(test)]
             runtime_reconcile_query_events: Vec::new(),
-        }
+        })
     }
 
     fn apply_selection_snapshot(&mut self, snapshot: RuntimeSelectionSnapshot) {
@@ -8150,7 +8154,7 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
         context: &StrategyBuildContext,
         trader: &Rc<RefCell<Trader>>,
     ) -> Result<StrategyId> {
-        let strategy = BinaryOracleEdgeTaker::new(Self::parse_config(raw)?, context.clone());
+        let strategy = BinaryOracleEdgeTaker::new(Self::parse_config(raw)?, context.clone())?;
         let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
         trader.borrow_mut().add_strategy(strategy)?;
         Ok(strategy_id)

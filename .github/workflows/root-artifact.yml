@@ -1,0 +1,458 @@
+name: Root artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Operation to execute
+        required: true
+        type: string
+      sha:
+        description: Exact current main commit SHA
+        required: true
+        type: string
+
+concurrency:
+  group: root-artifact
+  cancel-in-progress: false
+
+env:
+  JUST_VERSION: "1.49.0"
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+
+jobs:
+  preflight:
+    name: Exact-main preflight
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+    outputs:
+      build_profile: ${{ steps.source.outputs.build_profile }}
+      build_target: ${{ steps.source.outputs.build_target }}
+      runner_label: ${{ steps.source.outputs.runner_label }}
+      wrapper_program: ${{ steps.source.outputs.wrapper_program }}
+      workflow_start_epoch: ${{ steps.remote.outputs.workflow_start_epoch }}
+    steps:
+      - name: Require exact current main
+        id: remote
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISPATCH_OPERATION: ${{ inputs.operation }}
+          DISPATCH_SHA: ${{ inputs.sha }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$DISPATCH_OPERATION" == "root-artifact" ]] || {
+            echo "unsupported operation: $DISPATCH_OPERATION" >&2
+            exit 1
+          }
+          [[ "$DEFAULT_BRANCH" == "main" ]] || {
+            echo "repository default branch is not main" >&2
+            exit 1
+          }
+          [[ "$EVENT_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || {
+            echo "dispatch ref is not current main: $EVENT_REF" >&2
+            exit 1
+          }
+          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "requested SHA is not a full lowercase commit SHA" >&2
+            exit 1
+          }
+          remote_sha="$(gh api "repos/$REPOSITORY/branches/$DEFAULT_BRANCH" --jq '.commit.sha')"
+          [[ "$remote_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "unable to resolve remote main" >&2
+            exit 1
+          }
+          [[ "$DISPATCH_SHA" == "$remote_sha" ]] || {
+            echo "requested SHA does not equal current remote main" >&2
+            exit 1
+          }
+          [[ "$EVENT_SHA" == "$remote_sha" ]] || {
+            echo "dispatch event SHA does not equal current remote main" >&2
+            exit 1
+          }
+          echo "workflow_start_epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate governed source configuration
+        id: source
+        env:
+          DISPATCH_SHA: ${{ inputs.sha }}
+          REPOSITORY_RUNNER_LABEL: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse --show-toplevel)" == "$GITHUB_WORKSPACE" ]]
+          [[ "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+
+          policy_json="$(python3 scripts/rust_verification.py validate-policy --repo "$GITHUB_WORKSPACE")"
+          build_target="$(jq -er '.build_target' <<< "$policy_json")"
+          build_profile="$(jq -er '.build_profile' <<< "$policy_json")"
+          wrapper_program="$(python3 -c '
+          import pathlib, tomllib
+          data = tomllib.loads(pathlib.Path("ci/rust-verification.toml").read_text())
+          print(data["remote_compile_cache"]["wrapper_program"])
+          ')"
+          read -r runner_role runner_label < <(python3 -c '
+          import pathlib, tomllib
+          data = tomllib.loads(pathlib.Path("ci/github-actions-runners.toml").read_text())
+          role = data["workflows"]["root_artifact"]["produce"]
+          print(role, data["runners"][role]["label"])
+          ')
+
+          [[ "$build_target" == aarch64-* ]] || {
+            echo "configured root build target is not ARM64" >&2
+            exit 1
+          }
+          [[ "$build_profile" == "release" ]] || {
+            echo "configured root build profile is not release" >&2
+            exit 1
+          }
+          [[ "$wrapper_program" == "sccache" ]] || {
+            echo "configured compiler wrapper is not sccache" >&2
+            exit 1
+          }
+          [[ "$runner_role" == "managed_heavy" && "$runner_label" == *-arm ]] || {
+            echo "configured root build runner is not the governed ARM pool" >&2
+            exit 1
+          }
+          [[ "$REPOSITORY_RUNNER_LABEL" == "$runner_label" ]] || {
+            echo "repository ARM runner variable does not match runner configuration" >&2
+            exit 1
+          }
+          [[ "$build_target" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$build_profile" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$wrapper_program" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$runner_label" =~ ^[A-Za-z0-9._-]+$ ]]
+
+          python3 -c '
+          import pathlib, tomllib
+          paths = [pathlib.Path("config/root.toml")]
+          paths += sorted(pathlib.Path("config/profiles").glob("*.overlay.toml"))
+          paths += sorted(pathlib.Path("config/strategies").glob("*.toml"))
+          if len(paths) < 3:
+              raise SystemExit("tracked production config bundle is incomplete")
+          for path in paths:
+              tomllib.loads(path.read_text())
+          '
+          mapfile -t overlays < <(git ls-files -- 'config/profiles/*.overlay.toml' | LC_ALL=C sort)
+          (( ${#overlays[@]} > 0 )) || {
+            echo "no tracked production overlay found" >&2
+            exit 1
+          }
+          [[ "${#overlays[@]}" -eq "$(find config/profiles -maxdepth 1 -type f -name '*.overlay.toml' | wc -l | tr -d ' ')" ]] || {
+            echo "an untracked production overlay is present" >&2
+            exit 1
+          }
+
+          {
+            echo "build_profile=$build_profile"
+            echo "build_target=$build_target"
+            echo "runner_label=$runner_label"
+            echo "wrapper_program=$wrapper_program"
+          } >> "$GITHUB_OUTPUT"
+
+  produce:
+    name: Build and exercise staged root artifact
+    needs: preflight
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Start managed-runner meter
+        run: echo "producer_start_epoch=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Setup governed build environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          use-default-target: "true"
+          include-managed-target-dir: "true"
+          install-rust-linker: "true"
+
+      - name: Validate producer before cache access
+        env:
+          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
+          BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
+          DISPATCH_SHA: ${{ inputs.sha }}
+          MANAGED_TARGET_DIR: ${{ steps.setup.outputs.managed_target_dir }}
+          SETUP_TARGET: ${{ steps.setup.outputs.target }}
+          WRAPPER_PROGRAM: ${{ needs.preflight.outputs.wrapper_program }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse --show-toplevel)" == "$GITHUB_WORKSPACE" ]]
+          [[ "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+          [[ "$(realpath "$MANAGED_TARGET_DIR")" == "$GITHUB_WORKSPACE"/* ]]
+          [[ -z "$(find "$MANAGED_TARGET_DIR" -mindepth 1 -print -quit)" ]]
+          [[ "$SETUP_TARGET" == "$BUILD_TARGET" ]]
+          [[ "$(uname -m)" == "${BUILD_TARGET%%-*}" ]]
+          [[ "$BUILD_PROFILE" == "release" ]]
+          [[ "$WRAPPER_PROGRAM" == "sccache" ]]
+          policy_json="$(python3 scripts/rust_verification.py validate-policy --repo "$GITHUB_WORKSPACE")"
+          [[ "$(jq -er '.build_target' <<< "$policy_json")" == "$BUILD_TARGET" ]]
+          [[ "$(jq -er '.build_profile' <<< "$policy_json")" == "$BUILD_PROFILE" ]]
+          binary_path="$(python3 scripts/rust_verification.py binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"
+          [[ ! -e "$binary_path" && ! -L "$binary_path" ]]
+
+      - name: Setup mandatory governed sccache writer
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          active: "true"
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+
+      - name: Require verified sccache before Cargo
+        env:
+          CACHE_MODE: ${{ steps.sccache.outputs.cache-mode }}
+          ELIGIBLE: ${{ steps.sccache.outputs.eligible }}
+          ENABLED: ${{ steps.sccache.outputs.enabled }}
+          WRAPPER_PROGRAM: ${{ needs.preflight.outputs.wrapper_program }}
+        run: |
+          set -euo pipefail
+          [[ "$ELIGIBLE" == "true" ]]
+          [[ "$ENABLED" == "true" ]]
+          [[ "$CACHE_MODE" == "read_write" ]]
+          [[ -n "${SCCACHE_PATH:-}" && -x "$SCCACHE_PATH" ]]
+          [[ "$(basename "$SCCACHE_PATH")" == "$WRAPPER_PROGRAM" ]]
+          [[ "$($SCCACHE_PATH --version | awk '{ print $1 }')" == "$WRAPPER_PROGRAM" ]]
+
+      - name: Build once through mandatory sccache
+        env:
+          BOLT_RUST_VERIFICATION_SCCACHE: "1"
+          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
+          BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
+        run: |
+          set -euo pipefail
+          [[ "$BOLT_RUST_VERIFICATION_SCCACHE" == "1" ]]
+          [[ -n "${SCCACHE_PATH:-}" && -x "$SCCACHE_PATH" ]]
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- \
+            build --locked --profile "$BUILD_PROFILE" --target "$BUILD_TARGET" --bin bolt-v2
+
+      - name: Stage exactly one executable
+        id: stage
+        run: |
+          set -euo pipefail
+          binary_path="$(python3 scripts/rust_verification.py binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"
+          [[ -f "$binary_path" && ! -L "$binary_path" && -x "$binary_path" ]]
+          stage_dir="$RUNNER_TEMP/root-artifact"
+          [[ ! -e "$stage_dir" && ! -L "$stage_dir" ]]
+          mkdir -p "$stage_dir"
+          install -m 0755 "$binary_path" "$stage_dir/bolt-v2"
+          [[ "$(find "$stage_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" == "1" ]]
+          [[ "$(find "$stage_dir" -maxdepth 1 -type f -perm /111 | wc -l | tr -d ' ')" == "1" ]]
+          initial_sha256="$(sha256sum "$stage_dir/bolt-v2" | awk '{ print $1 }')"
+          artifact_bytes="$(stat -c '%s' "$stage_dir/bolt-v2")"
+          {
+            echo "artifact_bytes=$artifact_bytes"
+            echo "initial_sha256=$initial_sha256"
+            echo "stage_dir=$stage_dir"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Exercise only hash-guarded staged bytes
+        env:
+          EXPECTED_SHA256: ${{ steps.stage.outputs.initial_sha256 }}
+          STAGE_DIR: ${{ steps.stage.outputs.stage_dir }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          staged_executable="$STAGE_DIR/bolt-v2"
+          evidence_dir="$RUNNER_TEMP/root-artifact-evidence"
+          bundle_files="$evidence_dir/bundle-files.txt"
+          overlays_file="$evidence_dir/overlays.txt"
+          [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]]
+          mkdir -p "$evidence_dir"
+
+          run_staged() {
+            local expected_sha256="$1"
+            local candidate="$2"
+            shift 2
+            [[ "$(readlink -f "$candidate")" == "$(readlink -f "$staged_executable")" ]] || {
+              echo "refusing non-staged executable path" >&2
+              return 97
+            }
+            [[ "$(sha256sum "$candidate" | awk '{ print $1 }')" == "$expected_sha256" ]] || {
+              echo "refusing changed staged executable digest" >&2
+              return 98
+            }
+            "$staged_executable" "$@"
+          }
+
+          copy_bundle() {
+            local destination="$1"
+            mkdir -p "$destination"
+            while IFS= read -r path; do
+              install -D -m 0644 "$path" "$destination/$path"
+            done < "$bundle_files"
+          }
+
+          git ls-files -- config/root.toml 'config/profiles/*.overlay.toml' 'config/strategies/*.toml' |
+            sort > "$bundle_files"
+          git ls-files -- 'config/profiles/*.overlay.toml' | sort > "$overlays_file"
+          [[ -s "$overlays_file" ]]
+
+          wrong_path="$RUNNER_TEMP/not-the-staged-binary"
+          install -m 0644 "$staged_executable" "$wrong_path"
+          printf '\000' >> "$wrong_path"
+          if run_staged "$EXPECTED_SHA256" "$wrong_path" --help; then
+            echo "non-staged executable path was accepted" >&2
+            exit 1
+          fi
+          if [[ "${EXPECTED_SHA256:0:1}" == "0" ]]; then
+            wrong_digest="1${EXPECTED_SHA256:1}"
+          else
+            wrong_digest="0${EXPECTED_SHA256:1}"
+          fi
+          if run_staged "$wrong_digest" "$staged_executable" --help; then
+            echo "changed executable digest was accepted" >&2
+            exit 1
+          fi
+
+          while IFS= read -r overlay; do
+            profile="$(basename "$overlay" .overlay.toml)"
+            case_root="$evidence_dir/$profile"
+
+            positive_root="$case_root/positive"
+            copy_bundle "$positive_root"
+            run_staged "$EXPECTED_SHA256" "$staged_executable" ops generate-live-config \
+              --profile "$profile" --config-root "$positive_root/config"
+            run_staged "$EXPECTED_SHA256" "$staged_executable" ops verify-live-config \
+              --profile "$profile" --config-root "$positive_root/config"
+            if run_staged "$EXPECTED_SHA256" "$staged_executable" run \
+              --config "$positive_root/config/live.toml"; then
+              echo "plain run unexpectedly accepted live configuration" >&2
+              exit 1
+            fi
+
+            tampered_root="$case_root/tampered"
+            copy_bundle "$tampered_root"
+            run_staged "$EXPECTED_SHA256" "$staged_executable" ops generate-live-config \
+              --profile "$profile" --config-root "$tampered_root/config"
+            printf '\n# tampered after generation\n' >> "$tampered_root/config/live.toml"
+            if run_staged "$EXPECTED_SHA256" "$staged_executable" ops verify-live-config \
+              --profile "$profile" --config-root "$tampered_root/config"; then
+              echo "tampered generated configuration was accepted" >&2
+              exit 1
+            fi
+
+            malformed_root="$case_root/malformed"
+            copy_bundle "$malformed_root"
+            printf '[malformed\n' > "$malformed_root/$overlay"
+            if run_staged "$EXPECTED_SHA256" "$staged_executable" ops generate-live-config \
+              --profile "$profile" --config-root "$malformed_root/config"; then
+              echo "malformed overlay was accepted" >&2
+              exit 1
+            fi
+
+            omitted_root="$case_root/omitted"
+            copy_bundle "$omitted_root"
+            rm "$omitted_root/$overlay"
+            if run_staged "$EXPECTED_SHA256" "$staged_executable" ops generate-live-config \
+              --profile "$profile" --config-root "$omitted_root/config"; then
+              echo "omitted overlay was accepted" >&2
+              exit 1
+            fi
+
+            if run_staged "$EXPECTED_SHA256" "$staged_executable" ops generate-live-config \
+              --profile "unknown-$profile" --config-root "$positive_root/config"; then
+              echo "unknown profile was accepted" >&2
+              exit 1
+            fi
+          done < "$overlays_file"
+
+      - name: Record inert run evidence
+        env:
+          ARTIFACT_BYTES: ${{ steps.stage.outputs.artifact_bytes }}
+          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
+          BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
+          DISPATCH_SHA: ${{ inputs.sha }}
+          INITIAL_SHA256: ${{ steps.stage.outputs.initial_sha256 }}
+          RUNNER_LABEL: ${{ needs.preflight.outputs.runner_label }}
+          STAGE_DIR: ${{ steps.stage.outputs.stage_dir }}
+          WORKFLOW_START_EPOCH: ${{ needs.preflight.outputs.workflow_start_epoch }}
+        run: |
+          set -euo pipefail
+          final_sha256="$(sha256sum "$STAGE_DIR/bolt-v2" | awk '{ print $1 }')"
+          [[ "$final_sha256" == "$INITIAL_SHA256" ]]
+
+          evidence_dir="$RUNNER_TEMP/root-artifact-evidence"
+          stats_path="$evidence_dir/sccache-stats.json"
+          manifest_path="$evidence_dir/manifest.json"
+          "$SCCACHE_PATH" --show-stats --stats-format json > "$stats_path"
+          [[ "$(jq -er '.stats.compile_requests' "$stats_path")" -gt 0 ]]
+          cache_hits="$(jq -er '[.stats.cache_hits.counts[]?] | add // 0' "$stats_path")"
+          cache_misses="$(jq -er '[.stats.cache_misses.counts[]?] | add // 0' "$stats_path")"
+          producer_elapsed_seconds="$(( $(date +%s) - producer_start_epoch ))"
+          workflow_elapsed_seconds="$(( $(date +%s) - WORKFLOW_START_EPOCH ))"
+          runner_minutes="$(awk -v seconds="$producer_elapsed_seconds" 'BEGIN { printf "%.6f", seconds / 60 }')"
+          overlays_json="$(jq -R -s 'split("\n") | map(select(length > 0))' "$evidence_dir/overlays.txt")"
+
+          jq -n \
+            --arg operation "root-artifact" \
+            --arg sha "$DISPATCH_SHA" \
+            --arg build_profile "$BUILD_PROFILE" \
+            --arg build_target "$BUILD_TARGET" \
+            --arg runner_label "$RUNNER_LABEL" \
+            --arg initial_sha256 "$INITIAL_SHA256" \
+            --arg final_sha256 "$final_sha256" \
+            --argjson artifact_bytes "$ARTIFACT_BYTES" \
+            --argjson producer_elapsed_seconds "$producer_elapsed_seconds" \
+            --argjson workflow_elapsed_seconds "$workflow_elapsed_seconds" \
+            --argjson runner_minutes "$runner_minutes" \
+            --argjson cache_hits "$cache_hits" \
+            --argjson cache_misses "$cache_misses" \
+            --argjson overlays "$overlays_json" \
+            --slurpfile sccache "$stats_path" \
+            '{
+              schema_version: 1,
+              operation: $operation,
+              sha: $sha,
+              build: {
+                profile: $build_profile,
+                target: $build_target,
+                runner_label: $runner_label
+              },
+              executable: {
+                artifact_bytes: $artifact_bytes,
+                initial_sha256: $initial_sha256,
+                final_sha256: $final_sha256
+              },
+              configured_overlays: $overlays,
+              timing: {
+                producer_elapsed_seconds: $producer_elapsed_seconds,
+                workflow_elapsed_seconds: $workflow_elapsed_seconds,
+                runner_minutes: $runner_minutes
+              },
+              cache: {
+                hit_count: $cache_hits,
+                miss_count: $cache_misses,
+                raw_stats: $sccache[0],
+                warmth_claim: null
+              },
+              authority: null
+            }' > "$manifest_path"
+          {
+            echo '```json'
+            cat "$manifest_path"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

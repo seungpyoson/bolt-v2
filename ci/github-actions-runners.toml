@@ -79,6 +79,10 @@ probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
+[workflows.root_artifact]
+preflight = "github_hosted"
+produce = "managed_heavy"
+
 [cargo_build_jobs.ci]
 clippy = 3
 check-aarch64 = 3
@@ -180,6 +184,7 @@ included_workflows = [
   "ci_runner_debug",
   "debug_test",
   "rust_probe",
+  "root_artifact",
 ]
 
 [meter.api_limits]

@@ -1,431 +1,601 @@
-# Atomic Strategy Preparation And Single-Path Client Resolution Implementation Plan
+# Sealed Strategy Preparation And Shared Batch Registration Implementation Plan
 
-> **Required execution skill:** Use `superpowers:executing-plans` for inline execution. `superpowers:subagent-driven-development` is an optional alternative only if the user explicitly requests delegation.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every deterministic strategy-registration failure occur before the first `LiveNode` mutation, resolve every configured client identity once per strategy with alias reuse, and leave NautilusTrader `Trader::add_strategy` as the explicit non-transactional commit boundary.
+**Goal:** Remove raw client/config reachability and direct commit methods from strategy callbacks while making one atomic prepared-batch coordinator the only registration path for Live and Backtester.
 
-**Architecture:** Registration becomes a strict prepare/commit pipeline. The shared preflight resolves a deduplicated map of execution, signal, and resolution clients; each runtime binding then maps and builds its concrete strategy without receiving a `LiveNode`; only after every strategy is prepared and every strategy ID is checked does a final loop consume prepared registrations and call NT. The registry exposes one construction path, eliminating the current duplicated `build` and `register` implementations.
+**Architecture:** Shared preflight resolves each configured client identity once, retains only safe client-to-venue routes, and copies the non-client root values needed by raw mapping into an immutable snapshot. `StrategyRegistry` is the only producer of opaque prepared strategies; one public batch coordinator performs NT identity preparation, batch conflict checks, and final commits for both Live and Backtester.
 
-**Tech stack:** Rust, NautilusTrader native Rust API, TOML configuration, `anyhow`, integration tests, source-fence/static verification, GitHub Actions remote Rust verification.
+**Tech Stack:** Rust 2024, NautilusTrader Rust APIs, TOML-backed Bolt-v3 configuration, `anyhow`, `thiserror`, Rust integration tests, source-token structural fences, GitHub Actions/Ubicloud remote Rust verification.
 
-**Governing design:** `docs/superpowers/specs/2026-07-17-single-path-strategy-venue-preflight-design.md`
+## Global Constraints
+
+- Follow `AGENTS.md`; no hardcoded runtime identities, fallbacks, compatibility adapters, dual registration paths, warning suppressions, or deferred debt.
+- `StrategyRegistrationContext` must not store or expose `LoadedBoltV3Config`, `BoltV3RootConfig`, `ClientBlock`, or `ResolvedBoltV3Secrets`.
+- Live and `backtesting-vertical-slice` must use the same prepared-batch coordinator; Backtester normally supplies a batch of one.
+- `PreparedStrategyRegistration` may be named publicly as an opaque return type, but its constructor, identity-preparation operation, strategy accessor, and commit operation are not public.
+- Settlement remains capability-gated and is resolved from the prepared execution client and venue before fee-provider construction; execution venue is unconditional.
+- Local compile-heavy Rust verification is prohibited. Use `cargo fmt`, `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python/static fences, and exact-head remote CI.
+- Two Rust Probe runs have already been consumed for this branch. Do not dispatch another probe; use normal exact-head PR CI after the coherent slice is pushed.
+- B3 and bucket D remain excluded.
 
 ---
 
-## Task 1: Pin the two uncovered failure modes before changing production code
+### Task 1: Remove the exact-head compiler and lint debris
 
 **Files:**
+- Modify: `src/strategies/registry.rs:143-156`
+- Modify: `src/strategies/binary_oracle_edge_taker/mod.rs:1-6`
 
-- Modify: `tests/bolt_v3_strategy_registration.rs`
-- Modify: `tests/bolt_v3_provider_binding.rs`
+**Interfaces:**
+- Consumes: the existing registry test-only `TestStrategy` and edge-taker production module.
+- Produces: test code with `DataActor` in scope and production imports containing only live symbols.
 
-### Step 1: Add a production-binding atomicity regression
+- [ ] **Step 1: Record the existing RED evidence**
 
-Extend the existing registration fixture helper so the test can load two edge-taker strategies while preserving unique `strategy_instance_id` and `order_id_tag` values. Add a test named:
+Use exact-head CI at `4b03028691fe6d5e8f091ee82e3ed09141edf7db` as the failing baseline:
+
+```text
+nextest archive: E0405/E0277 because DataActor is absent in registry tests
+clippy: unused RefCell and Rc in binary_oracle_edge_taker/mod.rs
+bvs-clippy/archive: removed register_strategy and old raw_taker_config signature
+```
+
+Do not run local Rust compilation and do not dispatch another Rust Probe.
+
+- [ ] **Step 2: Restore the test-only trait import**
+
+Inside `src/strategies/registry.rs`'s `#[cfg(test)] mod tests`, add:
+
+```rust
+use nautilus_common::actor::DataActor;
+```
+
+Keep the production import as `DataActorNative`; do not broaden production imports for a test-only need.
+
+- [ ] **Step 3: Remove only the dead edge-taker imports**
+
+Change the opening import to:
+
+```rust
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
+};
+```
+
+Do not add an `allow` or `expect` attribute.
+
+- [ ] **Step 4: Run permitted static checks**
+
+Run:
+
+```bash
+cargo fmt --all -- --check
+git diff --check
+```
+
+Expected: both exit 0. These checks do not constitute Rust compilation proof.
+
+- [ ] **Step 5: Commit the isolated cleanup**
+
+```bash
+git add src/strategies/registry.rs src/strategies/binary_oracle_edge_taker/mod.rs
+git commit -m "fix: clear strategy registration compile debris"
+```
+
+---
+
+### Task 2: Seal callback inputs behind prepared routes and a safe config snapshot
+
+**Files:**
+- Modify: `src/bolt_v3_strategy_registration.rs:118-350`
+- Modify: `src/strategies/binary_oracle_edge_taker/archetype.rs:440-680,1132-1151,1539-1585`
+- Modify: `crates/backtesting-vertical-slice/src/runner.rs:825-858,4349-4375`
+- Test: `tests/bolt_v3_provider_binding.rs:387-613`
+- Test: `tests/bolt_v3_strategy_registration.rs:1064-1181`
+
+**Interfaces:**
+- Produces: `PreparedStrategyClientRoutes`, `StrategyPreparationConfig`, `prepare_strategy_client_routes`, `StrategyRegistrationContext::prepared_client_routes`, and `StrategyRegistrationContext::preparation_config`.
+- Consumes later: Task 3 uses the safe types while migrating Backtester registration; Task 4 token-fences these interfaces.
+
+- [ ] **Step 1: Add failing API and behavior assertions**
+
+Extend `strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cached_proof` so the parsed context fields reject every raw config/client capability:
+
+```rust
+for forbidden in [
+    "LoadedBoltV3Config",
+    "BoltV3RootConfig",
+    "ClientBlock",
+    "ResolvedBoltV3Secrets",
+    "loaded:",
+    "resolved:",
+] {
+    assert!(!context_fields.contains(forbidden), "context retained {forbidden}");
+}
+```
+
+Add a production-entrypoint regression next to the missing-signal case:
 
 ```rust
 #[test]
-fn invalid_second_signal_client_fails_before_any_strategy_is_registered() {
-    let mut loaded = loaded_registration_fixture();
-    let first = edge_taker_strategy(&loaded).clone();
-    let mut second = first.clone();
-    second.config.strategy_instance_id = "invalid_second_signal_client".to_string();
-    second.config.order_id_tag = "invalid-second-signal-client".to_string();
-    second
-        .config
-        .signal_data
-        .values_mut()
-        .next()
-        .expect("edge fixture must declare one signal source")
-        .data_client_id = ClientId::from("missing_signal");
-    loaded.strategies = vec![first, second];
-
-    let mut node = registration_test_node(&loaded);
-    let error = register_bolt_v3_strategies_on_node_with_bindings(
-        &mut node,
-        &loaded,
-        &resolved_test_secrets(&loaded),
-        production_runtime_bindings(),
-        test_execution_controls(),
-        Arc::new(NoopDecisionEvidenceWriter),
-    )
-    .expect_err("an unknown signal client must fail registration");
-
-    assert!(error.to_string().contains("missing_signal"));
-    assert!(
-        node.kernel().trader().borrow().strategy_ids().is_empty(),
-        "deterministic preparation failure must precede every NT registration"
-    );
+fn invalid_second_resolution_client_fails_before_any_strategy_is_registered() {
+    let (error, registered_strategy_ids) =
+        production_registration_error_with_invalid_second_edge_strategy(|invalid| {
+            invalid.config.resolution_data = invalid.config.signal_data.values().next().cloned();
+            invalid
+                .config
+                .resolution_data
+                .as_mut()
+                .expect("copied signal data must provide a resolution fixture")
+                .data_client_id = ClientId::from("missing_resolution");
+        });
+    assert!(error.to_string().contains("missing_resolution"));
+    assert!(registered_strategy_ids.is_empty());
 }
 ```
 
-Use existing fixture/node/secret constructors when their behavior matches the names above; if they are currently embedded in another test, extract them without changing their behavior.
+The current context-field assertion must fail because `pub loaded` is present. The new runtime test is expected to compile only after the coherent slice reaches remote CI.
 
-### Step 2: Add an alias-reuse regression
+- [ ] **Step 2: Add the safe prepared-route types**
 
-Add a fixture where the signal role and execution role use the same configured client ID. Exercise the production binding and assert success. Pair it with a source assertion that the owning resolver contains the only registration-path `.clients.get(` call and that the edge runtime preparation body contains none of:
-
-```rust
-["root.clients", "venue_for_client(", "execution_account_id("]
-```
-
-The behavioral test proves aliasing remains valid; the structural assertion proves it does not cause a second map lookup.
-
-### Step 3: Strengthen the secrets and constructor fences
-
-In the already-scoped `StrategyRegistrationContext` struct-body assertion:
+In `src/bolt_v3_strategy_registration.rs`, replace the current route struct with:
 
 ```rust
-assert!(!context_fields.contains("ResolvedBoltV3Secrets"));
-assert!(!context_fields.contains("resolved:"));
-```
-
-In the constructor/preflight assertion, scope the source spans and require:
-
-```rust
-assert_eq!(client_map_get_count_in_registration_preflight, 1);
-assert!(!constructor_body.contains("root.clients"));
-```
-
-The single allowed lookup must belong to the new prepared-client-route resolver, not the context constructor or a strategy callback.
-
-### Step 4: Commit the regression slice
-
-```bash
-git add tests/bolt_v3_strategy_registration.rs tests/bolt_v3_provider_binding.rs
-git commit -m "test: expose non-atomic strategy preparation"
-```
-
-### Step 5: Establish RED evidence remotely
-
-Local compile-heavy Rust commands are prohibited. Run the permitted checks first:
-
-```bash
-cargo fmt --all
-git diff --check
-just fmt-check
-just source-fence-static
-```
-
-Commit the compiling regression slice, publish with `just sandbox-safe-push`, run `just rust-probe suggest`, and dispatch one smallest-sufficient focused integration-test probe for `invalid_second_signal_client_fails_before_any_strategy_is_registered`.
-
-Expected RED evidence: registration returns an error after the first strategy has already appeared in `Trader::strategy_ids()`.
-
----
-
-## Task 2: Resolve all configured client roles once during shared preflight
-
-**Files:**
-
-- Modify: `src/bolt_v3_strategy_registration.rs`
-- Modify: `src/strategies/binary_oracle_edge_taker/archetype.rs`
-- Modify: `tests/bolt_v3_strategy_registration.rs`
-- Modify: `tests/bolt_v3_provider_binding.rs`
-
-### Step 1: Introduce a private prepared-client route set
-
-Add a private value owned by `StrategyRegistrationContext`:
-
-```rust
-#[derive(Clone)]
-struct StrategyRegistrationClientRoutes {
+#[derive(Clone, Debug)]
+pub struct PreparedStrategyClientRoutes {
     venues_by_client_id: BTreeMap<ClientId, Venue>,
 }
 
-impl StrategyRegistrationClientRoutes {
-    fn venue(&self, client_id: &ClientId) -> Option<Venue> {
+impl PreparedStrategyClientRoutes {
+    pub fn venue(&self, client_id: &ClientId) -> Option<Venue> {
         self.venues_by_client_id.get(client_id).copied()
     }
 }
+
+struct ResolvedStrategyClientRoutes<'a> {
+    prepared: PreparedStrategyClientRoutes,
+    execution_client: &'a ClientBlock,
+}
 ```
 
-Expose only the narrow lookup required by strategy preparation:
+Keep one private resolver that performs the single deduplicated `loaded.root.clients.get(...)` loop and returns `ResolvedStrategyClientRoutes`. Add the public safe wrapper:
 
 ```rust
-impl StrategyRegistrationContext<'_> {
-    pub(crate) fn prepared_client_venue(&self, client_id: &ClientId) -> Option<Venue> {
-        self.client_routes.venue(client_id)
+pub fn prepare_strategy_client_routes(
+    loaded: &LoadedBoltV3Config,
+    strategy: &LoadedStrategy,
+) -> Result<PreparedStrategyClientRoutes, BoltV3StrategyRegistrationError> {
+    Ok(resolve_strategy_client_routes(loaded, strategy)?.prepared)
+}
+```
+
+The wrapper must call the same resolver; it must not contain another client-table traversal.
+
+- [ ] **Step 3: Add the non-client root snapshot**
+
+Add this public, data-only type in `src/bolt_v3_strategy_registration.rs`:
+
+```rust
+#[derive(Clone, Debug, Default)]
+pub struct StrategyPreparationConfig {
+    realized_volatility_max_source_age_ms: BTreeMap<String, u64>,
+    gate_provider_max_age_ms: BTreeMap<String, u64>,
+    chainlink_feed_instrument_ids: BTreeSet<String>,
+}
+```
+
+Implement `from_root` by copying only:
+
+```rust
+pub fn from_root(root: &BoltV3RootConfig) -> Self {
+    let realized_volatility_max_source_age_ms = root
+        .realized_volatility_surfaces
+        .as_ref()
+        .into_iter()
+        .flat_map(|surfaces| surfaces.iter())
+        .map(|(id, surface)| (id.clone(), surface.policy.max_source_age_ms))
+        .collect();
+    let gate_provider_max_age_ms = root
+        .gate_providers
+        .as_ref()
+        .into_iter()
+        .flat_map(|providers| providers.iter())
+        .filter_map(|(id, provider)| {
+            provider.freshness.as_ref()?.max_age_ms.map(|age| (id.clone(), age))
+        })
+        .collect();
+    let chainlink_feed_instrument_ids = root
+        .chainlink_data_streams
+        .as_ref()
+        .into_iter()
+        .flat_map(|catalog| catalog.feed_bindings.iter())
+        .filter_map(|binding| binding.as_table())
+        .filter_map(|binding| binding.get(stringify!(instrument_id)))
+        .filter_map(toml::Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    Self {
+        realized_volatility_max_source_age_ms,
+        gate_provider_max_age_ms,
+        chainlink_feed_instrument_ids,
     }
 }
 ```
 
-Do not store `ClientBlock`, credentials, resolved secrets, or alternate config sources in the context.
-
-### Step 2: Replace execution-only lookup with one identity-aware resolver
-
-Replace `resolve_execution_client` with a resolver that:
-
-1. Collects the execution client ID.
-2. Collects every `signal_data.*.data_client_id`.
-3. Collects `resolution_data.data_client_id` when configured.
-4. Deduplicates them in a `BTreeMap<ClientId, BTreeSet<&'static str>>`, where the role set is used only for typed diagnostics.
-5. Calls `loaded.root.clients.get(id.as_str())` exactly once per unique identity.
-6. Returns the route map plus the execution `ClientBlock` reference needed for fee-provider and settlement derivation.
-
-Use stable configuration field names in diagnostics, not venue/client literals:
+Expose only narrow queries:
 
 ```rust
-fn resolve_strategy_client_routes<'a>(
-    loaded: &'a LoadedBoltV3Config,
-    strategy: &LoadedStrategy,
-) -> Result<(StrategyRegistrationClientRoutes, &'a ClientBlock), BoltV3StrategyRegistrationError>
+pub fn realized_volatility_max_source_age_ms(&self, id: &str) -> Option<u64>;
+pub fn gate_provider_max_age_ms(&self, id: &str) -> Option<u64>;
+pub fn has_chainlink_feed_binding(&self, instrument_id: &str) -> bool;
 ```
 
-When execution and signal IDs are identical, the map has one entry and one `.clients.get` operation. There is no conditional fallback and no second execution-client path.
+- [ ] **Step 4: Remove loaded config from the callback context**
 
-### Step 3: Derive every execution resource from that result
-
-Inside `StrategyRegistrationContext::new`, preserve the required order:
+Construct one `Arc<StrategyPreparationConfig>` beside `StrategyRegistrationRuntimeResources` and clone it into each context. Change the context fields to:
 
 ```rust
-let (client_routes, execution_client) =
-    resolve_strategy_client_routes(loaded, strategy)?;
-let execution_venue = client_routes
-    .venue(&strategy.config.execution_client_id)
-    .expect("the route resolver returns the execution identity on success");
-let settlement = capabilities
-    .settlement
-    .then(|| resolve_settlement_capability(/* same execution_client and venue */))
-    .transpose()?;
-let fee_provider = resolve_fee_provider(
-    strategy.config.execution_client_id.as_str(),
-    execution_client,
-    execution_venue,
-    resolved,
-)?;
+pub struct StrategyRegistrationContext<'a> {
+    pub strategy: &'a LoadedStrategy,
+    pub strategy_kind: &'static str,
+    pub capabilities: StrategyRuntimeCapabilities,
+    pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+    pub order_execution_policy: BoltV3OrderExecutionPolicy,
+    preparation_config: Arc<StrategyPreparationConfig>,
+    client_routes: PreparedStrategyClientRoutes,
+    execution_venue: Venue,
+    fee_provider: Arc<dyn FeeProvider>,
+    settlement: Option<StrategyRegistrationSettlementResources>,
+    realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
+}
 ```
 
-The `expect` is an immediately established local invariant, not validation-at-a-distance or a runtime fallback. If repository lint/fence policy rejects it, have the resolver return `execution_venue` directly alongside the map instead.
+Add crate-visible getters returning `&StrategyPreparationConfig` and `&PreparedStrategyClientRoutes`. `new` may consume `loaded` and `resolved` as parameters but must not retain either.
 
-### Step 4: Remove edge-taker callback client-map reads
+- [ ] **Step 5: Make raw taker mapping accept only safe inputs**
 
-Change `raw_taker_config` to consume the prepared context:
+Change the signature to:
 
 ```rust
 pub fn raw_taker_config(
-    context: &StrategyRegistrationContext<'_>,
+    strategy: &LoadedStrategy,
+    preparation_config: &StrategyPreparationConfig,
+    client_routes: &PreparedStrategyClientRoutes,
 ) -> Result<Value, BinaryOracleEdgeTakerRuntimeConfigError>
 ```
 
-Use `context.strategy`, `context.loaded`, and `context.prepared_client_venue(...)`. Replace both `venue_for_client` calls with required reads from the prepared route set. Pass the already-resolved resolution venue into `validate_resolution_data_binding`; retain `loaded.root` only for non-client configuration such as provider/feed metadata.
+Replace all three full-config reads:
 
-Update all tests and the runtime binding caller to the new signature. Do not add a compatibility overload.
+```rust
+let realized_volatility_max_source_age_ms = preparation_config
+    .realized_volatility_max_source_age_ms(realized_volatility_surface_id)
+    .ok_or_else(/* preserve the current typed error */)?;
 
-### Step 5: Verify and commit
+let resolution_venue = client_routes
+    .venue(&resolution_data.data_client_id)
+    .ok_or_else(/* preserve the current typed error */)?;
+
+let forced_flat_stale_reference_ms = preparation_config
+    .gate_provider_max_age_ms(&resolution_provider_id)
+    .filter(|value| *value != 0)
+    .ok_or_else(/* preserve the current typed error */)?;
+```
+
+Change resolution binding validation to query `has_chainlink_feed_binding` rather than accepting `&BoltV3RootConfig`. Delete `forced_flat_stale_reference_ms_from_gate_provider` once it has no callers.
+
+- [ ] **Step 6: Update Live and Backtester raw-mapping callers**
+
+Live callback:
+
+```rust
+let raw = raw_taker_config(
+    context.strategy,
+    context.preparation_config(),
+    context.prepared_client_routes(),
+)
+.map_err(|error| binding_error(&context, error))?;
+```
+
+At each Backtester overlay/canonicalization call site:
+
+```rust
+let preparation_config = StrategyPreparationConfig::from_root(&loaded.root);
+let client_routes = prepare_strategy_client_routes(&loaded, loaded_strategy)
+    .context("prepare configured strategy client routes")?;
+let raw_config = raw_taker_config(loaded_strategy, &preparation_config, &client_routes)
+    .context("build raw taker config from overlaid production config")?;
+```
+
+Do not add a Backtester-local client-map lookup closure.
+
+- [ ] **Step 7: Run local static evidence and commit**
+
+Run:
 
 ```bash
-cargo fmt --all
+cargo fmt --all -- --check
 git diff --check
-just fmt-check
 just source-fence-static
-git add src/bolt_v3_strategy_registration.rs src/strategies/binary_oracle_edge_taker/archetype.rs tests/bolt_v3_strategy_registration.rs tests/bolt_v3_provider_binding.rs
-git commit -m "fix: preflight all strategy client routes"
+```
+
+Expected: exit 0; no dependency-direction, provider-leak, or runtime-literal finding.
+
+Commit:
+
+```bash
+git add src/bolt_v3_strategy_registration.rs src/strategies/binary_oracle_edge_taker/archetype.rs crates/backtesting-vertical-slice/src/runner.rs tests/bolt_v3_provider_binding.rs tests/bolt_v3_strategy_registration.rs
+git commit -m "fix: seal strategy preparation inputs"
 ```
 
 ---
 
-## Task 3: Make strategy construction atomic and eliminate the registry dual path
+### Task 3: Introduce the sole prepared-batch coordinator and migrate every consumer
 
 **Files:**
-
-- Modify: `src/strategies/registry.rs`
-- Modify: `src/strategies/binary_oracle_edge_taker/mod.rs`
-- Modify: `src/strategies/binary_oracle_maker/mod.rs`
-- Modify: `src/strategies/complete_set_arbitrage/mod.rs`
-- Modify: `src/strategies/binary_oracle_edge_taker/archetype.rs`
-- Modify: `src/strategies/binary_oracle_maker/archetype.rs`
-- Modify: `src/strategies/complete_set_arbitrage/archetype.rs`
-- Modify: `src/bolt_v3_strategy_registration.rs`
-- Modify: `src/strategy_bindings.rs`
-- Modify: `tests/bolt_v3_strategy_registration.rs`
-- Modify: `tests/bolt_v3_provider_binding.rs`
-- Modify: affected registry/unit tests under `src/strategies/`
+- Modify: `src/bolt_v3_strategy_registration.rs:42-98,790-880`
+- Modify: `src/strategies/registry.rs:24-73`
+- Modify: `crates/backtesting-vertical-slice/src/runner.rs:700-740,879-910`
 - Modify: `tests/support/stub_runtime_strategy.rs`
-- Modify: `tests/bolt_v3_strategy_substrate_structure.rs`
+- Modify: `tests/bolt_v3_strategy_registration.rs:780-820,930-980,1185-1315`
+- Test: `tests/bolt_v3_provider_binding.rs:615-700`
 
-### Step 1: Add one-use prepared registration ownership at the shared boundary
+**Interfaces:**
+- Produces: `register_prepared_strategy_batch` and `PreparedStrategyBatchError::failed_index`.
+- Consumes: `StrategyRegistry::prepare_strategy` remains the only public producer of `PreparedStrategyRegistration`.
 
-In `src/bolt_v3_strategy_registration.rs`, add a private erased commit trait
-and a public prepared owner. The shared location preserves dependency direction:
-`strategies::registry` may depend on shared registration, while shared
-registration must not depend on the strategy layer.
+- [ ] **Step 1: Pin the one-consumer API structurally**
+
+Add assertions that the `PreparedStrategyRegistration` impl contains no public methods and that production references to `.prepare_registration(` and `.commit(` exist only inside `register_prepared_strategy_batch`. Add `prepare_registration(` to the commit-loop forbidden list so identity preparation cannot move into the first commit iteration.
+
+- [ ] **Step 2: Make the prepared value opaque**
+
+Change these methods to private or crate-private as required by the registry module:
 
 ```rust
-pub struct PreparedStrategyRegistration {
-    strategy_id: Option<StrategyId>,
-    strategy: Box<dyn PreparedStrategyCommit>,
-}
-
 impl PreparedStrategyRegistration {
-    pub fn prepare_registration(&mut self, trader: &Trader) -> Result<StrategyId> {
-        let strategy_id = self.strategy.prepare_registration(trader)?;
-        self.strategy_id = Some(strategy_id);
-        Ok(strategy_id)
+    pub(crate) fn from_strategy<T>(strategy: T) -> Self
+    where
+        T: Strategy + StrategyNative + DataActorNative + Component + Debug + 'static;
+
+    fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId>;
+    fn commit(self, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<StrategyId>;
+}
+```
+
+Remove the public `strategy_id` getter if it is not required by the coordinator.
+
+- [ ] **Step 3: Add the common batch error and coordinator**
+
+Implement:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+#[error("prepared strategy at batch index {failed_index} failed: {source}")]
+pub struct PreparedStrategyBatchError {
+    failed_index: usize,
+    #[source]
+    source: anyhow::Error,
+}
+
+impl PreparedStrategyBatchError {
+    pub fn failed_index(&self) -> usize {
+        self.failed_index
     }
+}
 
-    pub fn commit(self, trader: &Rc<RefCell<Trader>>) -> Result<StrategyId> {
-        let strategy_id = self.strategy_id.context(
-            "prepared strategy registration has no preflighted NT strategy ID",
-        )?;
-        self.strategy.commit(trader)?;
-        Ok(strategy_id)
-    }
+pub fn register_prepared_strategy_batch(
+    trader: &Rc<RefCell<Trader>>,
+    mut prepared: Vec<PreparedStrategyRegistration>,
+) -> Result<Vec<StrategyId>, PreparedStrategyBatchError>;
+```
+
+The function must:
+
+1. immutably borrow the supplied trader once;
+2. run `prepare_registration` for every item;
+3. reject duplicate strategy IDs and duplicate order-ID tags across the complete batch;
+4. drop the immutable borrow;
+5. commit each already-prepared item against the same `Rc<RefCell<Trader>>` in input order;
+6. return the prepared IDs in input order.
+
+Every error records its batch index. Do not accept separate prepare and commit traders, expose a token, or add rollback/fallback logic.
+
+- [ ] **Step 4: Route Live registration through the coordinator**
+
+After all binding callbacks return, retain a metadata vector in the same order as the prepared values. Call:
+
+```rust
+let registered_strategy_ids = register_prepared_strategy_batch(
+    node.kernel().trader(),
+    prepared_registrations,
+)
+.map_err(|error| {
+    let strategy = prepared_metadata[error.failed_index()];
+    binding_error(strategy, error.to_string())
+})?;
+```
+
+Zip IDs with metadata to build `BoltV3StrategyRegistrationSummary`. Delete the old local identity-preparation and commit loops.
+
+- [ ] **Step 5: Adapt integration-test stubs without reopening the constructor**
+
+In `tests/support/stub_runtime_strategy.rs`, add:
+
+```rust
+pub(crate) fn prepare_stub_runtime_strategy(
+    strategy_id: &str,
+    context: &StrategyBuildContext,
+) -> Result<PreparedStrategyRegistration> {
+    let mut registry = StrategyRegistry::new();
+    registry.register::<StubRuntimeStrategyBuilder>()?;
+    registry.prepare_strategy(
+        StubRuntimeStrategyBuilder::kind(),
+        &toml::toml! { strategy_id = strategy_id },
+        context,
+    )
 }
 ```
 
-The private erased strategy object owns the already-built concrete strategy.
-Its preflight method delegates to NT's non-mutating
-`prepare_strategy_for_registration`; its commit method delegates to
-`add_strategy`. Neither method performs TOML parsing, client resolution,
-registry selection, or strategy construction.
+Replace every integration-test call to `PreparedStrategyRegistration::from_strategy` with this registry-backed helper after assembling the callback's `StrategyBuildContext`. Tests must not require public access to the opaque constructor.
 
-### Step 2: Collapse `StrategyBuilder` to one construction method
+- [ ] **Step 6: Migrate both Backtester registration call sites**
 
-Replace the duplicated `build`/`register` trait methods with one concrete associated type and one build method:
+Replace `registry.register_strategy(...)` with:
 
 ```rust
-pub trait StrategyBuilder: Send + Sync + 'static {
-    type Strategy: Strategy
-        + StrategyNative
-        + DataActorNative
-        + Component
-        + std::fmt::Debug
-        + 'static;
-
-    fn kind() -> &'static str;
-    fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>);
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy>;
-}
+let prepared = registry
+    .prepare_strategy(registry_key, raw_config, &build_context)
+    .with_context(|| format!("prepare {registry_key} strategy through production registry"))?;
+register_prepared_strategy_batch(engine.kernel().trader(), vec![prepared])
+    .with_context(|| format!("register {registry_key} prepared strategy batch"))?;
 ```
 
-Use a generic registration adapter to turn `B::build(...)` into the shared
-`PreparedStrategyRegistration`. Do not derive an approximate ID in the
-registry; the dispatcher must call NT's authoritative, non-mutating strategy-ID
-preparation before commit.
+Use the identical coordinator for the binary-oracle-specific branch. Do not add a Backtester adapter or call `Trader::add_strategy` directly.
 
-Update `StrategyRegistration` to store only:
+- [ ] **Step 7: Run permitted evidence and commit**
 
-```rust
-prepare: fn(&Value, &StrategyBuildContext) -> Result<PreparedStrategyRegistration>
-```
-
-Expose `StrategyRegistry::prepare_strategy`; delete `StrategyRegistry::build`, `StrategyRegistry::register_strategy`, `BoxedStrategy`, and all concrete builder `register` methods. Do not leave aliases or compatibility paths.
-
-### Step 3: Make runtime bindings pure preparation callbacks
-
-Change `StrategyRuntimeBinding` from a `register(&mut LiveNode, context)` callback to:
-
-```rust
-pub prepare: for<'a> fn(
-    StrategyRegistrationContext<'a>,
-) -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError>,
-```
-
-Rename each archetype callback to `prepare_runtime_strategy`. Each callback must do all of the following before returning:
-
-1. Map its raw TOML runtime config.
-2. Assemble `StrategyBuildContext`.
-3. Construct the production registry.
-4. Select the configured builder.
-5. Build the concrete strategy through `prepare_strategy`.
-
-No callback receives `LiveNode`, `Trader`, or another mutation handle.
-
-### Step 4: Prepare every strategy before the first commit
-
-Change the shared registration function to collect fully prepared values:
-
-```rust
-let prepared = loaded
-    .strategies
-    .iter()
-    .map(|strategy| {
-        let binding = binding_for(strategy, bindings)?;
-        let context = StrategyRegistrationContext::new(/* existing inputs */)?;
-        let strategy_instance_id = strategy.config.strategy_instance_id.clone();
-        let strategy_archetype = strategy.config.strategy_archetype.clone();
-        let prepared = (binding.prepare)(context)?;
-        Ok((strategy_instance_id, strategy_archetype, prepared))
-    })
-    .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
-```
-
-Before mutation, call `prepare_registration` for every prepared strategy while
-holding only an immutable trader borrow, then reject:
-
-- duplicate `prepared.strategy_id()` values within the batch;
-- duplicate prepared order ID tags within the batch;
-- a prepared ID already present in `node.kernel().trader().borrow().strategy_ids()`.
-
-Only then commit:
-
-```rust
-for (strategy_instance_id, strategy_archetype, prepared) in prepared {
-    let registered_strategy_id = prepared
-        .commit(node.kernel().trader())
-        .map_err(|error| /* existing typed binding error with strategy metadata */)?;
-    summary.registered.push(/* existing summary record */);
-}
-```
-
-Document in code that an error returned by NT `add_strategy` is the external commit boundary. Do not add rollback, clone-and-swap, or a second registration path.
-
-### Step 5: Add focused regressions for complete deterministic preparation
-
-Add tests proving:
-
-1. Invalid raw config in the second strategy produces zero registered strategies.
-2. A missing second signal client produces zero registered strategies.
-3. A signal/execution alias succeeds and uses the single prepared route.
-4. Duplicate prepared strategy IDs fail before commit.
-5. A strategy ID already present in the trader fails before any new commit.
-6. Preparation callbacks receive no `LiveNode`; a counting commit stub remains zero on every preparation failure.
-
-Keep tests on the real registration entrypoint where production behavior is claimed. Stubs may isolate duplicate-ID and commit-count mechanics, but must not replace the production-binding missing-signal regression.
-
-### Step 6: Run the second and final Rust Probe only after the slice is coherent
-
-Run local non-compile checks, commit, publish, and then use the second allowed probe for the smallest integration-test target covering atomic preparation:
+Run:
 
 ```bash
-cargo fmt --all
+cargo fmt --all -- --check
 git diff --check
-just fmt-check
 just source-fence-static
-git add src tests
-git commit -m "fix: prepare all strategies before registration"
-just sandbox-safe-push
-just rust-probe suggest
 ```
 
-Expected GREEN evidence: all preparation-failure regressions pass; the production missing-signal case leaves `Trader::strategy_ids()` empty.
+Expected: exit 0 and the registry/source fences find no retired `register_strategy` route.
+
+Commit:
+
+```bash
+git add src/bolt_v3_strategy_registration.rs src/strategies/registry.rs crates/backtesting-vertical-slice/src/runner.rs tests/support/stub_runtime_strategy.rs tests/bolt_v3_strategy_registration.rs tests/bolt_v3_provider_binding.rs
+git commit -m "fix: share atomic strategy batch registration"
+```
 
 ---
 
-## Task 4: Align durable documentation, harden fences, and publish reviewable evidence
+### Task 4: Make the structural evidence resistant to the reviewed bypasses
 
 **Files:**
+- Create: `tests/support/rust_source_tokens.rs`
+- Modify: `tests/bolt_v3_strategy_substrate_structure.rs:1-140,393-652`
+- Modify: `tests/bolt_v3_provider_binding.rs:387-700`
+- Modify: `tests/bolt_v3_strategy_registration.rs:1064-1148`
 
-- Modify: `docs/superpowers/plans/2026-07-17-single-path-strategy-venue-preflight.md`
-- Modify: `docs/superpowers/specs/2026-07-17-single-path-strategy-venue-preflight-design.md` only if implementation reveals a real design correction
-- Modify: PR #1442 body only for timeless scope/behavior disclosures
+**Interfaces:**
+- Produces: shared comment/string-aware Rust tokenization for structural tests.
+- Consumes: Task 2 safe route/snapshot APIs and Task 3 common coordinator.
 
-### Step 1: Remove stale ordering and deleted-symbol claims
+- [ ] **Step 1: Extract the existing tokenizer without changing semantics**
 
-Ensure this plan is the only active plan for the slice and contains:
+Move `Token`, `tokenize`, `ident_start`, `ident_continue`, `scan_nested_block_comment`, `scan_raw_string`, `scan_quoted_literal`, and `scan_char_or_lifetime` from `bolt_v3_strategy_substrate_structure.rs` into `tests/support/rust_source_tokens.rs` with this interface:
 
-- settlement resolution before fee-provider construction;
-- no `binding_message` wrapper in shared registration;
-- deduplicated execution/signal/resolution client resolution;
-- full deterministic preparation before mutation;
-- the explicit NT commit boundary.
+```rust
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Token {
+    pub(crate) text: String,
+}
 
-Do not put current head SHAs or transient CI status in the PR body.
+pub(crate) fn tokenize(source: &str) -> Vec<Token>;
+pub(crate) fn texts(tokens: &[Token]) -> Vec<&str>;
+pub(crate) fn count_sequence(tokens: &[Token], needle: &[&str]) -> usize;
+```
 
-### Step 2: Run all permitted local evidence
+Import the module in both structural harnesses with:
+
+```rust
+#[path = "support/rust_source_tokens.rs"]
+mod rust_source_tokens;
+```
+
+Preserve the existing tokenizer adversarial self-test for comments, normal/raw strings, chars, lifetimes, and nested block comments.
+
+- [ ] **Step 2: Replace spelling-coupled context visibility checks**
+
+Tokenize the `StrategyRegistrationContext` body and assert that each protected field is preceded directly by its identifier, not any `pub`, `pub(crate)`, or `pub(super)` sequence. Protected fields:
+
+```text
+preparation_config
+client_routes
+realized_volatility_runtime
+execution_venue
+fee_provider
+settlement
+```
+
+Also assert the whole context body contains none of these type/field tokens:
+
+```text
+LoadedBoltV3Config BoltV3RootConfig ClientBlock ResolvedBoltV3Secrets loaded resolved
+```
+
+- [ ] **Step 3: Make ordering and retired-path checks token based**
+
+Using comment/string-stripped tokens:
+
+- require one definition and one constructor call of the route resolver;
+- reject both `# [ expect ( clippy :: too_many_arguments ) ]` and `# [ allow ( clippy :: too_many_arguments ) ]`;
+- require identity preparation to finish before the coordinator commit loop;
+- reject `prepare_registration`, raw mapping, registry lookup, and context construction inside the commit loop;
+- scan the complete registry production token stream for `register_strategy`, public `build`, and runtime `register` methods without newline-sensitive strings.
+
+Add decoy comments and string literals containing every required token and prove they do not satisfy the checks.
+
+- [ ] **Step 4: Pin both role-failure atomicity cases**
+
+Keep the production-entrypoint missing-signal regression and the new missing-resolution regression. Both must assert the rendered client ID and `strategy_ids().is_empty()`.
+
+- [ ] **Step 5: Run structural/static evidence and commit**
+
+Run:
 
 ```bash
-cargo fmt --all
+cargo fmt --all -- --check
+git diff --check
+just source-fence-static
+```
+
+Expected: exit 0, including tokenizer self-tests and all source fences.
+
+Commit:
+
+```bash
+git add tests/support/rust_source_tokens.rs tests/bolt_v3_strategy_substrate_structure.rs tests/bolt_v3_provider_binding.rs tests/bolt_v3_strategy_registration.rs
+git commit -m "test: harden strategy registration fences"
+```
+
+---
+
+### Task 5: Align durable documentation and publish exact-head evidence
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-07-17-single-path-strategy-venue-preflight-design.md`
+- Modify: `docs/superpowers/plans/2026-07-17-single-path-strategy-venue-preflight.md`
+- External: PR #1442 body, exact-head check runs, native review state
+
+**Interfaces:**
+- Consumes: all completed production and test changes.
+- Produces: one reviewable PR head with durable docs matching the code and no transient status embedded in the PR body.
+
+- [ ] **Step 1: Reconcile docs with final names and ordering**
+
+Search:
+
+```bash
+rg -n "context\.loaded|register_strategy|PreparedStrategyRegistration::from_strategy|fee_provider.*settlement|settlement.*fee_provider|TBD|TODO|FIXME" docs/superpowers src tests crates/backtesting-vertical-slice
+```
+
+Expected: retired API names appear only in explicit rejection/history text; every normative sequence says settlement before fee provider and prepare-all before the sole coordinator commit.
+
+- [ ] **Step 2: Run all permitted final local evidence**
+
+Run in this order:
+
+```bash
 cargo fmt --all -- --check
 git diff --check
 just fmt-check
@@ -434,53 +604,57 @@ just ci-lint-workflow
 just source-fence-static
 ```
 
-Run targeted text checks for stale APIs:
+Expected: every command exits 0. If sandbox policy blocks the deny cache or CI-lint loopback fixture, rerun that same governed command with the required sandbox approval; do not bypass its wrapper.
 
-```bash
-rg -n "binding_message|register_runtime_strategy|register_strategy\(|BoxedStrategy|fn register\(" src tests docs/superpowers
-rg -n "root\.clients|venue_for_client\(" src/strategies
+- [ ] **Step 3: Conduct the internal adversarial checklist**
+
+Verify directly:
+
+```text
+1. No callback can name or obtain LoadedBoltV3Config, BoltV3RootConfig, ClientBlock, or resolved secrets.
+2. Alias execution/signal/resolution roles use one resolver and one venue value per ClientId.
+3. PreparedStrategyRegistration has no public construction, prepare, getter, or commit method.
+4. Live and Backtester call the same register_prepared_strategy_batch function.
+5. The complete batch finishes NT identity checks before any commit.
+6. Missing signal and resolution clients leave the trader empty.
+7. No fallback, alternate venue, hardcoded runtime identity, direct add_strategy, or retired adapter remains.
+8. Source fences use tokens rather than comments/strings or newline-sensitive spellings.
 ```
 
-Every remaining match must be either an intentional validation/data-client path outside runtime preparation or a test fixture with an explicit assertion. No compatibility implementation may remain.
+Resolve every local finding before publishing.
 
-### Step 3: Conduct internal adversarial review
-
-Review the final diff against these attacks before requesting external review:
-
-- invalid second signal/resolution client;
-- same client ID in multiple roles;
-- alternate helper that performs a second client-map lookup;
-- private secret storage in the context;
-- raw config or builder failure after the first commit;
-- duplicate batch strategy IDs;
-- already-registered strategy ID;
-- fallbacks, condition chains, hardcoded runtime IDs, warning suppressions, dead wrappers, and dual APIs.
-
-Fix every confirmed local finding before publishing.
-
-### Step 4: Publish and request exact-head evidence
+- [ ] **Step 4: Commit documentation alignment**
 
 ```bash
-git status --short
+git add docs/superpowers/specs/2026-07-17-single-path-strategy-venue-preflight-design.md docs/superpowers/plans/2026-07-17-single-path-strategy-venue-preflight.md
+git commit -m "docs: align sealed registration implementation"
+```
+
+- [ ] **Step 5: Publish without waiting on CI**
+
+Run:
+
+```bash
 just sandbox-safe-push
+gh pr view 1442 --json headRefOid,isDraft,reviewRequests,statusCheckRollup,url
 ```
 
-Report the exact remote head SHA and detach; do not wait on CI. Before external review or merge, the reviewer must confirm the required exact-head checks are green under the current pre-cutover policy.
+Confirm the remote head equals local `HEAD`, the worktree is clean, and the stable PR body describes safe routes/snapshots plus the shared coordinator without embedding the head SHA or transient check status. Per `AGENTS.md`, report the exact head and detach; do not wait on CI and do not dispatch another Rust Probe.
 
-### Step 5: Request the required native reviewer only after evidence is clean
+- [ ] **Step 6: Hand off exact-head review requirements**
 
-Resolve node ID `U_kgDOEZMFhA` to its current login, keep `.github/CODEOWNERS` aligned, request that reviewer, and leave merging to the native human controls. Do not merge or bypass review/ruleset requirements.
+The reviewer must inspect terminal exact-head primary Clippy, Nextest archive/test, Backtester Clippy/archive/gate, source-fence, and coverage evidence. Do not merge. Native code-owner approval from the configured required reviewer, stale-review dismissal, last-push approval, and review-thread resolution remain mandatory.
 
 ---
 
-## Plan self-review checklist
+## Plan Self-Review Checklist
 
-- Every accepted design requirement maps to a production change and explicit evidence.
-- No placeholder names such as “similar helper” or “appropriate test” remain.
-- The client resolver is the sole registration-path client-map owner and deduplicates aliases by identity.
-- Settlement remains capability-gated, while execution venue remains unconditional.
-- Every strategy is concretely built before mutation; final commit owns no fallible repository preparation.
-- Registry construction has one path; no build/register compatibility layer remains.
-- No resolved secrets or raw client blocks are retained in the strategy context.
-- The NT `add_strategy` boundary is disclosed as non-transactional; no rollback is implied.
-- Verification respects the two-probe limit and the remote-first Rust policy.
+- Every spec control maps to a production task and explicit evidence.
+- Live and Backtester have one prepared-batch coordinator and no adapter.
+- The context contains no loaded/root/client-block/secrets capability.
+- Safe route and config snapshot signatures are consistent across Tasks 2–4.
+- Opaque prepared-type visibility is consistent across registry, tests, and Backtester.
+- Missing signal and resolution clients both have entrypoint-level zero-mutation tests.
+- All source-fence checks ignore comments and string literals.
+- No task requires local Rust compilation or a third Rust Probe.
+- No placeholder, deferred fix, or excluded B3/D scope is introduced.

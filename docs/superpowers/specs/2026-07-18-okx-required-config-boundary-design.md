@@ -25,12 +25,12 @@ the same value into the official `OKXDataClientConfig`, and copy the typed
 controls into the official config. Missing or invalid controls therefore fail
 as schema errors before an upstream config can exist.
 
-Both startup validation and adapter mapping will call the same parser. The
-shared data-only provider machinery will receive a required parser function,
-using the ordinary upstream deserializer for other providers and the typed OKX
-parser for OKX. Parser selection is declared once at the provider entry point;
-there is no runtime fallback, alternate value source, or branch on an
-individual field.
+Both startup validation and adapter mapping will call the same parser through a
+local config-boundary trait. Each official config type declares its parser
+once: ordinary providers use the upstream deserializer, OKX uses the typed
+monitor-control parser, and Kraken includes its official invariant validation.
+There is no runtime fallback, alternate value source, duplicated parser
+selection, or branch on an individual field.
 
 Delete:
 

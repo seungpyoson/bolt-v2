@@ -216,8 +216,9 @@ const KRAKEN_DATA_FIELDS: &[&str] = &[
     "max_requests_per_second",
     "transport_backend",
 ];
-type DataConfigParser<T> = fn(&toml::Value) -> Result<T, String>;
-type DataConfigValidator<T> = fn(&T) -> anyhow::Result<()>;
+trait DataConfigBoundary: ClientConfig + Sized + 'static {
+    fn parse(value: &toml::Value) -> Result<Self, String>;
+}
 
 #[derive(Debug, Deserialize)]
 struct RequiredOkxBookHealthControls {
@@ -236,39 +237,50 @@ where
         .map_err(|error: toml::de::Error| error.to_string())
 }
 
-fn parse_okx_data_config(value: &toml::Value) -> Result<OKXDataClientConfig, String> {
-    let controls = deserialize_data_config::<RequiredOkxBookHealthControls>(value)?;
-    let mut config = deserialize_data_config::<OKXDataClientConfig>(value)?;
-    config.book_stale_check_interval_secs = controls.book_stale_check_interval_secs;
-    config.book_stale_threshold_secs = controls.book_stale_threshold_secs;
-    config.book_snapshot_timeout_secs = controls.book_snapshot_timeout_secs;
-    Ok(config)
+macro_rules! impl_direct_data_config_boundary {
+    ($($config:ty),+ $(,)?) => {
+        $(
+            impl DataConfigBoundary for $config {
+                fn parse(value: &toml::Value) -> Result<Self, String> {
+                    deserialize_data_config(value)
+                }
+            }
+        )+
+    };
 }
 
-fn accept_data_config<T>(_config: &T) -> anyhow::Result<()> {
-    Ok(())
+impl_direct_data_config_boundary!(
+    BitmexDataClientConfig,
+    BybitDataClientConfig,
+    CoinbaseDataClientConfig,
+    DeribitDataClientConfig,
+);
+
+impl DataConfigBoundary for OKXDataClientConfig {
+    fn parse(value: &toml::Value) -> Result<Self, String> {
+        let controls = deserialize_data_config::<RequiredOkxBookHealthControls>(value)?;
+        let mut config = deserialize_data_config::<Self>(value)?;
+        config.book_stale_check_interval_secs = controls.book_stale_check_interval_secs;
+        config.book_stale_threshold_secs = controls.book_stale_threshold_secs;
+        config.book_snapshot_timeout_secs = controls.book_snapshot_timeout_secs;
+        Ok(config)
+    }
+}
+
+impl DataConfigBoundary for KrakenDataClientConfig {
+    fn parse(value: &toml::Value) -> Result<Self, String> {
+        let config = deserialize_data_config::<Self>(value)?;
+        config.validate().map_err(|error| error.to_string())?;
+        Ok(config)
+    }
 }
 
 pub fn validate_bitmex_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<BitmexDataClientConfig>(
-        BITMEX_KEY,
-        key,
-        client,
-        BITMEX_DATA_FIELDS,
-        deserialize_data_config::<BitmexDataClientConfig>,
-        accept_data_config::<BitmexDataClientConfig>,
-    )
+    validate_data_only_client::<BitmexDataClientConfig>(BITMEX_KEY, key, client, BITMEX_DATA_FIELDS)
 }
 
 pub fn validate_bybit_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<BybitDataClientConfig>(
-        BYBIT_KEY,
-        key,
-        client,
-        BYBIT_DATA_FIELDS,
-        deserialize_data_config::<BybitDataClientConfig>,
-        accept_data_config::<BybitDataClientConfig>,
-    )
+    validate_data_only_client::<BybitDataClientConfig>(BYBIT_KEY, key, client, BYBIT_DATA_FIELDS)
 }
 
 pub fn validate_coinbase_client(key: &str, client: &ClientBlock) -> Vec<String> {
@@ -277,8 +289,6 @@ pub fn validate_coinbase_client(key: &str, client: &ClientBlock) -> Vec<String> 
         key,
         client,
         COINBASE_DATA_FIELDS,
-        deserialize_data_config::<CoinbaseDataClientConfig>,
-        accept_data_config::<CoinbaseDataClientConfig>,
     )
 }
 
@@ -288,31 +298,15 @@ pub fn validate_deribit_client(key: &str, client: &ClientBlock) -> Vec<String> {
         key,
         client,
         DERIBIT_DATA_FIELDS,
-        deserialize_data_config::<DeribitDataClientConfig>,
-        accept_data_config::<DeribitDataClientConfig>,
     )
 }
 
 pub fn validate_okx_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<OKXDataClientConfig>(
-        OKX_KEY,
-        key,
-        client,
-        OKX_DATA_FIELDS,
-        parse_okx_data_config,
-        accept_data_config::<OKXDataClientConfig>,
-    )
+    validate_data_only_client::<OKXDataClientConfig>(OKX_KEY, key, client, OKX_DATA_FIELDS)
 }
 
 pub fn validate_kraken_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<KrakenDataClientConfig>(
-        KRAKEN_KEY,
-        key,
-        client,
-        KRAKEN_DATA_FIELDS,
-        deserialize_data_config::<KrakenDataClientConfig>,
-        KrakenDataClientConfig::validate,
-    )
+    validate_data_only_client::<KrakenDataClientConfig>(KRAKEN_KEY, key, client, KRAKEN_DATA_FIELDS)
 }
 
 fn validate_data_only_client<T>(
@@ -320,11 +314,9 @@ fn validate_data_only_client<T>(
     key: &str,
     client: &ClientBlock,
     allowed_fields: &[&str],
-    parse_config: DataConfigParser<T>,
-    validate_config: DataConfigValidator<T>,
 ) -> Vec<String>
 where
-    T: DeserializeOwned,
+    T: DataConfigBoundary,
 {
     let mut errors = Vec::new();
     if client.execution.is_some() {
@@ -354,12 +346,8 @@ where
         data,
         allowed_fields,
     ));
-    match parse_config(data) {
-        Ok(parsed) => {
-            if let Err(error) = validate_config(&parsed) {
-                errors.push(format!("clients.{key}.data: {error}"));
-            }
-        }
+    match T::parse(data) {
+        Ok(_) => {}
         Err(message) => errors.push(format!("clients.{key}.data: {message}")),
     }
     errors
@@ -452,7 +440,6 @@ pub fn map_bitmex_adapters(
         BitmexDataClientFactory::new(),
         BITMEX_KEY,
         BITMEX_DATA_FIELDS,
-        deserialize_data_config::<BitmexDataClientConfig>,
     )
 }
 
@@ -464,7 +451,6 @@ pub fn map_bybit_adapters(
         BybitDataClientFactory::new(),
         BYBIT_KEY,
         BYBIT_DATA_FIELDS,
-        deserialize_data_config::<BybitDataClientConfig>,
     )
 }
 
@@ -476,7 +462,6 @@ pub fn map_coinbase_adapters(
         CoinbaseDataClientFactory::new(),
         COINBASE_KEY,
         COINBASE_DATA_FIELDS,
-        deserialize_data_config::<CoinbaseDataClientConfig>,
     )
 }
 
@@ -488,7 +473,6 @@ pub fn map_deribit_adapters(
         DeribitDataClientFactory::new(),
         DERIBIT_KEY,
         DERIBIT_DATA_FIELDS,
-        deserialize_data_config::<DeribitDataClientConfig>,
     )
 }
 
@@ -500,7 +484,6 @@ pub fn map_okx_adapters(
         OKXDataClientFactory::new(),
         OKX_KEY,
         OKX_DATA_FIELDS,
-        parse_okx_data_config,
     )
 }
 
@@ -512,7 +495,6 @@ pub fn map_kraken_adapters(
         KrakenDataClientFactory::new(),
         KRAKEN_KEY,
         KRAKEN_DATA_FIELDS,
-        deserialize_data_config::<KrakenDataClientConfig>,
     )
 }
 
@@ -521,10 +503,9 @@ fn map_data_only_adapters<T, F>(
     factory: F,
     provider_key: &'static str,
     allowed_fields: &[&str],
-    parse_config: DataConfigParser<T>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>
 where
-    T: ClientConfig + DeserializeOwned + 'static,
+    T: DataConfigBoundary,
     F: DataClientFactory + 'static,
 {
     let value =
@@ -546,7 +527,7 @@ where
     Ok(BoltV3ClientAdapterConfig {
         data: Some(BoltV3DataClientAdapterConfig {
             factory: Box::new(factory),
-            config: Box::new(parse_data_config(context.client_key, value, parse_config)?),
+            config: Box::new(parse_data_config::<T>(context.client_key, value)?),
         }),
         execution: None,
     })
@@ -576,9 +557,11 @@ fn reject_unknown_data_fields_for_mapping(
 fn parse_data_config<T>(
     client_key: &str,
     value: &toml::Value,
-    parse_config: DataConfigParser<T>,
-) -> Result<T, BoltV3AdapterMappingError> {
-    parse_config(value).map_err(|message| BoltV3AdapterMappingError::SchemaParse {
+) -> Result<T, BoltV3AdapterMappingError>
+where
+    T: DataConfigBoundary,
+{
+    T::parse(value).map_err(|message| BoltV3AdapterMappingError::SchemaParse {
         client_key: client_key.to_string(),
         block: "data",
         message,

@@ -4,7 +4,7 @@
 
 **Goal:** Replace the OKX raw-key guard ladder with one typed, required configuration parser used by both validation and adapter mapping.
 
-**Architecture:** The shared data-only provider path receives required parser and validator functions. Ordinary providers use the generic Nautilus deserializer; OKX uses a typed monitor-control parser that constructs one official `OKXDataClientConfig` with the explicitly configured values. No optional parser/validator dispatch, field-list scan, fallback value, or second OKX-only mapping guard remains.
+**Architecture:** The shared data-only provider path is generic over one local config-boundary trait. Ordinary providers use the generic Nautilus deserializer; OKX's trait implementation constructs one official `OKXDataClientConfig` with the explicitly configured values, and Kraken's implementation includes its official invariant validation. No parser-function duplication, optional dispatch, field-list scan, fallback value, or second provider-only mapping guard remains.
 
 **Tech Stack:** Rust 1.97.0, serde, toml, NautilusTrader 0.61.0, GitHub Actions remote Rust verification.
 
@@ -29,11 +29,11 @@
 
 **Interfaces:**
 - Consumes: `toml::Value`, official `OKXDataClientConfig`, existing `validate_data_only_client` and `map_data_only_adapters` entry points.
-- Produces: `parse_okx_data_config(&toml::Value) -> Result<OKXDataClientConfig, String>` and required `DataConfigParser<T>` / `DataConfigValidator<T>` arguments shared by validation and mapping.
+- Produces: one `DataConfigBoundary::parse(&toml::Value) -> Result<Self, String>` implementation per official config type, shared by validation and mapping.
 
 - [ ] **Step 1: Replace procedural OKX key checks with typed controls**
 
-Add the typed input and the one parser that constructs the official config:
+Add the typed input and generic deserializer used by the config-type boundary:
 
 ```rust
 #[derive(Debug, Deserialize)]
@@ -50,32 +50,43 @@ where
     value.clone().try_into().map_err(|error: toml::de::Error| error.to_string())
 }
 
-fn parse_okx_data_config(value: &toml::Value) -> Result<OKXDataClientConfig, String> {
-    let controls = deserialize_data_config::<RequiredOkxBookHealthControls>(value)?;
-    let mut config = deserialize_data_config::<OKXDataClientConfig>(value)?;
-    config.book_stale_check_interval_secs = controls.book_stale_check_interval_secs;
-    config.book_stale_threshold_secs = controls.book_stale_threshold_secs;
-    config.book_snapshot_timeout_secs = controls.book_snapshot_timeout_secs;
-    Ok(config)
-}
 ```
 
 Delete `OKX_REQUIRED_DATA_FIELDS`, `missing_data_fields`, `reject_missing_data_fields_for_mapping`, and both OKX-only raw-table guard blocks.
 
-- [ ] **Step 2: Require parser and validator functions on the shared path**
+- [ ] **Step 2: Bind one parser to each official config type**
 
-Change both generic boundaries to take required functions:
+Bind the constructor to the official config type once:
 
 ```rust
-type DataConfigParser<T> = fn(&toml::Value) -> Result<T, String>;
-type DataConfigValidator<T> = fn(&T) -> anyhow::Result<()>;
+trait DataConfigBoundary: ClientConfig + Sized + 'static {
+    fn parse(value: &toml::Value) -> Result<Self, String>;
+}
 
-fn accept_data_config<T>(_config: &T) -> anyhow::Result<()> {
-    Ok(())
+impl DataConfigBoundary for OKXDataClientConfig {
+    fn parse(value: &toml::Value) -> Result<Self, String> {
+        let controls = deserialize_data_config::<RequiredOkxBookHealthControls>(value)?;
+        let mut config = deserialize_data_config::<Self>(value)?;
+        config.book_stale_check_interval_secs = controls.book_stale_check_interval_secs;
+        config.book_stale_threshold_secs = controls.book_stale_threshold_secs;
+        config.book_snapshot_timeout_secs = controls.book_snapshot_timeout_secs;
+        Ok(config)
+    }
+}
+
+impl DataConfigBoundary for KrakenDataClientConfig {
+    fn parse(value: &toml::Value) -> Result<Self, String> {
+        let config = deserialize_data_config::<Self>(value)?;
+        config.validate().map_err(|error| error.to_string())?;
+        Ok(config)
+    }
 }
 ```
 
-`validate_data_only_client` always calls its parser and validator. Every direct provider binding passes `deserialize_data_config::<T>` plus `accept_data_config::<T>`, except OKX passes `parse_okx_data_config` and Kraken passes `KrakenDataClientConfig::validate`. `map_data_only_adapters` always uses its required parser function to build the exact official config trait object.
+`validate_data_only_client<T>` and `map_data_only_adapters<T, F>` both call
+`T::parse`. The direct implementations use `deserialize_data_config`; the OKX
+and Kraken implementations enforce their typed invariants. The mapper rejects
+a missing `[data]` block instead of producing an empty adapter.
 
 - [ ] **Step 3: Preserve fail-closed tests through the typed boundary**
 

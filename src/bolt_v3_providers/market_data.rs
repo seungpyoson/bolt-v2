@@ -193,6 +193,9 @@ const OKX_DATA_FIELDS: &[&str] = &[
     "retry_delay_initial_ms",
     "retry_delay_max_ms",
     "update_instruments_interval_mins",
+    "book_stale_check_interval_secs",
+    "book_stale_threshold_secs",
+    "book_snapshot_timeout_secs",
     "vip_level",
     "transport_backend",
 ];

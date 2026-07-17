@@ -1,8 +1,8 @@
 {
   "metadata_version": "catalog-metadata.v1",
-  "manifest_hash": "c6cfefac56875b2d2df244dbdf94e0d25f8ce17dd4c176e2f406abdad180e19d",
-  "checkpoint_hash": "a1c7b3805815d0e240634327bf52330dc304c7e553920b2efb1207b2f8e8ec41",
-  "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+  "manifest_hash": "894cbe2e5f6c8a0cda0f7e76dbaeba665c74bc414cbee33078938ef381712a90",
+  "checkpoint_hash": "3d57006fa08f8ae50b86ebae7bb5e0b41779077780363b0f94260fe02cdeb635",
+  "catalog_hash": "0094dc67de2fee033d872279207fb1657383ce62d1482e32ed24bbbf11972d34",
   "nt_data_type": "OrderBookDelta",
   "nt_instrument_id": "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d-73895424095742155573626958367283533358717984717096075221396743226794070701077.POLYMARKET",
   "canonical_rows": 103,

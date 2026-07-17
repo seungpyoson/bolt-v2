@@ -8,7 +8,7 @@ const PMXT_REFERENCE_ROOT: &str = "../../specs/023-nt-research-analytics-platfor
 const INSTRUMENT_ID: &str = "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d-73895424095742155573626958367283533358717984717096075221396743226794070701077.POLYMARKET";
 const SELECTED_SOURCE_SHA256: &str =
     "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e";
-const CATALOG_HASH: &str = "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236";
+const CATALOG_HASH: &str = "0094dc67de2fee033d872279207fb1657383ce62d1482e32ed24bbbf11972d34";
 
 #[test]
 fn pmxt_selected_source_conversion_reference_artifact_is_usable_nt_catalog() {

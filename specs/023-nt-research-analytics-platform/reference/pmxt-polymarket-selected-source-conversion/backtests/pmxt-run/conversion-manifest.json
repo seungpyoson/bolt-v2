@@ -21,7 +21,7 @@
     "TradeTick": 1
   },
   "output_catalog_uri": "file:///Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/nt-catalog",
-  "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
-  "checkpoint_hash": "a1c7b3805815d0e240634327bf52330dc304c7e553920b2efb1207b2f8e8ec41",
+  "catalog_hash": "0094dc67de2fee033d872279207fb1657383ce62d1482e32ed24bbbf11972d34",
+  "checkpoint_hash": "3d57006fa08f8ae50b86ebae7bb5e0b41779077780363b0f94260fe02cdeb635",
   "completed_at": "2026-06-10T14:30:00Z"
 }

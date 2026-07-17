@@ -100,10 +100,6 @@ fn binary_option_spec() -> BinaryOptionInstrumentSpec {
         description: Some("Bounded binary option fixture".to_string()),
         max_quantity: Some("1000000".to_string()),
         min_quantity: Some("0.001".to_string()),
-        // The NT catalog Arrow schema does not persist these six fields for
-        // BinaryOption (decode_binary_option_batch rev 6e059dc lines 412-417
-        // hardcodes them as None), so build_binary_option rejects specs that
-        // set them to avoid silent data loss on the projection round-trip.
         max_notional: None,
         min_notional: None,
         max_price: None,

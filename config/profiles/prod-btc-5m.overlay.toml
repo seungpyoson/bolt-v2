@@ -109,6 +109,19 @@ quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
 carry_surfaces = []
 
+[client_execution.polymarket_main.economics.sources]
+schedule = "clob_market_info"
+
+[client_execution.polymarket_main.economics.formula]
+fee_round_decimal_places = "5"
+fee_rounding_mode = "midpoint_away_from_zero"
+sub_fee_quantum_behavior = "round_to_zero"
+
+[client_execution.polymarket_main.economics.assets.collateral]
+native_unit = "pUSD"
+identity_kind = "currency"
+evidence_fixture_id = "polymarket-v2-collateral-pusd"
+
 [client_execution.polymarket_main.economics.edge_basis.primary]
 resolver_id = "product-metadata"
 product_metadata_source = "polymarket-market-info"
@@ -116,4 +129,14 @@ product_metadata_source = "polymarket-market-info"
 [client_execution.polymarket_main.economics.product_surface_policies]
 binary_outcome = "primary"
 
-[client_execution.polymarket_main.economics.valuation.routes]
+[client_execution.polymarket_main.economics.valuation.routes.pusd_usd]
+from_unit = "pUSD"
+to_currency = "USD"
+valuation_policy = "configured-market"
+client_id = "coinbase_data"
+instrument_id = "USDC-USD.COINBASE"
+orientation = "base_to_quote"
+max_age_ms = 1000
+legs = [
+  { from_unit = "pUSD", to_unit = "USD", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 1000 },
+]

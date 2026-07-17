@@ -43,8 +43,26 @@ pub struct ExecutionEconomicsConfig {
     pub edge_basis: BTreeMap<String, EdgeBasisResolverConfig>,
     pub product_surface_policies: BTreeMap<String, String>,
     pub carry_surfaces: BTreeSet<String>,
+    pub sources: BTreeMap<String, String>,
+    pub formula: BTreeMap<String, String>,
+    pub assets: BTreeMap<String, EconomicsAssetIdentityConfig>,
     pub valuation: ValuationConfig,
     pub carry: Option<CarryQuotePolicyConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomicsAssetIdentityKind {
+    Currency,
+    AssetQuantity,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsAssetIdentityConfig {
+    pub native_unit: String,
+    pub identity_kind: EconomicsAssetIdentityKind,
+    pub evidence_fixture_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -124,27 +142,63 @@ pub enum EconomicsConfigField {
     ValuationPolicy,
     ValuationClient,
     ValuationInstrument,
+    SourcePolicy,
+    FormulaPolicy,
+    AssetIdentity,
+    AssetEvidenceFixture,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EconomicsConfigError {
-    InvalidText { field: EconomicsConfigField },
+    InvalidText {
+        field: EconomicsConfigField,
+    },
     ReportingPolicyMismatch,
     InvalidQuoteWindow,
     InvalidRefreshMargin,
     EmptyEdgeBasisMapping,
-    MissingEdgeBasisPolicy { surface: String, policy_id: String },
-    MissingProductSurface { surface: String },
-    UnexpectedProductSurface { surface: String },
-    CarrySurfaceMissingProductPolicy { surface: String },
+    MissingEdgeBasisPolicy {
+        surface: String,
+        policy_id: String,
+    },
+    MissingProductSurface {
+        surface: String,
+    },
+    UnexpectedProductSurface {
+        surface: String,
+    },
+    CarrySurfaceMissingProductPolicy {
+        surface: String,
+    },
     CarrySurfaceMissingPolicy,
     ZeroCarryHorizon,
-    WrongTerminalCurrency { route_id: String },
-    DuplicateValuationAuthority { from: String, to: String },
-    InactiveDataClient { route_id: String, client_id: String },
-    ZeroValuationAge { route_id: String },
-    DisconnectedValuationRoute { route_id: String },
-    CyclicValuationRoute { route_id: String },
+    WrongTerminalCurrency {
+        route_id: String,
+    },
+    DuplicateValuationAuthority {
+        from: String,
+        to: String,
+    },
+    InactiveDataClient {
+        route_id: String,
+        client_id: String,
+    },
+    ZeroValuationAge {
+        route_id: String,
+    },
+    DisconnectedValuationRoute {
+        route_id: String,
+    },
+    CyclicValuationRoute {
+        route_id: String,
+    },
+    EmptySourcePolicy,
+    EmptyFormulaPolicy,
+    EmptyAssetIdentityMapping,
+    MissingValuationRoute {
+        native_unit: String,
+        reporting_currency: String,
+    },
     LiveSubmissionDisabled,
 }
 
@@ -201,6 +255,47 @@ impl ExecutionEconomicsConfig {
         }
         if self.edge_basis.is_empty() || self.product_surface_policies.is_empty() {
             errors.push(EconomicsConfigError::EmptyEdgeBasisMapping);
+        }
+        if self.sources.is_empty() {
+            errors.push(EconomicsConfigError::EmptySourcePolicy);
+        }
+        if self.formula.is_empty() {
+            errors.push(EconomicsConfigError::EmptyFormulaPolicy);
+        }
+        if self.assets.is_empty() {
+            errors.push(EconomicsConfigError::EmptyAssetIdentityMapping);
+        }
+        for (asset_id, asset) in &self.assets {
+            require_text(asset_id, EconomicsConfigField::AssetIdentity, &mut errors);
+            require_text(
+                &asset.native_unit,
+                EconomicsConfigField::AssetIdentity,
+                &mut errors,
+            );
+            require_text(
+                &asset.evidence_fixture_id,
+                EconomicsConfigField::AssetEvidenceFixture,
+                &mut errors,
+            );
+            if asset.native_unit != reporting.pnl_currency
+                && !self.valuation.routes.values().any(|route| {
+                    route.from_unit == asset.native_unit
+                        && route.to_currency == reporting.pnl_currency
+                })
+            {
+                errors.push(EconomicsConfigError::MissingValuationRoute {
+                    native_unit: asset.native_unit.clone(),
+                    reporting_currency: reporting.pnl_currency.clone(),
+                });
+            }
+        }
+        for (source_id, source_kind) in &self.sources {
+            require_text(source_id, EconomicsConfigField::SourcePolicy, &mut errors);
+            require_text(source_kind, EconomicsConfigField::SourcePolicy, &mut errors);
+        }
+        for (parameter, value) in &self.formula {
+            require_text(parameter, EconomicsConfigField::FormulaPolicy, &mut errors);
+            require_text(value, EconomicsConfigField::FormulaPolicy, &mut errors);
         }
         for (surface, policy_id) in &self.product_surface_policies {
             require_text(surface, EconomicsConfigField::ProductSurface, &mut errors);

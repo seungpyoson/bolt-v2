@@ -1484,6 +1484,19 @@ quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
 carry_surfaces = []
 
+[clients.polymarket_main.execution.economics.sources]
+schedule = "clob_market_info"
+
+[clients.polymarket_main.execution.economics.formula]
+fee_round_decimal_places = "5"
+fee_rounding_mode = "midpoint_away_from_zero"
+sub_fee_quantum_behavior = "round_to_zero"
+
+[clients.polymarket_main.execution.economics.assets.collateral]
+native_unit = "USD"
+identity_kind = "currency"
+evidence_fixture_id = "polymarket-collateral-fixture"
+
 [clients.polymarket_main.execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"
 product_metadata_source = "polymarket-market-info"

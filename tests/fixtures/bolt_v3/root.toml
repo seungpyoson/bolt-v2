@@ -282,6 +282,19 @@ quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
 carry_surfaces = []
 
+[clients.polymarket_main.execution.economics.sources]
+schedule = "clob_market_info"
+
+[clients.polymarket_main.execution.economics.formula]
+fee_round_decimal_places = "5"
+fee_rounding_mode = "midpoint_away_from_zero"
+sub_fee_quantum_behavior = "round_to_zero"
+
+[clients.polymarket_main.execution.economics.assets.collateral]
+native_unit = "pUSD"
+identity_kind = "currency"
+evidence_fixture_id = "polymarket-collateral-pusd-v1"
+
 [clients.polymarket_main.execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"
 product_metadata_source = "polymarket-market-info"
@@ -289,7 +302,17 @@ product_metadata_source = "polymarket-market-info"
 [clients.polymarket_main.execution.economics.product_surface_policies]
 binary_outcome = "primary"
 
-[clients.polymarket_main.execution.economics.valuation.routes]
+[clients.polymarket_main.execution.economics.valuation.routes.pusd_to_usd]
+from_unit = "pUSD"
+to_currency = "USD"
+valuation_policy = "configured-market"
+client_id = "coinbase_data"
+instrument_id = "USDC-USD.COINBASE"
+orientation = "base_to_quote"
+max_age_ms = 1000
+legs = [
+  { from_unit = "pUSD", to_unit = "USD", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 1000 },
+]
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket/private-key"
@@ -306,6 +329,21 @@ contract_types = ["linear", "inverse"]
 load_spreads = false
 environment = "live"
 transport_backend = "sockudo"
+
+[clients.coinbase_data]
+venue = "COINBASE"
+
+[clients.coinbase_data.data]
+environment = "Live"
+transport_backend = "sockudo"
+
+[clients.coinbase_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+min_observed_targets = 10
 
 # Live Chainlink Data Streams resolution-strike source. Routes to
 # chainlink::map_adapters via venue = "CHAINLINK_DATA_STREAMS" (chainlink::KEY).

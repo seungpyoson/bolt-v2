@@ -61,6 +61,206 @@ classification = "hyperliquid_economics_surface_schema_key"
 reason = "Stable serde-aligned product-surface discriminator used only for exact economics-config coverage validation."
 
 [[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"account_fees"'''
+context = '''("account_fees".to_string(), "user_fees".to_string()),'''
+classification = "hyperliquid_economics_source_schema_key"
+reason = "Stable provider-owned TOML field identity for the account fee authority; the selected source value remains mandatory TOML configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"user_fees"'''
+context = '''("account_fees".to_string(), "user_fees".to_string()),'''
+classification = "hyperliquid_economics_source_discriminator"
+reason = "Versioned provider API source discriminator validated against mandatory TOML so no alternate fee authority can be selected implicitly."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"builder_approval"'''
+context = '''"builder_approval".to_string(),'''
+classification = "hyperliquid_economics_source_schema_key"
+reason = "Stable provider-owned TOML field identity for the account-scoped builder approval authority."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"max_builder_fee"'''
+context = '''"max_builder_fee".to_string(),'''
+classification = "hyperliquid_economics_source_discriminator"
+reason = "Versioned provider API source discriminator validated against mandatory TOML to prevent an implicit builder-fee authority."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"funding"'''
+context = '''"funding".to_string(),'''
+classification = "hyperliquid_economics_source_schema_key"
+reason = "Stable provider-owned TOML field identity for the funding authority required by enabled perp surfaces."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"user_funding_stream_and_history"'''
+context = '''"user_funding_stream_and_history".to_string(),'''
+classification = "hyperliquid_economics_source_discriminator"
+reason = "Versioned provider source composition name; runtime cadence and freshness remain mandatory TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"stable_pair_scale"'''
+context = '''"stable_pair_scale",'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the coefficient itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"growth_mode_scale"'''
+context = '''"growth_mode_scale",'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the coefficient itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"hip3_scale_threshold"'''
+context = '''"hip3_scale_threshold",'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the threshold itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"hip3_below_threshold_base"'''
+context = '''"hip3_below_threshold_base",'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the base coefficient itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"hip3_at_or_above_threshold_multiplier"'''
+context = '''"hip3_at_or_above_threshold_multiplier",'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the multiplier itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"hip3_at_or_above_deployer_share"'''
+context = '''"hip3_at_or_above_deployer_share",'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the share itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"settlement"'''
+context = '''if economics.assets.len() != 1 || !economics.assets.contains_key("settlement") {'''
+classification = "hyperliquid_economics_asset_role_schema_key"
+reason = "Stable provider-owned asset role requiring exactly one TOML identity for enabled perp products."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"schedule"'''
+context = '''BTreeMap::from([("schedule".to_string(), "clob_market_info".to_string())]);'''
+classification = "polymarket_economics_source_schema_key"
+reason = "Stable provider-owned TOML field identity for the sole market fee schedule authority."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"clob_market_info"'''
+context = '''BTreeMap::from([("schedule".to_string(), "clob_market_info".to_string())]);'''
+classification = "polymarket_economics_source_discriminator"
+reason = "Versioned provider API source discriminator validated against mandatory TOML so the retired fee-rate endpoint cannot reappear as an authority."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"fee_round_decimal_places"'''
+context = '''"fee_round_decimal_places",'''
+classification = "polymarket_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the rounding precision itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"fee_rounding_mode"'''
+context = '''"fee_rounding_mode",'''
+classification = "polymarket_economics_formula_schema_key"
+reason = "Stable TOML schema field name; the rounding mode itself is loaded from configuration and never defaulted in Rust."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"sub_fee_quantum_behavior"'''
+context = '''"sub_fee_quantum_behavior",'''
+classification = "polymarket_economics_formula_schema_key"
+reason = "Stable TOML schema field name; sub-quantum behavior is loaded from mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"fee_round_decimal_places"'''
+context = '''.get("fee_round_decimal_places")'''
+classification = "polymarket_economics_formula_schema_lookup"
+reason = "Provider-owned lookup of the mandatory TOML precision field; no precision value is embedded in code."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"fee_rounding_mode"'''
+context = '''.get("fee_rounding_mode")'''
+classification = "polymarket_economics_formula_schema_lookup"
+reason = "Provider-owned lookup of the mandatory TOML rounding-mode field."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"midpoint_away_from_zero"'''
+context = '''Some("midpoint_away_from_zero" | "to_zero")'''
+classification = "polymarket_economics_rounding_mode_discriminator"
+reason = "Closed provider-owned rounding-mode enum discriminator; the selected mode remains mandatory TOML configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"to_zero"'''
+context = '''Some("midpoint_away_from_zero" | "to_zero")'''
+classification = "polymarket_economics_rounding_mode_discriminator"
+reason = "Closed provider-owned rounding-mode enum discriminator; the selected mode remains mandatory TOML configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"sub_fee_quantum_behavior"'''
+context = '''.get("sub_fee_quantum_behavior")'''
+classification = "polymarket_economics_formula_schema_lookup"
+reason = "Provider-owned lookup of the mandatory TOML sub-quantum behavior field."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"round_to_zero"'''
+context = '''!= Some("round_to_zero")'''
+classification = "polymarket_economics_sub_quantum_discriminator"
+reason = "Closed provider-owned behavior discriminator that rejects unsupported configured behavior rather than defaulting."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"collateral"'''
+context = '''if economics.assets.len() != 1 || !economics.assets.contains_key("collateral") {'''
+classification = "polymarket_economics_asset_role_schema_key"
+reason = "Stable provider-owned asset role requiring exactly one TOML identity."
+
+[[allowed]]
 path = "src/bolt_v3_providers/mod.rs"
 kind = "string"
 literal = '''"clients.{client_id}.execution has no registered economics configuration binding"'''

@@ -545,6 +545,56 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
             execution.retry_delay_initial_ms, execution.retry_delay_max_ms
         ));
     }
+    errors.extend(validate_quote_economics_policy(key, &execution.economics));
+    errors
+}
+
+fn validate_quote_economics_policy(
+    key: &str,
+    economics: &crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let expected_sources =
+        BTreeMap::from([("schedule".to_string(), "clob_market_info".to_string())]);
+    if economics.sources != expected_sources {
+        errors.push(format!(
+            "clients.{key}.execution.economics.sources must contain exactly schedule = \"clob_market_info\" for the quote-only slice"
+        ));
+    }
+    let expected_formula_keys = BTreeSet::from([
+        "fee_round_decimal_places",
+        "fee_rounding_mode",
+        "sub_fee_quantum_behavior",
+    ]);
+    let actual_formula_keys = economics.formula.keys().map(String::as_str).collect();
+    if actual_formula_keys != expected_formula_keys
+        || economics
+            .formula
+            .get("fee_round_decimal_places")
+            .and_then(|value| value.parse::<u32>().ok())
+            .is_none_or(|value| value.is_zero())
+        || !matches!(
+            economics
+                .formula
+                .get("fee_rounding_mode")
+                .map(String::as_str),
+            Some("midpoint_away_from_zero" | "to_zero")
+        )
+        || economics
+            .formula
+            .get("sub_fee_quantum_behavior")
+            .map(String::as_str)
+            != Some("round_to_zero")
+    {
+        errors.push(format!(
+            "clients.{key}.execution.economics.formula must provide the complete validated Polymarket rounding policy"
+        ));
+    }
+    if economics.assets.len() != 1 || !economics.assets.contains_key("collateral") {
+        errors.push(format!(
+            "clients.{key}.execution.economics.assets must bind exactly one collateral identity"
+        ));
+    }
     errors
 }
 

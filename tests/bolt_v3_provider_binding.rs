@@ -439,6 +439,24 @@ quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
 carry_surfaces = ["standard_perps"]
 
+[execution.economics.sources]
+account_fees = "user_fees"
+builder_approval = "max_builder_fee"
+funding = "user_funding_stream_and_history"
+
+[execution.economics.formula]
+stable_pair_scale = "0.2"
+growth_mode_scale = "0.1"
+hip3_scale_threshold = "1"
+hip3_below_threshold_base = "1"
+hip3_at_or_above_threshold_multiplier = "2"
+hip3_at_or_above_deployer_share = "0.5"
+
+[execution.economics.assets.settlement]
+native_unit = "USD"
+identity_kind = "currency"
+evidence_fixture_id = "hyperliquid-settlement-fixture"
+
 [execution.economics.carry]
 holding_horizon_secs = 3600
 component_id = "funding-carry"

@@ -26,6 +26,17 @@ resting_order_refresh_margin_ms = 500
 carry_surfaces = ["perp"]
 product_surface_policies = { perp = "default" }
 
+[sources]
+account_fees = "user_fees"
+
+[formula]
+rate_scale = "1"
+
+[assets.settlement]
+native_unit = "pUSD"
+identity_kind = "currency"
+evidence_fixture_id = "settlement-pusd-v1"
+
 [edge_basis.default]
 resolver_id = "perp-notional"
 product_metadata_source = "product-snapshot"
@@ -51,6 +62,35 @@ fn quote_only_config_is_strict_and_validates_freshness_and_policy() {
 
     assert!(parse(&valid_config().replace("quote_only", "live")).is_err());
     assert!(parse(&format!("{}\nunknown_key = true", valid_config())).is_err());
+}
+
+#[test]
+fn non_reporting_native_unit_requires_one_explicit_valuation_route() {
+    let source = valid_config().replace("native_unit = \"pUSD\"", "native_unit = \"USDC\"");
+    let config = parse(&source).unwrap();
+    assert!(
+        config
+            .validate(&reporting(), &BTreeSet::new())
+            .iter()
+            .any(|error| {
+                matches!(
+                    error,
+                    EconomicsConfigError::MissingValuationRoute { native_unit, reporting_currency }
+                        if native_unit == "USDC" && reporting_currency == "pUSD"
+                )
+            })
+    );
+}
+
+#[test]
+fn sources_formula_and_assets_are_required_policy_not_defaults() {
+    for block in [
+        "[sources]\naccount_fees = \"user_fees\"\n",
+        "[formula]\nrate_scale = \"1\"\n",
+        "[assets.settlement]\nnative_unit = \"pUSD\"\nidentity_kind = \"currency\"\nevidence_fixture_id = \"settlement-pusd-v1\"\n",
+    ] {
+        assert!(parse(&valid_config().replace(block, "")).is_err());
+    }
 }
 
 #[test]

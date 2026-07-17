@@ -290,6 +290,19 @@ quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
 carry_surfaces = []
 
+[clients.polymarket_main.execution.economics.sources]
+schedule = "clob_market_info"
+
+[clients.polymarket_main.execution.economics.formula]
+fee_round_decimal_places = "5"
+fee_rounding_mode = "midpoint_away_from_zero"
+sub_fee_quantum_behavior = "round_to_zero"
+
+[clients.polymarket_main.execution.economics.assets.collateral]
+native_unit = "pUSD"
+identity_kind = "currency"
+evidence_fixture_id = "polymarket-v2-collateral-pusd"
+
 [clients.polymarket_main.execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"
 product_metadata_source = "polymarket-market-info"
@@ -297,7 +310,17 @@ product_metadata_source = "polymarket-market-info"
 [clients.polymarket_main.execution.economics.product_surface_policies]
 binary_outcome = "primary"
 
-[clients.polymarket_main.execution.economics.valuation.routes]
+[clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
+from_unit = "pUSD"
+to_currency = "USD"
+valuation_policy = "configured-market"
+client_id = "coinbase_data"
+instrument_id = "USDC-USD.COINBASE"
+orientation = "base_to_quote"
+max_age_ms = 1000
+legs = [
+  { from_unit = "pUSD", to_unit = "USD", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 1000 },
+]
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket/private-key"
@@ -541,7 +564,7 @@ venue = "HYPERLIQUID"
 account_id = "HYPERLIQUID-001"
 environment = "mainnet"
 execution_mode = "master_account_api_wallet"
-product_surfaces = ["standard_perps", "spot", "hip3_builder_perps", "hip4_outcomes"]
+product_surfaces = ["standard_perps", "hip3_builder_perps"]
 base_url_ws = "wss://api.hyperliquid.xyz/ws"
 base_url_http = "https://api.hyperliquid.xyz/info"
 base_url_exchange = "https://api.hyperliquid.xyz/exchange"
@@ -565,6 +588,24 @@ quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
 carry_surfaces = ["standard_perps", "hip3_builder_perps"]
 
+[clients.hyperliquid_execution.execution.economics.sources]
+account_fees = "user_fees"
+builder_approval = "max_builder_fee"
+funding = "user_funding_stream_and_history"
+
+[clients.hyperliquid_execution.execution.economics.formula]
+stable_pair_scale = "0.2"
+growth_mode_scale = "0.1"
+hip3_scale_threshold = "1"
+hip3_below_threshold_base = "1"
+hip3_at_or_above_threshold_multiplier = "2"
+hip3_at_or_above_deployer_share = "0.5"
+
+[clients.hyperliquid_execution.execution.economics.assets.settlement]
+native_unit = "USDC"
+identity_kind = "currency"
+evidence_fixture_id = "hyperliquid-usdc-settlement-v1"
+
 [clients.hyperliquid_execution.execution.economics.carry]
 holding_horizon_secs = 3600
 component_id = "funding-carry"
@@ -580,11 +621,19 @@ product_metadata_source = "hyperliquid-meta"
 
 [clients.hyperliquid_execution.execution.economics.product_surface_policies]
 standard_perps = "primary"
-spot = "primary"
 hip3_builder_perps = "primary"
-hip4_outcomes = "primary"
 
-[clients.hyperliquid_execution.execution.economics.valuation.routes]
+[clients.hyperliquid_execution.execution.economics.valuation.routes.usdc_usd]
+from_unit = "USDC"
+to_currency = "USD"
+valuation_policy = "configured-market"
+client_id = "coinbase_data"
+instrument_id = "USDC-USD.COINBASE"
+orientation = "base_to_quote"
+max_age_ms = 1000
+legs = [
+  { from_unit = "USDC", to_unit = "USD", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 1000 },
+]
 
 [clients.hyperliquid_execution.secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"

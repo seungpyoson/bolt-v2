@@ -661,6 +661,56 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
     if let Some(latency_profile) = &execution.latency_profile {
         errors.extend(validate_latency_profile_config(key, latency_profile));
     }
+    errors.extend(validate_quote_economics_policy(key, &execution.economics));
+    errors
+}
+
+fn validate_quote_economics_policy(
+    key: &str,
+    economics: &crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let expected_sources = BTreeMap::from([
+        ("account_fees".to_string(), "user_fees".to_string()),
+        (
+            "builder_approval".to_string(),
+            "max_builder_fee".to_string(),
+        ),
+        (
+            "funding".to_string(),
+            "user_funding_stream_and_history".to_string(),
+        ),
+    ]);
+    if economics.sources != expected_sources {
+        errors.push(format!(
+            "clients.{key}.execution.economics.sources must contain the complete Hyperliquid quote authority set"
+        ));
+    }
+    let expected_formula_keys = BTreeSet::from([
+        "stable_pair_scale",
+        "growth_mode_scale",
+        "hip3_scale_threshold",
+        "hip3_below_threshold_base",
+        "hip3_at_or_above_threshold_multiplier",
+        "hip3_at_or_above_deployer_share",
+    ]);
+    let actual_formula_keys = economics.formula.keys().map(String::as_str).collect();
+    if actual_formula_keys != expected_formula_keys
+        || economics.formula.values().any(|value| {
+            Decimal::from_str(value)
+                .map(|value| value < Decimal::ZERO)
+                .unwrap_or(true)
+        })
+    {
+        errors.push(format!(
+            "clients.{key}.execution.economics.formula must provide all non-negative Hyperliquid developer-formula coefficients"
+        ));
+    }
+    if economics.assets.len() != 1 || !economics.assets.contains_key("settlement") {
+        errors.push(format!(
+            "clients.{key}.execution.economics.assets must bind exactly one settlement identity for the enabled perp surfaces"
+        ));
+    }
     errors
 }
 

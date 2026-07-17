@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import dataclasses
 from collections.abc import Callable, Iterable, Mapping
 import difflib
 import hashlib
@@ -22,6 +23,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from workflow_expression_analysis import (
+    BACKTESTER_RA001A_SAFE_CANCEL_FORM,
     ELSE_RE,
     FI_RE,
     GATE_NAME_OUTPUT,
@@ -314,6 +316,7 @@ from ci_provenance import (
     POLICY_ROWS,
     POLICY_VALUES,
     REUSE_RELEVANT_WORKFLOW_ENV_KEYS,
+    CiPolicyResult as ProvenanceCiPolicyResult,
     ProvenanceError,
     check_lookback_le_retention,
     gate_name_collision_errors,
@@ -468,16 +471,6 @@ YAML_FOLDED_RUN_LINE_RE = re.compile(
 
 class PolicyError(RuntimeError):
     pass
-
-
-class CiPolicyResult(NamedTuple):
-    ci_policy_path: str
-    full_ci_required: bool
-    full_ci_deferred: bool
-    gate_name: str
-    backtester_gate_name: str
-    expected_event_class: str
-    reason: str
 
 
 class ArtifactRetentionClass(NamedTuple):
@@ -1283,7 +1276,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "1bb777d049341b37a59f360d456d79928491ebbef422d0f8c8acbcb2692b208d"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "8324341815250be53bc52b84c008d87e8ccdff52839050fa6e17ddfd3aae2838"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -1824,6 +1817,8 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))) "
     "&& format('bvs-pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& format('bvs-pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
+    "&& github.event.inputs.ra001a_durable_tracer == 'true' "
+    "&& format('bvs-ra001a-tracer-{0}', github.sha) || github.event_name == 'workflow_dispatch' "
     "&& format('bvs-{0}-dispatch-iteration', github.ref_name) "
     "|| github.event_name == 'merge_group' && format('bvs-mq-{0}', github.ref) "
     "|| format('bvs-{0}-{1}', github.ref_name, github.sha) }}",
@@ -1928,11 +1923,14 @@ def mergify_proof_pr_concurrency_errors(
         or MERGIFY_PROOF_PR_HEAD_SHA not in normalized_group
     ):
         errors.append("concurrency group must isolate Mergify proof PR runs")
-    if "github.run_id" in normalized_group:
-        errors.append("Mergify proof PR concurrency group must key on head SHA, not run_id")
     # Split on event arms, not every `||`: the Mergify head-ref predicate itself
     # contains an inner OR between stable and transient queue prefixes.
     group_arms = re.split(r"\s+\|\|\s+github\.event_name\b", normalized_group)
+    if any(
+        head_ref_predicate in arm and "github.run_id" in arm
+        for arm in group_arms
+    ):
+        errors.append("Mergify proof PR concurrency group must key on head SHA, not run_id")
     if any(
         head_ref_predicate in arm
         and MERGIFY_PROOF_PR_METADATA_ONLY_EDIT_PREDICATE in arm
@@ -2185,25 +2183,29 @@ def evaluate_ci_policy(
     event_sender_id: int = -1,
     pull_request_author_id: int = -1,
     ref: str,
-) -> CiPolicyResult:
+) -> ProvenanceCiPolicyResult:
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
-    # Queue-only rework (#981): the runtime resolver now reads
-    # config.mergify_temp_pr_actor_id and an event_sender_id to bind the mergify temp
-    # PR to its actor. This static mirror delegates to that same resolver, so it must
-    # supply the bound actor id (or a sentinel that never matches a real sender) and
-    # thread the sender id through, or it would crash on the missing attribute.
-    config = type(
-        "StaticPolicyConfig",
-        (),
-        {
-            "policy": {key: str(value) for key, value in policy.items() if key != "override"},
-            "gate_names": dict(gate_names),
-            "mergify_temp_pr_head_ref_prefix": mergify_temp_pr_head_ref_prefix,
-            "mergify_temp_pr_actor_id": mergify_temp_pr_actor_id,
-            "force_full_ci": force_full_ci,
-        },
-    )()
+    # Keep this static adapter on the complete, validated runtime config
+    # contract. Dataclass replacement preserves new required fields while the
+    # policy-specific fields remain explicit synthetic test inputs.
+    base_config = load_config(DEFAULT_RUNNERS_CONFIG)
+    config = dataclasses.replace(
+        base_config,
+        policy={key: str(value) for key, value in policy.items() if key != "override"},
+        gate_names=dict(gate_names),
+        mergify_temp_pr_head_ref_prefix=(
+            mergify_temp_pr_head_ref_prefix
+            if mergify_temp_pr_head_ref_prefix
+            else base_config.mergify_temp_pr_head_ref_prefix
+        ),
+        mergify_temp_pr_actor_id=(
+            mergify_temp_pr_actor_id
+            if mergify_temp_pr_actor_id > 0
+            else base_config.mergify_temp_pr_actor_id
+        ),
+        force_full_ci=force_full_ci,
+    )
     try:
         result = provenance_evaluate_ci_policy(
             config,
@@ -2219,15 +2221,7 @@ def evaluate_ci_policy(
         )
     except ProvenanceError as exc:
         raise ValueError(str(exc)) from exc
-    return CiPolicyResult(
-        ci_policy_path=result.ci_policy_path,
-        full_ci_required=result.full_ci_required,
-        full_ci_deferred=result.full_ci_deferred,
-        gate_name=result.gate_name,
-        backtester_gate_name=result.backtester_gate_name,
-        expected_event_class=result.expected_event_class,
-        reason=result.reason,
-    )
+    return result
 
 
 def policy_row_is_proof_affecting(semantics: PolicyRowSemantics) -> bool:
@@ -8559,8 +8553,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
 
     archive_fragments = [
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
-        ("backtester bvs-test archive must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
-        ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        ("backtester bvs-test archive must route transient outputs outside checkout", "name: Route BVS transient outputs outside checkout"),
+        ("backtester bvs-test archive must keep its Rust target outside the checkout", 'echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"'),
+        ("backtester bvs-test archive must declare external archive path", 'echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-nextest-archive.tar.zst"'),
+        ("backtester bvs-test archive must declare external sidecar path", 'echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-bin-sidecars.tar.gz"'),
+        ("backtester bvs-test archive must export transient paths", '} >> "$GITHUB_ENV"'),
         ("backtester bvs-test archive must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
         (
             "backtester bvs-test archive must expose nextest artifact S3 kill switch",
@@ -8676,7 +8673,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must pack only required sidecars",
-            'tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -',
+            'tar --null -czf "$BVS_BIN_SIDECARS_PATH" --files-from -',
         ),
         (
             "backtester bvs-test archive must save binary sidecar cache",
@@ -8720,7 +8717,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test archive must list scoped archive tests",
-            'nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"',
+            'nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH"',
         ),
         (
             "backtester bvs-test archive must create archive extract root",
@@ -8915,6 +8912,14 @@ BACKTESTER_POLICY_DEFER_ACTIONS = {
         "converted_to_draft",
     )
 }
+BACKTESTER_RA001A_TRACER_GROUP_ARM = (
+    "github.event_name == 'workflow_dispatch' "
+    "&& github.event.inputs.ra001a_durable_tracer == 'true' "
+    "&& format('bvs-ra001a-tracer-{0}', github.sha)"
+)
+BACKTESTER_RA001A_TRACER_REQUIRED_EXPR = (
+    "needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true'"
+)
 
 
 def has_backtester_full_proof_guard(job_text: str) -> bool:
@@ -8923,6 +8928,13 @@ def has_backtester_full_proof_guard(job_text: str) -> bool:
         and "needs.detect.outputs.bvs_changed == 'true'" in job_text
         and "needs.ci-policy.outputs.ci_policy_path == 'noop'" in job_text
         and "needs.ci-policy.outputs.full_ci_deferred == 'true'" in job_text
+    )
+
+
+def has_backtester_test_archive_guard(job_text: str) -> bool:
+    return (
+        has_backtester_full_proof_guard(job_text)
+        and BACKTESTER_RA001A_TRACER_REQUIRED_EXPR in job_text
     )
 
 
@@ -8979,6 +8991,13 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         for required in [
             "full_ci_required: ${{ steps.policy.outputs.full_ci_required }}",
             "full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}",
+            "backtester_test_archive_timeout_minutes: ${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}",
+            "backtester_issue_789_timeout_minutes: ${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}",
+            "ra001a_durable_tracer_required: ${{ steps.policy.outputs.ra001a_durable_tracer_required }}",
+            "ra001a_max_registry_packs: ${{ steps.policy.outputs.ra001a_max_registry_packs }}",
+            "ra001a_max_total_selected_object_bytes: ${{ steps.policy.outputs.ra001a_max_total_selected_object_bytes }}",
+            "ra001a_max_wall_seconds: ${{ steps.policy.outputs.ra001a_max_wall_seconds }}",
+            "ra001a_termination_grace_seconds: ${{ steps.policy.outputs.ra001a_termination_grace_seconds }}",
             "gate_name: ${{ steps.policy.outputs.gate_name }}",
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
@@ -8999,11 +9018,65 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             'author_args=(--pull-request-author-id "$PR_AUTHOR_ID")',
             '"${author_args[@]}"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
+            "tracer_args=()",
+            'python3 "$policy_script" ci-policy --help | grep -q -- "--ra001a-durable-tracer-requested"',
+            'tracer_args=(--ra001a-durable-tracer-requested "${{ github.event.inputs.ra001a_durable_tracer || \'false\' }}")',
+            'trusted policy resolver does not support the requested RA-001a tracer',
+            'RA001A_TRACER_ROLE_ARN: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}',
+            'RA001A_TRACER_REGION: ${{ vars.AWS_RA001A_TRACER_REGION }}',
+            'issue #789 and the RA-001a durable tracer are mutually exclusive managed-heavy requests',
+            'test -n "$RA001A_TRACER_ROLE_ARN"',
+            'test -n "$RA001A_TRACER_REGION"',
+            '"${tracer_args[@]}"',
+            'section = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["backtester"]["ra001a_durable_tracer"]',
+            '"max_registry_packs", "max_total_selected_object_bytes", "max_wall_seconds", "termination_grace_seconds"',
+            'print(f"ra001a_{key}={values[key]}")',
+            '\' "$policy_config" >> "$GITHUB_OUTPUT"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
+        timeout_capture_requirements = (
+            'policy_output="$RUNNER_TEMP/backtester-ci-policy-output"',
+            'test ! -e "$policy_output"',
+            '| tee "$policy_output"',
+        )
+        if any(required not in policy_text for required in timeout_capture_requirements):
+            errors.append(
+                "ci-policy job must capture trusted policy output before publication"
+            )
+        timeout_validation_requirements = (
+            "for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do",
+            'timeout_counts="$(awk -F= -v key="$timeout_key" \'$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf "%d:%d", all, valid }\' "$policy_output")"',
+            '[[ "$timeout_counts" == "1:1" ]]',
+            "trusted policy resolver must emit exactly one positive ${timeout_key}",
+            'cat "$policy_output" >> "$GITHUB_OUTPUT"',
+        )
+        if any(required not in policy_text for required in timeout_validation_requirements):
+            errors.append(
+                "ci-policy job must fail closed on missing or malformed timeout outputs"
+            )
+        timeout_capture_marker = '| tee "$policy_output"'
+        timeout_validation_marker = (
+            "for timeout_key in backtester_test_archive_timeout_minutes "
+            "backtester_issue_789_timeout_minutes; do"
+        )
+        timeout_publish_marker = 'cat "$policy_output" >> "$GITHUB_OUTPUT"'
+        if (
+            policy_text.count(timeout_capture_marker) != 1
+            or policy_text.count(timeout_validation_marker) != 1
+            or policy_text.count(timeout_publish_marker) != 1
+            or not (
+                policy_text.find(timeout_capture_marker)
+                < policy_text.find(timeout_validation_marker)
+                < policy_text.find(timeout_publish_marker)
+            )
+            or 'tee -a "$GITHUB_OUTPUT"' in policy_text
+        ):
+            errors.append(
+                "ci-policy job must validate timeout outputs before publishing them"
+            )
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
     for heavy_job in ("clippy", "test-archive"):
@@ -9013,8 +9086,114 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         needs = extract_needs(job)
         if "ci-policy" not in needs:
             errors.append(f"backtester draft deferral managed-heavy job {heavy_job} must need ci-policy")
-        if not has_backtester_full_proof_guard(uncommented_text(job)):
+        job_guard = job_if_value(job)
+        if not has_backtester_full_proof_guard(job_guard):
             errors.append("backtester draft deferral managed-heavy jobs must require full CI policy")
+        if heavy_job == "test-archive" and not has_backtester_test_archive_guard(job_guard):
+            errors.append(
+                "RA-001a tracer dispatch must reach test-archive through governed policy output"
+            )
+
+    test_archive = jobs.get("test-archive")
+    if test_archive is not None:
+        expected_test_archive_timeout = (
+            "    timeout-minutes: "
+            "${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}"
+        )
+        test_archive_timeout_lines = [
+            line for line in test_archive if line.startswith("    timeout-minutes:")
+        ]
+        if test_archive_timeout_lines != [expected_test_archive_timeout]:
+            errors.append(
+                "backtester test-archive timeout-minutes must use the trusted ci-policy output"
+            )
+        test_archive_text = "\n".join(test_archive)
+        transient_output_block = named_step_block(
+            test_archive, "Route BVS transient outputs outside checkout"
+        )
+        transient_output_text = (
+            uncommented_text(transient_output_block)
+            if transient_output_block is not None
+            else ""
+        )
+        if (
+            'echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"'
+            not in transient_output_text
+        ):
+            errors.append(
+                "RA-001a tracer test-archive Rust target must remain outside the checkout"
+            )
+        if (
+            'echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/'
+            'bvs-nextest-archive.tar.zst"'
+            not in transient_output_text
+            or 'echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/'
+            'bvs-bin-sidecars.tar.gz"'
+            not in transient_output_text
+        ):
+            errors.append(
+                "RA-001a tracer archive payloads must remain outside the checkout"
+            )
+        if transient_output_block is None or '} >> "$GITHUB_ENV"' not in transient_output_text:
+            errors.append(
+                "RA-001a tracer output routing must export through GITHUB_ENV"
+            )
+        if (
+            "      - name: test\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}"
+            not in test_archive_text
+        ):
+            errors.append(
+                "RA-001a tracer-only dispatch must skip the unrelated partition suite"
+            )
+        for step_name in ("Setup BVS MinIO S3 smoke", "test BVS MinIO S3 smoke"):
+            step = named_step_block(test_archive, step_name)
+            step_text = uncommented_text(step) if step is not None else ""
+            if (
+                "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}"
+                not in step_text
+            ):
+                errors.append(
+                    "RA-001a tracer-only dispatch must skip the unrelated MinIO smoke"
+                )
+        stop_minio = named_step_block(test_archive, "Stop BVS MinIO S3 smoke container")
+        stop_minio_text = uncommented_text(stop_minio) if stop_minio is not None else ""
+        if (
+            "if: ${{ always() && needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}"
+            not in stop_minio_text
+        ):
+            errors.append(
+                "RA-001a tracer-only dispatch must skip unrelated MinIO cleanup"
+            )
+        if (
+            'timeout --signal=TERM --kill-after="${RA001A_TERMINATION_GRACE_SECONDS}s" '
+            '"${RA001A_MAX_WALL_SECONDS}s"' not in test_archive_text
+        ):
+            errors.append(
+                "RA-001a tracer must enforce its TOML-owned aggregate wall-time envelope"
+            )
+        if (
+            "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: "
+            "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}"
+            not in test_archive_text
+        ):
+            errors.append(
+                "RA-001a tracer must receive its TOML-owned aggregate source-byte envelope"
+            )
+
+    issue_789 = jobs.get("issue_789")
+    if issue_789 is not None:
+        expected_issue_789_timeout = (
+            "    timeout-minutes: "
+            "${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}"
+        )
+        issue_789_timeout_lines = [
+            line for line in issue_789 if line.startswith("    timeout-minutes:")
+        ]
+        if issue_789_timeout_lines != [expected_issue_789_timeout]:
+            errors.append(
+                "backtester issue_789 timeout-minutes must use the trusted ci-policy output"
+            )
 
     gate = jobs.get("gate")
     if gate is None:
@@ -9025,13 +9204,26 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             errors.append("backtester draft deferral gate name must come from ci-policy backtester_gate_name output")
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester draft deferral gate must need ci-policy")
+        tracer_verdict_requirements = (
+            "tracer_verdict_args=()",
+            'python3 "$verdict_script" check-backtester-gate --help | grep -q -- '
+            '"--ra001a-durable-tracer-required"',
+            'tracer_verdict_args=(--ra001a-durable-tracer-required '
+            '"${{ needs.ci-policy.outputs.ra001a_durable_tracer_required || \'false\' }}")',
+            "trusted verdict resolver does not support the requested RA-001a tracer",
+            '"${tracer_verdict_args[@]}"',
+        )
+        if any(required not in gate_text for required in tracer_verdict_requirements):
+            errors.append(
+                "RA-001a tracer intent must reach the backtester gate verdict"
+            )
         for required in (
             "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
             "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
             'git check-ref-format "refs/heads/$base_branch"',
             "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
             "steps.verdict_base.outputs.script",
-            'python3 "$verdict_script" check-backtester-gate',
+            '          python3 "$verdict_script" check-backtester-gate \\',
         ):
             if required not in gate_text:
                 errors.append(
@@ -9041,6 +9233,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "--policy-path \"${{ needs.ci-policy.outputs.ci_policy_path }}\"",
             "--expected-event-class \"${{ needs.ci-policy.outputs.expected_event_class }}\"",
             "--full-ci-deferred \"${{ needs.ci-policy.outputs.full_ci_deferred }}\"",
+            '"${tracer_verdict_args[@]}"',
             "--bvs-changed \"${{ needs.detect.outputs.bvs_changed || 'false' }}\"",
             "--job ci-policy=${{ needs.ci-policy.result }}",
             "--job detect=${{ needs.detect.result }}",
@@ -9057,6 +9250,19 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
 
     group_text = backtester_concurrency_group_text(text)
+    normalized_group_text = _normalize_concurrency_text(group_text)
+    if normalized_group_text.count(BACKTESTER_RA001A_TRACER_GROUP_ARM) != 1:
+        errors.append("RA-001a tracer dispatches must use exact-head source-SHA concurrency")
+    concurrency = concurrency_group_and_cancel(text)
+    if concurrency is None:
+        errors.append("RA-001a tracer dispatches require explicit cancellation governance")
+    else:
+        _, cancel_text = concurrency
+        normalized_cancel = _normalize_concurrency_text(
+            _cancel_in_progress_value(cancel_text)
+        )
+        if normalized_cancel != BACKTESTER_RA001A_SAFE_CANCEL_FORM:
+            errors.append("RA-001a tracer dispatches must not be cancelled")
     if "format('bvs-pr-{0}-deferred', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:
         errors.append("backtester draft deferral concurrency must split deferred PR runs from full proof runs")
     if "format('bvs-pr-{0}-noop', github.event.number)" not in group_text:
@@ -10387,6 +10593,7 @@ def load_github_actions_runners_config(
     dispatch_cancel = validate_dispatch_cancel_config(data)
     jules_advisory = validate_jules_advisory_config(data)
     cargo_build_jobs = validate_cargo_build_jobs_config(data)
+    ra001a_durable_tracer = validate_ra001a_durable_tracer_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -10438,6 +10645,7 @@ def load_github_actions_runners_config(
         "dispatch_cancel": dispatch_cancel,
         "jules_advisory": jules_advisory,
         "cargo_build_jobs": cargo_build_jobs,
+        "ra001a_durable_tracer": ra001a_durable_tracer,
     }
 
 
@@ -10513,6 +10721,36 @@ def validate_cargo_build_jobs_config(data: dict[str, object]) -> dict[str, dict[
                 raise ValueError(f"cargo_build_jobs.{workflow_key}.{job} must be a positive integer")
             config[workflow_key][job] = value
     return config
+
+
+def validate_ra001a_durable_tracer_config(data: dict[str, object]) -> dict[str, int]:
+    backtester = data.get("backtester")
+    if not isinstance(backtester, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [backtester]")
+    section = backtester.get("ra001a_durable_tracer")
+    if not isinstance(section, dict):
+        raise ValueError(
+            "ci/github-actions-runners.toml must define [backtester.ra001a_durable_tracer]"
+        )
+    keys = (
+        "max_registry_packs",
+        "max_total_selected_object_bytes",
+        "max_wall_seconds",
+        "termination_grace_seconds",
+    )
+    result: dict[str, int] = {}
+    for key in keys:
+        value = section.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(
+                f"backtester.ra001a_durable_tracer.{key} must be a positive integer"
+            )
+        result[key] = value
+    if result["termination_grace_seconds"] >= result["max_wall_seconds"]:
+        raise ValueError(
+            "backtester.ra001a_durable_tracer.termination_grace_seconds must be shorter than max_wall_seconds"
+        )
+    return result
 
 
 def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:

@@ -18,6 +18,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import tomllib
 from typing import Callable
 
 from ci_test_manifest import CiTestManifest
@@ -1418,13 +1419,10 @@ def assert_ci_policy_matrix() -> None:
 
 
 def assert_ci_policy_resolvers_agree() -> None:
-    # The runtime resolver (ci_provenance.evaluate_ci_policy) and the static
-    # contract resolver (verify_ci_workflow_hygiene.evaluate_ci_policy) are
-    # independent hand-maintained mirrors with no shared implementation. #848
-    # adds a merge_group row to both; this parity lock fails loud if the two ever
-    # diverge on any event, so a future drift cannot let the verifier certify a
-    # workflow the runtime actually under-validates (a skipped required check
-    # counts as passing in GitHub). Both are fed the real production config.
+    # The static adapter delegates to the runtime resolver with a typed copy of
+    # the real production config. Whole-result equality keeps every current and
+    # future CiPolicyResult field in the adapter contract instead of allowing a
+    # hand-maintained projection to silently omit new trusted outputs.
     verifier = load_verifier()
     provenance = load_provenance()
     config_path = REPO_ROOT / "ci" / "github-actions-runners.toml"
@@ -1472,28 +1470,16 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_base_changed=base_changed,
             ref=ref,
         )
-        ver_tuple = (
-            ver.ci_policy_path,
-            ver.full_ci_required,
-            ver.full_ci_deferred,
-            ver.gate_name,
-            ver.backtester_gate_name,
-            ver.expected_event_class,
-            ver.reason,
+        ver_contract = tuple(
+            (field.name, getattr(ver, field.name)) for field in dataclasses.fields(ver)
         )
-        prov_tuple = (
-            prov.ci_policy_path,
-            prov.full_ci_required,
-            prov.full_ci_deferred,
-            prov.gate_name,
-            prov.backtester_gate_name,
-            prov.expected_event_class,
-            prov.reason,
+        prov_contract = tuple(
+            (field.name, getattr(prov, field.name)) for field in dataclasses.fields(prov)
         )
-        if ver_tuple != prov_tuple:
+        if ver_contract != prov_contract:
             raise AssertionError(
                 f"ci_policy resolver drift for {event_name}/{action!r}: "
-                f"verifier={ver_tuple} provenance={prov_tuple}"
+                f"verifier={ver_contract} provenance={prov_contract}"
             )
         saw_full = saw_full or ver.ci_policy_path == "full"
         saw_iteration = saw_iteration or ver.ci_policy_path == "iteration"
@@ -5579,8 +5565,8 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_shared_gate = replace_once(
         workflow,
-        'python3 "$verdict_script" check-backtester-gate',
-        'python3 "$verdict_script" check-not-backtester-gate',
+        '          python3 "$verdict_script" check-backtester-gate \\\n',
+        '          python3 "$verdict_script" check-not-backtester-gate \\\n',
     )
     missing_shared_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_shared_gate})
     if not any("backtester draft deferral gate must use trusted base-tree check-backtester-gate verdict" in error for error in missing_shared_gate_errors):
@@ -5590,8 +5576,9 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     carry_forward_reintroduced = replace_once(
         workflow,
-        'python3 "$verdict_script" check-backtester-gate',
-        'python3 "$verdict_script" resolve-gate-carry-forward\n          python3 "$verdict_script" check-backtester-gate',
+        '          python3 "$verdict_script" check-backtester-gate \\\n',
+        '          python3 "$verdict_script" resolve-gate-carry-forward\n'
+        '          python3 "$verdict_script" check-backtester-gate \\\n',
     )
     missing_carry_forward_errors = verifier.verify_repo_automation_texts({workflow_name: carry_forward_reintroduced})
     if not any(
@@ -8279,7 +8266,48 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
                 "artifact retention binding must reject lookback windows longer than external retention"
             )
 
-
+def assert_ra001a_aggregate_limits_config_contract() -> None:
+    verifier = load_verifier()
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(
+        encoding="utf-8"
+    )
+    config = tomllib.loads(config_text)["backtester"]["ra001a_durable_tracer"]
+    cases = (
+        (
+            "backtester.ra001a_durable_tracer.max_registry_packs must be a positive integer",
+            re.sub(r"^max_registry_packs = [0-9]+\n", "", config_text, count=1, flags=re.MULTILINE),
+        ),
+        (
+            "backtester.ra001a_durable_tracer.max_total_selected_object_bytes must be a positive integer",
+            re.sub(
+                r"^max_total_selected_object_bytes = [0-9]+$",
+                "max_total_selected_object_bytes = 0",
+                config_text,
+                count=1,
+                flags=re.MULTILINE,
+            ),
+        ),
+        (
+            "backtester.ra001a_durable_tracer.termination_grace_seconds must be shorter than max_wall_seconds",
+            re.sub(
+                r"^termination_grace_seconds = [0-9]+$",
+                f'termination_grace_seconds = {config["max_wall_seconds"]}',
+                config_text,
+                count=1,
+                flags=re.MULTILINE,
+            ),
+        ),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        for expected, mutated in cases:
+            config_path = write_temp_runner_config(pathlib.Path(tmp), mutated)
+            try:
+                verifier.load_github_actions_runners_config(config_path)
+            except ValueError as exc:
+                if expected not in str(exc):
+                    raise AssertionError(f"expected {expected!r}, got {exc}") from exc
+            else:
+                raise AssertionError(f"RA-001a aggregate config mutation did not fail: {expected}")
 
 
 def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
@@ -8779,14 +8807,19 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
     env:
-      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
-      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
       NEXTEST_ARTIFACT_CACHE_ENABLED: ${{ vars.CI_NEXTEST_ARCHIVE_S3_ENABLED }}
       NEXTEST_ARTIFACT_CACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
       NEXTEST_ARTIFACT_CACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
       NEXTEST_ARTIFACT_CACHE_KEY_PREFIX: ${{ vars.CI_NEXTEST_ARCHIVE_S3_KEY_PREFIX }}
     steps:
+      - name: Route BVS transient outputs outside checkout
+        run: |
+          {
+            echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"
+            echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-nextest-archive.tar.zst"
+            echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/bvs-bin-sidecars.tar.gz"
+          } >> "$GITHUB_ENV"
       - name: Compute BVS artifact input hash
         id: bvs_artifact_inputs
         run: |
@@ -8948,7 +8981,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         run: |
           python3 scripts/rust_test_targets.py sidecars --crate crates/backtesting-vertical-slice
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- "${cargo_args[@]}"
-          tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
+          tar --null -czf "$BVS_BIN_SIDECARS_PATH" --files-from -
       - name: Print sccache stats
         if: always()
         uses: ./.github/actions/sccache-stats
@@ -8982,7 +9015,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: List scoped BVS archive tests
-        run: nextest list --archive-file "$GITHUB_WORKSPACE/$BVS_NEXTEST_ARCHIVE_PATH"
+        run: nextest list --archive-file "$BVS_NEXTEST_ARCHIVE_PATH"
       - name: Setup BVS MinIO S3 smoke
         uses: ./.github/actions/setup-bvs-minio-s3-smoke
       - name: test
@@ -13518,6 +13551,7 @@ def main() -> int:
     assert_v6_red_workflow_policy_gaps()
     assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported()
     assert_ci_provenance_config_contract()
+    assert_ra001a_aggregate_limits_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_deleted_ai_review_model_freshness_workflow_is_unmapped()

@@ -881,7 +881,10 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(rules["ci_provenance"].name_prefixes, ("ci-provenance-attempt-",))
         self.assertIsNone(rules["ci_provenance"].candidate_reason)
         self.assertEqual(rules["backtester_payload"].name_equals, ("bvs-test-payload",))
-        self.assertEqual(rules["backtester_payload"].name_prefixes, ("issue-789-first-pl-",))
+        self.assertEqual(
+            rules["backtester_payload"].name_prefixes,
+            ("issue-789-first-pl-", "ra001a-durable-tracer-"),
+        )
         self.assertEqual(
             rules["backtester_payload"].candidate_reason,
             "expired backtester test payload outside protected refs",

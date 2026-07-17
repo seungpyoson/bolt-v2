@@ -29,6 +29,15 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
     actionlint_workflow = repo_workflow_text(".github/workflows/actionlint.yml")
     backtester_workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    tracer_group_arm = (
+        "        || github.event_name == 'workflow_dispatch'\n"
+        "        && github.event.inputs.ra001a_durable_tracer == 'true'\n"
+        "        && format('bvs-ra001a-tracer-{0}', github.sha)\n"
+    )
+    if tracer_group_arm not in backtester_workflow:
+        raise AssertionError(
+            "RA-001a tracer dispatches must have an exact-head source-SHA concurrency arm"
+        )
 
     # Baseline: real workflows declare merge_group and resolve clean.
     if verifier.verify_workflow(ci_workflow):
@@ -49,6 +58,454 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError(
             f"real backtester-ci.yml must be merge_group-clean, got: {backtester_baseline}"
         )
+
+    backtester_shared_tracer_group = replace_once(
+        backtester_workflow,
+        tracer_group_arm,
+        "",
+    )
+    shared_tracer_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_shared_tracer_group}
+    )
+    if not any(
+        "RA-001a tracer dispatches must use exact-head source-SHA concurrency" in error
+        for error in shared_tracer_errors
+    ):
+        raise AssertionError(
+            "backtester concurrency governance must reject tracer dispatches sharing the ordinary dispatch group"
+        )
+
+    backtester_unbounded_tracer_group = replace_once(
+        backtester_workflow,
+        "        && format('bvs-ra001a-tracer-{0}', github.sha)\n",
+        "        && format('bvs-ra001a-tracer-{0}', github.run_id)\n",
+    )
+    unbounded_tracer_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_unbounded_tracer_group}
+    )
+    if not any(
+        "RA-001a tracer dispatches must use exact-head source-SHA concurrency" in error
+        for error in unbounded_tracer_errors
+    ):
+        raise AssertionError(
+            "backtester concurrency governance must reject an unbounded per-run tracer group"
+        )
+
+    backtester_cancels_tracer_dispatch = replace_once(
+        backtester_workflow,
+        "        || (github.event_name == 'workflow_dispatch'\n"
+        "            && github.event.inputs.ra001a_durable_tracer != 'true') }}",
+        "        || github.event_name == 'workflow_dispatch' }}",
+    )
+    cancels_tracer_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_cancels_tracer_dispatch}
+    )
+    if not any(
+        "RA-001a tracer dispatches must not be cancelled" in error
+        for error in cancels_tracer_errors
+    ):
+        raise AssertionError(
+            "backtester cancellation governance must reject the older all-dispatch cancellation form"
+        )
+
+    tracer_policy_output = (
+        "      ra001a_durable_tracer_required: "
+        "${{ steps.policy.outputs.ra001a_durable_tracer_required }}\n"
+    )
+    archive_timeout_policy_output = (
+        "      backtester_test_archive_timeout_minutes: "
+        "${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}\n"
+    )
+    issue_789_timeout_policy_output = (
+        "      backtester_issue_789_timeout_minutes: "
+        "${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}\n"
+    )
+    tracer_policy_probe = (
+        "          tracer_args=()\n"
+        "          if python3 \"$policy_script\" ci-policy --help | grep -q -- \"--ra001a-durable-tracer-requested\"; then\n"
+        "            tracer_args=(--ra001a-durable-tracer-requested \"${{ github.event.inputs.ra001a_durable_tracer || 'false' }}\")\n"
+        "          elif [[ \"${{ github.event.inputs.ra001a_durable_tracer || 'false' }}\" == \"true\" ]]; then\n"
+        "            echo \"trusted policy resolver does not support the requested RA-001a tracer\" >&2\n"
+        "            exit 1\n"
+        "          fi\n"
+    )
+    tracer_archive_guard = (
+        " || needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true'"
+    )
+    for label, fragment in (
+        ("policy output", tracer_policy_output),
+        ("trusted archive timeout output", archive_timeout_policy_output),
+        ("trusted issue #789 timeout output", issue_789_timeout_policy_output),
+        ("trusted-base compatibility probe", tracer_policy_probe),
+        ("test-archive reachability guard", tracer_archive_guard),
+    ):
+        if fragment not in backtester_workflow:
+            raise AssertionError(f"RA-001a tracer {label} is missing from the real workflow")
+
+    unprobed_policy_workflow = replace_once(
+        backtester_workflow,
+        tracer_policy_probe,
+        "          tracer_args=(--ra001a-durable-tracer-requested \"${{ github.event.inputs.ra001a_durable_tracer || 'false' }}\")\n",
+    )
+    unprobed_policy_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": unprobed_policy_workflow}
+    )
+    if not any("ci-policy job must include tracer_args=()" in error for error in unprobed_policy_errors):
+        raise AssertionError("backtester policy must probe trusted-base support for the tracer argument")
+
+    unreachable_tracer_workflow = replace_once(
+        backtester_workflow,
+        tracer_archive_guard,
+        "",
+    )
+    unreachable_tracer_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": unreachable_tracer_workflow}
+    )
+    if not any(
+        "RA-001a tracer dispatch must reach test-archive through governed policy output" in error
+        for error in unreachable_tracer_errors
+    ):
+        raise AssertionError(
+            "backtester governance must reject a tracer request that cannot reach its archive job"
+        )
+
+    tracer_test_skip = (
+        "      - name: test\n"
+        "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}\n"
+    )
+    tracer_timeout = (
+        '          timeout --signal=TERM --kill-after="${RA001A_TERMINATION_GRACE_SECONDS}s" '
+        '"${RA001A_MAX_WALL_SECONDS}s" \\\n'
+        "            just bte-test-archive-run \\\n"
+    )
+    tracer_byte_env = (
+        "          BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: "
+        "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}\n"
+    )
+    archive_job_timeout = (
+        "    timeout-minutes: "
+        "${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}\n"
+    )
+    issue_789_job_timeout = (
+        "    timeout-minutes: "
+        "${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}\n"
+    )
+    timeout_output_capture = (
+        '          policy_output="$RUNNER_TEMP/backtester-ci-policy-output"\n'
+        '          test ! -e "$policy_output" || { echo "trusted policy output path already exists" >&2; exit 1; }\n'
+    )
+    timeout_output_validation = (
+        "          for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do\n"
+        "            timeout_counts=\"$(awk -F= -v key=\"$timeout_key\" '$1 == key { all += 1; if ($2 ~ /^[1-9][0-9]*$/) valid += 1 } END { printf \"%d:%d\", all, valid }' \"$policy_output\")\"\n"
+        "            [[ \"$timeout_counts\" == \"1:1\" ]] || {\n"
+        "              echo \"trusted policy resolver must emit exactly one positive ${timeout_key}\" >&2\n"
+        "              exit 1\n"
+        "            }\n"
+        "          done\n"
+        "          cat \"$policy_output\" >> \"$GITHUB_OUTPUT\"\n"
+    )
+    for label, fragment in (
+        ("partition-suite skip", tracer_test_skip),
+        ("aggregate wall timeout", tracer_timeout),
+        ("aggregate source-byte limit", tracer_byte_env),
+        ("whole archive job timeout", archive_job_timeout),
+        ("whole issue #789 job timeout", issue_789_job_timeout),
+        ("trusted timeout output capture", timeout_output_capture),
+        ("trusted timeout output validation", timeout_output_validation),
+    ):
+        if fragment not in backtester_workflow:
+            raise AssertionError(f"RA-001a tracer {label} is missing from the real workflow")
+
+    tracer_dual_request_guard = (
+        '          if [[ "${{ github.event_name }}" == "workflow_dispatch" \\\n'
+        '            && "${{ github.event.inputs.issue_789 || \'false\' }}" == "true" \\\n'
+        '            && "${{ github.event.inputs.ra001a_durable_tracer || \'false\' }}" == "true" ]]; then\n'
+        '            echo "issue #789 and the RA-001a durable tracer are mutually exclusive managed-heavy requests" >&2\n'
+        "            exit 1\n"
+        "          fi\n"
+    )
+    tracer_role_preflight = (
+        '            test -n "$RA001A_TRACER_ROLE_ARN" || { echo "AWS_RA001A_TRACER_ROLE_ARN is required" >&2; exit 1; }\n'
+    )
+    tracer_region_preflight = (
+        '            test -n "$RA001A_TRACER_REGION" || { echo "AWS_RA001A_TRACER_REGION is required" >&2; exit 1; }\n'
+    )
+    minio_skip = (
+        "      - name: Setup BVS MinIO S3 smoke\n"
+        "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}\n"
+    )
+    minio_test_skip = (
+        "      - name: test BVS MinIO S3 smoke\n"
+        "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}\n"
+    )
+    minio_cleanup_skip = (
+        "      - name: Stop BVS MinIO S3 smoke container\n"
+        "        if: ${{ always() && needs.ci-policy.outputs.ra001a_durable_tracer_required != 'true' }}\n"
+    )
+    for label, fragment in (
+        ("dual managed-heavy request guard", tracer_dual_request_guard),
+        ("AWS role preflight", tracer_role_preflight),
+        ("AWS region preflight", tracer_region_preflight),
+        ("MinIO setup skip", minio_skip),
+        ("MinIO test skip", minio_test_skip),
+        ("MinIO cleanup skip", minio_cleanup_skip),
+    ):
+        if fragment not in backtester_workflow:
+            raise AssertionError(f"RA-001a tracer {label} is missing from the real workflow")
+
+    for fragment, replacement, expected in (
+        (
+            tracer_dual_request_guard,
+            "",
+            "ci-policy job must include issue #789 and the RA-001a durable tracer are mutually exclusive managed-heavy requests",
+        ),
+        (
+            tracer_role_preflight,
+            "",
+            'ci-policy job must include test -n "$RA001A_TRACER_ROLE_ARN"',
+        ),
+        (
+            tracer_region_preflight,
+            "",
+            'ci-policy job must include test -n "$RA001A_TRACER_REGION"',
+        ),
+        (
+            minio_skip,
+            "      - name: Setup BVS MinIO S3 smoke\n",
+            "RA-001a tracer-only dispatch must skip the unrelated MinIO smoke",
+        ),
+        (
+            minio_test_skip,
+            "      - name: test BVS MinIO S3 smoke\n",
+            "RA-001a tracer-only dispatch must skip the unrelated MinIO smoke",
+        ),
+        (
+            minio_cleanup_skip,
+            "      - name: Stop BVS MinIO S3 smoke container\n        if: always()\n",
+            "RA-001a tracer-only dispatch must skip unrelated MinIO cleanup",
+        ),
+        (
+            archive_job_timeout,
+            "    timeout-minutes: 120\n",
+            "backtester test-archive timeout-minutes must use the trusted ci-policy output",
+        ),
+        (
+            issue_789_job_timeout,
+            "    timeout-minutes: 120\n",
+            "backtester issue_789 timeout-minutes must use the trusted ci-policy output",
+        ),
+        (
+            timeout_output_capture,
+            "",
+            "ci-policy job must capture trusted policy output before publication",
+        ),
+        (
+            timeout_output_validation,
+            '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n',
+            "ci-policy job must fail closed on missing or malformed timeout outputs",
+        ),
+    ):
+        mutated = replace_once(backtester_workflow, fragment, replacement)
+        mutation_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": mutated}
+        )
+        if not any(expected in error for error in mutation_errors):
+            raise AssertionError(
+                f"backtester governance mutation did not fail with {expected!r}: {mutation_errors}"
+            )
+
+    zero_accepting_timeout_validation = replace_once(
+        backtester_workflow,
+        "$2 ~ /^[1-9][0-9]*$/",
+        "$2 ~ /^[0-9][0-9]*$/",
+    )
+    zero_accepting_timeout_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": zero_accepting_timeout_validation}
+    )
+    if not any(
+        "ci-policy job must fail closed on missing or malformed timeout outputs" in error
+        for error in zero_accepting_timeout_errors
+    ):
+        raise AssertionError(
+            "backtester governance must reject timeout validation that accepts zero"
+        )
+
+    early_timeout_publication = replace_once(
+        backtester_workflow,
+        '          | tee "$policy_output"\n'
+        "          for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do\n",
+        '          | tee "$policy_output"\n'
+        '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n'
+        "          for timeout_key in backtester_test_archive_timeout_minutes backtester_issue_789_timeout_minutes; do\n",
+    )
+    early_timeout_publication_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": early_timeout_publication}
+    )
+    if not any(
+        "ci-policy job must validate timeout outputs before publishing them" in error
+        for error in early_timeout_publication_errors
+    ):
+        raise AssertionError(
+            "backtester governance must reject timeout publication before validation"
+        )
+
+    unbounded_wall_workflow = replace_once(
+        backtester_workflow,
+        tracer_timeout,
+        "            just bte-test-archive-run \\\n",
+    )
+    unbounded_wall_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": unbounded_wall_workflow}
+    )
+    if not any(
+        "RA-001a tracer must enforce its TOML-owned aggregate wall-time envelope" in error
+        for error in unbounded_wall_errors
+    ):
+        raise AssertionError("backtester governance must reject an unbounded aggregate tracer run")
+
+    full_suite_tracer_workflow = replace_once(
+        backtester_workflow,
+        tracer_test_skip,
+        "      - name: test\n",
+    )
+    full_suite_tracer_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": full_suite_tracer_workflow}
+    )
+    if not any(
+        "RA-001a tracer-only dispatch must skip the unrelated partition suite" in error
+        for error in full_suite_tracer_errors
+    ):
+        raise AssertionError("backtester governance must reject an unrelated full suite on tracer dispatch")
+
+    unbounded_bytes_workflow = replace_once(
+        backtester_workflow,
+        tracer_byte_env,
+        "",
+    )
+    unbounded_bytes_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": unbounded_bytes_workflow}
+    )
+    if not any(
+        "RA-001a tracer must receive its TOML-owned aggregate source-byte envelope" in error
+        for error in unbounded_bytes_errors
+    ):
+        raise AssertionError("backtester governance must reject a tracer without an aggregate byte cap")
+
+    tracer_external_root = (
+        '            echo "RUST_VERIFICATION_ROOT_BASE=$RUNNER_TEMP/.rust-verification"\n'
+    )
+    tracer_external_archive = (
+        '            echo "BVS_NEXTEST_ARCHIVE_PATH=$RUNNER_TEMP/bvs-nextest-archive/'
+        'bvs-nextest-archive.tar.zst"\n'
+    )
+    tracer_external_sidecars = (
+        '            echo "BVS_BIN_SIDECARS_PATH=$RUNNER_TEMP/bvs-nextest-archive/'
+        'bvs-bin-sidecars.tar.gz"\n'
+    )
+    tracer_route_export = '          } >> "$GITHUB_ENV"\n'
+    tracer_gate_intent = (
+        '            tracer_verdict_args=(--ra001a-durable-tracer-required "'
+        "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required || 'false' }}"
+        '")\n'
+    )
+    tracer_gate_probe = (
+        '          if python3 "$verdict_script" check-backtester-gate --help | grep -q -- '
+        '"--ra001a-durable-tracer-required"; then\n'
+    )
+    tracer_gate_expansion = '            "${tracer_verdict_args[@]}" \\\n'
+    for label, fragment in (
+        ("external Rust target root", tracer_external_root),
+        ("external nextest archive", tracer_external_archive),
+        ("external binary sidecars", tracer_external_sidecars),
+        ("GITHUB_ENV output export", tracer_route_export),
+        ("gate intent propagation", tracer_gate_intent),
+        ("trusted-base gate capability probe", tracer_gate_probe),
+        ("gate argument expansion", tracer_gate_expansion),
+    ):
+        if fragment not in backtester_workflow:
+            raise AssertionError(f"RA-001a tracer {label} is missing from the real workflow")
+
+    checkout_target_workflow = replace_once(
+        backtester_workflow,
+        tracer_external_root,
+        '            echo "RUST_VERIFICATION_ROOT_BASE=$GITHUB_WORKSPACE/.rust-verification"\n',
+    )
+    checkout_target_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": checkout_target_workflow}
+    )
+    if not any(
+        "RA-001a tracer test-archive Rust target must remain outside the checkout" in error
+        for error in checkout_target_errors
+    ):
+        raise AssertionError("backtester governance must reject a checkout-local tracer Rust target")
+
+    checkout_archive_workflow = replace_once(
+        backtester_workflow,
+        tracer_external_archive,
+        '            echo "BVS_NEXTEST_ARCHIVE_PATH=$GITHUB_WORKSPACE/.nextest-archive/'
+        'bvs-nextest-archive.tar.zst"\n',
+    )
+    checkout_archive_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": checkout_archive_workflow}
+    )
+    if not any(
+        "RA-001a tracer archive payloads must remain outside the checkout" in error
+        for error in checkout_archive_errors
+    ):
+        raise AssertionError("backtester governance must reject a checkout-local tracer archive")
+
+    checkout_sidecars_workflow = replace_once(
+        backtester_workflow,
+        tracer_external_sidecars,
+        '            echo "BVS_BIN_SIDECARS_PATH=$GITHUB_WORKSPACE/.nextest-archive/'
+        'bvs-bin-sidecars.tar.gz"\n',
+    )
+    checkout_sidecars_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": checkout_sidecars_workflow}
+    )
+    if not any(
+        "RA-001a tracer archive payloads must remain outside the checkout" in error
+        for error in checkout_sidecars_errors
+    ):
+        raise AssertionError("backtester governance must reject checkout-local tracer sidecars")
+
+    unexported_paths_workflow = replace_once(
+        backtester_workflow,
+        tracer_route_export,
+        "          }\n",
+    )
+    unexported_paths_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": unexported_paths_workflow}
+    )
+    if not any(
+        "RA-001a tracer output routing must export through GITHUB_ENV" in error
+        for error in unexported_paths_errors
+    ):
+        raise AssertionError("backtester governance must reject unexported external paths")
+
+    unrouted_gate_workflow = replace_once(backtester_workflow, tracer_gate_intent, "")
+    unrouted_gate_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": unrouted_gate_workflow}
+    )
+    if not any(
+        "RA-001a tracer intent must reach the backtester gate verdict" in error
+        for error in unrouted_gate_errors
+    ):
+        raise AssertionError("backtester governance must reject unconsumed tracer gate intent")
+
+    unprobed_gate_workflow = replace_once(
+        backtester_workflow,
+        tracer_gate_probe,
+        "          if true; then\n",
+    )
+    unprobed_gate_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": unprobed_gate_workflow}
+    )
+    if not any(
+        "RA-001a tracer intent must reach the backtester gate verdict" in error
+        for error in unprobed_gate_errors
+    ):
+        raise AssertionError("backtester governance must reject an unprobed trusted-base gate")
 
     # (i) merge_group policy value flipped away from required proof → config contract error.
     flipped_config = ci_provenance_config_fixture().replace(
@@ -203,8 +660,11 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
     backtester_cancelling_merge_group = replace_once(
         backtester_workflow,
-        "        || github.event_name == 'workflow_dispatch' }}",
-        "        || github.event_name == 'workflow_dispatch'\n        || github.event_name == 'merge_group' }}",
+        "        || (github.event_name == 'workflow_dispatch'\n"
+        "            && github.event.inputs.ra001a_durable_tracer != 'true') }}",
+        "        || (github.event_name == 'workflow_dispatch'\n"
+        "            && github.event.inputs.ra001a_durable_tracer != 'true')\n"
+        "        || github.event_name == 'merge_group' }}",
     )
     backtester_cancel_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": backtester_cancelling_merge_group}
@@ -1873,7 +2333,44 @@ jobs:
         raise AssertionError(f"flaky detection verifier must reject BVS managed-target staging, got: {managed_target_errors}")
 
 
+def assert_ra001a_dispatch_cancel_guard_is_fail_closed() -> None:
+    verifier = load_verifier()
+    guarded_cancel = """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+             || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))))
+        || (github.event_name == 'workflow_dispatch'
+            && github.event.inputs.ra001a_durable_tracer != 'true') }}"""
+    if not verifier.cancel_in_progress_is_merge_group_safe(guarded_cancel):
+        raise AssertionError(
+            "the RA-001a dispatch opt-out is event-guarded and must preserve merge_group runs"
+        )
+
+    unsafe_mutations = {
+        "missing dispatch event guard": guarded_cancel.replace(
+            "(github.event_name == 'workflow_dispatch'\n            && ", "(", 1
+        ),
+        "or instead of and": guarded_cancel.replace(
+            "github.event_name == 'workflow_dispatch'\n            &&",
+            "github.event_name == 'workflow_dispatch'\n            ||",
+            1,
+        ),
+        "merge-group event arm": guarded_cancel.replace(
+            "github.event_name == 'workflow_dispatch'",
+            "github.event_name == 'merge_group'",
+            1,
+        ),
+    }
+    for label, mutated in unsafe_mutations.items():
+        if verifier.cancel_in_progress_is_merge_group_safe(mutated):
+            raise AssertionError(f"cancel guard must reject {label}")
+
+
 def main() -> int:
+    assert_ra001a_dispatch_cancel_guard_is_fail_closed()
     assert_merge_group_support_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_flaky_detection_workflows_are_split_without_mode_gates()

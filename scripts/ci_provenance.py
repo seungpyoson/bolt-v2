@@ -101,6 +101,8 @@ REQUIRED_CHECK_INTEGRATION_ID = 15368
 REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
 TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
+GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES = 360
+SECONDS_PER_MINUTE = 60
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 NEXTEST_FINGERPRINT_RE = re.compile(
@@ -162,6 +164,14 @@ class RequiredCheckConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class BacktesterTestArchiveTimeoutConfig:
+    ordinary_max_job_minutes: int
+    ra001a_durable_tracer_max_job_minutes: int
+    ra001a_durable_tracer_max_wall_seconds: int
+    ra001a_durable_tracer_termination_grace_seconds: int
+
+
+@dataclasses.dataclass(frozen=True)
 class ProvenanceConfig:
     schema_version: int
     artifact_name_template: str
@@ -190,6 +200,8 @@ class ProvenanceConfig:
     max_lookback_pages: int
     max_lookback_age_seconds: int
     inherited_emitter_probe_timeout_seconds: int
+    backtester_test_archive_timeout: BacktesterTestArchiveTimeoutConfig | None
+    backtester_issue_789_timeout_minutes: int | None
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -207,8 +219,11 @@ class CiPolicyResult:
     ci_policy_path: str
     full_ci_required: bool
     full_ci_deferred: bool
+    ra001a_durable_tracer_required: bool
     gate_name: str
     backtester_gate_name: str
+    backtester_test_archive_timeout_minutes: int
+    backtester_issue_789_timeout_minutes: int
     expected_event_class: str
     reason: str
 
@@ -290,6 +305,84 @@ def optional_positive_int(parent: dict[str, object], key: str, prefix: str) -> i
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
     return value
+
+
+def load_backtester_test_archive_timeout_config(
+    data: dict[str, object],
+    *,
+    required: bool,
+) -> BacktesterTestArchiveTimeoutConfig | None:
+    backtester = data.get("backtester")
+    if backtester is None and not required:
+        return None
+    if not isinstance(backtester, dict):
+        raise ProvenanceError(
+            "missing [backtester]" if backtester is None else "backtester must be a table"
+        )
+
+    timeout_prefix = "backtester.test_archive_timeout"
+    timeout = require_table(backtester, "test_archive_timeout", "backtester")
+    tracer_prefix = "backtester.ra001a_durable_tracer"
+    tracer = require_table(backtester, "ra001a_durable_tracer", "backtester")
+    ordinary_minutes = require_positive_int(timeout, "ordinary_max_job_minutes", timeout_prefix)
+    tracer_minutes = require_positive_int(
+        timeout,
+        "ra001a_durable_tracer_max_job_minutes",
+        timeout_prefix,
+    )
+    max_wall_seconds = require_positive_int(tracer, "max_wall_seconds", tracer_prefix)
+    termination_grace_seconds = require_positive_int(
+        tracer,
+        "termination_grace_seconds",
+        tracer_prefix,
+    )
+    for key, value in (
+        ("ordinary_max_job_minutes", ordinary_minutes),
+        ("ra001a_durable_tracer_max_job_minutes", tracer_minutes),
+    ):
+        if value > GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES:
+            raise ProvenanceError(
+                f"{timeout_prefix}.{key} must not exceed GitHub Actions' "
+                f"{GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES}-minute maximum"
+            )
+    if tracer_minutes * SECONDS_PER_MINUTE <= max_wall_seconds + termination_grace_seconds:
+        raise ProvenanceError(
+            f"{timeout_prefix}.ra001a_durable_tracer_max_job_minutes must exceed "
+            "the tracer wall limit plus termination grace"
+        )
+    return BacktesterTestArchiveTimeoutConfig(
+        ordinary_max_job_minutes=ordinary_minutes,
+        ra001a_durable_tracer_max_job_minutes=tracer_minutes,
+        ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
+        ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
+    )
+
+
+def load_backtester_issue_789_timeout_minutes(
+    data: dict[str, object],
+    *,
+    required: bool,
+) -> int | None:
+    backtester = data.get("backtester")
+    if backtester is None and not required:
+        return None
+    if not isinstance(backtester, dict):
+        raise ProvenanceError(
+            "missing [backtester]" if backtester is None else "backtester must be a table"
+        )
+
+    issue_789 = require_table(backtester, "issue_789", "backtester")
+    max_job_minutes = require_positive_int(
+        issue_789,
+        "max_job_minutes",
+        "backtester.issue_789",
+    )
+    if max_job_minutes > GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES:
+        raise ProvenanceError(
+            "backtester.issue_789.max_job_minutes must not exceed GitHub Actions' "
+            f"{GITHUB_ACTIONS_MAX_JOB_TIMEOUT_MINUTES}-minute maximum"
+        )
+    return max_job_minutes
 
 
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
@@ -632,6 +725,15 @@ def load_config(
     if ci_provenance.get("schema_version") != 1:
         raise ProvenanceError("ci_provenance.schema_version must be 1")
 
+    backtester_test_archive_timeout = load_backtester_test_archive_timeout_config(
+        data,
+        required=require_workflows,
+    )
+    backtester_issue_789_timeout_minutes = load_backtester_issue_789_timeout_minutes(
+        data,
+        required=require_workflows,
+    )
+
     duplicated_fingerprint_keys = {
         "fingerprint_artifact_prefix",
         "fingerprint_workflow",
@@ -884,6 +986,8 @@ def load_config(
         ),
         max_lookback_age_seconds=max_lookback_age_seconds,
         inherited_emitter_probe_timeout_seconds=inherited_emitter_probe_timeout_seconds,
+        backtester_test_archive_timeout=backtester_test_archive_timeout,
+        backtester_issue_789_timeout_minutes=backtester_issue_789_timeout_minutes,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,
@@ -1148,15 +1252,30 @@ def evaluate_backtester_gate_verdict(
     full_ci_deferred: bool,
     job_results: dict[str, str],
     bvs_changed: bool,
+    ra001a_durable_tracer_required: bool = False,
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "bvs-ci-policy did not succeed")
     require_job_result(job_results, "detect", "success", "bvs-detect did not succeed")
     if full_ci_deferred != (policy_path == "defer"):
         raise ProvenanceError("backtester full_ci_deferred must match policy_path == 'defer'")
+    if ra001a_durable_tracer_required and policy_path != "iteration":
+        raise ProvenanceError("RA-001a durable tracer is only valid for iteration policy")
 
     if policy_path == "iteration":
         if expected_event_class != "iteration":
             raise ProvenanceError(f"backtester iteration CI policy outside resolver-permitted event class {expected_event_class!r}")
+        if ra001a_durable_tracer_required:
+            if not bvs_changed:
+                raise ProvenanceError("RA-001a durable tracer requires bvs_changed=true")
+            require_job_result(job_results, "fmt", "success", "bvs-fmt did not succeed for RA-001a diagnostic")
+            require_jobs_skipped(job_results, ("clippy",), "RA-001a diagnostic")
+            require_job_result(
+                job_results,
+                "test-archive",
+                "success",
+                "RA-001a diagnostic test-archive did not succeed",
+            )
+            return "RA-001a diagnostic passed; no required full proof published by this run"
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during iteration")
         require_jobs_skipped(job_results, ("clippy", "test-archive"), "backtester iteration")
         return "backtester iteration CI policy; no required full proof published by this run"
@@ -1370,7 +1489,23 @@ def evaluate_ci_policy(
     event_sender_id: int = -1,
     pull_request_author_id: int = -1,
     ref: str,
+    ra001a_durable_tracer_requested: bool = False,
 ) -> CiPolicyResult:
+    if ra001a_durable_tracer_requested and event_name != "workflow_dispatch":
+        raise ProvenanceError(
+            "ra001a_durable_tracer_requested is only valid for workflow_dispatch"
+        )
+    timeout = config.backtester_test_archive_timeout
+    if timeout is None:
+        raise ProvenanceError("backtester test-archive timeout config is unavailable")
+    issue_789_timeout_minutes = config.backtester_issue_789_timeout_minutes
+    if issue_789_timeout_minutes is None:
+        raise ProvenanceError("backtester issue #789 timeout config is unavailable")
+    archive_timeout_minutes = (
+        timeout.ra001a_durable_tracer_max_job_minutes
+        if ra001a_durable_tracer_requested
+        else timeout.ordinary_max_job_minutes
+    )
     mergify_temp_pr = mergify_temp_pr_matches(
         event_name=event_name,
         event_action=event_action,
@@ -1457,8 +1592,11 @@ def evaluate_ci_policy(
         ci_policy_path=path,
         full_ci_required=path == "full",
         full_ci_deferred=path == "defer",
+        ra001a_durable_tracer_required=ra001a_durable_tracer_requested,
         gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
+        backtester_test_archive_timeout_minutes=archive_timeout_minutes,
+        backtester_issue_789_timeout_minutes=issue_789_timeout_minutes,
         expected_event_class=expected_event_class_for(reason, path),
         reason=reason,
     )
@@ -3453,6 +3591,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--pull-request-author-id", default="")
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--docs-only", default="false")
+        parser.add_argument("--ra001a-durable-tracer-requested", default="false")
         parser.add_argument("--ref", required=True)
     if mode == "check-ci-gate":
         parser.add_argument("--policy-path", required=True)
@@ -3467,6 +3606,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--policy-path", required=True)
         parser.add_argument("--expected-event-class", required=True)
         parser.add_argument("--full-ci-deferred", default="false")
+        parser.add_argument("--ra001a-durable-tracer-required", default="false")
         parser.add_argument("--bvs-changed", default="false")
         parser.add_argument("--job", action="append", default=[])
     if mode == "resolve-gate-carry-forward":
@@ -3547,12 +3687,27 @@ def main(argv: list[str] | None = None) -> int:
                     args.pull_request_author_id, name="pull_request_author_id"
                 ),
                 ref=args.ref,
+                ra001a_durable_tracer_requested=parse_bool(
+                    args.ra001a_durable_tracer_requested
+                ),
             )
             print(f"ci_policy_path={result.ci_policy_path}")
             print(f"full_ci_required={str(result.full_ci_required).lower()}")
             print(f"full_ci_deferred={str(result.full_ci_deferred).lower()}")
+            print(
+                "ra001a_durable_tracer_required="
+                f"{str(result.ra001a_durable_tracer_required).lower()}"
+            )
             print(f"gate_name={result.gate_name}")
             print(f"backtester_gate_name={result.backtester_gate_name}")
+            print(
+                "backtester_test_archive_timeout_minutes="
+                f"{result.backtester_test_archive_timeout_minutes}"
+            )
+            print(
+                "backtester_issue_789_timeout_minutes="
+                f"{result.backtester_issue_789_timeout_minutes}"
+            )
             print(f"expected_event_class={result.expected_event_class}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
@@ -3578,6 +3733,7 @@ def main(argv: list[str] | None = None) -> int:
                     full_ci_deferred=parse_bool(args.full_ci_deferred),
                     job_results=parse_job_result_values(args.job),
                     bvs_changed=parse_bool(args.bvs_changed),
+                    ra001a_durable_tracer_required=parse_bool(args.ra001a_durable_tracer_required),
                 )
             )
         elif mode == "resolve-gate-carry-forward":

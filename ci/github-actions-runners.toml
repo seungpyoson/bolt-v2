@@ -56,6 +56,10 @@ test-archive = "managed_heavy"
 issue_789 = "managed_heavy"
 gate = "github_hosted"
 
+[backtester.test_archive_timeout]
+ordinary_max_job_minutes = 360
+ra001a_durable_tracer_max_job_minutes = 120
+
 [workflows.flaky_test_detection]
 flaky-detection-rust-root = "managed_heavy"
 flaky-detection-rust-backtester = "managed_heavy"
@@ -202,8 +206,20 @@ run_attempt = "${{ github.run_attempt }}"
 
 [backtester.issue_789]
 artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
+max_job_minutes = 120
 
 [backtester.issue_789.artifact_name_template_vars]
+run_id = "${{ github.run_id }}"
+run_attempt = "${{ github.run_attempt }}"
+
+[backtester.ra001a_durable_tracer]
+artifact_name_template = "ra001a-durable-tracer-{run_id}-{run_attempt}"
+max_registry_packs = 64
+max_total_selected_object_bytes = 1073741824
+max_wall_seconds = 3600
+termination_grace_seconds = 30
+
+[backtester.ra001a_durable_tracer.artifact_name_template_vars]
 run_id = "${{ github.run_id }}"
 run_attempt = "${{ github.run_attempt }}"
 
@@ -426,6 +442,14 @@ artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_tem
 artifact_class = "transient"
 retention_days = 7
 
+[artifact_retention.uploads.".github/workflows/backtester-ci.yml::test-archive::upload-ra001a-durable-tracer-receipt"]
+artifact_name_template_config_file = "ci/github-actions-runners.toml"
+artifact_name_template_config_ref = "backtester.ra001a_durable_tracer.artifact_name_template"
+artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
+artifact_name_template_vars_config_ref = "backtester.ra001a_durable_tracer.artifact_name_template_vars"
+artifact_class = "transient"
+retention_days = 7
+
 [artifact_retention.uploads.".github/workflows/ci-storage-cleanup-alert.yml::cleanup-alert::upload-cleanup-feasibility-json"]
 artifact_name = "ci-storage-cleanup-feasibility"
 artifact_class = "transient"
@@ -563,7 +587,10 @@ keep_reason = "nextest archive is retained until it expires"
 [[storage_audit.cleanup_feasibility.classes]]
 id = "backtester_payload"
 name_equals = ["bvs-test-payload"]
-name_prefixes_from_templates = ["backtester.issue_789.artifact_name_template"]
+name_prefixes_from_templates = [
+  "backtester.issue_789.artifact_name_template",
+  "backtester.ra001a_durable_tracer.artifact_name_template",
+]
 expired_decision = "DELETE-CANDIDATE"
 candidate_reason = "expired backtester test payload outside protected refs"
 keep_reason = "backtester test payload is retained until it expires"

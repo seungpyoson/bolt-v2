@@ -40,6 +40,17 @@ host-health = "github_hosted"
 [workflows.actionlint]
 actionlint = "github_hosted"
 
+[backtester.test_archive_timeout]
+ordinary_max_job_minutes = 360
+ra001a_durable_tracer_max_job_minutes = 120
+
+[backtester.ra001a_durable_tracer]
+max_wall_seconds = 3600
+termination_grace_seconds = 30
+
+[backtester.issue_789]
+max_job_minutes = 120
+
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
@@ -254,6 +265,17 @@ actionlint = "github_hosted"
 
 [workflows.ci]
 host-health = "github_hosted"
+
+[backtester.ra001a_durable_tracer]
+termination_grace_seconds = 30
+max_wall_seconds = 3600
+
+[backtester.test_archive_timeout]
+ra001a_durable_tracer_max_job_minutes = 120
+ordinary_max_job_minutes = 360
+
+[backtester.issue_789]
+max_job_minutes = 120
 
 [ci_provenance.policy.override]
 ignore_emit_failure = false
@@ -842,6 +864,148 @@ def assert_positive_int_config_rejects_booleans() -> None:
         for expected, text in cases.items():
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
+
+
+def assert_backtester_timeout_configs_reject_invalid_values() -> None:
+    module = load_script()
+    cases = {
+        "backtester.test_archive_timeout.ordinary_max_job_minutes must be a positive integer": CONFIG_TOML.replace(
+            "ordinary_max_job_minutes = 360",
+            "ordinary_max_job_minutes = true",
+            1,
+        ),
+        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must be a positive integer": CONFIG_TOML.replace(
+            "ra001a_durable_tracer_max_job_minutes = 120",
+            "ra001a_durable_tracer_max_job_minutes = 0",
+            1,
+        ),
+        "backtester.test_archive_timeout.ordinary_max_job_minutes must not exceed GitHub Actions' 360-minute maximum": CONFIG_TOML.replace(
+            "ordinary_max_job_minutes = 360",
+            "ordinary_max_job_minutes = 361",
+            1,
+        ),
+        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must not exceed GitHub Actions' 360-minute maximum": CONFIG_TOML.replace(
+            "ra001a_durable_tracer_max_job_minutes = 120",
+            "ra001a_durable_tracer_max_job_minutes = 361",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_wall_seconds must be a positive integer": CONFIG_TOML.replace(
+            "max_wall_seconds = 3600",
+            "max_wall_seconds = true",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.termination_grace_seconds must be a positive integer": CONFIG_TOML.replace(
+            "termination_grace_seconds = 30",
+            "termination_grace_seconds = 0",
+            1,
+        ),
+        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must exceed the tracer wall limit plus termination grace": CONFIG_TOML.replace(
+            "ra001a_durable_tracer_max_job_minutes = 120",
+            "ra001a_durable_tracer_max_job_minutes = 60",
+            1,
+        ).replace("max_wall_seconds = 3600", "max_wall_seconds = 3570", 1),
+    }
+    issue_789_cases = [
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]\nmax_job_minutes = true",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                '[backtester.issue_789]\nmax_job_minutes = "120"',
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]\nmax_job_minutes = 0",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must not exceed GitHub Actions' 360-minute maximum",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]\nmax_job_minutes = 361",
+                1,
+            ),
+        ),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for expected, text in cases.items():
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in issue_789_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+
+
+def assert_backtester_timeout_configs_load_limits() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        loaded = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    timeout = loaded.backtester_test_archive_timeout
+    actual = (
+        timeout.ordinary_max_job_minutes,
+        timeout.ra001a_durable_tracer_max_job_minutes,
+        timeout.ra001a_durable_tracer_max_wall_seconds,
+        timeout.ra001a_durable_tracer_termination_grace_seconds,
+    )
+    if actual != (360, 120, 3600, 30):
+        raise AssertionError(f"backtester test-archive timeout config drifted: {actual}")
+    if loaded.backtester_issue_789_timeout_minutes != 120:
+        raise AssertionError(
+            "backtester issue #789 timeout config drifted: "
+            f"{loaded.backtester_issue_789_timeout_minutes}"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        boundary = module.load_config(
+            write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(
+                    "ra001a_durable_tracer_max_job_minutes = 120",
+                    "ra001a_durable_tracer_max_job_minutes = 61",
+                    1,
+                ),
+            )
+        )
+    if boundary.backtester_test_archive_timeout.ra001a_durable_tracer_max_job_minutes != 61:
+        raise AssertionError(
+            "a 61-minute job ceiling must cover a 60-minute wall limit plus 30-second grace"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        issue_789_boundary = module.load_config(
+            write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(
+                    "[backtester.issue_789]\nmax_job_minutes = 120",
+                    "[backtester.issue_789]\nmax_job_minutes = 360",
+                    1,
+                ),
+            )
+        )
+    if issue_789_boundary.backtester_issue_789_timeout_minutes != 360:
+        raise AssertionError(
+            "the GitHub Actions 360-minute maximum must remain a valid issue #789 bound"
+        )
 
 
 def assert_deploy_artifact_window_uses_short_deploy_policy() -> None:
@@ -2576,6 +2740,74 @@ def assert_ci_policy_rejects_event_sender_cli_override_arguments() -> None:
             raise AssertionError(f"{flag} must fail as unrecognized, got {combined!r}")
 
 
+def assert_ci_policy_exposes_ra001a_tracer_request_without_promoting_full_ci() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        config = module.load_config(config_path)
+
+        result = module.evaluate_ci_policy(
+            config,
+            event_name="workflow_dispatch",
+            event_action="",
+            pull_request_draft=False,
+            ra001a_durable_tracer_requested=True,
+            ref="refs/heads/codex/branch",
+        )
+        if result.ci_policy_path != "iteration" or result.full_ci_required:
+            raise AssertionError(f"RA-001a diagnostic must remain non-proof iteration: {result}")
+        if not result.ra001a_durable_tracer_required:
+            raise AssertionError(f"RA-001a diagnostic request was not preserved: {result}")
+        if result.backtester_test_archive_timeout_minutes != 120:
+            raise AssertionError(
+                "RA-001a diagnostic must select the trusted 120-minute archive timeout: "
+                f"{result}"
+            )
+        if result.backtester_issue_789_timeout_minutes != 120:
+            raise AssertionError(
+                f"issue #789 timeout output drifted while resolving RA-001a: {result}"
+            )
+
+        assert_raises(
+            "only valid for workflow_dispatch",
+            lambda: module.evaluate_ci_policy(
+                config,
+                event_name="pull_request",
+                event_action="opened",
+                pull_request_draft=False,
+                ra001a_durable_tracer_requested=True,
+                ref="refs/pull/1/merge",
+            ),
+        )
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config_path),
+                "--event-name",
+                "workflow_dispatch",
+                "--ra001a-durable-tracer-requested",
+                "true",
+                "--ref",
+                "refs/heads/codex/branch",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"RA-001a ci-policy CLI failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ra001a_durable_tracer_required") != "true":
+            raise AssertionError(f"RA-001a ci-policy CLI dropped the governed request: {output}")
+        if output.get("backtester_test_archive_timeout_minutes") != "120":
+            raise AssertionError(
+                f"RA-001a ci-policy CLI must expose the trusted tracer timeout: {output}"
+            )
+        if output.get("backtester_issue_789_timeout_minutes") != "120":
+            raise AssertionError(
+                f"RA-001a ci-policy CLI must expose the trusted issue #789 timeout: {output}"
+            )
+
+
 def assert_ci_policy_outputs_matrix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
@@ -2676,6 +2908,10 @@ def assert_ci_policy_outputs_matrix() -> None:
                 )
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
+            if output.get("backtester_test_archive_timeout_minutes") != "360":
+                raise AssertionError(f"ci-policy must expose the trusted ordinary timeout: {output}")
+            if output.get("backtester_issue_789_timeout_minutes") != "120":
+                raise AssertionError(f"ci-policy must expose the trusted issue #789 timeout: {output}")
 
         code, stdout, stderr = run_cli_with_event_sender(
             [
@@ -5943,11 +6179,133 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
     )
 
 
+def assert_backtester_gate_verdict_routes_ra001a_diagnostic() -> None:
+    module = load_script()
+    ordinary_iteration_jobs = {
+        "ci-policy": "success",
+        "detect": "success",
+        "fmt": "success",
+        "clippy": "skipped",
+        "test-archive": "skipped",
+    }
+    module.evaluate_backtester_gate_verdict(
+        policy_path="iteration",
+        expected_event_class="iteration",
+        full_ci_deferred=False,
+        job_results=ordinary_iteration_jobs,
+        bvs_changed=True,
+        ra001a_durable_tracer_required=False,
+    )
+
+    tracer_jobs = {**ordinary_iteration_jobs, "test-archive": "success"}
+    verdict = module.evaluate_backtester_gate_verdict(
+        policy_path="iteration",
+        expected_event_class="iteration",
+        full_ci_deferred=False,
+        job_results=tracer_jobs,
+        bvs_changed=True,
+        ra001a_durable_tracer_required=True,
+    )
+    if "RA-001a diagnostic" not in verdict or "no required full proof" not in verdict:
+        raise AssertionError(f"RA-001a verdict must remain explicitly non-proof: {verdict!r}")
+
+    assert_raises(
+        "test-archive did not succeed",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="iteration",
+            expected_event_class="iteration",
+            full_ci_deferred=False,
+            job_results={**tracer_jobs, "test-archive": "failure"},
+            bvs_changed=True,
+            ra001a_durable_tracer_required=True,
+        ),
+    )
+    assert_raises(
+        "requires bvs_changed=true",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="iteration",
+            expected_event_class="iteration",
+            full_ci_deferred=False,
+            job_results=tracer_jobs,
+            bvs_changed=False,
+            ra001a_durable_tracer_required=True,
+        ),
+    )
+    assert_raises(
+        "only valid for iteration",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            job_results=tracer_jobs,
+            bvs_changed=True,
+            ra001a_durable_tracer_required=True,
+        ),
+    )
+    assert_raises(
+        "test-archive unexpectedly ran during backtester iteration",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="iteration",
+            expected_event_class="iteration",
+            full_ci_deferred=False,
+            job_results=tracer_jobs,
+            bvs_changed=True,
+            ra001a_durable_tracer_required=False,
+        ),
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        cli_args = [
+            "check-backtester-gate",
+            "--config",
+            str(config_path),
+            "--policy-path",
+            "iteration",
+            "--expected-event-class",
+            "iteration",
+            "--full-ci-deferred",
+            "false",
+            "--ra001a-durable-tracer-required",
+            "true",
+            "--bvs-changed",
+            "true",
+            "--job",
+            "ci-policy=success",
+            "--job",
+            "detect=success",
+            "--job",
+            "fmt=success",
+            "--job",
+            "clippy=skipped",
+            "--job",
+            "test-archive=success",
+        ]
+        code, stdout, stderr = run_cli(cli_args)
+        if code != 0 or "RA-001a diagnostic" not in stdout:
+            raise AssertionError(
+                f"RA-001a gate CLI must accept the governed diagnostic lane: "
+                f"code={code} stdout={stdout!r} stderr={stderr!r}"
+            )
+
+        without_intent = cli_args.copy()
+        flag_index = without_intent.index("--ra001a-durable-tracer-required")
+        del without_intent[flag_index : flag_index + 2]
+        code, stdout, stderr = run_cli(without_intent)
+        if code == 0 or "test-archive unexpectedly ran during backtester iteration" not in stdout + stderr:
+            raise AssertionError(
+                "the ordinary iteration CLI path must reject a successful tracer archive "
+                f"without governed intent: code={code} stdout={stdout!r} stderr={stderr!r}"
+            )
+
+
 def main() -> int:
     assert_load_script_reuses_module()
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_positive_int_config_rejects_booleans()
+    assert_backtester_timeout_configs_reject_invalid_values()
+    assert_backtester_timeout_configs_load_limits()
     assert_deploy_artifact_window_uses_short_deploy_policy()
     assert_capture_config_can_omit_deploy_artifact_window()
     assert_optional_deploy_window_rejects_partial_config()
@@ -6001,6 +6359,7 @@ def main() -> int:
     assert_artifact_metadata_outputs_configured_name_only()
     assert_artifact_metadata_accepts_capture_config_without_workflows()
     assert_ci_policy_rejects_event_sender_cli_override_arguments()
+    assert_ci_policy_exposes_ra001a_tracer_request_without_promoting_full_ci()
     assert_ci_policy_outputs_matrix()
     assert_ci_policy_gate_names_are_event_based()
     assert_required_gate_proof_event_classes_match_resolver()
@@ -6069,6 +6428,7 @@ def main() -> int:
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()
     assert_ci_gate_verdict_hardens_full_and_reuse_proof()
     assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
+    assert_backtester_gate_verdict_routes_ra001a_diagnostic()
     print("OK: CI provenance self-tests passed.")
     return 0
 

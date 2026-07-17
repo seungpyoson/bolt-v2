@@ -291,7 +291,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             "      - name: Configure AWS credentials for RA-001a durable tracer\n"
             "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n"
             "        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b-suffix\n",
-            "RA-001a tracer AWS action must use exactly the reviewed 40-hex commit",
+            "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
         ),
         (
             "AWS role binding",
@@ -372,7 +372,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             "exact tracer selector",
             "            -E 'binary(=backtesting_vertical_slice_tests) & test(=backtesting_vertical_slice_source_universe_durable_tracer::registry_complete_ra001a_live_tracer_runs_every_committed_pack)'\n",
             "            -E 'binary(=backtesting_vertical_slice_tests)'\n",
-            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+            "RA-001a tracer must execute its exact selector before exactly one live non-empty receipt guard",
         ),
         (
             "non-empty receipt check",
@@ -396,7 +396,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             "        id: upload-ra001a-durable-tracer-receipt\n"
             "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}\n"
             "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a-suffix\n",
-            "RA-001a receipt upload action must use exactly the reviewed 40-hex commit",
+            "RA-001a receipt upload must require successful evidence production and fail on absence",
         ),
         (
             "receipt upload path",
@@ -432,7 +432,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}\n"
     )
     timeout_output_capture = (
-        '          policy_output="$RUNNER_TEMP/backtester-ci-policy-output"\n'
+        '          readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"\n'
         '          test ! -e "$policy_output" || { echo "trusted policy output path already exists" >&2; exit 1; }\n'
     )
     timeout_output_validation = (
@@ -466,6 +466,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "            echo \"trusted policy resolver tracer decision does not match the dispatch request\" >&2\n"
         "            exit 1\n"
         "          }\n"
+        "          [[ \"$(sha256sum \"$policy_output\" | cut -d ' ' -f 1)\" == \"$policy_output_sha256\" ]] || { echo \"trusted policy output changed after validation\" >&2; exit 1; }\n"
         "          cat \"$policy_output\" >> \"$GITHUB_OUTPUT\"\n"
     )
     for label, fragment in (
@@ -540,6 +541,156 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             "backtester governance must reject a trusted policy invocation nested in dead control flow"
         )
 
+    policy_capture_chain = (
+        '            | tee "$policy_output"\n'
+        '          policy_output_sha256="$(sha256sum "$policy_output" | cut -d \' \' -f 1)"\n'
+        '          readonly policy_output_sha256\n'
+        '          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }\n'
+    )
+    policy_rehash_chain = (
+        '          [[ "$(sha256sum "$policy_output" | cut -d \' \' -f 1)" == "$policy_output_sha256" ]] || { echo "trusted policy output changed after validation" >&2; exit 1; }\n'
+        '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n'
+    )
+    if policy_capture_chain not in backtester_workflow or policy_rehash_chain not in backtester_workflow:
+        raise AssertionError("trusted policy output seal is missing from the real workflow")
+
+    seal_mutations = (
+        (
+            "path seal removal",
+            "          readonly policy_script policy_config\n",
+            "",
+        ),
+        (
+            "trusted path rebinding",
+            "          readonly policy_script policy_config\n",
+            "          readonly policy_script policy_config\n"
+            '          policy_script="scripts/ci_provenance.py"\n',
+        ),
+        (
+            "output readonly removal",
+            '          readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"\n',
+            '          policy_output="$RUNNER_TEMP/backtester-ci-policy-output"\n',
+        ),
+        (
+            "output rebinding",
+            '          readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"\n',
+            '          readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"\n'
+            '          policy_output="$RUNNER_TEMP/rebound-policy-output"\n',
+        ),
+        (
+            "captured hash readonly removal",
+            "          readonly policy_output_sha256\n",
+            "",
+        ),
+        (
+            "sed mutation",
+            '          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }\n',
+            '          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }\n'
+            '          sed -i \'s/full_ci_required=true/full_ci_required=false/\' "$policy_output"\n',
+        ),
+        (
+            "remove mutation",
+            '          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }\n',
+            '          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }\n'
+            '          rm -f "$policy_output"\n',
+        ),
+        (
+            "move mutation",
+            '          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }\n',
+            '          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }\n'
+            '          mv "$policy_output" "$RUNNER_TEMP/moved-policy-output"\n',
+        ),
+        (
+            "rehash removal",
+            policy_rehash_chain,
+            '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n',
+        ),
+        (
+            "rehash/publication separation",
+            policy_rehash_chain,
+            policy_rehash_chain.replace(
+                '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n',
+                '          echo "separated rehash from publication"\n'
+                '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n',
+            ),
+        ),
+    )
+    for label, fragment, replacement in seal_mutations:
+        mutated = replace_once(backtester_workflow, fragment, replacement)
+        mutation_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": mutated}
+        )
+        if not any(
+            "ci-policy job must seal trusted paths and policy output against rebinding or post-validation mutation"
+            in error
+            for error in mutation_errors
+        ):
+            raise AssertionError(
+                f"trusted policy seal did not reject {label}: {mutation_errors}"
+            )
+
+    moved_capture = replace_once(backtester_workflow, policy_capture_chain, '            | tee "$policy_output"\n')
+    moved_capture = replace_once(
+        moved_capture,
+        policy_rehash_chain,
+        policy_capture_chain.removeprefix('            | tee "$policy_output"\n')
+        + policy_rehash_chain,
+    )
+    moved_capture_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": moved_capture}
+    )
+    if not any(
+        "ci-policy job must seal trusted paths and policy output against rebinding or post-validation mutation"
+        in error
+        for error in moved_capture_errors
+    ):
+        raise AssertionError(
+            "trusted policy seal must reject a hash capture moved away from resolver output"
+        )
+
+    marker_smuggling_mutations = (
+        (
+            "AWS credential marker",
+            "        with:\n"
+            "          role-to-assume: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}\n",
+            "        env:\n"
+            "          ROLE_MARKER: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}\n"
+            "        with:\n"
+            "          role-to-assume: arn:aws:iam::000000000000:role/untrusted\n",
+            "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
+        ),
+        (
+            "resolve-input marker",
+            "          WORKER_EXECUTABLE: ${{ steps.crate_target.outputs.dir }}/debug/source_universe_batch_execution\n",
+            "          WORKER_EXECUTABLE: /tmp/unreviewed-worker\n"
+            "          WORKER_MARKER: ${{ steps.crate_target.outputs.dir }}/debug/source_universe_batch_execution\n",
+            "RA-001a tracer inputs must bind an executable worker and a fresh receipt path",
+        ),
+        (
+            "tracer-limit marker",
+            "          BOLT_RA001A_MAX_REGISTRY_PACKS: ${{ needs.ci-policy.outputs.ra001a_max_registry_packs }}\n",
+            "          BOLT_RA001A_MAX_REGISTRY_PACKS: 999999\n"
+            "          LIMIT_MARKER: ${{ needs.ci-policy.outputs.ra001a_max_registry_packs }}\n",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+        ),
+        (
+            "upload-path marker",
+            "          path: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}\n",
+            "          path: ${{ runner.temp }}\n"
+            "          PATH_MARKER: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}\n",
+            "RA-001a receipt upload must require successful evidence production and fail on absence",
+        ),
+    )
+    for label, fragment, replacement, expected in marker_smuggling_mutations:
+        mutated = replace_once(backtester_workflow, fragment, replacement)
+        mutation_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": mutated}
+        )
+        if not any(expected in error for error in mutation_errors):
+            raise AssertionError(
+                f"RA-001a exact step contract did not reject {label}: {mutation_errors}"
+            )
+
     continue_on_error_mutations = (
         (
             "test-archive job",
@@ -554,7 +705,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             "        id: ra001a-durable-tracer\n"
             "        continue-on-error: true\n"
             "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n",
-            "Run RA-001a registry-complete durable tracer must fail closed without continue-on-error",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
         ),
         (
             "receipt upload step",
@@ -563,7 +714,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             "        id: upload-ra001a-durable-tracer-receipt\n"
             "        continue-on-error: true\n"
             "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}\n",
-            "Upload RA-001a durable tracer receipt must fail closed without continue-on-error",
+            "RA-001a receipt upload must require successful evidence production and fail on absence",
         ),
     )
     for label, fragment, replacement, expected in continue_on_error_mutations:
@@ -668,12 +819,12 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         (
             tracer_checkout_policy_env,
             "",
-            "RA-001a checkout cleanliness policy must come from trusted TOML outputs",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
         ),
         (
             tracer_no_tests_fail,
             "            --run-ignored ignored-only \\\n",
-            "RA-001a tracer must fail when its exact ignored test selection is empty",
+            "RA-001a tracer must execute its exact selector before exactly one live non-empty receipt guard",
         ),
     ):
         mutated = replace_once(backtester_workflow, fragment, replacement)
@@ -703,11 +854,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
     early_timeout_publication = replace_once(
         backtester_workflow,
-        '          | tee "$policy_output"\n'
-        "          for positive_policy_key in \\\n",
-        '          | tee "$policy_output"\n'
-        '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n'
-        "          for positive_policy_key in \\\n",
+        '            | tee "$policy_output"\n',
+        '            | tee "$policy_output"\n'
+        '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n',
     )
     early_timeout_publication_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": early_timeout_publication}
@@ -729,7 +878,8 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         {".github/workflows/backtester-ci.yml": unbounded_wall_workflow}
     )
     if not any(
-        "RA-001a tracer must enforce its TOML-owned aggregate wall-time envelope" in error
+        "RA-001a tracer must execute its exact selector before exactly one live non-empty receipt guard"
+        in error
         for error in unbounded_wall_errors
     ):
         raise AssertionError("backtester governance must reject an unbounded aggregate tracer run")
@@ -757,7 +907,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         {".github/workflows/backtester-ci.yml": unbounded_bytes_workflow}
     )
     if not any(
-        "RA-001a tracer must receive its TOML-owned aggregate source-byte envelope" in error
+        "RA-001a tracer must bind exact-head evidence and require a non-empty receipt" in error
         for error in unbounded_bytes_errors
     ):
         raise AssertionError("backtester governance must reject a tracer without an aggregate byte cap")

@@ -210,6 +210,7 @@ jobs:
             policy_script="scripts/ci_provenance.py"
             policy_config="ci/github-actions-runners.toml"
           fi
+          readonly policy_script policy_config
           test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }
           test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }
           author_args=()
@@ -223,7 +224,7 @@ jobs:
             echo "trusted policy resolver does not support the requested RA-001a tracer" >&2
             exit 1
           fi
-          policy_output="$RUNNER_TEMP/backtester-ci-policy-output"
+          readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"
           test ! -e "$policy_output" || { echo "trusted policy output path already exists" >&2; exit 1; }
           python3 "$policy_script" ci-policy \
             --config "$policy_config" \
@@ -236,6 +237,9 @@ jobs:
             "${tracer_args[@]}" \
             --ref "${{ github.ref }}" \
             | tee "$policy_output"
+          policy_output_sha256="$(sha256sum "$policy_output" | cut -d ' ' -f 1)"
+          readonly policy_output_sha256
+          [[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }
           for positive_policy_key in \
             backtester_test_archive_timeout_minutes \
             backtester_issue_789_timeout_minutes \
@@ -266,6 +270,7 @@ jobs:
             echo "trusted policy resolver tracer decision does not match the dispatch request" >&2
             exit 1
           }
+          [[ "$(sha256sum "$policy_output" | cut -d ' ' -f 1)" == "$policy_output_sha256" ]] || { echo "trusted policy output changed after validation" >&2; exit 1; }
           cat "$policy_output" >> "$GITHUB_OUTPUT"
 
   # Always-runs detector (no compile, no toolchain). Decides whether the crate or any of its

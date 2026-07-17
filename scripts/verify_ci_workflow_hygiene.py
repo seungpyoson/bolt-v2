@@ -9049,9 +9049,12 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             if required not in policy_text:
                 errors.append(f"backtester iteration policy ci-policy job must include {required}")
         timeout_capture_requirements = (
-            'policy_output="$RUNNER_TEMP/backtester-ci-policy-output"',
+            'readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"',
             'test ! -e "$policy_output"',
             '| tee "$policy_output"',
+            'policy_output_sha256="$(sha256sum "$policy_output" | cut -d \' \' -f 1)"',
+            "readonly policy_output_sha256",
+            '[[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]]',
         )
         if any(required not in policy_text for required in timeout_capture_requirements):
             errors.append(
@@ -9116,6 +9119,7 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             'policy_script="${{ steps.policy_base.outputs.script }}"',
             'policy_config="${{ steps.policy_base.outputs.config }}"',
         )
+        policy_readonly_line = "readonly policy_script policy_config"
         policy_guard_lines = (
             'test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }',
             'test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }',
@@ -9127,7 +9131,11 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             and '--config "$policy_config"' in line
         ]
         policy_command_positions: list[int] = []
-        for command in (*policy_assignment_lines, *policy_guard_lines):
+        for command in (
+            *policy_assignment_lines,
+            policy_readonly_line,
+            *policy_guard_lines,
+        ):
             positions = [
                 index
                 for index, line in enumerate(policy_shell_commands)
@@ -9145,6 +9153,123 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
         ):
             errors.append(
                 "ci-policy job must execute each trusted policy path guard exactly once after binding and before use"
+            )
+
+        policy_run_lines = (
+            [strip_comment(line).strip() for line in block_run_body_lines(policy_step)]
+            if policy_step is not None
+            else []
+        )
+        assignment_census = {
+            "policy_script": (
+                'policy_script="${{ steps.policy_base.outputs.script }}"',
+                'policy_script="scripts/ci_provenance.py"',
+            ),
+            "policy_config": (
+                'policy_config="${{ steps.policy_base.outputs.config }}"',
+                'policy_config="ci/github-actions-runners.toml"',
+            ),
+            "policy_output": (
+                'readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"',
+            ),
+            "policy_output_sha256": (
+                'policy_output_sha256="$(sha256sum "$policy_output" | cut -d \' \' -f 1)"',
+            ),
+        }
+        assignment_census_valid = True
+        for variable, expected_assignments in assignment_census.items():
+            assignment_pattern = re.compile(
+                rf"^(?:readonly\s+)?{re.escape(variable)}="
+            )
+            actual_assignments = tuple(
+                line for line in policy_run_lines if assignment_pattern.match(line)
+            )
+            if actual_assignments != expected_assignments:
+                assignment_census_valid = False
+                break
+
+        resolver_positions = policy_use_positions
+        output_declaration_command = (
+            'readonly policy_output="$RUNNER_TEMP/backtester-ci-policy-output"'
+        )
+        output_absence_command = (
+            'test ! -e "$policy_output" || { echo "trusted policy output path already '
+            'exists" >&2; exit 1; }'
+        )
+        output_declaration_positions = [
+            index
+            for index, line in enumerate(policy_shell_commands)
+            if line == output_declaration_command
+        ]
+        output_absence_positions = [
+            index
+            for index, line in enumerate(policy_shell_commands)
+            if line == output_absence_command
+        ]
+        output_chain_commands = (
+            'policy_output_sha256="$(sha256sum "$policy_output" | cut -d \' \' -f 1)"',
+            "readonly policy_output_sha256",
+            '[[ "$policy_output_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "trusted policy output SHA-256 is invalid" >&2; exit 1; }',
+        )
+        output_chain_positions: list[int] = []
+        for command in output_chain_commands:
+            positions = [
+                index
+                for index, line in enumerate(policy_shell_commands)
+                if line == command
+            ]
+            if len(positions) != 1:
+                output_chain_positions = []
+                break
+            output_chain_positions.append(positions[0])
+        rehash_command = (
+            '[[ "$(sha256sum "$policy_output" | cut -d \' \' -f 1)" == '
+            '"$policy_output_sha256" ]] || { echo "trusted policy output changed after '
+            'validation" >&2; exit 1; }'
+        )
+        publish_command = 'cat "$policy_output" >> "$GITHUB_OUTPUT"'
+        rehash_positions = [
+            index
+            for index, line in enumerate(policy_shell_commands)
+            if line == rehash_command
+        ]
+        publish_positions = [
+            index
+            for index, line in enumerate(policy_shell_commands)
+            if line == publish_command
+        ]
+        forbidden_output_mutation = any(
+            re.match(r"^(?:command\s+)?(?:sed|rm|mv)\b", command)
+            and (
+                "$policy_output" in command
+                or "backtester-ci-policy-output" in command
+            )
+            for command in policy_shell_commands
+        )
+        if (
+            not assignment_census_valid
+            or policy_shell_commands.count(policy_readonly_line) != 1
+            or len(resolver_positions) != 1
+            or len(output_declaration_positions) != 1
+            or len(output_absence_positions) != 1
+            or output_declaration_positions[0] + 1
+            != output_absence_positions[0]
+            or output_absence_positions[0] + 1 != resolver_positions[0]
+            or not output_chain_positions
+            or output_chain_positions
+            != list(
+                range(
+                    resolver_positions[0] + 1,
+                    resolver_positions[0] + 1 + len(output_chain_commands),
+                )
+            )
+            or len(rehash_positions) != 1
+            or len(publish_positions) != 1
+            or rehash_positions[0] + 1 != publish_positions[0]
+            or forbidden_output_mutation
+        ):
+            errors.append(
+                "ci-policy job must seal trusted paths and policy output against rebinding or post-validation mutation"
             )
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
@@ -9239,82 +9364,105 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             errors.append(
                 "RA-001a tracer-only dispatch must skip unrelated MinIO cleanup"
             )
-        if (
-            'timeout --signal=TERM --kill-after="${RA001A_TERMINATION_GRACE_SECONDS}s" '
-            '"${RA001A_MAX_WALL_SECONDS}s"' not in test_archive_text
-        ):
-            errors.append(
-                "RA-001a tracer must enforce its TOML-owned aggregate wall-time envelope"
-            )
-        if "--run-ignored ignored-only \\\n            --no-tests=fail \\" not in test_archive_text:
-            errors.append(
-                "RA-001a tracer must fail when its exact ignored test selection is empty"
-            )
-        if (
-            "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: "
-            "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}"
-            not in test_archive_text
-        ):
-            errors.append(
-                "RA-001a tracer must receive its TOML-owned aggregate source-byte envelope"
-            )
-        for output_name, env_name in (
-            ("ra001a_allowed_ignored_runtime_roots", "BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS"),
-            ("ra001a_max_ignored_entry_bytes", "BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES"),
-            ("ra001a_max_ignored_entries", "BOLT_RA001A_MAX_IGNORED_ENTRIES"),
-        ):
-            if (
-                f"{env_name}: ${{{{ needs.ci-policy.outputs.{output_name} }}}}"
-                not in test_archive_text
-            ):
-                errors.append(
-                    "RA-001a checkout cleanliness policy must come from trusted TOML outputs"
-                )
-
-        tracer_step_requirements = (
+        tracer_step_contracts = (
             (
                 "Configure AWS credentials for RA-001a durable tracer",
-                (
-                    "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
-                    "role-to-assume: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}",
-                    "aws-region: ${{ vars.AWS_RA001A_TRACER_REGION }}",
-                ),
+                frozenset({"name", "if", "uses", "with"}),
+                {
+                    "name": "Configure AWS credentials for RA-001a durable tracer",
+                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
+                    "uses": "aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
+                    "with": "",
+                },
+                {
+                    "with": {
+                        "role-to-assume": "${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}",
+                        "aws-region": "${{ vars.AWS_RA001A_TRACER_REGION }}",
+                    }
+                },
                 "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
             ),
             (
                 "Resolve RA-001a durable tracer inputs",
-                (
-                    "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
-                    "WORKER_EXECUTABLE: ${{ steps.crate_target.outputs.dir }}/debug/source_universe_batch_execution",
-                    "RECEIPT_PATH: ${{ runner.temp }}/ra001a-durable-tracer/receipt-set.json",
-                ),
+                frozenset({"name", "id", "if", "shell", "env", "run"}),
+                {
+                    "name": "Resolve RA-001a durable tracer inputs",
+                    "id": "ra001a-durable-tracer-inputs",
+                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
+                    "shell": "bash",
+                    "env": "",
+                    "run": "|",
+                },
+                {
+                    "env": {
+                        "WORKER_EXECUTABLE": "${{ steps.crate_target.outputs.dir }}/debug/source_universe_batch_execution",
+                        "RECEIPT_PATH": "${{ runner.temp }}/ra001a-durable-tracer/receipt-set.json",
+                    }
+                },
                 "RA-001a tracer inputs must bind an executable worker and a fresh receipt path",
             ),
             (
                 "Run RA-001a registry-complete durable tracer",
-                (
-                    "BOLT_RA001A_SOURCE_REVISION: ${{ github.sha }}",
-                    "BOLT_RA001A_WORKER_SHA256: ${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}",
-                    "BOLT_RA001A_RECEIPT_PATH: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
-                    "-E 'binary(=backtesting_vertical_slice_tests) & test(=backtesting_vertical_slice_source_universe_durable_tracer::registry_complete_ra001a_live_tracer_runs_every_committed_pack)'",
-                    'test -s "$BOLT_RA001A_RECEIPT_PATH"',
-                ),
+                frozenset({"name", "id", "if", "shell", "env", "run"}),
+                {
+                    "name": "Run RA-001a registry-complete durable tracer",
+                    "id": "ra001a-durable-tracer",
+                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
+                    "shell": "bash",
+                    "env": "",
+                    "run": "|",
+                },
+                {
+                    "env": {
+                        "BOLT_RA001A_SOURCE_REVISION": "${{ github.sha }}",
+                        "BOLT_RA001A_WORKER_SHA256": "${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}",
+                        "BOLT_RA001A_RECEIPT_PATH": "${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
+                        "BOLT_RA001A_MAX_REGISTRY_PACKS": "${{ needs.ci-policy.outputs.ra001a_max_registry_packs }}",
+                        "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}",
+                        "BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS": "${{ needs.ci-policy.outputs.ra001a_allowed_ignored_runtime_roots }}",
+                        "BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_ignored_entry_bytes }}",
+                        "BOLT_RA001A_MAX_IGNORED_ENTRIES": "${{ needs.ci-policy.outputs.ra001a_max_ignored_entries }}",
+                        "RA001A_MAX_WALL_SECONDS": "${{ needs.ci-policy.outputs.ra001a_max_wall_seconds }}",
+                        "RA001A_TERMINATION_GRACE_SECONDS": "${{ needs.ci-policy.outputs.ra001a_termination_grace_seconds }}",
+                    }
+                },
                 "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
             ),
             (
                 "Upload RA-001a durable tracer receipt",
-                (
-                    "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}",
-                    "path: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
-                    "if-no-files-found: error",
-                ),
+                frozenset({"name", "id", "if", "uses", "with"}),
+                {
+                    "name": "Upload RA-001a durable tracer receipt",
+                    "id": "upload-ra001a-durable-tracer-receipt",
+                    "if": "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}",
+                    "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                    "with": "",
+                },
+                {
+                    "with": {
+                        "name": "ra001a-durable-tracer-${{ github.run_id }}-${{ github.run_attempt }}",
+                        "path": "${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
+                        "if-no-files-found": "error",
+                        "retention-days": "7",
+                    }
+                },
                 "RA-001a receipt upload must require successful evidence production and fail on absence",
             ),
         )
-        for step_name, requirements, error_message in tracer_step_requirements:
+        for (
+            step_name,
+            allowed_keys,
+            required_scalars,
+            nested_mappings,
+            error_message,
+        ) in tracer_step_contracts:
             step = named_step_block(test_archive, step_name)
-            step_text = uncommented_text(step) if step is not None else ""
-            if any(requirement not in step_text for requirement in requirements):
+            if step is None or not block_has_canonical_step_envelope(
+                step,
+                allowed_keys,
+                required_scalars,
+                nested_mappings,
+            ):
                 errors.append(error_message)
 
         resolve_inputs_step = named_step_block(
@@ -9358,35 +9506,6 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             errors.append(
                 "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order"
             )
-
-        exact_action_uses = (
-            (
-                "Configure AWS credentials for RA-001a durable tracer",
-                "aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
-                "RA-001a tracer AWS action must use exactly the reviewed 40-hex commit",
-            ),
-            (
-                "Upload RA-001a durable tracer receipt",
-                "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-                "RA-001a receipt upload action must use exactly the reviewed 40-hex commit",
-            ),
-        )
-        for step_name, expected_uses, error_message in exact_action_uses:
-            step = named_step_block(test_archive, step_name)
-            step_items = block_top_level_items(step) if step is not None else None
-            if step_items is None or step_items.get("uses") != expected_uses:
-                errors.append(error_message)
-
-        for step_name in (
-            "Run RA-001a registry-complete durable tracer",
-            "Upload RA-001a durable tracer receipt",
-        ):
-            step = named_step_block(test_archive, step_name)
-            step_items = block_top_level_items(step) if step is not None else None
-            if step_items is None or "continue-on-error" in step_items:
-                errors.append(
-                    f"{step_name} must fail closed without continue-on-error"
-                )
 
         tracer_step = named_step_block(
             test_archive, "Run RA-001a registry-complete durable tracer"

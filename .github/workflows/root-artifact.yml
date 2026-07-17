@@ -237,6 +237,16 @@ jobs:
           [[ "$(basename "$SCCACHE_PATH")" == "$WRAPPER_PROGRAM" ]]
           [[ "$($SCCACHE_PATH --version | awk '{ print $1 }')" == "$WRAPPER_PROGRAM" ]]
 
+      - name: Verify empty sccache statistics baseline
+        run: |
+          set -euo pipefail
+          baseline_stats="$RUNNER_TEMP/root-artifact-sccache-baseline.json"
+          "$SCCACHE_PATH" --zero-stats
+          "$SCCACHE_PATH" --show-stats --stats-format json > "$baseline_stats"
+          [[ "$(jq -er '.stats.compile_requests' "$baseline_stats")" -eq 0 ]]
+          [[ "$(jq -er '[.stats.cache_hits.counts[]?] | add // 0' "$baseline_stats")" -eq 0 ]]
+          [[ "$(jq -er '[.stats.cache_misses.counts[]?] | add // 0' "$baseline_stats")" -eq 0 ]]
+
       - name: Build once through mandatory sccache
         env:
           BOLT_RUST_VERIFICATION_SCCACHE: "1"

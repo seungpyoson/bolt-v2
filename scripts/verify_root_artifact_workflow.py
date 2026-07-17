@@ -47,6 +47,22 @@ def root_artifact_workflow_errors(text: str) -> list[str]:
             "root-artifact must require the governed wrapper opt-in",
         ),
         (
+            '"$SCCACHE_PATH" --zero-stats',
+            "root-artifact must reset sccache statistics",
+        ),
+        (
+            '[[ "$(jq -er \'.stats.compile_requests\' "$baseline_stats")" -eq 0 ]]',
+            "root-artifact must verify zero compile requests before Cargo",
+        ),
+        (
+            '[[ "$(jq -er \'[.stats.cache_hits.counts[]?] | add // 0\' "$baseline_stats")" -eq 0 ]]',
+            "root-artifact must verify zero cache hits before Cargo",
+        ),
+        (
+            '[[ "$(jq -er \'[.stats.cache_misses.counts[]?] | add // 0\' "$baseline_stats")" -eq 0 ]]',
+            "root-artifact must verify zero cache misses before Cargo",
+        ),
+        (
             'rm "$omitted_root/$overlay"',
             "root-artifact must test omitted overlays",
         ),
@@ -66,6 +82,18 @@ def root_artifact_workflow_errors(text: str) -> list[str]:
     for fragment, error in required_fragments:
         if fragment not in source:
             errors.append(error)
+
+    baseline_fragments = (
+        '"$SCCACHE_PATH" --zero-stats',
+        '"$SCCACHE_PATH" --show-stats --stats-format json > "$baseline_stats"',
+        '[[ "$(jq -er \'.stats.compile_requests\' "$baseline_stats")" -eq 0 ]]',
+        '[[ "$(jq -er \'[.stats.cache_hits.counts[]?] | add // 0\' "$baseline_stats")" -eq 0 ]]',
+        '[[ "$(jq -er \'[.stats.cache_misses.counts[]?] | add // 0\' "$baseline_stats")" -eq 0 ]]',
+    )
+    build_position = source.find("      - name: Build once through mandatory sccache")
+    baseline_positions = tuple(source.find(fragment) for fragment in baseline_fragments)
+    if build_position < 0 or any(position < 0 or position >= build_position for position in baseline_positions):
+        errors.append("root-artifact must establish the zero-stat baseline before Cargo")
 
     if re.search(r"^\s*(?:retry|continue-on-error):", source, re.MULTILINE):
         errors.append("root-artifact must not retry or continue after failure")

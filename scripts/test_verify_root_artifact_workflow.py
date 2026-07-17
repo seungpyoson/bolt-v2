@@ -11,6 +11,18 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = pathlib.Path(__file__).with_name("verify_root_artifact_workflow.py")
 WORKFLOW_PATH = REPO_ROOT / ".github/workflows/root-artifact.yml"
+BUILD_STEP = "      - name: Build once through mandatory sccache\n"
+SCCACHE_BASELINE_STEP = """      - name: Verify empty sccache statistics baseline
+        run: |
+          set -euo pipefail
+          baseline_stats="$RUNNER_TEMP/root-artifact-sccache-baseline.json"
+          "$SCCACHE_PATH" --zero-stats
+          "$SCCACHE_PATH" --show-stats --stats-format json > "$baseline_stats"
+          [[ "$(jq -er '.stats.compile_requests' "$baseline_stats")" -eq 0 ]]
+          [[ "$(jq -er '[.stats.cache_hits.counts[]?] | add // 0' "$baseline_stats")" -eq 0 ]]
+          [[ "$(jq -er '[.stats.cache_misses.counts[]?] | add // 0' "$baseline_stats")" -eq 0 ]]
+
+"""
 
 
 def load_verifier():
@@ -37,7 +49,8 @@ def assert_mutation_rejected(verifier, baseline: str, label: str, old: str, new:
 
 def main() -> int:
     verifier = load_verifier()
-    baseline = WORKFLOW_PATH.read_text(encoding="utf-8")
+    real_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    baseline = real_workflow
     baseline_errors = verifier.root_artifact_workflow_errors(baseline)
     if baseline_errors:
         raise AssertionError(f"real root-artifact workflow must pass: {baseline_errors}")
@@ -136,6 +149,49 @@ def main() -> int:
     )
     for label, old, new, expected in cases:
         assert_mutation_rejected(verifier, baseline, label, old, new, expected)
+
+    candidate = (
+        real_workflow
+        if SCCACHE_BASELINE_STEP in real_workflow
+        else replace_once(real_workflow, BUILD_STEP, SCCACHE_BASELINE_STEP + BUILD_STEP)
+    )
+    baseline_cases = (
+        (
+            "sccache reset removal",
+            '          "$SCCACHE_PATH" --zero-stats\n',
+            "",
+            "must reset sccache statistics",
+        ),
+        (
+            "compile request baseline removal",
+            '          [[ "$(jq -er \'.stats.compile_requests\' "$baseline_stats")" -eq 0 ]]\n',
+            "",
+            "must verify zero compile requests before Cargo",
+        ),
+        (
+            "cache hit baseline removal",
+            '          [[ "$(jq -er \'[.stats.cache_hits.counts[]?] | add // 0\' "$baseline_stats")" -eq 0 ]]\n',
+            "",
+            "must verify zero cache hits before Cargo",
+        ),
+        (
+            "cache miss baseline removal",
+            '          [[ "$(jq -er \'[.stats.cache_misses.counts[]?] | add // 0\' "$baseline_stats")" -eq 0 ]]\n',
+            "",
+            "must verify zero cache misses before Cargo",
+        ),
+        (
+            "baseline after Cargo",
+            SCCACHE_BASELINE_STEP + BUILD_STEP,
+            BUILD_STEP + SCCACHE_BASELINE_STEP,
+            "must establish the zero-stat baseline before Cargo",
+        ),
+    )
+    for label, old, new, expected in baseline_cases:
+        assert_mutation_rejected(verifier, candidate, label, old, new, expected)
+
+    if real_workflow != candidate:
+        raise AssertionError("real root-artifact workflow must contain the verified zero-stat baseline")
 
     print("OK: root-artifact workflow mutation tests passed.")
     return 0

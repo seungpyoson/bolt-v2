@@ -379,7 +379,7 @@ def _use_aliases(text: str) -> list[tuple[str, str]]:
         for start, end in _top_level_segments(tree, opening + 1, closing):
             item = tree[start:end].strip()
             alias = re.fullmatch(
-                rf"(?P<target>{RUST_IDENT})\s+as\s+(?P<alias>{RUST_IDENT})",
+                rf"(?P<target>{RUST_PATH})\s+as\s+(?P<alias>{RUST_IDENT})",
                 item,
             )
             if alias is not None:
@@ -601,11 +601,14 @@ def _has_protected_trait_impl(
     protected_type_names: set[str],
     trait_name: str | None = None,
 ) -> bool:
+    protected_trait_names = (
+        _protected_type_names(text, trait_name) if trait_name is not None else set()
+    )
     for match in TRAIT_IMPL_HEADER.finditer(text):
         target = _terminal_rust_identifier(match.group("target"))
         implemented_trait = _terminal_rust_identifier(match.group("trait"))
         if target in protected_type_names and (
-            trait_name is None or implemented_trait == trait_name
+            trait_name is None or implemented_trait in protected_trait_names
         ):
             return True
     return False

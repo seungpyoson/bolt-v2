@@ -203,6 +203,26 @@ impl RecoveryWorkspaceHandle {
 
         self.assertTrue(any("raw workspace authority must not implement Clone" in error for error in errors))
 
+    def test_rejects_raw_workspace_clone_impl_through_grouped_trait_alias(self) -> None:
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
+        owner.write_text(
+            owner.read_text(encoding="utf-8")
+            + "\nuse core::{clone::Clone as C};\n"
+            + "impl C for RiskClosureWorkspaceAuthority {\n"
+            + "    fn clone(&self) -> Self { Self }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("raw workspace authority must not implement Clone" in error for error in errors))
+
     def test_rejects_second_raw_authority_constructor_definition(self) -> None:
         owner = (
             self.root

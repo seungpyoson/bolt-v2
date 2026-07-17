@@ -281,7 +281,7 @@ git commit -m "fix(resources): close capability surface census"
 
 ---
 
-### Task 3: Grouped aliases and protected conversion traits
+### Task 3: Grouped aliases and protected trait resolution
 
 **Files:**
 - Modify: `scripts/test_verify_risk_closure_workspace_authority.py:280-308`
@@ -289,9 +289,9 @@ git commit -m "fix(resources): close capability surface census"
 
 **Interfaces:**
 - Consumes: raw-aware `RUST_IDENT` and `_top_level_segments`.
-- Produces: `_use_aliases(text: str) -> list[tuple[str, str]]` and qualified-path-aware trait matching.
+- Produces: `_use_aliases(text: str) -> list[tuple[str, str]]` and qualified-path-aware protected type and trait matching.
 
-- [ ] **Step 1: Write the failing grouped-alias conversion test**
+- [ ] **Step 1: Write failing grouped type- and trait-alias tests**
 
 ```python
 def test_rejects_conversion_trait_through_grouped_use_aliases(self) -> None:
@@ -312,9 +312,22 @@ def test_rejects_conversion_trait_through_grouped_use_aliases(self) -> None:
     )
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+During final adversarial replay, add `test_rejects_raw_workspace_clone_impl_through_grouped_trait_alias` with:
 
-Expected: assertion failure because `N` and `R` are absent from the protected-name closure.
+```python
+owner.write_text(
+    owner.read_text(encoding="utf-8")
+    + "\nuse core::{clone::Clone as C};\n"
+    + "impl C for RiskClosureWorkspaceAuthority {\n"
+    + "    fn clone(&self) -> Self { Self }\n"
+    + "}\n",
+    encoding="utf-8",
+)
+```
+
+- [ ] **Step 2: Run both tests and verify RED**
+
+Expected: two assertion failures because `N` and `R` are absent from the protected-type closure and `C` is absent from the protected-trait closure.
 
 - [ ] **Step 3: Implement grouped-use alias expansion**
 
@@ -347,7 +360,7 @@ def _use_aliases(text: str) -> list[tuple[str, str]]:
         for start, end in _top_level_segments(tree, opening + 1, closing):
             item = tree[start:end].strip()
             alias = re.fullmatch(
-                rf"(?P<target>{RUST_IDENT})\s+as\s+(?P<alias>{RUST_IDENT})",
+                rf"(?P<target>{RUST_PATH})\s+as\s+(?P<alias>{RUST_IDENT})",
                 item,
             )
             if alias is not None:
@@ -357,13 +370,13 @@ def _use_aliases(text: str) -> list[tuple[str, str]]:
     return aliases
 ```
 
-Update `_protected_type_names` to close over `TYPE_ALIAS` matches and `_use_aliases(text)`. Strip `r#` from terminal identifiers before comparison. Use the new path expression in `IMPL_HEADER` and `TRAIT_IMPL_HEADER`.
+Update `_protected_type_names` to close over `TYPE_ALIAS` matches and `_use_aliases(text)`. Strip `r#` from terminal identifiers before comparison. Use the new path expression in `IMPL_HEADER` and `TRAIT_IMPL_HEADER`. When `_has_protected_trait_impl` receives a specific trait name such as `Clone`, resolve that trait's aliases through the same protected-name closure before comparing the implementation header.
 
 - [ ] **Step 4: Run grouped, simple-alias, qualified-target, and Default tests**
 
-Run the new test with `test_rejects_application_ledger_default_implementation`, `test_rejects_qualified_application_ledger_trait_implementation`, and `test_rejects_trait_implementation_through_local_type_alias`.
+Run both new tests with `test_rejects_application_ledger_default_implementation`, `test_rejects_qualified_application_ledger_trait_implementation`, and `test_rejects_trait_implementation_through_local_type_alias`.
 
-Expected: four tests pass.
+Expected: five tests pass.
 
 - [ ] **Step 5: Commit Task 3**
 

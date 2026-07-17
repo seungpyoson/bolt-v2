@@ -3863,6 +3863,8 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
 fn live_entered_and_pending_adopted_positions_retain_interval_end_boundary() {
     let live_pending_entry = || {
         let mut strategy = ready_to_trade_strategy();
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
         set_active_books_best_prices(&mut strategy, 0.40, 0.41);
         strategy.config.order_notional_target = 25.0;
         strategy.config.maximum_position_notional = 25.0;

@@ -1088,6 +1088,8 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
 #[test]
 fn market_quote_quantity_entry_submission_sizes_from_current_book_notional() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
@@ -1478,6 +1480,8 @@ fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
 #[test]
 fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     strategy.active.phase = SelectionPhase::Freeze;
     strategy.config.exit_order.order_type = OrderType::Market;
     strategy.config.exit_order.time_in_force = TimeInForce::Ioc;
@@ -1854,7 +1858,8 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
 #[test]
 fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
     let mut strategy = ready_to_trade_strategy();
-    let _cache = register_test_strategy(&mut strategy);
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.order_type = OrderType::LimitIfTouched;
     strategy.config.entry_order.time_in_force = TimeInForce::Gtd;

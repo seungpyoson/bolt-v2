@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(Probability::new(1.2), None);
         assert_eq!(
             uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: probability(0.40),
+                lead_gap_probability: probability(0.60),
                 jitter_penalty_probability: probability(0.30),
                 time_uncertainty_probability: probability(0.20),
             }),

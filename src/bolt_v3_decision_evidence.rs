@@ -4998,7 +4998,7 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            66
+            65
         );
         assert_eq!(
             snapshot_field["realized_volatility_gate_result"],

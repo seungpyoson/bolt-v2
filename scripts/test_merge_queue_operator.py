@@ -146,21 +146,35 @@ def assert_multi_pr_ready_verdict_does_not_queue() -> None:
     assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
 
 
-def assert_ready_batch_must_match_requested_pr() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner(
-            {
-                "verdict": "queue_as_one_wave",
-                "batches": [{"prs": [2]}],
-                "summary": "mismatched batch",
-            },
-            0,
-        )
-        rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
-    assert rc == 4, (rc, stdout, stderr)
-    assert "requested PR" in stderr, stderr
-    assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
+def assert_ready_batch_must_be_single_and_match_requested_pr() -> None:
+    malformed_payloads = {
+        "missing": {"verdict": "queue_as_one_wave", "summary": "missing batch"},
+        "empty": {"verdict": "queue_as_one_wave", "batches": [], "summary": "empty batch"},
+        "multiple": {
+            "verdict": "queue_as_one_wave",
+            "batches": [{"prs": [1]}, {"prs": [2]}],
+            "summary": "multiple batches",
+        },
+        "non-list": {"verdict": "queue_as_one_wave", "batches": {}, "summary": "non-list batches"},
+        "wrong-typed-prs": {
+            "verdict": "queue_as_one_wave",
+            "batches": [{"prs": "1"}],
+            "summary": "wrong-typed PRs",
+        },
+        "mismatched": {
+            "verdict": "queue_as_one_wave",
+            "batches": [{"prs": [2]}],
+            "summary": "mismatched batch",
+        },
+    }
+    for label, payload in malformed_payloads.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            runner = FakeRunner(payload, 0)
+            rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+        assert rc == 4, (label, rc, stdout, stderr)
+        assert "requested PR" in stderr, (label, stderr)
+        assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), (label, runner.commands)
 
 
 def assert_split_advised_prints_subsets_without_queueing() -> None:
@@ -379,7 +393,7 @@ def main() -> int:
     assert_operator_imports_preflight_verdict_constants()
     assert_queue_as_one_wave_posts_mergify_comments()
     assert_multi_pr_ready_verdict_does_not_queue()
-    assert_ready_batch_must_match_requested_pr()
+    assert_ready_batch_must_be_single_and_match_requested_pr()
     assert_split_advised_prints_subsets_without_queueing()
     assert_blocked_verdict_does_not_queue()
     assert_unexpected_success_payload_is_operator_error()

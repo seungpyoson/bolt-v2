@@ -5529,7 +5529,7 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
         "--job test-archive=${{ needs.test-archive.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
     )
     issue_gate_errors = verifier.verify_repo_automation_texts({workflow_name: issue_gate_workflow})
-    if not any("backtester diagnostic issue-789 lane must not gate merge proof" in error for error in issue_gate_errors):
+    if not any("backtester diagnostic issue-789 lane must remain advisory" in error for error in issue_gate_errors):
         raise AssertionError(
             f"backtester-ci workflow must reject issue-789 as a merge-gating lane, got: {issue_gate_errors}"
         )

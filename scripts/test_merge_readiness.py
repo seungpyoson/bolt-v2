@@ -392,7 +392,7 @@ def assert_comment_upsert_replaces_existing_marker() -> None:
         raise AssertionError(fake.requests)
     if fake.comments[0]["body"].count("bolt-v2-merge-readiness") != 1:
         raise AssertionError(fake.comments)
-    if "all required checks passed" not in fake.comments[0]["body"]:
+    if "advisory CI evidence recorded" not in fake.comments[0]["body"]:
         raise AssertionError(fake.comments[0]["body"])
 
 
@@ -457,7 +457,7 @@ def assert_comment_upsert_finds_sticky_comment_on_second_page() -> None:
     post_requests = [request for request in fake.requests if request[0] == "POST"]
     if len(patch_requests) != 1 or post_requests:
         raise AssertionError(fake.requests)
-    if len(fake.comments) != 2 or "all required checks passed" not in fake.comments[1]["body"]:
+    if len(fake.comments) != 2 or "advisory CI evidence recorded" not in fake.comments[1]["body"]:
         raise AssertionError(fake.comments)
 
 

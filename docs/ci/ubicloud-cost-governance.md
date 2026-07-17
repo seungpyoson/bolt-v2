@@ -39,7 +39,7 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 
 The nextest cache/fingerprint producer lives in `scripts/nextest_fingerprint.py`, with tracked inputs declared in `ci/nextest-fingerprint.toml` and the workflow consuming the producer outputs for cache keys, fingerprint file names, and artifact names. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
-Fingerprint reuse is available on full-CI `pull_request` and `merge_group` consumers when the Rust-only nextest fingerprint matches a trusted archived `push` run on `main`. It is disabled for either consumer event when the branch changes the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests, so branch-controlled reuse logic cannot decide to skip test execution outside the diff guard. `workflow_dispatch` runs are iteration feedback only and are not merge proof.
+Fingerprint reuse is available on full-CI `pull_request` and `merge_group` consumers when the Rust-only nextest fingerprint matches a trusted archived `push` run on `main`. It is disabled for either consumer event when the branch changes the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests, so branch-controlled reuse logic cannot decide to skip test execution outside the diff guard. `workflow_dispatch` runs are iteration feedback only and carry no merge authority.
 
 ## Baseline Evidence
 
@@ -162,7 +162,7 @@ Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `
 
 Decision: go for a separate focused follow-up PR under #648 and #333.
 
-The one-day filtered lookback measured draft-stage runs at 709.484 `managed_heavy` minutes and 64.183 `managed_light` minutes. That is enough addressable spend to justify designing an on-demand heavy-lane flow, provided the required `gate` still blocks merge until a full green run or provenance-verified reuse exists on the exact final head SHA.
+The one-day filtered lookback measured draft-stage runs at 709.484 `managed_heavy` minutes and 64.183 `managed_light` minutes. That is enough addressable spend to justify designing an on-demand heavy-lane flow, provided applicable Rust evidence still covers the exact final head SHA without being treated as merge authority.
 
 Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first full-feedback runs such as `just verify-remote` that operators may still request before merge readiness. Normal Rust debugging should use targeted `just rust-probe ...` runs instead. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
 

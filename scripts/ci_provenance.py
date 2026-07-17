@@ -1147,7 +1147,7 @@ MERGIFY_CONFIG_EXPECTATIONS = {
     "queue_rules": {
         "hotfix": {
             "queue_conditions": ("label = hotfix",),
-            "branch_protection_injection_mode": "merge",
+            "branch_protection_injection_mode": "none",
             "batch_size": 1,
             "batch_max_wait_time": "30 seconds",
             "batch_max_failure_resolution_attempts": 0,
@@ -1157,7 +1157,7 @@ MERGIFY_CONFIG_EXPECTATIONS = {
         },
         "default": {
             "queue_conditions": (),
-            "branch_protection_injection_mode": "merge",
+            "branch_protection_injection_mode": "none",
             "batch_size": 1,
             "batch_max_wait_time": "5 minutes",
             "batch_max_failure_resolution_attempts": 3,
@@ -1178,8 +1178,8 @@ MERGIFY_CONFIG_EXPECTATIONS = {
 
 # Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>".
 # `tmp-` is a documented transient form (docs/ci/merge-queue-evidence.md); the
-# resolver and workflow concurrency layer must both recognize it, or a proof PR can
-# be promoted without isolation and leave the queue waiting forever for `gate`.
+# resolver and workflow concurrency layer must both recognize it so queue evidence
+# remains isolated and attributed to the correct temporary branch.
 
 
 def mergify_temp_pr_matches(

@@ -241,12 +241,10 @@ printf 'args=%s\\n' "$*" >> {just_log}
             refusal.get("refusal_code") != "local_compile_disabled"
             or "just rust-probe suggest" not in next_steps
             or "for full remote feedback on a draft PR: run: just verify-remote" not in next_steps
-            or (
-                "for merge proof: mark the PR ready, then run: just verify-remote "
-                "to wait for the required PR gate, or use the merge-queue gate"
-            )
-            not in next_steps
-            or "for merge proof: run: just verify-remote" in next_steps
+            or "treat the result as advisory evidence, never merge authority" not in next_steps
+            or "merge proof" in next_steps
+            or "required PR gate" in next_steps
+            or "merge-queue gate" in next_steps
         ):
             raise AssertionError(refusal)
 
@@ -295,9 +293,15 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
         "For final proof, use exact-head PR CI evidence through `just verify-remote`",
         "Full CI is proof. Rust Probe is debugging.",
         "dispatch Backtester CI with " + "full_ci" + "=true for this branch or mark ready",
+        "for merge proof",
+        "required PR gate",
+        "merge-queue gate",
+        "safe to merge",
     )
     operator_surfaces = (
         SCRIPT,
+        REPO_ROOT / "scripts" / "merge_readiness.py",
+        REPO_ROOT / "scripts" / "ci_provenance.py",
         REPO_ROOT / "AGENTS.md",
         REPO_ROOT / "docs" / "ci" / "ubicloud-cost-governance.md",
         REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml",
@@ -325,7 +329,7 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
     output = stdout.getvalue()
     if result != 0:
         raise AssertionError((result, output))
-    if "draft verify-remote is feedback only" not in output:
+    if "neither is merge authority" not in output:
         raise AssertionError(output)
     if any(fragment in output for fragment in stale_fragments):
         raise AssertionError(output)

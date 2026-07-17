@@ -871,6 +871,16 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
         raise AssertionError("post-cutover Mergify config must not contain check-success predicates")
     for queue_name, queue in expectations["queue_rules"].items():
         assert_equal(queue["batch_size"], 1, f"{queue_name} single-PR batch")
+        assert_equal(
+            queue["branch_protection_injection_mode"],
+            "none",
+            f"{queue_name} branch-protection injection",
+        )
+    assert_equal(
+        config.count("    branch_protection_injection_mode: none\n"),
+        2,
+        "disabled branch-protection injection",
+    )
     assert_equal(
         config.count(f"      - {required_condition}\n"),
         2,

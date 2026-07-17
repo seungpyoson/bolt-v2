@@ -91,8 +91,8 @@ Examples:
   just rust-probe nextest-test-target <harness_target>
   just rust-probe nextest-test-target-name <harness_target> <member_stem>::
 
-Rust Probe is targeted remote debugging feedback only. It is not merge proof.
-Use just verify-remote for full remote feedback; mark the PR ready before treating it as merge proof.
+Rust Probe is targeted remote debugging evidence only. It cannot authorize or veto merge.
+Use just verify-remote for full exact-head remote evidence; its result remains advisory.
 """
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
@@ -2945,11 +2945,11 @@ def local_compile_refusal_payload(
             "for targeted Rust debugging after cheap local checks: run: just rust-probe suggest",
             "then commit and push the branch before running the smallest suggested just rust-probe command",
             "for full remote feedback on a draft PR: run: just verify-remote",
-            "for merge proof: commit local changes",
-            "for merge proof: push the branch",
+            "for exact-head remote Rust evidence: commit local changes",
+            "for exact-head remote Rust evidence: push the branch",
             (
-                "for merge proof: mark the PR ready, then run: just verify-remote "
-                "to wait for the required PR gate, or use the merge-queue gate"
+                "when ready-only workflows are applicable: mark the PR ready, then run: just verify-remote; "
+                "treat the result as advisory evidence, never merge authority"
             ),
         ],
         "reclaimability_measured": False,
@@ -4194,7 +4194,7 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     print("commands:")
     for suggestion in rust_probe_suggestions(changed_files, probe_policy["separate_workspaces"]):
         print(f"- {suggestion}")
-    print("Rust Probe is not merge proof. Draft verify-remote is full feedback only; mark the PR ready for merge proof.")
+    print("Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.")
     return 0
 
 
@@ -4229,7 +4229,7 @@ def evaluate_rust_probe_run(
         return None
     if state == "pass":
         print(f"OK: Rust Probe {probe_id} passed for {head}: {summary}")
-        print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof")
+        print("Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.")
         return 0
     conclusion = str(run.get("conclusion") or "")
     if conclusion == "cancelled":
@@ -4240,7 +4240,10 @@ def evaluate_rust_probe_run(
         return 2
     print(f"Rust Probe {probe_id} failed for {head}; this is debugging feedback only:", file=sys.stderr)
     print(f"- {summary}", file=sys.stderr)
-    print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof", file=sys.stderr)
+    print(
+        "Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.",
+        file=sys.stderr,
+    )
     return 1
 
 
@@ -4480,7 +4483,7 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     print(f"sha: {head}")
     print(f"scope: {scope}")
     print(f"runner_tier: {runner_tier}")
-    print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof")
+    print("Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.")
     return wait_for_rust_probe_run(
         repo=repo,
         remote_policy=probe_policy,
@@ -4956,7 +4959,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rust_probe = subparsers.add_parser(
         "rust-probe",
-        description="Dispatch a bounded remote Rust Probe for debugging feedback; not merge proof.",
+        description="Dispatch a bounded remote Rust Probe for debugging evidence; never merge authority.",
         epilog=RUST_PROBE_HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

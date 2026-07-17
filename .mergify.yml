@@ -9,7 +9,8 @@ queue_rules:
       - label = hotfix
     merge_conditions:
       - approved-reviews-by = sp-reviewer
-    branch_protection_injection_mode: merge
+    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
+    branch_protection_injection_mode: none
     batch_size: 1
     batch_max_wait_time: 30 seconds
     batch_max_failure_resolution_attempts: 0
@@ -21,7 +22,8 @@ queue_rules:
     queue_conditions: []
     merge_conditions:
       - approved-reviews-by = sp-reviewer
-    branch_protection_injection_mode: merge
+    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
+    branch_protection_injection_mode: none
     batch_size: 1
     batch_max_wait_time: 5 minutes
     batch_max_failure_resolution_attempts: 3

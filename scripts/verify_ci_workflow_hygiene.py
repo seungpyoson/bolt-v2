@@ -8474,7 +8474,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     if gate_job is not None and (
         "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
     ):
-        errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
+        errors.append("backtester diagnostic issue-789 lane must remain advisory")
     artifact_cache_blocks = [
         block
         for block in action_blocks(archive_job, "actions/cache/restore@")
@@ -9033,7 +9033,7 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
                     f"backtester iteration policy must not retain PR metadata carry-forward plumbing ({forbidden})"
                 )
         if gate_text and ("issue_789" in extract_needs(gate) or "needs.issue_789.result" in gate_text):
-            errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
+            errors.append("backtester diagnostic issue-789 lane must remain advisory")
 
     group_text = backtester_concurrency_group_text(text)
     if "format('bvs-pr-{0}-iteration', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:

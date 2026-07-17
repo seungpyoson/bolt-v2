@@ -51,7 +51,9 @@ Stdlib only, plus PyYAML.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -100,6 +102,15 @@ NAMING_AUDIT_PATH = (
 )
 SRC_PATH = REPO_ROOT / "src" / "nt_runtime_capture.rs"
 TEST_PATH = REPO_ROOT / "tests" / "nt_runtime_capture.rs"
+POLYMARKET_QUERY_FIXTURE_PATH = (
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "nt_polymarket_query_post_order_params_8160730c.txt"
+)
+POLYMARKET_QUERY_SOURCE_PATH = Path(
+    "crates/adapters/polymarket/src/http/query.rs"
+)
 NT_API_PATH_TEMPLATE = (
     ".cargo/git/checkouts/nautilus_trader-*/*/"
     "crates/common/src/msgbus/api.rs"
@@ -415,6 +426,201 @@ def find_pinned_nt_api_path(
     return matches[0]
 
 
+def find_pinned_nt_checkout(
+    findings: list[tuple[str, str]], nautilus_revision: str | None
+) -> Path | None:
+    if not nautilus_revision:
+        return None
+    matches: list[Path] = []
+    failures: list[str] = []
+    for checkout in sorted(
+        path
+        for path in Path.home().glob(".cargo/git/checkouts/nautilus_trader-*/*")
+        if path.is_dir()
+    ):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            failures.append(f"{checkout}: {error}")
+            continue
+        if result.stdout.strip() == nautilus_revision:
+            matches.append(checkout)
+    if len(matches) != 1:
+        detail = f"; unreadable candidates: {'; '.join(failures)}" if failures else ""
+        findings.append(
+            (
+                "13.pinned_nt_checkout_missing",
+                f"expected exactly one NautilusTrader checkout at full revision "
+                f"{nautilus_revision}, found {len(matches)}{detail}",
+            )
+        )
+        return None
+    return matches[0]
+
+
+def verify_polymarket_query_fixture(
+    findings: list[tuple[str, str]],
+    nautilus_revision: str | None,
+    checkout: Path | None,
+) -> None:
+    if not nautilus_revision or checkout is None:
+        return
+    try:
+        fixture_bytes = POLYMARKET_QUERY_FIXTURE_PATH.read_bytes()
+    except OSError as error:
+        findings.append(
+            (
+                "13.polymarket_fixture_missing",
+                f"could not read {POLYMARKET_QUERY_FIXTURE_PATH}: {error}",
+            )
+        )
+        return
+    try:
+        metadata_bytes, fixture_body = fixture_bytes.split(b"\n\n", 1)
+        metadata = metadata_bytes.decode("utf-8").splitlines()
+    except (ValueError, UnicodeDecodeError) as error:
+        findings.append(
+            (
+                "13.polymarket_fixture_metadata_invalid",
+                f"Polymarket fixture metadata/body separator is invalid: {error}",
+            )
+        )
+        return
+    if len(metadata) != 5:
+        findings.append(
+            (
+                "13.polymarket_fixture_metadata_invalid",
+                f"Polymarket fixture must contain exactly five metadata lines, found {len(metadata)}",
+            )
+        )
+        return
+
+    labels = (
+        "Source: ",
+        "Revision: ",
+        "Path: ",
+        "Full source SHA-256: ",
+        "Extracted ranges from pinned checkout: lines ",
+    )
+    if any(not line.startswith(label) for line, label in zip(metadata, labels)):
+        findings.append(
+            (
+                "13.polymarket_fixture_metadata_invalid",
+                "Polymarket fixture metadata labels or order are invalid",
+            )
+        )
+        return
+    source_name = metadata[0][len(labels[0]) :]
+    fixture_revision = metadata[1][len(labels[1]) :]
+    relative_source = metadata[2][len(labels[2]) :]
+    declared_digest = metadata[3][len(labels[3]) :]
+    range_text = metadata[4][len(labels[4]) :]
+    if source_name != "NautilusTrader" or fixture_revision != nautilus_revision:
+        findings.append(
+            (
+                "13.polymarket_fixture_revision_mismatch",
+                f"Polymarket fixture source/revision must be NautilusTrader at "
+                f"{nautilus_revision}, got {source_name!r} at {fixture_revision!r}",
+            )
+        )
+    if re.fullmatch(r"[0-9a-f]{64}", declared_digest) is None:
+        findings.append(
+            (
+                "13.polymarket_fixture_digest_invalid",
+                f"Polymarket fixture declares invalid SHA-256 {declared_digest!r}",
+            )
+        )
+        return
+
+    relative_path = Path(relative_source)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        findings.append(
+            (
+                "13.polymarket_fixture_path_escape",
+                f"Polymarket fixture source path must remain relative to the pinned checkout: {relative_source!r}",
+            )
+        )
+        return
+    if relative_path != POLYMARKET_QUERY_SOURCE_PATH:
+        findings.append(
+            (
+                "13.polymarket_fixture_source_mismatch",
+                f"Polymarket fixture must extract {POLYMARKET_QUERY_SOURCE_PATH}, "
+                f"got {relative_source!r}",
+            )
+        )
+        return
+    checkout_root = checkout.resolve()
+    source_path = (checkout_root / relative_path).resolve()
+    if not source_path.is_relative_to(checkout_root):
+        findings.append(
+            (
+                "13.polymarket_fixture_path_escape",
+                f"Polymarket fixture source path escapes the pinned checkout: {relative_source!r}",
+            )
+        )
+        return
+    try:
+        source_bytes = source_path.read_bytes()
+    except OSError as error:
+        findings.append(
+            (
+                "13.polymarket_fixture_source_missing",
+                f"could not read pinned Polymarket source {source_path}: {error}",
+            )
+        )
+        return
+    actual_digest = hashlib.sha256(source_bytes).hexdigest()
+    if actual_digest != declared_digest:
+        findings.append(
+            (
+                "13.polymarket_fixture_digest_mismatch",
+                f"Polymarket fixture declares full-source SHA-256 {declared_digest}, "
+                f"but pinned source hashes to {actual_digest}",
+            )
+        )
+
+    range_parts = range_text.split(" and ")
+    ranges: list[tuple[int, int]] = []
+    for part in range_parts:
+        match = re.fullmatch(r"([1-9][0-9]*)-([1-9][0-9]*)", part)
+        if match is None:
+            ranges = []
+            break
+        start, end = (int(match.group(1)), int(match.group(2)))
+        if start > end or (ranges and start <= ranges[-1][1]):
+            ranges = []
+            break
+        ranges.append((start, end))
+    source_lines = source_bytes.splitlines(keepends=True)
+    if not ranges or any(end > len(source_lines) for _, end in ranges):
+        findings.append(
+            (
+                "13.polymarket_fixture_ranges_invalid",
+                f"Polymarket fixture declares invalid or out-of-bounds ranges {range_text!r} "
+                f"for a {len(source_lines)}-line source",
+            )
+        )
+        return
+    expected_body = b"".join(
+        line
+        for start, end in ranges
+        for line in source_lines[start - 1 : end]
+    )
+    if fixture_body != expected_body:
+        findings.append(
+            (
+                "13.polymarket_fixture_bytes_mismatch",
+                "Polymarket fixture body does not byte-match the declared ranges from the pinned source",
+            )
+        )
+
+
 def rust_char_literal_end(text: str, start: int) -> int | None:
     if start + 1 >= len(text):
         return None
@@ -516,6 +722,12 @@ def collect_failures() -> list[tuple[str, str]]:
         else []
     )
     nautilus_revision = cargo_nautilus_revision(findings)
+    pinned_nt_checkout = find_pinned_nt_checkout(findings, nautilus_revision)
+    verify_polymarket_query_fixture(
+        findings,
+        nautilus_revision,
+        pinned_nt_checkout,
+    )
 
     # Check 1: No stale pre-rename runtime capture references.
     for label, content in (

@@ -127,6 +127,9 @@ fn admission_outcome_key(outcome: &BoltV3AdmissionOutcome) -> &'static str {
         BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
             "rejected_submit_lifecycle_disallowed"
         }
+        BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable => {
+            "rejected_provider_capability_unavailable"
+        }
         BoltV3AdmissionOutcome::RejectedLossGovernorHalted => "rejected_loss_governor_halted",
         BoltV3AdmissionOutcome::RejectedNonPositiveNotional => "rejected_non_positive_notional",
         BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => "rejected_notional_cap_exceeded",
@@ -1662,6 +1665,9 @@ impl BoltV3SubmitAdmissionState {
                     intent: request.intent_kind,
                 })
             }
+            BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable => {
+                Err(BoltV3SubmitAdmissionError::ProviderCapabilityUnavailable)
+            }
             BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
                 Err(BoltV3SubmitAdmissionError::LossGovernorHalted {
                     reasons: evaluation.loss_halt_reasons,
@@ -2010,6 +2016,9 @@ impl BoltV3SubmitAdmissionState {
                     intent: request.intent_kind,
                 })
             }
+            BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable => {
+                Err(BoltV3SubmitAdmissionError::ProviderCapabilityUnavailable)
+            }
             BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
                 Err(BoltV3SubmitAdmissionError::LossGovernorHalted {
                     reasons: evaluation.loss_halt_reasons.clone(),
@@ -2285,6 +2294,14 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
+        if request.intent_kind == BoltV3SubmitIntentKind::Entry
+            && !request.new_risk_provider_capabilities_available
+        {
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable,
+                now_ns,
+            );
+        }
         let mut loss_snapshot_diagnostics = None;
         if let Some(loss_policy) = inner.loss_policy.clone()
             && matches!(
@@ -2471,6 +2488,7 @@ fn basket_outcome_from_submit_outcome(
         BoltV3AdmissionOutcome::Admitted => BoltV3BasketAdmissionOutcome::Admitted,
         BoltV3AdmissionOutcome::RejectedKillSwitchLatched
         | BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed
+        | BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable
         | BoltV3AdmissionOutcome::RejectedLossGovernorHalted
         | BoltV3AdmissionOutcome::RejectedNonPositiveNotional
         | BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
@@ -2524,6 +2542,9 @@ fn submit_admission_error_from_outcome(
         }
         BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
             BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed { intent }
+        }
+        BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable => {
+            BoltV3SubmitAdmissionError::ProviderCapabilityUnavailable
         }
         BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
             BoltV3SubmitAdmissionError::LossGovernorHalted {
@@ -2879,6 +2900,7 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub order_side: OrderSide,
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
+    pub new_risk_provider_capabilities_available: bool,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
@@ -3003,6 +3025,7 @@ pub struct BoltV3BasketSubmitSlotClaim {
     pub order_side: OrderSide,
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
+    pub new_risk_provider_capabilities_available: bool,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub admission_evidence: Option<BoltV3CompiledOrderAdmissionEvidence>,
@@ -3022,6 +3045,7 @@ fn basket_submit_request(
         order_side: claim.order_side,
         order_quantity: claim.order_quantity,
         intent_kind: claim.intent_kind,
+        new_risk_provider_capabilities_available: claim.new_risk_provider_capabilities_available,
         lifecycle_policy: claim.lifecycle_policy,
         risk_reducing_exit_proof: claim.risk_reducing_exit_proof.clone(),
         kill_switch_forced_reduction: None,
@@ -3079,6 +3103,7 @@ pub struct BoltV3SubmitAdmissionRequestInput<'a> {
     pub order: &'a OrderAny,
     pub valuation: OrderValuationContext<'a>,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    pub new_risk_provider_capabilities_available: bool,
     pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
 }
 
@@ -3180,6 +3205,7 @@ where
         order_side: input.order.order_side(),
         order_quantity: quantity,
         intent_kind,
+        new_risk_provider_capabilities_available: input.new_risk_provider_capabilities_available,
         lifecycle_policy: input.lifecycle_policy,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
@@ -3485,6 +3511,7 @@ pub enum BoltV3SubmitAdmissionError {
     SubmitLifecycleDisallowed {
         intent: BoltV3SubmitIntentKind,
     },
+    ProviderCapabilityUnavailable,
     LossGovernorHalted {
         reasons: Vec<LossHaltReason>,
     },
@@ -3525,6 +3552,10 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::SubmitLifecycleDisallowed { intent } => write!(
                 f,
                 "bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"
+            ),
+            Self::ProviderCapabilityUnavailable => write!(
+                f,
+                "bolt-v3 submit admission provider capability is unavailable for new risk"
             ),
             Self::LossGovernorHalted { reasons } => {
                 let reasons = reasons
@@ -4405,6 +4436,7 @@ mod loss_governor_halt_evidence_tests {
             order_side: OrderSide::Buy,
             order_quantity: Decimal::ONE,
             intent_kind: BoltV3SubmitIntentKind::Entry,
+            new_risk_provider_capabilities_available: true,
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,

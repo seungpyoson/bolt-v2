@@ -273,6 +273,15 @@ impl RealizedVolSurfaceRuntime {
         found_enabled_subscribable_source
     }
 
+    pub fn source_new_risk_capability_unavailable(
+        &self,
+        surface_id: &str,
+        source_id: &str,
+    ) -> bool {
+        self.new_risk_capability_unavailable_sources
+            .contains(&(surface_id.to_string(), source_id.to_string()))
+    }
+
     pub fn quote_subscription_requests_for_surface(
         &self,
         surface_id: &str,

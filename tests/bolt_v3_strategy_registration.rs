@@ -859,6 +859,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(1, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
+        new_risk_provider_capabilities_available: true,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,

@@ -63,6 +63,13 @@ CURRENT_STATUS_MAP_CAPABILITY_CLAIM = (
     "does not provide Binance Spot SBE schema 3:5 or adapter receive-clock ownership; "
     "those capabilities fail closed for affected new-risk consumers"
 )
+CURRENT_STATUS_MAP_CAPABILITY_TERM = "Binance Spot SBE schema 3:5"
+FORBIDDEN_CURRENT_NT_CAPABILITY_CLAIMS = (
+    "preserves Binance Spot SBE schema 3:5",
+    "provides Binance Spot SBE schema 3:5",
+    "adapter receive-clock ownership is available",
+    "github.com/seungpyoson/nautilus_trader",
+)
 NT_SOURCE_CAPABILITIES_PIN_SURFACE = Path("ci/nautilus-source-capabilities.toml")
 POLYMARKET_QUERY_FIXTURE_PIN_SURFACE = Path(
     "tests/fixtures/nt_polymarket_query_post_order_params_8160730c.txt"
@@ -2205,11 +2212,13 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
             continue
         scan_nt_lock_pin(surface, text, findings, expected_revision)
 
+    runtime_contract = None
     for surface in NON_CARGO_PIN_SURFACES:
         text = read_required_pin_surface(root, surface, findings)
         if text is None:
             continue
         if surface == RUNTIME_CONTRACT_PIN_SURFACE:
+            runtime_contract = text
             scan_runtime_contract_pin(surface, text, findings, expected_revision)
             continue
         pattern_revisions = [
@@ -2256,6 +2265,29 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
             f"{CURRENT_STATUS_MAP_SURFACE}: current status map must state unavailable "
             "Binance Spot SBE capabilities in both the summary and readiness row"
         )
+    if status_map is not None:
+        if status_map.count(CURRENT_STATUS_MAP_CAPABILITY_TERM) != 2:
+            findings.append(
+                f"{CURRENT_STATUS_MAP_SURFACE}: current status map must contain exactly "
+                "the two governed unavailable Binance Spot SBE capability terms"
+            )
+        for claim in FORBIDDEN_CURRENT_NT_CAPABILITY_CLAIMS:
+            if claim in status_map:
+                findings.append(
+                    f"{CURRENT_STATUS_MAP_SURFACE}: current status map reintroduces stale "
+                    f"NautilusTrader capability authority {claim!r}"
+                )
+
+    if runtime_contract is not None:
+        binance_owner = markdown_section(runtime_contract, BINANCE_BOUNDARY_OWNER_HEADING)
+        if binance_owner is not None:
+            for claim in FORBIDDEN_CURRENT_NT_CAPABILITY_CLAIMS:
+                if claim in binance_owner:
+                    findings.append(
+                        f"{RUNTIME_CONTRACT_PIN_SURFACE}: "
+                        f"{BINANCE_BOUNDARY_OWNER_HEADING} reintroduces stale NautilusTrader "
+                        f"capability authority {claim!r}"
+                    )
 
 
 def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:

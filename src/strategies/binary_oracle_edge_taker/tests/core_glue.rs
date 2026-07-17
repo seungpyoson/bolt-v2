@@ -319,6 +319,7 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
             order_side: exit_order_side,
             order_quantity: exit_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
+            new_risk_provider_capabilities_available: false,
             lifecycle_policy: strategy.submit_lifecycle_policy(),
             risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
                 position_id: managed_position.position.position_id.to_string(),

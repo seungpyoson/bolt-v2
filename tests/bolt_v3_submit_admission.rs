@@ -158,6 +158,7 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
             order: &order,
             valuation: OrderValuationContext::empty(),
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            new_risk_provider_capabilities_available: true,
             risk_reducing_exit_position: None,
         },
         |_| Ok(Decimal::ZERO),
@@ -222,6 +223,7 @@ fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() 
             order: &order,
             valuation: OrderValuationContext::empty(),
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            new_risk_provider_capabilities_available: true,
             risk_reducing_exit_position: None,
         },
         |_| anyhow::bail!("fee lookup failed before ceiling valuation"),
@@ -366,6 +368,7 @@ fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
                 ..OrderValuationContext::empty()
             },
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            new_risk_provider_capabilities_available: true,
             risk_reducing_exit_position: None,
         },
         |_| Ok(Decimal::ZERO),
@@ -1134,6 +1137,7 @@ fn submit_request_with_kind_policy_and_exit_proof(
         order_side,
         order_quantity,
         intent_kind,
+        new_risk_provider_capabilities_available: true,
         lifecycle_policy,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
@@ -2361,6 +2365,57 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
         ]
     );
     assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn unavailable_provider_capability_rejects_entry_without_consuming_capacity() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
+    let mut unavailable_entry = submit_request(Decimal::new(1, 0));
+    unavailable_entry.new_risk_provider_capabilities_available = false;
+
+    let error = admission
+        .admit(&unavailable_entry)
+        .expect_err("unavailable provider capability must reject new-risk entry");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::ProviderCapabilityUnavailable
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        writer.admission_decisions()[0].outcome,
+        BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable
+    );
+
+    admission
+        .admit(&submit_request(Decimal::new(1, 0)))
+        .expect("capability rejection must not consume the sole submit slot")
+        .commit_submitted();
+    assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn unavailable_new_risk_provider_capability_does_not_block_proven_exit() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
+    let mut exit = submit_request_with_kind_and_exit_proof(
+        Decimal::new(264, 2),
+        BoltV3SubmitIntentKind::RiskReducingExit,
+        Some(valid_risk_reducing_exit_proof()),
+    );
+    exit.new_risk_provider_capabilities_available = false;
+
+    admission
+        .admit(&exit)
+        .expect("entry-only provider capability must not block a proven exit")
+        .commit_submitted();
+
+    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(
+        writer.admission_decisions()[0].outcome,
+        BoltV3AdmissionOutcome::Admitted
+    );
 }
 
 #[test]

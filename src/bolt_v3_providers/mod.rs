@@ -324,6 +324,8 @@ type ProductSubmitProofArtifactWriter =
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
 type MetadataRefreshIntervalLoader = fn(&ClientBlock) -> Result<Option<u64>, String>;
+pub(crate) type NewRiskMarketDataAvailabilityLoader =
+    fn(&str, &ClientBlock) -> Result<bool, String>;
 type VenueTruthRuntimeSourceBuilder =
     for<'a> fn(
         ProviderVenueTruthSourceContext<'a>,
@@ -607,6 +609,7 @@ pub struct ProviderBinding {
     pub supported_market_families: &'static [&'static str],
     pub market_exit_order_constraints: ProviderMarketExitOrderConstraints,
     pub metadata_refresh_interval_mins: Option<MetadataRefreshIntervalLoader>,
+    pub(crate) new_risk_market_data_available: NewRiskMarketDataAvailabilityLoader,
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
     pub credential_log_modules: &'static [&'static str],
@@ -778,6 +781,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(polymarket::metadata_refresh_interval_mins),
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polymarket::SECRET_FIELD_NAMES,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
@@ -799,6 +803,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: binance::new_risk_market_data_available,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         secret_field_names: binance::SECRET_FIELD_NAMES,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
@@ -820,6 +825,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(hyperliquid::metadata_refresh_interval_mins),
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: hyperliquid::REQUIRED_SECRET_BLOCKS,
         secret_field_names: hyperliquid::SECRET_FIELD_NAMES,
         credential_log_modules: hyperliquid::CREDENTIAL_LOG_MODULES,
@@ -843,6 +849,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::BITMEX_CREDENTIAL_LOG_MODULES,
@@ -864,6 +871,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::BYBIT_CREDENTIAL_LOG_MODULES,
@@ -885,6 +893,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::COINBASE_CREDENTIAL_LOG_MODULES,
@@ -906,6 +915,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::DERIBIT_CREDENTIAL_LOG_MODULES,
@@ -927,6 +937,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::OKX_CREDENTIAL_LOG_MODULES,
@@ -948,6 +959,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::KRAKEN_CREDENTIAL_LOG_MODULES,
@@ -969,6 +981,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
         secret_field_names: chainlink::SECRET_FIELD_NAMES,
         credential_log_modules: chainlink::CREDENTIAL_LOG_MODULES,
@@ -992,6 +1005,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: chainlink_reference::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: chainlink_reference::REQUIRED_SECRET_BLOCKS,
         secret_field_names: chainlink_reference::SECRET_FIELD_NAMES,
         credential_log_modules: chainlink_reference::CREDENTIAL_LOG_MODULES,
@@ -1015,6 +1029,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         supported_market_families: polyresearch::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: always_available_new_risk_market_data,
         required_secret_blocks: polyresearch::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polyresearch::SECRET_FIELD_NAMES,
         credential_log_modules: polyresearch::CREDENTIAL_LOG_MODULES,
@@ -1041,14 +1056,24 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
         .find(|binding| binding.key == key)
 }
 
+fn always_available_new_risk_market_data(
+    _client_key: &str,
+    _client: &ClientBlock,
+) -> Result<bool, String> {
+    Ok(true)
+}
+
 pub fn new_risk_market_data_available(
     client_key: &str,
     client: &ClientBlock,
 ) -> Result<bool, String> {
-    if client.venue.as_str() == binance::KEY {
-        return binance::new_risk_market_data_available(client_key, client);
-    }
-    Ok(true)
+    let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+        format!(
+            "clients.{client_key}.venue `{}` has no provider binding for new-risk market-data capability",
+            client.venue
+        )
+    })?;
+    (binding.new_risk_market_data_available)(client_key, client)
 }
 
 pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64>, String> {
@@ -1518,6 +1543,59 @@ mod tests {
             nt_reconnect_budget("UNREGISTERED_PROVIDER", None),
             Err(NtReconnectBudgetResolutionError::UnsupportedProvider { .. })
         ));
+    }
+
+    #[test]
+    fn provider_bindings_explicitly_dispatch_new_risk_market_data_capability() {
+        let spot_sbe = binance_reference_client();
+        assert_eq!(
+            new_risk_market_data_available("binance_spot_sbe", &spot_sbe),
+            Ok(false)
+        );
+
+        let mut spot_json = spot_sbe.clone();
+        spot_json
+            .data
+            .as_mut()
+            .expect("Binance spot fixture should declare data config")
+            .as_table_mut()
+            .expect("Binance data config should be a table")
+            .insert(
+                stringify!(spot_market_data_mode).to_string(),
+                toml::Value::String("json".to_string()),
+            );
+        assert_eq!(
+            new_risk_market_data_available("binance_spot_json", &spot_json),
+            Ok(false),
+            "JSON WebSocket mode does not change the pinned Spot HTTP SBE instrument decoder"
+        );
+
+        let mut futures = spot_sbe;
+        futures
+            .data
+            .as_mut()
+            .expect("Binance fixture should declare data config")
+            .as_table_mut()
+            .expect("Binance data config should be a table")
+            .insert(
+                stringify!(product_type).to_string(),
+                toml::Value::String("usd_m".to_string()),
+            );
+        assert_eq!(
+            new_risk_market_data_available("binance_futures", &futures),
+            Ok(true)
+        );
+
+        let neutral = client_from_toml("venue = \"POLYMARKET\"");
+        assert_eq!(
+            new_risk_market_data_available("polymarket", &neutral),
+            Ok(true)
+        );
+
+        let unknown = client_from_toml("venue = \"UNREGISTERED\"");
+        let error = new_risk_market_data_available("unknown", &unknown)
+            .expect_err("unregistered providers must not inherit an available default");
+        assert!(error.contains("has no provider binding"), "{error}");
     }
 
     fn fake_secret_value(path: &str) -> String {

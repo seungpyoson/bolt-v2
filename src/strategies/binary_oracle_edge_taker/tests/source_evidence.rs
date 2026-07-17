@@ -2282,22 +2282,9 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
 
 #[test]
 fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submit_permit() {
-    let mut loaded =
+    let loaded =
         crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
             .expect("production config should load");
-    let surfaces = loaded
-        .root
-        .realized_volatility_surfaces
-        .as_mut()
-        .expect("production config should declare RV surfaces");
-    let mut surface = surfaces
-        .remove("btc_usdt_midpoint_rv")
-        .expect("production config should declare the BTC/USDT RV surface");
-    surface
-        .sources
-        .retain(|source| source.data_client_id.as_str() == "binance_spot_data");
-    surfaces.clear();
-    surfaces.insert("btc_usdt_midpoint_rv".to_string(), surface);
     let runtime = Arc::new(Mutex::new(
         crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
             &loaded,
@@ -2308,7 +2295,7 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        evidence,
+        evidence.clone(),
         submit_admission.clone(),
     );
     strategy.context = strategy
@@ -2318,32 +2305,78 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
     strategy.config.realized_volatility_surface_id = "btc_usdt_midpoint_rv".to_string();
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
     strategy.config.signal_new_risk_available = false;
-    strategy.pricing.set_selected_pricing_spot(None);
-    strategy.refresh_realized_volatility_snapshot_at(1_200);
 
     strategy
         .ensure_startup_subscription_derivations()
         .expect("missing new-risk capability must not block startup recovery and exit paths");
     register_test_strategy_with_active_instruments(&mut strategy);
 
-    assert_eq!(
+    for (ts_ms, bid, ask) in [
+        (1_000, 3_099.0, 3_101.0),
+        (2_000, 3_100.0, 3_102.0),
+        (3_000, 3_101.0, 3_103.0),
+        (4_000, 3_102.0, 3_104.0),
+        (5_000, 3_103.0, 3_105.0),
+        (6_000, 3_104.0, 3_106.0),
+        (7_000, 3_105.0, 3_107.0),
+        (8_000, 3_106.0, 3_108.0),
+    ] {
         strategy
-            .try_submit_entry_order(1_200)
-            .expect("capability-unavailable entry should fail closed without submit"),
-        None
+            .on_quote(&quote_tick("BTC-USDT.OKX", bid, ask, ts_ms))
+            .expect("available OKX RV quote should process through the production surface");
+    }
+    strategy.refresh_realized_volatility_snapshot_at(8_000);
+    let snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot_for_surface("btc_usdt_midpoint_rv")
+        .expect("production RV surface should publish an auditable snapshot");
+    assert!(snapshot.ready, "available OKX data should ready quorum");
+    assert!(
+        snapshot
+            .source_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.source_id == "binance_btc_usdt_midpoint"
+                && diagnostic.block_reason
+                    == Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ProviderCapabilityUnavailable)),
+        "unavailable Binance must remain diagnostic while OKX satisfies quorum"
+    );
+
+    strategy.pricing.observe_reference_current_price(&fast_spot(
+        "chainlink_primary",
+        3_107.0,
+        8_000,
+    ));
+    assert!(
+        strategy.pricing.spot_price().is_some(),
+        "the valid Chainlink reference should exercise the production bootstrap fallback"
+    );
+
+    let error = strategy.try_submit_entry_order(8_000).expect_err(
+        "ready pricing inputs must still fail closed at shared provider-capability admission",
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("provider capability is unavailable for new risk"),
+        "{error:#}"
     );
     assert_eq!(
         submit_admission.admitted_order_count(),
         0,
         "a strategy dependent on unavailable Binance SBE inputs must not obtain a submit permit"
     );
-    let snapshot = strategy
-        .pricing
-        .latest_realized_vol_snapshot_for_surface("btc_usdt_midpoint_rv")
-        .expect("the unavailable source should still publish an auditable snapshot");
-    assert!(snapshot.blocked_reasons.contains(
-        &crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ProviderCapabilityUnavailable
-    ));
+    let admission_outcomes = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission) => Some(admission.outcome),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admission_outcomes,
+        vec![crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable]
+    );
 }
 
 #[test]

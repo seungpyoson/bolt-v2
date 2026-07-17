@@ -5,7 +5,8 @@
 //! stay outside this core boundary.
 
 use crate::bolt_v3_config::{
-    BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
+    BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, RealizedVolatilitySurfaceBlock,
+    StrategyArchetypeKey,
 };
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_iv::{
@@ -596,23 +597,11 @@ fn validate_realized_volatility_node_transport_membership(
         .registered_clients()
         .into_iter()
         .collect::<BTreeSet<ClientId>>();
-    let subscribed = runtime
-        .subscription_requests()
-        .into_iter()
-        .map(|request| request.data_client_id)
-        .collect::<BTreeSet<ClientId>>();
-    let mut missing = BTreeSet::new();
-    for (surface_id, surface) in realized_volatility_surfaces {
-        for source in surface.sources.iter().filter(|source| source.enabled) {
-            let client_id = ClientId::from(source.data_client_id.as_str());
-            if subscribed.contains(&client_id) && !registered.contains(&client_id) {
-                missing.insert(format!(
-                    "realized_volatility_surfaces.{surface_id}.sources.{}.data_client_id `{}`",
-                    source.source_id, source.data_client_id
-                ));
-            }
-        }
-    }
+    let missing = missing_realized_volatility_node_transport_memberships(
+        realized_volatility_surfaces,
+        runtime,
+        &registered,
+    );
     if missing.is_empty() {
         return Ok(());
     }
@@ -623,4 +612,74 @@ fn validate_realized_volatility_node_transport_membership(
             missing.into_iter().collect::<Vec<_>>().join("; ")
         ),
     })
+}
+
+fn missing_realized_volatility_node_transport_memberships(
+    realized_volatility_surfaces: &BTreeMap<String, RealizedVolatilitySurfaceBlock>,
+    runtime: &RealizedVolSurfaceRuntime,
+    registered: &BTreeSet<ClientId>,
+) -> BTreeSet<String> {
+    let mut missing = BTreeSet::new();
+    for (surface_id, surface) in realized_volatility_surfaces {
+        for source in surface.sources.iter().filter(|source| source.enabled) {
+            if runtime.source_new_risk_capability_unavailable(surface_id, &source.source_id) {
+                continue;
+            }
+            let client_id = ClientId::from(source.data_client_id.as_str());
+            if !registered.contains(&client_id) {
+                missing.insert(format!(
+                    "realized_volatility_surfaces.{surface_id}.sources.{}.data_client_id `{}`",
+                    source.source_id, source.data_client_id
+                ));
+            }
+        }
+    }
+    missing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_membership_waives_only_explicitly_unavailable_sources() {
+        let loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("production config should load");
+        let surfaces = loaded
+            .root
+            .realized_volatility_surfaces
+            .as_ref()
+            .expect("production config should declare RV surfaces");
+        let runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
+            .expect("production RV runtime should build");
+        let surface = surfaces
+            .get("btc_usdt_midpoint_rv")
+            .expect("production config should declare the BTC/USDT RV surface");
+        let mut registered = surface
+            .sources
+            .iter()
+            .filter(|source| source.data_client_id.as_str() != "binance_spot_data")
+            .map(|source| source.data_client_id)
+            .collect::<BTreeSet<_>>();
+
+        assert!(
+            missing_realized_volatility_node_transport_memberships(
+                surfaces,
+                &runtime,
+                &registered,
+            )
+            .is_empty(),
+            "the explicit unavailable Binance source should receive the narrow startup waiver"
+        );
+
+        registered.remove(&ClientId::from("okx_data"));
+        let missing =
+            missing_realized_volatility_node_transport_memberships(surfaces, &runtime, &registered);
+        assert_eq!(missing.len(), 1);
+        assert!(
+            missing.iter().any(|entry| entry.contains("okx_data")),
+            "an available source must stay loud even if another derivation omits it: {missing:#?}"
+        );
+    }
 }

@@ -5766,6 +5766,7 @@ impl BinaryOracleEdgeTaker {
                     instrument: instrument.as_ref(),
                 },
                 lifecycle_policy: self.submit_lifecycle_policy(),
+                new_risk_provider_capabilities_available: self.config.signal_new_risk_available,
                 risk_reducing_exit_position,
             },
             |price| self.max_entry_fee_bps_for_admission(order.instrument_id(), price),

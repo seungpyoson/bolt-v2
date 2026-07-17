@@ -2698,6 +2698,8 @@ fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
 
 #[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
+    use nautilus_polymarket::{common::enums::PolymarketOrderType, http::query::PostOrderParams};
+
     let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_8160730c.txt");
     let nt_field = ["post", "only"].join("_");
     let fixture_revision = query_source
@@ -2709,14 +2711,29 @@ fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
         fixture_revision,
         bolt_v2::bolt_v3_iv::runtime::cargo_pinned_nt_revision()
     );
-    assert!(query_source.contains(
-        "Full source SHA-256: 39c2ae4e66fd5be0c79669721157ddb9c354296a5bd1b7afbd9f39b9d22fad5d"
-    ));
     assert!(query_source.contains("pub struct PostOrderParams"));
     assert!(query_source.contains(r#"#[serde(rename_all = "camelCase")]"#));
     assert!(query_source.contains(&format!("pub {nt_field}: bool")));
     assert!(query_source.contains(r#"json.contains("postOnly")"#));
     assert!(query_source.contains(&format!(r#"json.contains("{nt_field}")"#)));
+
+    let omitted = serde_json::to_value(PostOrderParams {
+        order_type: PolymarketOrderType::GTC,
+        post_only: false,
+    })
+    .expect("pinned upstream PostOrderParams should serialize");
+    assert_eq!(omitted.get("postOnly"), None);
+    assert_eq!(omitted.get(&nt_field), None);
+
+    let included = serde_json::to_value(PostOrderParams {
+        order_type: PolymarketOrderType::GTC,
+        post_only: true,
+    })
+    .expect("pinned upstream PostOrderParams should serialize");
+    assert_eq!(
+        included.get("postOnly").and_then(|value| value.as_bool()),
+        Some(true)
+    );
 }
 
 #[test]

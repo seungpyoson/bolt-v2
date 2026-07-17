@@ -621,6 +621,7 @@ where
                 ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
             },
             lifecycle_policy: context.submit_lifecycle_policy,
+            new_risk_provider_capabilities_available: true,
             risk_reducing_exit_position: None,
         },
         |_| Ok(context.max_fee_bps),
@@ -970,6 +971,7 @@ where
                 order: &order,
                 valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
                 lifecycle_policy: self.context.submit_lifecycle_policy,
+                new_risk_provider_capabilities_available: true,
                 risk_reducing_exit_position: None,
             },
             |_| Ok(self.context.max_fee_bps),
@@ -2379,6 +2381,7 @@ mod tests {
             order_side: OrderSide::Buy,
             order_quantity: Decimal::new(1, 0),
             intent_kind: BoltV3SubmitIntentKind::Entry,
+            new_risk_provider_capabilities_available: true,
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,
@@ -2420,6 +2423,7 @@ mod tests {
             order_side: OrderSide::Sell,
             order_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
+            new_risk_provider_capabilities_available: false,
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
                 position_id: "POSITION-001".to_string(),

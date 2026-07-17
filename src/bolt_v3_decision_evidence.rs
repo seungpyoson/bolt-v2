@@ -1591,6 +1591,7 @@ pub enum BoltV3AdmissionOutcome {
     Admitted,
     RejectedKillSwitchLatched,
     RejectedSubmitLifecycleDisallowed,
+    RejectedProviderCapabilityUnavailable,
     RejectedLossGovernorHalted,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
@@ -5061,6 +5062,7 @@ mod tests {
             BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedKillSwitchLatched,
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
+            BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable,
             BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
@@ -5136,6 +5138,9 @@ mod tests {
                 BoltV3AdmissionOutcome::Admitted => "admitted",
                 BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
                     "rejected_submit_lifecycle_disallowed"
+                }
+                BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable => {
+                    "rejected_provider_capability_unavailable"
                 }
                 BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
                     "rejected_loss_governor_halted"

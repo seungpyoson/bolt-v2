@@ -44,6 +44,7 @@ BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
 BINANCE_TIMESTAMP_TEST_PATH = "tests/binance_sbe_quote_timestamps.rs"
 BINANCE_TIMESTAMP_PARSER_ALIAS = "nt_binance_sbe_parse"
 CURRENT_STATUS_MAP_SURFACE = "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
+RUNTIME_CONTRACT_PIN_SURFACE = "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
 CURRENT_STATUS_MAP_CAPABILITY_CLAIM = (
     "does not provide Binance Spot SBE schema 3:5 or adapter receive-clock ownership; "
     "those capabilities fail closed for affected new-risk consumers"
@@ -734,9 +735,26 @@ def test_current_status_map_rejects_stale_available_binance_capability_claim() -
         path = root / CURRENT_STATUS_MAP_SURFACE
         text = path.read_text(encoding="utf-8")
         path.write_text(
+            text
+            + "\nThe current pin preserves Binance Spot SBE schema 3:5 plus adapter receive-clock ownership.\n",
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "current status map must contain exactly the two governed unavailable Binance Spot SBE capability terms",
+    )
+
+
+def test_runtime_contract_rejects_additive_stale_binance_capability_claim() -> None:
+    def mutate(root: Path) -> None:
+        path = root / RUNTIME_CONTRACT_PIN_SURFACE
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
             text.replace(
-                CURRENT_STATUS_MAP_CAPABILITY_CLAIM,
-                "preserves Binance Spot SBE schema 3:5 plus adapter receive-clock ownership",
+                "`StrategySignalObservation`\n",
+                "`StrategySignalObservation`\n"
+                "The current pin preserves Binance Spot SBE schema 3:5 plus adapter receive-clock ownership.\n",
                 1,
             ),
             encoding="utf-8",
@@ -744,7 +762,7 @@ def test_current_status_map_rejects_stale_available_binance_capability_claim() -
 
     assert_finding(
         scan_temp(mutate),
-        "current status map must state unavailable Binance Spot SBE capabilities",
+        "reintroduces stale NautilusTrader capability authority",
     )
 
 

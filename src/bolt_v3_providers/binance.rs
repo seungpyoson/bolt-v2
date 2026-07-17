@@ -177,7 +177,6 @@ pub(crate) fn new_risk_market_data_available(
             format!("clients.{client_key}.data could not parse Binance config: {error}")
         })?;
     Ok(config.product_type != BinanceProductType::Spot
-        || config.spot_market_data_mode != BinanceSpotMarketDataMode::Sbe
         || NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_new_risk_quorum)
 }
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import contextlib
+import hashlib
 import io
 import sys
 import tempfile
@@ -168,6 +169,26 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
                 "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n"
             ),
         }
+        nt_query_text = (
+            "use serde::Serialize;\n"
+            "/// Parameters for POST /order.\n"
+            "pub struct PostOrderParams {\n"
+            "    pub post_only: bool,\n"
+            "}\n"
+        )
+        nt_query_digest = hashlib.sha256(nt_query_text.encode("utf-8")).hexdigest()
+        fixture["nt_query_text"] = nt_query_text
+        fixture["polymarket_fixture_text"] = (
+            "Source: NautilusTrader\n"
+            f"Revision: {self.PINNED_REV}\n"
+            "Path: crates/adapters/polymarket/src/http/query.rs\n"
+            f"Full source SHA-256: {nt_query_digest}\n"
+            "Extracted ranges from pinned checkout: lines 2-4\n"
+            "\n"
+            "/// Parameters for POST /order.\n"
+            "pub struct PostOrderParams {\n"
+            "    pub post_only: bool,\n"
+        )
         if mutate is not None:
             mutate(fixture)
 
@@ -181,6 +202,15 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         src_path = src_dir / "nt_runtime_capture.rs"
         test_path = tests_dir / "nt_runtime_capture.rs"
         nt_api_path = nt_dir / "api.rs"
+        nt_checkout = root / "nt_checkout"
+        nt_query_path = (
+            nt_checkout / "crates" / "adapters" / "polymarket" / "src" / "http" / "query.rs"
+        )
+        polymarket_fixture_path = (
+            tests_dir
+            / "fixtures"
+            / "nt_polymarket_query_post_order_params_8160730c.txt"
+        )
 
         surfaces_path.write_text(VERIFIER.yaml.safe_dump(fixture["surfaces"]), encoding="utf-8")
         feas_path.write_text(VERIFIER.yaml.safe_dump(fixture["feas"]), encoding="utf-8")
@@ -197,6 +227,12 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         src_path.write_text(fixture["src_text"], encoding="utf-8")
         test_path.write_text(fixture["test_text"], encoding="utf-8")
         nt_api_path.write_text(fixture["nt_api_text"], encoding="utf-8")
+        nt_query_path.parent.mkdir(parents=True, exist_ok=True)
+        nt_query_path.write_text(fixture["nt_query_text"], encoding="utf-8")
+        polymarket_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        polymarket_fixture_path.write_text(
+            fixture["polymarket_fixture_text"], encoding="utf-8"
+        )
 
         self.patch_verifier_attr("REPO_ROOT", root)
         self.patch_verifier_attr("SURFACES_PATH", surfaces_path)
@@ -205,6 +241,13 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         self.patch_verifier_attr("NAMING_AUDIT_PATH", naming_audit_path)
         self.patch_verifier_attr("SRC_PATH", src_path)
         self.patch_verifier_attr("TEST_PATH", test_path)
+        self.patch_verifier_attr(
+            "POLYMARKET_QUERY_FIXTURE_PATH", polymarket_fixture_path
+        )
+        self.patch_verifier_attr(
+            "find_pinned_nt_checkout",
+            lambda findings, nautilus_revision: nt_checkout,
+        )
         self.patch_verifier_attr(
             "find_pinned_nt_api_path",
             lambda findings, nautilus_revision: nt_api_path,
@@ -746,6 +789,66 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             fixture["naming_audit"]["nautilus_trader_revision"] = "0" * 40
 
         self.assert_collects("13.pin_revision_mismatch", mutate)
+
+    def test_collect_failures_rejects_polymarket_fixture_revision_drift(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["polymarket_fixture_text"] = fixture[
+                "polymarket_fixture_text"
+            ].replace(self.PINNED_REV, "b" * 40, 1)
+
+        self.assert_collects("13.polymarket_fixture_revision_mismatch", mutate)
+
+    def test_collect_failures_rejects_polymarket_fixture_digest_drift(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["polymarket_fixture_text"] = fixture[
+                "polymarket_fixture_text"
+            ].replace(
+                hashlib.sha256(fixture["nt_query_text"].encode("utf-8")).hexdigest(),
+                "0" * 64,
+                1,
+            )
+
+        self.assert_collects("13.polymarket_fixture_digest_mismatch", mutate)
+
+    def test_collect_failures_rejects_polymarket_fixture_path_escape(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["polymarket_fixture_text"] = fixture[
+                "polymarket_fixture_text"
+            ].replace(
+                "Path: crates/adapters/polymarket/src/http/query.rs",
+                "Path: ../query.rs",
+                1,
+            )
+
+        self.assert_collects("13.polymarket_fixture_path_escape", mutate)
+
+    def test_collect_failures_rejects_polymarket_fixture_wrong_source(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["polymarket_fixture_text"] = fixture[
+                "polymarket_fixture_text"
+            ].replace(
+                "Path: crates/adapters/polymarket/src/http/query.rs",
+                "Path: crates/adapters/polymarket/src/http/parse.rs",
+                1,
+            )
+
+        self.assert_collects("13.polymarket_fixture_source_mismatch", mutate)
+
+    def test_collect_failures_rejects_polymarket_fixture_invalid_range(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["polymarket_fixture_text"] = fixture[
+                "polymarket_fixture_text"
+            ].replace("lines 2-4", "lines 2-99", 1)
+
+        self.assert_collects("13.polymarket_fixture_ranges_invalid", mutate)
+
+    def test_collect_failures_rejects_one_byte_polymarket_fixture_mutation(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["polymarket_fixture_text"] = fixture[
+                "polymarket_fixture_text"
+            ].replace("pub struct", "pub xtruct", 1)
+
+        self.assert_collects("13.polymarket_fixture_bytes_mismatch", mutate)
 
     def test_collect_failures_rejects_multiple_cargo_pins(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:

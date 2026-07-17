@@ -15,8 +15,9 @@ origin` cannot resolve. Consequently, valid merge-queue candidates are marked
 ## Scope
 
 Preserve the existing private-repository and isolated-worktree architecture.
-Configure the private repository's canonical `origin` remote from the same
-normalized, fetchable URL already used to fetch pinned refs. Do not change the
+Configure only each temporary verifier worktree's canonical `origin` remote
+from the same normalized, fetchable URL already used to fetch pinned refs. Do
+not configure remotes in the private bare repository, change the
 dependency-direction verifier, weaken its fail-closed behavior, add a second
 secret or fetch path, touch the operator's source checkout Git metadata, or
 alter queue eligibility rules.
@@ -27,15 +28,15 @@ approval lands.
 ## Design
 
 `PrivateFetchRefs.fetch_origin()` remains the single place that resolves a
-configured remote name or URL against the source checkout. After resolution,
-it ensures the private bare repository has a remote named `origin` pointing to
-that normalized URL. Subsequent calls use the existing in-memory cache and do
-not add another remote or resolution path.
+configured remote name or URL against the source checkout. The normalized URL
+is passed with the existing alternate-object context into verifier execution.
 
-Verifier worktrees are linked to the private bare repository, so they inherit
-its repository-local remote configuration. A verifier can therefore resolve
-`origin` while all fetched refs, synthetic commits, worktree metadata, and
-cleanup remain isolated from the user's checkout.
+Before adding a verifier worktree, the temporary private repository enables
+Git's worktree-specific configuration extension. The worktree records
+`remote.origin.url` only in its own temporary config. A verifier can therefore
+resolve `origin`, while the private bare repository remains remote-free and all
+fetched refs, synthetic commits, worktree metadata, and cleanup remain isolated
+from the user's checkout.
 
 Remote setup must fail closed through the existing `PreflightError` path. The
 remote URL remains temporary Git configuration and must not be added to JSON,
@@ -47,7 +48,8 @@ Add a regression test to `scripts/test_merge_queue_preflight.py` that runs a
 real verifier inside an isolated candidate worktree. The verifier requires
 `git remote get-url origin` to match the fixture's normalized remote path. The
 test must fail on the current implementation with a verifier failure and pass
-after the private repository installs the remote.
+after the worktree installs its temporary remote configuration. Existing tests
+continue to prove that the private bare repository itself has no remotes.
 
 Run the targeted merge-queue preflight suite, Python syntax checks for changed
 scripts, the permitted repository static gates, and the original direct JSON

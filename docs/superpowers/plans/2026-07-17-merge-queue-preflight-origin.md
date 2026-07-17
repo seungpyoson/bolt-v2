@@ -4,7 +4,7 @@
 
 **Goal:** Make isolated merge-queue verifier worktrees resolve the same canonical `origin` URL used to fetch their pinned candidate commits.
 
-**Architecture:** Keep the per-run private bare repository as the only mutable Git repository used by preflight. After `PrivateFetchRefs.fetch_origin()` normalizes the configured source, store that URL as `remote.origin.url` in the private repository so all linked verifier worktrees inherit it.
+**Architecture:** Keep the per-run private bare repository and linked verifier worktrees as the only mutable Git repositories used by preflight. After `PrivateFetchRefs.fetch_origin()` normalizes the configured source, pass that URL into verifier execution and store it only as worktree-specific `remote.origin.url` configuration; the private bare repository remains remote-free.
 
 **Tech Stack:** Python 3 standard library, Git CLI, repository `just` verification recipes.
 
@@ -27,13 +27,13 @@
 
 **Interfaces:**
 - Consumes: `PrivateFetchRefs.fetch_origin(origin: str) -> str` and the existing `GitFixture` remote.
-- Produces: repository-local `remote.origin.url` configuration inherited by worktrees created in `run_verifier_commands()`.
+- Produces: worktree-local `remote.origin.url` configuration created and removed with each worktree in `run_verifier_commands()`.
 
-- [ ] **Step 1: Write the failing regression test**
+- [x] **Step 1: Write the failing regression test**
 
 Add `assert_verifier_worktrees_inherit_origin_remote()` beside the existing verifier-worktree isolation tests. Create a fixture PR and a verifier script that runs `git remote get-url origin`, compares the resolved value with `fixture.remote`, and exits nonzero when the remote is absent or different. Run preflight with the strict verifier profile and assert an unblocked batch for PR 1. Register the assertion in the test runner's existing list.
 
-- [ ] **Step 2: Run the targeted suite to verify RED**
+- [x] **Step 2: Run the targeted suite to verify RED**
 
 Run:
 
@@ -43,28 +43,29 @@ python3 scripts/test_merge_queue_preflight.py
 
 Expected: failure from the new assertion because preflight returns a `verifier_failed` block containing `No such remote 'origin'`.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
-Refactor the existing success/fallback branches in `PrivateFetchRefs.fetch_origin()` to converge before returning, then configure the private repository:
+Pass the normalized origin URL through the existing verifier batching calls. In `run_verifier_commands()`, enable worktree-specific configuration before adding the worktree, then configure the remote inside the worktree's existing cleanup boundary:
 
 ```python
-if result.returncode != 0 or not remote_url:
-    remote_url = fetchable_origin_argument(origin, self.source_repo)
-else:
-    remote_url = fetchable_remote_url(remote_url, self.source_repo)
 git(
-    self.git_repo,
+    repo,
     "config",
-    "--local",
-    "remote.origin.url",
-    remote_url,
-    timeout_seconds=self.input_timeout_seconds,
+    "extensions.worktreeConfig",
+    "true",
+    timeout_seconds=input_timeout_seconds,
 )
-self.remotes[origin] = remote_url
-return remote_url
+git(
+    worktree,
+    "config",
+    "--worktree",
+    "remote.origin.url",
+    origin_url,
+    timeout_seconds=input_timeout_seconds,
+)
 ```
 
-- [ ] **Step 4: Run the targeted suite to verify GREEN**
+- [x] **Step 4: Run the targeted suite to verify GREEN**
 
 Run:
 
@@ -74,7 +75,7 @@ python3 scripts/test_merge_queue_preflight.py
 
 Expected: `OK: merge_queue_preflight tests passed.`
 
-- [ ] **Step 5: Run changed-script syntax and diff checks**
+- [x] **Step 5: Run changed-script syntax and diff checks**
 
 Run:
 
@@ -85,7 +86,7 @@ git diff --check
 
 Expected: both commands exit 0 with no diagnostics.
 
-- [ ] **Step 6: Commit the test and implementation**
+- [x] **Step 6: Commit the test and implementation**
 
 ```bash
 git add scripts/merge_queue_preflight.py scripts/test_merge_queue_preflight.py

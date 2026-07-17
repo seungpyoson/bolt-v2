@@ -2814,6 +2814,7 @@ def run_verifier_commands(
     commands: Sequence[str],
     timeout_seconds: int,
     input_timeout_seconds: int,
+    origin_url: str,
     alternate_object_dir: str | None = None,
 ) -> tuple[VerifierResult, ...]:
     if not commands:
@@ -2821,6 +2822,13 @@ def run_verifier_commands(
     results: list[VerifierResult] = []
     with tempfile.TemporaryDirectory(prefix="merge-queue-preflight-") as tmp:
         worktree = pathlib.Path(tmp) / "worktree"
+        git(
+            repo,
+            "config",
+            "extensions.worktreeConfig",
+            "true",
+            timeout_seconds=input_timeout_seconds,
+        )
         git(
             repo,
             "worktree",
@@ -2832,6 +2840,14 @@ def run_verifier_commands(
             timeout_seconds=input_timeout_seconds,
         )
         try:
+            git(
+                worktree,
+                "config",
+                "--worktree",
+                "remote.origin.url",
+                origin_url,
+                timeout_seconds=input_timeout_seconds,
+            )
             for command in commands:
                 parts = shlex.split(command)
                 if not parts:
@@ -3096,6 +3112,7 @@ def verified_fallback_batches(
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
     alternate_object_dir: str | None,
+    origin_url: str,
     start_index: int,
 ) -> VerifiedBatchFallback:
     """Recover from a failed optimistic batch by verifying each PR, then rebuilding batches."""
@@ -3118,6 +3135,7 @@ def verified_fallback_batches(
             ),
             verifier_timeout_seconds,
             input_timeout_seconds,
+            origin_url,
             alternate_object_dir,
         )
         failed = first_failed_verifier(verifier_results)
@@ -3196,6 +3214,7 @@ def verified_fallback_batches(
             ),
             verifier_timeout_seconds,
             input_timeout_seconds,
+            origin_url,
             alternate_object_dir,
         )
         failed = first_failed_verifier(candidate_verifiers)
@@ -3253,6 +3272,7 @@ def verify_final_batches_with_fallback(
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
     alternate_object_dir: str | None,
+    origin_url: str,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch], set[int]]:
     """Verify optimistic batches, falling back over the remaining suffix after the first failure."""
     blocked_prs: list[dict[str, object]] = []
@@ -3275,6 +3295,7 @@ def verify_final_batches_with_fallback(
             ),
             verifier_timeout_seconds,
             input_timeout_seconds,
+            origin_url,
             alternate_object_dir,
         )
         failed = first_failed_verifier(verifier_results)
@@ -3305,6 +3326,7 @@ def verify_final_batches_with_fallback(
             input_timeout_seconds=input_timeout_seconds,
             output_policy=output_policy,
             alternate_object_dir=alternate_object_dir,
+            origin_url=origin_url,
             start_index=batch_index,
         )
         blocked_prs.extend(fallback.blocked_prs)
@@ -3863,6 +3885,7 @@ def preflight_with_fetch_refs(
         input_timeout_seconds=input_timeout_seconds,
         output_policy=output_policy,
         alternate_object_dir=fetch_refs.source_objects,
+        origin_url=fetch_refs.fetch_origin(origin),
     )
     conflicts = [
         conflict

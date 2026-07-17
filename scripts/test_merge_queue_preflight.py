@@ -1931,6 +1931,84 @@ def assert_verifier_worktrees_can_read_checkout_object_database() -> None:
         assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "checkout-object verifier batch")
 
 
+def assert_verifier_worktrees_inherit_origin_remote() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        verifier = root / "require_origin_remote.py"
+        write(
+            verifier,
+            "import pathlib\n"
+            "import subprocess\n"
+            "import sys\n"
+            "completed = subprocess.run(\n"
+            "    ['git', 'remote', 'get-url', 'origin'],\n"
+            "    text=True,\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    stderr=subprocess.PIPE,\n"
+            ")\n"
+            "if completed.returncode != 0:\n"
+            "    sys.stderr.write(completed.stderr)\n"
+            "    sys.exit(7)\n"
+            "actual = pathlib.Path(completed.stdout.strip()).resolve()\n"
+            "expected = pathlib.Path(sys.argv[1]).resolve()\n"
+            "if actual != expected:\n"
+            "    print(f'expected origin {expected}, got {actual}', file=sys.stderr)\n"
+            "    sys.exit(8)\n"
+            "preserved = subprocess.run(\n"
+            "    ['git', 'config', '--get', 'preflight.existing'],\n"
+            "    text=True,\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    check=False,\n"
+            ")\n"
+            "if preserved.returncode != 0 or preserved.stdout.strip() != 'preserved':\n"
+            "    print('existing Git command config was not preserved', file=sys.stderr)\n"
+            "    sys.exit(9)\n",
+        )
+        config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier} {fixture.remote}"])
+
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            str(fixture.remote),
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--config",
+            str(config),
+            "--json",
+            "1",
+        ]
+        env = os.environ.copy()
+        env.update(
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "preflight.existing",
+                "GIT_CONFIG_VALUE_0": "preserved",
+            }
+        )
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=env,
+        )
+        payload = parse_json(result.stdout)
+        if payload["blocked_prs"]:
+            raise AssertionError(payload["blocked_prs"])
+        assert_equal(result.returncode, 3, "origin-remote verifier no-gh rc")
+        assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "origin-remote verifier batch")
+
+
 def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
     module = load_preflight_module()
     assert_equal(
@@ -5072,6 +5150,7 @@ def main() -> int:
     assert_github_actions_auth_helper_keeps_local_ambient_auth_optional()
     assert_verifier_worktrees_do_not_write_checkout_git_metadata()
     assert_verifier_worktrees_can_read_checkout_object_database()
+    assert_verifier_worktrees_inherit_origin_remote()
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()

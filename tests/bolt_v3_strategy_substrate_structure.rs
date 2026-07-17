@@ -818,7 +818,7 @@ fn production_tokenizer_excludes_inline_test_items_only() {
     assert_eq!(count_sequence(&tokens, &["ProductionField"]), 2);
     assert_eq!(count_sequence(&tokens, &["modify_order_via_nt", "("]), 3);
     assert_eq!(count_sequence(&tokens, &["cancel_order", "("]), 1);
-    assert_eq!(count_sequence(&tokens, &["test_only_arm_body", "("]), 1);
+    assert_eq!(count_sequence(&tokens, &["test_only_arm_body", "("]), 0);
     assert_eq!(
         count_sequence(&tokens, &["production_after_gated_arm", "("]),
         1

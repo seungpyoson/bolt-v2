@@ -42,17 +42,22 @@ actionlint = "github_hosted"
 
 [backtester.test_archive_timeout]
 ordinary_max_job_minutes = 360
-ra001a_durable_tracer_max_job_minutes = 120
 
 [backtester.ra001a_durable_tracer]
+max_job_minutes = 120
 max_registry_packs = 64
 max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
 
+[backtester.ra001a_durable_tracer.git_executable]
+path = "/usr/bin/git"
+max_bytes = 67108864
+
 [backtester.ra001a_durable_tracer.pack_limits]
 max_fetch_timeout_seconds = 300
+max_worker_termination_grace_seconds = 30
 max_worker_virtual_memory_bytes = 2147483648
 min_worker_reserved_overhead_bytes = 536870912
 max_decoded_bytes = 1073741824
@@ -292,10 +297,16 @@ max_wall_seconds = 3600
 max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_registry_packs = 64
+max_job_minutes = 120
+
+[backtester.ra001a_durable_tracer.git_executable]
+max_bytes = 67108864
+path = "/usr/bin/git"
 
 [backtester.ra001a_durable_tracer.pack_limits]
 candidate_retention_age_seconds = 86400
 cache_retention_age_seconds = 2592000
+max_worker_termination_grace_seconds = 30
 max_workspace_bytes = 34359738368
 max_worker_virtual_memory_bytes = 2147483648
 min_worker_reserved_overhead_bytes = 536870912
@@ -321,7 +332,6 @@ max_ignored_entry_bytes = 4096
 allowed_ignored_runtime_roots = [".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]
 
 [backtester.test_archive_timeout]
-ra001a_durable_tracer_max_job_minutes = 120
 ordinary_max_job_minutes = 360
 
 [backtester.issue_789]
@@ -625,11 +635,14 @@ def output_dict(stdout: str) -> dict[str, str]:
 
 
 EXPECTED_RA001A_OUTPUT_KEYS = {
-    "ra001a_durable_tracer_required",
+    "ra001a_max_job_minutes",
     "ra001a_max_registry_packs",
     "ra001a_max_total_selected_object_bytes",
     "ra001a_max_worker_executable_bytes",
+    "ra001a_git_executable_path",
+    "ra001a_max_git_executable_bytes",
     "ra001a_max_fetch_timeout_seconds",
+    "ra001a_max_worker_termination_grace_seconds",
     "ra001a_max_worker_virtual_memory_bytes",
     "ra001a_min_worker_reserved_overhead_bytes",
     "ra001a_max_decoded_bytes",
@@ -658,10 +671,10 @@ EXPECTED_RA001A_OUTPUT_KEYS = {
 
 
 def assert_exact_ra001a_output_keys(output: dict[str, str]) -> None:
-    actual = {key for key in output if key.startswith("ra001a_")}
+    actual = set(output)
     if actual != EXPECTED_RA001A_OUTPUT_KEYS:
         raise AssertionError(
-            "ci-policy RA-001a output set drifted: "
+            "ra001a-policy output set drifted: "
             f"missing={sorted(EXPECTED_RA001A_OUTPUT_KEYS - actual)}, "
             f"unexpected={sorted(actual - EXPECTED_RA001A_OUTPUT_KEYS)}"
         )
@@ -964,9 +977,17 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "ordinary_max_job_minutes = true",
             1,
         ),
-        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must be a positive integer": CONFIG_TOML.replace(
-            "ra001a_durable_tracer_max_job_minutes = 120",
-            "ra001a_durable_tracer_max_job_minutes = 0",
+        "backtester.test_archive_timeout has unexpected keys: ['ra001a_durable_tracer_max_job_minutes']": CONFIG_TOML.replace(
+            "ordinary_max_job_minutes = 360",
+            (
+                "ordinary_max_job_minutes = 360\n"
+                "ra001a_durable_tracer_max_job_minutes = 120"
+            ),
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_job_minutes must be a positive integer": CONFIG_TOML.replace(
+            "max_job_minutes = 120",
+            "max_job_minutes = 0",
             1,
         ),
         "backtester.test_archive_timeout.ordinary_max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
@@ -974,9 +995,9 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "ordinary_max_job_minutes = 361",
             1,
         ),
-        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
-            "ra001a_durable_tracer_max_job_minutes = 120",
-            "ra001a_durable_tracer_max_job_minutes = 361",
+        "backtester.ra001a_durable_tracer.max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
+            "max_job_minutes = 120",
+            "max_job_minutes = 361",
             1,
         ),
         "backtester.ra001a_durable_tracer.max_wall_seconds must be a positive integer": CONFIG_TOML.replace(
@@ -999,14 +1020,24 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "max_worker_executable_bytes = 0",
             1,
         ),
+        "backtester.ra001a_durable_tracer.git_executable.path must be a normalized absolute path": CONFIG_TOML.replace(
+            'path = "/usr/bin/git"',
+            'path = "git"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.git_executable.max_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_bytes = 67108864",
+            "max_bytes = 0",
+            1,
+        ),
         "backtester.ra001a_durable_tracer.termination_grace_seconds must be a positive integer": CONFIG_TOML.replace(
             "termination_grace_seconds = 30",
             "termination_grace_seconds = 0",
             1,
         ),
-        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must exceed the tracer wall limit plus termination grace": CONFIG_TOML.replace(
-            "ra001a_durable_tracer_max_job_minutes = 120",
-            "ra001a_durable_tracer_max_job_minutes = 60",
+        "backtester.ra001a_durable_tracer.max_job_minutes must exceed the tracer wall limit plus termination grace": CONFIG_TOML.replace(
+            "max_job_minutes = 120",
+            "max_job_minutes = 60",
             1,
         ).replace("max_wall_seconds = 3600", "max_wall_seconds = 3570", 1),
         "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must be sorted and unique": CONFIG_TOML.replace(
@@ -1079,6 +1110,7 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
     ]
     pack_limit_values = {
         "max_fetch_timeout_seconds": "300",
+        "max_worker_termination_grace_seconds": "30",
         "max_worker_virtual_memory_bytes": "2147483648",
         "min_worker_reserved_overhead_bytes": "536870912",
         "max_decoded_bytes": "1073741824",
@@ -1264,6 +1296,27 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             CONFIG_TOML.replace('"target/"', '"target//"', 1),
         ),
     ]
+    git_path_error = (
+        "backtester.ra001a_durable_tracer.git_executable.path must be a normalized absolute path"
+    )
+    git_path_cases = [
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "//usr/bin/git"', 1),
+        ),
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "/usr//bin/git"', 1),
+        ),
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "/usr/bin/./git"', 1),
+        ),
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "/usr/bin/git/"', 1),
+        ),
+    ]
     with tempfile.TemporaryDirectory() as tmp:
         for expected, text in cases.items():
             config = write_config(pathlib.Path(tmp), text)
@@ -1277,6 +1330,9 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
         for expected, text in root_cases:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in git_path_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
 
 
 def assert_backtester_timeout_configs_load_limits() -> None:
@@ -1286,10 +1342,11 @@ def assert_backtester_timeout_configs_load_limits() -> None:
     timeout = loaded.backtester_test_archive_timeout
     actual = (
         timeout.ordinary_max_job_minutes,
-        timeout.ra001a_durable_tracer_max_job_minutes,
+        timeout.ra001a_max_job_minutes,
         timeout.ra001a_durable_tracer_max_registry_packs,
         timeout.ra001a_durable_tracer_max_total_selected_object_bytes,
         timeout.ra001a_durable_tracer_max_worker_executable_bytes,
+        timeout.ra001a_git_executable,
         timeout.ra001a_pack_limits,
         timeout.ra001a_durable_tracer_max_wall_seconds,
         timeout.ra001a_durable_tracer_termination_grace_seconds,
@@ -1303,8 +1360,13 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         64,
         1073741824,
         1073741824,
+        module.Ra001aDurableTracerGitExecutableConfig(
+            path="/usr/bin/git",
+            max_bytes=67108864,
+        ),
         module.Ra001aDurableTracerPackLimitsConfig(
             max_fetch_timeout_seconds=300,
+            max_worker_termination_grace_seconds=30,
             max_worker_virtual_memory_bytes=2147483648,
             min_worker_reserved_overhead_bytes=536870912,
             max_decoded_bytes=1073741824,
@@ -1343,13 +1405,13 @@ def assert_backtester_timeout_configs_load_limits() -> None:
             write_config(
                 pathlib.Path(tmp),
                 CONFIG_TOML.replace(
-                    "ra001a_durable_tracer_max_job_minutes = 120",
-                    "ra001a_durable_tracer_max_job_minutes = 61",
+                    "max_job_minutes = 120",
+                    "max_job_minutes = 61",
                     1,
                 ),
             )
         )
-    if boundary.backtester_test_archive_timeout.ra001a_durable_tracer_max_job_minutes != 61:
+    if boundary.backtester_test_archive_timeout.ra001a_max_job_minutes != 61:
         raise AssertionError("a 61-minute job ceiling must cover a 60-minute wall limit plus 30-second grace")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -1369,33 +1431,44 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         )
 
 
-def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
+def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
     module = load_script()
+    ordinary_result_fields = {
+        field.name for field in module.dataclasses.fields(module.CiPolicyResult)
+    }
+    ordinary_ra001a_fields = sorted(
+        field for field in ordinary_result_fields if field.startswith("ra001a_")
+    )
+    if ordinary_ra001a_fields:
+        raise AssertionError(
+            "ordinary CiPolicyResult must not carry RA-001a fields: "
+            f"{ordinary_ra001a_fields}"
+        )
+    ordinary_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml"
+    ).read_text(encoding="utf-8")
+    if "ra001a" in ordinary_workflow.lower():
+        raise AssertionError(
+            "ordinary backtester-ci workflow must not carry RA-001a inputs, branches, or env"
+        )
     with tempfile.TemporaryDirectory() as tmp:
         config_path = write_config(pathlib.Path(tmp), CONFIG_TOML)
         config = module.load_config(config_path)
-        result = module.evaluate_ci_policy(
+        result = module.evaluate_ra001a_policy(
             config,
             event_name="workflow_dispatch",
-            event_action="",
-            pull_request_draft=False,
-            ra001a_durable_tracer_requested=True,
-            ref="refs/heads/codex/branch",
+            ref="refs/heads/main",
+            repository_default_branch="main",
         )
-        if result.ci_policy_path != "iteration" or result.full_ci_required:
-            raise AssertionError(f"RA-001a diagnostic must remain non-proof iteration: {result}")
-        if not result.ra001a_durable_tracer_required:
-            raise AssertionError(f"RA-001a diagnostic request was not preserved: {result}")
-        if result.backtester_test_archive_timeout_minutes != 120:
-            raise AssertionError(
-                "RA-001a diagnostic must select the trusted 120-minute archive timeout: "
-                f"{result}"
-            )
         expected_limits = (
+            120,
             64,
             1073741824,
             1073741824,
+            "/usr/bin/git",
+            67108864,
             300,
+            30,
             2147483648,
             536870912,
             1073741824,
@@ -1422,10 +1495,14 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
             128,
         )
         actual_limits = (
+            result.ra001a_max_job_minutes,
             result.ra001a_max_registry_packs,
             result.ra001a_max_total_selected_object_bytes,
             result.ra001a_max_worker_executable_bytes,
+            result.ra001a_git_executable_path,
+            result.ra001a_max_git_executable_bytes,
             result.ra001a_max_fetch_timeout_seconds,
+            result.ra001a_max_worker_termination_grace_seconds,
             result.ra001a_max_worker_virtual_memory_bytes,
             result.ra001a_min_worker_reserved_overhead_bytes,
             result.ra001a_max_decoded_bytes,
@@ -1456,29 +1533,27 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
 
         code, stdout, stderr = run_cli(
             [
-                "ci-policy",
+                "ra001a-policy",
                 "--config",
                 str(config_path),
                 "--event-name",
                 "workflow_dispatch",
-                "--ra001a-durable-tracer-requested",
-                "true",
                 "--ref",
-                "refs/heads/codex/branch",
+                "refs/heads/main",
+                "--repository-default-branch",
+                "main",
             ]
         )
         if code != 0:
-            raise AssertionError(f"RA-001a ci-policy CLI failed: {stderr}")
+            raise AssertionError(f"ra001a-policy CLI failed: {stderr}")
         output = output_dict(stdout)
         assert_exact_ra001a_output_keys(output)
-        if output.get("ra001a_durable_tracer_required") != "true":
-            raise AssertionError(f"RA-001a ci-policy CLI dropped the governed request: {output}")
-        if output.get("backtester_test_archive_timeout_minutes") != "120":
-            raise AssertionError(
-                f"RA-001a ci-policy CLI must expose the trusted tracer timeout: {output}"
-            )
         for key, expected in {
+            "ra001a_max_job_minutes": "120",
+            "ra001a_git_executable_path": "/usr/bin/git",
+            "ra001a_max_git_executable_bytes": "67108864",
             "ra001a_max_fetch_timeout_seconds": "300",
+            "ra001a_max_worker_termination_grace_seconds": "30",
             "ra001a_max_worker_virtual_memory_bytes": "2147483648",
             "ra001a_min_worker_reserved_overhead_bytes": "536870912",
             "ra001a_max_decoded_bytes": "1073741824",
@@ -1503,19 +1578,74 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
             "ra001a_max_ignored_entries": "128",
         }.items():
             if output.get(key) != expected:
-                raise AssertionError(f"RA-001a ci-policy CLI output {key} drifted: {output}")
+                raise AssertionError(f"ra001a-policy CLI output {key} drifted: {output}")
 
-    assert_raises(
-        "ra001a_durable_tracer_requested is only valid for workflow_dispatch",
-        lambda: module.evaluate_ci_policy(
-            config,
-            event_name="pull_request",
-            event_action="opened",
-            pull_request_draft=True,
-            ra001a_durable_tracer_requested=True,
-            ref="refs/pull/1/merge",
-        ),
-    )
+        required_args = [
+            "ra001a-policy",
+            "--config",
+            str(config_path),
+            "--event-name",
+            "workflow_dispatch",
+            "--ref",
+            "refs/heads/main",
+            "--repository-default-branch",
+            "main",
+        ]
+        for option in (
+            "--config",
+            "--event-name",
+            "--ref",
+            "--repository-default-branch",
+        ):
+            option_index = required_args.index(option)
+            missing = required_args[:option_index] + required_args[option_index + 2 :]
+            assert_fails(option, missing)
+
+        assert_fails(
+            "unrecognized arguments: --ra001a-durable-tracer-requested true",
+            [
+                "ci-policy",
+                "--config",
+                str(config_path),
+                "--event-name",
+                "workflow_dispatch",
+                "--ref",
+                "refs/heads/main",
+                "--ra001a-durable-tracer-requested",
+                "true",
+            ],
+        )
+
+        assert_fails(
+            "ra001a-policy requires workflow_dispatch",
+            [
+                *required_args[: required_args.index("workflow_dispatch")],
+                "pull_request",
+                *required_args[required_args.index("workflow_dispatch") + 1 :],
+            ],
+        )
+        assert_fails(
+            "ra001a-policy requires ref 'refs/heads/main'",
+            [
+                *required_args[: required_args.index("refs/heads/main")],
+                "refs/heads/codex/branch",
+                *required_args[required_args.index("refs/heads/main") + 1 :],
+            ],
+        )
+        assert_fails(
+            "ra001a-policy requires ref 'refs/heads/other'",
+            [
+                *required_args[:-1],
+                "other",
+            ],
+        )
+        assert_fails(
+            "repository_default_branch must be a non-empty branch name",
+            [
+                *required_args[:-1],
+                "refs/heads/main",
+            ],
+        )
 
 
 def assert_deploy_artifact_window_uses_short_deploy_policy() -> None:
@@ -3327,7 +3457,14 @@ def assert_ci_policy_outputs_matrix() -> None:
             if code != 0:
                 raise AssertionError(f"ci-policy failed for {event_name}/{action}: {stderr}")
             output = output_dict(stdout)
-            assert_exact_ra001a_output_keys(output)
+            ra001a_output_keys = sorted(
+                key for key in output if key.startswith("ra001a_")
+            )
+            if ra001a_output_keys:
+                raise AssertionError(
+                    "ordinary ci-policy must not emit RA-001a outputs: "
+                    f"{ra001a_output_keys}"
+                )
             if output.get("ci_policy_path") != expected:
                 raise AssertionError((event_name, action, draft, ref, expected, output))
             if output.get("full_ci_required") != str(expected == "full").lower():
@@ -3351,38 +3488,6 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"ci-policy must expose the trusted ordinary timeout: {output}")
             if output.get("backtester_issue_789_timeout_minutes") != "120":
                 raise AssertionError(f"ci-policy must expose the trusted issue #789 timeout: {output}")
-            expected_ra001a_limits = {
-                "ra001a_max_registry_packs": "64",
-                "ra001a_max_total_selected_object_bytes": "1073741824",
-                "ra001a_max_worker_executable_bytes": "1073741824",
-                "ra001a_max_fetch_timeout_seconds": "300",
-                "ra001a_max_worker_virtual_memory_bytes": "2147483648",
-                "ra001a_min_worker_reserved_overhead_bytes": "536870912",
-                "ra001a_max_decoded_bytes": "1073741824",
-                "ra001a_max_source_rows": "1000000",
-                "ra001a_max_projected_row_groups": "128",
-                "ra001a_max_operator_wall_seconds": "1800",
-                "ra001a_max_terminal_commit_timeout_seconds": "60",
-                "ra001a_max_launch_artifact_bytes": "65536",
-                "ra001a_max_control_artifact_bytes": "65536",
-                "ra001a_max_retained_control_input_bytes": "262144",
-                "ra001a_max_final_object_bytes": "4194304",
-                "ra001a_max_workspace_bytes": "34359738368",
-                "ra001a_max_cache_bytes": "17179869184",
-                "ra001a_min_free_space_reserve_bytes": "10737418240",
-                "ra001a_min_one_record_worst_case_bytes": "4294967296",
-                "ra001a_cache_retention_age_seconds": "2592000",
-                "ra001a_candidate_retention_age_seconds": "86400",
-                "ra001a_max_lifecycle_cleanup_entries": "1000000",
-                "ra001a_max_lifecycle_cleanup_depth": "64",
-                "ra001a_max_wall_seconds": "3600",
-                "ra001a_termination_grace_seconds": "30",
-            }
-            for key, expected_value in expected_ra001a_limits.items():
-                if output.get(key) != expected_value:
-                    raise AssertionError(
-                        f"ci-policy must expose trusted {key}={expected_value}: {output}"
-                    )
 
         code, stdout, stderr = run_cli_with_event_sender(
             [
@@ -5667,7 +5772,7 @@ def main() -> int:
     assert_positive_int_config_rejects_booleans()
     assert_backtester_timeout_configs_reject_invalid_values()
     assert_backtester_timeout_configs_load_limits()
-    assert_ra001a_ci_policy_selects_trusted_limits()
+    assert_ra001a_policy_requires_exact_default_branch_dispatch()
     assert_deploy_artifact_window_uses_short_deploy_policy()
     assert_capture_config_can_omit_deploy_artifact_window()
     assert_optional_deploy_window_rejects_partial_config()

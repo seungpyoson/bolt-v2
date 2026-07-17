@@ -5436,9 +5436,170 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
     verifier = load_verifier()
     workflow_name = ".github/workflows/backtester-ci.yml"
     workflow = repo_workflow_text(workflow_name)
+    for required in (
+        "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+        'echo "revision=$trusted_revision"',
+        "trusted_revision: ${{ steps.policy_base.outputs.revision }}",
+        'TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}',
+        '--pull-request-author-id "$PR_AUTHOR_ID"',
+        '--config "$verdict_config"',
+    ):
+        if required not in workflow:
+            raise AssertionError(
+                f"backtester-ci must use one explicit trusted policy revision ({required})"
+            )
+    for forbidden in (
+        'if [[ -z "$policy_script" ]]',
+        'policy_script="scripts/ci_provenance.py"',
+        'if [[ -z "$policy_config" ]]',
+        'policy_config="ci/github-actions-runners.toml"',
+        'ci-policy --help',
+        "author_args=()",
+        'if [[ -z "$verdict_script" ]]',
+        'verdict_script="scripts/ci_provenance.py"',
+    ):
+        if forbidden in workflow:
+            raise AssertionError(
+                f"backtester-ci must not retain trusted-policy fallbacks ({forbidden})"
+            )
     errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
     if any("backtester iteration policy" in error for error in errors):
         raise AssertionError(f"backtester-ci workflow must satisfy iteration policy, got: {errors}")
+
+    for marker, replacement in (
+        (
+            "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            "REPOSITORY_DEFAULT_BRANCH: ''",
+        ),
+        (
+            'echo "revision=$trusted_revision"',
+            'echo "revision="',
+        ),
+        (
+            "TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}",
+            "TRUSTED_REVISION: ''",
+        ),
+        (
+            '--config "$verdict_config"',
+            "",
+        ),
+    ):
+        mutated = replace_once(workflow, marker, replacement)
+        mutated_errors = verifier.verify_repo_automation_texts({workflow_name: mutated})
+        if not any("backtester iteration policy" in error for error in mutated_errors):
+            raise AssertionError(
+                f"backtester-ci must reject missing trusted-policy binding {marker}: "
+                f"{mutated_errors}"
+            )
+
+    policy_fallback = replace_once(
+        workflow,
+        '          readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+        (
+            '          policy_script="${{ steps.policy_base.outputs.script }}"\n'
+            '          if [[ -z "$policy_script" ]]; then\n'
+            '            policy_script="scripts/ci_provenance.py"\n'
+            "          fi"
+        ),
+    )
+    policy_fallback_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: policy_fallback}
+    )
+    if not any(
+        "must not retain trusted-policy fallbacks" in error
+        for error in policy_fallback_errors
+    ):
+        raise AssertionError(
+            "backtester-ci must reject a local policy-script fallback, got: "
+            f"{policy_fallback_errors}"
+        )
+
+    for marker, replacement, expected_error in (
+        (
+            'readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+            (
+                "readonly policy_script=\"${{ steps.policy_base.outputs.script "
+                "|| 'scripts/ci_provenance.py' }}\""
+            ),
+            "must bind each trusted policy capability exactly once without fallback",
+        ),
+        (
+            'readonly policy_config="${{ steps.policy_base.outputs.config }}"',
+            (
+                "readonly policy_config=\"${{ steps.policy_base.outputs.config "
+                "|| 'ci/github-actions-runners.toml' }}\""
+            ),
+            "must bind each trusted policy capability exactly once without fallback",
+        ),
+        (
+            'trusted_branch="$PR_BASE_REF"',
+            'trusted_branch="${PR_BASE_REF:-$REPOSITORY_DEFAULT_BRANCH}"',
+            "must select one event-scoped trusted branch without fallback",
+        ),
+        (
+            'readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+            (
+                "readonly verdict_script=\"${{ steps.verdict_base.outputs.script "
+                "|| 'scripts/ci_provenance.py' }}\""
+            ),
+            "must bind each trusted verdict capability exactly once without fallback",
+        ),
+        (
+            'readonly verdict_config="${{ steps.verdict_base.outputs.config }}"',
+            (
+                "readonly verdict_config=\"${{ steps.verdict_base.outputs.config "
+                "|| 'ci/github-actions-runners.toml' }}\""
+            ),
+            "must bind each trusted verdict capability exactly once without fallback",
+        ),
+    ):
+        mutated = replace_once(workflow, marker, replacement)
+        mutated_errors = verifier.verify_repo_automation_texts({workflow_name: mutated})
+        if not any(expected_error in error for error in mutated_errors):
+            raise AssertionError(
+                f"backtester-ci must reject conditional capability fallback {marker}: "
+                f"{mutated_errors}"
+            )
+
+    help_probe = replace_once(
+        workflow,
+        '            --pull-request-author-id "$PR_AUTHOR_ID" \\',
+        (
+            '            $(python3 "$policy_script" ci-policy --help | '
+            'grep -q -- "--pull-request-author-id" && '
+            'echo --pull-request-author-id "$PR_AUTHOR_ID") \\'
+        ),
+    )
+    help_probe_errors = verifier.verify_repo_automation_texts({workflow_name: help_probe})
+    if not any(
+        "must not retain trusted-policy fallbacks" in error
+        for error in help_probe_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci must reject ci-policy capability probes, got: {help_probe_errors}"
+        )
+
+    verdict_fallback = replace_once(
+        workflow,
+        '          readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+        (
+            '          verdict_script="${{ steps.verdict_base.outputs.script }}"\n'
+            '          if [[ -z "$verdict_script" ]]; then\n'
+            '            verdict_script="scripts/ci_provenance.py"\n'
+            "          fi"
+        ),
+    )
+    verdict_fallback_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: verdict_fallback}
+    )
+    if not any(
+        "must not retain trusted-verdict fallbacks" in error
+        for error in verdict_fallback_errors
+    ):
+        raise AssertionError(
+            "backtester-ci must reject a local verdict-script fallback, got: "
+            f"{verdict_fallback_errors}"
+        )
 
     missing_required_gate_note = replace_once(
         workflow,

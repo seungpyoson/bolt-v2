@@ -58,20 +58,25 @@ gate = "github_hosted"
 
 [backtester.test_archive_timeout]
 ordinary_max_job_minutes = 360
-ra001a_durable_tracer_max_job_minutes = 120
 
 [backtester.ra001a_durable_tracer]
+max_job_minutes = 120
 max_registry_packs = 64
 max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
 
+[backtester.ra001a_durable_tracer.git_executable]
+path = "/usr/bin/git"
+max_bytes = 67108864
+
 # Trusted-default-branch bounds checked against every committed pack before
 # worker capture. `max_*` values are ceilings; `min_*` values are safety floors;
 # unprefixed retention ages are exact because either direction changes cost.
 [backtester.ra001a_durable_tracer.pack_limits]
 max_fetch_timeout_seconds = 300
+max_worker_termination_grace_seconds = 30
 max_worker_virtual_memory_bytes = 2147483648
 min_worker_reserved_overhead_bytes = 536870912
 max_decoded_bytes = 1073741824

@@ -8938,11 +8938,16 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             "gate_name: ${{ steps.policy.outputs.gate_name }}",
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
-            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "trusted_revision: ${{ steps.policy_base.outputs.revision }}",
             "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-            'git check-ref-format "refs/heads/$base_branch"',
-            "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+            "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            '[[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]',
+            'git check-ref-format "refs/heads/$trusted_branch"',
+            'trusted_revision="$(git rev-parse --verify "${trusted_ref}^{commit}")"',
+            'git archive "$trusted_revision" scripts/ ci/github-actions-runners.toml',
+            'echo "revision=$trusted_revision"',
             "steps.policy_base.outputs.script",
+            "steps.policy_base.outputs.config",
             'python3 "$policy_script" ci-policy',
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
@@ -8950,16 +8955,54 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
             '--pull-request-head-ref "$PR_HEAD_REF"',
             "PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}",
-            "author_args=()",
-            'python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"',
-            'author_args=(--pull-request-author-id "$PR_AUTHOR_ID")',
-            '"${author_args[@]}"',
+            '--pull-request-author-id "$PR_AUTHOR_ID"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:
                 errors.append(f"backtester iteration policy ci-policy job must include {required}")
+        for forbidden in (
+            'if [[ -z "$policy_script" ]]',
+            'policy_script="scripts/ci_provenance.py"',
+            'if [[ -z "$policy_config" ]]',
+            'policy_config="ci/github-actions-runners.toml"',
+            "ci-policy --help",
+            "author_args=()",
+        ):
+            if forbidden in policy_text:
+                errors.append(
+                    "backtester iteration policy must not retain trusted-policy "
+                    f"fallbacks ({forbidden})"
+                )
+        policy_binding_lines = [
+            line.strip()
+            for line in policy_text.splitlines()
+            if re.match(r"^(?:readonly\s+)?policy_(?:script|config)=", line.strip())
+        ]
+        if policy_binding_lines != [
+            'readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+            'readonly policy_config="${{ steps.policy_base.outputs.config }}"',
+        ]:
+            errors.append(
+                "backtester iteration policy must bind each trusted policy capability "
+                "exactly once without fallback"
+            )
+        trusted_branch_assignment_lines = [
+            line.strip()
+            for line in policy_text.splitlines()
+            if line.strip().startswith("trusted_branch=")
+        ]
+        if trusted_branch_assignment_lines != [
+            'trusted_branch="$PR_BASE_REF"',
+            'trusted_branch="${merge_group_base#refs/heads/}"',
+            'trusted_branch="$merge_group_base"',
+            'trusted_branch="$REPOSITORY_DEFAULT_BRANCH"',
+        ]:
+            errors.append(
+                "backtester iteration policy must select one event-scoped trusted branch "
+                "without fallback"
+            )
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
     for heavy_job in ("clippy", "test-archive"):
@@ -8982,17 +9025,40 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester iteration policy gate must need ci-policy")
         for required in (
-            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
-            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-            'git check-ref-format "refs/heads/$base_branch"',
-            "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+            "TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}",
+            'git fetch --no-tags origin "+${TRUSTED_REVISION}:${trusted_ref}"',
+            'git archive "$TRUSTED_REVISION" scripts/ ci/github-actions-runners.toml',
             "steps.verdict_base.outputs.script",
+            "steps.verdict_base.outputs.config",
             'python3 "$verdict_script" check-backtester-gate',
+            '--config "$verdict_config"',
         ):
             if required not in gate_text:
                 errors.append(
                     f"backtester iteration policy gate must use trusted base-tree check-backtester-gate verdict ({required})"
                 )
+        for forbidden in (
+            'if [[ -z "$verdict_script" ]]',
+            'verdict_script="scripts/ci_provenance.py"',
+        ):
+            if forbidden in gate_text:
+                errors.append(
+                    "backtester iteration policy gate must not retain trusted-verdict "
+                    f"fallbacks ({forbidden})"
+                )
+        verdict_binding_lines = [
+            line.strip()
+            for line in gate_text.splitlines()
+            if re.match(r"^(?:readonly\s+)?verdict_(?:script|config)=", line.strip())
+        ]
+        if verdict_binding_lines != [
+            'readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+            'readonly verdict_config="${{ steps.verdict_base.outputs.config }}"',
+        ]:
+            errors.append(
+                "backtester iteration policy gate must bind each trusted verdict capability "
+                "exactly once without fallback"
+            )
         for required in (
             "--policy-path \"${{ needs.ci-policy.outputs.ci_policy_path }}\"",
             "--expected-event-class \"${{ needs.ci-policy.outputs.expected_event_class }}\"",

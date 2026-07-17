@@ -193,6 +193,12 @@ class Ra001aDurableTracerGitExecutableConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class Ra001aDurableTracerAwsConfig:
+    role_arn: str
+    region: str
+
+
+@dataclasses.dataclass(frozen=True)
 class BacktesterTestArchiveTimeoutConfig:
     ordinary_max_job_minutes: int
     ra001a_max_job_minutes: int
@@ -200,6 +206,9 @@ class BacktesterTestArchiveTimeoutConfig:
     ra001a_durable_tracer_max_total_selected_object_bytes: int
     ra001a_durable_tracer_max_worker_executable_bytes: int
     ra001a_git_executable: Ra001aDurableTracerGitExecutableConfig
+    ra001a_aws: Ra001aDurableTracerAwsConfig
+    ra001a_receipt_artifact_name: str
+    ra001a_receipt_retention_days: int
     ra001a_durable_tracer_max_wall_seconds: int
     ra001a_durable_tracer_termination_grace_seconds: int
     ra001a_pack_limits: Ra001aDurableTracerPackLimitsConfig
@@ -271,6 +280,10 @@ class Ra001aPolicyResult:
     ra001a_max_worker_executable_bytes: int
     ra001a_git_executable_path: str
     ra001a_max_git_executable_bytes: int
+    ra001a_aws_role_arn: str
+    ra001a_aws_region: str
+    ra001a_receipt_artifact_name: str
+    ra001a_receipt_retention_days: int
     ra001a_max_fetch_timeout_seconds: int
     ra001a_max_worker_termination_grace_seconds: int
     ra001a_max_worker_virtual_memory_bytes: int
@@ -397,6 +410,9 @@ def load_backtester_test_archive_timeout_config(
         "max_total_selected_object_bytes",
         "max_worker_executable_bytes",
         "git_executable",
+        "aws",
+        "receipt_artifact_name",
+        "receipt_retention_days",
         "max_wall_seconds",
         "termination_grace_seconds",
         "pack_limits",
@@ -459,6 +475,57 @@ def load_backtester_test_archive_timeout_config(
             git_executable_prefix,
         ),
     )
+    aws_prefix = f"{tracer_prefix}.aws"
+    aws_table = require_table(tracer, "aws", tracer_prefix)
+    unexpected_aws_keys = sorted(set(aws_table) - {"role_arn", "region"})
+    if unexpected_aws_keys:
+        raise ProvenanceError(f"{aws_prefix} has unexpected keys: {unexpected_aws_keys}")
+    aws_role_arn = require_string(aws_table, "role_arn", aws_prefix)
+    if (
+        re.fullmatch(
+            r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+",
+            aws_role_arn,
+        )
+        is None
+        or "//" in aws_role_arn
+        or any(character.isspace() for character in aws_role_arn)
+    ):
+        raise ProvenanceError(f"{aws_prefix}.role_arn must be one canonical IAM role ARN")
+    aws_region = require_string(aws_table, "region", aws_prefix)
+    if re.fullmatch(r"[a-z]{2}(?:-gov)?-[a-z]+-[1-9][0-9]*", aws_region) is None:
+        raise ProvenanceError(f"{aws_prefix}.region must be one canonical AWS region")
+    aws = Ra001aDurableTracerAwsConfig(role_arn=aws_role_arn, region=aws_region)
+    receipt_artifact_name = require_string(
+        tracer,
+        "receipt_artifact_name",
+        tracer_prefix,
+    )
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", receipt_artifact_name) is None:
+        raise ProvenanceError(
+            f"{tracer_prefix}.receipt_artifact_name must be one static safe artifact name"
+        )
+    receipt_retention_days = require_positive_int(
+        tracer,
+        "receipt_retention_days",
+        tracer_prefix,
+    )
+    artifact_retention = require_table(data, "artifact_retention", "root")
+    artifact_classes = require_table(artifact_retention, "classes", "artifact_retention")
+    transient_class = require_table(
+        artifact_classes,
+        "transient",
+        "artifact_retention.classes",
+    )
+    transient_max_retention_days = require_positive_int(
+        transient_class,
+        "max_retention_days",
+        "artifact_retention.classes.transient",
+    )
+    if receipt_retention_days > transient_max_retention_days:
+        raise ProvenanceError(
+            f"{tracer_prefix}.receipt_retention_days must not exceed "
+            "artifact_retention.classes.transient.max_retention_days"
+        )
     max_wall_seconds = require_positive_int(tracer, "max_wall_seconds", tracer_prefix)
     termination_grace_seconds = require_positive_int(
         tracer,
@@ -703,6 +770,9 @@ def load_backtester_test_archive_timeout_config(
         ra001a_durable_tracer_max_total_selected_object_bytes=max_total_selected_object_bytes,
         ra001a_durable_tracer_max_worker_executable_bytes=max_worker_executable_bytes,
         ra001a_git_executable=git_executable,
+        ra001a_aws=aws,
+        ra001a_receipt_artifact_name=receipt_artifact_name,
+        ra001a_receipt_retention_days=receipt_retention_days,
         ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
         ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
         ra001a_pack_limits=pack_limits,
@@ -1869,6 +1939,10 @@ def evaluate_ra001a_policy(
         ),
         ra001a_git_executable_path=timeout.ra001a_git_executable.path,
         ra001a_max_git_executable_bytes=timeout.ra001a_git_executable.max_bytes,
+        ra001a_aws_role_arn=timeout.ra001a_aws.role_arn,
+        ra001a_aws_region=timeout.ra001a_aws.region,
+        ra001a_receipt_artifact_name=timeout.ra001a_receipt_artifact_name,
+        ra001a_receipt_retention_days=timeout.ra001a_receipt_retention_days,
         ra001a_max_fetch_timeout_seconds=pack_limits.max_fetch_timeout_seconds,
         ra001a_max_worker_termination_grace_seconds=(
             pack_limits.max_worker_termination_grace_seconds

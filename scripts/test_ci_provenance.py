@@ -50,10 +50,16 @@ max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
+receipt_artifact_name = "ra001a-durable-tracer-receipt"
+receipt_retention_days = 7
 
 [backtester.ra001a_durable_tracer.git_executable]
 path = "/usr/bin/git"
 max_bytes = 67108864
+
+[backtester.ra001a_durable_tracer.aws]
+role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
+region = "eu-west-2"
 
 [backtester.ra001a_durable_tracer.pack_limits]
 max_fetch_timeout_seconds = 300
@@ -85,6 +91,9 @@ max_ignored_entries = 128
 
 [backtester.issue_789]
 max_job_minutes = 120
+
+[artifact_retention.classes.transient]
+max_retention_days = 7
 
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
@@ -298,10 +307,16 @@ max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_registry_packs = 64
 max_job_minutes = 120
+receipt_retention_days = 7
+receipt_artifact_name = "ra001a-durable-tracer-receipt"
 
 [backtester.ra001a_durable_tracer.git_executable]
 max_bytes = 67108864
 path = "/usr/bin/git"
+
+[backtester.ra001a_durable_tracer.aws]
+region = "eu-west-2"
+role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
 
 [backtester.ra001a_durable_tracer.pack_limits]
 candidate_retention_age_seconds = 86400
@@ -336,6 +351,9 @@ ordinary_max_job_minutes = 360
 
 [backtester.issue_789]
 max_job_minutes = 120
+
+[artifact_retention.classes.transient]
+max_retention_days = 7
 
 [ci_provenance.policy.override]
 ignore_emit_failure = false
@@ -641,6 +659,10 @@ EXPECTED_RA001A_OUTPUT_KEYS = {
     "ra001a_max_worker_executable_bytes",
     "ra001a_git_executable_path",
     "ra001a_max_git_executable_bytes",
+    "ra001a_aws_role_arn",
+    "ra001a_aws_region",
+    "ra001a_receipt_artifact_name",
+    "ra001a_receipt_retention_days",
     "ra001a_max_fetch_timeout_seconds",
     "ra001a_max_worker_termination_grace_seconds",
     "ra001a_max_worker_virtual_memory_bytes",
@@ -1030,6 +1052,31 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "max_bytes = 0",
             1,
         ),
+        "backtester.ra001a_durable_tracer.aws.role_arn must be one canonical IAM role ARN": CONFIG_TOML.replace(
+            'role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"',
+            'role_arn = "bolt-v2-github-ra001a-tracer"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.aws.region must be one canonical AWS region": CONFIG_TOML.replace(
+            'region = "eu-west-2"',
+            'region = "EU_WEST_2"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.receipt_artifact_name must be one static safe artifact name": CONFIG_TOML.replace(
+            'receipt_artifact_name = "ra001a-durable-tracer-receipt"',
+            'receipt_artifact_name = "ra001a-{run_id}"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.receipt_retention_days must be a positive integer": CONFIG_TOML.replace(
+            "receipt_retention_days = 7",
+            "receipt_retention_days = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.receipt_retention_days must not exceed artifact_retention.classes.transient.max_retention_days": CONFIG_TOML.replace(
+            "receipt_retention_days = 7",
+            "receipt_retention_days = 8",
+            1,
+        ),
         "backtester.ra001a_durable_tracer.termination_grace_seconds must be a positive integer": CONFIG_TOML.replace(
             "termination_grace_seconds = 30",
             "termination_grace_seconds = 0",
@@ -1347,6 +1394,9 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         timeout.ra001a_durable_tracer_max_total_selected_object_bytes,
         timeout.ra001a_durable_tracer_max_worker_executable_bytes,
         timeout.ra001a_git_executable,
+        timeout.ra001a_aws,
+        timeout.ra001a_receipt_artifact_name,
+        timeout.ra001a_receipt_retention_days,
         timeout.ra001a_pack_limits,
         timeout.ra001a_durable_tracer_max_wall_seconds,
         timeout.ra001a_durable_tracer_termination_grace_seconds,
@@ -1364,6 +1414,12 @@ def assert_backtester_timeout_configs_load_limits() -> None:
             path="/usr/bin/git",
             max_bytes=67108864,
         ),
+        module.Ra001aDurableTracerAwsConfig(
+            role_arn="arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
+            region="eu-west-2",
+        ),
+        "ra001a-durable-tracer-receipt",
+        7,
         module.Ra001aDurableTracerPackLimitsConfig(
             max_fetch_timeout_seconds=300,
             max_worker_termination_grace_seconds=30,
@@ -1467,6 +1523,10 @@ def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
             1073741824,
             "/usr/bin/git",
             67108864,
+            "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
+            "eu-west-2",
+            "ra001a-durable-tracer-receipt",
+            7,
             300,
             30,
             2147483648,
@@ -1501,6 +1561,10 @@ def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
             result.ra001a_max_worker_executable_bytes,
             result.ra001a_git_executable_path,
             result.ra001a_max_git_executable_bytes,
+            result.ra001a_aws_role_arn,
+            result.ra001a_aws_region,
+            result.ra001a_receipt_artifact_name,
+            result.ra001a_receipt_retention_days,
             result.ra001a_max_fetch_timeout_seconds,
             result.ra001a_max_worker_termination_grace_seconds,
             result.ra001a_max_worker_virtual_memory_bytes,
@@ -1552,6 +1616,10 @@ def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
             "ra001a_max_job_minutes": "120",
             "ra001a_git_executable_path": "/usr/bin/git",
             "ra001a_max_git_executable_bytes": "67108864",
+            "ra001a_aws_role_arn": "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
+            "ra001a_aws_region": "eu-west-2",
+            "ra001a_receipt_artifact_name": "ra001a-durable-tracer-receipt",
+            "ra001a_receipt_retention_days": "7",
             "ra001a_max_fetch_timeout_seconds": "300",
             "ra001a_max_worker_termination_grace_seconds": "30",
             "ra001a_max_worker_virtual_memory_bytes": "2147483648",

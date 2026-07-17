@@ -66,10 +66,16 @@ max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
+receipt_artifact_name = "ra001a-durable-tracer-receipt"
+receipt_retention_days = 7
 
 [backtester.ra001a_durable_tracer.git_executable]
 path = "/usr/bin/git"
 max_bytes = 67108864
+
+[backtester.ra001a_durable_tracer.aws]
+role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
+region = "eu-west-2"
 
 # Trusted-default-branch bounds checked against every committed pack before
 # worker capture. `max_*` values are ceilings; `min_*` values are safety floors;

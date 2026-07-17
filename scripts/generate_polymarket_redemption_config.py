@@ -8,6 +8,7 @@ import dataclasses
 import hashlib
 import json
 import pathlib
+import posixpath
 import sys
 import tomllib
 import urllib.parse
@@ -18,6 +19,10 @@ from ethereum_keccak import keccak_256
 
 HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 LOWER_HEX_DIGITS = frozenset("0123456789abcdef")
+CANONICAL_HOST_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+CANONICAL_URL_PATH_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-._~"
+)
 MAX_U256 = (1 << 256) - 1
 
 
@@ -185,27 +190,34 @@ def _https_snapshot_root(value: object, field: str) -> pathlib.PurePosixPath:
     source_url = _string(value, field)
     try:
         parsed = urllib.parse.urlsplit(source_url)
-        port = parsed.port
+        hostname = parsed.hostname or ""
     except ValueError as error:
         raise ConfigError(f"{field} must be a canonical HTTPS URL") from error
-    path_parts = parsed.path.removeprefix("/").split("/")
-    canonical_url = urllib.parse.urlunsplit(
-        ("https", parsed.hostname or "", parsed.path, "", "")
+    canonical_hostname = ".".join(
+        "".join(
+            character
+            for character in label.lower().strip("-")
+            if character in CANONICAL_HOST_LABEL_CHARS
+        )
+        for label in hostname.rstrip(".").split(".")
+        if label
     )
-    if not (
-        source_url == canonical_url
-        and parsed.scheme == "https"
-        and parsed.netloc == parsed.hostname
-        and port is None
-        and not parsed.query
-        and not parsed.fragment
-        and parsed.path.startswith("/")
-        and urllib.parse.unquote(parsed.path) == parsed.path
-        and all(part not in {"", ".", ".."} for part in path_parts)
-    ):
+    canonical_path = posixpath.normpath(
+        "/"
+        + "".join(
+            character
+            for character in parsed.path
+            if character in CANONICAL_URL_PATH_CHARS
+        ).lstrip("/")
+    )
+    canonical_url = urllib.parse.urlunsplit(
+        ("https", canonical_hostname, canonical_path, "", "")
+    )
+    if source_url != canonical_url or canonical_path == "/":
         raise ConfigError(f"{field} must be a canonical HTTPS URL")
+    path_parts = canonical_path.removeprefix("/").split("/")
     return pathlib.PurePosixPath(
-        "polymarket-redemption-sources", parsed.netloc, *path_parts
+        "polymarket-redemption-sources", canonical_hostname, *path_parts
     )
 
 
@@ -227,11 +239,15 @@ def _deployment_snapshot_path(
     root = _https_snapshot_root(source_url, "adapter_abi.deployment_source_url")
     observed = _string(observed_date, "adapter_abi.deployment_observed_date")
     try:
-        date.fromisoformat(observed)
+        canonical_observed = date.fromisoformat(observed).isoformat()
     except ValueError as error:
         raise ConfigError(
-            "adapter_abi.deployment_observed_date must be an ISO calendar date"
+            "adapter_abi.deployment_observed_date must be a canonical ISO calendar date"
         ) from error
+    if observed != canonical_observed:
+        raise ConfigError(
+            "adapter_abi.deployment_observed_date must be a canonical ISO calendar date"
+        )
     return pathlib.PurePosixPath(
         "polymarket-redemption-sources",
         root.parts[1],

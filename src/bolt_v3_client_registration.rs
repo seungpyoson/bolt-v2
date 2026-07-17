@@ -191,12 +191,13 @@ mod tests {
     }
 
     fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
-        let private_key = "0x4242424242424242424242424242424242424242424242424242424242424242";
         ResolvedBoltV3PolymarketSecrets {
             // 32-byte secp256k1 hex; the unit tests in this module never
             // reach NT factory.create, but downstream integration tests
             // use the same shape.
-            private_key: zeroize::Zeroizing::new(private_key.to_string()),
+            private_key: zeroize::Zeroizing::new(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
             api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
             api_secret: zeroize::Zeroizing::new("YWJj".to_string()),
             passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),

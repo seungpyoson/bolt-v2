@@ -158,12 +158,10 @@ fn strategy_free_adapter_mapping_preserves_strategy_derived_market_filters() {
     ))
     .expect("fixture config should load");
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
-    let polymarket_private_key =
-        "0x4242424242424242424242424242424242424242424242424242424242424242";
     clients.insert(
         "polymarket_main".to_string(),
         Arc::new(ResolvedBoltV3PolymarketSecrets {
-            private_key: zeroize::Zeroizing::new(polymarket_private_key.to_string()),
+            private_key: zeroize::Zeroizing::new("fixture-poly-private-key".to_string()),
             api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
             api_secret: zeroize::Zeroizing::new("fixture-poly-api-secret".to_string()),
             passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),

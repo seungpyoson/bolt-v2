@@ -250,7 +250,7 @@ Run focused Python tests, generator/verifier checks, formatting, source-fence st
 - Consumes: source metadata whose immutable capture paths are derived from URL/repository, revision, source path, and observation date, plus declared SHA-256 values.
 
 - [ ] Add known-answer RED tests for Keccak-256 of empty bytes and the canonical redemption signature; add mutation tests showing a handwritten selector is rejected and a changed signature changes the projection.
-- [ ] Add RED tests for missing or mutated derived captures, invalid or parent-traversing source metadata, and deployment facts that disagree with the captured official Markdown.
+- [ ] Add RED tests for missing or mutated derived captures, non-canonical or parent-traversing source metadata, alias URL/date spellings, and deployment facts that disagree with the captured official Markdown.
 - [ ] Implement the dependency-free Keccak permutation and derive the four-byte selector from `function_signature`.
 - [ ] Vendor exact-byte hexadecimal captures of the five pinned source files and official contracts Markdown, derive every capture path from provenance metadata, bind each decoded capture to its SHA-256, and structurally compare chain ID plus three deployment addresses to runtime TOML.
 - [ ] Remove the self-referential deployment-fact hash and independently editable selector authority; regenerate Rust and run focused suites to GREEN.

@@ -222,6 +222,14 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             "https://github.com/Polymarket/../Polymarket/ctf-exchange-v2",
             "https://github.com//Polymarket/ctf-exchange-v2",
             "https://github.com/Polymarket/%2e%2e/Polymarket/ctf-exchange-v2",
+            "https://github.com/Polymarket/%2E%2E%2FPolymarket/ctf-exchange-v2",
+            "https://github.com./Polymarket/ctf-exchange-v2",
+            r"https://github.com/Polymarket\\ctf-exchange-v2",
+            "http://github.com/Polymarket/ctf-exchange-v2",
+            "https://reviewer@github.com/Polymarket/ctf-exchange-v2",
+            "https://github.com:443/Polymarket/ctf-exchange-v2",
+            "https://github.com/Polymarket/ctf-exchange-v2?ref=main",
+            "https://github.com/Polymarket/ctf-exchange-v2#source",
         )
         for alias in aliases:
             with self.subTest(alias=alias):
@@ -240,6 +248,8 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             "https://docs.polymarket.com/resources/../resources/contracts",
             "https://docs.polymarket.com//resources/contracts",
             "https://docs.polymarket.com/resources/%2e%2e/resources/contracts",
+            "https://docs.polymarket.com./resources/contracts",
+            r"https://docs.polymarket.com/resources\\contracts",
         )
         for alias in aliases:
             with self.subTest(alias=alias):
@@ -298,8 +308,23 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                 "repository-relative path",
             ),
             (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "src/./builder/safe.ts"',
+                "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "src//builder/safe.ts"',
+                "repository-relative path",
+            ),
+            (
                 'revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"',
                 'revision = "../9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"',
+                "40 lowercase hexadecimal",
+            ),
+            (
+                'revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"',
+                'revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b29"',
                 "40 lowercase hexadecimal",
             ),
             (
@@ -313,6 +338,16 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(generator.ConfigError, message):
                     self.load(
                         evidence_text=EVIDENCE_TOML.replace(expected, replacement)
+                    )
+
+    def test_deployment_observation_date_has_one_spelling(self) -> None:
+        for alias in ("20260717", "2026-W29-5"):
+            with self.subTest(alias=alias):
+                with self.assertRaisesRegex(
+                    generator.ConfigError, "canonical ISO calendar date"
+                ):
+                    self.load(
+                        evidence_text=EVIDENCE_TOML.replace("2026-07-17", alias)
                     )
 
     def test_missing_derived_snapshot_is_rejected(self) -> None:

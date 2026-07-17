@@ -41,6 +41,9 @@ from the user's checkout.
 Remote setup must fail closed through the existing `PreflightError` path. The
 remote URL remains temporary Git configuration and must not be added to JSON,
 plain-text diagnostics, or command arguments emitted by the preflight result.
+HTTP(S) URLs containing userinfo and URLs containing passwords are rejected
+before any Git call. Configuration errors and verifier streams redact the exact
+normalized URL as `<remote-url>`.
 
 ## Verification
 
@@ -49,7 +52,11 @@ real verifier inside an isolated candidate worktree. The verifier requires
 `git remote get-url origin` to match the fixture's normalized remote path. The
 test must fail on the current implementation with a verifier failure and pass
 after the worktree installs its temporary remote configuration. Existing tests
-continue to prove that the private bare repository itself has no remotes.
+continue to prove that the private bare repository itself has no remotes. The
+regression uses a checkout-relative remote and checks the normalized worktree
+value directly. Negative tests prove credential-bearing URLs never reach Git,
+configuration errors do not expose the URL, and failed verifier streams redact
+the URL in both JSON and plain diagnostics.
 
 Run the targeted merge-queue preflight suite, Python syntax checks for changed
 scripts, the permitted repository static gates, and the original direct JSON

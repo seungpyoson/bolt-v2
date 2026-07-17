@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.parse
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -623,6 +624,24 @@ PREFLIGHT_MODE_FINDINGS = {
 
 class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
+
+
+def redact_remote_urls(text: str, remote_urls: Sequence[str]) -> str:
+    redacted = text
+    for remote_url in remote_urls:
+        if remote_url:
+            redacted = redacted.replace(remote_url, "<remote-url>")
+    return redacted
+
+
+def require_credential_free_remote_url(remote_url: str) -> str:
+    parsed = urllib.parse.urlsplit(remote_url)
+    has_http_userinfo = parsed.scheme in ("http", "https") and parsed.username is not None
+    if parsed.password is not None or has_http_userinfo:
+        raise PreflightError(
+            "Git remote URLs must not contain embedded credentials; use a credential helper or SSH agent auth"
+        )
+    return remote_url
 
 
 require_table = functools.partial(_cv.require_table, error_cls=PreflightError)
@@ -1971,6 +1990,7 @@ class PrivateFetchRefs:
         )
 
     def fetch_origin(self, origin: str) -> str:
+        require_credential_free_remote_url(origin)
         cached = self.remotes.get(origin)
         if cached is not None:
             return cached
@@ -1987,9 +2007,9 @@ class PrivateFetchRefs:
         remote_url = result.stdout.strip()
         if result.returncode != 0 or not remote_url:
             remote_url = fetchable_origin_argument(origin, self.source_repo)
-            self.remotes[origin] = remote_url
-            return remote_url
-        remote_url = fetchable_remote_url(remote_url, self.source_repo)
+        else:
+            remote_url = fetchable_remote_url(remote_url, self.source_repo)
+        remote_url = require_credential_free_remote_url(remote_url)
         self.remotes[origin] = remote_url
         return remote_url
 
@@ -1997,14 +2017,16 @@ class PrivateFetchRefs:
         if not self.git_repo.is_dir():
             raise PreflightError(f"private Git repository directory {self.git_repo} does not exist")
         ref = f"{self.namespace}/{name}"
+        remote_url = self.fetch_origin(origin)
         git(
             self.git_repo,
             "fetch",
             "--quiet",
             "--no-write-fetch-head",
             "--no-tags",
-            self.fetch_origin(origin),
+            remote_url,
             f"{source}:{ref}",
+            redact_values=(remote_url,),
             timeout_seconds=self.input_timeout_seconds,
         )
         self.refs.append(ref)
@@ -2246,6 +2268,7 @@ def run_command(
     input_text: str | None = None,
     timeout_seconds: int | None = None,
     process_group: bool = False,
+    redact_values: Sequence[str] = (),
 ) -> CommandResult:
     command_args = list(args)
     stdin = subprocess.PIPE if input_text is not None else subprocess.DEVNULL
@@ -2307,9 +2330,16 @@ def run_command(
         failure_type=failure_type,
     )
     if check and result.returncode != 0:
-        rendered = " ".join(shlex.quote(part) for part in result.args)
+        rendered = " ".join(
+            shlex.quote(redact_remote_urls(part, redact_values)) for part in result.args
+        )
         raise PreflightError(
-            f"command failed ({result.returncode}): {rendered}\n{result.stderr}{result.stdout}"
+            "command failed ({returncode}): {rendered}\n{stderr}{stdout}".format(
+                returncode=result.returncode,
+                rendered=rendered,
+                stderr=redact_remote_urls(result.stderr, redact_values),
+                stdout=redact_remote_urls(result.stdout, redact_values),
+            )
         )
     return result
 
@@ -2321,6 +2351,7 @@ def git(
     env: dict[str, str] | None = None,
     input_text: str | None = None,
     timeout_seconds: int | None = None,
+    redact_values: Sequence[str] = (),
 ) -> CommandResult:
     return run_command(
         ["git", *args],
@@ -2329,6 +2360,7 @@ def git(
         env=env,
         input_text=input_text,
         timeout_seconds=timeout_seconds,
+        redact_values=redact_values,
     )
 
 
@@ -2808,6 +2840,28 @@ def synthesize_merge(
     return SyntheticCommit(commit=commit, prs=tuple(prs))
 
 
+def configure_verifier_worktree_origin(
+    worktree: pathlib.Path,
+    origin_url: str,
+    input_timeout_seconds: int,
+) -> None:
+    origin_url = require_credential_free_remote_url(origin_url)
+    completed = git(
+        worktree,
+        "config",
+        "--worktree",
+        "remote.origin.url",
+        origin_url,
+        check=False,
+        redact_values=(origin_url,),
+        timeout_seconds=input_timeout_seconds,
+    )
+    if completed.returncode != 0:
+        details = redact_remote_urls(f"{completed.stderr}{completed.stdout}".strip(), (origin_url,))
+        suffix = f": {details}" if details else ""
+        raise PreflightError(f"failed to configure verifier origin{suffix}")
+
+
 def run_verifier_commands(
     repo: pathlib.Path,
     commit: str,
@@ -2840,13 +2894,10 @@ def run_verifier_commands(
             timeout_seconds=input_timeout_seconds,
         )
         try:
-            git(
+            configure_verifier_worktree_origin(
                 worktree,
-                "config",
-                "--worktree",
-                "remote.origin.url",
                 origin_url,
-                timeout_seconds=input_timeout_seconds,
+                input_timeout_seconds,
             )
             for command in commands:
                 parts = shlex.split(command)
@@ -2877,8 +2928,8 @@ def run_verifier_commands(
                 verifier_result = VerifierResult(
                     command=command,
                     returncode=completed.returncode,
-                    stdout=completed.stdout,
-                    stderr=completed.stderr,
+                    stdout=redact_remote_urls(completed.stdout, (origin_url,)),
+                    stderr=redact_remote_urls(completed.stderr, (origin_url,)),
                     classification=verifier_failure_classification(completed.failure_type),
                 )
                 results.append(verifier_result)

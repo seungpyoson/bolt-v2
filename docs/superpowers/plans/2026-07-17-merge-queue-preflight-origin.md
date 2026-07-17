@@ -4,7 +4,7 @@
 
 **Goal:** Make isolated merge-queue verifier worktrees resolve the same canonical `origin` URL used to fetch their pinned candidate commits.
 
-**Architecture:** Keep the per-run private bare repository and linked verifier worktrees as the only mutable Git repositories used by preflight. After `PrivateFetchRefs.fetch_origin()` normalizes the configured source, pass that URL into verifier execution and store it only as worktree-specific `remote.origin.url` configuration; the private bare repository remains remote-free.
+**Architecture:** Keep the per-run private bare repository and linked verifier worktrees as the only mutable Git repositories used by preflight. After `PrivateFetchRefs.fetch_origin()` normalizes and validates the credential-free configured source, pass that URL into verifier execution and store it only as worktree-specific `remote.origin.url` configuration; the private bare repository remains remote-free. Redact the normalized URL from Git failures and verifier streams.
 
 **Tech Stack:** Python 3 standard library, Git CLI, repository `just` verification recipes.
 
@@ -31,7 +31,7 @@
 
 - [x] **Step 1: Write the failing regression test**
 
-Add `assert_verifier_worktrees_inherit_origin_remote()` beside the existing verifier-worktree isolation tests. Create a fixture PR and a verifier script that runs `git remote get-url origin`, compares the resolved value with `fixture.remote`, and exits nonzero when the remote is absent or different. Run preflight with the strict verifier profile and assert an unblocked batch for PR 1. Register the assertion in the test runner's existing list.
+Add `assert_verifier_worktrees_inherit_origin_remote()` beside the existing verifier-worktree isolation tests. Create a fixture PR whose checkout remote is `../origin.git` and a verifier script that runs `git remote get-url origin`, compares the normalized value with `fixture.remote`, proves `git config --worktree` owns it, and proves `git config --local` does not. Add negative tests that reject embedded credentials before Git and redact the normalized URL from configuration errors and failed verifier streams. Run preflight with the strict verifier profile and assert an unblocked batch for PR 1. Register the assertions in the test runner's existing list.
 
 - [x] **Step 2: Run the targeted suite to verify RED**
 
@@ -64,6 +64,11 @@ git(
     timeout_seconds=input_timeout_seconds,
 )
 ```
+
+Before calling Git, reject HTTP(S) userinfo and any parsed password. Run
+worktree configuration with `check=False`, convert failure to a redacted
+`PreflightError`, and replace the normalized URL in captured verifier stdout
+and stderr with `<remote-url>`.
 
 - [x] **Step 4: Run the targeted suite to verify GREEN**
 

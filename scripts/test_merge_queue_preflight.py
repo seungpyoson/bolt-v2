@@ -1936,6 +1936,7 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
+        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
         verifier = root / "require_origin_remote.py"
         write(
             verifier,
@@ -1956,6 +1957,24 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             "if actual != expected:\n"
             "    print(f'expected origin {expected}, got {actual}', file=sys.stderr)\n"
             "    sys.exit(8)\n"
+            "worktree_url = subprocess.run(\n"
+            "    ['git', 'config', '--worktree', '--get', 'remote.origin.url'],\n"
+            "    text=True,\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    check=False,\n"
+            ")\n"
+            "if worktree_url.returncode != 0 or pathlib.Path(worktree_url.stdout.strip()).resolve() != expected:\n"
+            "    print('origin is not worktree-local', file=sys.stderr)\n"
+            "    sys.exit(9)\n"
+            "shared_url = subprocess.run(\n"
+            "    ['git', 'config', '--local', '--get', 'remote.origin.url'],\n"
+            "    text=True,\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    check=False,\n"
+            ")\n"
+            "if shared_url.returncode == 0:\n"
+            "    print('origin leaked into shared repository config', file=sys.stderr)\n"
+            "    sys.exit(10)\n"
             "preserved = subprocess.run(\n"
             "    ['git', 'config', '--get', 'preflight.existing'],\n"
             "    text=True,\n"
@@ -1964,7 +1983,7 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             ")\n"
             "if preserved.returncode != 0 or preserved.stdout.strip() != 'preserved':\n"
             "    print('existing Git command config was not preserved', file=sys.stderr)\n"
-            "    sys.exit(9)\n",
+            "    sys.exit(11)\n",
         )
         config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier} {fixture.remote}"])
 
@@ -1972,7 +1991,7 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             sys.executable,
             str(SCRIPT_PATH),
             "--origin",
-            str(fixture.remote),
+            "../origin.git",
             "--base",
             "main",
             "--expected-base-sha",
@@ -2007,6 +2026,132 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             raise AssertionError(payload["blocked_prs"])
         assert_equal(result.returncode, 3, "origin-remote verifier no-gh rc")
         assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "origin-remote verifier batch")
+
+
+def assert_verifier_origin_rejects_embedded_credentials_before_git() -> None:
+    module = load_preflight_module()
+    credential = "preflight-secret"
+    origin_url = f"https://user:{credential}@example.invalid/repo.git"
+    git_calls: list[tuple[object, ...]] = []
+
+    def fake_git(*args: object, **_kwargs: object) -> object:
+        git_calls.append(args)
+        raise AssertionError("credential-bearing origin reached Git")
+
+    original_git = module.git
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+        module.git = fake_git
+        try:
+            try:
+                private_fetch.fetch_origin(origin_url)
+            except module.PreflightError as exc:
+                message = str(exc)
+            else:
+                raise AssertionError("credential-bearing fetch origin was accepted")
+        finally:
+            module.git = original_git
+            private_fetch.cleanup()
+        if credential in message or origin_url in message:
+            raise AssertionError(f"credential leaked through fetch-origin error: {message!r}")
+        assert_equal(git_calls, [], "credential-bearing fetch origin Git calls")
+
+    module.git = fake_git
+    try:
+        try:
+            module.configure_verifier_worktree_origin(pathlib.Path("/tmp/worktree"), origin_url, 10)
+        except module.PreflightError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("credential-bearing verifier origin was accepted")
+    finally:
+        module.git = original_git
+    if credential in message or origin_url in message:
+        raise AssertionError(f"credential leaked through verifier-origin error: {message!r}")
+    assert_equal(git_calls, [], "credential-bearing origin Git calls")
+
+    safe_origin = "https://example.invalid/repo.git"
+
+    def failing_git(*args: object, **_kwargs: object) -> object:
+        return module.CommandResult(tuple(str(arg) for arg in args), 1, "", f"cannot set {safe_origin}")
+
+    module.git = failing_git
+    try:
+        try:
+            module.configure_verifier_worktree_origin(pathlib.Path("/tmp/worktree"), safe_origin, 10)
+        except module.PreflightError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("failed verifier-origin configuration was accepted")
+    finally:
+        module.git = original_git
+    if safe_origin in message:
+        raise AssertionError(f"origin URL leaked through configuration error: {message!r}")
+    if "<remote-url>" not in message:
+        raise AssertionError(f"origin placeholder absent from configuration error: {message!r}")
+
+
+def assert_verifier_diagnostics_redact_origin_url() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
+        verifier = root / "print_origin_remote.py"
+        write(
+            verifier,
+            "import subprocess\n"
+            "import sys\n"
+            "completed = subprocess.run(\n"
+            "    ['git', 'remote', 'get-url', 'origin'],\n"
+            "    text=True,\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    check=True,\n"
+            ")\n"
+            "origin = completed.stdout.strip()\n"
+            "print(f'origin={origin}')\n"
+            "print(f'origin-error={origin}', file=sys.stderr)\n"
+            "sys.exit(7)\n",
+        )
+        config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier}"])
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--origin",
+            "../origin.git",
+            "--base",
+            "main",
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--config",
+            str(config),
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 2, "origin-redaction verifier rc")
+        normalized_origin = str(fixture.remote.resolve())
+        combined_output = f"{result.stdout}\n{result.stderr}"
+        if normalized_origin in combined_output:
+            raise AssertionError("normalized origin leaked through verifier diagnostics")
+        payload = parse_json(result.stdout)
+        blocked = payload["blocked_prs"]
+        if len(blocked) != 1 or blocked[0]["pr"] != 1:
+            raise AssertionError(blocked)
+        for stream in ("stdout_preview", "stderr_preview"):
+            if "<remote-url>" not in blocked[0][stream]:
+                raise AssertionError(f"origin placeholder absent from {stream}: {blocked[0][stream]!r}")
 
 
 def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
@@ -5151,6 +5296,8 @@ def main() -> int:
     assert_verifier_worktrees_do_not_write_checkout_git_metadata()
     assert_verifier_worktrees_can_read_checkout_object_database()
     assert_verifier_worktrees_inherit_origin_remote()
+    assert_verifier_origin_rejects_embedded_credentials_before_git()
+    assert_verifier_diagnostics_redact_origin_url()
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()

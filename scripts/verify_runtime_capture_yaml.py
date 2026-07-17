@@ -458,15 +458,54 @@ def find_pinned_nt_polymarket_query_path(
     return exact_matches[0]
 
 
+def read_pinned_nt_polymarket_query_blob(
+    findings: list[tuple[str, str]],
+    nautilus_revision: str,
+    upstream_path: Path,
+) -> bytes | None:
+    check_id = "13.polymarket_fixture_provenance"
+    try:
+        checkout = upstream_path.parents[5]
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "show",
+                f"{nautilus_revision}:{POLYMARKET_QUERY_RELATIVE_PATH.as_posix()}",
+            ],
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            findings.append(
+                (
+                    check_id,
+                    "could not read the governed Polymarket source blob from Git: "
+                    f"{detail or f'exit {result.returncode}'}",
+                )
+            )
+            return None
+        return result.stdout
+    except (IndexError, OSError) as error:
+        findings.append((check_id, f"could not read Polymarket evidence: {error}"))
+        return None
+
+
 def verify_polymarket_query_fixture(
     findings: list[tuple[str, str]],
     nautilus_revision: str,
     upstream_path: Path,
 ) -> None:
     check_id = "13.polymarket_fixture_provenance"
+    upstream = read_pinned_nt_polymarket_query_blob(
+        findings, nautilus_revision, upstream_path
+    )
+    if upstream is None:
+        return
     try:
         fixture = POLYMARKET_QUERY_FIXTURE_PATH.read_bytes()
-        upstream = upstream_path.read_bytes()
     except OSError as error:
         findings.append((check_id, f"could not read Polymarket evidence: {error}"))
         return

@@ -7,6 +7,7 @@ import importlib.util
 import contextlib
 import hashlib
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,14 +24,19 @@ VERIFIER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
 ORIGINAL_FIND_PINNED_NT_API_PATH = VERIFIER.find_pinned_nt_api_path
+ORIGINAL_READ_PINNED_NT_POLYMARKET_QUERY_BLOB = (
+    VERIFIER.read_pinned_nt_polymarket_query_blob
+)
 
 TEST_POLYMARKET_SOURCE = "".join(
     f"upstream line {line}\n" for line in range(1, 549)
 ).encode("utf-8")
 
 
-def polymarket_fixture(revision: str) -> bytes:
-    source_lines = TEST_POLYMARKET_SOURCE.splitlines(keepends=True)
+def polymarket_fixture(
+    revision: str, source: bytes = TEST_POLYMARKET_SOURCE
+) -> bytes:
+    source_lines = source.splitlines(keepends=True)
     body = b"".join(
         b"".join(source_lines[start - 1 : end])
         for start, end in ((130, 137), (529, 547))
@@ -39,7 +45,7 @@ def polymarket_fixture(revision: str) -> bytes:
         "Source: NautilusTrader\n"
         f"Revision: {revision}\n"
         "Path: crates/adapters/polymarket/src/http/query.rs\n"
-        f"Full source SHA-256: {hashlib.sha256(TEST_POLYMARKET_SOURCE).hexdigest()}\n"
+        f"Full source SHA-256: {hashlib.sha256(source).hexdigest()}\n"
         "Extracted ranges from pinned checkout: lines 130-137 and 529-547\n\n"
     ).encode("utf-8") + body
 
@@ -246,6 +252,11 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             lambda findings, nautilus_revision: nt_polymarket_query_path,
         )
 
+        self.patch_verifier_attr(
+            "read_pinned_nt_polymarket_query_blob",
+            lambda findings, nautilus_revision, upstream_path: upstream_path.read_bytes(),
+        )
+
     def assert_collects(
         self, expected_check_id: str, mutate: Callable[[dict[str, Any]], None]
     ) -> None:
@@ -257,6 +268,62 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         self.write_fixture()
 
         self.assertEqual([], VERIFIER.collect_failures())
+
+    def test_polymarket_fixture_uses_committed_blob_when_checkout_is_dirty(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        checkout = Path(temp.name)
+        query_path = checkout / VERIFIER.POLYMARKET_QUERY_RELATIVE_PATH
+        query_path.parent.mkdir(parents=True)
+        query_path.write_bytes(TEST_POLYMARKET_SOURCE)
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "add", query_path.relative_to(checkout)],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "-c",
+                "user.name=runtime-capture-test",
+                "-c",
+                "user.email=runtime-capture-test@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+        )
+        revision = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        dirty_source = TEST_POLYMARKET_SOURCE.replace(
+            b"upstream line 130", b"dirty line 130"
+        )
+        query_path.write_bytes(dirty_source)
+        fixture_path = checkout / "fixture.txt"
+        fixture_path.write_bytes(polymarket_fixture(revision, dirty_source))
+        self.patch_verifier_attr("POLYMARKET_QUERY_FIXTURE_PATH", fixture_path)
+        self.patch_verifier_attr(
+            "read_pinned_nt_polymarket_query_blob",
+            ORIGINAL_READ_PINNED_NT_POLYMARKET_QUERY_BLOB,
+        )
+
+        findings: list[tuple[str, str]] = []
+        VERIFIER.verify_polymarket_query_fixture(findings, revision, query_path)
+
+        self.assertIn(
+            "13.polymarket_fixture_provenance",
+            [check_id for check_id, _ in findings],
+            findings,
+        )
 
     def test_main_returns_zero_for_consistent_fixture(self) -> None:
         self.write_fixture()

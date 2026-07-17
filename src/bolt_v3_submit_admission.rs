@@ -658,6 +658,15 @@ impl BoltV3SubmitAdmissionState {
         panic!("poison submit admission inner");
     }
 
+    #[cfg(test)]
+    fn poison_reject_episodes_for_test(&self) {
+        let _guard = self
+            .reject_episodes
+            .lock()
+            .expect("test should acquire reject episodes lock before poisoning it");
+        panic!("poison submit admission reject episodes");
+    }
+
     pub fn capital_admission_state_snapshot(&self) -> Option<NtDerivedCapitalAdmissionState> {
         self.inner
             .lock()
@@ -4410,6 +4419,89 @@ mod loss_governor_halt_evidence_tests {
             kill_switch_forced_reduction: None,
             admission_evidence: None,
         }
+    }
+
+    #[test]
+    fn operator_health_snapshot_reports_poisoned_submit_admission_state() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_inner_for_test();
+        }));
+        assert!(poisoned.is_err(), "test setup must poison the state lock");
+
+        assert_eq!(
+            admission.operator_health_snapshot(),
+            Err(BoltV3SubmitAdmissionHealthReadError::StateLockPoisoned)
+        );
+    }
+
+    #[test]
+    fn poisoned_submit_admission_state_prevents_permit_and_provider_submit_side_effect() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let request = entry_request(
+            "strategy-poisoned-submit-state".to_string(),
+            "client-order-poisoned-submit-state".to_string(),
+        );
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_inner_for_test();
+        }));
+        assert!(poisoned.is_err(), "test setup must poison the state lock");
+        let provider_submit_count = AtomicU64::new(0);
+
+        let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if admission.admit_at(&request, 1_000).is_ok() {
+                provider_submit_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+
+        assert!(
+            admission_result.is_err(),
+            "a poisoned admission state must not return control to the provider-submit branch"
+        );
+        assert_eq!(
+            provider_submit_count.load(Ordering::SeqCst),
+            0,
+            "a poisoned admission state must have no provider submit side effect"
+        );
+    }
+
+    #[test]
+    fn poisoned_reject_episode_state_prevents_permit_and_provider_submit_side_effect() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let request = entry_request(
+            "strategy-poisoned-reject-episodes".to_string(),
+            "client-order-poisoned-reject-episodes".to_string(),
+        );
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_reject_episodes_for_test();
+        }));
+        assert!(
+            poisoned.is_err(),
+            "test setup must poison the reject-episode lock"
+        );
+        let provider_submit_count = AtomicU64::new(0);
+
+        let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if admission.admit_at(&request, 1_000).is_ok() {
+                provider_submit_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+
+        assert!(
+            admission_result.is_err(),
+            "a poisoned reject-episode state must not return control to the provider-submit branch"
+        );
+        assert_eq!(
+            provider_submit_count.load(Ordering::SeqCst),
+            0,
+            "a poisoned reject-episode state must have no provider submit side effect"
+        );
     }
 
     #[test]

@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -45,18 +44,15 @@ fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
 }
 
 fn sample_venue_violations(src: &Path, sources: &[(PathBuf, String)]) -> Vec<String> {
-    let test_only_includes = test_only_included_source_paths(src, sources);
     let mut failures = Vec::new();
     for (path, content) in sources {
-        if test_only_includes.contains(path) {
-            continue;
-        }
         let lower = production_source(content).to_ascii_lowercase();
         for needle in SAMPLE_VENUE_NEEDLES {
             if lower.contains(needle) && !needle_allowed_in_production_path(needle, path, src) {
                 failures.push(format!("{} contains {needle:?}", path.display()));
             }
         }
+        failures.extend(production_test_support_reference_violations(path, content));
     }
     failures
 }
@@ -116,7 +112,7 @@ fn committed_pack_completion_boundaries_are_registry_derived_not_venue_listed() 
     ] {
         let path = crate_root.join(relative_path);
         let source = fs::read_to_string(&path).expect("read registry-derived boundary source");
-        let function = rust_function_region(&source, function_name);
+        let function = rust_function_source(&source, function_name);
         let lower = function.to_ascii_lowercase();
         for venue in ["binance", "bybit"] {
             assert!(
@@ -128,29 +124,33 @@ fn committed_pack_completion_boundaries_are_registry_derived_not_venue_listed() 
     }
 }
 
-fn rust_function_region<'a>(source: &'a str, function_name: &str) -> &'a str {
-    let signature = format!("fn {function_name}(");
-    let function_start = source
-        .find(&signature)
-        .unwrap_or_else(|| panic!("missing function {function_name}"));
-    let source = &source[function_start..];
-    let body_start = source
-        .find('{')
-        .unwrap_or_else(|| panic!("missing body for function {function_name}"));
-    let mut depth = 0_u64;
-    for (offset, character) in source[body_start..].char_indices() {
-        match character {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.checked_sub(1).expect("balanced function braces");
-                if depth == 0 {
-                    return &source[..body_start + offset + character.len_utf8()];
-                }
-            }
-            _ => {}
+fn rust_function_source(source: &str, function_name: &str) -> String {
+    let file = syn::parse_file(source).expect("parse Rust source for named function");
+    let mut collector = NamedFunctionCollector {
+        function_name,
+        functions: Vec::new(),
+    };
+    collector.visit_file(&file);
+    assert_eq!(
+        collector.functions.len(),
+        1,
+        "expected exactly one Rust function named {function_name}"
+    );
+    collector.functions.pop().expect("one named function")
+}
+
+struct NamedFunctionCollector<'a> {
+    function_name: &'a str,
+    functions: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for NamedFunctionCollector<'_> {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if node.sig.ident == self.function_name {
+            self.functions.push(node.to_token_stream().to_string());
         }
+        visit::visit_item_fn(self, node);
     }
-    panic!("unterminated body for function {function_name}")
 }
 
 fn production_source(content: &str) -> String {
@@ -339,163 +339,104 @@ fn cfg_possibility_when_test_is_disabled(meta: &Meta) -> CfgPossibility {
     }
 }
 
-fn test_only_included_source_paths(src: &Path, sources: &[(PathBuf, String)]) -> HashSet<PathBuf> {
-    let source_paths = sources
-        .iter()
-        .map(|(path, _)| path.clone())
-        .collect::<HashSet<_>>();
-    let mut test_only_includes = HashSet::new();
-    let mut production_includes = HashSet::new();
-    for (including_path, content) in sources {
-        let file = syn::parse_file(content).expect("parse Rust source for test-only includes");
-        let mut collector = IncludeReachabilityCollector::default();
-        collector.visit_file(&file);
-        collect_include_references(
-            &collector.test_only_invocations,
-            &mut test_only_includes,
-            src,
-            including_path,
-            &source_paths,
-        );
-        collect_include_references(
-            &collector.production_invocations,
-            &mut production_includes,
-            src,
-            including_path,
-            &source_paths,
-        );
-    }
-    test_only_includes
-        .difference(&production_includes)
-        .cloned()
-        .collect()
-}
-
-fn collect_include_references(
-    invocations: &[String],
-    included: &mut HashSet<PathBuf>,
-    src: &Path,
-    including_path: &Path,
-    source_paths: &HashSet<PathBuf>,
-) {
-    for invocation in invocations {
-        for candidate in source_paths {
-            if include_invocation_references(invocation, src, including_path, candidate) {
-                included.insert(candidate.clone());
-            }
-        }
-    }
-}
-
 #[derive(Default)]
-struct IncludeReachabilityCollector {
-    inside_test_only_item: bool,
-    test_only_invocations: Vec<String>,
-    production_invocations: Vec<String>,
+struct ProductionTestSupportReferenceCollector {
+    references: Vec<&'static str>,
 }
 
-impl<'ast> Visit<'ast> for IncludeReachabilityCollector {
-    fn visit_item(&mut self, node: &'ast Item) {
-        let parent_reachability = self.inside_test_only_item;
-        self.inside_test_only_item |= attributes_require_test(item_attributes(node));
-        visit::visit_item(self, node);
-        self.inside_test_only_item = parent_reachability;
-    }
-
-    fn visit_impl_item(&mut self, node: &'ast ImplItem) {
-        let parent_reachability = self.inside_test_only_item;
-        self.inside_test_only_item |= attributes_require_test(impl_item_attributes(node));
-        visit::visit_impl_item(self, node);
-        self.inside_test_only_item = parent_reachability;
-    }
-
-    fn visit_trait_item(&mut self, node: &'ast TraitItem) {
-        let parent_reachability = self.inside_test_only_item;
-        self.inside_test_only_item |= attributes_require_test(trait_item_attributes(node));
-        visit::visit_trait_item(self, node);
-        self.inside_test_only_item = parent_reachability;
-    }
-
-    fn visit_foreign_item(&mut self, node: &'ast ForeignItem) {
-        let parent_reachability = self.inside_test_only_item;
-        self.inside_test_only_item |= attributes_require_test(foreign_item_attributes(node));
-        visit::visit_foreign_item(self, node);
-        self.inside_test_only_item = parent_reachability;
-    }
-
+impl<'ast> Visit<'ast> for ProductionTestSupportReferenceCollector {
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
-        if node.path.is_ident("include") {
-            let invocation = node.tokens.to_string();
-            if self.inside_test_only_item {
-                self.test_only_invocations.push(invocation);
-            } else {
-                self.production_invocations.push(invocation);
-            }
+        if node.path.is_ident("include") && references_test_support(&node.tokens.to_string()) {
+            self.references.push("include!");
         }
         visit::visit_macro(self, node);
     }
-}
 
-#[test]
-fn included_source_is_skipped_only_when_every_reachable_include_is_test_only() {
-    let src = PathBuf::from("/synthetic/src");
-    let parent = src.join("parent.rs");
-    let fixture = src.join("fixture.rs");
-    let test_only_parent = r#"
-mod support {
-    #[cfg(all(test, target_os = "linux"))]
-    mod tests {
-        include!("fixture.rs");
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if node.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("path")
+                && match &attribute.meta {
+                    Meta::NameValue(value) => match &value.value {
+                        syn::Expr::Lit(value) => match &value.lit {
+                            syn::Lit::Str(value) => references_test_support(&value.value()),
+                            _ => false,
+                        },
+                        _ => false,
+                    },
+                    _ => false,
+                }
+        }) {
+            self.references.push("#[path]");
+        }
+        visit::visit_item_mod(self, node);
     }
 }
-"#;
-    let mut sources = vec![
-        (parent, test_only_parent.to_owned()),
-        (fixture.clone(), "const VENUE: &str = \"bybit\";".to_owned()),
-    ];
-    assert!(test_only_included_source_paths(&src, &sources).contains(&fixture));
-    assert!(sample_venue_violations(&src, &sources).is_empty());
 
-    sources[0].1.push_str(
-        r#"
-mod production {
-    include!("fixture.rs");
-}
-"#,
-    );
-    assert!(!test_only_included_source_paths(&src, &sources).contains(&fixture));
-    assert!(
-        sample_venue_violations(&src, &sources)
-            .iter()
-            .any(|failure| failure.contains("fixture.rs") && failure.contains("bybit"))
-    );
+fn production_test_support_reference_violations(path: &Path, content: &str) -> Vec<String> {
+    let mut file = syn::parse_file(content).expect("parse Rust source for test-support fence");
+    let mut pruner = ProductionItemPruner;
+    pruner.visit_file_mut(&mut file);
+    let mut collector = ProductionTestSupportReferenceCollector::default();
+    collector.visit_file(&file);
+    collector
+        .references
+        .into_iter()
+        .map(|kind| {
+            format!(
+                "{} contains production-reachable {kind} into tests/support",
+                path.display()
+            )
+        })
+        .collect()
 }
 
-fn include_invocation_references(
-    invocation: &str,
-    src: &Path,
-    including_path: &Path,
-    candidate: &Path,
-) -> bool {
-    let mut literals = Vec::new();
-    if let Ok(relative) = candidate.strip_prefix(src) {
-        literals.push(format!("/src/{}", slash_path(relative)));
+fn references_test_support(value: &str) -> bool {
+    let mut normalized = value.replace('\\', "/");
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
     }
-    if let Some(parent) = including_path.parent()
-        && let Ok(relative) = candidate.strip_prefix(parent)
+    normalized.retain(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '/' | '.' | '_' | '-')
+    });
+    normalized.contains("tests/support/")
+}
+
+fn production_manifest_test_support_violations(manifest: &str) -> Vec<String> {
+    // Cargo's implicit roots are build.rs, src/lib.rs, src/main.rs, and
+    // src/bin/*.rs. Only explicit build/lib/bin path overrides can redirect a
+    // production target into tests/support.
+    let manifest = manifest
+        .parse::<toml::Value>()
+        .expect("parse backtesting crate Cargo.toml");
+    let mut violations = Vec::new();
+    if let Some(build) = manifest
+        .get("package")
+        .and_then(|package| package.get("build"))
+        .and_then(toml::Value::as_str)
+        && references_test_support(build)
     {
-        literals.push(slash_path(relative));
+        violations.push("package.build".to_owned());
     }
-    literals
-        .iter()
-        .any(|literal| invocation.contains(&format!("\"{literal}\"")))
-}
-
-fn slash_path(path: &Path) -> String {
-    path.components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    if let Some(path) = manifest
+        .get("lib")
+        .and_then(|lib| lib.get("path"))
+        .and_then(toml::Value::as_str)
+        && references_test_support(path)
+    {
+        violations.push("lib.path".to_owned());
+    }
+    if let Some(binaries) = manifest.get("bin").and_then(toml::Value::as_array) {
+        for (index, binary) in binaries.iter().enumerate() {
+            if binary
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .is_some_and(references_test_support)
+            {
+                violations.push(format!("bin[{index}].path"));
+            }
+        }
+    }
+    violations
 }
 
 #[test]
@@ -520,12 +461,20 @@ const PRODUCTION_AFTER: &str = "synthetic";
 }
 
 #[test]
-fn cfg_test_include_is_excluded_only_while_its_parent_module_is_test_only() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+fn test_support_include_is_allowed_only_while_its_parent_module_is_test_only() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = crate_root.join("src");
     let mut sources = rust_sources(&src);
     let parent = src.join("source_universe_batch_execution.rs");
-    let included = src.join("source_universe_batch_execution_tests.rs");
-    assert!(test_only_included_source_paths(&src, &sources).contains(&included));
+    assert!(
+        !src.join("source_universe_batch_execution_tests.rs")
+            .exists()
+    );
+    assert!(
+        crate_root
+            .join("tests/support/source_universe_batch_execution_tests.rs")
+            .is_file()
+    );
     assert!(sample_venue_violations(&src, &sources).is_empty());
 
     let parent_source = sources
@@ -536,17 +485,70 @@ fn cfg_test_include_is_excluded_only_while_its_parent_module_is_test_only() {
     assert_eq!(parent_source.matches(test_gate).count(), 1);
     *parent_source = parent_source.replacen(test_gate, "mod source_universe_batch_tests", 1);
 
-    assert!(!test_only_included_source_paths(&src, &sources).contains(&included));
     let failures = sample_venue_violations(&src, &sources);
-    for needle in ["bybit", "public_archive"] {
-        assert!(
-            failures.iter().any(|failure| {
-                failure.contains("source_universe_batch_execution_tests.rs")
-                    && failure.contains(needle)
-            }),
-            "making the include production-reachable must expose {needle:?}: {failures:?}"
-        );
-    }
+    assert!(
+        failures.iter().any(|failure| {
+            failure.contains("source_universe_batch_execution.rs")
+                && failure.contains("production-reachable include!")
+        }),
+        "making the test-support include production-reachable must fail: {failures:?}"
+    );
+}
+
+#[test]
+fn production_module_path_cannot_reintroduce_test_support_as_a_source_root() {
+    let path = Path::new("/synthetic/src/production.rs");
+    let production = r#"
+#[path = "../tests/support/source_universe_batch_execution_tests.rs"]
+mod leaked_test_support;
+"#;
+    let failures = production_test_support_reference_violations(path, production);
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].contains("production-reachable #[path]"));
+
+    let test_only = format!("#[cfg(test)]\n{production}");
+    assert!(production_test_support_reference_violations(path, &test_only).is_empty());
+
+    let split_include = r#"
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/te", "sts/sup", "port/leak.rs"));
+"#;
+    assert_eq!(
+        production_test_support_reference_violations(path, split_include).len(),
+        1
+    );
+}
+
+#[test]
+fn cargo_production_targets_cannot_root_in_test_support() {
+    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read backtesting crate manifest");
+    assert!(production_manifest_test_support_violations(&manifest).is_empty());
+
+    let mutated = format!(
+        "{manifest}\n[[bin]]\nname = \"leaked-test-support\"\npath = \
+         \"tests/support/source_universe_batch_execution_tests.rs\"\n"
+    );
+    let violations = production_manifest_test_support_violations(&mutated);
+    assert_eq!(violations.len(), 1);
+    assert!(violations[0].starts_with("bin[") && violations[0].ends_with("].path"));
+}
+
+#[test]
+fn named_function_lookup_ignores_braces_inside_literals_and_comments() {
+    let source = r#"
+fn guarded_boundary() {
+    let misleading_brace = "}";
+    /* }}} a textual brace must not terminate the AST item */
+    let venue = "bybit";
+}
+
+fn neighboring_function() {
+    let venue = "binance";
+}
+"#;
+    let function = rust_function_source(source, "guarded_boundary");
+    assert!(function.contains("bybit"));
+    assert!(!function.contains("binance"));
 }
 
 fn needle_allowed_in_production_path(needle: &str, path: &Path, src: &Path) -> bool {

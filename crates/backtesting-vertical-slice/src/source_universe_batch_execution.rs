@@ -132,7 +132,7 @@ mod source_universe_batch_tests {
 
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/source_universe_batch_execution_tests.rs"
+        "/tests/support/source_universe_batch_execution_tests.rs"
     ));
 }
 
@@ -3950,11 +3950,11 @@ where
             let runner_factory = &runner_factory;
             let output_root_lease = &owned_plan.output_root_lease;
             handles.push(scope.spawn(move || -> Result<()> {
-                // Dev/test profiles unwind here, so convert an otherwise
-                // unclassified supervisor panic into the same typed hard-stop
-                // used for uncertain durable terminal ownership. The release
-                // profile is panic=abort and still fails closed at the process
-                // boundary rather than attempting an unsafe retry.
+                // This isolated workspace does not override Cargo's unwind
+                // panic strategy, including in release builds. Convert an
+                // otherwise unclassified supervisor panic into the same typed
+                // hard-stop used for uncertain durable terminal ownership;
+                // the outer join remains a second fail-closed boundary.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<()> {
                         let mut fetcher: Option<F> = None;

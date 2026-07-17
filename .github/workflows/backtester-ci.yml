@@ -205,12 +205,13 @@ jobs:
           if [[ "$EVENT_NAME" == "pull_request" \
             || "$EVENT_NAME" == "merge_group" \
             || "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }
-            test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }
+            :
           else
             policy_script="scripts/ci_provenance.py"
             policy_config="ci/github-actions-runners.toml"
           fi
+          test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }
+          test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }
           author_args=()
           if python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"; then
             author_args=(--pull-request-author-id "$PR_AUTHOR_ID")

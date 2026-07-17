@@ -214,6 +214,7 @@ run_attempt = "${{ github.run_attempt }}"
 
 [backtester.ra001a_durable_tracer]
 artifact_name_template = "ra001a-durable-tracer-{run_id}-{run_attempt}"
+artifact_upload_if = "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}"
 max_registry_packs = 64
 max_total_selected_object_bytes = 1073741824
 max_wall_seconds = 3600
@@ -449,6 +450,8 @@ artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
 artifact_name_template_vars_config_ref = "backtester.ra001a_durable_tracer.artifact_name_template_vars"
 artifact_class = "transient"
 retention_days = 7
+required_if_config_file = "ci/github-actions-runners.toml"
+required_if_config_ref = "backtester.ra001a_durable_tracer.artifact_upload_if"
 
 [artifact_retention.uploads.".github/workflows/ci-storage-cleanup-alert.yml::cleanup-alert::upload-cleanup-feasibility-json"]
 artifact_name = "ci-storage-cleanup-feasibility"

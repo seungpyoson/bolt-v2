@@ -77,6 +77,26 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError("backtester governance must reject an untyped tracer dispatch input")
 
+    for input_name in ("issue_789", "ra001a_durable_tracer"):
+        input_header = f"      {input_name}:\n"
+        input_start = backtester_workflow.index(input_header)
+        default_start = backtester_workflow.index("        default: false\n", input_start)
+        default_true_workflow = (
+            backtester_workflow[:default_start]
+            + "        default: true\n"
+            + backtester_workflow[default_start + len("        default: false\n"):]
+        )
+        default_true_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": default_true_workflow}
+        )
+        if not any(
+            f"workflow_dispatch input {input_name} must default false" in error
+            for error in default_true_errors
+        ):
+            raise AssertionError(
+                f"backtester governance must reject default-enabled {input_name} dispatch"
+            )
+
     dispatch_uses_head_policy = replace_once(
         backtester_workflow,
         "if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'",
@@ -256,6 +276,153 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "            --run-ignored ignored-only \\\n"
         "            --no-tests=fail \\\n"
     )
+    tracer_evidence_requirements = (
+        (
+            "AWS policy gate",
+            "      - name: Configure AWS credentials for RA-001a durable tracer\n        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n",
+            "      - name: Configure AWS credentials for RA-001a durable tracer\n",
+            "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
+        ),
+        (
+            "AWS action pin",
+            "      - name: Configure AWS credentials for RA-001a durable tracer\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n"
+            "        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0\n",
+            "      - name: Configure AWS credentials for RA-001a durable tracer\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n"
+            "        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b-suffix\n",
+            "RA-001a tracer AWS action must use exactly the reviewed 40-hex commit",
+        ),
+        (
+            "AWS role binding",
+            "          role-to-assume: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}\n",
+            "          role-to-assume: arn:aws:iam::000000000000:role/untrusted\n",
+            "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
+        ),
+        (
+            "AWS region binding",
+            "          aws-region: ${{ vars.AWS_RA001A_TRACER_REGION }}\n",
+            "          aws-region: us-east-1\n",
+            "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
+        ),
+        (
+            "worker executable check",
+            '          test -x "$WORKER_EXECUTABLE" || { echo "RA-001a worker sidecar is missing or not executable"; exit 1; }\n',
+            '          true || test -x "$WORKER_EXECUTABLE" || { echo "RA-001a worker sidecar is missing or not executable"; exit 1; }\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "receipt directory creation",
+            '          mkdir -p "$(dirname "$RECEIPT_PATH")"\n',
+            "",
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "fresh receipt path check",
+            '          test ! -e "$RECEIPT_PATH" || { echo "RA-001a receipt path already exists"; exit 1; }\n',
+            '          true || test ! -e "$RECEIPT_PATH" || { echo "RA-001a receipt path already exists"; exit 1; }\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "duplicated worker digest",
+            '          worker_sha256="$(sha256sum "$WORKER_EXECUTABLE" | cut -d \' \' -f 1)"\n',
+            '          worker_sha256="$(sha256sum "$WORKER_EXECUTABLE" | cut -d \' \' -f 1)"\n'
+            '          worker_sha256="$(sha256sum "$WORKER_EXECUTABLE" | cut -d \' \' -f 1)"\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "worker digest validation",
+            '          [[ "$worker_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "RA-001a worker SHA-256 is invalid"; exit 1; }\n',
+            '          true || [[ "$worker_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "RA-001a worker SHA-256 is invalid"; exit 1; }\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "duplicated worker digest output",
+            '          echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"\n',
+            '          echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"\n'
+            '          echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "duplicated receipt path output",
+            '          echo "receipt_path=$RECEIPT_PATH" >> "$GITHUB_OUTPUT"\n',
+            '          echo "receipt_path=$RECEIPT_PATH" >> "$GITHUB_OUTPUT"\n'
+            '          echo "receipt_path=$RECEIPT_PATH" >> "$GITHUB_OUTPUT"\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "source revision binding",
+            "          BOLT_RA001A_SOURCE_REVISION: ${{ github.sha }}\n",
+            "          BOLT_RA001A_SOURCE_REVISION: refs/heads/main\n",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+        ),
+        (
+            "worker digest binding",
+            "          BOLT_RA001A_WORKER_SHA256: ${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}\n",
+            "",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+        ),
+        (
+            "receipt binding",
+            "          BOLT_RA001A_RECEIPT_PATH: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}\n",
+            "",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+        ),
+        (
+            "exact tracer selector",
+            "            -E 'binary(=backtesting_vertical_slice_tests) & test(=backtesting_vertical_slice_source_universe_durable_tracer::registry_complete_ra001a_live_tracer_runs_every_committed_pack)'\n",
+            "            -E 'binary(=backtesting_vertical_slice_tests)'\n",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+        ),
+        (
+            "non-empty receipt check",
+            '          test -s "$BOLT_RA001A_RECEIPT_PATH" || { echo "RA-001a receipt is missing or empty"; exit 1; }\n',
+            '          true || test -s "$BOLT_RA001A_RECEIPT_PATH" || { echo "RA-001a receipt is missing or empty"; exit 1; }\n',
+            "RA-001a tracer must execute its exact selector before exactly one live non-empty receipt guard",
+        ),
+        (
+            "success-gated receipt upload",
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}\n",
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n",
+            "RA-001a receipt upload must require successful evidence production and fail on absence",
+        ),
+        (
+            "receipt upload action pin",
+            "      - name: Upload RA-001a durable tracer receipt\n"
+            "        id: upload-ra001a-durable-tracer-receipt\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}\n"
+            "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n",
+            "      - name: Upload RA-001a durable tracer receipt\n"
+            "        id: upload-ra001a-durable-tracer-receipt\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}\n"
+            "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a-suffix\n",
+            "RA-001a receipt upload action must use exactly the reviewed 40-hex commit",
+        ),
+        (
+            "receipt upload path",
+            "          path: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}\n",
+            "          path: ${{ runner.temp }}\n",
+            "RA-001a receipt upload must require successful evidence production and fail on absence",
+        ),
+        (
+            "missing-receipt upload failure",
+            "          path: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}\n          if-no-files-found: error\n",
+            "          path: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}\n          if-no-files-found: warn\n",
+            "RA-001a receipt upload must require successful evidence production and fail on absence",
+        ),
+        (
+            "trusted policy script presence check",
+            '          test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }\n',
+            '          true || test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }\n',
+            "ci-policy job must execute each trusted policy path guard exactly once after binding and before use",
+        ),
+        (
+            "trusted policy config presence check",
+            '          test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }\n',
+            '          true || test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }\n',
+            "ci-policy job must execute each trusted policy path guard exactly once after binding and before use",
+        ),
+    )
     archive_job_timeout = (
         "    timeout-minutes: "
         "${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}\n"
@@ -314,6 +481,101 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         if fragment not in backtester_workflow:
             raise AssertionError(f"RA-001a tracer {label} is missing from the real workflow")
+
+    for label, fragment, replacement, expected in tracer_evidence_requirements:
+        if fragment not in backtester_workflow:
+            raise AssertionError(f"RA-001a tracer {label} is missing from the real workflow")
+        mutated = replace_once(backtester_workflow, fragment, replacement)
+        mutation_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": mutated}
+        )
+        if not any(expected in error for error in mutation_errors):
+            raise AssertionError(
+                f"RA-001a tracer {label} mutation did not fail with {expected!r}: "
+                f"{mutation_errors}"
+            )
+
+    nested_policy_guards = replace_once(
+        backtester_workflow,
+        '          test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }\n'
+        '          test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }\n',
+        '          if false; then\n'
+        '            test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }\n'
+        '            test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }\n'
+        '          fi\n',
+    )
+    nested_policy_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": nested_policy_guards}
+    )
+    if not any(
+        "ci-policy job must execute each trusted policy path guard exactly once after binding and before use"
+        in error
+        for error in nested_policy_errors
+    ):
+        raise AssertionError(
+            "backtester governance must reject trusted policy guards nested in dead control flow"
+        )
+
+    nested_policy_use = replace_once(
+        backtester_workflow,
+        '          python3 "$policy_script" ci-policy \\\n',
+        '          if false; then\n'
+        '            python3 "$policy_script" ci-policy \\\n',
+    )
+    nested_policy_use = replace_once(
+        nested_policy_use,
+        '            | tee "$policy_output"\n',
+        '            | tee "$policy_output"\n'
+        '          fi\n',
+    )
+    nested_policy_use_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": nested_policy_use}
+    )
+    if not any(
+        "ci-policy job must execute each trusted policy path guard exactly once after binding and before use"
+        in error
+        for error in nested_policy_use_errors
+    ):
+        raise AssertionError(
+            "backtester governance must reject a trusted policy invocation nested in dead control flow"
+        )
+
+    continue_on_error_mutations = (
+        (
+            "test-archive job",
+            archive_job_timeout,
+            archive_job_timeout + "    continue-on-error: true\n",
+            "RA-001a test-archive job must fail closed without job-level continue-on-error",
+        ),
+        (
+            "tracer producer step",
+            "        id: ra001a-durable-tracer\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n",
+            "        id: ra001a-durable-tracer\n"
+            "        continue-on-error: true\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}\n",
+            "Run RA-001a registry-complete durable tracer must fail closed without continue-on-error",
+        ),
+        (
+            "receipt upload step",
+            "        id: upload-ra001a-durable-tracer-receipt\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}\n",
+            "        id: upload-ra001a-durable-tracer-receipt\n"
+            "        continue-on-error: true\n"
+            "        if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}\n",
+            "Upload RA-001a durable tracer receipt must fail closed without continue-on-error",
+        ),
+    )
+    for label, fragment, replacement, expected in continue_on_error_mutations:
+        mutated = replace_once(backtester_workflow, fragment, replacement)
+        mutation_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": mutated}
+        )
+        if not any(expected in error for error in mutation_errors):
+            raise AssertionError(
+                f"RA-001a {label} continue-on-error mutation did not fail with "
+                f"{expected!r}: {mutation_errors}"
+            )
 
     tracer_dual_request_guard = (
         '          if [[ "$EVENT_NAME" == "workflow_dispatch" \\\n'

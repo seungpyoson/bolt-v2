@@ -8207,17 +8207,18 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
 
 def assert_ra001a_aggregate_limits_config_contract() -> None:
     verifier = load_verifier()
+    provenance = load_provenance()
     config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(
         encoding="utf-8"
     )
     config = tomllib.loads(config_text)["backtester"]["ra001a_durable_tracer"]
     cases = (
         (
-            "backtester.ra001a_durable_tracer.max_registry_packs must be a positive integer",
+            "missing max_registry_packs",
             re.sub(r"^max_registry_packs = [0-9]+\n", "", config_text, count=1, flags=re.MULTILINE),
         ),
         (
-            "backtester.ra001a_durable_tracer.max_total_selected_object_bytes must be a positive integer",
+            "zero max_total_selected_object_bytes",
             re.sub(
                 r"^max_total_selected_object_bytes = [0-9]+$",
                 "max_total_selected_object_bytes = 0",
@@ -8227,7 +8228,7 @@ def assert_ra001a_aggregate_limits_config_contract() -> None:
             ),
         ),
         (
-            "backtester.ra001a_durable_tracer.termination_grace_seconds must be shorter than max_wall_seconds",
+            "outer timeout does not exceed wall plus grace",
             re.sub(
                 r"^termination_grace_seconds = [0-9]+$",
                 f'termination_grace_seconds = {config["max_wall_seconds"]}',
@@ -8237,7 +8238,7 @@ def assert_ra001a_aggregate_limits_config_contract() -> None:
             ),
         ),
         (
-            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must be sorted and unique",
+            "unsorted ignored roots",
             config_text.replace(
                 '  ".nextest-archive/",\n  ".rust-verification/",',
                 '  ".rust-verification/",\n  ".nextest-archive/",',
@@ -8245,7 +8246,7 @@ def assert_ra001a_aggregate_limits_config_contract() -> None:
             ),
         ),
         (
-            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must not be empty",
+            "empty ignored roots",
             re.sub(
                 r"allowed_ignored_runtime_roots = \[(?:\n  .*?)*\n\]",
                 "allowed_ignored_runtime_roots = []",
@@ -8254,24 +8255,99 @@ def assert_ra001a_aggregate_limits_config_contract() -> None:
             ),
         ),
         (
-            "backtester.ra001a_durable_tracer.checkout.max_ignored_entry_bytes must be a positive integer",
+            "zero ignored-entry byte limit",
             config_text.replace("max_ignored_entry_bytes = 4096", "max_ignored_entry_bytes = 0", 1),
         ),
         (
-            "backtester.ra001a_durable_tracer.checkout.max_ignored_entries must be a positive integer",
+            "boolean ignored-entry count limit",
             config_text.replace("max_ignored_entries = 128", "max_ignored_entries = true", 1),
         ),
+        (
+            "comma-smuggled ignored root",
+            config_text.replace('  "target/",', '  "target/,elsewhere/",', 1),
+        ),
+        (
+            "absolute ignored root",
+            config_text.replace('  "target/",', '  "/target/",', 1),
+        ),
+        (
+            "ignored root without trailing slash",
+            config_text.replace('  "target/",', '  "target",', 1),
+        ),
+        (
+            "duplicate ignored root",
+            config_text.replace(
+                '  "scripts/__pycache__/",\n  "target/",',
+                '  "scripts/__pycache__/",\n  "scripts/__pycache__/",\n  "target/",',
+                1,
+            ),
+        ),
+        (
+            "ignored root with empty component",
+            config_text.replace('  "target/",', '  "target//nested/",', 1),
+        ),
     )
+    parsed = tomllib.loads(config_text)
+    trusted_config = provenance.load_backtester_test_archive_timeout_config(
+        parsed,
+        required=True,
+    )
+    verifier_config = verifier.validate_ra001a_durable_tracer_config(parsed)
+    if dataclasses.asdict(trusted_config) != dataclasses.asdict(verifier_config):
+        raise AssertionError(
+            "RA-001a verifier config must be the trusted typed resolver result"
+        )
+    loaded_runner_config = verifier.load_github_actions_runners_config()
+    receipt_upload = loaded_runner_config["artifact_retention"].uploads[
+        ".github/workflows/backtester-ci.yml::test-archive::upload-ra001a-durable-tracer-receipt"
+    ]
+    configured_upload_if = config.get("artifact_upload_if")
+    if not isinstance(configured_upload_if, str) or not configured_upload_if:
+        raise AssertionError("RA-001a receipt upload condition must be TOML-owned")
+    if receipt_upload.required_if != configured_upload_if:
+        raise AssertionError(
+            "RA-001a artifact-retention policy must require the TOML-owned success condition"
+        )
     with tempfile.TemporaryDirectory() as tmp:
-        for expected, mutated in cases:
+        for label, mutated in cases:
+            mutated_data = tomllib.loads(mutated)
+            try:
+                provenance.load_backtester_test_archive_timeout_config(
+                    mutated_data,
+                    required=True,
+                )
+            except provenance.ProvenanceError as exc:
+                trusted_error = str(exc)
+            else:
+                raise AssertionError(
+                    f"trusted RA-001a resolver accepted {label}"
+                )
+            try:
+                verifier.validate_ra001a_durable_tracer_config(mutated_data)
+            except ValueError as exc:
+                verifier_error = str(exc)
+            else:
+                raise AssertionError(
+                    f"workflow verifier accepted {label}"
+                )
+            if verifier_error != trusted_error:
+                raise AssertionError(
+                    f"RA-001a resolver parity drift for {label}: "
+                    f"trusted={trusted_error!r}, verifier={verifier_error!r}"
+                )
             config_path = write_temp_runner_config(pathlib.Path(tmp), mutated)
             try:
                 verifier.load_github_actions_runners_config(config_path)
             except ValueError as exc:
-                if expected not in str(exc):
-                    raise AssertionError(f"expected {expected!r}, got {exc}") from exc
+                if str(exc) != trusted_error:
+                    raise AssertionError(
+                        f"runner config loader parity drift for {label}: "
+                        f"trusted={trusted_error!r}, loader={str(exc)!r}"
+                    ) from exc
             else:
-                raise AssertionError(f"RA-001a aggregate config mutation did not fail: {expected}")
+                raise AssertionError(
+                    f"RA-001a aggregate config mutation did not fail: {label}"
+                )
 
 
 def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:

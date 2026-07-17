@@ -310,6 +310,7 @@ from merge_queue_preflight import (
 )
 
 from ci_provenance import (
+    BacktesterTestArchiveTimeoutConfig,
     GATE_NAME_KEYS,
     MERGIFY_CONFIG_EXPECTATIONS,
     MERGIFY_TEMP_PR_TRANSIENT_PREFIX,
@@ -326,6 +327,7 @@ from ci_provenance import (
     docs_safe_path_contract_errors,
     ProvenanceConfig,
     load_config,
+    load_backtester_test_archive_timeout_config,
     mergify_temp_pr_matches,
     reuse_scoped_env_value_uses_single_line_scalar,
     top_level_block_lines,
@@ -8970,6 +8972,13 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             errors.append(
                 f"backtester workflow_dispatch input {input_name} must be boolean"
             )
+        default_lines = [
+            line for line in input_block if line.startswith("        default:")
+        ]
+        if default_lines != ["        default: false"]:
+            errors.append(
+                f"backtester workflow_dispatch input {input_name} must default false"
+            )
     uncommented_workflow = uncommented_text(text.splitlines())
     if (
         "github.event.inputs.issue_789" in uncommented_workflow
@@ -9097,6 +9106,46 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             errors.append(
                 "ci-policy job must use the typed trusted resolver instead of an inline policy parser"
             )
+        policy_step = named_step_block(policy, "Compute Backtester CI policy")
+        policy_shell_commands = (
+            top_level_shell_commands(block_run_body_lines(policy_step))
+            if policy_step is not None
+            else []
+        )
+        policy_assignment_lines = (
+            'policy_script="${{ steps.policy_base.outputs.script }}"',
+            'policy_config="${{ steps.policy_base.outputs.config }}"',
+        )
+        policy_guard_lines = (
+            'test -n "$policy_script" || { echo "trusted base policy script is required for $EVENT_NAME" >&2; exit 1; }',
+            'test -n "$policy_config" || { echo "trusted base policy config is required for $EVENT_NAME" >&2; exit 1; }',
+        )
+        policy_use_positions = [
+            index
+            for index, line in enumerate(policy_shell_commands)
+            if line.startswith('python3 "$policy_script" ci-policy ')
+            and '--config "$policy_config"' in line
+        ]
+        policy_command_positions: list[int] = []
+        for command in (*policy_assignment_lines, *policy_guard_lines):
+            positions = [
+                index
+                for index, line in enumerate(policy_shell_commands)
+                if line == command
+            ]
+            if len(positions) != 1:
+                policy_command_positions = []
+                break
+            policy_command_positions.append(positions[0])
+        if (
+            not policy_command_positions
+            or policy_command_positions != sorted(policy_command_positions)
+            or len(policy_use_positions) != 1
+            or policy_command_positions[-1] >= policy_use_positions[0]
+        ):
+            errors.append(
+                "ci-policy job must execute each trusted policy path guard exactly once after binding and before use"
+            )
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
     for heavy_job in ("clippy", "test-archive"):
@@ -9116,6 +9165,11 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
 
     test_archive = jobs.get("test-archive")
     if test_archive is not None:
+        test_archive_items = job_top_level_items(test_archive)
+        if test_archive_items is None or "continue-on-error" in test_archive_items:
+            errors.append(
+                "RA-001a test-archive job must fail closed without job-level continue-on-error"
+            )
         expected_test_archive_timeout = (
             "    timeout-minutes: "
             "${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}"
@@ -9216,6 +9270,164 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
                 errors.append(
                     "RA-001a checkout cleanliness policy must come from trusted TOML outputs"
                 )
+
+        tracer_step_requirements = (
+            (
+                "Configure AWS credentials for RA-001a durable tracer",
+                (
+                    "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
+                    "role-to-assume: ${{ vars.AWS_RA001A_TRACER_ROLE_ARN }}",
+                    "aws-region: ${{ vars.AWS_RA001A_TRACER_REGION }}",
+                ),
+                "RA-001a tracer AWS credentials must remain role-scoped and policy-gated",
+            ),
+            (
+                "Resolve RA-001a durable tracer inputs",
+                (
+                    "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' }}",
+                    "WORKER_EXECUTABLE: ${{ steps.crate_target.outputs.dir }}/debug/source_universe_batch_execution",
+                    "RECEIPT_PATH: ${{ runner.temp }}/ra001a-durable-tracer/receipt-set.json",
+                ),
+                "RA-001a tracer inputs must bind an executable worker and a fresh receipt path",
+            ),
+            (
+                "Run RA-001a registry-complete durable tracer",
+                (
+                    "BOLT_RA001A_SOURCE_REVISION: ${{ github.sha }}",
+                    "BOLT_RA001A_WORKER_SHA256: ${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}",
+                    "BOLT_RA001A_RECEIPT_PATH: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
+                    "-E 'binary(=backtesting_vertical_slice_tests) & test(=backtesting_vertical_slice_source_universe_durable_tracer::registry_complete_ra001a_live_tracer_runs_every_committed_pack)'",
+                    'test -s "$BOLT_RA001A_RECEIPT_PATH"',
+                ),
+                "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+            ),
+            (
+                "Upload RA-001a durable tracer receipt",
+                (
+                    "if: ${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}",
+                    "path: ${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
+                    "if-no-files-found: error",
+                ),
+                "RA-001a receipt upload must require successful evidence production and fail on absence",
+            ),
+        )
+        for step_name, requirements, error_message in tracer_step_requirements:
+            step = named_step_block(test_archive, step_name)
+            step_text = uncommented_text(step) if step is not None else ""
+            if any(requirement not in step_text for requirement in requirements):
+                errors.append(error_message)
+
+        resolve_inputs_step = named_step_block(
+            test_archive, "Resolve RA-001a durable tracer inputs"
+        )
+        resolve_shell_commands = (
+            top_level_shell_commands(block_run_body_lines(resolve_inputs_step))
+            if resolve_inputs_step is not None
+            else []
+        )
+        resolve_commands = (
+            'test -x "$WORKER_EXECUTABLE" || { echo "RA-001a worker sidecar is missing or not executable"; exit 1; }',
+            'mkdir -p "$(dirname "$RECEIPT_PATH")"',
+            'test ! -e "$RECEIPT_PATH" || { echo "RA-001a receipt path already exists"; exit 1; }',
+            'worker_sha256="$(sha256sum "$WORKER_EXECUTABLE" | cut -d \' \' -f 1)"',
+            '[[ "$worker_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "RA-001a worker SHA-256 is invalid"; exit 1; }',
+            'echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"',
+            'echo "receipt_path=$RECEIPT_PATH" >> "$GITHUB_OUTPUT"',
+        )
+        resolve_positions: list[int] = []
+        for command in resolve_commands:
+            positions = [
+                index
+                for index, line in enumerate(resolve_shell_commands)
+                if line == command
+            ]
+            if len(positions) != 1:
+                resolve_positions = []
+                break
+            resolve_positions.append(positions[0])
+        if (
+            not resolve_positions
+            or resolve_positions
+            != list(
+                range(
+                    resolve_positions[0],
+                    resolve_positions[0] + len(resolve_positions),
+                )
+            )
+        ):
+            errors.append(
+                "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order"
+            )
+
+        exact_action_uses = (
+            (
+                "Configure AWS credentials for RA-001a durable tracer",
+                "aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
+                "RA-001a tracer AWS action must use exactly the reviewed 40-hex commit",
+            ),
+            (
+                "Upload RA-001a durable tracer receipt",
+                "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "RA-001a receipt upload action must use exactly the reviewed 40-hex commit",
+            ),
+        )
+        for step_name, expected_uses, error_message in exact_action_uses:
+            step = named_step_block(test_archive, step_name)
+            step_items = block_top_level_items(step) if step is not None else None
+            if step_items is None or step_items.get("uses") != expected_uses:
+                errors.append(error_message)
+
+        for step_name in (
+            "Run RA-001a registry-complete durable tracer",
+            "Upload RA-001a durable tracer receipt",
+        ):
+            step = named_step_block(test_archive, step_name)
+            step_items = block_top_level_items(step) if step is not None else None
+            if step_items is None or "continue-on-error" in step_items:
+                errors.append(
+                    f"{step_name} must fail closed without continue-on-error"
+                )
+
+        tracer_step = named_step_block(
+            test_archive, "Run RA-001a registry-complete durable tracer"
+        )
+        tracer_shell_commands = (
+            top_level_shell_commands(block_run_body_lines(tracer_step))
+            if tracer_step is not None
+            else []
+        )
+        exact_tracer_command = (
+            'timeout --signal=TERM --kill-after="${RA001A_TERMINATION_GRACE_SECONDS}s" '
+            '"${RA001A_MAX_WALL_SECONDS}s" \\ just bte-test-archive-run \\ '
+            '"$BVS_NEXTEST_ARCHIVE_PATH" \\ '
+            '"$RUNNER_TEMP/bvs-nextest-archive-extract-ra001a" \\ '
+            "--run-ignored ignored-only \\ --no-tests=fail \\ "
+            "-E 'binary(=backtesting_vertical_slice_tests) & "
+            "test(=backtesting_vertical_slice_source_universe_durable_tracer::"
+            "registry_complete_ra001a_live_tracer_runs_every_committed_pack)'"
+        )
+        receipt_guard = (
+            'test -s "$BOLT_RA001A_RECEIPT_PATH" || { '
+            'echo "RA-001a receipt is missing or empty"; exit 1; }'
+        )
+        tracer_command_positions = [
+            index
+            for index, line in enumerate(tracer_shell_commands)
+            if line == exact_tracer_command
+        ]
+        receipt_guard_positions = [
+            index
+            for index, line in enumerate(tracer_shell_commands)
+            if line == receipt_guard
+        ]
+        if (
+            len(tracer_command_positions) != 1
+            or len(receipt_guard_positions) != 1
+            or tracer_command_positions[0] + 1 != receipt_guard_positions[0]
+        ):
+            errors.append(
+                "RA-001a tracer must execute its exact selector before exactly one live non-empty receipt guard"
+            )
 
     issue_789 = jobs.get("issue_789")
     if issue_789 is not None:
@@ -10752,79 +10964,17 @@ def validate_cargo_build_jobs_config(data: dict[str, object]) -> dict[str, dict[
     return config
 
 
-def validate_ra001a_durable_tracer_config(data: dict[str, object]) -> dict[str, object]:
-    backtester = data.get("backtester")
-    if not isinstance(backtester, dict):
-        raise ValueError("ci/github-actions-runners.toml must define [backtester]")
-    section = backtester.get("ra001a_durable_tracer")
-    if not isinstance(section, dict):
-        raise ValueError(
-            "ci/github-actions-runners.toml must define [backtester.ra001a_durable_tracer]"
-        )
-    keys = (
-        "max_registry_packs",
-        "max_total_selected_object_bytes",
-        "max_wall_seconds",
-        "termination_grace_seconds",
-    )
-    result: dict[str, object] = {}
-    for key in keys:
-        value = section.get(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(
-                f"backtester.ra001a_durable_tracer.{key} must be a positive integer"
-            )
-        result[key] = value
-    if result["termination_grace_seconds"] >= result["max_wall_seconds"]:
-        raise ValueError(
-            "backtester.ra001a_durable_tracer.termination_grace_seconds must be shorter than max_wall_seconds"
-        )
-    checkout = section.get("checkout")
-    if not isinstance(checkout, dict):
-        raise ValueError(
-            "backtester.ra001a_durable_tracer.checkout must be a table"
-        )
-    roots = checkout.get("allowed_ignored_runtime_roots")
-    if not isinstance(roots, list) or not all(
-        isinstance(root, str) and root for root in roots
-    ):
-        raise ValueError(
-            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
-            "must be a non-empty string list"
-        )
-    if not roots:
-        raise ValueError(
-            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
-            "must not be empty"
-        )
-    if tuple(roots) != tuple(sorted(set(roots))):
-        raise ValueError(
-            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
-            "must be sorted and unique"
-        )
-    for root in roots:
-        components = root.removesuffix("/").split("/")
-        if (
-            root.startswith("/")
-            or not root.endswith("/")
-            or "\\" in root
-            or re.fullmatch(r"[A-Za-z0-9._/-]+", root) is None
-            or any(character in root for character in ("\0", "\r", "\n", ","))
-            or any(not component or component in {".", ".."} for component in components)
-        ):
-            raise ValueError(
-                "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
-                "must contain normalized repository-relative directories"
-            )
-    result["allowed_ignored_runtime_roots"] = tuple(roots)
-    for key in ("max_ignored_entry_bytes", "max_ignored_entries"):
-        value = checkout.get(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(
-                f"backtester.ra001a_durable_tracer.checkout.{key} must be a positive integer"
-            )
-        result[key] = value
-    return result
+def validate_ra001a_durable_tracer_config(
+    data: dict[str, object],
+) -> BacktesterTestArchiveTimeoutConfig:
+    """Delegate tracer-policy validation to the trusted typed resolver."""
+    try:
+        config = load_backtester_test_archive_timeout_config(data, required=True)
+    except ProvenanceError as exc:
+        raise ValueError(str(exc)) from exc
+    if config is None:  # required=True makes this unreachable; retain fail-closed typing.
+        raise ValueError("backtester RA-001a durable tracer policy is required")
+    return config
 
 
 def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:

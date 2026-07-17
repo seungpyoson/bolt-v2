@@ -1,4 +1,103 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, process::Command};
+
+const CANONICAL_EXEC_START: &str = "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config";
+
+fn validate_packaged_systemd_unit(rendered: &[u8], generated: &[u8]) -> Result<(), String> {
+    if rendered != generated {
+        return Err(
+            "deploy/systemd/bolt-v2.service must match render_install_unit.py byte-for-byte"
+                .to_string(),
+        );
+    }
+
+    let unit = std::str::from_utf8(generated)
+        .map_err(|error| format!("rendered systemd unit must be UTF-8: {error}"))?;
+    let active_exec_starts: Vec<&str> = unit
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.starts_with("ExecStart="))
+        .collect();
+    if active_exec_starts != [CANONICAL_EXEC_START] {
+        return Err(format!(
+            "packaged systemd must have exactly the canonical ops launch ExecStart; got {active_exec_starts:?}"
+        ));
+    }
+
+    Ok(())
+}
+
+fn rendered_install_unit() -> Vec<u8> {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let renderer = repo_root.join("scripts/render_install_unit.py");
+    let output = Command::new("python3")
+        .arg(&renderer)
+        .current_dir(&repo_root)
+        .output()
+        .expect("render_install_unit.py should execute with python3");
+    assert!(
+        output.status.success(),
+        "render_install_unit.py failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+#[test]
+fn packaged_systemd_unit_matches_the_single_renderer_byte_for_byte() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let generated = fs::read(&unit_path).expect("generated systemd unit should exist");
+
+    validate_packaged_systemd_unit(&rendered_install_unit(), &generated)
+        .expect("renderer output and packaged unit must satisfy the deploy contract");
+}
+
+#[test]
+fn packaged_systemd_evidence_rejects_executable_path_mutation() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let generated = fs::read_to_string(&unit_path).expect("generated systemd unit should exist");
+    let mutated = generated.replace(
+        "/opt/bolt-v2/bolt-v2 ops launch",
+        "/opt/bolt-v2/alternate-binary ops launch",
+    );
+    assert_ne!(
+        mutated, generated,
+        "executable-path mutation must take effect"
+    );
+
+    let error = validate_packaged_systemd_unit(mutated.as_bytes(), mutated.as_bytes())
+        .expect_err("executable-path mutation must fail deploy evidence");
+    assert!(error.contains("canonical ops launch ExecStart"), "{error}");
+}
+
+#[test]
+fn packaged_systemd_evidence_rejects_ops_launch_subcommand_mutation() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let generated = fs::read_to_string(&unit_path).expect("generated systemd unit should exist");
+    let mutated = generated.replace(" ops launch --profile", " run --profile");
+    assert_ne!(mutated, generated, "ops-launch mutation must take effect");
+
+    let error = validate_packaged_systemd_unit(mutated.as_bytes(), mutated.as_bytes())
+        .expect_err("ops-launch mutation must fail deploy evidence");
+    assert!(error.contains("canonical ops launch ExecStart"), "{error}");
+}
+
+#[test]
+fn packaged_systemd_evidence_rejects_rendered_byte_drift() {
+    let rendered = rendered_install_unit();
+    let generated = String::from_utf8(rendered.clone()).expect("rendered unit should be UTF-8");
+    let mutated = generated.replace("Restart=on-failure", "Restart=always");
+    assert_ne!(
+        mutated, generated,
+        "rendered-byte mutation must take effect"
+    );
+
+    let error = validate_packaged_systemd_unit(&rendered, mutated.as_bytes())
+        .expect_err("rendered-byte mutation must fail byte-equality evidence");
+    assert!(error.contains("byte-for-byte"), "{error}");
+}
 
 #[test]
 fn systemd_unit_sets_srv_working_directory() {
@@ -35,9 +134,7 @@ fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
         "systemd unit must load live profile selection from operator config, not hardcode a venue/market/strategy profile"
     );
     assert!(
-        unit.contains(
-            "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
-        ),
+        unit.contains(CANONICAL_EXEC_START),
         "systemd unit must enter the same binary-owned ops launch lane as just live"
     );
     let active_exec_starts: Vec<&str> = unit
@@ -47,9 +144,7 @@ fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
         .collect();
     assert_eq!(
         active_exec_starts,
-        vec![
-            "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
-        ],
+        vec![CANONICAL_EXEC_START],
         "systemd unit must have exactly one active ExecStart, and it must be the ops launch lane (no second ExecStart bypass)"
     );
     assert!(

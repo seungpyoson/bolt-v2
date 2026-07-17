@@ -66,14 +66,15 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alloy"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1172e33a862030da77768c11cf17a1f801590de94cf518392b65207f15810c8"
+checksum = "d9677ab3454c237abe6307805bea17a7912b3a516b606c7b4d3d948b9fede137"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
  "alloy-core",
  "alloy-eips",
+ "alloy-ens",
  "alloy-network",
  "alloy-provider",
  "alloy-rpc-client",
@@ -96,9 +97,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b44937ce84d2cbf1ee4010667bd9214bb7db134a91dd9ffa6b1b8b1d6b030449"
+checksum = "a6ff0c4adba2abdcd9fb5829ae5f4394c06f8585ed283a9ba79aa33763c802e1"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -123,9 +124,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus-any"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bb0bdd61ddff726026676450e7e6a52c68aa39d98f2d60d05ad7caaea5b8100"
+checksum = "7cdf48932b1db3216175e19a2b476d89d53076e004850ee7983c6807ba0fde74"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -137,9 +138,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-contract"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1475c7edc6780b1759ccdb7960e28d29856ecbed47cfcf9e25be6a5f48b0cfb"
+checksum = "ee5c8b5baa015ef1d07a33983794e1539cce36954846a9bc6e1050d8a1ebf9b7"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -241,9 +242,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-eips"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "154b0f566ebbfc256b63c8d643c6a299f40a6fcd50a9d756c1d191487dd06483"
+checksum = "ea4c0453065b9206acc0f869a258dc8dcbbd595e144b4446f2c493a24a814d1f"
 dependencies = [
  "alloy-eip2124",
  "alloy-eip2930",
@@ -263,6 +264,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy-ens"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "709ddd5c63a05ac3274143ed0589e129119206f65cf094d2e727499da23efae8"
+dependencies = [
+ "alloy-contract",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-sol-types",
+ "async-trait",
+ "thiserror",
+]
+
+[[package]]
 name = "alloy-json-abi"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -276,9 +291,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-json-rpc"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e92108767c8c95b5e521570e039e374e65198c4179a98d200412c083d6c26d5"
+checksum = "c4691c60de5d628533752cd07e102d17c47874c06c04c91af33960fd94c484f4"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -291,9 +306,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4546c9fae2861d4159ee3b25c44ab3edb90f21b849e86cf2086cacb1d56d8ac"
+checksum = "9d912bb639bf4ac31e83095afe9e907c8b9774ce0c405966228368309fcfc45f"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -317,9 +332,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network-primitives"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca2c325d5934445209c8d22fc67d27e2cf9fb79054b8154d9e522d6a4ee3a4f7"
+checksum = "d875a11bd98595f57f73890f2e36f4a1cca0fa670623e59c9fb08b2389979c36"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -358,9 +373,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-provider"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff4536d25780fcf51a338c26153c526c99649be1273600684ef10b397a207d4a"
+checksum = "0e7d526d184d392a8fbcf4293e457789b307bb70646e4f8b902989a246529450"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -419,9 +434,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-client"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f8d765656f02f993fa0565abeb3554ccd6a0d72ea44ce0558b983136639bd6b"
+checksum = "755447dc13a04c6fa6db8dedb5d32ab5edfa4dd7aa34487ff192a3d873e0e8cf"
 dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
@@ -442,9 +457,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-any"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b06bfe79149dd53de5b196aa3c96db0500b7cf0ed72dbd1a31bac7660bc7cc65"
+checksum = "911a513723ef0b90c3b072f65eebf54d6ebc8b651d06734e252d024bd89b88ac"
 dependencies = [
  "alloy-consensus-any",
  "alloy-network-primitives",
@@ -457,9 +472,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-eth"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b41d1a11f58b456c199e04591befc64cb236fa2574a7275a07b98b173727bd39"
+checksum = "4e1bd19904581ee2075b61faabab1a4cefa8b96d8f2c85343adeae8ecf615e2b"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -478,9 +493,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-serde"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcf028ac8bcb161ad7c104243e710cece8e1a794f65ee6c35c4c4d693c8e80ee"
+checksum = "c1e97b3e0b9f816b25083045dcfa69431bd059a078e828e4d82d296d1949b96c"
 dependencies = [
  "alloy-primitives",
  "serde",
@@ -489,9 +504,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-signer"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a5f392f2f56b2417ea6b74e1e116c6f35df5ab5fce4dc422e277d72ee18ff7b"
+checksum = "6913d06ccc0d9c6ab67e2f82e2fbe292706da1f91442f30cded2d04b56bf0d58"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -504,9 +519,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-signer-local"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78de3d4ed62e2c90e16be166d0ddfe41944bb5979752703199073acf976083f2"
+checksum = "c880813cd26bd1ddf8c2236e31295896efd1fcc5cc761d8894ae894503aeea53"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -593,9 +608,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39f42ee1ef30d4d3d8b4ea5794937fccfc69e2bb1cd5bcf42d62afc57b049081"
+checksum = "999adfe5c91035c6bf4c4210e0eb8d0caed79d76fbf5e1b70d78721f6097ac04"
 dependencies = [
  "alloy-json-rpc",
  "auto_impl",
@@ -616,9 +631,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-http"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee68bc7d713e033eeaaecb8fd13d5d8a41af97226c4388930ad459285b8e9f70"
+checksum = "0e79a2c1793afc61eed9ca0963da370a988b27d2bbfa67c78013e262d47424c4"
 dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
@@ -648,9 +663,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-tx-macros"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc2cd27809c88c413e5542dbd5a8eff8c12f0086af920e881ae586d3a787d5e5"
+checksum = "406bc1183f6843e0aba09f7b3365e828b597213d60793ba5cb41befc863e3a78"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -725,9 +740,9 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arc-swap"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
 ]
@@ -1246,7 +1261,7 @@ dependencies = [
  "fastrand",
  "hex",
  "http 1.4.2",
- "sha1",
+ "sha1 0.10.6",
  "time",
  "tokio",
  "tracing",
@@ -1268,9 +1283,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.17.0"
+version = "1.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
+checksum = "4342d8937fc7e5dd9b1c60292261c0670c882a2cd1719cfc11b1af41731e32ad"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -1278,14 +1293,15 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.41.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
+checksum = "6d9ceb1da931507a12f4fccea479dccd00da1943e1b4ae72d8e502d707361444"
 dependencies = [
  "cc",
  "cmake",
  "dunce",
  "fs_extra",
+ "pkg-config",
 ]
 
 [[package]]
@@ -1678,7 +1694,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
- "toml 1.1.2+spec-1.1.0",
+ "toml 1.1.3+spec-1.1.0",
  "ustr",
  "zip",
 ]
@@ -1852,7 +1868,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tokio-util",
- "toml 1.1.2+spec-1.1.0",
+ "toml 1.1.3+spec-1.1.0",
  "url",
  "ustr",
  "zeroize",
@@ -1985,9 +2001,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.12.0"
+version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 dependencies = [
  "serde",
 ]
@@ -4499,8 +4515,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-analysis"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4512,8 +4528,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-backtest"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4542,8 +4558,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-binance"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4580,8 +4596,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-bitmex"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4616,8 +4632,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-bybit"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4653,8 +4669,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-coinbase"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4688,8 +4704,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-common"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4720,8 +4736,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-core"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4731,21 +4747,21 @@ dependencies = [
  "chrono",
  "indexmap 2.14.0",
  "log",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rmp-serde",
  "rust_decimal",
  "serde",
  "serde_json",
  "thiserror",
- "toml 1.1.2+spec-1.1.0",
+ "toml 1.1.3+spec-1.1.0",
  "ustr",
  "uuid",
 ]
 
 [[package]]
 name = "nautilus-cryptography"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -4760,8 +4776,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-data"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4782,8 +4798,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-deribit"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4818,8 +4834,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-execution"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4832,7 +4848,7 @@ dependencies = [
  "nautilus-common",
  "nautilus-core",
  "nautilus-model",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rstest",
  "rust_decimal",
  "rust_decimal_macros",
@@ -4844,8 +4860,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-hyperliquid"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "alloy",
@@ -4883,8 +4899,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-indicators"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "anyhow",
  "arraydeque",
@@ -4895,8 +4911,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-kraken"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4933,8 +4949,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-live"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4961,8 +4977,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-model"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4989,8 +5005,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-network"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -5004,7 +5020,7 @@ dependencies = [
  "log",
  "nautilus-core",
  "nautilus-cryptography",
- "rand 0.10.1",
+ "rand 0.10.2",
  "reqwest 0.13.4",
  "rustls",
  "rustls-pemfile",
@@ -5024,8 +5040,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-okx"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -5061,8 +5077,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-persistence"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -5090,8 +5106,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-persistence-macros"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5100,8 +5116,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-polymarket"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "alloy",
@@ -5116,6 +5132,7 @@ dependencies = [
  "derive_builder",
  "dotenvy",
  "futures-util",
+ "indexmap 2.14.0",
  "log",
  "nautilus-common",
  "nautilus-core",
@@ -5123,7 +5140,7 @@ dependencies = [
  "nautilus-model",
  "nautilus-network",
  "nautilus-persistence-macros",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
@@ -5142,8 +5159,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-portfolio"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "bon",
@@ -5160,8 +5177,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-risk"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "bon",
@@ -5180,8 +5197,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-serialization"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5199,8 +5216,8 @@ dependencies = [
 
 [[package]]
 name = "nautilus-system"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -5217,14 +5234,15 @@ dependencies = [
  "nautilus-risk",
  "nautilus-trading",
  "serde",
+ "serde_json",
  "sysinfo",
  "ustr",
 ]
 
 [[package]]
 name = "nautilus-trading"
-version = "0.60.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=8160730c7c550480b0a439fb11086a4c4de15f0b#8160730c7c550480b0a439fb11086a4c4de15f0b"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -5388,7 +5406,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "quick-xml",
- "rand 0.10.1",
+ "rand 0.10.2",
  "reqwest 0.12.28",
  "ring",
  "rustls-pki-types",
@@ -5893,9 +5911,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -5996,9 +6014,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.12.4"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -6008,9 +6026,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.14"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
+checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -6346,9 +6364,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.41"
+version = "0.23.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
+checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -6746,6 +6764,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6898,7 +6927,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "rustls",
- "sha1",
+ "sha1 0.10.6",
  "simdutf8",
  "socket2 0.5.10",
  "tokio",
@@ -7266,9 +7295,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
-version = "0.29.0"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
+checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
@@ -7310,9 +7339,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.1.2+spec-1.1.0"
+version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
+checksum = "53c96ecdfa941c8fc4fcaed14f99ada8ebed502eef533015095a07e3301d4c3c"
 dependencies = [
  "indexmap 2.14.0",
  "serde_core",
@@ -7364,9 +7393,9 @@ dependencies = [
 
 [[package]]
 name = "toml_writer"
-version = "1.1.1+spec-1.1.0"
+version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tower"
@@ -7452,19 +7481,19 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tungstenite"
-version = "0.29.0"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
+checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
 dependencies = [
  "bytes",
  "data-encoding",
  "http 1.4.2",
  "httparse",
  "log",
- "rand 0.9.4",
+ "rand 0.10.2",
  "rustls",
  "rustls-pki-types",
- "sha1",
+ "sha1 0.11.0",
  "thiserror",
 ]
 
@@ -7589,9 +7618,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.23.4"
+version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
+checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

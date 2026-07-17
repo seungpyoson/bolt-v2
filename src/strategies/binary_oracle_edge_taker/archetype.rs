@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn production_binance_sbe_signal_is_ineligible_for_new_risk_at_official_pin() {
+    fn production_binance_sbe_signal_is_eligible_for_new_risk_at_official_pin() {
         let loaded =
             crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
                 .expect("production root.toml should load");
@@ -585,15 +585,15 @@ mod tests {
             .expect("production config should include the binary oracle edge taker");
 
         let raw = raw_taker_config(strategy, &loaded)
-            .expect("unavailable signal capability must not prevent strategy construction");
+            .expect("available signal capability must permit strategy construction");
         let table = raw.as_table().expect("raw taker config should be a table");
 
         assert_eq!(
             table
                 .get("signal_new_risk_available")
                 .and_then(Value::as_bool),
-            Some(false),
-            "the official pin must mark Binance Spot SBE signal data as unavailable for new risk"
+            Some(true),
+            "the official pin must mark Binance Spot SBE signal data as available for new risk"
         );
         assert_eq!(
             table.get("signal_venue").and_then(Value::as_str),

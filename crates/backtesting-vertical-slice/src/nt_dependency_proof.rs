@@ -302,7 +302,7 @@ impl Error for NtDependencyProofError {}
 mod tests {
     use super::*;
 
-    const REVISION: &str = "8160730c7c550480b0a439fb11086a4c4de15f0b";
+    const REVISION: &str = "d81be0bcc7a473c45d2dc8a8885638336073a218";
 
     fn manifest(git: &str) -> String {
         format!(

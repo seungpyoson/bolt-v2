@@ -2281,7 +2281,7 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
 }
 
 #[test]
-fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submit_permit() {
+fn explicit_signal_capability_gate_blocks_submit_with_available_binance_rv_source() {
     let loaded =
         crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
             .expect("production config should load");
@@ -2289,7 +2289,7 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
         crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
             &loaded,
         )
-        .expect("missing provider capability must not prevent runtime construction"),
+        .expect("available provider capability must permit runtime construction"),
     ));
 
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -2308,7 +2308,7 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
 
     strategy
         .ensure_startup_subscription_derivations()
-        .expect("missing new-risk capability must not block startup recovery and exit paths");
+        .expect("explicit signal gating must not block startup recovery and exit paths");
     register_test_strategy_with_active_instruments(&mut strategy);
 
     for (ts_ms, bid, ask) in [
@@ -2337,8 +2337,8 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
             .iter()
             .any(|diagnostic| diagnostic.source_id == "binance_btc_usdt_midpoint"
                 && diagnostic.block_reason
-                    == Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ProviderCapabilityUnavailable)),
-        "unavailable Binance must remain diagnostic while OKX satisfies quorum"
+                    != Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ProviderCapabilityUnavailable)),
+        "available Binance must not carry a provider-capability blocker"
     );
 
     strategy.pricing.observe_reference_current_price(&fast_spot(
@@ -2363,7 +2363,7 @@ fn unavailable_binance_sbe_inputs_keep_startup_reachable_but_cannot_obtain_submi
     assert_eq!(
         submit_admission.admitted_order_count(),
         0,
-        "a strategy dependent on unavailable Binance SBE inputs must not obtain a submit permit"
+        "an explicitly signal-gated strategy must not obtain a submit permit"
     );
     let admission_outcomes = evidence
         .events()

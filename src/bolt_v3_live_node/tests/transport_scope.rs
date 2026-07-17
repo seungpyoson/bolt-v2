@@ -68,7 +68,7 @@ fn trade_transport_config_prunes_unreferenced_hyperliquid_execution_clients_from
 }
 
 #[test]
-fn production_transport_prunes_unavailable_binance_sbe_new_risk_client() {
+fn production_transport_keeps_available_binance_sbe_new_risk_client() {
     let loaded =
         crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
             .expect("production root config should load");
@@ -82,8 +82,8 @@ fn production_transport_prunes_unavailable_binance_sbe_new_risk_client() {
             .expect("capability-gated trade transport scope should derive cleanly");
 
     assert!(
-        !scoped.root.clients.contains_key("binance_spot_data"),
-        "an unavailable client used only for new-risk signal and RV inputs must not be constructed or connected"
+        scoped.root.clients.contains_key("binance_spot_data"),
+        "an available client used for new-risk signal and RV inputs must remain in transport scope"
     );
     assert!(scoped.root.clients.contains_key("okx_data"));
     assert!(scoped.root.clients.contains_key("bybit_data"));

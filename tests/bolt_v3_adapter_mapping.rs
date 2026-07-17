@@ -453,7 +453,7 @@ fn configured_sockudo_transport_backend_is_compiled_for_live_connectivity() {
 
 /// Captured live exchangeInfo wire (schema 3, vendor version 5).
 /// Same fixture as `tests/binance_sbe_schema_v5_decode.rs`; the official pin's
-/// lower version is capability-absence evidence, not a value to restamp.
+/// matching version is direct capability-presence evidence.
 const CAPTURED_LIVE_EXCHANGE_INFO_SBE: &[u8] =
     include_bytes!("fixtures/binance_sbe/exchange_info_btc_usdt_schema_3_5.bin");
 
@@ -469,10 +469,10 @@ fn captured_live_exchange_info_sbe_version() -> u16 {
 }
 
 #[test]
-fn nt_binance_spot_sbe_schema_does_not_match_live_exchange_info_version() {
-    assert_eq!(NT_BINANCE_SPOT_SBE_SCHEMA_VERSION, 4);
+fn nt_binance_spot_sbe_schema_matches_live_exchange_info_version() {
+    assert_eq!(NT_BINANCE_SPOT_SBE_SCHEMA_VERSION, 5);
     assert_eq!(captured_live_exchange_info_sbe_version(), 5);
-    assert_ne!(
+    assert_eq!(
         NT_BINANCE_SPOT_SBE_SCHEMA_VERSION,
         captured_live_exchange_info_sbe_version()
     );

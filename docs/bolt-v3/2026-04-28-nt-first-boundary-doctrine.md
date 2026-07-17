@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `8160730c7c550480b0a439fb11086a4c4de15f0b`
-Last NT pin compatibility verified date: 2026-07-16
+Last NT pin compatibility verified rev: `d81be0bcc7a473c45d2dc8a8885638336073a218`
+Last NT pin compatibility verified date: 2026-07-17
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -124,11 +124,11 @@ The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
 - `Cargo.toml` pins the official NautilusTrader repository to immutable
-  `v1.230.0` release commit
-  `8160730c7c550480b0a439fb11086a4c4de15f0b`. The 2026-07-16 correction
+  upstream PR #4474 merge commit
+  `d81be0bcc7a473c45d2dc8a8885638336073a218`. The 2026-07-17 compatibility
   slice's declared compatibility scope is official dependency identity,
-  SHA-bound Binance capability absence, fail-closed new-risk signal and RV
-  gating, the
+  SHA-bound Binance schema-3:5 and adapter receive-clock capability presence,
+  composite new-risk quorum, the
   Polymarket fixture anchor, and required exact-head tests. It does not re-audit
   all NT-owned behaviors cited by this doctrine.
 - The NT pin-change audit and compatibility probe are recorded under

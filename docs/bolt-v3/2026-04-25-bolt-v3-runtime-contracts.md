@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `8160730c7c550480b0a439fb11086a4c4de15f0b`
+  - current value: `d81be0bcc7a473c45d2dc8a8885638336073a218`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1374,46 +1374,30 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`8160730c7c550480b0a439fb11086a4c4de15f0b`. WebSocket frames flow through
+`d81be0bcc7a473c45d2dc8a8885638336073a218`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows that
 `parse_trades_event`, `parse_bbo_event`, `parse_depth_snapshot`, and
-`parse_depth_diff` accept no adapter receive-clock argument and initialize
-`ts_init` from venue event time. The pin also rejects the captured Binance Spot
-SBE schema 3:5 exchange-info response.
+`parse_depth_diff` require the adapter receive-clock argument and preserve it as
+`ts_init`. The pin also decodes the captured Binance Spot SBE schema 3:5
+exchange-info response.
 
 The SHA-bound generated `NAUTILUS_SOURCE_CAPABILITIES` record therefore marks
 schema 3:5, adapter receive-clock ownership, and their composite new-risk
-quorum capability unavailable. `RealizedVolatilityObservation` and
-`StrategySignalObservation` must not treat that source as ready: the RV runtime
-omits its subscription and route, rejects direct observations, reports
-`ProviderCapabilityUnavailable`, and lets ordinary quorum rules decide whether
-other configured providers are sufficient. The same provider-owned decision
-suppresses the affected strategy signal subscription and observation path, and
-removes a client used only by unavailable new-risk inputs from the live
-transport. The derived signal capability is carried into shared submit
-admission, which rejects entry and replace-submit intent before constructing a
-permit while leaving risk-reducing exit admission reachable. It does not
-restamp, infer, or substitute timestamps. Startup,
-recovery, exits, reconciliation, and settlement remain reachable because the
-capability gate is confined to new-risk market-data inputs; an RV surface whose
-subscriptions are absent solely because of that registered provider capability
-stays auditable and blocks entry without aborting strategy startup. Other empty
-subscription derivations still fail startup loudly.
+quorum capability available. `RealizedVolatilityObservation` and
+`StrategySignalObservation` may use that source for new risk, and the Binance
+Spot SBE client remains in live transport scope. The generic provider-capability
+gate remains fail closed with `ProviderCapabilityUnavailable` for a future pin
+that lacks either required leg.
 
 The `binance_sbe_quote_timestamps` harness executes the public parsers and
-proves the absent receive-clock contract across every trade in a multi-trade
+proves unequal `ts_event` and adapter-owned `ts_init` across every trade in a multi-trade
 message, the BBO quote, and both aggregate and inner snapshot/diff deltas. The
-schema capture test separately proves schema 3:5 rejection on the exact pin.
+schema capture test separately proves schema 3:5 decoding on the exact pin.
 
-The boundary verifier's Cargo-target and Rust-test-body checks are a structural
-fence only. They reject target fields or function attributes that can suppress
-ordinary test execution, reject crate-level inner attributes, and require the
-governed parser/assertion shapes while masking comments and strings. They do
-not compile or execute the harness and do not prove runtime semantics. The
-required full-CI nextest proof—executed at the head or admitted through
-governed fingerprint reuse—is the behavioral execution proof; a green
-structural fence is not a substitute.
+The required full-CI nextest proof executes these harnesses against the pinned
+dependency. Rust behavior is established by compiler and executable-test
+results, not by source-text prediction.
 
 ### 11.6 Controlled-connect and controlled-disconnect boundary
 
@@ -1514,11 +1498,11 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at the
-immutable `v1.230.0` release commit
-`8160730c7c550480b0a439fb11086a4c4de15f0b`. The Polymarket query fixture is
+immutable upstream PR #4474 merge commit
+`d81be0bcc7a473c45d2dc8a8885638336073a218`. The Polymarket query fixture is
 re-anchored to that exact official source and byte digest. Binance Spot SBE
-schema 3:5 and adapter receive-clock capabilities are explicitly unavailable
-and fail closed for affected new-risk quorum. The compatibility evidence proves
+schema 3:5 and adapter receive-clock capabilities are explicitly available and
+enable affected new-risk quorum. The compatibility evidence proves
 focused Bolt-v3 compile and test compatibility only. It does not prove live
 order signing, submission, fill parsing, collateral accounting, or fee
 behavior.

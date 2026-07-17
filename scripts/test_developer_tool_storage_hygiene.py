@@ -70,7 +70,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         retain_exact_names: list[str] | None = None,
         remove_exact_names: list[str] | None = None,
     ) -> None:
-        retained = retain_exact_names or ["1.96.0-aarch64-apple-darwin"]
+        retained = retain_exact_names or ["1.97.0-aarch64-apple-darwin"]
         removed = remove_exact_names or []
         policy.write_text(
             textwrap.dedent(
@@ -985,7 +985,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
     def test_dry_run_rustup_candidates_are_exact_name_removals_with_protections(self) -> None:
         active = "active-aarch64-apple-darwin"
         default = "default-aarch64-apple-darwin"
-        pinned = "1.96.0-aarch64-apple-darwin"
+        pinned = "1.97.0-aarch64-apple-darwin"
         retained = "retained-aarch64-apple-darwin"
         removable = "old-aarch64-apple-darwin"
         unlisted = "unlisted-aarch64-apple-darwin"
@@ -1011,7 +1011,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     [toolchain]
-                    channel = "1.96.0"
+                    channel = "1.97.0"
                     """
                 ),
                 encoding="utf-8",
@@ -1075,7 +1075,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     [toolchain]
-                    channel = "1.96.0"
+                    channel = "1.97.0"
                     """
                 ),
                 encoding="utf-8",
@@ -1172,7 +1172,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     [toolchain]
-                    channel = "1.96.0"
+                    channel = "1.97.0"
                     """
                 ),
                 encoding="utf-8",
@@ -1230,7 +1230,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     [toolchain]
-                    channel = "1.96.0"
+                    channel = "1.97.0"
                     """
                 ),
                 encoding="utf-8",
@@ -1294,7 +1294,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     [toolchain]
-                    channel = "1.96.0"
+                    channel = "1.97.0"
                     """
                 ),
                 encoding="utf-8",
@@ -1455,7 +1455,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             ("retained_rotations = 2\n", "codex.log.retained_rotations"),
             ("ttl_days = 14\n", "codex.sessions.ttl_days"),
             (
-                'retain_exact_names = ["1.96.0-aarch64-apple-darwin"]\n',
+                'retain_exact_names = ["1.97.0-aarch64-apple-darwin"]\n',
                 "rustup.toolchains.retain_exact_names",
             ),
             ("remove_exact_names = []\n", "rustup.toolchains.remove_exact_names"),
@@ -2401,7 +2401,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
     def test_apply_removes_only_unprotected_exact_name_rustup_candidate(self) -> None:
         active = "active-aarch64-apple-darwin"
         default = "default-aarch64-apple-darwin"
-        pinned = "1.96.0-aarch64-apple-darwin"
+        pinned = "1.97.0-aarch64-apple-darwin"
         retained = "retained-aarch64-apple-darwin"
         removable = "old-aarch64-apple-darwin"
 
@@ -2427,7 +2427,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     [toolchain]
-                    channel = "1.96.0"
+                    channel = "1.97.0"
                     """
                 ),
                 encoding="utf-8",
@@ -2935,7 +2935,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             report = tmp_path / "dry-run.json"
             home_root = tmp_path / "home"
             repo_root = tmp_path / "repo"
-            retained = "1.96.0-aarch64-apple-darwin"
+            retained = "1.97.0-aarch64-apple-darwin"
             self.write_policy_fixture(policy, retain_exact_names=[retained])
 
             codex_log = home_root / ".codex" / "log" / "codex-tui.log"

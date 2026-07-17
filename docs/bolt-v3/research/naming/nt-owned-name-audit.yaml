@@ -10,7 +10,7 @@
 #   files, fixtures, and tests scanned by scripts/verify_bolt_v3_naming.py.
 
 schema_version: 1
-nautilus_trader_revision: "8160730c7c550480b0a439fb11086a4c4de15f0b"
+nautilus_trader_revision: "d81be0bcc7a473c45d2dc8a8885638336073a218"
 
 rules:
   - id: nt_owned_name_wins

@@ -209,7 +209,7 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         polymarket_fixture_path = (
             tests_dir
             / "fixtures"
-            / "nt_polymarket_query_post_order_params_8160730c.txt"
+            / "nt_polymarket_query_post_order_params_d81be0bc.txt"
         )
 
         surfaces_path.write_text(VERIFIER.yaml.safe_dump(fixture["surfaces"]), encoding="utf-8")

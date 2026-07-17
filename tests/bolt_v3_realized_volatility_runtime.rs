@@ -119,22 +119,22 @@ fn event_clock_replay_fixture() -> QuoteReplayFixture {
 }
 
 #[test]
-fn official_pin_capabilities_fail_closed_for_binance_sbe_new_risk_quorum() {
+fn official_pin_capabilities_enable_binance_sbe_new_risk_quorum() {
     assert_eq!(
         NAUTILUS_SOURCE_CAPABILITIES.git,
         "https://github.com/nautechsystems/nautilus_trader.git"
     );
     assert_eq!(
         NAUTILUS_SOURCE_CAPABILITIES.revision,
-        "8160730c7c550480b0a439fb11086a4c4de15f0b"
+        "d81be0bcc7a473c45d2dc8a8885638336073a218"
     );
-    assert!(!NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_schema_3_5);
-    assert!(!NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_adapter_receive_clock);
-    assert!(!NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_new_risk_quorum);
+    assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_schema_3_5);
+    assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_adapter_receive_clock);
+    assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_new_risk_quorum);
 }
 
 #[test]
-fn unavailable_binance_sbe_capability_keeps_runtime_reachable_but_cannot_ready_quorum() {
+fn available_binance_sbe_capability_creates_ingestion_route_and_participates_in_quorum() {
     let mut loaded = load_bolt_v3_config(&super::support::repo_path("config/root.toml"))
         .expect("production config should load");
     let surfaces = loaded
@@ -150,8 +150,8 @@ fn unavailable_binance_sbe_capability_keeps_runtime_reachable_but_cannot_ready_q
         .retain(|source| source.data_client_id.as_str() == "binance_spot_data");
 
     let mut runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
-        .expect("missing provider capabilities must not prevent runtime construction");
-    assert!(runtime.source_new_risk_capability_unavailable(
+        .expect("available provider capabilities must permit runtime construction");
+    assert!(!runtime.source_new_risk_capability_unavailable(
         "btc_usdt_midpoint_rv",
         "binance_btc_usdt_midpoint"
     ));
@@ -162,16 +162,17 @@ fn unavailable_binance_sbe_capability_keeps_runtime_reachable_but_cannot_ready_q
         )
     );
     assert!(
-        runtime.surface_subscriptions_blocked_only_by_provider_capability("btc_usdt_midpoint_rv"),
-        "the production surface should identify capability-only subscription suppression"
+        !runtime.surface_subscriptions_blocked_only_by_provider_capability("btc_usdt_midpoint_rv"),
+        "the production surface must not report capability-only subscription suppression"
     );
-    assert!(
+    assert_eq!(
         runtime
             .subscription_requests_for_surface("btc_usdt_midpoint_rv")
-            .is_empty(),
-        "unavailable Binance SBE must not create an ingestion route"
+            .len(),
+        1,
+        "available Binance SBE must create its configured ingestion route"
     );
-    assert!(!runtime.observe(RealizedVolObservation {
+    assert!(runtime.observe(RealizedVolObservation {
         source_id: "binance_btc_usdt_midpoint".to_string(),
         source_class: RealizedVolSourceClass::SpotQuote,
         sample_kind: RealizedVolSampleKind::Midpoint,
@@ -191,19 +192,18 @@ fn unavailable_binance_sbe_capability_keeps_runtime_reachable_but_cannot_ready_q
             .contains(&RealizedVolBlockReason::QuorumNotReady)
     );
     assert!(
-        snapshot
+        !snapshot
             .blocked_reasons
-            .contains(&RealizedVolBlockReason::ProviderCapabilityUnavailable),
-        "the top-level snapshot must preserve the causal provider blocker for durable entry and exit evidence"
+            .contains(&RealizedVolBlockReason::ProviderCapabilityUnavailable)
     );
     let diagnostic = snapshot
         .source_diagnostics
         .iter()
         .find(|diagnostic| diagnostic.source_id == "binance_btc_usdt_midpoint")
-        .expect("unavailable source should remain visible in diagnostics");
-    assert!(!diagnostic.counts_toward_quorum);
-    assert_eq!(diagnostic.status, RealizedVolSourceStatus::DiagnosticOnly);
-    assert_eq!(
+        .expect("available source should remain visible in diagnostics");
+    assert!(diagnostic.counts_toward_quorum);
+    assert_ne!(diagnostic.status, RealizedVolSourceStatus::DiagnosticOnly);
+    assert_ne!(
         diagnostic.block_reason,
         Some(RealizedVolBlockReason::ProviderCapabilityUnavailable)
     );

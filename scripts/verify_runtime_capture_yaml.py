@@ -106,7 +106,7 @@ POLYMARKET_QUERY_FIXTURE_PATH = (
     REPO_ROOT
     / "tests"
     / "fixtures"
-    / "nt_polymarket_query_post_order_params_8160730c.txt"
+    / "nt_polymarket_query_post_order_params_d81be0bc.txt"
 )
 POLYMARKET_QUERY_SOURCE_PATH = Path(
     "crates/adapters/polymarket/src/http/query.rs"

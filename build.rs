@@ -346,12 +346,12 @@ mod nautilus_source_capability_tests {
     const CAPABILITIES: &str = r#"
 [source]
 git = "https://github.com/nautechsystems/nautilus_trader.git"
-revision = "8160730c7c550480b0a439fb11086a4c4de15f0b"
+revision = "d81be0bcc7a473c45d2dc8a8885638336073a218"
 
 [binance_spot_sbe]
-schema_3_5 = false
-adapter_receive_clock = false
-new_risk_quorum = false
+schema_3_5 = true
+adapter_receive_clock = true
+new_risk_quorum = true
 "#;
 
     #[test]
@@ -361,14 +361,17 @@ new_risk_quorum = false
             parsed.git,
             "https://github.com/nautechsystems/nautilus_trader.git"
         );
-        assert_eq!(parsed.revision, "8160730c7c550480b0a439fb11086a4c4de15f0b");
-        assert!(!parsed.binance_spot_sbe_new_risk_quorum);
+        assert_eq!(parsed.revision, "d81be0bcc7a473c45d2dc8a8885638336073a218");
+        assert!(parsed.binance_spot_sbe_new_risk_quorum);
     }
 
     #[test]
     #[should_panic(expected = "new_risk_quorum must equal schema_3_5 && adapter_receive_clock")]
     fn capability_manifest_cannot_claim_composite_quorum_without_both_inputs() {
-        let invalid = CAPABILITIES.replace("new_risk_quorum = false", "new_risk_quorum = true");
+        let invalid = CAPABILITIES.replace(
+            "adapter_receive_clock = true",
+            "adapter_receive_clock = false",
+        );
         let _ = parse_nautilus_source_capabilities(&invalid, Path::new("capabilities"));
     }
 
@@ -376,7 +379,7 @@ new_risk_quorum = false
     #[should_panic(expected = "nautilus-binance must match the source capability manifest")]
     fn capability_manifest_rejects_a_personal_fork_dependency_anchor() {
         let parsed = parse_nautilus_source_capabilities(CAPABILITIES, Path::new("capabilities"));
-        let personal_fork = r#"nautilus-binance = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "8160730c7c550480b0a439fb11086a4c4de15f0b" }"#;
+        let personal_fork = r#"nautilus-binance = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }"#;
         verify_nautilus_dependency_anchor(personal_fork, &parsed, Path::new("Cargo.toml"));
     }
 }

@@ -10330,6 +10330,22 @@ reason = "IV strategy registration uses tuple-field indices and diagnostic templ
 
 [[allowed]]
 path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"prepared NT strategy ID `{strategy_id}` is duplicated in the batch"'''
+context = '''"prepared NT strategy ID `{strategy_id}` is duplicated in the batch"'''
+classification = "strategy_registration_fail_closed_diagnostic"
+reason = "The shared batch coordinator reports a duplicate config-derived NT strategy identity before commit; this diagnostic does not select or default any runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"'''
+context = '''"prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"'''
+classification = "strategy_registration_fail_closed_diagnostic"
+reason = "The shared batch coordinator reports a duplicate config-derived NT order-ID tag before commit; this diagnostic does not select or default any runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
 kind = "number"
 literal = '''0'''
 context = '''key.0, key.1'''

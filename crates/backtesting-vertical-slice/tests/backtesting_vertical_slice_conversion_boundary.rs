@@ -1,11 +1,11 @@
 use std::fs;
 
 use backtesting_vertical_slice::conversion_boundary::{
-    CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
-    CatalogConsumptionEvidence, CatalogPublicationReceiptIdentity, ConversionCatalogMetadata,
-    ConversionCheckpoint, ConversionCheckpointStage, ConversionFingerprint, ConversionManifest,
-    ConversionOutputState, inspect_conversion_output, write_completed_conversion_artifacts,
-    write_conversion_checkpoint,
+    CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_CHECKPOINT_VERSION,
+    CONVERSION_GENERATION_PATH_MARKER, CONVERSION_MANIFEST_FILE, CatalogConsumptionEvidence,
+    CatalogPublicationReceiptIdentity, ConversionCatalogMetadata, ConversionCheckpoint,
+    ConversionCheckpointStage, ConversionFingerprint, ConversionManifest, ConversionOutputState,
+    inspect_conversion_output, write_completed_conversion_artifacts, write_conversion_checkpoint,
 };
 
 fn fingerprint() -> ConversionFingerprint {
@@ -20,12 +20,76 @@ fn fingerprint() -> ConversionFingerprint {
         converter_identity: "csv-native-trades-to-canonical-trades.v1".to_string(),
         converter_version: "1".to_string(),
         converter_config_hash: "converterconfigabc".to_string(),
+        catalog_encoding_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+            .to_string(),
+        conversion_semantics_sha256:
+            "2222222222222222222222222222222222222222222222222222222222222222"
+                .to_string(),
     }
+}
+
+#[test]
+fn conversion_generation_is_the_canonical_fingerprint_hash_and_exact_output_suffix() {
+    let fingerprint = fingerprint();
+    let generation = fingerprint
+        .conversion_generation_sha256()
+        .expect("derive canonical conversion generation");
+    let canonical =
+        backtesting_vertical_slice::reference_artifact::canonical_json_sha256(&fingerprint)
+            .expect("hash canonical fingerprint JSON");
+
+    assert_eq!(generation, canonical);
+    assert_eq!(generation.len(), 64);
+    let wire = serde_json::to_value(&fingerprint).expect("serialize fingerprint wire schema");
+    assert!(wire.get("conversion_semantics_sha256").is_some());
+    assert!(wire.get("run_spec_semantics_sha256").is_none());
+    fingerprint
+        .validate_output_prefix_generation(&format!(
+            "s3://bolt-parquet/nt-research-analytics/backtests/run{CONVERSION_GENERATION_PATH_MARKER}{generation}"
+        ))
+        .expect("exact generation suffix");
+
+    for invalid in [
+        format!(
+            "s3://bolt-parquet/nt-research-analytics/backtests/run{CONVERSION_GENERATION_PATH_MARKER}{generation}/"
+        ),
+        "s3://bolt-parquet/nt-research-analytics/backtests/run".to_string(),
+        format!(
+            "s3://bolt-parquet/nt-research-analytics/backtests/run{CONVERSION_GENERATION_PATH_MARKER}{}",
+            "f".repeat(64)
+        ),
+        format!(
+            "s3://bolt-parquet/nt-research-analytics/backtests/run{CONVERSION_GENERATION_PATH_MARKER}{}{CONVERSION_GENERATION_PATH_MARKER}{generation}",
+            "e".repeat(64)
+        ),
+    ] {
+        fingerprint
+            .validate_output_prefix_generation(&invalid)
+            .expect_err("non-exact generation suffix must fail closed");
+    }
+
+    let mut next_generation = fingerprint.clone();
+    next_generation.catalog_encoding_hash = "2".repeat(64);
+    assert_ne!(
+        generation,
+        next_generation
+            .conversion_generation_sha256()
+            .expect("derive changed generation")
+    );
+
+    let mut changed_semantics = fingerprint.clone();
+    changed_semantics.conversion_semantics_sha256 = "3".repeat(64);
+    assert_ne!(
+        generation,
+        changed_semantics
+            .conversion_generation_sha256()
+            .expect("derive changed conversion-semantics generation")
+    );
 }
 
 fn completed_checkpoint(fingerprint: &ConversionFingerprint) -> ConversionCheckpoint {
     ConversionCheckpoint {
-        checkpoint_version: "conversion-checkpoint.v2".to_string(),
+        checkpoint_version: CONVERSION_CHECKPOINT_VERSION.to_string(),
         fingerprint: fingerprint.clone(),
         stage: ConversionCheckpointStage::Completed,
         canonical_rows: Some(3),
@@ -106,6 +170,31 @@ fn source_control_digest_change_invalidates_completed_conversion_reuse() {
 
     assert!(
         error.to_string().contains("control_artifact_sha256"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn catalog_encoding_change_invalidates_completed_conversion_reuse() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let original = fingerprint();
+    let checkpoint = completed_checkpoint(&original);
+    let checkpoint_hash = checkpoint.content_hash().unwrap();
+    let manifest = completed_manifest(&original, checkpoint_hash);
+    let metadata = ConversionCatalogMetadata::from_manifest(
+        &manifest,
+        manifest.content_hash().unwrap(),
+        checkpoint.content_hash().unwrap(),
+    );
+    write_completed_conversion_artifacts(dir.path(), &manifest, &checkpoint, &metadata).unwrap();
+
+    let mut changed_encoding = original;
+    changed_encoding.catalog_encoding_hash = "2".repeat(64);
+    let error = inspect_conversion_output(dir.path(), &changed_encoding)
+        .expect_err("changed catalog encoding must invalidate completed-output reuse");
+
+    assert!(
+        error.to_string().contains("catalog_encoding_hash"),
         "{error:#}"
     );
 }

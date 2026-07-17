@@ -7,6 +7,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use backtesting_vertical_slice::{
+    artifact_store::{CatalogCompression, CatalogEncodingConfig},
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
         ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
@@ -1661,6 +1662,17 @@ fn pmxt_conversion_fingerprint_for_hash(accepted_object_sha256: &str) -> Convers
         converter_version: "1".to_string(),
         converter_config_hash: "7c5ff8475a73c3aaf3e64cc09d803ff34de9cbc51345978406125fcc5147879a"
             .to_string(),
+        catalog_encoding_hash: CatalogEncodingConfig::new(5_000, 5_000, CatalogCompression::Snappy)
+            .expect("explicit PMXT test catalog encoding")
+            .content_hash()
+            .expect("hash PMXT test catalog encoding"),
+        // This digest names every output-determining semantic owned by the
+        // synthetic PMXT fixture beyond the source/control/converter/catalog
+        // identities already carried above. It deliberately does not claim a
+        // RunSpec identity because this projection path has no RunSpec.
+        conversion_semantics_sha256: hex::encode(Sha256::digest(
+            b"pmxt-test-conversion-semantics.v1;source_binding=synthetic-pmxt-one-off-source;usage_scope=one_off_backfill_data;condition=0xcondition;token=token-a;normalized_schema=pmxt-selected-source-l2.v1;tables=order_book_delta,quote_tick,trade_tick",
+        )),
     }
 }
 

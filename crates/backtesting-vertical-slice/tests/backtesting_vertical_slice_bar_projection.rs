@@ -33,6 +33,15 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
 const INSTRUMENT_ID: &str = "BASEQUOTE";
 const BASE_OPEN_TIME: i64 = 1_700_000_000_000_000_000;
+
+fn test_catalog_encoding() -> backtesting_vertical_slice::artifact_store::CatalogEncodingConfig {
+    backtesting_vertical_slice::artifact_store::CatalogEncodingConfig::new(
+        5000,
+        5000,
+        backtesting_vertical_slice::artifact_store::CatalogCompression::Snappy,
+    )
+    .expect("positive test catalog encoding")
+}
 const BAR_INTERVAL_NANOS: i64 = 60_000_000_000;
 
 fn spec() -> SpotInstrumentSpec {
@@ -165,7 +174,8 @@ fn bars_round_trip_through_nt_catalog() {
     let dir = tempfile::TempDir::new().expect("temp dir");
 
     let projection =
-        project_canonical_bars_to_catalog(&table, &spec(), dir.path()).expect("project bars");
+        project_canonical_bars_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project bars");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(
@@ -250,8 +260,13 @@ fn bars_round_trip_through_binary_option_spec() {
     let table = bars_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
 
-    let projection = project_canonical_bars_to_catalog(&table, &binary_option_spec(), dir.path())
-        .expect("project bars via binary option spec");
+    let projection = project_canonical_bars_to_catalog(
+        &table,
+        &binary_option_spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project bars via binary option spec");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert!(!projection.catalog_hash.is_empty());
@@ -324,7 +339,8 @@ fn bars_round_trip_preserves_non_default_bar_spec() {
     table.rows[0].capture_time = BASE_OPEN_TIME + four_hours_nanos;
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_bars_to_catalog(&table, &spec(), dir.path()).expect("project 4-HOUR bars");
+    project_canonical_bars_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+        .expect("project 4-HOUR bars");
 
     let loaded = read_back_bars(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(loaded.len(), 1);
@@ -379,8 +395,9 @@ fn projection_refuses_dirty_catalog_root() {
     let table = bars_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
     std::fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
-    let err = project_canonical_bars_to_catalog(&table, &spec(), dir.path())
-        .expect_err("dirty catalog root must be refused");
+    let err =
+        project_canonical_bars_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect_err("dirty catalog root must be refused");
     assert!(err.to_string().contains("not empty"), "{err}");
 }
 
@@ -397,7 +414,7 @@ fn bar_precision_widens_when_data_finer() {
         "100.0001",
     )]);
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_bars_to_catalog(&table, &spec(), dir.path())
+    project_canonical_bars_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
         .expect("projection widens precision instead of rejecting accepted data");
     let loaded = read_back_bars(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(loaded.len(), 1);
@@ -420,8 +437,12 @@ fn bar_catalog_hash_is_stable() {
     let table = bars_table();
     let dir_a = tempfile::TempDir::new().unwrap();
     let dir_b = tempfile::TempDir::new().unwrap();
-    let a = project_canonical_bars_to_catalog(&table, &spec(), dir_a.path()).unwrap();
-    let b = project_canonical_bars_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+    let a =
+        project_canonical_bars_to_catalog(&table, &spec(), dir_a.path(), &test_catalog_encoding())
+            .unwrap();
+    let b =
+        project_canonical_bars_to_catalog(&table, &spec(), dir_b.path(), &test_catalog_encoding())
+            .unwrap();
     assert_eq!(
         a.catalog_hash, b.catalog_hash,
         "same bar data must hash identically regardless of root"
@@ -431,7 +452,13 @@ fn bar_catalog_hash_is_stable() {
     let mut table_c = bars_table();
     table_c.rows[0].close = "0.50".to_string();
     let dir_c = tempfile::TempDir::new().unwrap();
-    let c = project_canonical_bars_to_catalog(&table_c, &spec(), dir_c.path()).unwrap();
+    let c = project_canonical_bars_to_catalog(
+        &table_c,
+        &spec(),
+        dir_c.path(),
+        &test_catalog_encoding(),
+    )
+    .unwrap();
     assert_ne!(
         a.catalog_hash, c.catalog_hash,
         "different bar data must change the catalog hash"

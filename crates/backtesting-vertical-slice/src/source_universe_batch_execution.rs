@@ -39,7 +39,10 @@ use std::{
 };
 
 use crate::atomic_artifact_write::{
-    atomic_file_create_or_verify_guarded, open_pinned_regular_file,
+    OwnedTempDirectory, atomic_file_create_or_verify_guarded,
+    compact_owned_temp_directory_to_receipt_bounded, create_owned_temp_directory_guarded,
+    initialize_owned_temp_directory_receipt_guarded, open_pinned_regular_file,
+    unique_temp_path_guarded,
 };
 use crate::backfill_execution_plan::{
     BackfillExecutionPlan, ValidatedBackfillExecutionControls,
@@ -60,21 +63,27 @@ use crate::path_resolution::{
 use crate::pinned_regular_file::{PinnedRegularFileFingerprint, read_exact_pinned_file};
 use crate::reference_artifact::ReferenceArtifactPin;
 use crate::retired_backfill_evidence::ensure_active_backfill_runtime_path;
+use crate::source_universe_local_storage::{
+    SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_BYTES, SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_FILE,
+    SourceUniverseLifecycleCleanupLimits, SourceUniverseLocalStorageLease,
+    SourceUniverseLocalStoragePolicy,
+};
 use crate::{
     operator::{
-        DurableCompletionLocator, DurableOutputCandidateSealProbe, DurableRunDispatcher,
-        DurableRunReceipt, OperatorRunSummary, RunSpec, VerifiedSourceBindingRegistry,
+        DurableCompletionLocator, DurableExecutionAttestation, DurableExecutionProvenance,
+        DurableOutputCandidateSealProbe, DurableRunDispatcher, DurableRunReceipt,
+        OperatorRunSummary, RunSpec, VerifiedSourceBindingRegistry,
         probe_durable_output_candidate_seal_summary_capped, validate_durable_run_spec_preflight,
         validate_run_spec_manifest_for_object_hash_with_verified_registry,
     },
     source_universe_execution_pack::{
-        SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION, SourceUniverseExecutionPack,
-        SourceUniverseExecutionPackRecord, SourceUniverseExecutionPackStatus,
+        SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
+        SourceUniverseExecutionPackStatus, validate_execution_pack_semantics,
     },
 };
 
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION: &str =
-    "source-universe-batch-execution-report.v5";
+    "source-universe-batch-execution-report.v9";
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE: &str =
     "source-universe-batch-execution-report.json";
 
@@ -83,7 +92,7 @@ pub const SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT: &str =
     ".source-universe-operator-worker-requests";
 #[cfg(target_os = "linux")]
 const SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_SCHEMA_VERSION: &str =
-    "source-universe-operator-worker-request.v5";
+    "source-universe-operator-worker-request.v6";
 #[cfg(target_os = "linux")]
 const WORKER_REQUEST_ROLE_ACCEPTED_TRANCHE: &str = "accepted_tranche";
 #[cfg(target_os = "linux")]
@@ -102,6 +111,11 @@ const WORKER_REQUEST_ROLES: [&str; 5] = [
     WORKER_REQUEST_ROLE_SELECTED_OBJECT,
     WORKER_REQUEST_ROLE_SOURCE_BINDINGS,
 ];
+
+fn worker_request_archive_header_bytes() -> Result<u64> {
+    u64::try_from(std::mem::size_of::<u64>())
+        .context("worker request header width does not fit u64")
+}
 
 /// Operator-supplied identity for a launch artifact. The executor opens the
 /// path without following symlinks and accepts only this exact length/hash.
@@ -171,6 +185,41 @@ pub struct SourceUniverseBatchBootstrapLimits {
     /// Aggregate encoded-input envelope for all retained raw controls plus the
     /// typed control values derived from them for the selected batch window.
     pub max_retained_control_input_bytes: u64,
+}
+
+/// TOML-owned hard resource ceiling for the same-binary worker process.
+/// Cooperative decoded-byte accounting remains useful diagnostics, while the
+/// kernel address-space limit is the final aggregate peak-memory authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseBatchResourceLimits {
+    pub worker_max_virtual_memory_bytes: u64,
+    /// TOML-owned allowance for worker executable mappings, allocator state,
+    /// runtime stacks, and memory outside the selected object plus the
+    /// execution plan's decoded-byte ceiling.
+    pub worker_reserved_overhead_bytes: u64,
+}
+
+impl SourceUniverseBatchResourceLimits {
+    pub fn validate(self) -> Result<Self> {
+        ensure!(
+            self.worker_max_virtual_memory_bytes > 0,
+            "resource_limits.worker_max_virtual_memory_bytes must be positive"
+        );
+        ensure!(
+            self.worker_max_virtual_memory_bytes != u64::MAX,
+            "resource_limits.worker_max_virtual_memory_bytes must be finite"
+        );
+        ensure!(
+            self.worker_reserved_overhead_bytes > 0,
+            "resource_limits.worker_reserved_overhead_bytes must be positive"
+        );
+        ensure!(
+            self.worker_reserved_overhead_bytes != u64::MAX,
+            "resource_limits.worker_reserved_overhead_bytes must be finite"
+        );
+        Ok(self)
+    }
 }
 
 impl SourceUniverseBatchBootstrapLimits {
@@ -403,9 +452,17 @@ trait SourceUniverseOperatorRunner {
         _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
         _work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Option<DurableRunReceipt>> {
+    ) -> Result<Option<SourceUniverseDiscoveredRunReceipt>> {
         Ok(None)
     }
+}
+
+/// One exact immutable terminal discovered by the worker used for this
+/// attempt. The attempt worker may be newer than the immutable publisher
+/// attested inside `receipt`.
+struct SourceUniverseDiscoveredRunReceipt {
+    attempt_worker_sha256: String,
+    receipt: DurableRunReceipt,
 }
 
 /// Clock-only injection seam for deterministic batch deadline tests.
@@ -490,6 +547,7 @@ impl SourceUniverseBatchExecutionRunOutput {
 #[derive(Debug)]
 struct SourceUniverseCommittedRunReceipt {
     output: SourceUniverseBatchExecutionRunOutput,
+    worker_executable_sha256: String,
     durable_completion: DurableCompletionLocator,
 }
 
@@ -542,6 +600,7 @@ fn validate_worker_durable_receipt(
     bytes: &[u8],
     spec: &RunSpec,
     summary: &OperatorRunSummary,
+    expected_worker_executable_sha256: &str,
 ) -> Result<DurableRunReceipt> {
     ensure!(
         !bytes.is_empty(),
@@ -557,6 +616,13 @@ fn validate_worker_durable_receipt(
         bail!("source-universe execute worker returned no current completion")
     };
     validate_durable_receipt(&receipt, spec, summary)?;
+    ensure!(
+        receipt.execution_attestation.provenance
+            == DurableExecutionProvenance::ExecutedProcessIsolated
+            && receipt.execution_attestation.worker_executable_sha256
+                == expected_worker_executable_sha256,
+        "source-universe worker durable receipt execution attestation disagrees with the sealed process-isolated worker"
+    );
     Ok(receipt)
 }
 
@@ -588,6 +654,10 @@ fn durable_receipt_summary(
     spec: &RunSpec,
 ) -> Result<OperatorRunSummary> {
     receipt.completion.validate()?;
+    receipt
+        .execution_attestation
+        .validate()
+        .context("validate source-universe worker durable execution attestation")?;
     ensure!(
         receipt.run_id == spec.manifest.run_id
             && receipt.submitted_manifest_hash == spec.manifest.manifest_hash(),
@@ -622,6 +692,7 @@ fn validate_durable_receipt(
 fn accept_quiesced_durable_worker(
     worker_result: Result<WorkerExitEvidence>,
     candidate_probe: Result<DurableOutputCandidateSealProbe>,
+    worker_executable_sha256: String,
     validate_receipt: impl FnOnce(&[u8], &OperatorRunSummary) -> Result<DurableRunReceipt>,
     validate_final_local_state: impl FnOnce() -> Result<()>,
 ) -> Result<SourceUniverseOperatorRunOutcome> {
@@ -664,9 +735,29 @@ fn accept_quiesced_durable_worker(
             "output lease changed while accepting durable candidate and receipt: {error:#}"
         ))
     })?;
+    durable_receipt
+        .execution_attestation
+        .validate()
+        .map_err(|error| {
+            committed_indeterminate_worker_error(format!(
+                "durable receipt execution attestation is invalid: {error:#}"
+            ))
+        })?;
+    if durable_receipt
+        .execution_attestation
+        .worker_executable_sha256
+        != worker_executable_sha256
+    {
+        return Err(committed_indeterminate_worker_error(
+            "durable receipt worker executable SHA-256 disagrees with the sealed process-isolated worker",
+        ));
+    }
     Ok(SourceUniverseOperatorRunOutcome::Committed(
         SourceUniverseCommittedRunReceipt {
             output: SourceUniverseBatchExecutionRunOutput::from_summary(summary),
+            worker_executable_sha256: durable_receipt
+                .execution_attestation
+                .worker_executable_sha256,
             durable_completion: durable_receipt.completion,
         },
     ))
@@ -706,12 +797,32 @@ pub struct SourceUniverseBatchExecutionConfig {
     pub max_concurrent_records: Option<u64>,
 }
 
+#[cfg(test)]
+pub(crate) const TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS:
+    SourceUniverseLifecycleCleanupLimits = SourceUniverseLifecycleCleanupLimits {
+    max_entries: 100_000,
+    max_depth: 64,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceUniverseBatchExecutionReportStatus {
     Completed,
     CompletedWithFailures,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceUniverseBatchExecutionRecordProvenance {
+    ExecutedProcessIsolated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceUniverseBatchExecutionCompletionResolution {
+    Published,
+    Discovered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -733,8 +844,11 @@ pub struct SourceUniverseBatchExecutionRecord {
     pub canonical_rows: u64,
     pub nt_catalog_rows: u64,
     pub catalog_hash: String,
+    pub completion_provenance: SourceUniverseBatchExecutionRecordProvenance,
+    pub completion_resolution: SourceUniverseBatchExecutionCompletionResolution,
+    pub attempt_worker_sha256: String,
+    pub terminal_publisher_worker_sha256: String,
     pub durable_completion: Option<DurableCompletionLocator>,
-    pub output_dir: PathBuf,
 }
 
 /// Exact local identity of an owned output attempt retained after a
@@ -789,6 +903,14 @@ pub struct SourceUniverseBatchExecutionReportArtifact {
     pub content_hash: String,
     pub bytes: u64,
     pub completed_record_count: u64,
+}
+
+/// A process-isolated batch report published through the same pinned output
+/// root capability that governed execution.
+#[derive(Debug)]
+pub struct SourceUniversePublishedBatchExecution {
+    pub report: SourceUniverseBatchExecutionReport,
+    pub artifact: SourceUniverseBatchExecutionReportArtifact,
 }
 
 /// Validate a batch report as evidence rather than trusting its aggregate
@@ -926,9 +1048,22 @@ pub fn validate_source_universe_batch_execution_report(
                 .with_context(|| format!("validate completed record {name}"))?;
         }
         ensure!(
-            !record.output_dir.as_os_str().is_empty(),
-            "batch execution report completed record output_dir must not be empty"
+            record.completion_provenance
+                == SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated,
+            "batch execution report completion provenance must be executed_process_isolated"
         );
+        validate_sha256_hex(&record.attempt_worker_sha256)
+            .context("validate completed record attempt_worker_sha256")?;
+        validate_sha256_hex(&record.terminal_publisher_worker_sha256)
+            .context("validate completed record terminal_publisher_worker_sha256")?;
+        if record.completion_resolution
+            == SourceUniverseBatchExecutionCompletionResolution::Published
+        {
+            ensure!(
+                record.attempt_worker_sha256 == record.terminal_publisher_worker_sha256,
+                "batch execution report freshly published completion must bind the attempt worker as terminal publisher"
+            );
+        }
         record
             .durable_completion
             .as_ref()
@@ -1426,6 +1561,7 @@ enum SourceUniverseOperatorWorkerRequestKind {
 struct SourceUniverseOperatorWorkerRequestManifest {
     schema_version: String,
     request_kind: SourceUniverseOperatorWorkerRequestKind,
+    execution_attestation: DurableExecutionAttestation,
     record: SourceUniverseExecutionPackRecord,
     output_dir: PathBuf,
     source_bindings_path: PathBuf,
@@ -1646,14 +1782,16 @@ struct ProcessIsolatedSourceUniverseOperatorRunner {
     #[cfg(test)]
     executable_hash_traversals: usize,
     request_root: PathBuf,
+    workspace_owner_lock: fs::File,
     worker_termination_grace: Duration,
+    resource_limits: SourceUniverseBatchResourceLimits,
 }
 
 /// Reject process-level record parallelism until the execution plan carries a
 /// real aggregate parent/child memory ceiling. The CLI calls this before any
 /// pack, cache, output, fetch, or spawn activity; the constructor repeats the
 /// same single source of truth for library callers.
-fn validate_process_isolated_max_concurrent_records(max_concurrent_records: u64) -> Result<()> {
+pub fn validate_process_isolated_max_concurrent_records(max_concurrent_records: u64) -> Result<()> {
     ensure!(
         max_concurrent_records == 1,
         "process-isolated execution requires max_concurrent_records=1 until a configured aggregate-memory byte budget exists; got {max_concurrent_records}"
@@ -1661,13 +1799,36 @@ fn validate_process_isolated_max_concurrent_records(max_concurrent_records: u64)
     Ok(())
 }
 
+/// Validate the sole production tracer's bounded selection before it may
+/// inspect the execution pack, output tree, or object cache.
+pub fn validate_process_isolated_batch_selection(
+    record_limit: Option<u64>,
+    max_concurrent_records: Option<u64>,
+) -> Result<()> {
+    ensure!(
+        max_concurrent_records == Some(1),
+        "process-isolated execution requires max_concurrent_records=1; got {max_concurrent_records:?}"
+    );
+    validate_process_isolated_max_concurrent_records(
+        max_concurrent_records.expect("exact process-isolated concurrency was checked"),
+    )?;
+    ensure!(
+        record_limit == Some(1),
+        "process-isolated execution requires record_limit=1; got {record_limit:?}"
+    );
+    Ok(())
+}
+
 impl ProcessIsolatedSourceUniverseOperatorRunner {
     fn new(
         request_root: PathBuf,
+        workspace_owner_lock: fs::File,
         max_concurrent_records: u64,
         worker_termination_grace: Duration,
+        resource_limits: SourceUniverseBatchResourceLimits,
     ) -> Result<Self> {
         validate_process_isolated_max_concurrent_records(max_concurrent_records)?;
+        let resource_limits = resource_limits.validate()?;
         ensure!(
             !worker_termination_grace.is_zero(),
             "worker termination grace must be positive"
@@ -1700,7 +1861,9 @@ impl ProcessIsolatedSourceUniverseOperatorRunner {
             #[cfg(test)]
             executable_hash_traversals: 0,
             request_root,
+            workspace_owner_lock,
             worker_termination_grace,
+            resource_limits,
         })
     }
 
@@ -1853,12 +2016,19 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<SourceUniverseOperatorRunOutcome> {
         self.seal_executable_once(work_budget)?;
+        let worker_executable_sha256 = self
+            .executable_sha256
+            .clone()
+            .context("sealed worker executable is missing its cached SHA-256")?;
+        let execution_attestation =
+            DurableExecutionAttestation::new_process_isolated(worker_executable_sha256.clone())?;
         let output_lease = PinnedWorkerDirectoryLease::capture(output_dir)?;
         reverify_parent_held_controls(record, control_artifacts, work_budget)?;
         let request_archive = commit_worker_request_archive(
             &self.request_root,
             record,
             SourceUniverseOperatorWorkerRequest::Execute(object_bytes),
+            &execution_attestation,
             control_artifacts,
             output_dir,
             work_budget,
@@ -1868,9 +2038,11 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
         // overlap its selected-object buffer with a full parent-side copy.
         let worker_lifecycle = spawn_and_wait_for_worker(
             &self.executable,
+            &self.workspace_owner_lock,
             request_archive,
             work_budget,
             self.worker_termination_grace,
+            self.resource_limits,
         );
         let worker_result = require_quiesced_worker_lifecycle(worker_lifecycle)?;
 
@@ -1894,8 +2066,14 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
         accept_quiesced_durable_worker(
             worker_result,
             candidate_probe,
+            worker_executable_sha256,
             |bytes, summary| {
-                validate_worker_durable_receipt(bytes, &control_artifacts.run_spec, summary)
+                validate_worker_durable_receipt(
+                    bytes,
+                    &control_artifacts.run_spec,
+                    summary,
+                    &execution_attestation.worker_executable_sha256,
+                )
             },
             || output_lease.revalidate(),
         )
@@ -1907,23 +2085,33 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         output_dir: &Path,
         work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<Option<DurableRunReceipt>> {
+    ) -> Result<Option<SourceUniverseDiscoveredRunReceipt>> {
         self.seal_executable_once(work_budget)?;
+        let worker_executable_sha256 = self
+            .executable_sha256
+            .clone()
+            .context("sealed worker executable is missing its cached SHA-256")?;
+        let execution_attestation = DurableExecutionAttestation::new_process_isolated(
+            worker_executable_sha256.clone(),
+        )?;
         let output_lease = PinnedWorkerDirectoryLease::capture(output_dir)?;
         reverify_parent_held_controls(record, control_artifacts, work_budget)?;
         let request_archive = commit_worker_request_archive(
             &self.request_root,
             record,
             SourceUniverseOperatorWorkerRequest::Discover,
+            &execution_attestation,
             control_artifacts,
             output_dir,
             work_budget,
         )?;
         let worker_lifecycle = spawn_and_wait_for_worker(
             &self.executable,
+            &self.workspace_owner_lock,
             request_archive,
             work_budget,
             self.worker_termination_grace,
+            self.resource_limits,
         );
         let worker_result = require_quiesced_worker_lifecycle(worker_lifecycle)?;
         let worker_evidence = worker_result.map_err(|error| {
@@ -1940,7 +2128,10 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
             &worker_evidence.receipt_bytes,
             &control_artifacts.run_spec,
         )?
-        .map(|(receipt, _summary)| receipt);
+        .map(|(receipt, _summary)| SourceUniverseDiscoveredRunReceipt {
+            attempt_worker_sha256: worker_executable_sha256,
+            receipt,
+        });
         output_lease
             .revalidate()
             .context("fresh discovery scratch lease changed during current-terminal validation")?;
@@ -2167,6 +2358,7 @@ fn commit_worker_request_archive(
     request_root: &Path,
     record: &SourceUniverseExecutionPackRecord,
     request: SourceUniverseOperatorWorkerRequest,
+    execution_attestation: &DurableExecutionAttestation,
     controls: &SourceUniverseVerifiedControlArtifacts,
     output_dir: &Path,
     work_budget: &OperatorWorkBudgetGuard,
@@ -2177,6 +2369,7 @@ fn commit_worker_request_archive(
             request_root,
             record,
             request,
+            execution_attestation,
             controls,
             output_dir,
             work_budget,
@@ -2273,6 +2466,7 @@ fn commit_worker_request_archive(
         let manifest = SourceUniverseOperatorWorkerRequestManifest {
             schema_version: SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_SCHEMA_VERSION.to_string(),
             request_kind,
+            execution_attestation: execution_attestation.clone(),
             record: record.clone(),
             output_dir,
             source_bindings_path: controls.source_bindings_path.clone(),
@@ -2355,6 +2549,10 @@ fn validate_worker_request_manifest(
         manifest.schema_version == SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_SCHEMA_VERSION,
         "worker request schema mismatch"
     );
+    manifest
+        .execution_attestation
+        .validate()
+        .context("validate worker request execution attestation")?;
     ensure!(
         manifest.output_dir.is_absolute(),
         "worker request output_dir must be absolute"
@@ -2432,8 +2630,7 @@ fn worker_request_archive_expected_bytes(
 ) -> Result<u64> {
     validate_worker_request_manifest(manifest)?;
     manifest.payloads.iter().try_fold(
-        u64::try_from(std::mem::size_of::<u64>())
-            .context("worker request header width does not fit u64")?
+        worker_request_archive_header_bytes()?
             .checked_add(manifest_bytes)
             .context("worker request manifest range overflow")?,
         |total, payload| {
@@ -2450,8 +2647,7 @@ fn worker_request_payload_offset(
     manifest: &SourceUniverseOperatorWorkerRequestManifest,
     role: &str,
 ) -> Result<u64> {
-    let mut offset = u64::try_from(std::mem::size_of::<u64>())
-        .context("worker request header width does not fit u64")?
+    let mut offset = worker_request_archive_header_bytes()?
         .checked_add(manifest_bytes)
         .context("worker request manifest range overflow")?;
     for payload in &manifest.payloads {
@@ -2476,15 +2672,172 @@ fn worker_request_retained_peak_bytes(
     })
 }
 
+#[cfg(target_os = "linux")]
+fn worker_rlimit_from_u64(bytes: u64) -> Result<libc::rlim_t> {
+    // `rlim_t` is a platform alias: this is an identity conversion on common
+    // 64-bit Linux targets and a checked narrowing conversion where it is
+    // smaller. Keep the checked form so the source remains width-correct.
+    #[allow(clippy::useless_conversion)]
+    let limit =
+        libc::rlim_t::try_from(bytes).context("worker address-space limit does not fit rlim_t")?;
+    ensure!(
+        limit != libc::RLIM_INFINITY,
+        "worker address-space limit must not resolve to RLIM_INFINITY"
+    );
+    Ok(limit)
+}
+
+#[cfg(target_os = "linux")]
+fn configure_worker_address_space_limit(
+    command: &mut Command,
+    resource_limits: SourceUniverseBatchResourceLimits,
+) -> Result<()> {
+    let resource_limits = resource_limits.validate()?;
+    let limit = worker_rlimit_from_u64(resource_limits.worker_max_virtual_memory_bytes)?;
+    let rlimit = libc::rlimit {
+        rlim_cur: limit,
+        rlim_max: limit,
+    };
+    // SAFETY: the closure performs only the async-signal-safe `setrlimit`
+    // syscall between fork and exec. Every value is copied into the closure;
+    // it allocates nothing and touches no shared process state.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setrlimit(libc::RLIMIT_AS, &rlimit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn configure_worker_workspace_owner_lock_inheritance(
+    command: &mut Command,
+    workspace_owner_lock: &fs::File,
+) -> Result<()> {
+    let fd = workspace_owner_lock.as_raw_fd();
+    ensure!(
+        fd > libc::STDERR_FILENO,
+        "workspace owner-lock descriptor must not overlap standard streams"
+    );
+    // SAFETY: F_GETFD only inspects the live descriptor.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("inspect workspace owner-lock descriptor flags before worker spawn");
+    }
+    ensure!(
+        flags & libc::FD_CLOEXEC != 0,
+        "parent workspace owner-lock descriptor must remain close-on-exec"
+    );
+    // SAFETY: the closure performs only async-signal-safe fcntl syscalls
+    // between fork and exec. It changes the descriptor flag in the child-only
+    // descriptor table, so other parent threads never observe an inheritable
+    // owner-lock descriptor.
+    unsafe {
+        command.pre_exec(move || {
+            let child_flags = libc::fcntl(fd, libc::F_GETFD);
+            if child_flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(fd, libc::F_SETFD, child_flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn adopt_inherited_workspace_owner_lock(fd: i32) -> Result<fs::File> {
+    ensure!(
+        fd > libc::STDERR_FILENO,
+        "inherited workspace owner-lock descriptor must not overlap standard streams"
+    );
+    // SAFETY: F_GETFD only inspects the descriptor supplied by the trusted
+    // same-binary parent launch path.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("inspect inherited workspace owner-lock descriptor");
+    }
+    ensure!(
+        flags & libc::FD_CLOEXEC == 0,
+        "workspace owner-lock descriptor did not survive worker exec"
+    );
+    // SAFETY: after exec no Rust owner exists for this inherited raw
+    // descriptor. This worker adopts the sole process-local owner and keeps it
+    // live for the entire worker operation.
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    let metadata = file
+        .metadata()
+        .context("stat inherited workspace owner-lock descriptor")?;
+    // SAFETY: geteuid has no preconditions.
+    let effective_uid = unsafe { libc::geteuid() };
+    ensure!(
+        metadata.file_type().is_file()
+            && metadata.uid() == effective_uid
+            && metadata.nlink() == 1
+            && metadata.mode() & 0o077 == 0,
+        "inherited workspace owner lock must be one owner-private regular file"
+    );
+    // An inherited descriptor refers to the same open-file description as the
+    // parent lease. Reasserting the nonblocking exclusive flock proves the
+    // capability still carries that live ownership before any worker write.
+    // SAFETY: flock operates on the live inherited descriptor and never waits.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("validate inherited workspace owner lease in worker");
+    }
+    Ok(file)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_current_worker_address_space_limit(expected_bytes: u64) -> Result<()> {
+    ensure!(
+        expected_bytes > 0 && expected_bytes != u64::MAX,
+        "worker address-space limit must be positive and finite"
+    );
+    let expected = worker_rlimit_from_u64(expected_bytes)?;
+    let mut actual = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `actual` is valid writable storage for one `rlimit` value.
+    if unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut actual) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("read worker RLIMIT_AS after exec");
+    }
+    ensure!(
+        actual.rlim_cur == expected && actual.rlim_max == expected,
+        "worker RLIMIT_AS does not match configured hard ceiling: expected {expected_bytes}, got soft={} hard={}",
+        actual.rlim_cur,
+        actual.rlim_max
+    );
+    Ok(())
+}
+
 fn spawn_and_wait_for_worker(
     executable: &PinnedWorkerExecutable,
+    workspace_owner_lock: &fs::File,
     archive: CommittedWorkerRequestArchive,
     work_budget: &OperatorWorkBudgetGuard,
     termination_timeout: Duration,
+    resource_limits: SourceUniverseBatchResourceLimits,
 ) -> WorkerLifecycleOutcome {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (executable, archive, work_budget, termination_timeout);
+        let _ = (
+            executable,
+            workspace_owner_lock,
+            archive,
+            work_budget,
+            termination_timeout,
+            resource_limits,
+        );
         WorkerLifecycleOutcome::NotStarted(anyhow::anyhow!(
             "fd-backed same-binary worker execution is unsupported on this platform"
         ))
@@ -2494,6 +2847,7 @@ fn spawn_and_wait_for_worker(
     {
         let bootstrap_max_bytes = match (|| -> Result<u64> {
             executable.revalidate_identity()?;
+            resource_limits.validate()?;
             let bootstrap_max_bytes = work_budget.decoded_byte_limit().unwrap_or(u64::MAX);
             ensure!(
                 bootstrap_max_bytes > 0 && archive.manifest_bytes <= bootstrap_max_bytes,
@@ -2514,6 +2868,8 @@ fn spawn_and_wait_for_worker(
         let mut command = Command::new(executable.exec_path());
         command
             .arg(SOURCE_UNIVERSE_OPERATOR_WORKER_MODE)
+            .arg("--workspace-owner-lock-fd")
+            .arg(workspace_owner_lock.as_raw_fd().to_string())
             .arg("--request-archive-bytes")
             .arg(archive.archive_bytes.to_string())
             .arg("--request-manifest-bytes")
@@ -2522,9 +2878,19 @@ fn spawn_and_wait_for_worker(
             .arg(&archive.manifest_sha256)
             .arg("--bootstrap-max-bytes")
             .arg(bootstrap_max_bytes.to_string())
+            .arg("--worker-max-virtual-memory-bytes")
+            .arg(resource_limits.worker_max_virtual_memory_bytes.to_string())
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        if let Err(error) =
+            configure_worker_workspace_owner_lock_inheritance(&mut command, workspace_owner_lock)
+        {
+            return WorkerLifecycleOutcome::NotStarted(error);
+        }
+        if let Err(error) = configure_worker_address_space_limit(&mut command, resource_limits) {
+            return WorkerLifecycleOutcome::NotStarted(error);
+        }
         let lifecycle = spawn_command_with_hard_deadline_observed_with_stdout(
             &mut command,
             work_budget,
@@ -2987,24 +3353,30 @@ fn detach_worker_reaper(child: Child) -> Result<()> {
 /// Hidden child-process entry. One read-only anonymous archive on stdin is the
 /// only operational input; no request pathname exists or needs cleanup.
 pub fn execute_source_universe_operator_worker(
+    workspace_owner_lock_fd: i32,
     archive_bytes: u64,
     manifest_bytes: u64,
     manifest_sha256: &str,
     bootstrap_max_bytes: u64,
+    worker_max_virtual_memory_bytes: u64,
 ) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (
+            workspace_owner_lock_fd,
             archive_bytes,
             manifest_bytes,
             manifest_sha256,
             bootstrap_max_bytes,
+            worker_max_virtual_memory_bytes,
         );
         bail!("anonymous stdin worker request archives are unsupported on this platform");
     }
 
     #[cfg(target_os = "linux")]
     {
+        let _workspace_owner_lock = adopt_inherited_workspace_owner_lock(workspace_owner_lock_fd)?;
+        validate_current_worker_address_space_limit(worker_max_virtual_memory_bytes)?;
         // SAFETY: stdin is live for the process. F_DUPFD_CLOEXEC creates one
         // independently owned descriptor without changing the shared offset.
         let fd = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_DUPFD_CLOEXEC, 0) };
@@ -3127,6 +3499,14 @@ fn execute_source_universe_operator_worker_from_archive(
         &bootstrap_plan,
         manifest.work_budget_deadline,
     )?;
+    let worker_executable = PinnedWorkerExecutable::capture_current()
+        .context("capture process-isolated worker executable for attestation")?;
+    worker_executable
+        .hash_and_revalidate(
+            Some(&manifest.execution_attestation.worker_executable_sha256),
+            &work_budget,
+        )
+        .context("verify process-isolated worker executable attestation")?;
     work_budget.verify_decoded_bytes(
         worker_request_retained_peak_bytes(&manifest)?,
         OperatorWorkBudgetStage::ObjectVerification,
@@ -3214,6 +3594,7 @@ fn execute_source_universe_operator_worker_from_archive(
                 object_bytes,
                 &manifest.output_dir,
                 &registry,
+                manifest.execution_attestation.clone(),
                 &work_budget,
             ))?;
             let receipt = outcome.into_receipt();
@@ -3470,6 +3851,8 @@ where
             fetcher,
             runner,
             clock_factory,
+            TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS,
+            BatchCompletionPolicy::AllowPublish,
         );
         let stop = matches!(slot, RecordSlot::Stopped(_));
         slots[slot_index] = Some(slot);
@@ -3498,11 +3881,38 @@ where
 /// way — only which record's error is reported can differ.
 /// Parallel production entry: every bootstrap artifact is supplied with its
 /// operator-selected length and digest.
+#[cfg(test)]
 fn execute_source_universe_batch_with_pinned_artifacts_factories<F, R>(
     batch_id: &str,
     launch_artifacts: &SourceUniverseBatchLaunchArtifacts,
     output_dir: &Path,
     config: SourceUniverseBatchExecutionConfig,
+    lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+    fetcher_factory: impl Fn() -> Result<F> + Sync,
+    runner_factory: impl Fn() -> Result<R> + Sync,
+) -> Result<SourceUniverseBatchExecutionReport>
+where
+    F: SourceUniverseObjectFetcher,
+    R: SourceUniverseOperatorRunner,
+{
+    let owned_plan = prepare_batch(batch_id, launch_artifacts, output_dir, &config)?;
+    execute_prepared_source_universe_batch_with_factories(
+        batch_id,
+        &owned_plan,
+        config,
+        lifecycle_cleanup_limits,
+        BatchCompletionPolicy::AllowPublish,
+        fetcher_factory,
+        runner_factory,
+    )
+}
+
+fn execute_prepared_source_universe_batch_with_factories<F, R>(
+    batch_id: &str,
+    owned_plan: &OwnedBatchPlan,
+    config: SourceUniverseBatchExecutionConfig,
+    lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+    completion_policy: BatchCompletionPolicy,
     fetcher_factory: impl Fn() -> Result<F> + Sync,
     runner_factory: impl Fn() -> Result<R> + Sync,
 ) -> Result<SourceUniverseBatchExecutionReport>
@@ -3511,11 +3921,10 @@ where
     R: SourceUniverseOperatorRunner,
 {
     let clock_factory = SystemSourceUniverseWorkBudgetClockFactory;
-    let owned_plan = prepare_batch(batch_id, launch_artifacts, output_dir, &config)?;
     let plan = owned_plan.plan();
     let work_item_count = plan.work_items.len();
     if work_item_count == 0 {
-        return assemble_report(batch_id, &owned_plan, Vec::new());
+        return assemble_report(batch_id, owned_plan, Vec::new());
     }
     let worker_count = config
         .max_concurrent_records
@@ -3574,6 +3983,8 @@ where
                                     config,
                                     &mut lazy_fetcher,
                                     runner.as_mut().expect("batch runner initialized"),
+                                    lifecycle_cleanup_limits,
+                                    completion_policy,
                                 ))
                             })() {
                                 Ok(slot) => slot,
@@ -3611,7 +4022,7 @@ where
     {
         return Err(lowest_sequence_error(slots));
     }
-    assemble_report(batch_id, &owned_plan, slots)
+    assemble_report(batch_id, owned_plan, slots)
 }
 
 /// Sole production batch entry: selected records execute in a pinned
@@ -3625,31 +4036,81 @@ pub fn execute_source_universe_batch_process_isolated<F>(
     fetcher_factory: impl Fn() -> Result<F> + Sync,
     request_root: PathBuf,
     worker_termination_grace_seconds: u64,
-) -> Result<SourceUniverseBatchExecutionReport>
+    resource_limits: SourceUniverseBatchResourceLimits,
+    local_storage_policy: &SourceUniverseLocalStoragePolicy,
+    local_storage_lease: &SourceUniverseLocalStorageLease,
+    lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+) -> Result<SourceUniversePublishedBatchExecution>
 where
     F: SourceUniverseObjectFetcher,
 {
-    let max_concurrent_records = config.max_concurrent_records.unwrap_or(1);
-    validate_process_isolated_max_concurrent_records(max_concurrent_records)?;
+    validate_process_isolated_batch_selection(config.record_limit, config.max_concurrent_records)?;
+    let max_concurrent_records = config
+        .max_concurrent_records
+        .expect("exact process-isolated concurrency was checked");
     ensure!(
         worker_termination_grace_seconds > 0,
         "worker_termination_grace_seconds must be positive"
     );
+    let resource_limits = resource_limits.validate()?;
+    let lifecycle_cleanup_limits = lifecycle_cleanup_limits.validate()?;
     let worker_termination_grace = Duration::from_secs(worker_termination_grace_seconds);
-    execute_source_universe_batch_with_pinned_artifacts_factories(
+    let owned_plan = prepare_batch(batch_id, launch_artifacts, output_dir, &config)?;
+    let existing_report = read_existing_batch_report_with_lease(
+        &owned_plan.output_root_lease,
+        launch_artifacts.bootstrap_limits.max_retained_control_input_bytes,
+    )?;
+    if let Some(existing) = existing_report.as_ref() {
+        validate_existing_batch_report_selection(existing, batch_id, &owned_plan)?;
+    }
+    let record_envelope = owned_plan.process_isolated_record_resource_envelope(
+        launch_artifacts.bootstrap_limits,
+        resource_limits,
+    )?;
+    local_storage_lease
+        .verify_pre_record_admission(
+            local_storage_policy,
+            record_envelope.local_storage_required_bytes,
+        )
+        .context("verify selected-record local-storage admission reserve before fetch")?;
+    let report = execute_prepared_source_universe_batch_with_factories(
         batch_id,
-        launch_artifacts,
-        output_dir,
+        &owned_plan,
         config,
+        lifecycle_cleanup_limits,
+        if existing_report.is_some() {
+            BatchCompletionPolicy::RequireExistingRemoteTerminal
+        } else {
+            BatchCompletionPolicy::AllowPublish
+        },
         fetcher_factory,
         move || {
             ProcessIsolatedSourceUniverseOperatorRunner::new(
                 request_root.clone(),
+                local_storage_lease.duplicate_owner_lock_for_worker()?,
                 max_concurrent_records,
                 worker_termination_grace,
+                resource_limits,
             )
         },
-    )
+    )?;
+    let report = if let Some(existing) = existing_report {
+        validate_existing_batch_report_against_remote_discovery(&existing, &report)?;
+        existing
+    } else {
+        report
+    };
+    local_storage_lease
+        .verify_observed_terminal_boundedness(local_storage_policy)
+        .context("verify observed local-storage boundedness after record-attempt compaction")?;
+    let artifact = write_source_universe_batch_execution_report_with_lease(
+        &owned_plan.output_root_lease,
+        &report,
+    )?;
+    local_storage_lease
+        .verify_observed_terminal_boundedness(local_storage_policy)
+        .context("verify observed local-storage boundedness after batch report publication")?;
+    Ok(SourceUniversePublishedBatchExecution { report, artifact })
 }
 
 /// A single unit of batch work after selection: either a control-artifact
@@ -3687,6 +4148,12 @@ enum RecordSlot {
     Discovered(SourceUniverseBatchExecutionRecord),
     Failed(SourceUniverseBatchExecutionFailureRecord),
     Stopped(StoppedRecord),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchCompletionPolicy {
+    AllowPublish,
+    RequireExistingRemoteTerminal,
 }
 
 struct StoppedRecord {
@@ -3789,7 +4256,7 @@ impl BatchOutputRootLease {
 struct BatchOutputChildClaim {
     component: String,
     canonical_path: PathBuf,
-    handle: fs::File,
+    owned: OwnedTempDirectory,
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -3844,33 +4311,54 @@ fn attempt_identity_from_claim_error(
 }
 
 impl BatchOutputChildClaim {
-    fn acquire(root: &BatchOutputRootLease, operator_run_id: &str) -> Result<Self> {
+    fn acquire(
+        root: &BatchOutputRootLease,
+        operator_run_id: &str,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<Self> {
         root.revalidate()?;
         validate_portable_path_component("operator_run_id", operator_run_id)?;
-        let attempt_path = crate::atomic_artifact_write::unique_temp_path(
+        let (attempt_path, retained_path_bytes) = unique_temp_path_guarded(
             &root.canonical_path.join(operator_run_id),
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
         )
-        .context("derive unique operator output attempt")?;
+        .context("derive guarded unique operator output attempt")?;
         let component = attempt_path
             .file_name()
             .and_then(|name| name.to_str())
             .context("unique operator output attempt is not UTF-8")?
             .to_string();
         validate_portable_path_component("operator_output_attempt", &component)?;
-        fs::create_dir(&attempt_path).with_context(|| {
+        let owned = create_owned_temp_directory_guarded(
+            attempt_path.clone(),
+            retained_path_bytes,
+            work_budget,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .with_context(|| {
             format!(
-                "atomically claim unique operator output attempt {}",
+                "claim unique operator output attempt {}",
                 attempt_path.display()
             )
         })?;
-        let attempt_identity = claimed_attempt_identity(&attempt_path);
+        let attempt_identity = claimed_attempt_identity(owned.path());
         (|| -> Result<Self> {
+            initialize_owned_temp_directory_receipt_guarded(
+                &owned,
+                std::ffi::OsStr::new(SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_FILE),
+                SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_BYTES,
+                work_budget,
+                OperatorWorkBudgetStage::ObjectVerification,
+            )
+            .context("initialize record-attempt lifecycle receipt")?;
             let canonical_path =
                 resolve_contained_output_component(&root.canonical_path, &component)?;
-            let handle = fs::File::open(&canonical_path).with_context(|| {
-                format!("open claimed operator output {}", canonical_path.display())
-            })?;
-            let metadata = handle.metadata().with_context(|| {
+            ensure!(
+                canonical_path == owned.path(),
+                "claimed operator output canonical path changed during acquisition"
+            );
+            let metadata = fs::symlink_metadata(&canonical_path).with_context(|| {
                 format!("stat claimed operator output {}", canonical_path.display())
             })?;
             ensure!(
@@ -3881,7 +4369,7 @@ impl BatchOutputChildClaim {
             let claim = Self {
                 component,
                 canonical_path,
-                handle,
+                owned,
                 #[cfg(unix)]
                 device: metadata.dev(),
                 #[cfg(unix)]
@@ -3913,23 +4401,20 @@ impl BatchOutputChildClaim {
                 self.canonical_path.display()
             )
         })?;
-        let handle_metadata = self.handle.metadata().with_context(|| {
+        self.owned.revalidate_namespace().with_context(|| {
             format!(
-                "stat held operator output handle {}",
+                "revalidate owned operator output {}",
                 self.canonical_path.display()
             )
         })?;
         ensure!(
-            path_metadata.is_dir() && handle_metadata.is_dir(),
+            path_metadata.is_dir(),
             "claimed operator output {} is no longer a directory",
             self.canonical_path.display()
         );
         #[cfg(unix)]
         ensure!(
-            path_metadata.dev() == self.device
-                && path_metadata.ino() == self.inode
-                && handle_metadata.dev() == self.device
-                && handle_metadata.ino() == self.inode,
+            path_metadata.dev() == self.device && path_metadata.ino() == self.inode,
             "claimed operator output {} device/inode identity changed",
             self.canonical_path.display()
         );
@@ -3949,91 +4434,24 @@ impl BatchOutputChildClaim {
             inode: None,
         }
     }
-}
 
-pub(crate) fn validate_execution_pack_identity(pack: &SourceUniverseExecutionPack) -> Result<()> {
-    ensure!(
-        pack.schema_version == SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
-        "execution pack schema_version mismatch: expected {}, got {}",
-        SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
-        pack.schema_version
-    );
-    ensure!(
-        !pack.pack_id.trim().is_empty(),
-        "execution pack pack_id must not be empty"
-    );
-    ensure!(
-        !pack.universe_id.trim().is_empty(),
-        "execution pack universe_id must not be empty"
-    );
-    ensure!(
-        !pack.venue.trim().is_empty(),
-        "execution pack venue must not be empty"
-    );
-    ensure!(
-        !pack.table_family.trim().is_empty(),
-        "execution pack table_family must not be empty"
-    );
-    let mut source_bindings_refs = pack
-        .artifact_refs
-        .iter()
-        .filter(|artifact| artifact.role == "source_bindings");
-    let source_bindings_ref = source_bindings_refs
-        .next()
-        .context("execution pack must retain one shared source_bindings artifact ref")?;
-    ensure!(
-        source_bindings_refs.next().is_none(),
-        "execution pack must retain exactly one shared source_bindings artifact ref"
-    );
-    validate_sha256_hex(&source_bindings_ref.sha256)
-        .context("execution pack source_bindings artifact ref has invalid SHA-256")?;
-
-    for records in pack.records.windows(2) {
-        ensure!(
-            records[0].sequence < records[1].sequence,
-            "execution pack {} sequences must be strictly increasing; {} is followed by {}",
-            pack.pack_id,
-            records[0].sequence,
-            records[1].sequence
-        );
+    fn compact_to_receipt(
+        &self,
+        root: &BatchOutputRootLease,
+        limits: SourceUniverseLifecycleCleanupLimits,
+    ) -> Result<()> {
+        self.revalidate(root)?;
+        compact_owned_temp_directory_to_receipt_bounded(
+            &self.owned,
+            std::ffi::OsStr::new(SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_FILE),
+            SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_BYTES,
+            limits.max_entries,
+            limits.max_depth,
+        )
+        .context("compact terminal record attempt to lifecycle receipt")?;
+        self.revalidate(root)?;
+        Ok(())
     }
-
-    let mut operator_run_ids = BTreeSet::new();
-    for record in &pack.records {
-        validate_portable_path_component("operator_run_id", &record.operator_run_id).with_context(
-            || {
-                format!(
-                    "validate pack record {} operator_run_id {:?}",
-                    record.sequence, record.operator_run_id
-                )
-            },
-        )?;
-        ensure!(
-            operator_run_ids.insert(record.operator_run_id.as_str()),
-            "execution pack {} has duplicate operator_run_id {:?}",
-            pack.pack_id,
-            record.operator_run_id
-        );
-        ensure!(
-            record.source_bindings_path == source_bindings_ref.path
-                && record.source_bindings_sha256 == source_bindings_ref.sha256,
-            "execution pack record {} source-bindings identity does not match shared artifact ref",
-            record.sequence
-        );
-        for (role, bytes) in [
-            ("source_bindings", record.source_bindings_bytes),
-            ("run_spec", record.run_spec_bytes),
-            ("accepted_tranche", record.accepted_tranche_bytes),
-            ("execution_plan", record.execution_plan_bytes),
-        ] {
-            ensure!(
-                bytes > 0,
-                "execution pack record {} {role} byte length must be positive",
-                record.sequence
-            );
-        }
-    }
-    Ok(())
 }
 
 #[derive(Serialize)]
@@ -4150,6 +4568,22 @@ fn execution_record_digests(pack: &SourceUniverseExecutionPack) -> Result<BTreeM
         );
     }
     Ok(digests)
+}
+
+/// Return the canonical digest for one execution-pack record without exposing
+/// or duplicating the pack-context fingerprint algorithm.
+pub(crate) fn execution_record_digest(
+    pack: &SourceUniverseExecutionPack,
+    sequence: u64,
+) -> Result<String> {
+    execution_record_digests(pack)?
+        .remove(&sequence)
+        .with_context(|| {
+            format!(
+                "execution pack {} has no record with sequence {sequence}",
+                pack.pack_id
+            )
+        })
 }
 
 fn validate_pack_record_control_alignment(
@@ -4303,8 +4737,7 @@ fn prepare_batch(
     })?;
     let pack: SourceUniverseExecutionPack = serde_json::from_slice(&pack_bytes)
         .with_context(|| format!("parse execution pack {}", execution_pack_path.display()))?;
-    validate_execution_pack_identity(&pack)?;
-    let execution_record_sha256s = execution_record_digests(&pack)?;
+    validate_execution_pack_semantics(&pack)?;
     ensure!(
         matches!(
             pack.status,
@@ -4323,6 +4756,24 @@ fn prepare_batch(
         .record_limit
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(usize::MAX);
+    let selected_record_count = pack
+        .records
+        .iter()
+        .filter(|record| {
+            config
+                .start_sequence
+                .is_none_or(|start_sequence| record.sequence >= start_sequence)
+        })
+        .take(record_limit)
+        .count();
+    ensure!(
+        selected_record_count > 0,
+        "batch selection for execution pack {} selects zero records (start_sequence={:?}, record_limit={})",
+        pack.pack_id,
+        config.start_sequence,
+        record_limit
+    );
+    let execution_record_sha256s = execution_record_digests(&pack)?;
     let control_input_envelope = validate_selected_control_input_envelope(
         &pack,
         &pack_base_dir,
@@ -4940,7 +5391,126 @@ struct OwnedBatchPlan {
     output_root_lease: BatchOutputRootLease,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessIsolatedRecordResourceEnvelope {
+    local_storage_required_bytes: u64,
+    worker_virtual_memory_required_bytes: u64,
+}
+
+fn calculate_process_isolated_record_resource_envelope(
+    selected_object_bytes: u64,
+    max_decoded_bytes: u64,
+    max_retained_control_input_bytes: u64,
+    max_final_object_bytes: u64,
+    worker_reserved_overhead_bytes: u64,
+) -> Result<ProcessIsolatedRecordResourceEnvelope> {
+    let double_selected_object_bytes = selected_object_bytes
+        .checked_mul(2)
+        .context("selected-record doubled selected-object reserve overflow")?;
+    let double_decoded_bytes = max_decoded_bytes
+        .checked_mul(2)
+        .context("selected-record doubled decoded-byte reserve overflow")?;
+    // The selected object exists simultaneously in the content-addressed
+    // cache and the anonymous worker-request archive. The archive also carries
+    // the retained controls, a length header, and a manifest whose enforced
+    // runtime bootstrap cap is max_decoded_bytes. Keep those bytes independent
+    // from the two decoded-output reserves so admission remains conservative
+    // even when the source object is larger than its decoded output.
+    let request_manifest_and_header_bytes = max_decoded_bytes
+        .checked_add(worker_request_archive_header_bytes()?)
+        .context("selected-record worker-request framing reserve overflow")?;
+    let local_storage_required_bytes = double_selected_object_bytes
+        .checked_add(double_decoded_bytes)
+        .and_then(|value| value.checked_add(max_retained_control_input_bytes))
+        .and_then(|value| value.checked_add(max_final_object_bytes))
+        .and_then(|value| value.checked_add(request_manifest_and_header_bytes))
+        .context("selected-record local-storage requirement overflow")?;
+    let worker_virtual_memory_required_bytes = selected_object_bytes
+        .checked_add(max_decoded_bytes)
+        .and_then(|value| value.checked_add(worker_reserved_overhead_bytes))
+        .context("selected-record worker virtual-memory requirement overflow")?;
+    Ok(ProcessIsolatedRecordResourceEnvelope {
+        local_storage_required_bytes,
+        worker_virtual_memory_required_bytes,
+    })
+}
+
+fn validate_process_isolated_worker_resource_envelope(
+    resource_limits: SourceUniverseBatchResourceLimits,
+    selected_object_bytes: u64,
+    max_decoded_bytes: u64,
+    envelope: ProcessIsolatedRecordResourceEnvelope,
+) -> Result<()> {
+    ensure!(
+        resource_limits.worker_max_virtual_memory_bytes
+            >= envelope.worker_virtual_memory_required_bytes,
+        "resource_limits.worker_max_virtual_memory_bytes {} cannot cover selected_object_bytes {} plus execution_plan.max_decoded_bytes {} plus worker_reserved_overhead_bytes {} (required {})",
+        resource_limits.worker_max_virtual_memory_bytes,
+        selected_object_bytes,
+        max_decoded_bytes,
+        resource_limits.worker_reserved_overhead_bytes,
+        envelope.worker_virtual_memory_required_bytes
+    );
+    Ok(())
+}
+
 impl OwnedBatchPlan {
+    fn process_isolated_record_resource_envelope(
+        &self,
+        bootstrap_limits: SourceUniverseBatchBootstrapLimits,
+        resource_limits: SourceUniverseBatchResourceLimits,
+    ) -> Result<ProcessIsolatedRecordResourceEnvelope> {
+        let mut selected = self
+            .pack
+            .records
+            .iter()
+            .filter(|record| {
+                self.start_sequence
+                    .is_none_or(|start_sequence| record.sequence >= start_sequence)
+            })
+            .take(self.record_limit);
+        let record = selected
+            .next()
+            .context("process-isolated selection has no record")?;
+        ensure!(
+            selected.next().is_none(),
+            "process-isolated selected-record envelope is not singular"
+        );
+        ensure!(
+            self.record_limit == 1,
+            "process-isolated selected-record envelope requires record_limit=1"
+        );
+        if let Some(error) = self.control_artifact_failures.get(&record.sequence) {
+            bail!(
+                "selected process-isolated record {} controls are not verified: {error}",
+                record.sequence
+            );
+        }
+        let controls = self
+            .verified_control_artifacts
+            .get(&record.sequence)
+            .context("selected process-isolated record is missing verified controls")?;
+        let artifact_store = controls
+            .run_spec
+            .artifact_store
+            .as_ref()
+            .context("selected process-isolated record RunSpec is missing artifact_store")?;
+        let envelope = calculate_process_isolated_record_resource_envelope(
+            record.selected_object_bytes,
+            controls.execution_plan.max_decoded_bytes,
+            bootstrap_limits.max_retained_control_input_bytes,
+            artifact_store.max_final_object_bytes,
+            resource_limits.worker_reserved_overhead_bytes,
+        )?;
+        validate_process_isolated_worker_resource_envelope(
+            resource_limits,
+            record.selected_object_bytes,
+            controls.execution_plan.max_decoded_bytes,
+            envelope,
+        )?;
+        Ok(envelope)
+    }
+
     fn plan(&self) -> BatchPlan<'_> {
         let work_items = self
             .pack
@@ -4980,13 +5550,21 @@ impl OwnedBatchPlan {
 }
 
 fn reconstructed_discovered_record(
-    output_dir: &Path,
-    durable_completion: DurableCompletionLocator,
+    discovered: SourceUniverseDiscoveredRunReceipt,
     sealed_summary: OperatorRunSummary,
     record: &SourceUniverseExecutionPackRecord,
     control_artifacts: &SourceUniverseVerifiedControlArtifacts,
     execution_record_sha256: &str,
 ) -> SourceUniverseBatchExecutionRecord {
+    let SourceUniverseDiscoveredRunReceipt {
+        attempt_worker_sha256,
+        receipt: durable_receipt,
+    } = discovered;
+    let DurableRunReceipt {
+        completion,
+        execution_attestation,
+        ..
+    } = durable_receipt;
     SourceUniverseBatchExecutionRecord {
         sequence: record.sequence,
         operator_run_id: record.operator_run_id.clone(),
@@ -5004,8 +5582,12 @@ fn reconstructed_discovered_record(
         canonical_rows: sealed_summary.canonical_rows,
         nt_catalog_rows: sealed_summary.nt_catalog_rows,
         catalog_hash: sealed_summary.catalog_hash,
-        durable_completion: Some(durable_completion),
-        output_dir: output_dir.to_path_buf(),
+        completion_provenance:
+            SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated,
+        completion_resolution: SourceUniverseBatchExecutionCompletionResolution::Discovered,
+        attempt_worker_sha256,
+        terminal_publisher_worker_sha256: execution_attestation.worker_executable_sha256,
+        durable_completion: Some(completion),
     }
 }
 
@@ -5017,6 +5599,8 @@ fn process_work_item<F, R, G>(
     fetcher: &mut F,
     runner: &mut R,
     clock_factory: &G,
+    lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+    completion_policy: BatchCompletionPolicy,
 ) -> RecordSlot
 where
     F: SourceUniverseObjectFetcher,
@@ -5025,9 +5609,15 @@ where
 {
     match resolve_work_item(work_item, config, clock_factory) {
         ResolvedBatchWorkItem::Terminal(slot) => *slot,
-        ResolvedBatchWorkItem::Fresh(fresh) => {
-            process_fresh_work_item(fresh, output_root_lease, config, fetcher, runner)
-        }
+        ResolvedBatchWorkItem::Fresh(fresh) => process_fresh_work_item(
+            fresh,
+            output_root_lease,
+            config,
+            fetcher,
+            runner,
+            lifecycle_cleanup_limits,
+            completion_policy,
+        ),
     }
 }
 
@@ -5086,12 +5676,33 @@ where
     })
 }
 
+fn finalize_record_attempt(
+    record: &SourceUniverseExecutionPackRecord,
+    slot: RecordSlot,
+    output_claim: &BatchOutputChildClaim,
+    output_root_lease: &BatchOutputRootLease,
+    lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+) -> RecordSlot {
+    match output_claim.compact_to_receipt(output_root_lease, lifecycle_cleanup_limits) {
+        Ok(()) => slot,
+        Err(error) => RecordSlot::Stopped(StoppedRecord {
+            sequence: record.sequence,
+            error: error.context(format!(
+                "record outcome was captured but owned attempt {} could not be compacted",
+                output_claim.canonical_path.display()
+            )),
+        }),
+    }
+}
+
 fn process_fresh_work_item<F, R>(
     fresh: FreshBatchWorkItem<'_>,
     output_root_lease: &BatchOutputRootLease,
     config: &SourceUniverseBatchExecutionConfig,
     fetcher: &mut F,
     runner: &mut R,
+    lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+    completion_policy: BatchCompletionPolicy,
 ) -> RecordSlot
 where
     F: SourceUniverseObjectFetcher,
@@ -5122,7 +5733,7 @@ where
     let output_claim = match guarded_operation_outcome(
         &work_budget,
         OperatorWorkBudgetStage::ObjectVerification,
-        || BatchOutputChildClaim::acquire(output_root_lease, &record.operator_run_id),
+        || BatchOutputChildClaim::acquire(output_root_lease, &record.operator_run_id, &work_budget),
     )
     .and_then(std::convert::identity)
     .with_context(|| {
@@ -5152,6 +5763,15 @@ where
             );
         }
     };
+    let finish = |slot| {
+        finalize_record_attempt(
+            record,
+            slot,
+            &output_claim,
+            output_root_lease,
+            lifecycle_cleanup_limits,
+        )
+    };
 
     let record_output_dir = match guarded_operation_outcome(
         &work_budget,
@@ -5163,40 +5783,51 @@ where
     {
         Ok(record_output_dir) => record_output_dir,
         Err(error) => {
-            return record_error_slot_with_attempt(
+            return finish(record_error_slot_with_attempt(
                 record,
                 execution_record_sha256,
                 "validate_output",
                 error,
                 output_claim.attempt_identity(),
                 config,
-            );
+            ));
         }
     };
     let discovery = runner
         .discover_current_completion(record, control_artifacts, &record_output_dir, &work_budget)
         .and_then(|discovered| {
             discovered
-                .map(|receipt| {
-                    let summary = durable_receipt_summary(&receipt, &control_artifacts.run_spec)?;
-                    Ok((receipt, summary))
+                .map(|discovered| {
+                    let summary = durable_receipt_summary(
+                        &discovered.receipt,
+                        &control_artifacts.run_spec,
+                    )?;
+                    Ok((discovered, summary))
                 })
                 .transpose()
         });
     match discovery {
-        Ok(Some((receipt, summary))) => {
-            return RecordSlot::Discovered(reconstructed_discovered_record(
-                &record_output_dir,
-                receipt.completion,
+        Ok(Some((discovered, summary))) => {
+            return finish(RecordSlot::Discovered(reconstructed_discovered_record(
+                discovered,
                 summary,
                 record,
                 control_artifacts,
                 execution_record_sha256,
-            ));
+            )));
         }
-        Ok(None) => {}
+        Ok(None) => {
+            if completion_policy == BatchCompletionPolicy::RequireExistingRemoteTerminal {
+                return finish(RecordSlot::Stopped(StoppedRecord {
+                    sequence: record.sequence,
+                    error: anyhow::anyhow!(
+                        "immutable batch report exists but its exact remote durable terminal is absent"
+                    ),
+                }));
+            }
+        }
         Err(error) => {
-            return record_error_slot_with_attempt(
+            return finish(record_error_slot_with_attempt(
                 record,
                 execution_record_sha256,
                 "discover_durable_completion",
@@ -5205,7 +5836,7 @@ where
                 )),
                 output_claim.attempt_identity(),
                 config,
-            );
+            ));
         }
     }
 
@@ -5218,27 +5849,27 @@ where
         {
             Ok(object) => object,
             Err(error) => {
-                return record_error_slot_with_attempt(
+                return finish(record_error_slot_with_attempt(
                     record,
                     execution_record_sha256,
                     "fetch",
                     error,
                     output_claim.attempt_identity(),
                     config,
-                );
+                ));
             }
         };
     let object_bytes = match object.into_bytes_for(record) {
         Ok(bytes) => bytes,
         Err(error) => {
-            return record_error_slot_with_attempt(
+            return finish(record_error_slot_with_attempt(
                 record,
                 execution_record_sha256,
                 "fetch",
                 error.context("bind verified source object to execution-pack record"),
                 output_claim.attempt_identity(),
                 config,
-            );
+            ));
         }
     };
 
@@ -5264,25 +5895,25 @@ where
     }) {
         Ok(record_output_dir) => record_output_dir,
         Err(error) => {
-            return record_error_slot_with_attempt(
+            return finish(record_error_slot_with_attempt(
                 record,
                 execution_record_sha256,
                 "validate_output",
                 error,
                 output_claim.attempt_identity(),
                 config,
-            );
+            ));
         }
     };
     if post_fetch_output_dir != record_output_dir {
-        return record_error_slot_with_attempt(
+        return finish(record_error_slot_with_attempt(
             record,
             execution_record_sha256,
             "validate_output",
             anyhow::anyhow!("fresh discovery scratch path changed before execution"),
             output_claim.attempt_identity(),
             config,
-        );
+        ));
     }
 
     // Allocate and bind every report field before entering the only operation
@@ -5305,8 +5936,12 @@ where
         canonical_rows: 0,
         nt_catalog_rows: 0,
         catalog_hash: String::new(),
+        completion_provenance:
+            SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated,
+        completion_resolution: SourceUniverseBatchExecutionCompletionResolution::Published,
+        attempt_worker_sha256: String::new(),
+        terminal_publisher_worker_sha256: String::new(),
         durable_completion: None,
-        output_dir: record_output_dir,
     };
 
     // The selected operator owns its exact durable completion. Its success
@@ -5318,7 +5953,7 @@ where
             record,
             object_bytes,
             control_artifacts,
-            &completed_record.output_dir,
+            &record_output_dir,
             &work_budget,
         )
     })
@@ -5326,25 +5961,30 @@ where
     let run_output = match run_result {
         Ok(run_output) => run_output,
         Err(error) => {
-            return record_error_slot_with_attempt(
+            return finish(record_error_slot_with_attempt(
                 record,
                 execution_record_sha256,
                 "run_operator",
                 error,
                 output_claim.attempt_identity(),
                 config,
-            );
+            ));
         }
     };
     completed_record.canonical_rows = run_output.output.canonical_rows;
     completed_record.nt_catalog_rows = run_output.output.nt_catalog_rows;
     completed_record.catalog_hash = run_output.output.catalog_hash;
+    completed_record
+        .attempt_worker_sha256
+        .clone_from(&run_output.worker_executable_sha256);
+    completed_record.terminal_publisher_worker_sha256 = run_output.worker_executable_sha256;
     completed_record.durable_completion = Some(run_output.durable_completion);
-    RecordSlot::Completed(completed_record)
+    finish(RecordSlot::Completed(completed_record))
 }
 
 struct CompletedOperatorRun {
     output: SourceUniverseBatchExecutionRunOutput,
+    worker_executable_sha256: String,
     durable_completion: DurableCompletionLocator,
 }
 
@@ -5352,13 +5992,42 @@ struct CompletedOperatorRun {
 pub(crate) fn synthetic_test_durable_completion() -> DurableCompletionLocator {
     DurableCompletionLocator {
         object: crate::operator::DurableObjectVersionIdentity {
-            uri: "s3://synthetic-test/durable-completion-manifest.json".to_string(),
+            uri: format!(
+                "s3://synthetic-test/{}",
+                crate::operator::DURABLE_COMPLETION_MANIFEST_FILE
+            ),
             sha256: crate::hashing::sha256_hex(b"synthetic durable completion"),
             byte_len: 1,
             version_id: "synthetic-version".to_string(),
             e_tag: None,
         },
     }
+}
+
+#[cfg(test)]
+fn synthetic_test_durable_receipt(completion: DurableCompletionLocator) -> DurableRunReceipt {
+    DurableRunReceipt {
+        completion,
+        execution_attestation: DurableExecutionAttestation::new_process_isolated(
+            synthetic_test_worker_executable_sha256(),
+        )
+        .expect("synthetic process-isolated execution attestation"),
+        run_id: "synthetic-run".to_string(),
+        submitted_manifest_hash: crate::hashing::sha256_hex(b"synthetic manifest"),
+        canonical_rows: 1,
+        nt_catalog_rows: 1,
+        catalog_hash: crate::hashing::sha256_hex(b"synthetic catalog"),
+    }
+}
+
+#[cfg(test)]
+fn synthetic_test_worker_executable_sha256() -> String {
+    crate::hashing::sha256_hex(b"synthetic process-isolated worker executable")
+}
+
+#[cfg(test)]
+pub(crate) fn synthetic_test_current_attempt_worker_sha256() -> String {
+    crate::hashing::sha256_hex(b"synthetic current process-isolated worker executable")
 }
 
 fn run_operator_with_terminal_ownership(
@@ -5369,6 +6038,7 @@ fn run_operator_with_terminal_ownership(
     match operation() {
         Ok(SourceUniverseOperatorRunOutcome::Committed(receipt)) => Ok(CompletedOperatorRun {
             output: receipt.output,
+            worker_executable_sha256: receipt.worker_executable_sha256,
             durable_completion: receipt.durable_completion,
         }),
         #[cfg(test)]
@@ -5376,6 +6046,7 @@ fn run_operator_with_terminal_ownership(
             work_budget.check_deadline(OperatorWorkBudgetStage::Backtest)?;
             Ok(CompletedOperatorRun {
                 output,
+                worker_executable_sha256: synthetic_test_worker_executable_sha256(),
                 durable_completion: synthetic_test_durable_completion(),
             })
         }
@@ -5555,14 +6226,393 @@ fn assemble_report(
     Ok(report)
 }
 
-pub fn write_source_universe_batch_execution_report(
-    output_dir: &Path,
+fn validate_existing_batch_report_selection(
+    report: &SourceUniverseBatchExecutionReport,
+    batch_id: &str,
+    owned_plan: &OwnedBatchPlan,
+) -> Result<()> {
+    validate_source_universe_batch_execution_report(report)
+        .context("validate existing immutable batch execution report")?;
+    ensure!(
+        report.batch_id == batch_id
+            && report.pack_id == owned_plan.pack.pack_id
+            && report.universe_id == owned_plan.pack.universe_id
+            && report.venue == owned_plan.pack.venue,
+        "existing immutable batch report does not match the selected batch and execution pack"
+    );
+    ensure!(
+        report.failures.is_empty(),
+        "existing immutable batch report contains failures; retry requires a new batch output identity"
+    );
+    let expected_records = owned_plan
+        .pack
+        .records
+        .iter()
+        .filter(|record| {
+            owned_plan
+                .start_sequence
+                .is_none_or(|start_sequence| record.sequence >= start_sequence)
+        })
+        .take(owned_plan.record_limit)
+        .collect::<Vec<_>>();
+    ensure!(
+        report.records.len() == expected_records.len(),
+        "existing immutable batch report selected record count does not match the current batch selection"
+    );
+    for (actual, expected) in report.records.iter().zip(expected_records) {
+        let execution_record_sha256 = owned_plan
+            .execution_record_sha256s
+            .get(&expected.sequence)
+            .context("selected execution-record digest is missing")?;
+        let controls = owned_plan
+            .verified_control_artifacts
+            .get(&expected.sequence)
+            .context("selected verified controls are missing")?;
+        ensure!(
+            actual.sequence == expected.sequence
+                && actual.operator_run_id == expected.operator_run_id
+                && actual.source_binding == expected.source_binding
+                && actual.category == expected.category
+                && actual.symbol == expected.symbol
+                && actual.archive_date == expected.archive_date
+                && actual.selected_object_sha256 == expected.selected_object_sha256
+                && actual.run_spec_sha256 == expected.run_spec_sha256
+                && actual.accepted_tranche_sha256 == expected.accepted_tranche_sha256
+                && actual.execution_plan_sha256 == expected.execution_plan_sha256
+                && actual.execution_record_sha256.as_str() == execution_record_sha256.as_str()
+                && actual.source_bindings_sha256.as_str()
+                    == controls.source_bindings_sha256.as_str()
+                && actual.selected_object_bytes == expected.selected_object_bytes,
+            "existing immutable batch report record {} does not match the exact selected controls",
+            expected.sequence
+        );
+    }
+    Ok(())
+}
+
+fn validate_existing_batch_report_against_remote_discovery(
+    existing: &SourceUniverseBatchExecutionReport,
+    discovered: &SourceUniverseBatchExecutionReport,
+) -> Result<()> {
+    ensure!(
+        existing.records.len() == discovered.records.len(),
+        "existing immutable batch report remote-discovery cardinality mismatch"
+    );
+    let mut normalized_discovery = discovered.clone();
+    for (existing_record, discovered_record) in existing
+        .records
+        .iter()
+        .zip(&mut normalized_discovery.records)
+    {
+        ensure!(
+            discovered_record.completion_resolution
+                == SourceUniverseBatchExecutionCompletionResolution::Discovered,
+            "existing immutable batch report restart must resolve every exact remote terminal by discovery"
+        );
+        ensure!(
+            existing_record.attempt_worker_sha256 == discovered_record.attempt_worker_sha256,
+            "existing immutable batch report attempt worker is not the exact-current worker"
+        );
+        discovered_record.completion_resolution = existing_record.completion_resolution;
+    }
+    ensure!(
+        &normalized_discovery == existing,
+        "existing immutable batch report does not match exact-current remote terminal discovery"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn read_existing_batch_report_with_lease(
+    output_root_lease: &BatchOutputRootLease,
+    max_bytes: u64,
+) -> Result<Option<SourceUniverseBatchExecutionReport>> {
+    ensure!(max_bytes > 0, "batch report read cap must be positive");
+    output_root_lease
+        .revalidate()
+        .context("revalidate leased output root before existing batch report read")?;
+    let name = std::ffi::CString::new(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE)
+        .context("batch report file name contains an interior NUL")?;
+    let Some(mut file) = try_open_batch_report_at(&output_root_lease.handle, &name)? else {
+        return Ok(None);
+    };
+    let initial = file.metadata().context("stat existing batch report")?;
+    ensure!(
+        initial.len() > 0 && initial.len() <= max_bytes,
+        "existing immutable batch report byte length {} exceeds configured bounded range 1..={max_bytes}",
+        initial.len()
+    );
+    let read_cap = initial
+        .len()
+        .checked_add(1)
+        .context("existing batch report read cap overflow")?;
+    let reserve = usize::try_from(read_cap).context("existing batch report cap exceeds usize")?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(reserve)
+        .context("reserve existing batch report buffer")?;
+    (&mut file)
+        .take(read_cap)
+        .read_to_end(&mut bytes)
+        .context("read existing immutable batch report")?;
+    ensure!(
+        bytes.len() == usize::try_from(initial.len()).context("batch report length exceeds usize")?,
+        "existing immutable batch report length changed while reading"
+    );
+    let after_read = file.metadata().context("re-stat existing batch report")?;
+    ensure!(
+        initial.dev() == after_read.dev()
+            && initial.ino() == after_read.ino()
+            && initial.len() == after_read.len()
+            && initial.mtime() == after_read.mtime()
+            && initial.mtime_nsec() == after_read.mtime_nsec()
+            && initial.ctime() == after_read.ctime()
+            && initial.ctime_nsec() == after_read.ctime_nsec(),
+        "existing immutable batch report changed while reading"
+    );
+    let reopened = open_batch_report_at(&output_root_lease.handle, &name)?;
+    let reopened_identity = reopened
+        .metadata()
+        .context("stat re-opened existing batch report")?;
+    ensure!(
+        initial.dev() == reopened_identity.dev() && initial.ino() == reopened_identity.ino(),
+        "existing immutable batch report namespace changed while reading"
+    );
+    let report: SourceUniverseBatchExecutionReport =
+        serde_json::from_slice(&bytes).context("parse existing immutable batch report")?;
+    let canonical = crate::reference_artifact::canonical_json_bytes(&report)
+        .context("serialize existing immutable batch report canonically")?;
+    ensure!(
+        canonical == bytes,
+        "existing immutable batch report bytes are not canonical"
+    );
+    validate_source_universe_batch_execution_report(&report)
+        .context("validate existing immutable batch report")?;
+    output_root_lease
+        .revalidate()
+        .context("revalidate leased output root after existing batch report read")?;
+    Ok(Some(report))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_existing_batch_report_with_lease(
+    _output_root_lease: &BatchOutputRootLease,
+    _max_bytes: u64,
+) -> Result<Option<SourceUniverseBatchExecutionReport>> {
+    Ok(None)
+}
+
+#[cfg(target_os = "linux")]
+fn try_open_batch_report_at(
+    output_root: &fs::File,
+    name: &std::ffi::CStr,
+) -> Result<Option<fs::File>> {
+    // SAFETY: the held directory fd and C string are live. O_NOFOLLOW rejects
+    // a symlink occupant, and a successful fd is immediately owned by File.
+    let fd = unsafe {
+        libc::openat(
+            output_root.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error).context("open batch report at output-root fd");
+    }
+    // SAFETY: openat returned one new owned descriptor.
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    ensure!(
+        file.metadata()?.file_type().is_file(),
+        "batch report namespace occupant is not a regular file"
+    );
+    Ok(Some(file))
+}
+
+#[cfg(target_os = "linux")]
+fn open_batch_report_at(output_root: &fs::File, name: &std::ffi::CStr) -> Result<fs::File> {
+    try_open_batch_report_at(output_root, name)?
+        .context("batch report is absent at output-root fd")
+}
+
+#[cfg(target_os = "linux")]
+fn verify_batch_report_at(
+    output_root: &fs::File,
+    name: &std::ffi::CStr,
+    expected: &[u8],
+) -> Result<()> {
+    let mut file = open_batch_report_at(output_root, name)?;
+    let initial = file.metadata().context("stat opened batch report")?;
+    ensure!(
+        initial.len()
+            == u64::try_from(expected.len()).context("batch report length exceeds u64")?,
+        "existing immutable batch report has different bytes"
+    );
+    let read_cap = initial
+        .len()
+        .checked_add(1)
+        .context("batch report verification read cap overflow")?;
+    let reserve =
+        usize::try_from(read_cap).context("batch report verification cap exceeds usize")?;
+    let mut observed = Vec::new();
+    observed
+        .try_reserve_exact(reserve)
+        .context("reserve batch report verification buffer")?;
+    (&mut file)
+        .take(read_cap)
+        .read_to_end(&mut observed)
+        .context("read existing immutable batch report")?;
+    ensure!(
+        observed == expected,
+        "existing immutable batch report has different bytes"
+    );
+    let after_read = file.metadata().context("re-stat opened batch report")?;
+    ensure!(
+        initial.dev() == after_read.dev()
+            && initial.ino() == after_read.ino()
+            && initial.len() == after_read.len()
+            && initial.mtime() == after_read.mtime()
+            && initial.mtime_nsec() == after_read.mtime_nsec()
+            && initial.ctime() == after_read.ctime()
+            && initial.ctime_nsec() == after_read.ctime_nsec(),
+        "existing immutable batch report changed during verification"
+    );
+    let reopened = open_batch_report_at(output_root, name)?;
+    let current = reopened
+        .metadata()
+        .context("stat re-opened batch report namespace")?;
+    ensure!(
+        initial.dev() == current.dev() && initial.ino() == current.ino(),
+        "batch report namespace identity changed during verification"
+    );
+    file.sync_all()
+        .context("sync existing immutable batch report")?;
+    output_root
+        .sync_all()
+        .context("sync batch report output-root directory")?;
+    let final_open = open_batch_report_at(output_root, name)?;
+    let final_identity = final_open
+        .metadata()
+        .context("stat final batch report namespace")?;
+    ensure!(
+        initial.dev() == final_identity.dev() && initial.ino() == final_identity.ino(),
+        "batch report namespace identity changed while syncing"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn create_or_verify_batch_report_at(output_root: &fs::File, bytes: &[u8]) -> Result<()> {
+    let name = std::ffi::CString::new(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE)
+        .context("batch report file name contains an interior NUL")?;
+    // SAFETY: the held directory fd and static dot component are live. A
+    // successful O_TMPFILE descriptor owns an unnamed regular file.
+    let fd = unsafe {
+        libc::openat(
+            output_root.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDWR | libc::O_CLOEXEC | libc::O_TMPFILE,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("create anonymous batch report");
+    }
+    // SAFETY: openat returned one new owned descriptor.
+    let mut candidate = unsafe { fs::File::from_raw_fd(fd) };
+    ensure!(
+        candidate.metadata()?.file_type().is_file(),
+        "anonymous batch report is not a regular file"
+    );
+    candidate
+        .write_all(bytes)
+        .context("write anonymous batch report")?;
+    candidate.flush().context("flush anonymous batch report")?;
+    candidate
+        .sync_all()
+        .context("sync anonymous batch report")?;
+    // SAFETY: the anonymous source fd, held directory fd, and C strings remain
+    // live. AT_EMPTY_PATH links the exact anonymous inode create-only.
+    let link_result = unsafe {
+        libc::linkat(
+            candidate.as_raw_fd(),
+            c"".as_ptr(),
+            output_root.as_raw_fd(),
+            name.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if link_result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error).context("create-only link anonymous batch report");
+        }
+    }
+    verify_batch_report_at(output_root, &name, bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn write_source_universe_batch_execution_report_with_lease(
+    output_root_lease: &BatchOutputRootLease,
     report: &SourceUniverseBatchExecutionReport,
 ) -> Result<SourceUniverseBatchExecutionReportArtifact> {
     validate_source_universe_batch_execution_report(report)
         .context("validate batch execution report before write")?;
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("create batch execution report dir {}", output_dir.display()))?;
+    let bytes = crate::reference_artifact::canonical_json_bytes(report)
+        .context("serialize canonical batch execution report")?;
+    let content_hash = crate::hashing::sha256_hex(&bytes);
+    let byte_len = u64::try_from(bytes.len()).context("batch report length exceeds u64")?;
+    output_root_lease
+        .revalidate()
+        .context("revalidate leased batch output root before report publication")?;
+
+    create_or_verify_batch_report_at(&output_root_lease.handle, &bytes).with_context(|| {
+        format!(
+            "create or verify immutable batch execution report under leased output root {}",
+            output_root_lease.canonical_path.display()
+        )
+    })?;
+    output_root_lease
+        .revalidate()
+        .context("revalidate leased batch output root after report publication")?;
+
+    Ok(SourceUniverseBatchExecutionReportArtifact {
+        path: output_root_lease
+            .canonical_path
+            .join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE),
+        content_hash,
+        bytes: byte_len,
+        completed_record_count: report.completed_record_count,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_source_universe_batch_execution_report_with_lease(
+    _output_root_lease: &BatchOutputRootLease,
+    _report: &SourceUniverseBatchExecutionReport,
+) -> Result<SourceUniverseBatchExecutionReportArtifact> {
+    bail!("fd-relative batch report publication requires Linux O_TMPFILE/linkat")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn write_source_universe_batch_execution_report(
+    output_dir: &Path,
+    report: &SourceUniverseBatchExecutionReport,
+) -> Result<SourceUniverseBatchExecutionReportArtifact> {
+    let output_root_lease = BatchOutputRootLease::acquire(output_dir)?;
+    write_source_universe_batch_execution_report_with_lease(&output_root_lease, report)
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+pub(crate) fn write_source_universe_batch_execution_report(
+    output_dir: &Path,
+    report: &SourceUniverseBatchExecutionReport,
+) -> Result<SourceUniverseBatchExecutionReportArtifact> {
+    validate_source_universe_batch_execution_report(report)
+        .context("validate batch execution report before test write")?;
     let path = output_dir.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len(
         &path,
@@ -5570,7 +6620,7 @@ pub fn write_source_universe_batch_execution_report(
         report,
         crate::reference_artifact::ReferenceArtifactRewrite::FailOnDirty,
     )
-    .with_context(|| format!("write batch execution report {}", path.display()))?;
+    .with_context(|| format!("write test batch execution report {}", path.display()))?;
     Ok(SourceUniverseBatchExecutionReportArtifact {
         path,
         content_hash: written.pin.sha256,
@@ -5802,8 +6852,13 @@ mod tests {
     fn process_isolated_runner_rejects_parallelism_before_fetch_or_spawn_setup() {
         let error = ProcessIsolatedSourceUniverseOperatorRunner::new(
             PathBuf::from("relative-path-must-not-be-inspected"),
+            fs::File::open("/dev/null").expect("open inert test descriptor"),
             2,
             Duration::from_secs(1),
+            SourceUniverseBatchResourceLimits {
+                worker_max_virtual_memory_bytes: 1,
+                worker_reserved_overhead_bytes: 1,
+            },
         )
         .expect_err("parallel process workers need an explicit aggregate-memory budget");
 
@@ -5813,6 +6868,78 @@ mod tests {
                 .contains("requires max_concurrent_records=1"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn process_resource_limits_reject_zero_worker_address_space() {
+        let error = SourceUniverseBatchResourceLimits {
+            worker_max_virtual_memory_bytes: 0,
+            worker_reserved_overhead_bytes: 1,
+        }
+        .validate()
+        .expect_err("worker address-space limit must fail closed at zero");
+
+        assert!(
+            error
+                .to_string()
+                .contains("worker_max_virtual_memory_bytes must be positive"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn process_record_resource_envelope_uses_checked_conservative_formula() {
+        let envelope = calculate_process_isolated_record_resource_envelope(10, 20, 30, 40, 50)
+            .expect("calculate bounded record resource envelope");
+
+        assert_eq!(envelope.local_storage_required_bytes, 158);
+        assert_eq!(envelope.worker_virtual_memory_required_bytes, 80);
+        assert!(
+            calculate_process_isolated_record_resource_envelope(u64::MAX, 1, 1, 1, 1)
+                .expect_err("overflow must fail closed")
+                .to_string()
+                .contains("overflow")
+        );
+    }
+
+    #[test]
+    fn process_record_resource_envelope_reserves_cache_and_request_archive_copies() {
+        let envelope = calculate_process_isolated_record_resource_envelope(100, 1, 1, 1, 1)
+            .expect("calculate selected-object-dominant resource envelope");
+
+        assert_eq!(envelope.local_storage_required_bytes, 213);
+    }
+
+    #[test]
+    fn process_record_resource_envelope_rejects_underdeclared_worker_ceiling() {
+        let resource_limits = SourceUniverseBatchResourceLimits {
+            worker_max_virtual_memory_bytes: 79,
+            worker_reserved_overhead_bytes: 50,
+        };
+        let envelope = calculate_process_isolated_record_resource_envelope(10, 20, 30, 40, 50)
+            .expect("calculate bounded record resource envelope");
+
+        let error =
+            validate_process_isolated_worker_resource_envelope(resource_limits, 10, 20, envelope)
+                .expect_err("worker ceiling below object + decoded + overhead must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("worker_max_virtual_memory_bytes"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[allow(clippy::useless_conversion)]
+    fn process_resource_limits_reject_kernel_infinity_sentinel() {
+        let infinity = u64::try_from(libc::RLIM_INFINITY).expect("rlim_t fits u64");
+        let error = worker_rlimit_from_u64(infinity)
+            .expect_err("RLIM_INFINITY must not disable the configured hard ceiling");
+
+        assert!(error.to_string().contains("RLIM_INFINITY"), "{error:#}");
     }
 
     #[cfg(target_os = "linux")]
@@ -5826,8 +6953,13 @@ mod tests {
             .join(SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT);
         let mut runner = ProcessIsolatedSourceUniverseOperatorRunner::new(
             request_root,
+            fs::File::open("/dev/null").expect("open inert test descriptor"),
             1,
             Duration::from_secs(1),
+            SourceUniverseBatchResourceLimits {
+                worker_max_virtual_memory_bytes: 1_073_741_824,
+                worker_reserved_overhead_bytes: 1,
+            },
         )
         .expect("construct process runner");
         let work_budget = OperatorWorkBudgetGuard::unbounded();
@@ -6213,6 +7345,10 @@ mod tests {
         let manifest = SourceUniverseOperatorWorkerRequestManifest {
             schema_version: SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_SCHEMA_VERSION.to_string(),
             request_kind: SourceUniverseOperatorWorkerRequestKind::Execute,
+            execution_attestation: DurableExecutionAttestation::new_process_isolated(
+                synthetic_test_worker_executable_sha256(),
+            )
+            .expect("synthetic process-isolated execution attestation"),
             record,
             output_dir: output_dir.canonicalize().expect("canonical output dir"),
             source_bindings_path: temp_root.join("source-bindings-provenance.toml"),
@@ -6301,6 +7437,40 @@ mod tests {
             precision_error.to_string().contains("nanoseconds"),
             "{precision_error:#}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_request_rejects_missing_or_tampered_execution_attestation() {
+        let temp = tempfile::tempdir().expect("worker attestation tempdir");
+        let (mut manifest, _) = synthetic_worker_manifest(&temp);
+        manifest.execution_attestation.worker_executable_sha256 = "not-a-sha256".to_string();
+        let tampered = validate_worker_request_manifest(&manifest)
+            .expect_err("tampered worker executable identity must fail closed");
+        assert!(
+            tampered.to_string().contains("worker executable SHA-256"),
+            "{tampered:#}"
+        );
+
+        let (manifest, _) = synthetic_worker_manifest(&temp);
+        let mut missing = serde_json::to_value(manifest).expect("serialize worker request");
+        missing
+            .as_object_mut()
+            .expect("worker request is an object")
+            .remove("execution_attestation");
+        let missing =
+            serde_json::from_value::<SourceUniverseOperatorWorkerRequestManifest>(missing)
+                .expect_err("missing execution attestation must fail closed");
+        assert!(missing.to_string().contains("execution_attestation"));
+
+        let (manifest, _) = synthetic_worker_manifest(&temp);
+        let mut foreign = serde_json::to_value(manifest).expect("serialize worker request");
+        foreign["execution_attestation"]["provenance"] =
+            serde_json::Value::String("discovered_current_terminal".to_string());
+        let foreign =
+            serde_json::from_value::<SourceUniverseOperatorWorkerRequestManifest>(foreign)
+                .expect_err("foreign execution provenance must fail closed");
+        assert!(foreign.to_string().contains("unknown variant"));
     }
 
     #[cfg(target_os = "linux")]
@@ -7208,16 +8378,17 @@ mod tests {
         let first_root = BatchOutputRootLease::acquire(output.path()).expect("first root lease");
         let second_root = BatchOutputRootLease::acquire(output.path()).expect("second root lease");
         let run_id = "same-operator-run";
+        let work_budget = OperatorWorkBudgetGuard::unbounded();
 
-        let first = BatchOutputChildClaim::acquire(&first_root, run_id)
+        let first = BatchOutputChildClaim::acquire(&first_root, run_id, &work_budget)
             .expect("first unique attempt claim");
         fs::write(first.canonical_path.join("partial"), b"crash residue")
             .expect("plant crashed attempt residue");
-        let second = BatchOutputChildClaim::acquire(&second_root, run_id)
+        let second = BatchOutputChildClaim::acquire(&second_root, run_id, &work_budget)
             .expect("concurrent unique attempt claim");
         fs::write(second.canonical_path.join("live"), b"live attempt")
             .expect("plant live attempt marker");
-        let retry = BatchOutputChildClaim::acquire(&first_root, run_id)
+        let retry = BatchOutputChildClaim::acquire(&first_root, run_id, &work_budget)
             .expect("retry gets another unique attempt");
 
         assert_ne!(first.canonical_path, second.canonical_path);
@@ -7240,6 +8411,48 @@ mod tests {
         retry
             .revalidate(&first_root)
             .expect("retry identity retained");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn leased_report_publication_rejects_output_root_symlink_replacement() {
+        let temp = tempfile::tempdir().expect("report publication tempdir");
+        let record = discovered_record(crate::hashing::sha256_hex(b"catalog"));
+        let owned_plan = owned_plan_for_record(&record, temp.path());
+        let report = assemble_report(
+            "lease-bound-publication",
+            &owned_plan,
+            vec![Some(RecordSlot::Discovered(record))],
+        )
+        .expect("assemble report");
+        let original_root = owned_plan.output_root_lease.canonical_path.clone();
+        let displaced_root = original_root.with_extension("displaced");
+        let replacement_root = original_root.with_extension("replacement");
+        fs::create_dir(&replacement_root).expect("create replacement root");
+        fs::rename(&original_root, &displaced_root).expect("displace leased root");
+        std::os::unix::fs::symlink(&replacement_root, &original_root)
+            .expect("replace leased root with symlink");
+
+        let error = write_source_universe_batch_execution_report_with_lease(
+            &owned_plan.output_root_lease,
+            &report,
+        )
+        .expect_err("root replacement must fail before report publication");
+
+        assert!(
+            format!("{error:#}").contains("leased batch output root"),
+            "{error:#}"
+        );
+        assert!(
+            !replacement_root
+                .join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE)
+                .exists()
+        );
+        assert!(
+            !displaced_root
+                .join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE)
+                .exists()
+        );
     }
 
     fn one_second_test_guard(clock: Arc<ManualWorkBudgetClock>) -> OperatorWorkBudgetGuard {
@@ -7270,6 +8483,7 @@ mod tests {
                         7,
                         crate::hashing::sha256_hex(b"catalog"),
                     )?,
+                    worker_executable_sha256: synthetic_test_worker_executable_sha256(),
                     durable_completion: synthetic_test_durable_completion(),
                 },
             ))
@@ -7277,6 +8491,10 @@ mod tests {
         .expect("a terminal-owner success cannot be reclassified after its commit");
 
         assert_eq!(result.output.canonical_rows(), 7);
+        assert_eq!(
+            result.worker_executable_sha256,
+            synthetic_test_worker_executable_sha256()
+        );
     }
 
     #[cfg(unix)]
@@ -7291,6 +8509,10 @@ mod tests {
         };
         let receipt = DurableRunReceipt {
             completion: synthetic_test_durable_completion(),
+            execution_attestation: DurableExecutionAttestation::new_process_isolated(
+                synthetic_test_worker_executable_sha256(),
+            )
+            .expect("synthetic process-isolated execution attestation"),
             run_id: "synthetic-run".to_string(),
             submitted_manifest_hash: crate::hashing::sha256_hex(b"synthetic manifest"),
             canonical_rows: summary.canonical_rows,
@@ -7307,6 +8529,7 @@ mod tests {
                 receipt_bytes,
             }),
             Ok(DurableOutputCandidateSealProbe::Candidate(summary.clone())),
+            synthetic_test_worker_executable_sha256(),
             move |observed_bytes, observed_summary| {
                 ensure!(
                     observed_bytes == expected_receipt_bytes,
@@ -7326,6 +8549,10 @@ mod tests {
             panic!("production durable acceptance must return a committed outcome");
         };
         assert_eq!(committed.output.canonical_rows(), 7);
+        assert_eq!(
+            committed.worker_executable_sha256,
+            synthetic_test_worker_executable_sha256()
+        );
         assert_eq!(
             committed.durable_completion,
             synthetic_test_durable_completion()
@@ -7348,6 +8575,7 @@ mod tests {
                 receipt_bytes: Vec::new(),
             }),
             Ok(DurableOutputCandidateSealProbe::Candidate(summary)),
+            synthetic_test_worker_executable_sha256(),
             |_, _| panic!("a crashed child must never reach receipt validation"),
             || panic!("a crashed child must never reach final local validation"),
         )
@@ -7396,6 +8624,7 @@ mod tests {
                 receipt_bytes: Vec::new(),
             }),
             Ok(DurableOutputCandidateSealProbe::Absent),
+            synthetic_test_worker_executable_sha256(),
             |_, _| panic!("an absent candidate must stop before receipt validation"),
             || panic!("an absent candidate must stop before final local validation"),
         )
@@ -7409,6 +8638,7 @@ mod tests {
         let error = accept_quiesced_durable_worker(
             Err(anyhow::anyhow!("synthetic post-start wait failure")),
             Ok(DurableOutputCandidateSealProbe::Absent),
+            synthetic_test_worker_executable_sha256(),
             |_, _| panic!("a wait error must stop before receipt validation"),
             || panic!("a wait error must stop before final local validation"),
         )
@@ -7432,6 +8662,7 @@ mod tests {
                 receipt_bytes: Vec::new(),
             }),
             Err(anyhow::anyhow!("synthetic occupied invalid candidate")),
+            synthetic_test_worker_executable_sha256(),
             |_, _| panic!("an invalid candidate must stop before receipt validation"),
             || panic!("an invalid candidate must stop before final local validation"),
         )
@@ -7981,10 +9212,7 @@ mod tests {
         );
     }
 
-    fn discovered_record_with_output(
-        output_dir: PathBuf,
-        catalog_hash: String,
-    ) -> SourceUniverseBatchExecutionRecord {
+    fn discovered_record(catalog_hash: String) -> SourceUniverseBatchExecutionRecord {
         SourceUniverseBatchExecutionRecord {
             sequence: 0,
             operator_run_id: "operator-run-discovered".to_string(),
@@ -8002,14 +9230,21 @@ mod tests {
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash,
+            completion_provenance:
+                SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated,
+            completion_resolution: SourceUniverseBatchExecutionCompletionResolution::Discovered,
+            attempt_worker_sha256: synthetic_test_current_attempt_worker_sha256(),
+            terminal_publisher_worker_sha256: synthetic_test_worker_executable_sha256(),
             durable_completion: Some(synthetic_test_durable_completion()),
-            output_dir,
         }
     }
 
     /// Build an [`OwnedBatchPlan`] with one verified pack record for report and
     /// exact-current completion-discovery tests.
-    fn owned_plan_for_record(record: &SourceUniverseBatchExecutionRecord) -> OwnedBatchPlan {
+    fn owned_plan_for_record(
+        record: &SourceUniverseBatchExecutionRecord,
+        output_root_parent: &Path,
+    ) -> OwnedBatchPlan {
         let pack_record = SourceUniverseExecutionPackRecord {
             sequence: record.sequence,
             work_item_id: "work-item".to_string(),
@@ -8156,14 +9391,10 @@ mod tests {
         );
         let execution_record_sha256s = execution_record_digests(&pack).expect("fingerprint pack");
         static NEXT_OUTPUT_ROOT: AtomicUsize = AtomicUsize::new(0);
-        let fresh_output_root = record
-            .output_dir
-            .parent()
-            .expect("record output has parent")
-            .join(format!(
-                "fresh-output-{}",
-                NEXT_OUTPUT_ROOT.fetch_add(1, Ordering::SeqCst)
-            ));
+        let fresh_output_root = output_root_parent.join(format!(
+            "fresh-output-{}",
+            NEXT_OUTPUT_ROOT.fetch_add(1, Ordering::SeqCst)
+        ));
         fs::create_dir_all(&fresh_output_root).expect("create fresh output root");
         let output_root_lease = BatchOutputRootLease::acquire(&fresh_output_root)
             .expect("acquire test output-root lease");
@@ -8178,13 +9409,278 @@ mod tests {
         }
     }
 
+    fn exact_current_discovery_report(
+        owned_plan: &OwnedBatchPlan,
+    ) -> SourceUniverseBatchExecutionReport {
+        let record = &owned_plan.pack.records[0];
+        let controls = owned_plan
+            .verified_control_artifacts
+            .get(&record.sequence)
+            .expect("test controls");
+        let execution_record_sha256 = owned_plan
+            .execution_record_sha256s
+            .get(&record.sequence)
+            .expect("test execution-record digest");
+        let mut discovered = reconstructed_discovered_record(
+            SourceUniverseDiscoveredRunReceipt {
+                attempt_worker_sha256: synthetic_test_current_attempt_worker_sha256(),
+                receipt: synthetic_test_durable_receipt(synthetic_test_durable_completion()),
+            },
+            OperatorRunSummary {
+                canonical_rows: 7,
+                nt_catalog_rows: 7,
+                catalog_hash: crate::hashing::sha256_hex(b"restart catalog"),
+            },
+            record,
+            controls,
+            execution_record_sha256,
+        );
+        discovered.terminal_publisher_worker_sha256 =
+            discovered.attempt_worker_sha256.clone();
+        assemble_report(
+            "batch",
+            owned_plan,
+            vec![Some(RecordSlot::Discovered(discovered))],
+        )
+        .expect("assemble exact-current discovery report")
+    }
+
+    struct RestartSpyFetcher {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SourceUniverseObjectFetcher for RestartSpyFetcher {
+        fn fetch(
+            &mut self,
+            _record: &SourceUniverseExecutionPackRecord,
+            _run_spec: &RunSpec,
+            _work_budget: &OperatorWorkBudgetGuard,
+        ) -> Result<VerifiedSourceObject> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("restart verification must never fetch source bytes")
+        }
+    }
+
+    struct RestartDiscoveryRunner {
+        discovery_calls: Arc<AtomicUsize>,
+        run_calls: Arc<AtomicUsize>,
+        terminal_present: bool,
+    }
+
+    impl SourceUniverseOperatorRunner for RestartDiscoveryRunner {
+        fn run(
+            &mut self,
+            _record: &SourceUniverseExecutionPackRecord,
+            _object_bytes: Vec<u8>,
+            _control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+            _output_dir: &Path,
+            _work_budget: &OperatorWorkBudgetGuard,
+        ) -> Result<SourceUniverseOperatorRunOutcome> {
+            self.run_calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("restart verification must never execute or publish")
+        }
+
+        fn discover_current_completion(
+            &mut self,
+            _record: &SourceUniverseExecutionPackRecord,
+            control_artifacts: &SourceUniverseVerifiedControlArtifacts,
+            _output_dir: &Path,
+            _work_budget: &OperatorWorkBudgetGuard,
+        ) -> Result<Option<SourceUniverseDiscoveredRunReceipt>> {
+            self.discovery_calls.fetch_add(1, Ordering::SeqCst);
+            if !self.terminal_present {
+                return Ok(None);
+            }
+            let worker = synthetic_test_current_attempt_worker_sha256();
+            Ok(Some(SourceUniverseDiscoveredRunReceipt {
+                attempt_worker_sha256: worker.clone(),
+                receipt: DurableRunReceipt {
+                    completion: synthetic_test_durable_completion(),
+                    execution_attestation:
+                        DurableExecutionAttestation::new_process_isolated(worker)?,
+                    run_id: control_artifacts.run_spec.manifest.run_id.clone(),
+                    submitted_manifest_hash: control_artifacts.run_spec.manifest.manifest_hash(),
+                    canonical_rows: 7,
+                    nt_catalog_rows: 7,
+                    catalog_hash: crate::hashing::sha256_hex(b"restart catalog"),
+                },
+            }))
+        }
+    }
+
+    fn run_restart_discovery_policy(
+        owned_plan: &OwnedBatchPlan,
+        terminal_present: bool,
+        fetch_calls: Arc<AtomicUsize>,
+        discovery_calls: Arc<AtomicUsize>,
+        run_calls: Arc<AtomicUsize>,
+    ) -> Result<SourceUniverseBatchExecutionReport> {
+        execute_prepared_source_universe_batch_with_factories(
+            "batch",
+            owned_plan,
+            SourceUniverseBatchExecutionConfig {
+                start_sequence: None,
+                record_limit: Some(1),
+                continue_on_error: false,
+                max_concurrent_records: Some(1),
+            },
+            TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS,
+            BatchCompletionPolicy::RequireExistingRemoteTerminal,
+            move || {
+                Ok(RestartSpyFetcher {
+                    calls: Arc::clone(&fetch_calls),
+                })
+            },
+            move || {
+                Ok(RestartDiscoveryRunner {
+                    discovery_calls: Arc::clone(&discovery_calls),
+                    run_calls: Arc::clone(&run_calls),
+                    terminal_present,
+                })
+            },
+        )
+    }
+
+    #[test]
+    fn restart_policy_discovers_once_with_zero_fetch_run_or_publish_work() {
+        let temp = tempfile::tempdir().expect("restart policy tempdir");
+        let owned_plan = owned_plan_for_record(&discovered_record("f".repeat(64)), temp.path());
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let discovery_calls = Arc::new(AtomicUsize::new(0));
+        let run_calls = Arc::new(AtomicUsize::new(0));
+        let report = run_restart_discovery_policy(
+            &owned_plan,
+            true,
+            Arc::clone(&fetch_calls),
+            Arc::clone(&discovery_calls),
+            Arc::clone(&run_calls),
+        )
+        .expect("exact remote terminal satisfies restart-only policy");
+
+        assert_eq!(discovery_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(run_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            report.records[0].completion_resolution,
+            SourceUniverseBatchExecutionCompletionResolution::Discovered
+        );
+    }
+
+    #[test]
+    fn restart_policy_missing_remote_terminal_fails_without_fetch_run_or_publish_work() {
+        let temp = tempfile::tempdir().expect("missing restart terminal tempdir");
+        let owned_plan = owned_plan_for_record(&discovered_record("f".repeat(64)), temp.path());
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let discovery_calls = Arc::new(AtomicUsize::new(0));
+        let run_calls = Arc::new(AtomicUsize::new(0));
+        let error = run_restart_discovery_policy(
+            &owned_plan,
+            false,
+            Arc::clone(&fetch_calls),
+            Arc::clone(&discovery_calls),
+            Arc::clone(&run_calls),
+        )
+        .expect_err("missing exact remote terminal must fail closed");
+
+        assert!(
+            error.to_string().contains("exact remote durable terminal is absent"),
+            "{error:#}"
+        );
+        assert_eq!(discovery_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(run_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fresh_publish_restart_discovers_remote_terminal_and_reuses_immutable_report_bytes() {
+        let temp = tempfile::tempdir().expect("restart report tempdir");
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp.path());
+        let discovered = exact_current_discovery_report(&owned_plan);
+        let mut published = discovered.clone();
+        published.records[0].completion_resolution =
+            SourceUniverseBatchExecutionCompletionResolution::Published;
+        validate_source_universe_batch_execution_report(&published)
+            .expect("fresh published report validates");
+        validate_existing_batch_report_selection(&published, "batch", &owned_plan)
+            .expect("fresh report binds current selection");
+        let first = write_source_universe_batch_execution_report_with_lease(
+            &owned_plan.output_root_lease,
+            &published,
+        )
+        .expect("publish immutable fresh report");
+        let first_bytes = fs::read(&first.path).expect("read fresh report bytes");
+
+        let retained = read_existing_batch_report_with_lease(
+            &owned_plan.output_root_lease,
+            1024 * 1024,
+        )
+        .expect("read retained report")
+        .expect("retained report exists");
+        validate_existing_batch_report_against_remote_discovery(&retained, &discovered)
+            .expect("same-worker remote discovery confirms retained report");
+        write_source_universe_batch_execution_report_with_lease(
+            &owned_plan.output_root_lease,
+            &retained,
+        )
+        .expect("restart verifies original immutable bytes");
+
+        assert_eq!(
+            fs::read(&first.path).expect("re-read immutable report"),
+            first_bytes
+        );
+        assert_eq!(
+            retained.records[0].completion_resolution,
+            SourceUniverseBatchExecutionCompletionResolution::Published,
+            "restart returns the original publication fact"
+        );
+    }
+
+    #[test]
+    fn retained_report_from_different_attempt_worker_fails_exact_current_restart() {
+        let temp = tempfile::tempdir().expect("restart worker tempdir");
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp.path());
+        let discovered = exact_current_discovery_report(&owned_plan);
+        let mut retained = discovered.clone();
+        retained.records[0].attempt_worker_sha256 = "a".repeat(64);
+        validate_source_universe_batch_execution_report(&retained)
+            .expect("older-attempt discovery report remains structurally valid");
+
+        let error = validate_existing_batch_report_against_remote_discovery(&retained, &discovered)
+            .expect_err("older attempt worker cannot satisfy exact-current restart proof");
+        assert!(error.to_string().contains("exact-current worker"), "{error:#}");
+    }
+
+    #[test]
+    fn execution_record_digest_selects_exact_sequence_and_rejects_missing_sequence() {
+        let temp = tempfile::tempdir().expect("execution record digest tempdir");
+        let record = discovered_record("a".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp.path());
+        let expected = owned_plan
+            .execution_record_sha256s
+            .get(&record.sequence)
+            .expect("owned plan record digest");
+
+        assert_eq!(
+            execution_record_digest(&owned_plan.pack, record.sequence)
+                .expect("select exact record digest"),
+            expected.clone()
+        );
+        let error = execution_record_digest(&owned_plan.pack, record.sequence + 1)
+            .expect_err("missing sequence must fail closed");
+        assert!(
+            error.to_string().contains("has no record with sequence"),
+            "{error:#}"
+        );
+    }
+
     #[test]
     fn reconstructed_discovered_record_uses_only_the_sealed_summary() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-discovered");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let untrusted_record = discovered_record_with_output(output_dir.clone(), "f".repeat(64));
-        let owned_plan = owned_plan_for_record(&untrusted_record);
+        let untrusted_record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&untrusted_record, temp_dir.path());
         let record = &owned_plan.pack.records[0];
         let controls = owned_plan
             .verified_control_artifacts
@@ -8197,11 +9693,15 @@ mod tests {
         let sealed_hash = crate::hashing::sha256_hex(b"sealed catalog");
 
         let reconstructed = reconstructed_discovered_record(
-            &output_dir,
-            untrusted_record
-                .durable_completion
-                .clone()
-                .expect("record has durable completion"),
+            SourceUniverseDiscoveredRunReceipt {
+                attempt_worker_sha256: synthetic_test_current_attempt_worker_sha256(),
+                receipt: synthetic_test_durable_receipt(
+                    untrusted_record
+                        .durable_completion
+                        .clone()
+                        .expect("record has durable completion"),
+                ),
+            },
             OperatorRunSummary {
                 canonical_rows: 3,
                 nt_catalog_rows: 3,
@@ -8215,6 +9715,18 @@ mod tests {
         assert_eq!(reconstructed.canonical_rows, 3);
         assert_eq!(reconstructed.nt_catalog_rows, 3);
         assert_eq!(reconstructed.catalog_hash, sealed_hash);
+        assert_eq!(
+            reconstructed.completion_provenance,
+            SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
+        );
+        assert_eq!(
+            reconstructed.attempt_worker_sha256,
+            synthetic_test_current_attempt_worker_sha256()
+        );
+        assert_eq!(
+            reconstructed.terminal_publisher_worker_sha256,
+            synthetic_test_worker_executable_sha256()
+        );
         assert_ne!(
             reconstructed.canonical_rows,
             untrusted_record.canonical_rows
@@ -8225,10 +9737,8 @@ mod tests {
     #[test]
     fn final_assembly_consumes_a_sealed_discovery_summary_without_more_io() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-discovered");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = discovered_record_with_output(output_dir.clone(), "f".repeat(64));
-        let owned_plan = owned_plan_for_record(&record);
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp_dir.path());
         let pack_record = &owned_plan.pack.records[0];
         let controls = owned_plan
             .verified_control_artifacts
@@ -8239,11 +9749,15 @@ mod tests {
             .get(&pack_record.sequence)
             .expect("record fingerprint");
         let slot = RecordSlot::Discovered(reconstructed_discovered_record(
-            &output_dir,
-            record
-                .durable_completion
-                .clone()
-                .expect("discovered record has durable completion"),
+            SourceUniverseDiscoveredRunReceipt {
+                attempt_worker_sha256: synthetic_test_current_attempt_worker_sha256(),
+                receipt: synthetic_test_durable_receipt(
+                    record
+                        .durable_completion
+                        .clone()
+                        .expect("discovered record has durable completion"),
+                ),
+            },
             OperatorRunSummary {
                 canonical_rows: 3,
                 nt_catalog_rows: 3,
@@ -8253,8 +9767,6 @@ mod tests {
             controls,
             execution_record_sha256,
         ));
-        fs::remove_dir_all(&output_dir).expect("remove sealed output after resolution");
-
         let report = assemble_report("batch", &owned_plan, vec![Some(slot)])
             .expect("sealed result assembly performs no post-terminal I/O");
 
@@ -8264,15 +9776,85 @@ mod tests {
         );
         assert_eq!(report.records.len(), 1);
         assert!(report.failures.is_empty());
+        assert_eq!(
+            report.records[0].completion_provenance,
+            SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
+        );
+        assert_eq!(
+            report.records[0].attempt_worker_sha256,
+            synthetic_test_current_attempt_worker_sha256()
+        );
+        assert_eq!(
+            report.records[0].terminal_publisher_worker_sha256,
+            synthetic_test_worker_executable_sha256()
+        );
+    }
+
+    #[test]
+    fn report_validator_rejects_executed_record_without_attempt_worker_hash() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp_dir.path());
+        let mut report = assemble_report(
+            "batch",
+            &owned_plan,
+            vec![Some(RecordSlot::Discovered(record))],
+        )
+        .expect("assemble valid discovered report");
+        report.records[0].attempt_worker_sha256.clear();
+
+        let error = validate_source_universe_batch_execution_report(&report)
+            .expect_err("executed provenance without a worker executable hash must fail closed");
+
+        assert!(error.to_string().contains("attempt_worker_sha256"), "{error:#}");
+    }
+
+    #[test]
+    fn report_validator_rejects_executed_record_with_invalid_worker_executable_hash() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp_dir.path());
+        let mut report = assemble_report(
+            "batch",
+            &owned_plan,
+            vec![Some(RecordSlot::Discovered(record))],
+        )
+        .expect("assemble valid discovered report");
+        report.records[0].completion_provenance =
+            SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated;
+        report.records[0].terminal_publisher_worker_sha256 = "not-a-sha256".to_string();
+
+        let error = validate_source_universe_batch_execution_report(&report)
+            .expect_err("executed provenance with an invalid worker hash must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("terminal_publisher_worker_sha256"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn report_validator_accepts_recovered_original_worker_executable_hash() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp_dir.path());
+        let report = assemble_report(
+            "batch",
+            &owned_plan,
+            vec![Some(RecordSlot::Discovered(record))],
+        )
+        .expect("assemble valid discovered report");
+        validate_source_universe_batch_execution_report(&report)
+            .expect("recovered report retains the original process-isolated worker hash");
     }
 
     #[test]
     fn final_assembly_rejects_a_missing_slot_unconditionally() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-discovered");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = discovered_record_with_output(output_dir, "f".repeat(64));
-        let owned_plan = owned_plan_for_record(&record);
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp_dir.path());
         let error = assemble_report("batch", &owned_plan, vec![None])
             .expect_err("a missing slot is an invariant failure, not a record failure");
         assert!(error.to_string().contains("slot 0 is missing"), "{error:#}");
@@ -8281,10 +9863,8 @@ mod tests {
     #[test]
     fn final_assembly_rejects_slot_vector_cardinality_drift() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("operator-run-discovered");
-        fs::create_dir_all(&output_dir).expect("create output dir");
-        let record = discovered_record_with_output(output_dir, "f".repeat(64));
-        let owned_plan = owned_plan_for_record(&record);
+        let record = discovered_record("f".repeat(64));
+        let owned_plan = owned_plan_for_record(&record, temp_dir.path());
         let error = assemble_report("batch", &owned_plan, Vec::new())
             .expect_err("slot cardinality drift must fail before report construction");
         assert!(

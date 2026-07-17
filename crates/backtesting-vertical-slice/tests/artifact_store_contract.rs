@@ -23,16 +23,18 @@ use crate::{
         ArtifactIndexAuditEpoch, ArtifactIndexCommitPlan, ArtifactIndexCommitState,
         ArtifactIndexEvent, ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow,
         ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
-        ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogDispatchConfig,
-        CatalogProjectionBinding, CatalogProjectionPublicationReceipt, CreateOnlyArtifactWriter,
-        CreateOnlyProbeTranscript, CreateOnlyWriteDisposition, ResolvedArtifactRoot,
-        S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES, S3ArtifactStoreCredentials,
-        StoredArtifactIndexPointer, hydrate_catalog_projection_from_receipt_guarded,
-        is_terminal_create_indeterminate, persist_catalog_projection_for_source_binding_guarded,
+        ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogCompression,
+        CatalogDispatchConfig, CatalogEncodingConfig, CatalogProjectionBinding,
+        CatalogProjectionPublicationReceipt, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
+        CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3_SINGLE_PUT_PROTOCOL_CEILING_BYTES,
+        S3ArtifactStoreCredentials, StoredArtifactIndexPointer,
+        hydrate_catalog_projection_from_receipt_guarded, is_terminal_create_indeterminate,
+        persist_catalog_projection_for_source_binding_guarded,
     },
     backfill_execution_plan::BackfillExecutionWorkBudget,
     conversion_boundary::{
-        CONVERSION_MANIFEST_FILE, CatalogConsumption, ConversionCatalogMetadata,
+        CONVERSION_GENERATION_PATH_MARKER, CONVERSION_MANIFEST_FILE, CatalogConsumption,
+        ConversionCatalogMetadata,
     },
     nt_catalog_capability::{
         NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
@@ -41,9 +43,10 @@ use crate::{
         SYNTHETIC_SOURCE_PROOF_ID,
     },
     operator::{
-        CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableRunOutcome,
-        OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE, RunArtifacts, RunSpec,
+        CATALOG_DIR, DURABLE_COMPLETION_MANIFEST_FILE, DurableExecutionProvenance,
+        DurableRunOutcome, OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE, RunArtifacts, RunSpec,
         VerifiedSourceBindingRegistry,
+        conversion_generation_sha256_for_run_spec,
         discover_current_durable_completion_with_artifact_store_guarded, run_from_run_spec,
         run_from_run_spec_with_artifact_store_guarded,
     },
@@ -290,10 +293,33 @@ fn committed_run_spec_for(gz_bytes: &[u8]) -> CommittedRunSpecFixture {
     spec.accepted_object.sha256 = object_hash.clone();
     spec.accepted_object.bytes = gz_bytes.len() as u64;
     spec.source_proof.raw_sample_hash = object_hash;
+    bind_conversion_generation(&mut spec);
     CommittedRunSpecFixture {
         spec,
         _source_bindings_dir: source_bindings_dir,
     }
+}
+
+fn output_prefix_without_conversion_generation(output_prefix: &str) -> &str {
+    output_prefix
+        .rsplit_once(CONVERSION_GENERATION_PATH_MARKER)
+        .filter(|(_, generation)| {
+            generation.len() == 64
+                && generation
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
+        .map_or(output_prefix, |(base, _)| base)
+}
+
+fn bind_conversion_generation(spec: &mut RunSpec) {
+    let base = output_prefix_without_conversion_generation(&spec.manifest.output_prefix).to_string();
+    let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)
+        .expect("snapshot source bindings for conversion generation");
+    let generation = conversion_generation_sha256_for_run_spec(spec, &registry)
+        .expect("derive conversion generation");
+    spec.manifest.output_prefix =
+        format!("{base}{CONVERSION_GENERATION_PATH_MARKER}{generation}");
 }
 
 fn artifact_config() -> ArtifactStoreConfig {
@@ -1967,6 +1993,7 @@ fn lifecycle_config_rejects_delete_expiration_and_keeps_hot_index_active() {
 fn dispatches_source_bindings_to_catalog_projection_roots_without_venue_paths() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = CatalogDispatchConfig {
+        encoding: catalog_encoding(),
         bindings: vec![
             CatalogProjectionBinding {
                 source_binding: "binary-official".to_string(),
@@ -2134,12 +2161,18 @@ async fn create_only_probe_replays_existing_same_payload_sentinels() {
 
 fn catalog_dispatch(projection_id: &str) -> CatalogDispatchConfig {
     CatalogDispatchConfig {
+        encoding: catalog_encoding(),
         bindings: vec![CatalogProjectionBinding {
             source_binding: "binary-official".to_string(),
             market_structure_fixture: MarketStructureFixture::BinaryOption,
             catalog_projection_id: projection_id.to_string(),
         }],
     }
+}
+
+fn catalog_encoding() -> CatalogEncodingConfig {
+    CatalogEncodingConfig::new(5000, 5000, CatalogCompression::Snappy)
+        .expect("positive test catalog encoding")
 }
 
 fn write_catalog_file(root: &Path, relative_path: &str, payload: &[u8]) {
@@ -3721,6 +3754,13 @@ async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch
 
 #[tokio::test]
 async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
+    const LEGACY_V2_DURABLE_COMPLETION_MANIFEST_FILE: &str =
+        "durable-completion-manifest.v2.json";
+
+    assert_eq!(
+        DURABLE_COMPLETION_MANIFEST_FILE, "durable-completion-manifest.v3.json",
+        "the RunSpec-bound v3 schema must own an explicitly versioned immutable key"
+    );
     let gz = gzip(SAMPLE_CSV);
     let spec = committed_run_spec_for(&gz);
     let output_dir = tempfile::TempDir::new().expect("temp dir");
@@ -3739,6 +3779,18 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let completion_path = artifact_root
         .object_path_for_uri(&completion_uri)
         .expect("durable completion path");
+    let legacy_completion_uri = format!(
+        "{}/{}",
+        spec.manifest.output_prefix.trim_end_matches('/'),
+        LEGACY_V2_DURABLE_COMPLETION_MANIFEST_FILE
+    );
+    let legacy_completion_path = artifact_root
+        .object_path_for_uri(&legacy_completion_uri)
+        .expect("legacy durable completion path");
+    assert_ne!(
+        completion_path, legacy_completion_path,
+        "RunSpec-bound v3 terminals must not reuse the immutable v2 terminal key"
+    );
     let candidate_path = output_dir
         .path()
         .join(OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE);
@@ -3757,6 +3809,15 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
                 terminal_put_observed_candidate_for_hook.store(true, Ordering::SeqCst);
             }
         }));
+    let legacy_completion_bytes: &[u8] = b"preexisting immutable v2 durable terminal";
+    store
+        .put_opts(
+            &legacy_completion_path,
+            legacy_completion_bytes.to_vec().into(),
+            PutMode::Overwrite.into(),
+        )
+        .await
+        .expect("seed immutable legacy v2 durable terminal");
     let expected_catalog_root = catalog_dispatch
         .catalog_root_for(
             &spec.source_proof.source_binding,
@@ -3765,6 +3826,21 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         )
         .expect("source binding dispatches");
     let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
+    let source_bindings = VerifiedSourceBindingRegistry::from_run_spec(&spec)
+        .expect("snapshot source bindings for durable discovery");
+    let legacy_only_discovery = discover_current_durable_completion_with_artifact_store_guarded(
+        &spec,
+        &store,
+        &versioning,
+        &source_bindings,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("legacy v2 key must not interfere with v3 discovery");
+    assert!(
+        legacy_only_discovery.is_none(),
+        "a preexisting v2 terminal must not be discovered as a v3 terminal"
+    );
 
     let work_budget = OperatorWorkBudgetGuard::unbounded();
     let outcome = run_from_run_spec_with_artifact_store_guarded(
@@ -3778,11 +3854,37 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     .await
     .expect("operator artifact-store run");
     let completion_locator = outcome.receipt().completion.clone();
+    let original_execution_attestation = outcome.receipt().execution_attestation.clone();
+    assert_eq!(
+        original_execution_attestation.provenance,
+        DurableExecutionProvenance::ExecutedProcessIsolated
+    );
     assert!(
         terminal_put_observed_candidate.load(Ordering::SeqCst),
         "remote terminal publication must observe the pre-terminal local candidate seal"
     );
     assert_eq!(completion_locator.object.uri, completion_uri);
+    assert_eq!(
+        store
+            .get(&legacy_completion_path)
+            .await
+            .expect("legacy v2 durable terminal remains readable")
+            .bytes()
+            .await
+            .expect("read legacy v2 durable terminal bytes")
+            .as_ref(),
+        legacy_completion_bytes,
+        "v3 publication must not mutate the immutable v2 terminal"
+    );
+    assert_eq!(
+        store
+            .put_attempts()
+            .iter()
+            .filter(|path| *path == &legacy_completion_path)
+            .count(),
+        1,
+        "only the test seed may write the legacy v2 terminal key"
+    );
     assert_eq!(
         store
             .exact_version_get_attempts()
@@ -4002,8 +4104,6 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     );
 
     let put_count_before_discovery = store.put_attempts().len();
-    let source_bindings = VerifiedSourceBindingRegistry::from_run_spec(&spec)
-        .expect("snapshot source bindings for durable discovery");
     let discovered = discover_current_durable_completion_with_artifact_store_guarded(
         &spec,
         &store,
@@ -4015,6 +4115,14 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     .expect("discover exact current terminal")
     .expect("current terminal exists");
     assert_eq!(discovered.completion, completion_locator);
+    assert_eq!(
+        discovered.completion.object.uri, completion_uri,
+        "publication and discovery must use the same v3 terminal key"
+    );
+    assert_eq!(
+        discovered.execution_attestation, original_execution_attestation,
+        "exact-version discovery must recover the original process-isolated worker attestation"
+    );
     assert_eq!(store.put_attempts().len(), put_count_before_discovery);
 
     let first_candidate_bytes = fs::read(&candidate_path).expect("read first attempt candidate");
@@ -4109,6 +4217,100 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         store.put_attempts().len(),
         put_count_before_failed_discovery
     );
+}
+
+#[tokio::test]
+async fn conversion_generations_publish_and_discover_independent_terminal_keys() {
+    let gz = gzip(SAMPLE_CSV);
+    let generation_a = committed_run_spec_for(&gz);
+    let mut generation_b = generation_a.spec.clone();
+    let bindings_b = generation_b
+        .source_bindings_path
+        .parent()
+        .expect("source bindings have parent")
+        .join("source-bindings-generation-b.toml");
+    fs::copy(&generation_b.source_bindings_path, &bindings_b)
+        .expect("copy identical generation-B source bindings");
+    generation_b.source_bindings_path = bindings_b;
+    bind_conversion_generation(&mut generation_b);
+
+    assert_ne!(
+        generation_a.manifest.output_prefix,
+        generation_b.manifest.output_prefix,
+        "the control-artifact identity change must derive a new conversion generation"
+    );
+
+    let store = VersionedCatalogStore::new();
+    let artifact_root = generation_a
+        .required_artifact_store()
+        .expect("artifact-store config")
+        .resolve()
+        .expect("artifact root");
+    let versioning = artifact_root.emulate_bucket_versioning_enabled_for_contract_test();
+    let output_a = tempfile::tempdir().expect("generation-A output");
+    let output_b = tempfile::tempdir().expect("generation-B output");
+
+    let published_a = run_from_run_spec_with_artifact_store_guarded(
+        &generation_a,
+        gz.clone(),
+        output_a.path(),
+        &store,
+        &versioning,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish generation A");
+    let published_b = run_from_run_spec_with_artifact_store_guarded(
+        &generation_b,
+        gz.clone(),
+        output_b.path(),
+        &store,
+        &versioning,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect("publish generation B without colliding with generation A");
+    assert_ne!(
+        published_a.receipt().completion.object.uri,
+        published_b.receipt().completion.object.uri
+    );
+
+    for spec in [&generation_a.spec, &generation_b] {
+        let registry = VerifiedSourceBindingRegistry::from_run_spec(spec)
+            .expect("snapshot generation registry");
+        discover_current_durable_completion_with_artifact_store_guarded(
+            spec,
+            &store,
+            &versioning,
+            &registry,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
+        .await
+        .expect("discover generation terminal")
+        .expect("generation terminal exists");
+    }
+
+    let mut mismatched = generation_b.clone();
+    let base = output_prefix_without_conversion_generation(&mismatched.manifest.output_prefix);
+    mismatched.manifest.output_prefix = format!(
+        "{base}{CONVERSION_GENERATION_PATH_MARKER}{}",
+        "f".repeat(64)
+    );
+    let puts_before = store.put_attempts().len();
+    let rejected_output = tempfile::tempdir().expect("mismatched-generation output");
+    let error = run_from_run_spec_with_artifact_store_guarded(
+        &mismatched,
+        gz,
+        rejected_output.path(),
+        &store,
+        &versioning,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("wrong conversion generation suffix must fail before artifact I/O");
+    assert!(format!("{error:#}").contains("conversion generation suffix"));
+    assert_eq!(store.put_attempts().len(), puts_before);
+    assert!(!rejected_output.path().join(CONVERSION_MANIFEST_FILE).exists());
 }
 
 #[test]

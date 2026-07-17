@@ -38,7 +38,7 @@
     {
       "role": "run_spec_template",
       "path": "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml",
-      "sha256": "1ba3efe0f304df4fb2058878dce128ac4d0ffdbb2ab3010eafa02cb101f9ac00"
+      "sha256": "f25520763f97914827db618ff0f7655cc5b6b1a856f77397a3a6bee494f9c7a2"
     },
     {
       "role": "source_bindings",
@@ -67,19 +67,19 @@
       "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",
       "source_proof_version": 1,
       "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:AAVEUSD:2025-06-01:0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516:accepted-tranche",
-      "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=AAVEUSD/dt=2025-06-01/object=0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516",
+      "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=AAVEUSD/dt=2025-06-01/object=0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516/conversion=ad56975ad57507b375ad68a7f2aeec27f026be1ca369a7652eae45500e007598",
       "source_bindings_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
       "source_bindings_bytes": 16032,
       "source_bindings_sha256": "a39018c732c12d9dced380e2b4842fe92e2ac8b3ca7a92736b4efaf05f794d06",
       "run_spec_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/runs/00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/run-spec.toml",
-      "run_spec_bytes": 11777,
-      "run_spec_sha256": "e4dd79d1e293a6407992e4a2f5a53c29210af3ed8d77e019178ac5153aa1532f",
+      "run_spec_bytes": 11949,
+      "run_spec_sha256": "acfb97d815a975da4619ab46a136a99d15bcace9e220eb16efc97a6d8d3c6ea8",
       "accepted_tranche_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/runs/00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/backfill-accepted-tranche-manifest.json",
       "accepted_tranche_bytes": 1639,
       "accepted_tranche_sha256": "1d300ad208a5ce6447c132e8795d222f6394f4529fb1dcb35d9f1af957dcd084",
       "execution_plan_path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/runs/00000-source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000/backfill-execution-plan.json",
-      "execution_plan_bytes": 1970,
-      "execution_plan_sha256": "e8454e30d0e1b8505a0ff79c306a082d28fae9e90e2bfe7555d672a8b49d9d66"
+      "execution_plan_bytes": 2046,
+      "execution_plan_sha256": "396e942593371a9209ba4221d0562ba86771696ecbc5454ea0112648cfae69b6"
     }
   ],
   "blocking_reasons": [

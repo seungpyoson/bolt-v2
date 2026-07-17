@@ -14,8 +14,13 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus};
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
-use crate::source_proof::{SourceBindingRegistry, read_source_binding_registry_from_path};
+use crate::{
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
+    source_proof::SourceBindingRegistry,
+};
 
 pub const BACKFILL_BINDING_COVERAGE_SCHEMA_VERSION: &str = "backfill-binding-coverage-report.v1";
 pub const BACKFILL_BINDING_COVERAGE_REPORT_FILE: &str = "backfill-binding-coverage-report.json";
@@ -176,35 +181,53 @@ pub fn write_backfill_binding_coverage_report_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillBindingCoverageArtifact, BackfillBindingCoverageError> {
     let spec_path_display = spec_path.display().to_string();
-    let spec_text =
-        fs::read_to_string(spec_path).map_err(|error| BackfillBindingCoverageError::ReadSpec {
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillBindingCoverageError::ReadSpec {
             path: spec_path_display.clone(),
             error: error.to_string(),
-        })?;
-    let spec: BackfillBindingCoverageSpec = toml::from_str(&spec_text).map_err(|error| {
-        BackfillBindingCoverageError::ParseSpecToml {
+        }
+    })?;
+    let spec_text = std::str::from_utf8(&spec_bytes).map_err(|error| {
+        BackfillBindingCoverageError::ReadSpec {
+            path: spec_path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: BackfillBindingCoverageSpec =
+        toml::from_str(spec_text).map_err(|error| BackfillBindingCoverageError::ParseSpecToml {
             path: spec_path_display,
             error: error.to_string(),
-        }
-    })?;
+        })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let resolved_source_bindings_path = resolve_existing_path(base_dir, &spec.source_bindings_path);
-    let registry = read_source_binding_registry_from_path(&resolved_source_bindings_path).map_err(
-        |error| BackfillBindingCoverageError::ReadSourceBindings {
+    let source_bindings_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.source_bindings_path).map_err(
+            |error| BackfillBindingCoverageError::ReadSourceBindings {
+                path: source_bindings_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
+    let source_bindings_text = std::str::from_utf8(&source_bindings_bytes).map_err(|error| {
+        BackfillBindingCoverageError::ReadSourceBindings {
             path: source_bindings_path.clone(),
-            error: error.to_string(),
-        },
-    )?;
-    let source_bindings = source_bindings_from_registry(&registry, &source_bindings_path)?;
-    let ledger_path = spec.coverage_ledger_path.display().to_string();
-    let resolved_ledger_path = resolve_existing_path(base_dir, &spec.coverage_ledger_path);
-    let ledger_bytes = fs::read(&resolved_ledger_path).map_err(|error| {
-        BackfillBindingCoverageError::ReadLedger {
-            path: ledger_path.clone(),
             error: error.to_string(),
         }
     })?;
+    let registry = SourceBindingRegistry::from_toml_str(source_bindings_text).map_err(|error| {
+        BackfillBindingCoverageError::ReadSourceBindings {
+            path: source_bindings_path.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let source_bindings = source_bindings_from_registry(&registry, &source_bindings_path)?;
+    let ledger_path = spec.coverage_ledger_path.display().to_string();
+    let ledger_bytes =
+        read_active_backfill_runtime_input(Some(base_dir), &spec.coverage_ledger_path).map_err(
+            |error| BackfillBindingCoverageError::ReadLedger {
+                path: ledger_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
     let ledger: BackfillCoverageLedger =
         serde_json::from_slice(&ledger_bytes).map_err(|error| {
             BackfillBindingCoverageError::ParseLedgerJson {
@@ -226,11 +249,16 @@ pub fn write_backfill_binding_coverage_report(
     output_dir: &Path,
     report: &BackfillBindingCoverageReport,
 ) -> Result<BackfillBindingCoverageArtifact, BackfillBindingCoverageError> {
+    let path =
+        active_backfill_runtime_output_path(output_dir, BACKFILL_BINDING_COVERAGE_REPORT_FILE)
+            .map_err(|error| BackfillBindingCoverageError::CreateDir {
+                path: output_dir.display().to_string(),
+                error: error.to_string(),
+            })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillBindingCoverageError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let path = output_dir.join(BACKFILL_BINDING_COVERAGE_REPORT_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_BINDING_COVERAGE_REPORT_FILE,

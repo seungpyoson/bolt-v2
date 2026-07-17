@@ -967,11 +967,15 @@ mod tests {
     use crate::backfill_conversion_batch::{
         BACKFILL_CONVERSION_BATCH_PLAN_SCHEMA_VERSION, BackfillConversionBatchSelection,
     };
-    use crate::operator::{DurableCompletionLocator, DurableObjectVersionIdentity};
+    use crate::operator::{
+        DURABLE_COMPLETION_MANIFEST_FILE, DurableCompletionLocator, DurableObjectVersionIdentity,
+    };
     use crate::source_universe_batch_execution::{
         SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
+        SourceUniverseBatchExecutionCompletionResolution,
         SourceUniverseBatchExecutionFailureRecord, SourceUniverseBatchExecutionRecord,
-        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
+        SourceUniverseBatchExecutionRecordProvenance, SourceUniverseBatchExecutionReport,
+        SourceUniverseBatchExecutionReportStatus,
     };
 
     fn batch_record(record_id: &str) -> BackfillConversionBatchRecord {
@@ -1058,10 +1062,15 @@ mod tests {
                 canonical_rows: 0,
                 nt_catalog_rows: 0,
                 catalog_hash: digest.clone(),
+                completion_provenance:
+                    SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated,
+                completion_resolution: SourceUniverseBatchExecutionCompletionResolution::Published,
+                attempt_worker_sha256: digest.clone(),
+                terminal_publisher_worker_sha256: digest.clone(),
                 durable_completion: Some(DurableCompletionLocator {
                     object: DurableObjectVersionIdentity {
                         uri: format!(
-                            "s3://test-bucket/backtests/run-{sequence}/durable-completion-manifest.json"
+                            "s3://test-bucket/backtests/run-{sequence}/{DURABLE_COMPLETION_MANIFEST_FILE}"
                         ),
                         sha256: digest.clone(),
                         byte_len: 1,
@@ -1069,7 +1078,6 @@ mod tests {
                         e_tag: None,
                     },
                 }),
-                output_dir: PathBuf::from(format!("test-output-{sequence}")),
             })
             .collect();
         let failures = (0..failed_record_count)

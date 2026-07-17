@@ -1318,6 +1318,11 @@ fn conversion_fingerprint() -> conversion_boundary::ConversionFingerprint {
         converter_identity: "converter-test".to_string(),
         converter_version: "1".to_string(),
         converter_config_hash: "converter-config-hash".to_string(),
+        catalog_encoding_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+            .to_string(),
+        conversion_semantics_sha256:
+            "4444444444444444444444444444444444444444444444444444444444444444"
+                .to_string(),
     }
 }
 

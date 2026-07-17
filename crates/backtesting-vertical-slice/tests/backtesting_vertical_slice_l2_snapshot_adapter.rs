@@ -47,6 +47,15 @@ use nautilus_model::{
 const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
 const INSTRUMENT_ID: &str = "BASEQUOTE";
 const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
+
+fn test_catalog_encoding() -> backtesting_vertical_slice::artifact_store::CatalogEncodingConfig {
+    backtesting_vertical_slice::artifact_store::CatalogEncodingConfig::new(
+        5000,
+        5000,
+        backtesting_vertical_slice::artifact_store::CatalogCompression::Snappy,
+    )
+    .expect("positive test catalog encoding")
+}
 const SOURCE_URL: &str = "https://synthetic.invalid/data";
 
 // Two full photos one minute apart. Each photo carries two bid levels and one
@@ -251,8 +260,13 @@ fn jsonl_snapshot_deltas_round_trip_to_catalog() {
     assert_eq!(table.rows.len(), 8);
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let projection = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project deltas");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project deltas");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(
@@ -299,7 +313,13 @@ fn jsonl_snapshot_deltas_round_trip_to_catalog() {
 fn jsonl_snapshot_expansion_shape_survives_round_trip() {
     let table = normalized_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project");
     let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     loaded.sort_by_key(|delta| delta.sequence);
 

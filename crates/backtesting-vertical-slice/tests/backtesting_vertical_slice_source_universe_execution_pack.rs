@@ -6,6 +6,7 @@ use backtesting_vertical_slice::{
     backfill_accepted_tranche::BackfillAcceptedTrancheManifest,
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
     catalog_projection::CatalogInstrumentSpec,
+    conversion_boundary::CONVERSION_GENERATION_PATH_MARKER,
     operator::{
         RunSpec, VerifiedSourceBindingRegistry, validate_durable_run_spec_preflight,
         validate_run_spec_manifest_for_object_hash_with_verified_registry,
@@ -527,9 +528,19 @@ crypto_future = "MARGIN"
     let run_spec_text = fs::read_to_string(&run_spec_path).expect("read run spec");
     let run_spec: RunSpec = toml::from_str(&run_spec_text).expect("run spec parses");
     assert_eq!(run_spec.manifest.run_id, record.operator_run_id);
-    assert_eq!(
-        run_spec.manifest.output_prefix,
-        "s3://synthetic-artifacts/backtests/source-universe=synthetic/object=object-sha"
+    let conversion_generation = run_spec
+        .manifest
+        .output_prefix
+        .strip_prefix(&format!(
+            "s3://synthetic-artifacts/backtests/source-universe=synthetic/object=object-sha{CONVERSION_GENERATION_PATH_MARKER}"
+        ))
+        .expect("materialized output prefix binds its derived conversion generation");
+    assert_eq!(conversion_generation.len(), 64);
+    assert!(
+        conversion_generation
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "conversion generation must be lowercase SHA-256"
     );
     assert_eq!(run_spec.accepted_object.sha256, "object-sha");
     assert_eq!(
@@ -642,6 +653,53 @@ crypto_future = "MARGIN"
     assert!(
         !mismatched_output_dir.exists(),
         "durable profile validation precedes execution-pack output"
+    );
+
+    let trailing_slash_template_path = temp_dir
+        .path()
+        .join("trailing-slash-run-spec-profile.toml");
+    let trailing_slash_output_dir = temp_dir.path().join("trailing-slash-execution-pack");
+    let trailing_slash_spec_path = temp_dir
+        .path()
+        .join("trailing-slash-source-universe-execution-pack.toml");
+    let trailing_slash_template = template.replacen(
+        "output_prefix = \"s3://synthetic-artifacts/backtests/stale-run\"",
+        "output_prefix = \"s3://synthetic-artifacts/backtests/stale-run/\"",
+        1,
+    );
+    fs::write(&trailing_slash_template_path, trailing_slash_template)
+        .expect("write trailing-slash durable profile");
+    fs::write(
+        &trailing_slash_spec_path,
+        format!(
+            r#"pack_id = "source-universe-execution-pack-trailing-slash"
+source_universe_conversion_work_order_path = "{}"
+run_spec_template_path = "{}"
+output_dir = "{}"
+record_limit = 1
+
+[venue_policy]
+starting_balance_amount = "250000"
+spot = "CASH"
+crypto_perpetual = "MARGIN"
+crypto_future = "MARGIN"
+"#,
+            work_order_path.display(),
+            trailing_slash_template_path.display(),
+            trailing_slash_output_dir.display(),
+        ),
+    )
+    .expect("write trailing-slash execution-pack spec");
+
+    let error = write_source_universe_execution_pack_from_spec_file(&trailing_slash_spec_path)
+        .expect_err("trailing-slash generation input fails closed");
+    assert!(
+        format!("{error:#}").contains("must not end with a slash"),
+        "{error:#}"
+    );
+    assert!(
+        !trailing_slash_output_dir.exists(),
+        "generation-input rejection precedes execution-pack output"
     );
 }
 
@@ -1509,6 +1567,11 @@ research_analytics = 7200
 [artifact_store.lifecycle.hot_index]
 latest_pointer_storage_profile = "active"
 current_snapshot_storage_profile = "active"
+
+[catalog_dispatch.encoding]
+batch_size = 5000
+max_row_group_size = 5000
+compression = "snappy"
 
 [[catalog_dispatch.bindings]]
 source_binding = "binance-spot-native-trades"

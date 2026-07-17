@@ -122,6 +122,8 @@ mod backtesting_vertical_slice_source_universe_conversion_queue;
 mod backtesting_vertical_slice_source_universe_conversion_run_plan;
 #[path = "backtesting_vertical_slice_source_universe_conversion_work_order.rs"]
 mod backtesting_vertical_slice_source_universe_conversion_work_order;
+#[path = "backtesting_vertical_slice_source_universe_durable_tracer.rs"]
+mod backtesting_vertical_slice_source_universe_durable_tracer;
 #[path = "backtesting_vertical_slice_source_universe_execution_acceptance.rs"]
 mod backtesting_vertical_slice_source_universe_execution_acceptance;
 #[path = "backtesting_vertical_slice_source_universe_execution_pack.rs"]

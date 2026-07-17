@@ -85,7 +85,8 @@ use crate::{
         read_back_trade_ticks_guarded, ts_init_nanos,
     },
     conversion_boundary::{
-        CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_TABLES_FILE,
+        CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_GENERATION_PATH_MARKER,
+        CONVERSION_TABLES_FILE,
         CatalogConsumptionEvidence, CatalogPublicationReceiptIdentity, ConversionCatalogMetadata,
         ConversionCheckpoint, ConversionCheckpointStage, ConversionFingerprint, ConversionManifest,
         ConversionOutputState, ConversionTableRecord, inspect_conversion_output,
@@ -151,10 +152,13 @@ pub const OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_FILE: &str =
     "operator-durable-output-candidate-seal.json";
 /// Published-catalog `BacktestNode` proof artifact filename.
 pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
-/// Sole remote completion authority for a durable catalog run.
-pub const DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.json";
+/// Sole remote completion authority for an attested v3 durable catalog run.
+///
+/// The schema version is part of the immutable key: an older terminal must
+/// never block or be mistaken for a v3 terminal.
+pub const DURABLE_COMPLETION_MANIFEST_FILE: &str = "durable-completion-manifest.v3.json";
 const PUBLISHED_CATALOG_PROOF_VERSION: &str = "published-catalog-proof.v2";
-const DURABLE_COMPLETION_MANIFEST_VERSION: &str = "durable-completion-manifest.v1";
+const DURABLE_COMPLETION_MANIFEST_VERSION: &str = "durable-completion-manifest.v3";
 
 const OPERATOR_ATTESTED_REDACTED: &str = "operator-attested-redacted";
 const OPERATOR_ATTESTED_ELAPSED_TIME_SECS: f64 = 0.0;
@@ -273,7 +277,7 @@ impl RunSpec {
     /// configuration required by the publish/proof path.
     pub fn required_catalog_dispatch(&self) -> Result<&CatalogDispatchConfig> {
         self.catalog_dispatch.as_ref().context(
-            "run spec missing [[catalog_dispatch.bindings]] required for artifact-store publish path",
+            "run spec missing [catalog_dispatch.encoding] and [[catalog_dispatch.bindings]] required for artifact-store publish path",
         )
     }
 }
@@ -535,11 +539,63 @@ impl DurableCompletionLocator {
     }
 }
 
+/// Original execution boundary attested by the immutable durable terminal.
+///
+/// Discovery is only an observation of that terminal; it never replaces the
+/// provenance of the process which performed the durable write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurableExecutionProvenance {
+    ExecutedProcessIsolated,
+}
+
+/// Immutable identity of the process-isolated worker which committed a run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurableExecutionAttestation {
+    pub provenance: DurableExecutionProvenance,
+    pub worker_executable_sha256: String,
+}
+
+impl DurableExecutionAttestation {
+    /// Construct the only supported durable execution provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the executable digest is not lowercase SHA-256.
+    pub fn new_process_isolated(worker_executable_sha256: String) -> Result<Self> {
+        let attestation = Self {
+            provenance: DurableExecutionProvenance::ExecutedProcessIsolated,
+            worker_executable_sha256,
+        };
+        attestation.validate()?;
+        Ok(attestation)
+    }
+
+    /// Validate the executable identity carried by durable terminal evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when provenance or executable identity is invalid.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.provenance == DurableExecutionProvenance::ExecutedProcessIsolated,
+            "durable execution provenance must be executed_process_isolated"
+        );
+        ensure!(
+            is_lowercase_sha256_hex(&self.worker_executable_sha256),
+            "durable execution worker executable SHA-256 must be lowercase hex"
+        );
+        Ok(())
+    }
+}
+
 /// Scalar receipt for a fully committed or discovered durable run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableRunReceipt {
     pub completion: DurableCompletionLocator,
+    pub execution_attestation: DurableExecutionAttestation,
     pub run_id: String,
     pub submitted_manifest_hash: String,
     pub canonical_rows: u64,
@@ -578,6 +634,7 @@ impl DurableRunOutcome {
 #[serde(deny_unknown_fields)]
 struct DurableCompletionManifest {
     manifest_version: String,
+    execution_attestation: DurableExecutionAttestation,
     run_id: String,
     submitted_manifest_hash: String,
     fingerprint: ConversionFingerprint,
@@ -594,6 +651,7 @@ struct DurableCompletionManifest {
 impl DurableCompletionManifest {
     fn new(
         spec: &RunSpec,
+        execution_attestation: DurableExecutionAttestation,
         fingerprint: ConversionFingerprint,
         summary: &OperatorRunSummary,
         publication_receipt: DurableObjectVersionIdentity,
@@ -601,6 +659,7 @@ impl DurableCompletionManifest {
     ) -> Self {
         Self {
             manifest_version: DURABLE_COMPLETION_MANIFEST_VERSION.to_string(),
+            execution_attestation,
             run_id: spec.manifest.run_id.clone(),
             submitted_manifest_hash: spec.manifest.manifest_hash(),
             fingerprint,
@@ -620,6 +679,9 @@ impl DurableCompletionManifest {
             self.manifest_version == DURABLE_COMPLETION_MANIFEST_VERSION,
             "unexpected durable completion manifest version"
         );
+        self.execution_attestation
+            .validate()
+            .context("validate durable completion execution attestation")?;
         ensure!(
             self.run_id == spec.manifest.run_id
                 && self.submitted_manifest_hash == spec.manifest.manifest_hash(),
@@ -799,9 +861,9 @@ pub(crate) struct OperatorRunSummary {
     pub catalog_hash: String,
 }
 
-const OPERATOR_TERMINAL_SEAL_VERSION: &str = "operator-terminal-seal.v1";
+const OPERATOR_TERMINAL_SEAL_VERSION: &str = "operator-terminal-seal.v2";
 const OPERATOR_DURABLE_OUTPUT_CANDIDATE_SEAL_VERSION: &str =
-    "operator-durable-output-candidate-seal.v1";
+    "operator-durable-output-candidate-seal.v2";
 const OPERATOR_DURABLE_OUTPUT_CANDIDATE_AUTHORITY_SCOPE: &str =
     "local-output-integrity-only-not-durable-completion";
 
@@ -3307,6 +3369,7 @@ async fn validate_durable_completion_manifest_bytes_guarded(
     );
     Ok(DurableRunReceipt {
         completion: locator.clone(),
+        execution_attestation: manifest.execution_attestation,
         run_id: manifest.run_id,
         submitted_manifest_hash: manifest.submitted_manifest_hash,
         canonical_rows: manifest.canonical_rows,
@@ -4082,9 +4145,11 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         .check_deadline(OperatorWorkBudgetStage::CatalogProjection)?;
     let canonical_rows = u64::try_from(canonical_table.rows.len())
         .context("canonical row count does not fit u64")?;
-    let projected_row_groups =
-        projected_nt_market_data_row_groups([u64::try_from(canonical_table.rows.len())
-            .context("canonical row count does not fit u64")?])?;
+    let projected_row_groups = projected_nt_market_data_row_groups(
+        [u64::try_from(canonical_table.rows.len())
+            .context("canonical row count does not fit u64")?],
+        &inputs.spec.required_catalog_dispatch()?.encoding,
+    )?;
     ensure!(
         actual_metadata.rows == canonical_rows,
         "completed actual projected Parquet metadata rows {} do not match canonical rows {canonical_rows}",
@@ -4614,8 +4679,10 @@ fn prepare_run_from_run_spec_inner(
         converter: &spec.converter,
         conversion_control_artifact_path,
         conversion_control_artifact_sha256: source_binding_registry.sha256(),
+        conversion_semantics_sha256: &conversion_fingerprint.conversion_semantics_sha256,
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
+        catalog_encoding: &spec.required_catalog_dispatch()?.encoding,
         authoritative_output_root: output_dir,
         selector_provenance: None,
         created_at: &spec.created_at_utc,
@@ -4778,6 +4845,10 @@ fn durable_run_spec_preflight(
         &spec.converter.version,
         &spec.source_proof.table_family,
     )?;
+    let fingerprint = conversion_fingerprint_for_run_spec(spec, registry)?;
+    fingerprint
+        .validate_output_prefix_generation(&spec.manifest.output_prefix)
+        .context("validate durable RunSpec conversion generation")?;
     let artifact_store = spec.required_artifact_store()?;
     spec.validate_artifact_store_publish_config(artifact_store)?;
     let artifact_root = artifact_store.resolve()?;
@@ -4839,13 +4910,10 @@ fn durable_run_validation_context<'a>(
     let catalog_dispatch = spec.required_catalog_dispatch()?;
     let artifact_root = artifact_store.resolve()?;
     artifact_root.validate_bucket_versioning_capability(versioning_enabled)?;
-    registry.reassert_for(spec)?;
-    let (_expected_source_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
-        spec,
-        &spec.accepted_object.sha256,
-        registry.registry(),
-    )?;
-    let fingerprint = conversion_fingerprint_for(spec, &accepted, registry)?;
+    let fingerprint = conversion_fingerprint_for_run_spec(spec, registry)?;
+    fingerprint
+        .validate_output_prefix_generation(&spec.manifest.output_prefix)
+        .context("validate durable RunSpec conversion generation")?;
     Ok((catalog_dispatch, artifact_root, fingerprint))
 }
 
@@ -4903,6 +4971,7 @@ impl DurableRunDispatcher {
         object_bytes: Vec<u8>,
         output_dir: &Path,
         registry: &VerifiedSourceBindingRegistry,
+        execution_attestation: DurableExecutionAttestation,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<DurableRunOutcome> {
         run_from_run_spec_with_verified_registry_guarded(
@@ -4912,6 +4981,7 @@ impl DurableRunDispatcher {
             &self.store,
             &self.versioning_enabled,
             registry,
+            execution_attestation,
             work_budget,
         )
         .await
@@ -4982,6 +5052,9 @@ pub(crate) async fn run_from_run_spec_with_artifact_store_guarded(
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<DurableRunOutcome> {
     let registry = VerifiedSourceBindingRegistry::from_run_spec_guarded(spec, work_budget)?;
+    let execution_attestation = DurableExecutionAttestation::new_process_isolated(
+        crate::hashing::sha256_hex(b"contract-test process-isolated worker executable"),
+    )?;
     run_from_run_spec_with_verified_registry_guarded(
         spec,
         object_bytes,
@@ -4989,6 +5062,7 @@ pub(crate) async fn run_from_run_spec_with_artifact_store_guarded(
         store,
         versioning_enabled,
         &registry,
+        execution_attestation,
         work_budget,
     )
     .await
@@ -5004,8 +5078,12 @@ async fn run_from_run_spec_with_verified_registry_guarded(
     store: &dyn ObjectStore,
     versioning_enabled: &BucketVersioningEnabled,
     registry: &VerifiedSourceBindingRegistry,
+    execution_attestation: DurableExecutionAttestation,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<DurableRunOutcome> {
+    execution_attestation
+        .validate()
+        .context("validate durable execution attestation before operator work")?;
     let (catalog_dispatch, artifact_root, fingerprint) = guarded_operation_outcome(
         work_budget,
         OperatorWorkBudgetStage::ObjectVerification,
@@ -5240,6 +5318,7 @@ async fn run_from_run_spec_with_verified_registry_guarded(
     };
     let completion_manifest = DurableCompletionManifest::new(
         spec,
+        execution_attestation,
         fingerprint.clone(),
         &artifacts.batch_summary,
         publication_receipt,
@@ -5310,6 +5389,7 @@ async fn run_from_run_spec_with_verified_registry_guarded(
     };
     let receipt = DurableRunReceipt {
         completion,
+        execution_attestation: completion_manifest.execution_attestation,
         run_id: completion_manifest.run_id,
         submitted_manifest_hash: completion_manifest.submitted_manifest_hash,
         canonical_rows: completion_manifest.canonical_rows,
@@ -5966,9 +6046,68 @@ fn conversion_fingerprint_for(
             .converter
             .content_hash()
             .context("hash converter config")?,
+        catalog_encoding_hash: spec
+            .required_catalog_dispatch()?
+            .encoding
+            .content_hash()
+            .context("hash catalog encoding config")?,
+        conversion_semantics_sha256: normalized_run_spec_semantics_sha256(spec)?,
     };
     fingerprint.validate()?;
     Ok(fingerprint)
+}
+
+fn normalized_run_spec_semantics_sha256(spec: &RunSpec) -> Result<String> {
+    let mut normalized = spec.clone();
+    let output_prefix = normalized.manifest.output_prefix.as_str();
+    let marker_count = output_prefix
+        .matches(CONVERSION_GENERATION_PATH_MARKER)
+        .count();
+    ensure!(
+        marker_count <= 1,
+        "durable manifest.output_prefix must contain at most one conversion generation suffix"
+    );
+    if marker_count == 1 {
+        let (base, generation) = output_prefix
+            .rsplit_once(CONVERSION_GENERATION_PATH_MARKER)
+            .context("conversion generation marker must be a terminal suffix")?;
+        ensure!(
+            !base.is_empty() && !base.ends_with('/'),
+            "durable manifest.output_prefix conversion generation suffix has an invalid base"
+        );
+        ensure!(
+            crate::hashing::is_lowercase_sha256_hex(generation),
+            "durable manifest.output_prefix conversion generation suffix must be lowercase SHA-256"
+        );
+        normalized.manifest.output_prefix = base.to_string();
+    }
+    let canonical_value = toml::Value::try_from(&normalized)
+        .context("project normalized full RunSpec semantics to structural TOML value")?;
+    crate::reference_artifact::canonical_json_sha256(&canonical_value)
+        .map_err(anyhow::Error::from)
+        .context("hash normalized full RunSpec semantics")
+}
+
+fn conversion_fingerprint_for_run_spec(
+    spec: &RunSpec,
+    registry: &VerifiedSourceBindingRegistry,
+) -> Result<ConversionFingerprint> {
+    registry.reassert_for(spec)?;
+    let (_expected_source_proof, accepted) = accepted_dataset_for_run_spec_hash_with_registry(
+        spec,
+        &spec.accepted_object.sha256,
+        registry.registry(),
+    )?;
+    conversion_fingerprint_for(spec, &accepted, registry)
+}
+
+/// Derive the durable namespace generation from the exact conversion
+/// fingerprint. This is a derivation helper, not another configured identity.
+pub(crate) fn conversion_generation_sha256_for_run_spec(
+    spec: &RunSpec,
+    registry: &VerifiedSourceBindingRegistry,
+) -> Result<String> {
+    conversion_fingerprint_for_run_spec(spec, registry)?.conversion_generation_sha256()
 }
 
 /// Normalize the decoded payload through the registered adapter dispatch for
@@ -6772,12 +6911,14 @@ fn run_multi_table_from_run_spec_with_verified_registry(
     )?;
     let table_count = tables.len();
     let planned = plan_projected_tables(output_dir, tables)?;
+    let catalog_encoding = &spec.required_catalog_dispatch()?.encoding;
     let projected_row_groups = projected_nt_market_data_row_groups(
         planned
             .iter()
             .map(|table| u64::try_from(table.table.rows_len()))
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("projected canonical row count does not fit u64")?,
+        catalog_encoding,
     )?;
     work_budget.check_projected_row_groups(
         projected_row_groups,
@@ -6825,6 +6966,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
                 instrument_spec,
                 &table.subroot,
                 output_dir,
+                catalog_encoding,
                 work_budget,
             ),
             NormalizedTable::Bars(canonical) => project_canonical_bars_to_catalog_guarded(
@@ -6832,6 +6974,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
                 instrument_spec,
                 &table.subroot,
                 output_dir,
+                catalog_encoding,
                 work_budget,
             ),
             NormalizedTable::Deltas(canonical) => {
@@ -6840,6 +6983,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
                     instrument_spec,
                     &table.subroot,
                     output_dir,
+                    catalog_encoding,
                     work_budget,
                 )
             }
@@ -6848,6 +6992,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
                 instrument_spec,
                 &table.subroot,
                 output_dir,
+                catalog_encoding,
                 work_budget,
             ),
             NormalizedTable::Index(canonical) => project_canonical_index_to_catalog_guarded(
@@ -6855,6 +7000,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
                 instrument_spec,
                 &table.subroot,
                 output_dir,
+                catalog_encoding,
                 work_budget,
             ),
             NormalizedTable::Mark(canonical) => project_canonical_mark_to_catalog_guarded(
@@ -6862,6 +7008,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
                 instrument_spec,
                 &table.subroot,
                 output_dir,
+                catalog_encoding,
                 work_budget,
             ),
             NormalizedTable::Funding(canonical) => {
@@ -6870,6 +7017,7 @@ fn run_multi_table_from_run_spec_with_verified_registry(
                     instrument_spec,
                     &table.subroot,
                     output_dir,
+                    catalog_encoding,
                     work_budget,
                 )
             }
@@ -6896,27 +7044,41 @@ fn run_multi_table_from_run_spec_with_verified_registry(
             .with_context(|| format!("create canonical artifact dir {}", parent.display()))?;
         work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
         match &table.table {
-            NormalizedTable::Trades(canonical) => {
-                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
-            }
-            NormalizedTable::Bars(canonical) => {
-                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
-            }
-            NormalizedTable::Deltas(canonical) => {
-                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
-            }
-            NormalizedTable::Quotes(canonical) => {
-                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
-            }
-            NormalizedTable::Index(canonical) => {
-                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
-            }
-            NormalizedTable::Mark(canonical) => {
-                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
-            }
-            NormalizedTable::Funding(canonical) => {
-                canonical.write_parquet_guarded(&table.canonical_path, work_budget)
-            }
+            NormalizedTable::Trades(canonical) => canonical.write_parquet_guarded(
+                &table.canonical_path,
+                catalog_encoding,
+                work_budget,
+            ),
+            NormalizedTable::Bars(canonical) => canonical.write_parquet_guarded(
+                &table.canonical_path,
+                catalog_encoding,
+                work_budget,
+            ),
+            NormalizedTable::Deltas(canonical) => canonical.write_parquet_guarded(
+                &table.canonical_path,
+                catalog_encoding,
+                work_budget,
+            ),
+            NormalizedTable::Quotes(canonical) => canonical.write_parquet_guarded(
+                &table.canonical_path,
+                catalog_encoding,
+                work_budget,
+            ),
+            NormalizedTable::Index(canonical) => canonical.write_parquet_guarded(
+                &table.canonical_path,
+                catalog_encoding,
+                work_budget,
+            ),
+            NormalizedTable::Mark(canonical) => canonical.write_parquet_guarded(
+                &table.canonical_path,
+                catalog_encoding,
+                work_budget,
+            ),
+            NormalizedTable::Funding(canonical) => canonical.write_parquet_guarded(
+                &table.canonical_path,
+                catalog_encoding,
+                work_budget,
+            ),
         }
         .with_context(|| {
             format!(
@@ -7784,7 +7946,12 @@ mod tests {
             .finish_retained(&OperatorWorkBudgetGuard::unbounded())
             .expect_err("identity replacement must fail closed before finish");
 
-        assert!(error.to_string().contains("identity changed"), "{error:#}");
+        assert!(
+            error
+                .to_string()
+                .contains("identity, owner, or private mode changed"),
+            "{error:#}"
+        );
         assert_eq!(
             fs::read(catalog_root.join("foreign.parquet")).expect("replacement remains"),
             b"foreign"
@@ -8099,9 +8266,9 @@ mod tests {
 
     #[test]
     fn one_durable_capability_admits_two_distinct_venue_bindings() {
-        let bybit: RunSpec =
+        let mut bybit: RunSpec =
             toml::from_str(COMMITTED_RUN_SPEC).expect("Bybit committed run-spec parses");
-        let binance: RunSpec =
+        let mut binance: RunSpec =
             toml::from_str(COMMITTED_BINANCE_RUN_SPEC).expect("Binance committed run-spec parses");
         assert_ne!(
             bybit.source_proof.source_binding,
@@ -8117,6 +8284,14 @@ mod tests {
 
         let registry = VerifiedSourceBindingRegistry::from_run_spec(&bybit)
             .expect("freeze the shared committed source-binding registry");
+        for spec in [&mut bybit, &mut binance] {
+            let generation = conversion_generation_sha256_for_run_spec(spec, &registry)
+                .expect("derive test conversion generation");
+            spec.manifest.output_prefix = format!(
+                "{}{CONVERSION_GENERATION_PATH_MARKER}{generation}",
+                spec.manifest.output_prefix.trim_end_matches('/')
+            );
+        }
         for spec in [&bybit, &binance] {
             assert!(
                 registry
@@ -8137,6 +8312,80 @@ mod tests {
                 )
             });
         }
+    }
+
+    #[test]
+    fn conversion_generation_binds_complete_run_spec_semantics_and_normalizes_only_its_suffix() {
+        let object_bytes = gzip(SAMPLE_CSV);
+        let base = run_spec_for(&object_bytes);
+        let registry = VerifiedSourceBindingRegistry::from_run_spec(&base)
+            .expect("freeze conversion-generation source bindings");
+        let base_generation = conversion_generation_sha256_for_run_spec(&base, &registry)
+            .expect("derive base conversion generation");
+
+        let mut with_suffix = base.clone();
+        with_suffix.manifest.output_prefix = format!(
+            "{}{CONVERSION_GENERATION_PATH_MARKER}{base_generation}",
+            with_suffix.manifest.output_prefix
+        );
+        assert_eq!(
+            conversion_generation_sha256_for_run_spec(&with_suffix, &registry)
+                .expect("derived suffix is excluded from RunSpec semantics"),
+            base_generation
+        );
+
+        let mut changed_capture_time = base.clone();
+        changed_capture_time.capture_time_utc = "2026-07-17T00:00:00Z".to_string();
+        let mut changed_run_id = base.clone();
+        changed_run_id.manifest.run_id.push_str("-changed");
+        let mut changed_identity = base.clone();
+        changed_identity
+            .identity
+            .single_mut()
+            .expect("single test identity")
+            .nt_instrument_id = "BNBUSDC.CHANGED".to_string();
+        let mut changed_instrument = base.clone();
+        changed_instrument
+            .instrument_spec
+            .single_mut()
+            .expect("single test instrument")
+            .spot_mut()
+            .expect("committed test instrument is spot")
+            .price_increment = "0.00000002".to_string();
+
+        for (label, changed) in [
+            ("capture_time_utc", changed_capture_time),
+            ("manifest.run_id", changed_run_id),
+            ("identity", changed_identity),
+            ("instrument_spec", changed_instrument),
+        ] {
+            let changed_generation =
+                conversion_generation_sha256_for_run_spec(&changed, &registry)
+                    .unwrap_or_else(|error| panic!("derive {label} generation: {error:#}"));
+            assert_ne!(
+                changed_generation, base_generation,
+                "{label} must rotate the conversion generation"
+            );
+        }
+
+        let mut malformed = base.clone();
+        malformed
+            .manifest
+            .output_prefix
+            .push_str(CONVERSION_GENERATION_PATH_MARKER);
+        malformed.manifest.output_prefix.push_str("bad");
+        let error = conversion_generation_sha256_for_run_spec(&malformed, &registry)
+            .expect_err("malformed generation suffix must fail closed");
+        assert!(error.to_string().contains("lowercase SHA-256"), "{error:#}");
+
+        let mut multiple = base;
+        multiple.manifest.output_prefix = format!(
+            "{}{CONVERSION_GENERATION_PATH_MARKER}{}{CONVERSION_GENERATION_PATH_MARKER}{}",
+            multiple.manifest.output_prefix, base_generation, base_generation
+        );
+        let error = conversion_generation_sha256_for_run_spec(&multiple, &registry)
+            .expect_err("multiple generation suffixes must fail closed");
+        assert!(error.to_string().contains("at most one"), "{error:#}");
     }
 
     #[test]
@@ -9656,6 +9905,8 @@ venue = "must-not-be-part-of-durable-capability"
         );
         let terminal = DurableCompletionManifest::new(
             &first_spec,
+            DurableExecutionAttestation::new_process_isolated(sha256_hex(b"test worker"))
+                .expect("test execution attestation"),
             first_fingerprint.clone(),
             &first.batch_summary,
             publication_receipt.clone(),
@@ -9687,6 +9938,31 @@ venue = "must-not-be-part-of-durable-capability"
                 ),
             },
         );
+        let mut tampered_attestation = terminal.clone();
+        tampered_attestation
+            .execution_attestation
+            .worker_executable_sha256 = "not-a-sha256".to_string();
+        let tampered_error = tampered_attestation
+            .validate_for(&first_spec, &first_fingerprint)
+            .expect_err("tampered terminal worker identity must fail closed");
+        assert!(
+            tampered_error
+                .to_string()
+                .contains("worker executable SHA-256"),
+            "{tampered_error:#}"
+        );
+
+        let mut missing_attestation =
+            serde_json::to_value(&terminal).expect("serialize durable completion terminal");
+        missing_attestation
+            .as_object_mut()
+            .expect("durable completion terminal is an object")
+            .remove("execution_attestation");
+        let missing_error =
+            serde_json::from_value::<DurableCompletionManifest>(missing_attestation)
+                .expect_err("missing terminal execution attestation must fail closed");
+        assert!(missing_error.to_string().contains("execution_attestation"));
+
         let mut first_contract = first.output.contract.clone();
         first_contract.artifact_uris.nt_catalog_manifest_uri =
             Some(publication_receipt.uri.clone());
@@ -9972,6 +10248,8 @@ table_families = ["trades", "bars"]
             "bar_type".to_string(),
             "BNBUSDC.BINANCE-1-MINUTE-LAST-INTERNAL".to_string(),
         );
+        spec.manifest.strategy_config_hash =
+            crate::result_contract::strategy_config_hash(&spec.manifest.strategy);
         spec.converter.raw_payload = RawPayloadConfig {
             container: RawPayloadContainer::SingleCsvZip,
             max_object_bytes: zip_bytes.len() as u64,

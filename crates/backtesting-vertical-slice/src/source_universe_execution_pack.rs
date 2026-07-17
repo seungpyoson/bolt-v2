@@ -17,13 +17,14 @@ use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::atomic_artifact_write::atomic_write;
-use crate::hashing::sha256_hex;
+use crate::hashing::{is_lowercase_sha256_hex, sha256_hex};
 use crate::path_resolution::{
     portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+    validate_portable_path_component,
 };
 use crate::reference_artifact::ReferenceArtifactPin;
 use crate::{
-    artifact_store::{CatalogDispatchConfig, CatalogProjectionBinding},
+    artifact_store::{CatalogDispatchConfig, CatalogEncodingConfig, CatalogProjectionBinding},
     backfill_accepted_tranche::{
         BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE, BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
         BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheObject,
@@ -36,8 +37,10 @@ use crate::{
     },
     canonical_trades::{CanonicalInstrumentIdentity, ConverterConfig, RawPayloadConfig},
     catalog_projection::CatalogInstrumentSpec,
+    conversion_boundary::CONVERSION_GENERATION_PATH_MARKER,
     operator::{
-        RunSpec, VerifiedSourceBindingRegistry, validate_durable_run_spec_preflight,
+        RunSpec, VerifiedSourceBindingRegistry, conversion_generation_sha256_for_run_spec,
+        validate_durable_run_spec_preflight,
         validate_run_spec_manifest_for_object_hash_with_verified_registry,
     },
     retired_backfill_evidence::resolve_active_backfill_runtime_input,
@@ -60,6 +63,8 @@ use crate::{
 pub const SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION: &str = "source-universe-execution-pack.v4";
 pub const SOURCE_UNIVERSE_EXECUTION_PACK_FILE: &str = "source-universe-execution-pack.json";
 pub const SOURCE_UNIVERSE_EXECUTION_PACK_RUN_SPEC_FILE: &str = "run-spec.toml";
+const NO_MATERIALIZED_RECORDS_REASON: &str = "no_source_universe_execution_records_materialized";
+const RECORD_LIMIT_SKIPPED_RECORDS_REASON: &str = "record_limit_skipped_executable_records";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -219,6 +224,245 @@ pub struct SourceUniverseExecutionPack {
     pub blocking_reasons: Vec<String>,
 }
 
+/// Validate the complete execution-pack identity and aggregate semantics.
+///
+/// This is the single validation boundary used by the producer, committed-pack
+/// discovery, and runtime consumption. Aggregate arithmetic is recomputed from
+/// the records so serialized counters cannot be trusted independently.
+pub fn validate_execution_pack_semantics(pack: &SourceUniverseExecutionPack) -> Result<()> {
+    ensure!(
+        pack.schema_version == SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
+        "execution pack schema_version mismatch: expected {}, got {}",
+        SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
+        pack.schema_version
+    );
+    ensure!(
+        !pack.pack_id.trim().is_empty(),
+        "execution pack pack_id must not be empty"
+    );
+    ensure!(
+        !pack.universe_id.trim().is_empty(),
+        "execution pack universe_id must not be empty"
+    );
+    ensure!(
+        !pack.venue.trim().is_empty(),
+        "execution pack venue must not be empty"
+    );
+    ensure!(
+        !pack.table_family.trim().is_empty(),
+        "execution pack table_family must not be empty"
+    );
+
+    let planned_object_count = pack
+        .executable_record_count
+        .checked_add(pack.withheld_record_count)
+        .context("execution pack planned object count overflow")?;
+    ensure!(
+        pack.planned_object_count == planned_object_count,
+        "execution pack planned_object_count mismatch: expected {}, got {}",
+        planned_object_count,
+        pack.planned_object_count
+    );
+
+    let materialized_record_count = u64::try_from(pack.records.len())
+        .context("execution pack materialized record count does not fit u64")?;
+    ensure!(
+        pack.selected_record_count == materialized_record_count,
+        "execution pack selected_record_count mismatch: expected {}, got {}",
+        materialized_record_count,
+        pack.selected_record_count
+    );
+    ensure!(
+        pack.materialized_record_count == materialized_record_count,
+        "execution pack materialized_record_count mismatch: expected {}, got {}",
+        materialized_record_count,
+        pack.materialized_record_count
+    );
+
+    match pack.status {
+        SourceUniverseExecutionPackStatus::Ready => {
+            ensure!(
+                pack.executable_record_count > 0 && materialized_record_count > 0,
+                "ready execution pack must retain at least one executable record"
+            );
+            ensure!(
+                pack.blocking_reasons.is_empty(),
+                "ready execution pack blocking_reasons must be empty"
+            );
+        }
+        SourceUniverseExecutionPackStatus::PartiallyReady => {
+            ensure!(
+                pack.executable_record_count > 0 && materialized_record_count > 0,
+                "partially ready execution pack must retain at least one executable record"
+            );
+            ensure!(
+                !pack.blocking_reasons.is_empty(),
+                "partially ready execution pack blocking_reasons must not be empty"
+            );
+        }
+        SourceUniverseExecutionPackStatus::Blocked => {
+            ensure!(
+                !pack.blocking_reasons.is_empty(),
+                "blocked execution pack blocking_reasons must not be empty"
+            );
+        }
+    }
+
+    let skipped_executable_record_count = pack
+        .executable_record_count
+        .checked_sub(materialized_record_count)
+        .context("execution pack materialized records exceed executable records")?;
+    ensure!(
+        pack.skipped_executable_record_count == skipped_executable_record_count,
+        "execution pack skipped_executable_record_count mismatch: expected {}, got {}",
+        skipped_executable_record_count,
+        pack.skipped_executable_record_count
+    );
+
+    let materialized_source_bytes = pack.records.iter().try_fold(0_u64, |total, record| {
+        ensure!(
+            record.selected_object_bytes > 0,
+            "execution pack record {} selected_object_bytes must be positive",
+            record.sequence
+        );
+        total
+            .checked_add(record.selected_object_bytes)
+            .context("materialized source byte total overflow")
+    })?;
+    ensure!(
+        pack.materialized_source_bytes == materialized_source_bytes,
+        "execution pack materialized_source_bytes mismatch: expected {}, got {}",
+        materialized_source_bytes,
+        pack.materialized_source_bytes
+    );
+    if pack.executable_record_count == 0 {
+        ensure!(
+            pack.executable_source_bytes == 0,
+            "execution pack executable_source_bytes must be zero when executable_record_count is zero"
+        );
+    } else {
+        ensure!(
+            pack.executable_source_bytes > 0,
+            "execution pack executable_source_bytes must be positive when executable records exist"
+        );
+    }
+    ensure!(
+        pack.materialized_source_bytes <= pack.executable_source_bytes,
+        "execution pack materialized_source_bytes {} exceeds executable_source_bytes {}",
+        pack.materialized_source_bytes,
+        pack.executable_source_bytes
+    );
+
+    for reasons in pack.blocking_reasons.windows(2) {
+        ensure!(
+            reasons[0] < reasons[1],
+            "execution pack blocking_reasons must be sorted and unique"
+        );
+    }
+    ensure!(
+        pack.blocking_reasons
+            .iter()
+            .all(|reason| !reason.trim().is_empty() && reason.trim() == reason),
+        "execution pack blocking_reasons must contain non-empty trimmed values"
+    );
+    let has_no_materialized_reason = pack
+        .blocking_reasons
+        .iter()
+        .any(|reason| reason == NO_MATERIALIZED_RECORDS_REASON);
+    ensure!(
+        has_no_materialized_reason == (materialized_record_count == 0),
+        "execution pack blocking reason {NO_MATERIALIZED_RECORDS_REASON} must be present exactly when no records are materialized"
+    );
+    let has_skipped_records_reason = pack
+        .blocking_reasons
+        .iter()
+        .any(|reason| reason == RECORD_LIMIT_SKIPPED_RECORDS_REASON);
+    ensure!(
+        has_skipped_records_reason == (skipped_executable_record_count > 0),
+        "execution pack blocking reason {RECORD_LIMIT_SKIPPED_RECORDS_REASON} must be present exactly when executable records are skipped"
+    );
+
+    let expected_status = if materialized_record_count == 0 {
+        SourceUniverseExecutionPackStatus::Blocked
+    } else if skipped_executable_record_count > 0
+        || pack.withheld_record_count > 0
+        || !pack.blocking_reasons.is_empty()
+    {
+        SourceUniverseExecutionPackStatus::PartiallyReady
+    } else {
+        SourceUniverseExecutionPackStatus::Ready
+    };
+    ensure!(
+        pack.status == expected_status,
+        "execution pack status mismatch: expected {:?}, got {:?}",
+        expected_status,
+        pack.status
+    );
+
+    let mut source_bindings_refs = pack
+        .artifact_refs
+        .iter()
+        .filter(|artifact| artifact.role == "source_bindings");
+    let source_bindings_ref = source_bindings_refs
+        .next()
+        .context("execution pack must retain one shared source_bindings artifact ref")?;
+    ensure!(
+        source_bindings_refs.next().is_none(),
+        "execution pack must retain exactly one shared source_bindings artifact ref"
+    );
+    ensure!(
+        is_lowercase_sha256_hex(&source_bindings_ref.sha256),
+        "execution pack source_bindings artifact ref has invalid SHA-256"
+    );
+
+    for records in pack.records.windows(2) {
+        ensure!(
+            records[0].sequence < records[1].sequence,
+            "execution pack {} sequences must be strictly increasing; {} is followed by {}",
+            pack.pack_id,
+            records[0].sequence,
+            records[1].sequence
+        );
+    }
+
+    let mut operator_run_ids = BTreeSet::new();
+    for record in &pack.records {
+        validate_portable_path_component("operator_run_id", &record.operator_run_id).with_context(
+            || {
+                format!(
+                    "validate pack record {} operator_run_id {:?}",
+                    record.sequence, record.operator_run_id
+                )
+            },
+        )?;
+        ensure!(
+            operator_run_ids.insert(record.operator_run_id.as_str()),
+            "execution pack {} has duplicate operator_run_id {:?}",
+            pack.pack_id,
+            record.operator_run_id
+        );
+        ensure!(
+            record.source_bindings_path == source_bindings_ref.path
+                && record.source_bindings_sha256 == source_bindings_ref.sha256,
+            "execution pack record {} source-bindings identity does not match shared artifact ref",
+            record.sequence
+        );
+        for (role, bytes) in [
+            ("source_bindings", record.source_bindings_bytes),
+            ("run_spec", record.run_spec_bytes),
+            ("accepted_tranche", record.accepted_tranche_bytes),
+            ("execution_plan", record.execution_plan_bytes),
+        ] {
+            ensure!(
+                bytes > 0,
+                "execution pack record {} {role} byte length must be positive",
+                record.sequence
+            );
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceUniverseExecutionPackArtifact {
     pub path: PathBuf,
@@ -358,7 +602,11 @@ pub fn write_source_universe_execution_pack(
         &verified_registry,
     )
     .context("source-universe execution-pack profile fails ordinary operator preflight")?;
-    validate_durable_run_spec_preflight(&template_run_spec, &verified_registry)
+    let mut generation_bound_template = template_run_spec.clone();
+    generation_bound_template.manifest.output_prefix =
+        output_prefix_with_conversion_generation(&template_run_spec, &verified_registry)
+            .context("derive source-universe execution-pack profile conversion generation")?;
+    validate_durable_run_spec_preflight(&generation_bound_template, &verified_registry)
         .context("source-universe execution-pack profile fails durable operator preflight")?;
 
     let proofs = source_proofs_by_id(base_dir, &object_gates)?;
@@ -423,6 +671,7 @@ pub fn write_source_universe_execution_pack(
             operator_inputs: &operator_inputs,
             venue_policy: &spec.venue_policy,
             market_structure_fixture: template_run_spec.manifest.market_structure_fixture,
+            verified_registry: &verified_registry,
         })?;
         let run_spec: RunSpec = toml::from_str(&run_spec_text)
             .context("materialized source-universe run spec does not deserialize")?;
@@ -515,7 +764,9 @@ pub fn write_source_universe_execution_pack(
         )
         .with_context(|| format!("write execution plan for {}", record.work_item_id))?;
 
-        materialized_source_bytes += record.selected_object_bytes;
+        materialized_source_bytes = materialized_source_bytes
+            .checked_add(record.selected_object_bytes)
+            .context("materialized source byte total overflow")?;
         materialized_records.push(SourceUniverseExecutionPackRecord {
             sequence: record.sequence,
             work_item_id: record.work_item_id.clone(),
@@ -555,23 +806,29 @@ pub fn write_source_universe_execution_pack(
         });
     }
 
-    let materialized_record_count = materialized_records.len() as u64;
-    let selected_record_count = selected_records.len() as u64;
+    let materialized_record_count = u64::try_from(materialized_records.len())
+        .context("materialized execution-pack record count does not fit u64")?;
+    let selected_record_count = u64::try_from(selected_records.len())
+        .context("selected execution-pack record count does not fit u64")?;
     let skipped_executable_record_count = work_order
         .executable_record_count
-        .saturating_sub(materialized_record_count);
+        .checked_sub(materialized_record_count)
+        .context("materialized execution-pack records exceed executable work-order records")?;
     let mut blocking_reasons = work_order.blocking_reasons.clone();
     if materialized_record_count == 0 {
-        blocking_reasons.push("no_source_universe_execution_records_materialized".to_string());
+        blocking_reasons.push(NO_MATERIALIZED_RECORDS_REASON.to_string());
     }
     if skipped_executable_record_count > 0 {
-        blocking_reasons.push("record_limit_skipped_executable_records".to_string());
+        blocking_reasons.push(RECORD_LIMIT_SKIPPED_RECORDS_REASON.to_string());
     }
     blocking_reasons.sort();
     blocking_reasons.dedup();
     let status = if materialized_record_count == 0 {
         SourceUniverseExecutionPackStatus::Blocked
-    } else if skipped_executable_record_count > 0 || work_order.withheld_record_count > 0 {
+    } else if skipped_executable_record_count > 0
+        || work_order.withheld_record_count > 0
+        || !blocking_reasons.is_empty()
+    {
         SourceUniverseExecutionPackStatus::PartiallyReady
     } else {
         SourceUniverseExecutionPackStatus::Ready
@@ -654,6 +911,8 @@ pub fn write_source_universe_execution_pack(
         records: materialized_records,
         blocking_reasons,
     };
+    validate_execution_pack_semantics(&pack)
+        .context("validate generated source-universe execution pack")?;
 
     let pack_path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
     fs::create_dir_all(&output_dir).with_context(|| {
@@ -706,6 +965,7 @@ struct RunSpecMaterializationInput<'a> {
     operator_inputs: &'a SourceUniverseOperatorInputs,
     venue_policy: &'a SourceUniverseExecutionPackVenuePolicy,
     market_structure_fixture: MarketStructureFixture,
+    verified_registry: &'a VerifiedSourceBindingRegistry,
 }
 
 fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String> {
@@ -718,6 +978,7 @@ fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String
         operator_inputs,
         venue_policy,
         market_structure_fixture,
+        verified_registry,
     } = input;
     let mut value = template.clone();
     set_table_value(
@@ -842,10 +1103,25 @@ fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String
     patch_strategy_bar_type(manifest, &instrument.nt_instrument_id)?;
     patch_catalog_dispatch(
         &mut value,
+        &template_catalog_dispatch.encoding,
         &record.source_binding,
         market_structure_fixture,
         &record.operator_run_id,
     )?;
+
+    let generation_candidate =
+        toml::to_string_pretty(&value).context("serialize conversion-generation candidate TOML")?;
+    let generation_candidate_run_spec: RunSpec = toml::from_str(&generation_candidate)
+        .context("conversion-generation candidate run spec does not deserialize")?;
+    let output_prefix = output_prefix_with_conversion_generation(
+        &generation_candidate_run_spec,
+        verified_registry,
+    )
+    .context("derive materialized source-universe conversion generation")?;
+    required_table_mut(&mut value, &["manifest"])?.insert(
+        "output_prefix".to_string(),
+        Value::String(output_prefix),
+    );
 
     let materialized =
         toml::to_string_pretty(&value).context("serialize materialized run spec TOML")?;
@@ -859,6 +1135,29 @@ fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String
         "materialized source-universe run spec must contain exactly one catalog-dispatch binding"
     );
     Ok(materialized)
+}
+
+fn output_prefix_with_conversion_generation(
+    run_spec: &RunSpec,
+    verified_registry: &VerifiedSourceBindingRegistry,
+) -> Result<String> {
+    ensure!(
+        !run_spec
+            .manifest
+            .output_prefix
+            .contains(CONVERSION_GENERATION_PATH_MARKER),
+        "source-universe execution-pack generation input output_prefix must not preconfigure a conversion generation"
+    );
+    ensure!(
+        run_spec.manifest.output_prefix
+            == run_spec.manifest.output_prefix.trim_end_matches('/'),
+        "source-universe execution-pack generation input output_prefix must not end with a slash"
+    );
+    let generation = conversion_generation_sha256_for_run_spec(run_spec, verified_registry)?;
+    Ok(format!(
+        "{}{CONVERSION_GENERATION_PATH_MARKER}{generation}",
+        run_spec.manifest.output_prefix
+    ))
 }
 
 fn validate_existing_run_directory_set(
@@ -1087,6 +1386,7 @@ fn patch_venue_policy(
 
 fn patch_catalog_dispatch(
     value: &mut Value,
+    encoding: &CatalogEncodingConfig,
     source_binding: &str,
     market_structure_fixture: MarketStructureFixture,
     catalog_projection_id: &str,
@@ -1103,6 +1403,7 @@ fn patch_catalog_dispatch(
         value,
         "catalog_dispatch",
         Value::try_from(CatalogDispatchConfig {
+            encoding: encoding.clone(),
             bindings: vec![CatalogProjectionBinding {
                 source_binding: source_binding.to_string(),
                 market_structure_fixture,

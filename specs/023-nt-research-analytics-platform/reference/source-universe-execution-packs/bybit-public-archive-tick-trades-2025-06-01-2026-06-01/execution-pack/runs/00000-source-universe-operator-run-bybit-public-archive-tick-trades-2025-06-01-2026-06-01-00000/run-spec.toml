@@ -67,6 +67,11 @@ raw = "raw"
 research_analytics = "research-analytics"
 source_proofs = "source-proofs"
 
+[catalog_dispatch.encoding]
+batch_size = 5000
+max_row_group_size = 5000
+compression = "snappy"
+
 [[catalog_dispatch.bindings]]
 catalog_projection_id = "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000"
 market_structure_fixture = "perps-spot"
@@ -124,7 +129,7 @@ execution_model = "nt_backtest_node"
 manifest_schema_version = "backtesting-run-manifest.v2"
 market_structure_fixture = "perps-spot"
 nt_streaming_chunk_size = 128
-output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=AAVEUSD/dt=2025-06-01/object=0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516"
+output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=AAVEUSD/dt=2025-06-01/object=0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516/conversion=ad56975ad57507b375ad68a7f2aeec27f026be1ca369a7652eae45500e007598"
 pins_non_latest_proof = false
 resolved_nt_version = "d636f17604cdbddc28ad40e0e15720e2d19bf860"
 run_id = "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00000"

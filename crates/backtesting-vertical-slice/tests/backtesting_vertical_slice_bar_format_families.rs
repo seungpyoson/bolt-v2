@@ -47,6 +47,15 @@ use nautilus_model::{
 const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
 const INSTRUMENT_ID: &str = "BASEQUOTE";
 const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
+
+fn test_catalog_encoding() -> backtesting_vertical_slice::artifact_store::CatalogEncodingConfig {
+    backtesting_vertical_slice::artifact_store::CatalogEncodingConfig::new(
+        5000,
+        5000,
+        backtesting_vertical_slice::artifact_store::CatalogCompression::Snappy,
+    )
+    .expect("positive test catalog encoding")
+}
 const SOURCE_URL: &str = "https://synthetic.invalid/data";
 
 fn spec() -> SpotInstrumentSpec {
@@ -207,7 +216,8 @@ fn accepted_dataset(schema_columns: &[&str]) -> AcceptedDataset {
 fn assert_round_trip(table: &CanonicalBarsTable) {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let projection =
-        project_canonical_bars_to_catalog(table, &spec(), dir.path()).expect("project bars");
+        project_canonical_bars_to_catalog(table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project bars");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(

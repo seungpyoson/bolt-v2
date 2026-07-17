@@ -83,6 +83,7 @@ use serde::Serialize;
 use crate::hashing::sha256_hex;
 
 use super::{
+    artifact_store::CatalogEncodingConfig,
     canonical_market_data::funding_rate_row_materialized_bytes,
     canonical_trades::{
         CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, ConverterConfig,
@@ -559,10 +560,16 @@ pub struct BacktestRunInputs<'a> {
     /// Exact source-control artifact identity authorizing this conversion.
     pub conversion_control_artifact_path: &'a str,
     pub conversion_control_artifact_sha256: &'a str,
+    /// Canonical identity of the path's complete output-determining conversion
+    /// semantics.
+    pub conversion_semantics_sha256: &'a str,
     /// Local path for the canonical normalized Parquet artifact.
     pub canonical_artifact_path: &'a Path,
     /// Local catalog projection root.
     pub catalog_root: &'a Path,
+    /// Explicit writer controls shared by NT catalog construction and
+    /// pre-write row-group planning.
+    pub catalog_encoding: &'a CatalogEncodingConfig,
     /// Authoritative output boundary. Projection candidates are created as
     /// private siblings outside this root and can never enter its exact seal.
     pub authoritative_output_root: &'a Path,
@@ -3395,9 +3402,11 @@ pub(crate) fn prepare_backtest(
         inputs.work_budget,
     )
     .context("canonical normalization failed")?;
-    let projected_row_groups =
-        projected_nt_market_data_row_groups([u64::try_from(canonical_table.rows.len())
-            .context("canonical row count does not fit u64")?])?;
+    let projected_row_groups = projected_nt_market_data_row_groups(
+        [u64::try_from(canonical_table.rows.len())
+            .context("canonical row count does not fit u64")?],
+        inputs.catalog_encoding,
+    )?;
     inputs.work_budget.check_projected_row_groups(
         projected_row_groups,
         OperatorWorkBudgetStage::CatalogProjection,
@@ -3406,7 +3415,11 @@ pub(crate) fn prepare_backtest(
         .work_budget
         .check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
     canonical_table
-        .write_parquet_guarded(inputs.canonical_artifact_path, inputs.work_budget)
+        .write_parquet_guarded(
+            inputs.canonical_artifact_path,
+            inputs.catalog_encoding,
+            inputs.work_budget,
+        )
         .context("write canonical artifact failed")?;
 
     // Gate 3: NautilusTrader catalog projection + read-back proof.
@@ -3418,6 +3431,7 @@ pub(crate) fn prepare_backtest(
         inputs.instrument_spec,
         inputs.catalog_root,
         inputs.authoritative_output_root,
+        inputs.catalog_encoding,
         inputs.work_budget,
     )
     .context("catalog projection failed")?;
@@ -3507,6 +3521,11 @@ pub(crate) fn prepare_backtest(
             .converter
             .content_hash()
             .context("hash converter config")?,
+        catalog_encoding_hash: inputs
+            .catalog_encoding
+            .content_hash()
+            .context("hash catalog encoding config")?,
+        conversion_semantics_sha256: inputs.conversion_semantics_sha256.to_string(),
     };
     conversion_fingerprint.validate()?;
     let conversion_checkpoint = ConversionCheckpoint::completed(
@@ -4656,6 +4675,15 @@ mod tests {
         STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
         StrategySourceKind, SubmittedRunIdentity,
     };
+
+    fn test_catalog_encoding() -> CatalogEncodingConfig {
+        CatalogEncodingConfig::new(
+            5000,
+            5000,
+            crate::artifact_store::CatalogCompression::Snappy,
+        )
+        .expect("positive test catalog encoding")
+    }
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
         normalize_seeded_l2_events, parse_seeded_l2_jsonl, seeded_l2_quote_transform_hash,
@@ -6216,6 +6244,7 @@ mod tests {
                 "0.00000001",
             ),
             &okx_catalog,
+            &test_catalog_encoding(),
         )
         .context("project OKX seeded L2 BBO quotes")?;
         let bybit_catalog = tempdir.path().join("bybit_btc_usdt_quotes");
@@ -6230,6 +6259,7 @@ mod tests {
                 "0.000001",
             ),
             &bybit_catalog,
+            &test_catalog_encoding(),
         )
         .context("project Bybit seeded L2 BBO quotes")?;
 
@@ -6277,6 +6307,7 @@ mod tests {
                 "0.000001",
             ),
             &chainlink_catalog,
+            &test_catalog_encoding(),
         )
         .context("project reconstructed Chainlink price-to-beat index updates")?;
 

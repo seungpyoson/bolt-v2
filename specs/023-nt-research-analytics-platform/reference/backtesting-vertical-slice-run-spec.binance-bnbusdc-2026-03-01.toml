@@ -305,6 +305,11 @@ research_analytics = 7200
 latest_pointer_storage_profile = "active"
 current_snapshot_storage_profile = "active"
 
+[catalog_dispatch.encoding]
+batch_size = 5000
+max_row_group_size = 5000
+compression = "snappy"
+
 [[catalog_dispatch.bindings]]
 source_binding = "binance-spot-native-trades"
 market_structure_fixture = "perps-spot"

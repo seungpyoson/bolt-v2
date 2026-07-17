@@ -4,7 +4,7 @@ use std::{
     cmp::Ordering as CmpOrdering,
     fs,
     future::Future,
-    io::{BufReader, Cursor, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
     sync::{
         Arc,
@@ -948,6 +948,55 @@ impl ExactSizedObjectBuffer {
     }
 }
 
+/// Traverse an exact-size stream through the caller's bounded `BufRead`
+/// window. The full payload is retained only when `output` is requested;
+/// hashing never allocates a payload-sized scratch buffer.
+fn stream_exact_sized_reader_guarded<R: BufRead>(
+    reader: &mut R,
+    path: &Path,
+    expected_bytes: u64,
+    mut output: Option<&mut ExactSizedObjectBuffer>,
+    mut hasher: Option<&mut Sha256>,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    let mut observed_bytes = 0_u64;
+    loop {
+        work_budget.check_deadline(stage)?;
+        let chunk = reader
+            .fill_buf()
+            .with_context(|| format!("read opened object {}", path.display()))?;
+        if chunk.is_empty() {
+            break;
+        }
+        let chunk_bytes = u64::try_from(chunk.len())
+            .context("exact-size stream chunk length does not fit u64")?;
+        observed_bytes = observed_bytes
+            .checked_add(chunk_bytes)
+            .context("exact-size stream observed byte count overflow")?;
+        ensure!(
+            observed_bytes <= expected_bytes,
+            "object byte length exceeds pinned expected size {expected_bytes} while reading {}",
+            path.display()
+        );
+        if let Some(output) = output.as_deref_mut() {
+            output.push(chunk, work_budget, stage)?;
+        }
+        if let Some(hasher) = hasher.as_deref_mut() {
+            hasher.update(chunk);
+        }
+        let consumed = chunk.len();
+        reader.consume(consumed);
+        work_budget.check_deadline(stage)?;
+    }
+    ensure!(
+        observed_bytes == expected_bytes,
+        "object byte length {observed_bytes} does not match pinned expected size {expected_bytes} while reading {}",
+        path.display()
+    );
+    work_budget.check_deadline(stage)
+}
+
 fn read_exact_sized_open_file_ref_guarded(
     file: &mut fs::File,
     path: &Path,
@@ -968,26 +1017,18 @@ fn read_exact_sized_open_file_ref_guarded(
         metadata_bytes == expected_bytes,
         "object byte length {metadata_bytes} does not match pinned expected size {expected_bytes}"
     );
-    let sentinel_bytes = expected_bytes
-        .checked_add(1)
-        .context("exact-size file ingress sentinel length overflow")?;
-    let scratch_len = usize::try_from(sentinel_bytes)
-        .context("exact-size file ingress scratch length does not fit usize")?;
-    let mut scratch = Vec::new();
-    scratch
-        .try_reserve_exact(scratch_len)
-        .context("reserve exact-size file ingress scratch buffer")?;
-    scratch.resize(scratch_len, 0);
     let mut output = ExactSizedObjectBuffer::new(expected_bytes)?;
-    loop {
-        work_budget.check_deadline(stage)?;
-        let read = file
-            .read(&mut scratch)
-            .with_context(|| format!("read opened object {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        output.push(&scratch[..read], work_budget, stage)?;
+    {
+        let mut reader = BufReader::new(file);
+        stream_exact_sized_reader_guarded(
+            &mut reader,
+            path,
+            expected_bytes,
+            Some(&mut output),
+            None,
+            work_budget,
+            stage,
+        )?;
     }
     output.finish(work_budget, stage)
 }
@@ -1133,29 +1174,19 @@ fn read_and_sha256_exact_sized_open_file_guarded(
         "object byte length {} does not match pinned expected size {expected_bytes}",
         metadata.len()
     );
-    let sentinel_bytes = expected_bytes
-        .checked_add(1)
-        .context("exact-size hashed file ingress sentinel length overflow")?;
-    let scratch_len = usize::try_from(sentinel_bytes)
-        .context("exact-size hashed file ingress scratch length does not fit usize")?;
-    let mut scratch = Vec::new();
-    scratch
-        .try_reserve_exact(scratch_len)
-        .context("reserve exact-size hashed file ingress scratch buffer")?;
-    scratch.resize(scratch_len, 0);
     let mut output = ExactSizedObjectBuffer::new(expected_bytes)?;
     let mut hasher = Sha256::new();
-    loop {
-        work_budget.check_deadline(stage)?;
-        let read = file
-            .read(&mut scratch)
-            .with_context(|| format!("read and hash opened object {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        output.push(&scratch[..read], work_budget, stage)?;
-        hasher.update(&scratch[..read]);
-        work_budget.check_deadline(stage)?;
+    {
+        let mut reader = BufReader::new(file);
+        stream_exact_sized_reader_guarded(
+            &mut reader,
+            path,
+            expected_bytes,
+            Some(&mut output),
+            Some(&mut hasher),
+            work_budget,
+            stage,
+        )?;
     }
     let bytes = output.finish(work_budget, stage)?;
     work_budget.check_deadline(stage)?;
@@ -1181,39 +1212,19 @@ pub(crate) fn sha256_exact_sized_open_file_guarded(
     );
     file.seek(SeekFrom::Start(0))
         .with_context(|| format!("seek opened object before hashing {}", path.display()))?;
-    let scratch_len = usize::try_from(expected_bytes.max(1))
-        .context("exact-size file hash scratch length does not fit usize")?;
-    let mut scratch = Vec::new();
-    scratch
-        .try_reserve_exact(scratch_len)
-        .context("reserve exact-size file hash scratch buffer")?;
-    scratch.resize(scratch_len, 0);
-    let mut observed_bytes = 0_u64;
     let mut hasher = Sha256::new();
-    loop {
-        work_budget.check_deadline(stage)?;
-        let read = file
-            .read(&mut scratch)
-            .with_context(|| format!("hash opened object {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        observed_bytes = observed_bytes
-            .checked_add(u64::try_from(read).context("file hash read length does not fit u64")?)
-            .context("file hash observed byte count overflow")?;
-        ensure!(
-            observed_bytes <= expected_bytes,
-            "object byte length exceeds pinned expected size {expected_bytes} while hashing {}",
-            path.display()
-        );
-        hasher.update(&scratch[..read]);
-        work_budget.check_deadline(stage)?;
+    {
+        let mut reader = BufReader::new(&mut *file);
+        stream_exact_sized_reader_guarded(
+            &mut reader,
+            path,
+            expected_bytes,
+            None,
+            Some(&mut hasher),
+            work_budget,
+            stage,
+        )?;
     }
-    ensure!(
-        observed_bytes == expected_bytes,
-        "object byte length {observed_bytes} does not match pinned expected size {expected_bytes} while hashing {}",
-        path.display()
-    );
     let final_metadata = file
         .metadata()
         .with_context(|| format!("re-stat hashed object {}", path.display()))?;
@@ -1501,8 +1512,8 @@ mod tests {
     use std::{
         fs,
         future::pending,
-        io::Write,
-        sync::atomic::{AtomicBool, AtomicU64, Ordering},
+        io::{BufReader, Cursor, Read, Write},
+        sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         sync::{Arc, Mutex, mpsc},
         time::Duration,
     };
@@ -1516,7 +1527,8 @@ mod tests {
         projected_row_group_count, read_exact_sized_file_guarded,
         read_exact_sized_hashed_file_guarded, read_exact_sized_hashed_pinned_file_guarded,
         read_exact_sized_pinned_file_guarded, read_file_with_budget,
-        sha256_exact_sized_file_guarded, sha256_hex_with_budget, system_operator_work_budget_clock,
+        sha256_exact_sized_file_guarded, sha256_hex_with_budget, stream_exact_sized_reader_guarded,
+        system_operator_work_budget_clock,
     };
     use crate::backfill_execution_plan::BackfillExecutionWorkBudget;
 
@@ -1545,6 +1557,19 @@ mod tests {
     struct DeadlineAdvancingWriter {
         bytes: Vec<u8>,
         clock: Arc<FakeClock>,
+    }
+
+    struct MaximumReadObserver {
+        inner: Cursor<Vec<u8>>,
+        maximum_requested: Arc<AtomicUsize>,
+    }
+
+    impl Read for MaximumReadObserver {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.maximum_requested
+                .fetch_max(buffer.len(), Ordering::SeqCst);
+            self.inner.read(buffer)
+        }
     }
 
     impl Write for DeadlineAdvancingWriter {
@@ -2016,6 +2041,45 @@ mod tests {
                 .to_string()
                 .contains("monotonic work-budget clock regressed"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn exact_size_streaming_never_requests_a_full_object_scratch_buffer() {
+        const TEST_STREAM_BUFFER_BYTES: usize = 31;
+        let object = vec![7_u8; 4_096];
+        let maximum_requested = Arc::new(AtomicUsize::new(0));
+        let reader = MaximumReadObserver {
+            inner: Cursor::new(object.clone()),
+            maximum_requested: maximum_requested.clone(),
+        };
+        let mut reader = BufReader::with_capacity(TEST_STREAM_BUFFER_BYTES, reader);
+        let guard = OperatorWorkBudgetGuard::unbounded();
+        let mut output = ExactSizedObjectBuffer::new(
+            u64::try_from(object.len()).expect("object length fits u64"),
+        )
+        .expect("construct exact-size output");
+
+        stream_exact_sized_reader_guarded(
+            &mut reader,
+            std::path::Path::new("observed-object"),
+            u64::try_from(object.len()).expect("object length fits u64"),
+            Some(&mut output),
+            None,
+            &guard,
+            OperatorWorkBudgetStage::ObjectVerification,
+        )
+        .expect("stream exact-size input");
+
+        assert_eq!(
+            output
+                .finish(&guard, OperatorWorkBudgetStage::ObjectVerification)
+                .expect("finish exact-size output"),
+            object
+        );
+        assert!(
+            maximum_requested.load(Ordering::SeqCst) <= TEST_STREAM_BUFFER_BYTES,
+            "underlying reader must see only the configured bounded stream buffer"
         );
     }
 

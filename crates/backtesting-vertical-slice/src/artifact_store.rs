@@ -869,7 +869,95 @@ impl ArtifactKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogDispatchConfig {
+    pub encoding: CatalogEncodingConfig,
     pub bindings: Vec<CatalogProjectionBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "CatalogEncodingConfigWire")]
+pub struct CatalogEncodingConfig {
+    batch_size: usize,
+    max_row_group_size: usize,
+    compression: CatalogCompression,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogEncodingConfigWire {
+    batch_size: usize,
+    max_row_group_size: usize,
+    compression: CatalogCompression,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogCompression {
+    Snappy,
+}
+
+impl CatalogEncodingConfig {
+    /// Build an explicit NautilusTrader catalog encoding configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either configured row count is zero.
+    pub fn new(
+        batch_size: usize,
+        max_row_group_size: usize,
+        compression: CatalogCompression,
+    ) -> Result<Self> {
+        ensure!(
+            batch_size > 0,
+            "catalog encoding batch_size must be positive"
+        );
+        ensure!(
+            max_row_group_size > 0,
+            "catalog encoding max_row_group_size must be positive"
+        );
+        Ok(Self {
+            batch_size,
+            max_row_group_size,
+            compression,
+        })
+    }
+
+    /// Hash the exact explicit encoding values used to build the NT catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the encoding identity cannot be serialized.
+    pub fn content_hash(&self) -> Result<String> {
+        crate::reference_artifact::canonical_json_sha256(self)
+            .context("hash exact catalog encoding config")
+    }
+
+    #[must_use]
+    pub(crate) const fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    #[must_use]
+    pub(crate) const fn max_row_group_size(&self) -> usize {
+        self.max_row_group_size
+    }
+
+    #[must_use]
+    pub(crate) const fn compression(&self) -> CatalogCompression {
+        self.compression
+    }
+}
+
+impl TryFrom<CatalogEncodingConfigWire> for CatalogEncodingConfig {
+    type Error = String;
+
+    fn try_from(value: CatalogEncodingConfigWire) -> std::result::Result<Self, Self::Error> {
+        Self::new(
+            value.batch_size,
+            value.max_row_group_size,
+            value.compression,
+        )
+        .map_err(|error| error.to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5223,6 +5311,102 @@ mod tests {
             CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION, CatalogProjectionManifestObject,
         },
     };
+
+    fn catalog_dispatch_toml(encoding: &str) -> String {
+        format!(
+            r#"
+{encoding}
+
+[[bindings]]
+source_binding = "binary-official"
+market_structure_fixture = "binary-option"
+catalog_projection_id = "binary-projection-1"
+"#
+        )
+    }
+
+    #[test]
+    fn catalog_dispatch_rejects_missing_encoding() {
+        let error = toml::from_str::<CatalogDispatchConfig>(&catalog_dispatch_toml(""))
+            .expect_err("catalog encoding must be explicit");
+
+        assert!(error.to_string().contains("encoding"), "{error}");
+    }
+
+    #[test]
+    fn catalog_encoding_rejects_zero_batch_size() {
+        let error = toml::from_str::<CatalogDispatchConfig>(&catalog_dispatch_toml(
+            r#"
+[encoding]
+batch_size = 0
+max_row_group_size = 5000
+compression = "snappy"
+"#,
+        ))
+        .expect_err("catalog batch_size must be positive");
+
+        assert!(error.to_string().contains("batch_size"), "{error}");
+    }
+
+    #[test]
+    fn catalog_encoding_rejects_zero_max_row_group_size() {
+        let error = toml::from_str::<CatalogDispatchConfig>(&catalog_dispatch_toml(
+            r#"
+[encoding]
+batch_size = 5000
+max_row_group_size = 0
+compression = "snappy"
+"#,
+        ))
+        .expect_err("catalog max_row_group_size must be positive");
+
+        assert!(error.to_string().contains("max_row_group_size"), "{error}");
+    }
+
+    #[test]
+    fn catalog_encoding_rejects_unknown_compression() {
+        let error = toml::from_str::<CatalogDispatchConfig>(&catalog_dispatch_toml(
+            r#"
+[encoding]
+batch_size = 5000
+max_row_group_size = 5000
+compression = "implicit-default"
+"#,
+        ))
+        .expect_err("catalog compression must map to an explicit supported NT value");
+
+        assert!(error.to_string().contains("compression"), "{error}");
+    }
+
+    #[test]
+    fn catalog_encoding_hash_binds_every_explicit_encoding_value() {
+        let baseline = CatalogEncodingConfig::new(5_000, 5_000, CatalogCompression::Snappy)
+            .expect("valid baseline encoding");
+        let changed_batch = CatalogEncodingConfig::new(5_001, 5_000, CatalogCompression::Snappy)
+            .expect("valid changed batch encoding");
+        let changed_row_group =
+            CatalogEncodingConfig::new(5_000, 5_001, CatalogCompression::Snappy)
+                .expect("valid changed row-group encoding");
+
+        let baseline_hash = baseline.content_hash().expect("hash catalog encoding");
+        assert!(crate::hashing::is_lowercase_sha256_hex(&baseline_hash));
+        assert_eq!(
+            baseline_hash,
+            baseline
+                .content_hash()
+                .expect("repeat catalog encoding hash")
+        );
+        assert_ne!(
+            baseline_hash,
+            changed_batch.content_hash().expect("hash changed batch")
+        );
+        assert_ne!(
+            baseline_hash,
+            changed_row_group
+                .content_hash()
+                .expect("hash changed row group")
+        );
+    }
 
     #[cfg(unix)]
     #[test]

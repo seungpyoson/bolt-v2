@@ -15,7 +15,12 @@ use serde::{Deserialize, Serialize};
 use crate::backfill_coverage::{
     BackfillCoverageLedger, BackfillCoverageRecord, BackfillCoverageStatus,
 };
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::{
+    path_resolution::resolve_output_dir,
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
+};
 
 pub const BACKFILL_PREFLIGHT_REPORT_SCHEMA_VERSION: &str = "backfill-preflight-report.v1";
 pub const BACKFILL_PREFLIGHT_REPORT_FILE: &str = "backfill-preflight-report.json";
@@ -227,11 +232,15 @@ pub fn write_backfill_preflight_report(
     output_dir: &Path,
     report: &BackfillPreflightReport,
 ) -> Result<BackfillPreflightReportArtifact, BackfillPreflightError> {
+    let path = active_backfill_runtime_output_path(output_dir, BACKFILL_PREFLIGHT_REPORT_FILE)
+        .map_err(|error| BackfillPreflightError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillPreflightError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let path = output_dir.join(BACKFILL_PREFLIGHT_REPORT_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_PREFLIGHT_REPORT_FILE,
@@ -255,24 +264,31 @@ pub fn write_backfill_preflight_report_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillPreflightReportArtifact, BackfillPreflightError> {
     let path = spec_path.display().to_string();
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillPreflightError::ReadSpec {
+            path: path.clone(),
+            error: error.to_string(),
+        }
+    })?;
     let spec_text =
-        fs::read_to_string(spec_path).map_err(|error| BackfillPreflightError::ReadSpec {
+        std::str::from_utf8(&spec_bytes).map_err(|error| BackfillPreflightError::ReadSpec {
             path: path.clone(),
             error: error.to_string(),
         })?;
     let spec: BackfillPreflightSpec =
-        toml::from_str(&spec_text).map_err(|error| BackfillPreflightError::ParseSpecToml {
+        toml::from_str(spec_text).map_err(|error| BackfillPreflightError::ParseSpecToml {
             path: path.clone(),
             error: error.to_string(),
         })?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let ledger_path = spec.coverage_ledger_path.display().to_string();
-    let resolved_ledger_path = resolve_existing_path(base_dir, &spec.coverage_ledger_path);
     let ledger_bytes =
-        fs::read(&resolved_ledger_path).map_err(|error| BackfillPreflightError::ReadLedger {
-            path: ledger_path.clone(),
-            error: error.to_string(),
-        })?;
+        read_active_backfill_runtime_input(Some(base_dir), &spec.coverage_ledger_path).map_err(
+            |error| BackfillPreflightError::ReadLedger {
+                path: ledger_path.clone(),
+                error: error.to_string(),
+            },
+        )?;
     let ledger: BackfillCoverageLedger =
         serde_json::from_slice(&ledger_bytes).map_err(|error| {
             BackfillPreflightError::ParseLedgerJson {

@@ -131,6 +131,9 @@ fn production_region(content: &str) -> &str {
 fn needle_allowed_in_production_path(needle: &str, path: &Path, src: &Path) -> bool {
     let relative = path.strip_prefix(src).expect("source-relative path");
     let relative = relative.to_str().expect("UTF-8 source path");
+    if relative == "retired_backfill_provenance.rs" {
+        return matches!(needle, "binance" | "bybit" | "bnbusdc");
+    }
     if relative == "reference_fixture_index.rs" {
         return matches!(needle, "binance" | "bybit" | "pmxt" | "polymarket");
     }
@@ -147,6 +150,29 @@ fn needle_allowed_in_production_path(needle: &str, path: &Path, src: &Path) -> b
             | "bin/pmxt_one_off_l2_artifact_root_run.rs"
             | "bin/polymarket_metadata_gate.rs"
     )
+}
+
+#[test]
+fn retired_backfill_provenance_allowlist_is_exact_and_path_scoped() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let provenance = src.join("retired_backfill_provenance.rs");
+    let generic_runtime = src.join("retired_backfill_evidence.rs");
+
+    for needle in ["binance", "bybit", "bnbusdc"] {
+        assert!(needle_allowed_in_production_path(needle, &provenance, &src));
+        assert!(!needle_allowed_in_production_path(
+            needle,
+            &generic_runtime,
+            &src
+        ));
+    }
+    for needle in ["pmxt", "polymarket", "public_archive"] {
+        assert!(!needle_allowed_in_production_path(
+            needle,
+            &provenance,
+            &src
+        ));
+    }
 }
 
 #[test]

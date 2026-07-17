@@ -37,6 +37,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use super::{
+    artifact_store::CatalogEncodingConfig,
     canonical_trades::{
         TradesPartition, constant_utf8_column_guarded, estimated_arrow_row_bytes,
         int64_column_guarded, optional_int64_column_guarded, optional_uint16_column_guarded,
@@ -1798,8 +1799,16 @@ impl CanonicalOrderBookDeltasTable {
     /// # Errors
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
-    pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    pub fn write_parquet(
+        &self,
+        path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
+    ) -> Result<()> {
+        self.write_parquet_guarded(
+            path,
+            catalog_encoding,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
     }
 
     /// Write this table atomically while enforcing the shared work budget.
@@ -1810,6 +1819,7 @@ impl CanonicalOrderBookDeltasTable {
     pub fn write_parquet_guarded(
         &self,
         path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
@@ -1817,6 +1827,7 @@ impl CanonicalOrderBookDeltasTable {
             &self.rows,
             Self::arrow_schema(),
             path,
+            catalog_encoding,
             work_budget,
             delta_row_materialized_bytes,
             |rows, guard| self.to_record_batch_guarded(rows, guard),
@@ -1927,8 +1938,16 @@ impl CanonicalBarsTable {
     /// # Errors
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
-    pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    pub fn write_parquet(
+        &self,
+        path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
+    ) -> Result<()> {
+        self.write_parquet_guarded(
+            path,
+            catalog_encoding,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
     }
 
     /// Write this table atomically while enforcing the shared work budget.
@@ -1939,6 +1958,7 @@ impl CanonicalBarsTable {
     pub fn write_parquet_guarded(
         &self,
         path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
@@ -1947,6 +1967,7 @@ impl CanonicalBarsTable {
             &self.rows,
             Self::arrow_schema(),
             path,
+            catalog_encoding,
             work_budget,
             |row| bar_row_materialized_bytes(row, &bar_aggregation),
             |rows, guard| self.to_record_batch_guarded(rows, guard),
@@ -2043,8 +2064,16 @@ impl CanonicalQuotesTable {
     /// # Errors
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
-    pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    pub fn write_parquet(
+        &self,
+        path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
+    ) -> Result<()> {
+        self.write_parquet_guarded(
+            path,
+            catalog_encoding,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
     }
 
     /// Write this table atomically while enforcing the shared work budget.
@@ -2055,6 +2084,7 @@ impl CanonicalQuotesTable {
     pub fn write_parquet_guarded(
         &self,
         path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
@@ -2062,6 +2092,7 @@ impl CanonicalQuotesTable {
             &self.rows,
             Self::arrow_schema(),
             path,
+            catalog_encoding,
             work_budget,
             quote_row_materialized_bytes,
             |rows, guard| self.to_record_batch_guarded(rows, guard),
@@ -2156,8 +2187,16 @@ impl CanonicalIndexPricesTable {
     /// # Errors
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
-    pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    pub fn write_parquet(
+        &self,
+        path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
+    ) -> Result<()> {
+        self.write_parquet_guarded(
+            path,
+            catalog_encoding,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
     }
 
     /// Write this table atomically while enforcing the shared work budget.
@@ -2168,6 +2207,7 @@ impl CanonicalIndexPricesTable {
     pub fn write_parquet_guarded(
         &self,
         path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
@@ -2175,6 +2215,7 @@ impl CanonicalIndexPricesTable {
             &self.rows,
             Self::arrow_schema(),
             path,
+            catalog_encoding,
             work_budget,
             point_price_row_materialized_bytes,
             |rows, guard| self.to_record_batch_guarded(rows, guard),
@@ -2269,8 +2310,16 @@ impl CanonicalMarkPricesTable {
     /// # Errors
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
-    pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    pub fn write_parquet(
+        &self,
+        path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
+    ) -> Result<()> {
+        self.write_parquet_guarded(
+            path,
+            catalog_encoding,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
     }
 
     /// Write this table atomically while enforcing the shared work budget.
@@ -2281,6 +2330,7 @@ impl CanonicalMarkPricesTable {
     pub fn write_parquet_guarded(
         &self,
         path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
@@ -2288,6 +2338,7 @@ impl CanonicalMarkPricesTable {
             &self.rows,
             Self::arrow_schema(),
             path,
+            catalog_encoding,
             work_budget,
             mark_price_row_materialized_bytes,
             |rows, guard| self.to_record_batch_guarded(rows, guard),
@@ -2390,8 +2441,16 @@ impl CanonicalFundingRatesTable {
     /// # Errors
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
-    pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    pub fn write_parquet(
+        &self,
+        path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
+    ) -> Result<()> {
+        self.write_parquet_guarded(
+            path,
+            catalog_encoding,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
     }
 
     /// Write this table atomically while enforcing the shared work budget.
@@ -2402,6 +2461,7 @@ impl CanonicalFundingRatesTable {
     pub fn write_parquet_guarded(
         &self,
         path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
@@ -2409,6 +2469,7 @@ impl CanonicalFundingRatesTable {
             &self.rows,
             Self::arrow_schema(),
             path,
+            catalog_encoding,
             work_budget,
             funding_rate_row_materialized_bytes,
             |rows, guard| self.to_record_batch_guarded(rows, guard),

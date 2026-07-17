@@ -2,22 +2,22 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use backtesting_vertical_slice::path_resolution::{
-    resolve_existing_input_path, resolve_existing_path, resolve_output_dir,
+    resolve_existing_input_path, resolve_output_dir, resolve_pack_control_path,
 };
 use backtesting_vertical_slice::source_universe_batch_execution::{
     CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
     SOURCE_UNIVERSE_OPERATOR_WORKER_MODE, SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT,
-    SourceUniverseBatchArtifactPin, SourceUniverseBatchBootstrapLimits,
-    SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReportStatus,
-    SourceUniverseBatchLaunchArtifacts, SourceUniverseCacheRunVerification,
+    SourceUniverseBatchArtifactPin, SourceUniverseBatchExecutionConfig,
+    SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchLaunchArtifacts,
+    SourceUniverseBatchResourceLimits, SourceUniverseCacheRunVerification,
     SourceUniverseObjectFetcher, VerifiedSourceObject,
     execute_source_universe_batch_process_isolated, execute_source_universe_operator_worker,
-    write_source_universe_batch_execution_report,
+    validate_process_isolated_batch_selection,
 };
 use backtesting_vertical_slice::source_universe_batch_launch::{
-    SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION, SourceUniverseBatchLaunchArtifactSpec,
     SourceUniverseBatchLaunchSpec, SourceUniverseBatchTransportSpec,
 };
+use backtesting_vertical_slice::source_universe_local_storage::acquire_source_universe_local_storage;
 use backtesting_vertical_slice::source_universe_object_transport::StagedS3SourceUniverseObjectFetcher;
 use clap::Parser;
 
@@ -38,6 +38,8 @@ struct Cli {
 #[derive(Debug, Parser)]
 struct WorkerCli {
     #[arg(long)]
+    workspace_owner_lock_fd: i32,
+    #[arg(long)]
     request_archive_bytes: u64,
     #[arg(long)]
     request_manifest_bytes: u64,
@@ -45,15 +47,14 @@ struct WorkerCli {
     request_manifest_sha256: String,
     #[arg(long)]
     bootstrap_max_bytes: u64,
+    #[arg(long)]
+    worker_max_virtual_memory_bytes: u64,
 }
 
-/// Object fetcher used by every batch worker: the HTTP fetcher, optionally
-/// wrapped in the content-addressed cache when `object_cache_dir` is set.
-/// One concrete type keeps the factory signature monomorphic across both modes.
+/// Object fetcher used by every batch worker. Both selected transports pass
+/// through the one mandatory content-addressed cache and shared run verifier.
 enum BatchWorkerFetcher {
-    DirectHttp(HttpSourceUniverseObjectFetcher),
     CachedHttp(CachingSourceUniverseObjectFetcher<HttpSourceUniverseObjectFetcher>),
-    DirectStagedS3(StagedS3SourceUniverseObjectFetcher),
     CachedStagedS3(CachingSourceUniverseObjectFetcher<StagedS3SourceUniverseObjectFetcher>),
 }
 
@@ -65,11 +66,7 @@ impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
         work_budget: &backtesting_vertical_slice::operator_work_budget::OperatorWorkBudgetGuard,
     ) -> Result<VerifiedSourceObject> {
         match self {
-            BatchWorkerFetcher::DirectHttp(fetcher) => fetcher.fetch(record, run_spec, work_budget),
             BatchWorkerFetcher::CachedHttp(fetcher) => fetcher.fetch(record, run_spec, work_budget),
-            BatchWorkerFetcher::DirectStagedS3(fetcher) => {
-                fetcher.fetch(record, run_spec, work_budget)
-            }
             BatchWorkerFetcher::CachedStagedS3(fetcher) => {
                 fetcher.fetch(record, run_spec, work_budget)
             }
@@ -80,7 +77,7 @@ impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
 fn build_batch_worker_fetcher(
     transport: &SourceUniverseBatchTransportSpec,
     fetch_timeout_seconds: u64,
-    object_cache_dir: Option<&Path>,
+    object_cache_dir: &Path,
     cache_run_verification: SourceUniverseCacheRunVerification,
 ) -> Result<BatchWorkerFetcher> {
     match transport {
@@ -89,29 +86,23 @@ fn build_batch_worker_fetcher(
                 Some(fetch_timeout_seconds),
                 Some(http_user_agent.as_str()),
             )?;
-            match object_cache_dir {
-                Some(cache_dir) => Ok(BatchWorkerFetcher::CachedHttp(
-                    CachingSourceUniverseObjectFetcher::for_run(
-                        fetcher,
-                        cache_dir,
-                        cache_run_verification,
-                    ),
-                )),
-                None => Ok(BatchWorkerFetcher::DirectHttp(fetcher)),
-            }
+            Ok(BatchWorkerFetcher::CachedHttp(
+                CachingSourceUniverseObjectFetcher::for_run(
+                    fetcher,
+                    object_cache_dir,
+                    cache_run_verification,
+                ),
+            ))
         }
         SourceUniverseBatchTransportSpec::StagedS3 => {
             let fetcher = StagedS3SourceUniverseObjectFetcher::new(Some(fetch_timeout_seconds))?;
-            match object_cache_dir {
-                Some(cache_dir) => Ok(BatchWorkerFetcher::CachedStagedS3(
-                    CachingSourceUniverseObjectFetcher::for_run(
-                        fetcher,
-                        cache_dir,
-                        cache_run_verification,
-                    ),
-                )),
-                None => Ok(BatchWorkerFetcher::DirectStagedS3(fetcher)),
-            }
+            Ok(BatchWorkerFetcher::CachedStagedS3(
+                CachingSourceUniverseObjectFetcher::for_run(
+                    fetcher,
+                    object_cache_dir,
+                    cache_run_verification,
+                ),
+            ))
         }
     }
 }
@@ -122,10 +113,12 @@ fn main() -> Result<()> {
     }) {
         let worker = WorkerCli::parse_from(std::env::args_os().skip(1));
         return execute_source_universe_operator_worker(
+            worker.workspace_owner_lock_fd,
             worker.request_archive_bytes,
             worker.request_manifest_bytes,
             &worker.request_manifest_sha256,
             worker.bootstrap_max_bytes,
+            worker.worker_max_virtual_memory_bytes,
         );
     }
     let cli = Cli::parse();
@@ -150,7 +143,10 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
         object_cache_dir: declared_object_cache_dir,
         allow_partial,
         bootstrap_limits,
+        resource_limits,
+        local_storage,
     } = spec;
+    validate_process_isolated_batch_selection(record_limit, Some(max_concurrent_records))?;
     ensure!(
         fetch_timeout_seconds > 0,
         "batch launch spec fetch_timeout_seconds must be positive"
@@ -161,18 +157,25 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
     );
     transport.validate()?;
     let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
-    let execution_pack_path = resolve_existing_path(base_dir, &execution_pack.path);
-    let output_dir = resolve_output_dir(base_dir, &declared_output_dir);
-    let object_cache_dir = declared_object_cache_dir
-        .as_ref()
-        .map(|path| resolve_output_dir(base_dir, path));
+    let execution_pack_path = resolve_execution_pack_path(spec_path, &execution_pack.path)?;
+    let declared_output_dir = resolve_output_dir(base_dir, &declared_output_dir);
+    let declared_object_cache_dir = resolve_output_dir(base_dir, &declared_object_cache_dir);
+    let local_storage_lease = acquire_source_universe_local_storage(
+        &local_storage,
+        base_dir,
+        &declared_output_dir,
+        &declared_object_cache_dir,
+    )?;
+    let output_dir = local_storage_lease.output_root().to_path_buf();
+    let object_cache_dir = local_storage_lease.cache_root().to_path_buf();
     let cache_run_verification = SourceUniverseCacheRunVerification::default();
+    let worker_cache_dir = object_cache_dir.clone();
 
     let fetcher_factory = move || -> Result<BatchWorkerFetcher> {
         build_batch_worker_fetcher(
             &transport,
             fetch_timeout_seconds,
-            object_cache_dir.as_deref(),
+            worker_cache_dir.as_path(),
             cache_run_verification.clone(),
         )
     };
@@ -192,7 +195,7 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
     let launch_artifacts =
         SourceUniverseBatchLaunchArtifacts::try_new(execution_pack, bootstrap_limits)?;
 
-    let report = execute_source_universe_batch_process_isolated(
+    let published = execute_source_universe_batch_process_isolated(
         &batch_id,
         &launch_artifacts,
         &output_dir,
@@ -205,8 +208,13 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
         fetcher_factory,
         request_root,
         worker_termination_grace_seconds,
+        resource_limits,
+        &local_storage,
+        &local_storage_lease,
+        local_storage.lifecycle_cleanup_limits(),
     )?;
-    let artifact = write_source_universe_batch_execution_report(&output_dir, &report)?;
+    let report = published.report;
+    let artifact = published.artifact;
     println!(
         "source_universe_batch_execution_report = {}",
         artifact.path.display()
@@ -237,6 +245,17 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
     Ok(())
 }
 
+fn resolve_execution_pack_path(spec_path: &Path, declared_path: &Path) -> Result<PathBuf> {
+    let spec_parent = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    resolve_pack_control_path(spec_parent, declared_path).with_context(|| {
+        format!(
+            "resolve execution pack {} from launch spec parent {}",
+            declared_path.display(),
+            spec_parent.display()
+        )
+    })
+}
+
 /// Map a finished batch report to its process exit code. Returns
 /// `Some(EXIT_PARTIAL_FAILURE)` when the run completed but any record failed and
 /// `allow_partial` was false, otherwise `None` (a clean `Ok(())` exit).
@@ -262,18 +281,37 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::{
-        BatchWorkerFetcher, Cli, EXIT_PARTIAL_FAILURE,
-        SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION, SourceUniverseBatchLaunchArtifactSpec,
-        SourceUniverseBatchLaunchSpec, SourceUniverseBatchTransportSpec,
-        build_batch_worker_fetcher, partial_failure_exit_code, run_batch,
+        BatchWorkerFetcher, Cli, EXIT_PARTIAL_FAILURE, SourceUniverseBatchLaunchSpec,
+        SourceUniverseBatchTransportSpec, build_batch_worker_fetcher, partial_failure_exit_code,
+        resolve_execution_pack_path, run_batch,
     };
     use backtesting_vertical_slice::source_universe_batch_execution::{
         SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionReportStatus,
-        SourceUniverseCacheRunVerification,
+        SourceUniverseBatchResourceLimits, SourceUniverseCacheRunVerification,
     };
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     use backtesting_vertical_slice::source_universe_batch_launch::discover_committed_source_universe_execution_packs;
+    use backtesting_vertical_slice::source_universe_batch_launch::{
+        SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION, SourceUniverseBatchLaunchArtifactSpec,
+    };
+    use backtesting_vertical_slice::source_universe_local_storage::SourceUniverseLocalStoragePolicy;
     use clap::Parser;
+
+    fn test_local_storage_policy(root: &std::path::Path) -> SourceUniverseLocalStoragePolicy {
+        let workspace_root = root.join("workspace");
+        SourceUniverseLocalStoragePolicy {
+            owner_lock_path: workspace_root.join("owner.lock"),
+            workspace_root,
+            max_workspace_bytes: 1 << 30,
+            max_cache_bytes: 1 << 29,
+            minimum_free_space_reserve_bytes: 1 << 20,
+            one_record_worst_case_bytes: 1 << 20,
+            cache_retention_age_seconds: 3600,
+            candidate_retention_age_seconds: 3600,
+            max_lifecycle_cleanup_entries: 10_000,
+            max_lifecycle_cleanup_depth: 64,
+        }
+    }
 
     #[test]
     fn completed_report_exits_clean() {
@@ -359,13 +397,18 @@ mod tests {
                 worker_termination_grace_seconds: 1,
                 max_concurrent_records: 2,
                 transport: SourceUniverseBatchTransportSpec::StagedS3,
-                object_cache_dir: None,
+                object_cache_dir: temp.path().join("workspace/cache"),
                 allow_partial: true,
                 bootstrap_limits: SourceUniverseBatchBootstrapLimits {
                     max_launch_artifact_bytes: 1,
                     max_control_artifact_bytes: 1,
                     max_retained_control_input_bytes: 1,
                 },
+                resource_limits: SourceUniverseBatchResourceLimits {
+                    worker_max_virtual_memory_bytes: 1_073_741_824,
+                    worker_reserved_overhead_bytes: 1,
+                },
+                local_storage: test_local_storage_policy(temp.path()),
             },
         )
         .expect_err("unsupported process parallelism must be a global configuration error");
@@ -380,6 +423,100 @@ mod tests {
             !output_dir.exists(),
             "configuration rejection must precede batch output creation"
         );
+    }
+
+    #[test]
+    fn unbounded_process_selection_fails_before_pack_output_or_cache_access() {
+        let temp = tempfile::tempdir().expect("temporary output parent");
+        let spec_path = temp.path().join("launch.toml");
+        let output_dir = temp.path().join("must-not-be-created");
+        let cache_dir = temp.path().join("workspace/cache");
+        let error = run_batch(
+            &spec_path,
+            SourceUniverseBatchLaunchSpec {
+                schema_version: SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION.to_string(),
+                batch_id: "unbounded-process-selection".to_string(),
+                execution_pack: SourceUniverseBatchLaunchArtifactSpec {
+                    path: PathBuf::from("nonexistent-pack-must-not-be-read.json"),
+                    bytes: 1,
+                    sha256: "0".repeat(64),
+                },
+                output_dir: output_dir.clone(),
+                start_sequence: None,
+                record_limit: None,
+                continue_on_error: false,
+                fetch_timeout_seconds: 1,
+                worker_termination_grace_seconds: 1,
+                max_concurrent_records: 1,
+                transport: SourceUniverseBatchTransportSpec::StagedS3,
+                object_cache_dir: cache_dir.clone(),
+                allow_partial: false,
+                bootstrap_limits: SourceUniverseBatchBootstrapLimits {
+                    max_launch_artifact_bytes: 1,
+                    max_control_artifact_bytes: 1,
+                    max_retained_control_input_bytes: 1,
+                },
+                resource_limits: SourceUniverseBatchResourceLimits {
+                    worker_max_virtual_memory_bytes: 1_073_741_824,
+                    worker_reserved_overhead_bytes: 1,
+                },
+                local_storage: test_local_storage_policy(temp.path()),
+            },
+        )
+        .expect_err("unbounded process selection must be rejected before artifact access");
+
+        assert!(
+            error.to_string().contains("requires record_limit=1"),
+            "{error:#}"
+        );
+        assert!(!output_dir.exists() && !cache_dir.exists());
+    }
+
+    #[test]
+    fn multi_record_process_selection_fails_before_pack_output_or_cache_access() {
+        let temp = tempfile::tempdir().expect("temporary output parent");
+        let spec_path = temp.path().join("launch.toml");
+        let output_dir = temp.path().join("must-not-be-created");
+        let cache_dir = temp.path().join("workspace/cache");
+        let error = run_batch(
+            &spec_path,
+            SourceUniverseBatchLaunchSpec {
+                schema_version: SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION.to_string(),
+                batch_id: "multi-record-process-selection".to_string(),
+                execution_pack: SourceUniverseBatchLaunchArtifactSpec {
+                    path: PathBuf::from("nonexistent-pack-must-not-be-read.json"),
+                    bytes: 1,
+                    sha256: "0".repeat(64),
+                },
+                output_dir: output_dir.clone(),
+                start_sequence: None,
+                record_limit: Some(2),
+                continue_on_error: false,
+                fetch_timeout_seconds: 1,
+                worker_termination_grace_seconds: 1,
+                max_concurrent_records: 1,
+                transport: SourceUniverseBatchTransportSpec::StagedS3,
+                object_cache_dir: cache_dir.clone(),
+                allow_partial: false,
+                bootstrap_limits: SourceUniverseBatchBootstrapLimits {
+                    max_launch_artifact_bytes: 1,
+                    max_control_artifact_bytes: 1,
+                    max_retained_control_input_bytes: 1,
+                },
+                resource_limits: SourceUniverseBatchResourceLimits {
+                    worker_max_virtual_memory_bytes: 1_073_741_824,
+                    worker_reserved_overhead_bytes: 1,
+                },
+                local_storage: test_local_storage_policy(temp.path()),
+            },
+        )
+        .expect_err("multi-record process selection must be rejected before artifact access");
+
+        assert!(
+            error.to_string().contains("requires record_limit=1"),
+            "{error:#}"
+        );
+        assert!(!output_dir.exists() && !cache_dir.exists());
     }
 
     #[test]
@@ -405,13 +542,18 @@ mod tests {
                 worker_termination_grace_seconds: 0,
                 max_concurrent_records: 1,
                 transport: SourceUniverseBatchTransportSpec::StagedS3,
-                object_cache_dir: None,
+                object_cache_dir: temp.path().join("workspace/cache"),
                 allow_partial: false,
                 bootstrap_limits: SourceUniverseBatchBootstrapLimits {
                     max_launch_artifact_bytes: 1,
                     max_control_artifact_bytes: 1,
                     max_retained_control_input_bytes: 1,
                 },
+                resource_limits: SourceUniverseBatchResourceLimits {
+                    worker_max_virtual_memory_bytes: 1_073_741_824,
+                    worker_reserved_overhead_bytes: 1,
+                },
+                local_storage: test_local_storage_policy(temp.path()),
             },
         )
         .expect_err("zero worker termination grace must fail before artifact access");
@@ -445,7 +587,7 @@ mod tests {
                 },
                 output_dir: output_dir.clone(),
                 start_sequence: None,
-                record_limit: None,
+                record_limit: Some(1),
                 continue_on_error: false,
                 fetch_timeout_seconds: 1,
                 worker_termination_grace_seconds: 1,
@@ -453,13 +595,18 @@ mod tests {
                 transport: SourceUniverseBatchTransportSpec::Https {
                     http_user_agent: "invalid\r\nuser-agent".to_string(),
                 },
-                object_cache_dir: None,
+                object_cache_dir: temp.path().join("workspace/cache"),
                 allow_partial: false,
                 bootstrap_limits: SourceUniverseBatchBootstrapLimits {
                     max_launch_artifact_bytes: 1,
                     max_control_artifact_bytes: 1,
                     max_retained_control_input_bytes: 1,
                 },
+                resource_limits: SourceUniverseBatchResourceLimits {
+                    worker_max_virtual_memory_bytes: 1_073_741_824,
+                    worker_reserved_overhead_bytes: 1,
+                },
+                local_storage: test_local_storage_policy(temp.path()),
             },
         )
         .expect_err("invalid HTTP user-agent must fail launch preflight");
@@ -468,6 +615,49 @@ mod tests {
         assert!(
             !output_dir.exists(),
             "HTTP header rejection must precede batch output creation"
+        );
+    }
+
+    #[test]
+    fn launch_execution_pack_path_ignores_ambient_cwd_decoy() {
+        let spec_root = tempfile::tempdir().expect("temporary launch spec root");
+        let spec_parent = spec_root.path().join("scope");
+        fs::create_dir(&spec_parent).expect("create launch spec parent");
+        let spec_path = spec_parent.join("source-universe-batch-launch.toml");
+
+        let current_dir = std::env::current_dir().expect("resolve ambient working directory");
+        let cwd_decoy_root =
+            tempfile::tempdir_in(&current_dir).expect("create ambient working-directory decoy");
+        let decoy_component = cwd_decoy_root
+            .path()
+            .file_name()
+            .expect("decoy directory has a file name");
+        let declared_path = PathBuf::from(decoy_component).join("execution-pack.json");
+        let cwd_decoy_path = current_dir.join(&declared_path);
+        fs::write(&cwd_decoy_path, b"ambient decoy").expect("write ambient decoy pack");
+
+        let authoritative_path = spec_parent.join(&declared_path);
+        fs::create_dir_all(
+            authoritative_path
+                .parent()
+                .expect("authoritative pack parent"),
+        )
+        .expect("create authoritative pack parent");
+        fs::write(&authoritative_path, b"spec-parent-owned pack")
+            .expect("write authoritative execution pack");
+
+        let resolved = resolve_execution_pack_path(&spec_path, &declared_path)
+            .expect("launch execution pack resolves");
+
+        assert_eq!(
+            resolved,
+            authoritative_path
+                .canonicalize()
+                .expect("canonical authoritative execution pack")
+        );
+        assert_eq!(
+            fs::read(resolved).expect("read resolved execution pack"),
+            b"spec-parent-owned pack"
         );
     }
 
@@ -485,6 +675,7 @@ continue_on_error = true
 fetch_timeout_seconds = 30
 worker_termination_grace_seconds = 5
 max_concurrent_records = 1
+object_cache_dir = "workspace/cache"
 allow_partial = false
 
 [transport]
@@ -499,6 +690,22 @@ sha256 = "{}"
 [bootstrap_limits]
 max_launch_artifact_bytes = 1024
 max_control_artifact_bytes = 1024
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 268435456
+
+[local_storage]
+workspace_root = "workspace"
+owner_lock_path = "workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
                 "0".repeat(64)
             ),
@@ -527,6 +734,7 @@ continue_on_error = true
 fetch_timeout_seconds = 30
 worker_termination_grace_seconds = 5
 max_concurrent_records = 1
+object_cache_dir = "workspace/cache"
 allow_partial = false
 untracked_runtime_switch = true
 
@@ -543,6 +751,22 @@ sha256 = "{}"
 max_launch_artifact_bytes = 1024
 max_control_artifact_bytes = 1024
 max_retained_control_input_bytes = 4096
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 268435456
+
+[local_storage]
+workspace_root = "workspace"
+owner_lock_path = "workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
                 "0".repeat(64)
             ),
@@ -571,6 +795,7 @@ continue_on_error = true
 fetch_timeout_seconds = 30
 worker_termination_grace_seconds = 5
 max_concurrent_records = 1
+object_cache_dir = "workspace/cache"
 allow_partial = false
 resume_report = {{ path = "prior-report.json", bytes = 1, sha256 = "{}" }}
 
@@ -587,6 +812,22 @@ sha256 = "{}"
 max_launch_artifact_bytes = 1024
 max_control_artifact_bytes = 1024
 max_retained_control_input_bytes = 4096
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 268435456
+
+[local_storage]
+workspace_root = "workspace"
+owner_lock_path = "workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
                 "1".repeat(64),
                 "0".repeat(64)
@@ -634,6 +875,7 @@ continue_on_error = true
 fetch_timeout_seconds = 30
 worker_termination_grace_seconds = 5
 max_concurrent_records = 1
+object_cache_dir = "workspace/cache"
 allow_partial = false
 
 [transport]
@@ -647,6 +889,22 @@ sha256 = "{}"
 
 [bootstrap_limits]
 {bootstrap_limits}
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 268435456
+
+[local_storage]
+workspace_root = "workspace"
+owner_lock_path = "workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
                     "0".repeat(64)
                 ),
@@ -722,6 +980,22 @@ sha256 = "{}"
 max_launch_artifact_bytes = 1024
 max_control_artifact_bytes = 1024
 max_retained_control_input_bytes = 4096
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 268435456
+
+[local_storage]
+workspace_root = "workspace"
+owner_lock_path = "workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
             "0".repeat(64)
         );
@@ -730,6 +1004,23 @@ max_retained_control_input_bytes = 4096
             .expect("complete launch spec parses");
         assert_eq!(parsed.start_sequence, Some(7));
         assert_eq!(parsed.record_limit, Some(3));
+
+        fs::write(
+            &spec_path,
+            valid.replace(
+                "worker_max_virtual_memory_bytes = 1073741824",
+                "worker_max_virtual_memory_bytes = 0",
+            ),
+        )
+        .expect("write launch spec with zero worker memory limit");
+        let error = SourceUniverseBatchLaunchSpec::from_toml_file(&spec_path)
+            .expect_err("zero worker memory limit must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("worker_max_virtual_memory_bytes must be positive"),
+            "{error:#}"
+        );
 
         fs::write(
             &spec_path,
@@ -795,6 +1086,7 @@ continue_on_error = false
 fetch_timeout_seconds = 30
 worker_termination_grace_seconds = 5
 max_concurrent_records = 1
+object_cache_dir = "workspace/cache"
 allow_partial = false
 
 [transport]
@@ -810,6 +1102,22 @@ sha256 = "{}"
 max_launch_artifact_bytes = 1024
 max_control_artifact_bytes = 1024
 max_retained_control_input_bytes = 4096
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 268435456
+
+[local_storage]
+workspace_root = "workspace"
+owner_lock_path = "workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
                 "0".repeat(64)
             ),
@@ -835,6 +1143,7 @@ continue_on_error = false
 fetch_timeout_seconds = 30
 worker_termination_grace_seconds = 0
 max_concurrent_records = 1
+object_cache_dir = "workspace/cache"
 allow_partial = false
 
 [transport]
@@ -849,6 +1158,22 @@ sha256 = "{}"
 max_launch_artifact_bytes = 1024
 max_control_artifact_bytes = 1024
 max_retained_control_input_bytes = 4096
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 268435456
+
+[local_storage]
+workspace_root = "workspace"
+owner_lock_path = "workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
                 "0".repeat(64)
             ),
@@ -867,24 +1192,25 @@ max_retained_control_input_bytes = 4096
 
     #[test]
     fn transport_selection_constructs_only_the_requested_implementation() {
+        let cache = tempfile::tempdir().expect("temporary object cache");
         let staged = build_batch_worker_fetcher(
             &SourceUniverseBatchTransportSpec::StagedS3,
             1,
-            None,
+            cache.path(),
             SourceUniverseCacheRunVerification::default(),
         )
         .expect("construct staged-S3 transport");
-        assert!(matches!(staged, BatchWorkerFetcher::DirectStagedS3(_)));
+        assert!(matches!(staged, BatchWorkerFetcher::CachedStagedS3(_)));
 
         let https = build_batch_worker_fetcher(
             &SourceUniverseBatchTransportSpec::Https {
                 http_user_agent: "transport-selection-test".to_string(),
             },
             1,
-            None,
+            cache.path(),
             SourceUniverseCacheRunVerification::default(),
         )
         .expect("construct HTTPS transport");
-        assert!(matches!(https, BatchWorkerFetcher::DirectHttp(_)));
+        assert!(matches!(https, BatchWorkerFetcher::CachedHttp(_)));
     }
 }

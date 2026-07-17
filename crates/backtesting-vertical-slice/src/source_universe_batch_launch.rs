@@ -16,16 +16,19 @@ use crate::{
     path_resolution::{resolve_pack_control_path, validate_portable_path_component},
     pinned_regular_file::{PinnedRegularFileIdentity, read_exact_pinned_file},
     source_universe_batch_execution::{
-        SourceUniverseBatchBootstrapLimits, validate_execution_pack_identity,
+        SourceUniverseBatchBootstrapLimits, SourceUniverseBatchResourceLimits,
+        validate_process_isolated_batch_selection,
     },
     source_universe_execution_pack::{
         SOURCE_UNIVERSE_EXECUTION_PACK_FILE, SourceUniverseExecutionPack,
         SourceUniverseExecutionPackSpec, SourceUniverseExecutionPackStatus,
+        validate_execution_pack_semantics,
     },
+    source_universe_local_storage::SourceUniverseLocalStoragePolicy,
 };
 
 pub const SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_SCHEMA_VERSION: &str =
-    "source-universe-batch-launch-spec.v2";
+    "source-universe-batch-launch-spec.v4";
 pub const COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT: &str =
     "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs";
 pub const SOURCE_UNIVERSE_EXECUTION_PACK_GENERATOR_SPEC_FILE: &str =
@@ -315,9 +318,11 @@ pub struct SourceUniverseBatchLaunchSpec {
     pub worker_termination_grace_seconds: u64,
     pub max_concurrent_records: u64,
     pub transport: SourceUniverseBatchTransportSpec,
-    pub object_cache_dir: Option<PathBuf>,
+    pub object_cache_dir: PathBuf,
     pub allow_partial: bool,
     pub bootstrap_limits: SourceUniverseBatchBootstrapLimits,
+    pub resource_limits: SourceUniverseBatchResourceLimits,
+    pub local_storage: SourceUniverseLocalStoragePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -352,7 +357,13 @@ impl SourceUniverseBatchLaunchSpec {
             "batch launch spec worker_termination_grace_seconds must be positive"
         );
         spec.transport.validate()?;
+        validate_process_isolated_batch_selection(
+            spec.record_limit,
+            Some(spec.max_concurrent_records),
+        )?;
         spec.bootstrap_limits.validate()?;
+        spec.resource_limits.validate()?;
+        spec.local_storage.validate()?;
         Ok(spec)
     }
 }
@@ -531,7 +542,7 @@ pub fn discover_committed_source_universe_execution_packs(
         );
         let summary: SourceUniverseExecutionPack = serde_json::from_slice(&summary_bytes)
             .with_context(|| format!("parse execution-pack summary {}", summary_path.display()))?;
-        validate_execution_pack_identity(&summary).with_context(|| {
+        validate_execution_pack_semantics(&summary).with_context(|| {
             format!("validate execution-pack summary {}", summary_path.display())
         })?;
         ensure!(
@@ -698,20 +709,48 @@ mod tests {
             "source": "test-source",
             "family": "test-family",
             "table_family": "trades",
-            "planned_object_count": 0,
-            "executable_record_count": 0,
+            "planned_object_count": 1,
+            "executable_record_count": 1,
             "withheld_record_count": 0,
-            "selected_record_count": 0,
-            "materialized_record_count": 0,
+            "selected_record_count": 1,
+            "materialized_record_count": 1,
             "skipped_executable_record_count": 0,
-            "executable_source_bytes": 0,
-            "materialized_source_bytes": 0,
+            "executable_source_bytes": 1,
+            "materialized_source_bytes": 1,
             "artifact_refs": [{
                 "role": "source_bindings",
                 "path": "config/source-bindings.toml",
                 "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
             }],
-            "records": [],
+            "records": [{
+                "sequence": 0,
+                "work_item_id": "work-item",
+                "operator_run_id": "operator-run",
+                "source_binding": "source-binding",
+                "category": "spot",
+                "symbol": "SYMBOL",
+                "archive_date": "2026-07-01",
+                "source_uri": "s3://bucket/object",
+                "source_url": "https://example.invalid/object",
+                "selected_object_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "selected_object_bytes": 1,
+                "source_proof_id": "source-proof",
+                "source_proof_version": 1,
+                "accepted_tranche_id": "accepted-tranche",
+                "output_prefix": "s3://bucket/output",
+                "source_bindings_path": "config/source-bindings.toml",
+                "source_bindings_bytes": 1,
+                "source_bindings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "run_spec_path": "controls/run-spec.toml",
+                "run_spec_bytes": 1,
+                "run_spec_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "accepted_tranche_path": "controls/accepted-tranche.json",
+                "accepted_tranche_bytes": 1,
+                "accepted_tranche_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "execution_plan_path": "controls/execution-plan.json",
+                "execution_plan_bytes": 1,
+                "execution_plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }],
             "blocking_reasons": []
         })
     }
@@ -749,7 +788,7 @@ crypto_future = "MARGIN"
         fs::write(
             path,
             format!(
-                r#"schema_version = "source-universe-batch-launch-spec.v2"
+                r#"schema_version = "source-universe-batch-launch-spec.v4"
 batch_id = "synthetic-one-record-tracer"
 output_dir = "target/source-universe-batch-output/synthetic-one-record-tracer"
 record_limit = 1
@@ -757,6 +796,7 @@ continue_on_error = false
 fetch_timeout_seconds = 30
 worker_termination_grace_seconds = 5
 max_concurrent_records = 1
+object_cache_dir = "target/source-universe-workspace/cache"
 allow_partial = false
 
 [transport]
@@ -771,6 +811,22 @@ sha256 = "{declared_sha256}"
 max_launch_artifact_bytes = 65536
 max_control_artifact_bytes = 65536
 max_retained_control_input_bytes = 262144
+
+[resource_limits]
+worker_max_virtual_memory_bytes = 1073741824
+worker_reserved_overhead_bytes = 1
+
+[local_storage]
+workspace_root = "target/source-universe-workspace"
+owner_lock_path = "target/source-universe-workspace/owner.lock"
+max_workspace_bytes = 1073741824
+max_cache_bytes = 536870912
+minimum_free_space_reserve_bytes = 1048576
+one_record_worst_case_bytes = 1048576
+cache_retention_age_seconds = 3600
+candidate_retention_age_seconds = 3600
+max_lifecycle_cleanup_entries = 10000
+max_lifecycle_cleanup_depth = 64
 "#,
                 summary_identity.display()
             ),
@@ -861,6 +917,13 @@ max_retained_control_input_bytes = 262144
             assert!(pack.launch_path.is_file());
             assert!(pack.summary_path.is_file());
             assert_eq!(pack.launch_spec.record_limit, Some(1));
+            assert_eq!(pack.launch_spec.max_concurrent_records, 1);
+            assert!(
+                pack.launch_spec
+                    .resource_limits
+                    .worker_reserved_overhead_bytes
+                    > 0
+            );
         }
     }
 
@@ -1069,6 +1132,15 @@ max_retained_control_input_bytes = 262144
         let blocked = write_committed_pack(blocked_repo.path(), "blocked-scope", "blocked-pack");
         let mut blocked_value = summary_value("blocked-pack");
         blocked_value["status"] = json!("blocked");
+        blocked_value["planned_object_count"] = json!(0);
+        blocked_value["executable_record_count"] = json!(0);
+        blocked_value["selected_record_count"] = json!(0);
+        blocked_value["materialized_record_count"] = json!(0);
+        blocked_value["executable_source_bytes"] = json!(0);
+        blocked_value["materialized_source_bytes"] = json!(0);
+        blocked_value["records"] = json!([]);
+        blocked_value["blocking_reasons"] =
+            json!(["no_source_universe_execution_records_materialized"]);
         fs::write(
             &blocked.summary_path,
             serde_json::to_vec_pretty(&blocked_value).unwrap(),

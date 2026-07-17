@@ -52,6 +52,15 @@ use nautilus_model::{
 };
 
 const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
+
+fn test_catalog_encoding() -> backtesting_vertical_slice::artifact_store::CatalogEncodingConfig {
+    backtesting_vertical_slice::artifact_store::CatalogEncodingConfig::new(
+        5000,
+        5000,
+        backtesting_vertical_slice::artifact_store::CatalogCompression::Snappy,
+    )
+    .expect("positive test catalog encoding")
+}
 const SOURCE_URL: &str = "https://synthetic.invalid/data";
 
 /// POSIX tar block size (header + data are laid out in 512-byte blocks).
@@ -374,6 +383,7 @@ fn tar_snapshot_deltas_split_across_members_round_trip_to_catalog() {
         table_one,
         &spec(&INSTRUMENT_ONE),
         dir.path(),
+        &test_catalog_encoding(),
     )
     .expect("project instrument one");
     assert_eq!(projection.trade_count, table_one.rows.len());

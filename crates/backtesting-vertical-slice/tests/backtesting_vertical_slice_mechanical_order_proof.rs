@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 
 use backtesting_vertical_slice::{
+    artifact_store::{CatalogCompression, CatalogEncodingConfig},
     canonical_trades::{
         CanonicalInstrumentIdentity, ConverterConfig, CsvTimestampUnit, CsvTradeMappingConfig,
         RawPayloadConfig, RawPayloadContainer, TRANSFORM_IDENTITY,
@@ -79,6 +80,11 @@ fn converter_config() -> ConverterConfig {
         quotes: None,
         seeded_l2_quotes: None,
     }
+}
+
+fn catalog_encoding() -> CatalogEncodingConfig {
+    CatalogEncodingConfig::new(5_000, 5_000, CatalogCompression::Snappy)
+        .expect("positive test catalog encoding")
 }
 
 const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
@@ -349,9 +355,12 @@ fn mechanical_probe_produces_orders_and_positions_through_result_contract() {
         manifest: &manifest,
         contract_manifest_hash: &contract_manifest_hash,
         converter: &converter_config(),
+        catalog_encoding: &catalog_encoding(),
         conversion_control_artifact_path: "synthetic-control.toml",
         conversion_control_artifact_sha256:
             "0000000000000000000000000000000000000000000000000000000000000000",
+        conversion_semantics_sha256:
+            "1111111111111111111111111111111111111111111111111111111111111111",
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
         authoritative_output_root: &catalog_root,

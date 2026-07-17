@@ -36,6 +36,7 @@ use parquet::{
         ArrowWriter,
         arrow_reader::{DEFAULT_BATCH_SIZE, ParquetRecordBatchReaderBuilder},
     },
+    basic::Compression,
     file::{metadata::ParquetMetaData, properties::WriterProperties},
 };
 use rust_decimal::Decimal;
@@ -43,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
+    artifact_store::{CatalogCompression, CatalogEncodingConfig},
     atomic_artifact_write::atomic_file_create_or_verify_guarded,
     operator_work_budget::{
         CooperativeDeadlineReader, OperatorWorkBudgetGuard, OperatorWorkBudgetStage,
@@ -2315,6 +2317,15 @@ pub(crate) fn verify_canonical_rows_materialization<R>(
     stage: OperatorWorkBudgetStage,
     row_materialized_bytes: impl Fn(&R) -> Result<usize>,
 ) -> Result<()> {
+    canonical_rows_materialized_bytes(rows, work_budget, stage, row_materialized_bytes).map(drop)
+}
+
+pub(crate) fn canonical_rows_materialized_bytes<R>(
+    rows: &[R],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+    row_materialized_bytes: impl Fn(&R) -> Result<usize>,
+) -> Result<usize> {
     work_budget.check_deadline(stage)?;
     let byte_limit = work_budget
         .decoded_byte_limit()
@@ -2333,7 +2344,8 @@ pub(crate) fn verify_canonical_rows_materialization<R>(
         );
         work_budget.check_deadline(stage)?;
     }
-    work_budget.check_deadline(stage)
+    work_budget.check_deadline(stage)?;
+    Ok(materialized_bytes)
 }
 
 pub(crate) fn utf8_column_guarded<R, F>(
@@ -2583,14 +2595,16 @@ enum CompactThriftFrame {
 /// a Parquet footer. This deliberately runs before Arrow/Parquet metadata
 /// construction: declared container and binary lengths are inspected without
 /// allocating from them, and the only dynamic state is a fallibly-grown stack
-/// bounded by the execution plan's total decoded-byte and source-row limits.
+/// bounded by the execution plan's decoded-byte limit and the footer's own
+/// byte length. Source-row limits do not describe footer schema cardinality:
+/// a valid one-row Parquet file can have many columns.
 struct CompactThriftFooterScanner<'a, R> {
     reader: R,
     remaining: u64,
     work_budget: &'a OperatorWorkBudgetGuard,
     stage: OperatorWorkBudgetStage,
     max_binary_bytes: u64,
-    max_container_items: u64,
+    max_footer_items: u64,
     container_items_seen: u64,
     max_stack_frames: usize,
 }
@@ -2603,11 +2617,9 @@ impl<'a, R: Read> CompactThriftFooterScanner<'a, R> {
         stage: OperatorWorkBudgetStage,
     ) -> Result<Self> {
         let decoded_bytes = work_budget.decoded_byte_limit().unwrap_or(u64::MAX);
-        let source_rows = work_budget.source_row_limit().unwrap_or(u64::MAX);
         let frame_bytes = size_of::<CompactThriftFrame>().max(1);
         let footer_frame_bound = usize::try_from(footer_bytes).unwrap_or(usize::MAX);
         let max_stack_frames = footer_frame_bound
-            .min(usize::try_from(source_rows).unwrap_or(usize::MAX))
             .min(usize::try_from(decoded_bytes).unwrap_or(usize::MAX) / frame_bytes);
         ensure!(
             max_stack_frames > 0,
@@ -2619,7 +2631,7 @@ impl<'a, R: Read> CompactThriftFooterScanner<'a, R> {
             work_budget,
             stage,
             max_binary_bytes: decoded_bytes,
-            max_container_items: source_rows,
+            max_footer_items: footer_bytes,
             container_items_seen: 0,
             max_stack_frames,
         })
@@ -2687,9 +2699,9 @@ impl<'a, R: Read> CompactThriftFooterScanner<'a, R> {
             .checked_add(1)
             .context("compact-Thrift struct field count overflow")?;
         ensure!(
-            fields <= self.max_container_items,
-            "compact-Thrift struct field count {fields} exceeds max_source_rows {}",
-            self.max_container_items
+            fields <= self.max_footer_items,
+            "compact-Thrift struct field count {fields} exceeds footer byte bound {}",
+            self.max_footer_items
         );
         let field_delta = header >> 4;
         let field_id = if field_delta == 0 {
@@ -2891,19 +2903,19 @@ impl<'a, R: Read> CompactThriftFooterScanner<'a, R> {
 
     fn consume_container_cardinality(&mut self, cardinality: u64, label: &str) -> Result<()> {
         ensure!(
-            cardinality <= self.max_container_items,
-            "compact-Thrift {label} {cardinality} exceeds max_source_rows {}",
-            self.max_container_items
+            cardinality <= self.max_footer_items,
+            "compact-Thrift {label} {cardinality} exceeds footer byte bound {}",
+            self.max_footer_items
         );
         self.container_items_seen = self
             .container_items_seen
             .checked_add(cardinality)
             .context("compact-Thrift aggregate container cardinality overflow")?;
         ensure!(
-            self.container_items_seen <= self.max_container_items,
-            "compact-Thrift aggregate container cardinality {} exceeds max_source_rows {} after {label} {cardinality}",
+            self.container_items_seen <= self.max_footer_items,
+            "compact-Thrift aggregate container cardinality {} exceeds footer byte bound {} after {label} {cardinality}",
             self.container_items_seen,
-            self.max_container_items
+            self.max_footer_items
         );
         Ok(())
     }
@@ -2919,7 +2931,7 @@ impl<'a, R: Read> CompactThriftFooterScanner<'a, R> {
             .context("compact-Thrift nesting depth overflow")?;
         ensure!(
             next_depth <= self.max_stack_frames,
-            "compact-Thrift nesting depth {next_depth} exceeds scanner depth {} derived from max_decoded_bytes and max_source_rows",
+            "compact-Thrift nesting depth {next_depth} exceeds scanner depth {} derived from footer bytes and max_decoded_bytes",
             self.max_stack_frames
         );
         frames
@@ -3267,26 +3279,26 @@ pub(crate) fn write_canonical_parquet_guarded<R>(
     rows: &[R],
     schema: Arc<Schema>,
     path: &Path,
+    catalog_encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
     row_materialized_bytes: impl Fn(&R) -> Result<usize>,
     to_record_batch: impl Fn(&[R], &OperatorWorkBudgetGuard) -> Result<RecordBatch>,
 ) -> Result<()> {
-    let nt_max_row_group_size =
-        usize::try_from(crate::catalog_projection::nt_catalog_max_row_group_size()?)
-            .context("NT catalog max_row_group_size does not fit usize")?;
-    ensure!(
-        nt_max_row_group_size > 0,
-        "NT catalog max_row_group_size must be positive"
-    );
+    let batch_size = catalog_encoding.batch_size();
+    let max_row_group_size = catalog_encoding.max_row_group_size();
+    let compression = match catalog_encoding.compression() {
+        CatalogCompression::Snappy => Compression::SNAPPY,
+    };
     let max_bytes_per_batch = work_budget
         .decoded_byte_limit()
         .map_or(usize::MAX, |limit| {
             usize::try_from(limit).unwrap_or(usize::MAX)
         });
     let properties = WriterProperties::builder()
-        .set_max_row_group_row_count(Some(nt_max_row_group_size))
+        .set_compression(compression)
+        .set_max_row_group_row_count(Some(max_row_group_size))
         .build();
-    verify_canonical_rows_materialization(
+    let retained_row_bytes = canonical_rows_materialized_bytes(
         rows,
         work_budget,
         OperatorWorkBudgetStage::CanonicalWrite,
@@ -3315,25 +3327,31 @@ pub(crate) fn write_canonical_parquet_guarded<R>(
                 || to_record_batch(&[], work_budget),
             )??;
             let fixed_batch_bytes = empty_batch.get_array_memory_size();
+            let fixed_peak_bytes = retained_row_bytes
+                .checked_add(fixed_batch_bytes)
+                .context("combined retained canonical rows and fixed Arrow batch overflow")?;
             ensure!(
-                fixed_batch_bytes <= max_bytes_per_batch,
-                "canonical Arrow batch fixed allocation {fixed_batch_bytes} bytes exceeds max_decoded_bytes {max_bytes_per_batch}"
+                fixed_peak_bytes <= max_bytes_per_batch,
+                "combined retained canonical rows {retained_row_bytes} bytes and fixed Arrow batch {fixed_batch_bytes} bytes require {fixed_peak_bytes} bytes, exceeding max_decoded_bytes {max_bytes_per_batch}"
             );
             drop(empty_batch);
 
-            for (chunk_index, chunk) in rows.chunks(nt_max_row_group_size).enumerate() {
+            for (chunk_index, chunk) in rows.chunks(batch_size).enumerate() {
                 work_budget.check_deadline(OperatorWorkBudgetStage::CanonicalWrite)?;
                 let start = chunk_index
-                    .checked_mul(nt_max_row_group_size)
+                    .checked_mul(batch_size)
                     .context("canonical Arrow batch start overflow")?;
                 let batch = to_record_batch(chunk, work_budget)?;
                 let actual_bytes = batch.get_array_memory_size();
+                let retained_peak_bytes = retained_row_bytes
+                    .checked_add(actual_bytes)
+                    .context("combined retained canonical rows and Arrow batch overflow")?;
                 let end = start
                     .checked_add(chunk.len())
                     .context("canonical Arrow batch end overflow")?;
                 ensure!(
-                    actual_bytes <= max_bytes_per_batch,
-                    "canonical Arrow batch rows {start}..{end} materialized {actual_bytes} bytes exceeding max_decoded_bytes {max_bytes_per_batch}"
+                    retained_peak_bytes <= max_bytes_per_batch,
+                    "combined retained canonical rows {retained_row_bytes} bytes and Arrow batch rows {start}..{end} {actual_bytes} bytes require {retained_peak_bytes} bytes, exceeding max_decoded_bytes {max_bytes_per_batch}"
                 );
                 guarded_operation_outcome(
                     work_budget,
@@ -3557,8 +3575,16 @@ impl CanonicalTradesTable {
     /// # Errors
     ///
     /// Returns an error if the table is invalid or the file cannot be written.
-    pub fn write_parquet(&self, path: &Path) -> Result<()> {
-        self.write_parquet_guarded(path, &OperatorWorkBudgetGuard::unbounded())
+    pub fn write_parquet(
+        &self,
+        path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
+    ) -> Result<()> {
+        self.write_parquet_guarded(
+            path,
+            catalog_encoding,
+            &OperatorWorkBudgetGuard::unbounded(),
+        )
     }
 
     /// Write through the shared cooperative, bounded, atomic Parquet core.
@@ -3569,6 +3595,7 @@ impl CanonicalTradesTable {
     pub fn write_parquet_guarded(
         &self,
         path: &Path,
+        catalog_encoding: &CatalogEncodingConfig,
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.validate_guarded(work_budget, OperatorWorkBudgetStage::CanonicalWrite)?;
@@ -3576,6 +3603,7 @@ impl CanonicalTradesTable {
             &self.rows,
             Self::arrow_schema(),
             path,
+            catalog_encoding,
             work_budget,
             canonical_trade_row_materialized_bytes,
             Self::to_record_batch_guarded,
@@ -3932,6 +3960,11 @@ mod tests {
     struct ExpireAfterObservationsClock {
         observations: AtomicU64,
         expires_after: u64,
+    }
+
+    fn test_catalog_encoding() -> CatalogEncodingConfig {
+        CatalogEncodingConfig::new(2, 3, CatalogCompression::Snappy)
+            .expect("valid explicit test catalog encoding")
     }
 
     impl crate::operator_work_budget::OperatorWorkBudgetClock for ExpireAfterObservationsClock {
@@ -5114,18 +5147,72 @@ seller_side_values = ["Sell"]
         .expect("normalize");
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("trades.parquet");
-        table.write_parquet(&path).expect("write parquet");
+        table
+            .write_parquet(&path, &test_catalog_encoding())
+            .expect("write parquet");
 
         let file = File::open(&path).expect("open parquet");
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .expect("reader builder")
-            .build()
-            .expect("reader");
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("reader builder");
+        assert!(
+            builder
+                .metadata()
+                .row_groups()
+                .iter()
+                .all(|row_group| row_group.num_rows() <= 3),
+            "canonical row groups must obey the explicit encoding"
+        );
+        assert!(
+            builder.metadata().row_groups().iter().all(|row_group| {
+                row_group
+                    .columns()
+                    .iter()
+                    .all(|column| column.compression() == Compression::SNAPPY)
+            }),
+            "canonical columns must use the explicit Snappy encoding"
+        );
+        let reader = builder.build().expect("reader");
         let mut total_rows = 0;
         for batch in reader {
             total_rows += batch.expect("batch").num_rows();
         }
         assert_eq!(total_rows, table.rows.len());
+    }
+
+    #[test]
+    fn one_row_parquet_footer_schema_is_independent_of_source_row_limit() {
+        const ONE_ROW_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,617.2,0.3,buy,0\n";
+        let accepted = accepted_dataset();
+        let table = normalize_sample_spot_tick_trades(
+            &accepted,
+            &identity(),
+            ONE_ROW_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize one-row table");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("one-row.parquet");
+        table
+            .write_parquet(&path, &test_catalog_encoding())
+            .expect("write one-row parquet");
+        let guard = OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: 1,
+                    max_decoded_bytes: u64::MAX,
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
+        .expect("one-row read guard");
+
+        let read_back = CanonicalTradesTable::read_parquet_guarded(&path, &accepted, &guard)
+            .expect("one-row file with a multi-column footer must remain valid");
+
+        assert_eq!(read_back.rows.len(), 1);
     }
 
     #[test]
@@ -5141,7 +5228,9 @@ seller_side_values = ["Sell"]
         .expect("normalize");
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("trades.parquet");
-        table.write_parquet(&path).expect("write parquet");
+        table
+            .write_parquet(&path, &test_catalog_encoding())
+            .expect("write parquet");
         let guard = expiring_guard(8);
 
         let error = CanonicalTradesTable::read_parquet_guarded(&path, &accepted, &guard)
@@ -5163,7 +5252,9 @@ seller_side_values = ["Sell"]
         .expect("normalize");
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("trades.parquet");
-        table.write_parquet(&path).expect("write parquet");
+        table
+            .write_parquet(&path, &test_catalog_encoding())
+            .expect("write parquet");
         let guard = OperatorWorkBudgetGuard::new(
             crate::operator_work_budget::OperatorWorkBudget::Backfill(
                 crate::backfill_execution_plan::BackfillExecutionWorkBudget {
@@ -5255,7 +5346,7 @@ seller_side_values = ["Sell"]
 
         assert!(
             format!("{error:#}").contains(
-                "compact-Thrift collection cardinality 4294967295 exceeds max_source_rows 8"
+                "compact-Thrift collection cardinality 4294967295 exceeds footer byte bound 7"
             ),
             "{error:#}"
         );
@@ -5313,7 +5404,7 @@ seller_side_values = ["Sell"]
         let path = dir.path().join("trades.parquet");
 
         let error = table
-            .write_parquet_guarded(&path, &guard)
+            .write_parquet_guarded(&path, &test_catalog_encoding(), &guard)
             .expect_err("one row above max_decoded_bytes must fail before Arrow allocation");
 
         assert!(
@@ -5327,6 +5418,65 @@ seller_side_values = ["Sell"]
             "{error:#}"
         );
         assert!(!path.exists(), "rejected row must not publish an artifact");
+    }
+
+    #[test]
+    fn canonical_write_rejects_combined_retained_rows_and_arrow_batch_peak() {
+        let table = normalize_sample_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let unbounded = OperatorWorkBudgetGuard::unbounded();
+        let retained_row_bytes = table
+            .rows
+            .iter()
+            .try_fold(0_usize, |total, row| {
+                total
+                    .checked_add(canonical_trade_row_materialized_bytes(row)?)
+                    .context("test retained row byte total overflow")
+            })
+            .expect("measure retained canonical rows");
+        let arrow_batch_bytes =
+            CanonicalTradesTable::to_record_batch_guarded(&table.rows, &unbounded)
+                .expect("materialize reference Arrow batch")
+                .get_array_memory_size();
+        let individual_limit = retained_row_bytes.max(arrow_batch_bytes);
+        assert!(
+            retained_row_bytes
+                .checked_add(arrow_batch_bytes)
+                .expect("combined peak fits usize")
+                > individual_limit,
+            "fixture must fit each allocation separately but not their combined peak"
+        );
+        let guard = OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(
+            BackfillExecutionWorkBudget {
+                max_source_rows: u64::MAX,
+                max_decoded_bytes: u64::try_from(individual_limit)
+                    .expect("individual limit fits u64"),
+                max_projected_row_groups: u64::MAX,
+                max_wall_seconds: 60,
+                require_object_selection_metadata: false,
+            },
+        ))
+        .expect("guard");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("trades.parquet");
+
+        let error = table
+            .write_parquet_guarded(&path, &test_catalog_encoding(), &guard)
+            .expect_err("combined live rows and Arrow batch must exceed the peak budget");
+
+        assert!(
+            error
+                .to_string()
+                .contains("combined retained canonical rows"),
+            "{error:#}"
+        );
+        assert!(!path.exists(), "rejected peak must not publish an artifact");
     }
 
     #[test]

@@ -39,7 +39,11 @@ const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
 pub struct SourceBindingRegistry {
     #[serde(default)]
     durable_operator: DurableOperatorConfig,
-    #[serde(rename = "source_binding", default)]
+    #[serde(
+        rename = "source_binding",
+        default,
+        deserialize_with = "deserialize_unique_source_bindings"
+    )]
     source_bindings: Vec<SourceBindingConfig>,
 }
 
@@ -86,9 +90,7 @@ impl SourceBindingRegistry {
         }
         self.source_bindings
             .iter()
-            .find(|binding| {
-                binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue)
-            })
+            .find(|binding| source_binding_identity_matches(binding, source_binding, venue))
             .cloned()
     }
 
@@ -187,6 +189,44 @@ struct SourceBindingConfig {
     table_families: Vec<String>,
     #[serde(default)]
     required_cross_market_component_roles: Vec<String>,
+}
+
+fn deserialize_unique_source_bindings<'de, D>(
+    deserializer: D,
+) -> Result<Vec<SourceBindingConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let bindings = Vec::<SourceBindingConfig>::deserialize(deserializer)?;
+    validate_unique_source_binding_identities(&bindings).map_err(serde::de::Error::custom)?;
+    Ok(bindings)
+}
+
+fn validate_unique_source_binding_identities(
+    bindings: &[SourceBindingConfig],
+) -> Result<(), String> {
+    for (index, binding) in bindings.iter().enumerate() {
+        if bindings[..index]
+            .iter()
+            .any(|existing| source_binding_identity_matches(existing, &binding.key, &binding.venue))
+        {
+            return Err(format!(
+                "duplicate source_binding identity for key {:?} and venue {:?}; keys and venues are trimmed and venues match case-insensitively",
+                binding.key.trim(),
+                binding.venue.trim()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn source_binding_identity_matches(
+    binding: &SourceBindingConfig,
+    source_binding: &str,
+    venue: &str,
+) -> bool {
+    binding.key.trim() == source_binding.trim()
+        && binding.venue.trim().eq_ignore_ascii_case(venue.trim())
 }
 
 /// Lifecycle status of a source-proof record.
@@ -1916,6 +1956,68 @@ fn coverage_bound_date(value: &str, field: &'static str) -> Result<NaiveDate, Ac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_binding_registry_rejects_duplicate_binding_identity() {
+        let error = SourceBindingRegistry::from_toml_str(
+            r#"
+[[source_binding]]
+key = "bybit-spot-tick-trades"
+venue = "bybit"
+product_family = "spot"
+source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
+evidence_state = "owner_archive_backfillable"
+
+[[source_binding]]
+key = "bybit-spot-tick-trades"
+venue = "bybit"
+product_family = "spot"
+source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
+evidence_state = "owner_archive_backfillable"
+"#,
+        )
+        .expect_err("duplicate source-binding identity must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate source_binding identity")
+                && error.to_string().contains("bybit-spot-tick-trades")
+                && error.to_string().contains("bybit"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn source_binding_registry_rejects_case_variant_duplicate_venue() {
+        let error = SourceBindingRegistry::from_toml_str(
+            r#"
+[[source_binding]]
+key = "bybit-spot-tick-trades"
+venue = "bybit"
+product_family = "spot"
+source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
+evidence_state = "owner_archive_backfillable"
+
+[[source_binding]]
+key = "bybit-spot-tick-trades"
+venue = "BYBIT"
+product_family = "spot"
+source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
+evidence_state = "owner_archive_backfillable"
+"#,
+        )
+        .expect_err("venue matching is case-insensitive and must be unique");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate source_binding identity")
+                && error.to_string().contains("bybit-spot-tick-trades")
+                && error.to_string().contains("BYBIT"),
+            "{error}"
+        );
+    }
 
     fn passing_checks() -> RequiredChecks {
         let evidence = "manifest://bybit-backfill-run-fdcc0758bbd03113";

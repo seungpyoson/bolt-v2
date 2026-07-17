@@ -4,13 +4,14 @@
 //! target path — never truncated, never a torn interleave. The legacy byte
 //! helper publishes a uniquely named sibling with one same-filesystem rename
 //! and is last-writer-wins. Linux guarded streamed artifacts publish an
-//! anonymous inode with create-only `linkat`, and therefore have exactly one
-//! winner. Neither path can expose a mix of two writers' bytes.
+//! anonymous inode with create-only `linkat`, sync the completed inode before
+//! publication, and sync the pinned parent after publication; they therefore
+//! have exactly one power-loss-durable winner. Neither path can expose a mix
+//! of two writers' bytes.
 //!
 //! Scope: this guards against *process* crashes and concurrent writers, not
-//! power loss. There is no `fsync`, so after a successful return the OS may
-//! still have the data or the rename buffered; a machine power-cut at that
-//! instant can lose the write. "Crash-safe" here means process-crash-safe.
+//! power loss for the legacy rename helper. Guarded Linux create-only writes
+//! additionally establish power-loss durability before they return.
 //!
 //! Usage: replace bare `fs::write(path, bytes)` with `atomic_write(path, bytes)`.
 //! The caller is still responsible for the "if path.exists() → mismatch-check"
@@ -26,7 +27,7 @@ use std::{
 };
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     io::{Read, Seek, SeekFrom},
     mem::size_of,
 };
@@ -83,11 +84,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Build one immutable local artifact and reconcile an identical create race.
 ///
-/// A successful anonymous-inode link returns immediately: no read-back or
-/// deadline observation can reclassify the commit. If another writer already
-/// owns the name, the anonymous candidate and an fd-pinned existing regular
-/// file are hashed from exact byte lengths under the same work budget; only
-/// identical bytes are accepted. The existing name is never replaced.
+/// The anonymous inode is synced before its create-only link and the pinned
+/// parent is synced afterward. A post-link parent-sync failure is reported as
+/// indeterminate; a retry pins, hashes, and syncs the existing regular file
+/// and parent, accepting only identical bytes. The existing name is never
+/// replaced.
 #[cfg(target_os = "linux")]
 pub fn atomic_file_create_or_verify_guarded<T>(
     path: &Path,
@@ -188,6 +189,21 @@ fn verify_anonymous_candidate_matches_existing_guarded(
         "existing immutable artifact {} has different bytes",
         path.display()
     );
+    existing
+        .sync_all()
+        .with_context(|| format!("sync existing immutable artifact {}", path.display()))?;
+    let parent = PinnedParentDirectory::open(path)
+        .with_context(|| format!("pin immutable artifact parent for {}", path.display()))?;
+    parent.revalidate_path().with_context(|| {
+        format!(
+            "revalidate immutable artifact parent for {}",
+            path.display()
+        )
+    })?;
+    parent
+        .file
+        .sync_all()
+        .with_context(|| format!("sync immutable artifact parent for {}", path.display()))?;
     work_budget.check_deadline(stage)
 }
 
@@ -249,6 +265,8 @@ impl OwnedTempDirectory {
         &self.path
     }
 }
+
+const MAX_OWNED_TEMP_RECEIPT_BYTES: usize = 4 * 1024;
 
 /// A content-hashed, exact-set manifest of one child directory under an
 /// [`OwnedTempDirectory`]. It retains only bounded identity/hash records; entry
@@ -566,6 +584,7 @@ impl OwnedAnonymousTempFile {
         self.publish_with(
             work_budget,
             stage,
+            || self.file.sync_all(),
             |source_fd, target_parent_fd, target_name| {
                 let empty = c"";
                 // SAFETY: source_fd is the live O_TMPFILE inode, target_parent_fd
@@ -580,6 +599,7 @@ impl OwnedAnonymousTempFile {
                     )
                 }
             },
+            || self.target_parent.file.sync_all(),
         )
     }
 
@@ -587,7 +607,9 @@ impl OwnedAnonymousTempFile {
         &self,
         work_budget: &OperatorWorkBudgetGuard,
         stage: OperatorWorkBudgetStage,
+        sync_candidate: impl FnOnce() -> std::io::Result<()>,
         link: impl FnOnce(std::ffi::c_int, std::ffi::c_int, *const std::ffi::c_char) -> std::ffi::c_int,
+        sync_parent: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<()> {
         ensure!(
             self.file.metadata()?.file_type().is_file(),
@@ -596,6 +618,9 @@ impl OwnedAnonymousTempFile {
         self.target_parent
             .revalidate_path()
             .context("revalidate anonymous publication target parent")?;
+        work_budget.check_deadline(stage)?;
+        sync_candidate().context("sync anonymous artifact before create-only publication")?;
+        work_budget.check_deadline(stage)?;
         let target_name = self.target_name.as_c_str()?;
         let permit = work_budget.authorize_commit(stage)?;
         let result = link_anonymous_file_with_permit(
@@ -609,6 +634,7 @@ impl OwnedAnonymousTempFile {
             return Err(std::io::Error::last_os_error())
                 .context("link anonymous artifact create-only");
         }
+        sync_parent().context("sync create-only publication parent directory")?;
         Ok(())
     }
 }
@@ -894,7 +920,7 @@ pub(crate) fn create_owned_temp_directory_guarded(
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 impl OwnedTempDirectory {
-    fn revalidate_namespace(&self) -> std::io::Result<()> {
+    pub(crate) fn revalidate_namespace(&self) -> std::io::Result<()> {
         self.parent.revalidate_path()?;
         let actual = validate_namespace_matches_handle(
             &self.parent.file,
@@ -918,6 +944,462 @@ impl OwnedTempDirectory {
         }
         Ok(())
     }
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+impl OwnedTempDirectory {
+    pub(crate) fn revalidate_namespace(&self) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "identity-owned temp directories are unsupported on this platform: {}",
+                self.path.display()
+            ),
+        ))
+    }
+}
+
+/// Create one bounded receipt inside an identity-owned temporary directory.
+/// The receipt is create-only and opened relative to the retained directory
+/// descriptor, so a symlink or replaced pathname can never receive authority.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn initialize_owned_temp_directory_receipt_guarded(
+    temp_root: &OwnedTempDirectory,
+    receipt_name: &std::ffi::OsStr,
+    receipt_bytes: &[u8],
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    ensure_single_path_component(receipt_name, "owned temp receipt")?;
+    ensure!(
+        !receipt_bytes.is_empty() && receipt_bytes.len() <= MAX_OWNED_TEMP_RECEIPT_BYTES,
+        "owned temp receipt must contain 1..={MAX_OWNED_TEMP_RECEIPT_BYTES} bytes"
+    );
+    temp_root
+        .revalidate_namespace()
+        .context("revalidate owned temp root before receipt create")?;
+    let name = std::ffi::CString::new(receipt_name.as_bytes())
+        .context("owned temp receipt name contains an interior NUL")?;
+    work_budget.check_deadline(stage)?;
+    // SAFETY: the retained directory descriptor and receipt component remain
+    // live for the call; create-only + no-follow grants exactly one file.
+    let fd = unsafe {
+        libc::openat(
+            temp_root.file.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CLOEXEC | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("create identity-owned temp receipt");
+    }
+    // SAFETY: openat returned one newly owned descriptor.
+    let file = unsafe { File::from_raw_fd(fd) };
+    let identity = validate_namespace_matches_handle(
+        &temp_root.file,
+        &name,
+        &file,
+        &temp_root.path.join(receipt_name),
+    )?;
+    // SAFETY: geteuid has no preconditions.
+    let effective_uid = unsafe { libc::geteuid() };
+    ensure!(
+        identity.is_file && identity.uid == effective_uid && identity.mode & 0o777 == 0o600,
+        "identity-owned temp receipt must be an owner-only regular file"
+    );
+    let mut writer = CooperativeDeadlineWriter::new(file, work_budget, stage);
+    writer
+        .write_all(receipt_bytes)
+        .context("write identity-owned temp receipt")?;
+    writer
+        .flush()
+        .context("flush identity-owned temp receipt")?;
+    let file = writer.into_inner();
+    file.sync_all()
+        .context("sync identity-owned temp receipt")?;
+    temp_root
+        .file
+        .sync_all()
+        .context("sync identity-owned temp receipt parent")?;
+    work_budget.check_deadline(stage)?;
+    temp_root
+        .revalidate_namespace()
+        .context("revalidate owned temp root after receipt create")?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn validate_owned_temp_directory_receipt(
+    temp_root: &OwnedTempDirectory,
+    receipt_name: &std::ffi::OsStr,
+    expected_bytes: &[u8],
+) -> Result<()> {
+    ensure_single_path_component(receipt_name, "owned temp receipt")?;
+    ensure!(
+        !expected_bytes.is_empty() && expected_bytes.len() <= MAX_OWNED_TEMP_RECEIPT_BYTES,
+        "owned temp receipt must contain 1..={MAX_OWNED_TEMP_RECEIPT_BYTES} bytes"
+    );
+    temp_root.revalidate_namespace()?;
+    let name = std::ffi::CString::new(receipt_name.as_bytes())
+        .context("owned temp receipt name contains an interior NUL")?;
+    // SAFETY: the directory descriptor and single component remain live.
+    let fd = unsafe {
+        libc::openat(
+            temp_root.file.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("open owned temp receipt");
+    }
+    // SAFETY: openat returned one newly owned descriptor.
+    let mut receipt = unsafe { File::from_raw_fd(fd) };
+    let identity = validate_namespace_matches_handle(
+        &temp_root.file,
+        &name,
+        &receipt,
+        &temp_root.path.join(receipt_name),
+    )?;
+    // SAFETY: geteuid has no preconditions.
+    let effective_uid = unsafe { libc::geteuid() };
+    ensure!(
+        identity.is_file
+            && identity.uid == effective_uid
+            && identity.mode & 0o777 == 0o600
+            && identity.byte_len == u64::try_from(expected_bytes.len())?,
+        "owned temp receipt identity or length changed"
+    );
+    ensure!(
+        receipt.metadata()?.nlink() == 1,
+        "owned temp receipt must have exactly one link"
+    );
+    let mut actual = Vec::new();
+    receipt
+        .by_ref()
+        .take(u64::try_from(MAX_OWNED_TEMP_RECEIPT_BYTES)?)
+        .read_to_end(&mut actual)
+        .context("read owned temp receipt")?;
+    ensure!(actual == expected_bytes, "owned temp receipt bytes changed");
+    validate_namespace_matches_handle(
+        &temp_root.file,
+        &name,
+        &receipt,
+        &temp_root.path.join(receipt_name),
+    )?;
+    temp_root.revalidate_namespace()?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+pub(crate) fn validate_owned_temp_directory_receipt(
+    _temp_root: &OwnedTempDirectory,
+    _receipt_name: &std::ffi::OsStr,
+    _expected_bytes: &[u8],
+) -> Result<()> {
+    anyhow::bail!("identity-owned temp receipt validation is unsupported on this platform")
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+pub(crate) fn initialize_owned_temp_directory_receipt_guarded(
+    _temp_root: &OwnedTempDirectory,
+    _receipt_name: &std::ffi::OsStr,
+    _receipt_bytes: &[u8],
+    _work_budget: &OperatorWorkBudgetGuard,
+    _stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    anyhow::bail!("identity-owned temp receipts are unsupported on this platform")
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn remove_identity_owned_entry_at_guarded(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    display_path: &Path,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    ensure_single_path_component(name, "owned temp cleanup entry")?;
+    let name = std::ffi::CString::new(name.as_bytes())
+        .context("owned temp cleanup entry contains an interior NUL")?;
+    work_budget.check_deadline(stage)?;
+    // Open without following before deciding whether this is a file or a
+    // directory. A symlink therefore fails closed and remains untouched.
+    let file_fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if file_fd < 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("open owned temp cleanup entry {}", display_path.display()));
+    }
+    // SAFETY: openat returned one newly owned descriptor.
+    let entry = unsafe { File::from_raw_fd(file_fd) };
+    let identity = validate_namespace_matches_handle(parent, &name, &entry, display_path)?;
+    // SAFETY: geteuid has no preconditions.
+    let effective_uid = unsafe { libc::geteuid() };
+    ensure!(
+        identity.uid == effective_uid,
+        "owned temp cleanup entry {} is foreign-owned",
+        display_path.display()
+    );
+    if identity.is_dir {
+        loop {
+            let mut selected = None;
+            for_each_directory_component(&entry, |child| {
+                if selected.is_none() {
+                    selected = Some(child.to_os_string());
+                }
+                Ok(())
+            })?;
+            let Some(child) = selected else { break };
+            remove_identity_owned_entry_at_guarded(
+                &entry,
+                &child,
+                &display_path.join(&child),
+                work_budget,
+                stage,
+            )?;
+        }
+        validate_namespace_matches_handle(parent, &name, &entry, display_path)?;
+        work_budget.check_deadline(stage)?;
+        // SAFETY: parent/name remain live; the directory is empty and its
+        // descriptor was revalidated against the namespace immediately above.
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!("remove owned temp directory {}", display_path.display())
+            });
+        }
+    } else {
+        ensure!(
+            identity.is_file,
+            "owned temp cleanup entry {} is neither a regular file nor directory",
+            display_path.display()
+        );
+        validate_namespace_matches_handle(parent, &name, &entry, display_path)?;
+        work_budget.check_deadline(stage)?;
+        // SAFETY: parent/name remain live and the opened regular file was
+        // revalidated against the namespace immediately above.
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("remove owned temp file {}", display_path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// Remove every descendant except the exact receipt from an identity-owned
+/// temporary directory. Traversal and removal remain descriptor-relative;
+/// symlinks, special files, owner drift, and identity replacement fail closed.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn compact_owned_temp_directory_to_receipt_guarded(
+    temp_root: &OwnedTempDirectory,
+    receipt_name: &std::ffi::OsStr,
+    work_budget: &OperatorWorkBudgetGuard,
+    stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    ensure_single_path_component(receipt_name, "owned temp receipt")?;
+    temp_root
+        .revalidate_namespace()
+        .context("revalidate owned temp root before receipt compaction")?;
+    loop {
+        let mut selected = None;
+        for_each_directory_component(&temp_root.file, |name| {
+            if name != receipt_name && selected.is_none() {
+                selected = Some(name.to_os_string());
+            }
+            Ok(())
+        })?;
+        let Some(name) = selected else { break };
+        remove_identity_owned_entry_at_guarded(
+            &temp_root.file,
+            &name,
+            &temp_root.path.join(&name),
+            work_budget,
+            stage,
+        )?;
+    }
+    temp_root
+        .revalidate_namespace()
+        .context("revalidate owned temp root after receipt compaction")?;
+    work_budget.check_deadline(stage)?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+struct OwnedTempCleanupProgress {
+    entries: u64,
+    max_entries: u64,
+    max_depth: u64,
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+impl OwnedTempCleanupProgress {
+    fn enter(&mut self, depth: u64) -> Result<()> {
+        ensure!(
+            depth <= self.max_depth,
+            "owned temp cleanup depth {depth} exceeds configured maximum {}",
+            self.max_depth
+        );
+        self.entries = self
+            .entries
+            .checked_add(1)
+            .context("owned temp cleanup entry count overflow")?;
+        ensure!(
+            self.entries <= self.max_entries,
+            "owned temp cleanup entry count exceeds configured maximum {}",
+            self.max_entries
+        );
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn remove_identity_owned_entry_at_bounded(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    display_path: &Path,
+    depth: u64,
+    progress: &mut OwnedTempCleanupProgress,
+) -> Result<()> {
+    progress.enter(depth)?;
+    ensure_single_path_component(name, "owned temp cleanup entry")?;
+    let name = std::ffi::CString::new(name.as_bytes())
+        .context("owned temp cleanup entry contains an interior NUL")?;
+    // SAFETY: parent and name remain live; O_NOFOLLOW rejects symlinks.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("open bounded owned temp entry {}", display_path.display()));
+    }
+    // SAFETY: openat returned one newly owned descriptor.
+    let entry = unsafe { File::from_raw_fd(fd) };
+    let identity = validate_namespace_matches_handle(parent, &name, &entry, display_path)?;
+    // SAFETY: geteuid has no preconditions.
+    let effective_uid = unsafe { libc::geteuid() };
+    ensure!(
+        identity.uid == effective_uid,
+        "owned temp cleanup entry {} is foreign-owned",
+        display_path.display()
+    );
+    if identity.is_dir {
+        loop {
+            let mut selected = None;
+            for_each_directory_component(&entry, |child| {
+                if selected.is_none() {
+                    selected = Some(child.to_os_string());
+                }
+                Ok(())
+            })?;
+            let Some(child) = selected else { break };
+            remove_identity_owned_entry_at_bounded(
+                &entry,
+                &child,
+                &display_path.join(&child),
+                depth
+                    .checked_add(1)
+                    .context("owned temp cleanup depth overflow")?,
+                progress,
+            )?;
+        }
+        validate_namespace_matches_handle(parent, &name, &entry, display_path)?;
+        // SAFETY: the directory is empty and its namespace identity was revalidated.
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!(
+                    "remove bounded owned temp directory {}",
+                    display_path.display()
+                )
+            });
+        }
+    } else {
+        ensure!(
+            identity.is_file && entry.metadata()?.nlink() == 1,
+            "owned temp cleanup entry {} is not one regular file",
+            display_path.display()
+        );
+        validate_namespace_matches_handle(parent, &name, &entry, display_path)?;
+        // SAFETY: the regular-file namespace identity was revalidated.
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!("remove bounded owned temp file {}", display_path.display())
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn compact_owned_temp_directory_to_receipt_bounded(
+    temp_root: &OwnedTempDirectory,
+    receipt_name: &std::ffi::OsStr,
+    receipt_bytes: &[u8],
+    max_entries: u64,
+    max_depth: u64,
+) -> Result<()> {
+    ensure!(
+        max_entries > 0 && max_entries != u64::MAX,
+        "owned temp cleanup max_entries must be positive and finite"
+    );
+    ensure!(
+        max_depth > 0 && max_depth <= max_entries,
+        "owned temp cleanup max_depth must be positive and no greater than max_entries"
+    );
+    validate_owned_temp_directory_receipt(temp_root, receipt_name, receipt_bytes)?;
+    let mut progress = OwnedTempCleanupProgress {
+        entries: 0,
+        max_entries,
+        max_depth,
+    };
+    loop {
+        let mut selected = None;
+        for_each_directory_component(&temp_root.file, |name| {
+            if name != receipt_name && selected.is_none() {
+                selected = Some(name.to_os_string());
+            }
+            Ok(())
+        })?;
+        let Some(name) = selected else { break };
+        remove_identity_owned_entry_at_bounded(
+            &temp_root.file,
+            &name,
+            &temp_root.path.join(&name),
+            1,
+            &mut progress,
+        )?;
+    }
+    validate_owned_temp_directory_receipt(temp_root, receipt_name, receipt_bytes)
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+pub(crate) fn compact_owned_temp_directory_to_receipt_bounded(
+    _temp_root: &OwnedTempDirectory,
+    _receipt_name: &std::ffi::OsStr,
+    _receipt_bytes: &[u8],
+    _max_entries: u64,
+    _max_depth: u64,
+) -> Result<()> {
+    anyhow::bail!("bounded identity-owned temp cleanup is unsupported on this platform")
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+pub(crate) fn compact_owned_temp_directory_to_receipt_guarded(
+    _temp_root: &OwnedTempDirectory,
+    _receipt_name: &std::ffi::OsStr,
+    _work_budget: &OperatorWorkBudgetGuard,
+    _stage: OperatorWorkBudgetStage,
+) -> Result<()> {
+    anyhow::bail!("identity-owned temp receipt compaction is unsupported on this platform")
 }
 
 /// Capture the exact physical entry set and every regular file's SHA-256 below
@@ -2080,7 +2562,7 @@ unsafe fn errno_location() -> *mut std::ffi::c_int {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-fn for_each_directory_component(
+pub(crate) fn for_each_directory_component(
     directory: &File,
     mut visit: impl FnMut(&std::ffi::OsStr) -> Result<()>,
 ) -> Result<()> {
@@ -3083,6 +3565,46 @@ pub(crate) fn unique_temp_path(path: &Path) -> std::io::Result<std::path::PathBu
     Ok(dir.join(tmp_name))
 }
 
+/// Recover the target component from the exact canonical name emitted by
+/// [`unique_temp_path`]. Lifecycle cleanup uses this parser instead of a loose
+/// `.tmp` suffix match so foreign or malformed entries never gain deletion
+/// authority.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn unique_temp_target_component(name: &OsStr) -> Option<&OsStr> {
+    let bytes = name.as_bytes();
+    let without_suffix = bytes.strip_suffix(b".tmp")?;
+    let token_separator = without_suffix.iter().rposition(|byte| *byte == b'.')?;
+    let (target_and_process, token_with_separator) = without_suffix.split_at(token_separator);
+    let token = token_with_separator.strip_prefix(b".")?;
+    let process_separator = target_and_process.iter().rposition(|byte| *byte == b'.')?;
+    let (target, process_with_separator) = target_and_process.split_at(process_separator);
+    let process = process_with_separator.strip_prefix(b".")?;
+    if target.is_empty()
+        || !is_canonical_decimal_component(process, u32::MAX.into())
+        || !is_canonical_decimal_component(token, u128::MAX)
+    {
+        return None;
+    }
+    Some(OsStr::from_bytes(target))
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn is_canonical_decimal_component(bytes: &[u8], maximum: u128) -> bool {
+    if bytes.is_empty() || (bytes.len() > 1 && bytes[0] == b'0') {
+        return false;
+    }
+    bytes
+        .iter()
+        .try_fold(0_u128, |value, byte| {
+            let digit = byte.checked_sub(b'0').filter(|digit| *digit <= 9)?;
+            value
+                .checked_mul(10)?
+                .checked_add(u128::from(digit))
+                .filter(|value| *value <= maximum)
+        })
+        .is_some()
+}
+
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub(crate) fn unique_temp_path_guarded(
     path: &Path,
@@ -3235,6 +3757,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     use super::{
         ManifestSha256Digest, OwnedDirectoryManifest, OwnedDirectoryManifestEntry,
+        unique_temp_path, unique_temp_target_component,
         validate_existing_directory_manifest_identical_with_post_traversal_hook_guarded,
         validate_staged_directory_manifest_with_post_traversal_hook_guarded,
     };
@@ -3269,6 +3792,31 @@ mod tests {
             .and_then(|bytes| bytes.checked_add(path_allocations))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .expect("manifest inventory byte size")
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn unique_temp_name_parser_accepts_only_the_generated_canonical_shape() {
+        let target = std::path::Path::new("/tmp/report.with.periods.json");
+        let temp = unique_temp_path(target).expect("derive unique temp path");
+
+        assert_eq!(
+            unique_temp_target_component(temp.file_name().expect("temp file name")),
+            target.file_name()
+        );
+        for malformed in [
+            "report.with.periods.json.tmp",
+            "report.with.periods.json.01.2.tmp",
+            "report.with.periods.json.1.02.tmp",
+            "report.with.periods.json.-1.2.tmp",
+            "report.with.periods.json.1.-2.tmp",
+        ] {
+            assert_eq!(
+                unique_temp_target_component(std::ffi::OsStr::new(malformed)),
+                None,
+                "malformed temp name must not gain cleanup authority: {malformed}"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -4668,6 +5216,58 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn anonymous_create_only_publish_syncs_inode_before_link_and_parent_after_link() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let target = dir.path().join("durable-cache-entry");
+        let guard = crate::operator_work_budget::OperatorWorkBudgetGuard::unbounded();
+        let stage = crate::operator_work_budget::OperatorWorkBudgetStage::Fetch;
+        let temp = super::OwnedAnonymousTempFile::create_guarded(&target, &guard, stage)
+            .expect("create anonymous temp");
+        temp.callback_file()
+            .expect("clone anonymous temp")
+            .write_all(b"durable bytes")
+            .expect("write anonymous temp");
+        let observed = std::sync::Mutex::new(Vec::new());
+
+        temp.publish_with(
+            &guard,
+            stage,
+            || {
+                observed.lock().expect("lock order").push("inode");
+                Ok(())
+            },
+            |source_fd, target_parent, target_name| {
+                observed.lock().expect("lock order").push("link");
+                let empty =
+                    std::ffi::CStr::from_bytes_with_nul(b"\0").expect("static empty component");
+                // SAFETY: the anonymous source fd and pinned target descriptor/name
+                // remain live for this test-only create-only publication.
+                unsafe {
+                    libc::linkat(
+                        source_fd,
+                        empty.as_ptr(),
+                        target_parent,
+                        target_name,
+                        libc::AT_EMPTY_PATH,
+                    )
+                }
+            },
+            || {
+                observed.lock().expect("lock order").push("parent");
+                Ok(())
+            },
+        )
+        .expect("durable create-only publication");
+
+        assert_eq!(
+            *observed.lock().expect("lock order"),
+            ["inode", "link", "parent"]
+        );
+        assert_eq!(fs::read(target).expect("read target"), b"durable bytes");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn anonymous_create_only_publish_rejects_a_target_inserted_at_the_syscall_boundary() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let target = dir.path().join("canonical.parquet");
@@ -4682,39 +5282,47 @@ mod tests {
         let foreign_bytes = b"boundary winner";
 
         let error = temp
-            .publish_with(&guard, stage, |source_fd, target_parent, target_name| {
-                // SAFETY: target parent/name are live. This insert is the
-                // deterministic competing writer immediately before linkat.
-                let fd = unsafe {
-                    libc::openat(
-                        target_parent,
-                        target_name,
-                        libc::O_WRONLY | libc::O_CLOEXEC | libc::O_CREAT | libc::O_EXCL,
-                        0o600,
-                    )
-                };
-                assert!(fd >= 0, "insert competing target");
-                // SAFETY: fd and bytes are live for the write.
-                assert_eq!(
-                    unsafe { libc::write(fd, foreign_bytes.as_ptr().cast(), foreign_bytes.len(),) },
-                    isize::try_from(foreign_bytes.len()).expect("foreign byte length")
-                );
-                // SAFETY: fd is owned by this closure.
-                assert_eq!(unsafe { libc::close(fd) }, 0);
-                let empty =
-                    std::ffi::CStr::from_bytes_with_nul(b"\0").expect("static empty component");
-                // SAFETY: the anonymous source fd and target descriptor/name
-                // remain live. The existing target must make linkat fail.
-                unsafe {
-                    libc::linkat(
-                        source_fd,
-                        empty.as_ptr(),
-                        target_parent,
-                        target_name,
-                        libc::AT_EMPTY_PATH,
-                    )
-                }
-            })
+            .publish_with(
+                &guard,
+                stage,
+                || Ok(()),
+                |source_fd, target_parent, target_name| {
+                    // SAFETY: target parent/name are live. This insert is the
+                    // deterministic competing writer immediately before linkat.
+                    let fd = unsafe {
+                        libc::openat(
+                            target_parent,
+                            target_name,
+                            libc::O_WRONLY | libc::O_CLOEXEC | libc::O_CREAT | libc::O_EXCL,
+                            0o600,
+                        )
+                    };
+                    assert!(fd >= 0, "insert competing target");
+                    // SAFETY: fd and bytes are live for the write.
+                    assert_eq!(
+                        unsafe {
+                            libc::write(fd, foreign_bytes.as_ptr().cast(), foreign_bytes.len())
+                        },
+                        isize::try_from(foreign_bytes.len()).expect("foreign byte length")
+                    );
+                    // SAFETY: fd is owned by this closure.
+                    assert_eq!(unsafe { libc::close(fd) }, 0);
+                    let empty =
+                        std::ffi::CStr::from_bytes_with_nul(b"\0").expect("static empty component");
+                    // SAFETY: the anonymous source fd and target descriptor/name
+                    // remain live. The existing target must make linkat fail.
+                    unsafe {
+                        libc::linkat(
+                            source_fd,
+                            empty.as_ptr(),
+                            target_parent,
+                            target_name,
+                            libc::AT_EMPTY_PATH,
+                        )
+                    }
+                },
+                || Ok(()),
+            )
             .expect_err("competing target must win create-only publication");
 
         assert!(error.to_string().contains("create-only"), "{error:#}");

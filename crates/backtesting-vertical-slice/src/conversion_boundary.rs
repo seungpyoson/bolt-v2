@@ -26,13 +26,21 @@ use crate::{
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
+/// Sole structural path marker for a derived immutable conversion generation.
+pub const CONVERSION_GENERATION_PATH_MARKER: &str = "/conversion=";
 /// Multi-table conversion index; written ONLY when one accepted object
 /// produced more than one projected catalog table. Single-table conversions
 /// never write it, so existing single-table outputs stay byte-identical.
 pub const CONVERSION_TABLES_FILE: &str = "conversion-tables.json";
 
-pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v2";
-pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v2";
+// v4 adds the path-owned complete conversion-semantics digest to the embedded
+// fingerprint. RunSpec conversion paths derive it from the normalized full
+// RunSpec with only the terminal `/conversion=<sha256>` suffix removed; other
+// paths must bind their own complete output-determining semantics.
+pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v4";
+pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v4";
+// Metadata contains the manifest/checkpoint hashes, not the fingerprint
+// itself, so its wire schema is unchanged by the v4 identity expansion.
 pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v2";
 
 /// Converter identity fields that must match before output can be reused.
@@ -51,6 +59,13 @@ pub struct ConversionFingerprint {
     pub converter_identity: String,
     pub converter_version: String,
     pub converter_config_hash: String,
+    /// Canonical digest of the explicit NT Parquet encoding configuration.
+    /// Completed output is reusable only when this identity is unchanged.
+    pub catalog_encoding_hash: String,
+    /// Canonical digest of this path's complete output-determining conversion
+    /// semantics. RunSpec paths remove only their derived terminal generation
+    /// suffix before hashing; non-RunSpec paths bind their own exact semantics.
+    pub conversion_semantics_sha256: String,
 }
 
 impl ConversionFingerprint {
@@ -103,6 +118,48 @@ impl ConversionFingerprint {
             &self.converter_config_hash,
             &expected.converter_config_hash,
         )?;
+        ensure_identity_field(
+            "catalog_encoding_hash",
+            &self.catalog_encoding_hash,
+            &expected.catalog_encoding_hash,
+        )?;
+        ensure_identity_field(
+            "conversion_semantics_sha256",
+            &self.conversion_semantics_sha256,
+            &expected.conversion_semantics_sha256,
+        )?;
+        Ok(())
+    }
+
+    /// Canonical identity of one conversion generation.
+    ///
+    /// The fingerprint is the complete conversion-reuse identity. Hashing its
+    /// canonical JSON representation gives durable publication a deterministic
+    /// namespace without adding a separately configurable identity field.
+    pub fn conversion_generation_sha256(&self) -> Result<String> {
+        self.validate()?;
+        crate::reference_artifact::canonical_json_sha256(self)
+            .map_err(anyhow::Error::from)
+            .context("hash canonical conversion fingerprint")
+    }
+
+    /// Require the durable output root to end at this exact generation.
+    /// Trailing slashes and descendants are rejected because either would
+    /// create another terminal namespace for the same fingerprint.
+    pub fn validate_output_prefix_generation(&self, output_prefix: &str) -> Result<()> {
+        let generation = self.conversion_generation_sha256()?;
+        let expected_suffix = format!("{CONVERSION_GENERATION_PATH_MARKER}{generation}");
+        ensure!(
+            output_prefix.ends_with(&expected_suffix),
+            "durable manifest.output_prefix conversion generation suffix mismatch: expected exact suffix {expected_suffix:?}, got {output_prefix:?}"
+        );
+        ensure!(
+            output_prefix
+                .matches(CONVERSION_GENERATION_PATH_MARKER)
+                .count()
+                == 1,
+            "durable manifest.output_prefix must contain exactly one conversion generation suffix"
+        );
         Ok(())
     }
 
@@ -114,6 +171,14 @@ impl ConversionFingerprint {
         ensure!(
             crate::hashing::is_lowercase_sha256_hex(&self.control_artifact_sha256),
             "conversion control_artifact_sha256 must be 64 lowercase-hex characters"
+        );
+        ensure!(
+            crate::hashing::is_lowercase_sha256_hex(&self.catalog_encoding_hash),
+            "conversion catalog_encoding_hash must be 64 lowercase-hex characters"
+        );
+        ensure!(
+            crate::hashing::is_lowercase_sha256_hex(&self.conversion_semantics_sha256),
+            "conversion_semantics_sha256 must be 64 lowercase-hex characters"
         );
         Ok(())
     }

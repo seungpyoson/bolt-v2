@@ -1,4 +1,4 @@
-//! Typed evidence authority for the retired per-day BNBUSDC backfill lane.
+//! Typed evidence authority for a retired per-day sample backfill lane.
 //!
 //! The old lane materialized one executable RunSpec/plan/readiness tree per
 //! venue-day. Those controls are no longer runnable. The committed inventory
@@ -19,25 +19,25 @@ use serde::{Deserialize, Serialize};
 use crate::{
     hashing::{is_lowercase_sha256_hex, sha256_hex},
     path_resolution::{resolve_existing_path, resolve_planned_write_path},
+    retired_backfill_provenance::{
+        EXPECTED_INSTRUMENT_ID, RETIRED_AGGREGATE_ARTIFACTS, RETIRED_DATE_RANGES,
+        daily_profile_should_be_retired, is_retired_daily_run_spec_name, is_retired_venue_date,
+        retired_gate_root, retired_gate_venue_and_date, retired_record_id,
+    },
     source_catalog_mapping_readiness::SourceCatalogMappingStatusEntry,
     source_proof::{SourceProofReport, SourceProofStatus, SourceProofUsageScope},
 };
+
+pub use crate::retired_backfill_provenance::RetiredBackfillVenue;
 
 pub const RETIRED_BACKFILL_EVIDENCE_INVENTORY_PATH: &str =
     "specs/023-nt-research-analytics-platform/reference/retired-backfill-evidence.inventory.json";
 pub const RETIRED_BACKFILL_EVIDENCE_SCHEMA_VERSION: &str = "retired-backfill-evidence-inventory.v1";
 
 const REFERENCE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/";
-const RETIRED_GATE_PREFIX: &str =
-    "specs/023-nt-research-analytics-platform/reference/backfill-gates/";
-const EXPECTED_INSTRUMENT_ID: &str = "BNBUSDC";
 const EXPECTED_TABLE_FAMILY: &str = "trades";
 const EXPECTED_NT_DATA_TYPE: &str = "TradeTick";
 const ACCEPTED_PUBLICATION_STATUS: &str = "accepted_gate_committed_and_s3_published";
-const RETIRED_BINANCE_FIRST_DATE: &str = "2026-03-01";
-const RETIRED_BINANCE_LAST_DATE: &str = "2026-05-31";
-const RETIRED_BYBIT_FIRST_DATE: &str = "2026-03-01";
-const RETIRED_BYBIT_LAST_DATE: &str = "2026-06-01";
 const REFERENCE_COMPONENTS: &[&str] = &["specs", "023-nt-research-analytics-platform", "reference"];
 
 const RETIRED_GATE_ARTIFACT_SUFFIXES: &[&str] = &[
@@ -57,95 +57,6 @@ const RETIRED_GATE_ARTIFACT_SUFFIXES: &[&str] = &[
     "source-catalog-mapping-readiness.toml",
     "source-proof-scope/backfill-source-proof-scope-report.json",
 ];
-
-const RETIRED_AGGREGATE_ARTIFACTS: &[(&str, &str, &str)] = &[
-    (
-        "backfill-conversion-batches",
-        "binance-bnbusdc-2026-03-01-2026-05-31",
-        "backfill-conversion-batch-plan.toml",
-    ),
-    (
-        "backfill-conversion-batches",
-        "binance-bnbusdc-2026-03-01-2026-05-31",
-        "plan/backfill-conversion-batch-plan.json",
-    ),
-    (
-        "backfill-conversion-batches",
-        "bybit-bnbusdc-2026-03-01-2026-06-01",
-        "backfill-conversion-batch-plan.toml",
-    ),
-    (
-        "backfill-conversion-batches",
-        "bybit-bnbusdc-2026-03-01-2026-06-01",
-        "plan/backfill-conversion-batch-plan.json",
-    ),
-    (
-        "backfill-coverage-ledgers",
-        "binance-bnbusdc-2026-03-01-2026-05-31",
-        "backfill-coverage-ledger.toml",
-    ),
-    (
-        "backfill-coverage-ledgers",
-        "binance-bnbusdc-2026-03-01-2026-05-31",
-        "ledger/backfill-coverage-ledger.json",
-    ),
-    (
-        "backfill-coverage-ledgers",
-        "bybit-bnbusdc-2026-03-01-2026-06-01",
-        "backfill-coverage-ledger.toml",
-    ),
-    (
-        "backfill-coverage-ledgers",
-        "bybit-bnbusdc-2026-03-01-2026-06-01",
-        "ledger/backfill-coverage-ledger.json",
-    ),
-    (
-        "backfill-conversion-completion-ledgers",
-        "binance-bnbusdc-2026-03-01-2026-05-31",
-        "backfill-conversion-completion-ledger.toml",
-    ),
-    (
-        "backfill-conversion-completion-ledgers",
-        "binance-bnbusdc-2026-03-01-2026-05-31",
-        "ledger/backfill-conversion-completion-ledger.json",
-    ),
-    (
-        "backfill-conversion-completion-ledgers",
-        "bybit-bnbusdc-2026-03-01-2026-06-01",
-        "backfill-conversion-completion-ledger.toml",
-    ),
-    (
-        "backfill-conversion-completion-ledgers",
-        "bybit-bnbusdc-2026-03-01-2026-06-01",
-        "ledger/backfill-conversion-completion-ledger.json",
-    ),
-];
-
-const ACTIVE_GOLDEN_BINANCE_PROFILE: &str =
-    "backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetiredBackfillVenue {
-    Binance,
-    Bybit,
-}
-
-impl RetiredBackfillVenue {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Binance => "binance",
-            Self::Bybit => "bybit",
-        }
-    }
-
-    const fn source_binding(self) -> &'static str {
-        match self {
-            Self::Binance => "binance-spot-native-trades",
-            Self::Bybit => "bybit-spot-tick-trades",
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -256,11 +167,7 @@ impl RetiredBackfillEvidenceInventory {
                 "record {} source_binding does not match venue",
                 record.record_id
             );
-            let expected_record_id = format!(
-                "retired-backfill-evidence-{}-bnbusdc-{}",
-                record.venue.as_str(),
-                record.archive_date
-            );
+            let expected_record_id = retired_record_id(record.venue, &record.archive_date);
             ensure!(
                 record.record_id == expected_record_id,
                 "record_id {:?} != expected {:?}",
@@ -297,11 +204,7 @@ impl RetiredBackfillEvidenceInventory {
                 RETIRED_GATE_ARTIFACT_SUFFIXES.len(),
                 record.gate_artifact_tombstones.len()
             );
-            let gate_root = format!(
-                "{RETIRED_GATE_PREFIX}{}-bnbusdc-{}/",
-                record.venue.as_str(),
-                record.archive_date
-            );
+            let gate_root = retired_gate_root(record.venue, &record.archive_date);
             let expected_gate_paths = RETIRED_GATE_ARTIFACT_SUFFIXES
                 .iter()
                 .map(|suffix| format!("{gate_root}{suffix}"))
@@ -328,10 +231,10 @@ impl RetiredBackfillEvidenceInventory {
                 record.record_id
             );
 
-            let daily_profile_should_be_retired = !(record.venue == RetiredBackfillVenue::Binance
-                && record.archive_date == "2026-03-01");
+            let retire_daily_profile =
+                daily_profile_should_be_retired(record.venue, &record.archive_date);
             ensure!(
-                record.retired_daily_run_spec.is_some() == daily_profile_should_be_retired,
+                record.retired_daily_run_spec.is_some() == retire_daily_profile,
                 "record {} retired_daily_run_spec presence is incorrect",
                 record.record_id
             );
@@ -352,20 +255,9 @@ impl RetiredBackfillEvidenceInventory {
             }
         }
 
-        validate_exact_date_range(
-            &self.records,
-            RetiredBackfillVenue::Binance,
-            RETIRED_BINANCE_FIRST_DATE,
-            RETIRED_BINANCE_LAST_DATE,
-            92,
-        )?;
-        validate_exact_date_range(
-            &self.records,
-            RetiredBackfillVenue::Bybit,
-            RETIRED_BYBIT_FIRST_DATE,
-            RETIRED_BYBIT_LAST_DATE,
-            93,
-        )?;
+        for &(venue, first, last, expected_count) in RETIRED_DATE_RANGES {
+            validate_exact_date_range(&self.records, venue, first, last, expected_count)?;
+        }
 
         ensure!(
             self.retired_aggregate_artifacts.len() == 12,
@@ -537,20 +429,36 @@ impl RetiredBackfillEvidenceInventory {
     }
 }
 
-/// Returns `true` only for the exact gate, daily-profile, and aggregate
-/// identities authorized by the typed retirement inventory.
+/// Returns `true` only for the exact gate roots, daily profiles, and aggregate
+/// roots authorized by the typed retirement inventory.
 ///
-/// Absolute checkout paths are matched by their normalized repository suffix;
-/// relative paths must begin at the repository's reference root, preventing an
-/// unrelated directory that happens to contain `backfill-gates` from inheriting
+/// Absolute paths are checked at every normalized repository-reference marker,
+/// so a nested marker cannot hide an enclosing retired root. Relative paths
+/// must begin at the repository's reference root, preventing an unrelated
+/// directory that happens to contain `backfill-gates` from inheriting
 /// retirement authority.
 pub fn is_retired_backfill_runtime_path(path: &Path) -> bool {
     let Some(components) = lexically_normal_components(path) else {
         return false;
     };
+    if path.is_absolute() {
+        return components
+            .windows(REFERENCE_COMPONENTS.len())
+            .enumerate()
+            .any(|(start, window)| {
+                window == REFERENCE_COMPONENTS
+                    && is_retired_reference_relative(
+                        &components[start + REFERENCE_COMPONENTS.len()..],
+                    )
+            });
+    }
     let Some(relative) = reference_relative_components(path, &components) else {
         return false;
     };
+    is_retired_reference_relative(relative)
+}
+
+fn is_retired_reference_relative(relative: &[&str]) -> bool {
     is_retired_gate_path(relative)
         || is_retired_daily_run_spec_components(relative)
         || is_retired_aggregate_path(relative)
@@ -667,78 +575,29 @@ fn is_retired_daily_run_spec_path(path: &Path) -> bool {
 }
 
 fn is_retired_gate_path(relative: &[&str]) -> bool {
-    if relative.len() < 3 || relative[0] != "backfill-gates" {
+    if relative.len() < 2 || relative[0] != "backfill-gates" {
         return false;
     }
     let Some((venue, date)) = retired_gate_venue_and_date(relative[1]) else {
         return false;
     };
     is_retired_venue_date(venue, date)
-        && RETIRED_GATE_ARTIFACT_SUFFIXES
-            .iter()
-            .any(|suffix| components_equal_path(&relative[2..], suffix))
 }
 
 fn is_retired_daily_run_spec_components(relative: &[&str]) -> bool {
     let [file_name] = relative else {
         return false;
     };
-    if *file_name == ACTIVE_GOLDEN_BINANCE_PROFILE {
-        return false;
-    }
-    let (venue, date_and_suffix) = if let Some(value) =
-        file_name.strip_prefix("backtesting-vertical-slice-run-spec.binance-bnbusdc-")
-    {
-        (RetiredBackfillVenue::Binance, value)
-    } else if let Some(value) =
-        file_name.strip_prefix("backtesting-vertical-slice-run-spec.bybit-bnbusdc-")
-    {
-        (RetiredBackfillVenue::Bybit, value)
-    } else {
-        return false;
-    };
-    let Some(date) = date_and_suffix.strip_suffix(".toml") else {
-        return false;
-    };
-    is_retired_venue_date(venue, date)
+    is_retired_daily_run_spec_name(file_name)
 }
 
 fn is_retired_aggregate_path(relative: &[&str]) -> bool {
-    if relative.len() < 3 {
+    if relative.len() < 2 {
         return false;
     }
     RETIRED_AGGREGATE_ARTIFACTS
         .iter()
-        .any(|(root, scope, suffix)| {
-            relative[0] == *root
-                && relative[1] == *scope
-                && components_equal_path(&relative[2..], suffix)
-        })
-}
-
-fn retired_gate_venue_and_date(scope: &str) -> Option<(RetiredBackfillVenue, &str)> {
-    if let Some(date) = scope.strip_prefix("binance-bnbusdc-") {
-        Some((RetiredBackfillVenue::Binance, date))
-    } else {
-        scope
-            .strip_prefix("bybit-bnbusdc-")
-            .map(|date| (RetiredBackfillVenue::Bybit, date))
-    }
-}
-
-fn is_retired_venue_date(venue: RetiredBackfillVenue, date: &str) -> bool {
-    if date.len() != "YYYY-MM-DD".len() || NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
-        return false;
-    }
-    let (first, last) = match venue {
-        RetiredBackfillVenue::Binance => (RETIRED_BINANCE_FIRST_DATE, RETIRED_BINANCE_LAST_DATE),
-        RetiredBackfillVenue::Bybit => (RETIRED_BYBIT_FIRST_DATE, RETIRED_BYBIT_LAST_DATE),
-    };
-    date >= first && date <= last
-}
-
-fn components_equal_path(components: &[&str], slash_path: &str) -> bool {
-    components.iter().copied().eq(slash_path.split('/'))
+        .any(|(root, scope, _)| relative[0] == *root && relative[1] == *scope)
 }
 
 fn reference_relative_components<'a>(
@@ -936,10 +795,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn active_alias_to_an_existing_retired_input_fails_on_canonical_identity() {
+    fn active_alias_to_an_arbitrary_retired_descendant_fails_on_canonical_identity() {
         let temp = tempfile::tempdir().expect("create temporary retirement root");
         let retired = temp.path().join(
-            "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/source-proof-scope/backfill-source-proof-scope-report.json",
+            "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/arbitrary/new-runtime-control.toml",
         );
         std::fs::create_dir_all(retired.parent().expect("retired input parent"))
             .expect("create retired input parent");

@@ -18,7 +18,7 @@ use std::{
     collections::HashSet,
     fmt::{self, Debug, Write},
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Read},
     mem::{size_of, size_of_val},
     path::{Path, PathBuf},
     str::FromStr,
@@ -46,9 +46,11 @@ use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
 use super::{
+    artifact_store::{CatalogCompression, CatalogEncodingConfig},
     atomic_artifact_write::{
-        DirectoryStageOutcome, capture_owned_directory_manifest_guarded,
-        create_owned_temp_directory_guarded, guarded_publication_child_path,
+        DirectoryStageOutcome, OwnedTempDirectory, capture_owned_directory_manifest_guarded,
+        compact_owned_temp_directory_to_receipt_guarded, create_owned_temp_directory_guarded,
+        guarded_publication_child_path, initialize_owned_temp_directory_receipt_guarded,
         open_pinned_regular_file, stage_directory_rename_create_only_guarded,
         unique_temp_path_guarded, validate_existing_directory_manifest_identical_guarded,
         validate_staged_directory_manifest_guarded,
@@ -72,6 +74,9 @@ use super::{
         cooperative_stable_sort_by_key, guarded_operation_outcome, projected_row_group_count,
     },
     source_proof::SourceProofFidelityClass,
+    source_universe_local_storage::{
+        SOURCE_UNIVERSE_CANDIDATE_RECEIPT_BYTES, SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE,
+    },
 };
 
 /// NautilusTrader data type written for this projection.
@@ -296,19 +301,32 @@ pub const NT_DATA_TYPE_MARK_PRICE_UPDATE: &str = "MarkPriceUpdate";
 /// `impl_catalog_path_prefix!(FundingRateUpdate, "funding_rate_update")`.
 pub const NT_DATA_TYPE_FUNDING_RATE_UPDATE: &str = "FundingRateUpdate";
 
-/// Maximum rows used by the exact NT catalog constructor shared by every
-/// projection in this module.
-pub(crate) fn nt_catalog_max_row_group_size() -> Result<u64> {
-    let catalog = ParquetDataCatalog::new(Path::new("."), None, None, None, None);
-    u64::try_from(catalog.max_row_group_size)
-        .context("NT catalog max_row_group_size does not fit u64")
+fn configured_nt_catalog(
+    catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
+) -> ParquetDataCatalog {
+    let compression = match encoding.compression() {
+        CatalogCompression::Snappy => parquet::basic::Compression::SNAPPY,
+    };
+    ParquetDataCatalog::new(
+        catalog_root,
+        None,
+        Some(encoding.batch_size()),
+        Some(compression),
+        Some(encoding.max_row_group_size()),
+    )
 }
 
 /// Exact pre-write row-group projection for NT market-data tables.
 pub(crate) fn projected_nt_market_data_row_groups(
     table_rows: impl IntoIterator<Item = u64>,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<u64> {
-    projected_row_group_count(table_rows, nt_catalog_max_row_group_size()?)
+    projected_row_group_count(
+        table_rows,
+        u64::try_from(encoding.max_row_group_size())
+            .context("configured catalog max_row_group_size does not fit u64")?,
+    )
 }
 
 fn guarded_catalog_operation<T>(
@@ -1776,12 +1794,14 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     table: &CanonicalTradesTable,
     spec: &S,
     catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<CatalogProjection> {
     project_canonical_trades_to_catalog_guarded(
         table,
         spec,
         catalog_root,
         catalog_root,
+        encoding,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -1798,6 +1818,7 @@ pub fn project_canonical_trades_to_catalog_guarded<S: CatalogInstrumentSpecSourc
     spec: &S,
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CatalogProjection> {
     table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
@@ -1821,6 +1842,7 @@ pub fn project_canonical_trades_to_catalog_guarded<S: CatalogInstrumentSpecSourc
     with_clean_catalog_root_guarded(
         catalog_root,
         authoritative_output_root,
+        encoding,
         work_budget,
         |catalog, projected_root| {
             guarded_catalog_operation(work_budget, || {
@@ -1955,6 +1977,7 @@ fn validate_catalog_publication_root_shape_guarded(
 fn with_clean_catalog_root_guarded<T>(
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
     operation: impl FnOnce(&ParquetDataCatalog, &Path) -> Result<T>,
 ) -> Result<T> {
@@ -1995,19 +2018,41 @@ fn with_clean_catalog_root_guarded<T>(
         OperatorWorkBudgetStage::CatalogProjection,
     )
     .context("create identity-owned guarded catalog temp root")?;
+    initialize_owned_temp_directory_receipt_guarded(
+        &temp_capability,
+        std::ffi::OsStr::new(SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE),
+        SOURCE_UNIVERSE_CANDIDATE_RECEIPT_BYTES,
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )
+    .context("initialize catalog candidate lifecycle receipt")?;
     let temp_root = temp_capability.path();
     if let Err(error) = work_budget.check_deadline(OperatorWorkBudgetStage::CatalogProjection) {
-        return Err(cleanup_owned_catalog_temp(temp_root, error));
+        return Err(cleanup_owned_catalog_temp(
+            &temp_capability,
+            error,
+            work_budget,
+        ));
     }
 
-    let catalog = ParquetDataCatalog::new(temp_capability.path(), None, None, None, None);
+    let catalog = configured_nt_catalog(temp_capability.path(), encoding);
     let value = match operation(&catalog, temp_capability.path()) {
         Ok(value) => value,
-        Err(error) => return Err(cleanup_owned_catalog_temp(temp_root, error)),
+        Err(error) => {
+            return Err(cleanup_owned_catalog_temp(
+                &temp_capability,
+                error,
+                work_budget,
+            ));
+        }
     };
 
     if let Err(error) = single_projected_data_root_guarded(temp_root, work_budget) {
-        return Err(cleanup_owned_catalog_temp(temp_root, error));
+        return Err(cleanup_owned_catalog_temp(
+            &temp_capability,
+            error,
+            work_budget,
+        ));
     }
     let manifest = match capture_owned_directory_manifest_guarded(
         &temp_capability,
@@ -2016,7 +2061,13 @@ fn with_clean_catalog_root_guarded<T>(
         OperatorWorkBudgetStage::CatalogProjection,
     ) {
         Ok(manifest) => manifest,
-        Err(error) => return Err(cleanup_owned_catalog_temp(temp_root, error)),
+        Err(error) => {
+            return Err(cleanup_owned_catalog_temp(
+                &temp_capability,
+                error,
+                work_budget,
+            ));
+        }
     };
     let final_data_root = match guarded_publication_child_path(
         catalog_root,
@@ -2025,7 +2076,13 @@ fn with_clean_catalog_root_guarded<T>(
         OperatorWorkBudgetStage::CatalogProjection,
     ) {
         Ok(path) => path,
-        Err(error) => return Err(cleanup_owned_catalog_temp(temp_root, error)),
+        Err(error) => {
+            return Err(cleanup_owned_catalog_temp(
+                &temp_capability,
+                error,
+                work_budget,
+            ));
+        }
     };
     match fs::create_dir(catalog_root) {
         Ok(()) => {}
@@ -2043,18 +2100,23 @@ fn with_clean_catalog_root_guarded<T>(
         }
         Err(error) => {
             return Err(cleanup_owned_catalog_temp(
-                temp_root,
+                &temp_capability,
                 anyhow::Error::new(error).context(format!(
                     "create final catalog root {}",
                     catalog_root.display()
                 )),
+                work_budget,
             ));
         }
     }
     if let Err(error) =
         validate_catalog_publication_root_shape_guarded(catalog_root, false, work_budget)
     {
-        return Err(cleanup_owned_catalog_temp(temp_root, error));
+        return Err(cleanup_owned_catalog_temp(
+            &temp_capability,
+            error,
+            work_budget,
+        ));
     }
 
     match stage_directory_rename_create_only_guarded(
@@ -2080,14 +2142,15 @@ fn with_clean_catalog_root_guarded<T>(
                 )
             })?;
             validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)?;
-            Ok(finish_reconciled_catalog_publication(temp_root, value))
+            finish_catalog_candidate(&temp_capability, value, work_budget)
         }
         DirectoryStageOutcome::NotStaged(error) => Err(cleanup_owned_catalog_temp(
-            temp_root,
+            &temp_capability,
             anyhow::Error::new(error).context(format!(
                 "create-only stage catalog data root to {}",
                 final_data_root.as_path().display()
             )),
+            work_budget,
         )),
         DirectoryStageOutcome::Staged => {
             validate_staged_directory_manifest_guarded(
@@ -2103,7 +2166,7 @@ fn with_clean_catalog_root_guarded<T>(
                 )
             })?;
             validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)?;
-            Ok(finish_committed_catalog_publication(temp_root, value))
+            finish_catalog_candidate(&temp_capability, value, work_budget)
         }
     }
 }
@@ -2194,26 +2257,19 @@ fn external_catalog_candidate_path_guarded(
     Ok((candidate_root, retained_path_bytes))
 }
 
-fn finish_committed_catalog_publication<T>(temp_root: &Path, value: T) -> T {
-    // Reader authority exists only after the separately staged root passes its
-    // exact-set/hash validation. Keep the now-empty external workspace as an
-    // inert ownership receipt: pathname deletion could race with a foreign
-    // entry, but this residue can never enter the authoritative output seal.
-    let _ = temp_root;
-    value
-}
-
-fn finish_reconciled_catalog_publication<T>(temp_root: &Path, value: T) -> T {
-    // A create conflict retains the full candidate catalog even after exact
-    // content equality is proven. Pathname cleanup is unsafe because an
-    // attacker can replace a descendant between validation and deletion. This
-    // private workspace is outside the authoritative output, so it cannot
-    // enter the terminal exact-set seal. Its disk cost belongs to the
-    // configured lifecycle janitor (or an ephemeral worker volume); the first
-    // successful publication still moves `data/` out and retains only its
-    // empty ownership root.
-    let _ = temp_root;
-    value
+fn finish_catalog_candidate<T>(
+    temp_root: &OwnedTempDirectory,
+    value: T,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> Result<T> {
+    compact_owned_temp_directory_to_receipt_guarded(
+        temp_root,
+        std::ffi::OsStr::new(SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE),
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    )
+    .context("compact completed catalog candidate to lifecycle receipt")?;
+    Ok(value)
 }
 
 fn single_projected_data_root_guarded(
@@ -2224,52 +2280,106 @@ fn single_projected_data_root_guarded(
         fs::read_dir(temp_root)
             .with_context(|| format!("read projected temp root {}", temp_root.display()))
     })?;
-    let first = guarded_catalog_operation(work_budget, || {
-        entries
-            .next()
-            .transpose()
-            .with_context(|| format!("read projected temp entry under {}", temp_root.display()))
-    })?
-    .context("NT projection produced no top-level data directory")?;
-    let second = guarded_catalog_operation(work_budget, || {
-        entries.next().transpose().with_context(|| {
-            format!(
-                "read second projected temp entry under {}",
-                temp_root.display()
-            )
-        })
-    })?;
-    ensure!(
-        second.is_none(),
-        "NT projection produced more than one top-level catalog entry"
-    );
-    ensure!(
-        first.file_name() == "data",
-        "NT projection produced unexpected top-level entry {:?}; expected data",
-        first.file_name()
-    );
-    let file_type = guarded_catalog_operation(work_budget, || {
-        first
-            .file_type()
-            .with_context(|| format!("read projected data root type {}", first.path().display()))
-    })?;
-    ensure!(
-        file_type.is_dir(),
-        "NT projected data root {} is not a directory",
-        first.path().display()
-    );
-    Ok(first.path())
+    let mut data_root = None;
+    let mut receipt_seen = false;
+    let mut entry_count = 0_u8;
+    loop {
+        let Some(entry) = guarded_catalog_operation(work_budget, || {
+            entries
+                .next()
+                .transpose()
+                .with_context(|| format!("read projected temp entry under {}", temp_root.display()))
+        })?
+        else {
+            break;
+        };
+        entry_count = entry_count
+            .checked_add(1)
+            .context("projected catalog top-level entry count overflow")?;
+        ensure!(
+            entry_count <= 2,
+            "NT projection produced more than the data directory and lifecycle receipt"
+        );
+        let file_type = guarded_catalog_operation(work_budget, || {
+            entry
+                .file_type()
+                .with_context(|| format!("read projected entry type {}", entry.path().display()))
+        })?;
+        if entry.file_name() == "data" {
+            ensure!(
+                data_root.is_none() && file_type.is_dir(),
+                "NT projected data root {} is not one unique directory",
+                entry.path().display()
+            );
+            data_root = Some(entry.path());
+            continue;
+        }
+        if entry.file_name() == SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE {
+            ensure!(
+                !receipt_seen && file_type.is_file(),
+                "catalog lifecycle receipt {} is not one unique regular file",
+                entry.path().display()
+            );
+            let receipt_path = entry.path();
+            let (mut receipt, receipt_identity) = open_pinned_regular_file(&receipt_path)
+                .with_context(|| {
+                    format!("pin catalog lifecycle receipt {}", receipt_path.display())
+                })?;
+            ensure!(
+                receipt
+                    .metadata()
+                    .with_context(|| {
+                        format!("stat catalog lifecycle receipt {}", receipt_path.display())
+                    })?
+                    .len()
+                    == u64::try_from(SOURCE_UNIVERSE_CANDIDATE_RECEIPT_BYTES.len())?,
+                "catalog lifecycle receipt {} has unexpected length",
+                receipt_path.display()
+            );
+            let mut bytes = [0_u8; SOURCE_UNIVERSE_CANDIDATE_RECEIPT_BYTES.len()];
+            guarded_catalog_operation(work_budget, || {
+                receipt.read_exact(&mut bytes).with_context(|| {
+                    format!("read catalog lifecycle receipt {}", receipt_path.display())
+                })
+            })?;
+            receipt_identity.revalidate(&receipt_path, &receipt)?;
+            ensure!(
+                bytes == SOURCE_UNIVERSE_CANDIDATE_RECEIPT_BYTES,
+                "catalog lifecycle receipt {} has unexpected bytes",
+                receipt_path.display()
+            );
+            receipt_seen = true;
+            continue;
+        }
+        anyhow::bail!(
+            "NT projection produced unexpected top-level entry {:?}",
+            entry.file_name()
+        );
+    }
+    ensure!(receipt_seen, "catalog lifecycle receipt is missing");
+    data_root.context("NT projection produced no top-level data directory")
 }
 
-fn cleanup_owned_catalog_temp(temp_root: &Path, error: anyhow::Error) -> anyhow::Error {
-    // Preserve failed external workspaces instead of recursively deleting by
-    // path. They cannot block a retry or enter the output seal, and the
-    // retained path is the exact forensic/lifecycle-cleanup target without a
-    // symlink/replacement-tree race.
-    error.context(format!(
-        "retained external catalog candidate workspace {} after failed projection",
-        temp_root.display()
-    ))
+fn cleanup_owned_catalog_temp(
+    temp_root: &OwnedTempDirectory,
+    error: anyhow::Error,
+    work_budget: &OperatorWorkBudgetGuard,
+) -> anyhow::Error {
+    match compact_owned_temp_directory_to_receipt_guarded(
+        temp_root,
+        std::ffi::OsStr::new(SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE),
+        work_budget,
+        OperatorWorkBudgetStage::CatalogProjection,
+    ) {
+        Ok(()) => error.context(format!(
+            "compacted failed catalog candidate {} to lifecycle receipt",
+            temp_root.path().display()
+        )),
+        Err(cleanup_error) => error.context(format!(
+            "failed to compact catalog candidate {} to lifecycle receipt: {cleanup_error:#}",
+            temp_root.path().display()
+        )),
+    }
 }
 
 /// Convert canonical order-book-delta rows into NautilusTrader `OrderBookDelta`s
@@ -2384,12 +2494,14 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
     table: &CanonicalOrderBookDeltasTable,
     spec: &S,
     catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<CatalogProjection> {
     project_canonical_order_book_deltas_to_catalog_guarded(
         table,
         spec,
         catalog_root,
         catalog_root,
+        encoding,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -2406,6 +2518,7 @@ pub fn project_canonical_order_book_deltas_to_catalog_guarded<
     spec: &S,
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CatalogProjection> {
     table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
@@ -2429,6 +2542,7 @@ pub fn project_canonical_order_book_deltas_to_catalog_guarded<
     with_clean_catalog_root_guarded(
         catalog_root,
         authoritative_output_root,
+        encoding,
         work_budget,
         |catalog, projected_root| {
             guarded_catalog_operation(work_budget, || {
@@ -2597,12 +2711,14 @@ pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     table: &CanonicalQuotesTable,
     spec: &S,
     catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<CatalogProjection> {
     project_canonical_quotes_to_catalog_guarded(
         table,
         spec,
         catalog_root,
         catalog_root,
+        encoding,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -2617,6 +2733,7 @@ pub fn project_canonical_quotes_to_catalog_guarded<S: CatalogInstrumentSpecSourc
     spec: &S,
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CatalogProjection> {
     table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
@@ -2640,6 +2757,7 @@ pub fn project_canonical_quotes_to_catalog_guarded<S: CatalogInstrumentSpecSourc
     with_clean_catalog_root_guarded(
         catalog_root,
         authoritative_output_root,
+        encoding,
         work_budget,
         |catalog, projected_root| {
             guarded_catalog_operation(work_budget, || {
@@ -2783,12 +2901,14 @@ pub fn project_canonical_index_to_catalog<S: CatalogInstrumentSpecSource + ?Size
     table: &CanonicalIndexPricesTable,
     spec: &S,
     catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<CatalogProjection> {
     project_canonical_index_to_catalog_guarded(
         table,
         spec,
         catalog_root,
         catalog_root,
+        encoding,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -2803,6 +2923,7 @@ pub fn project_canonical_index_to_catalog_guarded<S: CatalogInstrumentSpecSource
     spec: &S,
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CatalogProjection> {
     table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
@@ -2826,6 +2947,7 @@ pub fn project_canonical_index_to_catalog_guarded<S: CatalogInstrumentSpecSource
     with_clean_catalog_root_guarded(
         catalog_root,
         authoritative_output_root,
+        encoding,
         work_budget,
         |catalog, projected_root| {
             guarded_catalog_operation(work_budget, || {
@@ -2995,12 +3117,14 @@ pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     table: &CanonicalMarkPricesTable,
     spec: &S,
     catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<CatalogProjection> {
     project_canonical_mark_to_catalog_guarded(
         table,
         spec,
         catalog_root,
         catalog_root,
+        encoding,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -3015,6 +3139,7 @@ pub fn project_canonical_mark_to_catalog_guarded<S: CatalogInstrumentSpecSource 
     spec: &S,
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CatalogProjection> {
     table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
@@ -3038,6 +3163,7 @@ pub fn project_canonical_mark_to_catalog_guarded<S: CatalogInstrumentSpecSource 
     with_clean_catalog_root_guarded(
         catalog_root,
         authoritative_output_root,
+        encoding,
         work_budget,
         |catalog, projected_root| {
             guarded_catalog_operation(work_budget, || {
@@ -3209,12 +3335,14 @@ pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource
     table: &CanonicalFundingRatesTable,
     spec: &S,
     catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<CatalogProjection> {
     project_canonical_funding_rates_to_catalog_guarded(
         table,
         spec,
         catalog_root,
         catalog_root,
+        encoding,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -3231,6 +3359,7 @@ pub fn project_canonical_funding_rates_to_catalog_guarded<
     spec: &S,
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CatalogProjection> {
     table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
@@ -3262,6 +3391,7 @@ pub fn project_canonical_funding_rates_to_catalog_guarded<
     with_clean_catalog_root_guarded(
         catalog_root,
         authoritative_output_root,
+        encoding,
         work_budget,
         |catalog, projected_root| {
             guarded_catalog_operation(work_budget, || {
@@ -3439,12 +3569,14 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
     table: &CanonicalBarsTable,
     spec: &S,
     catalog_root: &Path,
+    encoding: &CatalogEncodingConfig,
 ) -> Result<CatalogProjection> {
     project_canonical_bars_to_catalog_guarded(
         table,
         spec,
         catalog_root,
         catalog_root,
+        encoding,
         &OperatorWorkBudgetGuard::unbounded(),
     )
 }
@@ -3459,6 +3591,7 @@ pub fn project_canonical_bars_to_catalog_guarded<S: CatalogInstrumentSpecSource 
     spec: &S,
     catalog_root: &Path,
     authoritative_output_root: &Path,
+    encoding: &CatalogEncodingConfig,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<CatalogProjection> {
     table.validate_guarded(work_budget, OperatorWorkBudgetStage::CatalogProjection)?;
@@ -3482,6 +3615,7 @@ pub fn project_canonical_bars_to_catalog_guarded<S: CatalogInstrumentSpecSource 
     with_clean_catalog_root_guarded(
         catalog_root,
         authoritative_output_root,
+        encoding,
         work_budget,
         |catalog, projected_root| {
             guarded_catalog_operation(work_budget, || {
@@ -4830,6 +4964,47 @@ mod tests {
     };
     use nautilus_model::enums::BarAggregation;
 
+    fn test_catalog_encoding() -> CatalogEncodingConfig {
+        CatalogEncodingConfig::new(5000, 5000, CatalogCompression::Snappy)
+            .expect("positive test catalog encoding")
+    }
+
+    fn assert_catalog_candidate_is_receipt_only(candidate: &Path) {
+        let entries = fs::read_dir(candidate)
+            .expect("read retained catalog candidate")
+            .map(|entry| entry.expect("read candidate entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [std::ffi::OsString::from(
+                SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE,
+            )],
+            "terminal catalog candidate must retain only its lifecycle receipt"
+        );
+        assert_eq!(
+            fs::read(candidate.join(SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE))
+                .expect("read lifecycle receipt"),
+            SOURCE_UNIVERSE_CANDIDATE_RECEIPT_BYTES
+        );
+    }
+
+    #[test]
+    fn configured_nt_catalog_and_row_group_plan_share_encoding_values() {
+        let encoding = CatalogEncodingConfig::new(7, 3, CatalogCompression::Snappy)
+            .expect("positive catalog encoding");
+        let directory = tempfile::TempDir::new().expect("temp dir");
+
+        let catalog = configured_nt_catalog(directory.path(), &encoding);
+
+        assert_eq!(catalog.batch_size, 7);
+        assert_eq!(catalog.max_row_group_size, 3);
+        assert_eq!(catalog.compression, parquet::basic::Compression::SNAPPY);
+        assert_eq!(
+            projected_nt_market_data_row_groups([7], &encoding).expect("project row groups"),
+            3
+        );
+    }
+
     #[derive(Default)]
     struct IncrementingClock {
         ticks: AtomicU64,
@@ -5919,9 +6094,13 @@ max_notional = "200000"
         )
         .expect("normalize");
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection =
-            project_canonical_trades_to_catalog(&table, &linear_perpetual_spec(), dir.path())
-                .expect("project derivative");
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project derivative");
 
         assert_eq!(projection.trade_count, 1);
         assert_eq!(projection.nt_instrument_id, "BTCUSDT.BYBIT");
@@ -5934,17 +6113,22 @@ max_notional = "200000"
     fn projects_and_reads_back_trade_ticks() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection =
-            project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project");
         assert_eq!(projection.trade_count, 3);
         assert_eq!(projection.data_type, NT_DATA_TYPE_TRADE_TICK);
         assert_eq!(projection.nt_instrument_id, "BNBUSDC.BYBIT");
         assert!(!projection.catalog_hash.is_empty());
-        let projected_row_groups =
-            projected_nt_market_data_row_groups([
-                u64::try_from(table.rows.len()).expect("row count fits u64")
-            ])
-            .expect("project row groups");
+        let projected_row_groups = projected_nt_market_data_row_groups(
+            [u64::try_from(table.rows.len()).expect("row count fits u64")],
+            &test_catalog_encoding(),
+        )
+        .expect("project row groups");
         let actual_metadata =
             actual_nt_market_data_metadata(dir.path()).expect("read actual Parquet metadata");
         assert_eq!(actual_metadata.rows, table.rows.len() as u64);
@@ -5990,7 +6174,8 @@ max_notional = "200000"
     fn catalog_preflight_rejects_stray_parquet_before_nt_query() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project");
         fs::write(
             dir.path().join("stray.parquet"),
             b"NOPE\x01\x00\x00\x00PAR1",
@@ -6016,7 +6201,8 @@ max_notional = "200000"
     fn catalog_preflight_rejects_oversized_instrument_footer_before_nt_query() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project");
         let stray = dir.path().join("data/instruments/stray.parquet");
         fs::write(&stray, b"PAR1\xff\xff\xff\xffPAR1").expect("write malformed instrument Parquet");
 
@@ -6054,7 +6240,7 @@ max_notional = "200000"
 
         assert!(
             format!("{error:#}").contains(
-                "compact-Thrift collection cardinality 4294967295 exceeds max_source_rows 8"
+                "compact-Thrift collection cardinality 4294967295 exceeds footer byte bound 7"
             ),
             "{error:#}"
         );
@@ -6090,7 +6276,8 @@ max_notional = "200000"
     fn catalog_preflight_enforces_all_file_row_groups_but_reports_market_data_only() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project");
         let unbounded = OperatorWorkBudgetGuard::unbounded();
         let summary = preflight_nt_catalog_parquet_guarded(
             dir.path(),
@@ -6126,7 +6313,7 @@ max_notional = "200000"
         let dir = tempfile::TempDir::new().expect("temp dir");
         let source = dir.path().join("tiny-0.parquet");
         table
-            .write_parquet(&source)
+            .write_parquet(&source, &test_catalog_encoding())
             .expect("write one-row-group Parquet");
         let single = preflight_nt_catalog_parquet_guarded(
             dir.path(),
@@ -6165,7 +6352,8 @@ max_notional = "200000"
     fn catalog_preflight_combined_accounting_accepts_exact_cap_and_rejects_cap_plus_one() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &spec(), dir.path()).expect("project");
+        project_canonical_trades_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project");
         let baseline = preflight_nt_catalog_parquet_guarded(
             dir.path(),
             &OperatorWorkBudgetGuard::unbounded(),
@@ -6299,8 +6487,13 @@ max_notional = "200000"
     fn projects_and_reads_back_quote_ticks() {
         let table = canonical_quotes_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection =
-            project_canonical_quotes_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let projection = project_canonical_quotes_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project");
         assert_eq!(projection.trade_count, 2);
         assert_eq!(projection.data_type, NT_DATA_TYPE_QUOTE_TICK);
         assert_eq!(projection.nt_instrument_id, "BNBUSDC.BYBIT");
@@ -6382,7 +6575,13 @@ max_notional = "200000"
         // projection recorded.
         let table = canonical_quotes_table();
         let dir = tempfile::TempDir::new().unwrap();
-        let projection = project_canonical_quotes_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let projection = project_canonical_quotes_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_eq!(
             projection.catalog_hash,
             logical_catalog_hash(dir.path()).unwrap(),
@@ -6397,8 +6596,20 @@ max_notional = "200000"
         let table = canonical_quotes_table();
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
-        let a = project_canonical_quotes_to_catalog(&table, &spec(), dir_a.path()).unwrap();
-        let b = project_canonical_quotes_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+        let a = project_canonical_quotes_to_catalog(
+            &table,
+            &spec(),
+            dir_a.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
+        let b = project_canonical_quotes_to_catalog(
+            &table,
+            &spec(),
+            dir_b.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_eq!(
             a.catalog_hash, b.catalog_hash,
             "same quote data must hash identically regardless of root"
@@ -6469,8 +6680,13 @@ max_notional = "200000"
     fn projects_and_reads_back_index_prices() {
         let table = canonical_index_prices_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection =
-            project_canonical_index_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let projection = project_canonical_index_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project");
         assert_eq!(projection.trade_count, 2);
         assert_eq!(projection.data_type, NT_DATA_TYPE_INDEX_PRICE_UPDATE);
         assert_eq!(projection.nt_instrument_id, "BNBUSDC.BYBIT");
@@ -6508,7 +6724,8 @@ max_notional = "200000"
         // the empty size_values view leaves the instrument size precision intact.
         let table = canonical_index_prices_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_index_to_catalog(&table, &spec(), dir.path()).expect("project");
+        project_canonical_index_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project");
         let loaded = read_back_index(dir.path(), "BNBUSDC.BYBIT").expect("read back");
         assert!(!loaded.is_empty());
         for update in &loaded {
@@ -6560,8 +6777,13 @@ max_notional = "200000"
         let dir = tempfile::TempDir::new().expect("temp dir");
         // Pre-seed the catalog root so it is non-empty.
         fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
-        let err = project_canonical_index_to_catalog(&table, &spec(), dir.path())
-            .expect_err("dirty catalog root must be refused");
+        let err = project_canonical_index_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect_err("dirty catalog root must be refused");
         assert!(err.to_string().contains("not empty"), "{err}");
     }
 
@@ -6572,8 +6794,20 @@ max_notional = "200000"
         let table = canonical_index_prices_table();
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
-        let a = project_canonical_index_to_catalog(&table, &spec(), dir_a.path()).unwrap();
-        let b = project_canonical_index_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+        let a = project_canonical_index_to_catalog(
+            &table,
+            &spec(),
+            dir_a.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
+        let b = project_canonical_index_to_catalog(
+            &table,
+            &spec(),
+            dir_b.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_eq!(
             a.catalog_hash, b.catalog_hash,
             "same index data must hash identically regardless of root"
@@ -6590,8 +6824,20 @@ max_notional = "200000"
         table_b.rows[0].value = "618.05".to_string();
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
-        let a = project_canonical_index_to_catalog(&table_a, &spec(), dir_a.path()).unwrap();
-        let b = project_canonical_index_to_catalog(&table_b, &spec(), dir_b.path()).unwrap();
+        let a = project_canonical_index_to_catalog(
+            &table_a,
+            &spec(),
+            dir_a.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
+        let b = project_canonical_index_to_catalog(
+            &table_b,
+            &spec(),
+            dir_b.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different index value must change the catalog hash"
@@ -6662,8 +6908,13 @@ max_notional = "200000"
     fn projects_and_reads_back_mark_prices() {
         let table = canonical_mark_prices_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection =
-            project_canonical_mark_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let projection = project_canonical_mark_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project");
         assert_eq!(projection.trade_count, 2);
         assert_eq!(projection.data_type, NT_DATA_TYPE_MARK_PRICE_UPDATE);
         assert_eq!(projection.nt_instrument_id, "BNBUSDC.BYBIT");
@@ -6701,7 +6952,8 @@ max_notional = "200000"
         // the empty size_values view leaves the instrument size precision intact.
         let table = canonical_mark_prices_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_mark_to_catalog(&table, &spec(), dir.path()).expect("project");
+        project_canonical_mark_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
+            .expect("project");
         let loaded = read_back_mark(dir.path(), "BNBUSDC.BYBIT").expect("read back");
         assert!(!loaded.is_empty());
         for update in &loaded {
@@ -6753,8 +7005,13 @@ max_notional = "200000"
         let dir = tempfile::TempDir::new().expect("temp dir");
         // Pre-seed the catalog root so it is non-empty.
         fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
-        let err = project_canonical_mark_to_catalog(&table, &spec(), dir.path())
-            .expect_err("dirty catalog root must be refused");
+        let err = project_canonical_mark_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect_err("dirty catalog root must be refused");
         assert!(err.to_string().contains("not empty"), "{err}");
     }
 
@@ -6765,8 +7022,20 @@ max_notional = "200000"
         let table = canonical_mark_prices_table();
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
-        let a = project_canonical_mark_to_catalog(&table, &spec(), dir_a.path()).unwrap();
-        let b = project_canonical_mark_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+        let a = project_canonical_mark_to_catalog(
+            &table,
+            &spec(),
+            dir_a.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
+        let b = project_canonical_mark_to_catalog(
+            &table,
+            &spec(),
+            dir_b.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_eq!(
             a.catalog_hash, b.catalog_hash,
             "same mark data must hash identically regardless of root"
@@ -6783,8 +7052,20 @@ max_notional = "200000"
         table_b.rows[0].value = "618.05".to_string();
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
-        let a = project_canonical_mark_to_catalog(&table_a, &spec(), dir_a.path()).unwrap();
-        let b = project_canonical_mark_to_catalog(&table_b, &spec(), dir_b.path()).unwrap();
+        let a = project_canonical_mark_to_catalog(
+            &table_a,
+            &spec(),
+            dir_a.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
+        let b = project_canonical_mark_to_catalog(
+            &table_b,
+            &spec(),
+            dir_b.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different mark value must change the catalog hash"
@@ -6872,6 +7153,7 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir.path(),
+            &test_catalog_encoding(),
         )
         .expect("project");
         assert_eq!(projection.trade_count, 2);
@@ -6900,8 +7182,13 @@ max_notional = "200000"
         //     0.000250) would pair with read-back row 0 (rate -0.000100) and fail.
         let table = canonical_funding_rates_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_funding_rates_to_catalog(&table, &linear_perpetual_spec(), dir.path())
-            .expect("project");
+        project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project");
         let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 2);
 
@@ -6942,6 +7229,7 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir.path(),
+            &test_catalog_encoding(),
         )
         .expect_err("missing nt_instrument_id rejected");
 
@@ -6961,6 +7249,7 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir.path(),
+            &test_catalog_encoding(),
         )
         .expect_err("later missing nt_instrument_id rejected");
 
@@ -6981,6 +7270,7 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir.path(),
+            &test_catalog_encoding(),
         )
         .expect_err("nt_instrument_id mismatch rejected");
 
@@ -7000,6 +7290,7 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir.path(),
+            &test_catalog_encoding(),
         )
         .expect_err("later nt_instrument_id mismatch rejected");
 
@@ -7082,6 +7373,7 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir.path(),
+            &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
         assert!(err.to_string().contains("not empty"), "{err}");
@@ -7096,12 +7388,14 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir_a.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         let b = project_canonical_funding_rates_to_catalog(
             &table,
             &linear_perpetual_spec(),
             dir_b.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         assert_eq!(
@@ -7122,6 +7416,7 @@ max_notional = "200000"
             &table,
             &linear_perpetual_spec(),
             dir.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
 
@@ -7142,12 +7437,14 @@ max_notional = "200000"
             &table_a,
             &linear_perpetual_spec(),
             dir_a.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         let b = project_canonical_funding_rates_to_catalog(
             &table_b,
             &linear_perpetual_spec(),
             dir_b.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         assert_ne!(
@@ -7172,12 +7469,14 @@ max_notional = "200000"
             &table_a,
             &linear_perpetual_spec(),
             dir_a.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         let b = project_canonical_funding_rates_to_catalog(
             &table_b,
             &linear_perpetual_spec(),
             dir_b.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         assert_eq!(
@@ -7217,12 +7516,14 @@ max_notional = "200000"
             &table_a,
             &linear_perpetual_spec(),
             dir_a.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         let b = project_canonical_funding_rates_to_catalog(
             &table_b,
             &linear_perpetual_spec(),
             dir_b.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         assert_ne!(
@@ -7242,12 +7543,14 @@ max_notional = "200000"
             &table_a,
             &linear_perpetual_spec(),
             dir_a.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         let b = project_canonical_funding_rates_to_catalog(
             &table_b,
             &linear_perpetual_spec(),
             dir_b.path(),
+            &test_catalog_encoding(),
         )
         .unwrap();
         assert_ne!(
@@ -7265,7 +7568,13 @@ max_notional = "200000"
         // hash pin against mark-section byte-tag drift.
         let table = canonical_table();
         let dir = tempfile::TempDir::new().unwrap();
-        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         let instrument = build_currency_pair(&spec()).expect("instrument");
         let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("ticks");
         assert_eq!(
@@ -7282,7 +7591,13 @@ max_notional = "200000"
         // must keep the committed logical-hash byte stream unchanged.
         let table = canonical_table();
         let dir = tempfile::TempDir::new().unwrap();
-        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         let instrument = build_currency_pair(&spec()).expect("instrument");
         let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("ticks");
         assert_eq!(
@@ -7355,9 +7670,13 @@ max_notional = "200000"
             2,1772323312219,12.3,0.1456,sell,0\n";
         let table = synthetic_table(csv, "BASEQUOTE", "BASEQUOTE.TESTVENUE");
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection =
-            project_canonical_trades_to_catalog(&table, &synthetic_spot_spec(), dir.path())
-                .expect("projection widens precision instead of rejecting accepted data");
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &synthetic_spot_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("projection widens precision instead of rejecting accepted data");
         assert_eq!(projection.trade_count, 2);
 
         // Read-back preserves the exact archived values.
@@ -7386,8 +7705,13 @@ max_notional = "200000"
             1,1772323201665,12,0.3,buy,0\n";
         let table = synthetic_table(csv, "BASEQUOTE", "BASEQUOTE.TESTVENUE");
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &synthetic_spot_spec(), dir.path())
-            .expect("project");
+        project_canonical_trades_to_catalog(
+            &table,
+            &synthetic_spot_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project");
         let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
         let instruments = catalog
             .query_instruments(Some(&["BASEQUOTE.TESTVENUE".to_string()]))
@@ -7407,8 +7731,13 @@ max_notional = "200000"
             1,1772323201665,12.30,0.3000,buy,0\n";
         let table = synthetic_table(csv, "BASEQUOTE", "BASEQUOTE.TESTVENUE");
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &synthetic_spot_spec(), dir.path())
-            .expect("project");
+        project_canonical_trades_to_catalog(
+            &table,
+            &synthetic_spot_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project");
         let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
         let instruments = catalog
             .query_instruments(Some(&["BASEQUOTE.TESTVENUE".to_string()]))
@@ -7426,8 +7755,13 @@ max_notional = "200000"
             1,1772323201665,12.34,0.3001,buy,0\n";
         let table = synthetic_table(csv, "BASEQUOTE-PERP", "BASEQUOTE-PERP.TESTVENUE");
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &synthetic_perpetual_spec(), dir.path())
-            .expect("derivative projection widens precision");
+        project_canonical_trades_to_catalog(
+            &table,
+            &synthetic_perpetual_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("derivative projection widens precision");
         let loaded =
             read_back_trade_ticks(dir.path(), "BASEQUOTE-PERP.TESTVENUE").expect("read back");
         assert_eq!(loaded[0].price, Price::from("12.34"));
@@ -7446,8 +7780,13 @@ max_notional = "200000"
             2,1772323312219,0.512,12.5,sell,0\n";
         let table = synthetic_table(csv, "YES", "YES.TESTVENUE");
         let dir = tempfile::TempDir::new().expect("temp dir");
-        project_canonical_trades_to_catalog(&table, &binary_option_spec(), dir.path())
-            .expect("binary option projection widens precision");
+        project_canonical_trades_to_catalog(
+            &table,
+            &binary_option_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("binary option projection widens precision");
 
         let loaded = read_back_trade_ticks(dir.path(), "YES.TESTVENUE").expect("read back");
         assert_eq!(loaded[0].price, Price::from("0.491"));
@@ -7597,9 +7936,13 @@ max_notional = "200000"
     fn binary_option_bar_catalog_projection_round_trips_through_nt_catalog() {
         let table = binary_option_bars_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection =
-            project_canonical_bars_to_catalog(&table, &binary_option_spec(), dir.path())
-                .expect("project binary-option bars");
+        let projection = project_canonical_bars_to_catalog(
+            &table,
+            &binary_option_spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project binary-option bars");
         assert_eq!(projection.trade_count, table.rows.len());
         assert_eq!(projection.data_type, NT_DATA_TYPE_BAR);
         assert_eq!(projection.nt_instrument_id, "YES.TESTVENUE");
@@ -7641,8 +7984,13 @@ max_notional = "200000"
         let table = synthetic_table(csv, "币安人生USDC", "币安人生USDC.BINANCE");
         let dir = tempfile::TempDir::new().expect("temp dir");
 
-        let projection = project_canonical_trades_to_catalog(&table, &spec, dir.path())
-            .expect("project non-ASCII catalog path");
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &spec,
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project non-ASCII catalog path");
         let loaded = read_back_trade_ticks(dir.path(), "币安人生USDC.BINANCE").expect("read back");
 
         assert_eq!(projection.trade_count, 1);
@@ -7786,8 +8134,13 @@ max_notional = "200000"
         let dir = tempfile::TempDir::new().expect("temp dir");
         // Pre-seed the catalog root so it is non-empty.
         fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
-        let err = project_canonical_trades_to_catalog(&table, &spec(), dir.path())
-            .expect_err("dirty catalog root must be refused");
+        let err = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .expect_err("dirty catalog root must be refused");
         assert!(err.to_string().contains("not empty"), "{err}");
     }
 
@@ -7796,8 +8149,20 @@ max_notional = "200000"
         let table = canonical_table();
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
-        let a = project_canonical_trades_to_catalog(&table, &spec(), dir_a.path()).unwrap();
-        let b = project_canonical_trades_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+        let a = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir_a.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
+        let b = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir_b.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_eq!(
             a.catalog_hash, b.catalog_hash,
             "same data must hash identically regardless of root"
@@ -7829,8 +8194,20 @@ max_notional = "200000"
         .expect("normalize variant");
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
-        let a = project_canonical_trades_to_catalog(&table_a, &spec(), dir_a.path()).unwrap();
-        let b = project_canonical_trades_to_catalog(&table_b, &spec(), dir_b.path()).unwrap();
+        let a = project_canonical_trades_to_catalog(
+            &table_a,
+            &spec(),
+            dir_a.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
+        let b = project_canonical_trades_to_catalog(
+            &table_b,
+            &spec(),
+            dir_b.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different trade data must change the catalog hash"
@@ -8044,7 +8421,13 @@ max_notional = "200000"
     fn catalog_hash_matches_stable_currency_pair_fields() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().unwrap();
-        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         let instrument = build_currency_pair(&spec()).expect("instrument");
         let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("ticks");
         assert_eq!(
@@ -8058,7 +8441,13 @@ max_notional = "200000"
     fn catalog_hash_ignores_writer_sidecar_files() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().unwrap();
-        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let projection = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            dir.path(),
+            &test_catalog_encoding(),
+        )
+        .unwrap();
         fs::write(dir.path().join("writer-version.txt"), b"nt writer metadata").unwrap();
         assert_eq!(
             projection.catalog_hash,
@@ -8073,10 +8462,20 @@ max_notional = "200000"
         let dir = tempfile::TempDir::new().unwrap();
         let catalog_root = dir.path().join("catalog");
 
-        let first = project_canonical_trades_to_catalog(&table, &spec(), &catalog_root)
-            .expect("first projection");
-        let second = project_canonical_trades_to_catalog(&table, &spec(), &catalog_root)
-            .expect("identical retry projection");
+        let first = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            &catalog_root,
+            &test_catalog_encoding(),
+        )
+        .expect("first projection");
+        let second = project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            &catalog_root,
+            &test_catalog_encoding(),
+        )
+        .expect("identical retry projection");
 
         assert_eq!(first, second);
         assert_eq!(
@@ -8093,15 +8492,41 @@ max_notional = "200000"
 
     #[test]
     fn catalog_hash_ignores_unrelated_relative_paths() {
-        // Non-catalog sidecar bytes under different relative paths must not
-        // affect the logical digest. The digest is over NT-read catalog records,
-        // not filesystem layout.
+        // Valid non-catalog Parquet sidecars under different relative paths
+        // must not affect the logical digest. The digest is over NT-read
+        // catalog records, not filesystem layout, while the structural
+        // preflight still validates every `.parquet` file it inventories.
+        let table = canonical_table();
         let root_a = tempfile::TempDir::new().unwrap();
         let root_b = tempfile::TempDir::new().unwrap();
+        project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            root_a.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project first valid NT catalog");
+        project_canonical_trades_to_catalog(
+            &table,
+            &spec(),
+            root_b.path(),
+            &test_catalog_encoding(),
+        )
+        .expect("project second valid NT catalog");
         fs::create_dir_all(root_a.path().join("data/alpha")).unwrap();
-        fs::write(root_a.path().join("data/alpha/file.parquet"), b"identical").unwrap();
+        table
+            .write_parquet(
+                &root_a.path().join("data/alpha/file.parquet"),
+                &test_catalog_encoding(),
+            )
+            .expect("write first valid unrelated Parquet sidecar");
         fs::create_dir_all(root_b.path().join("data/beta")).unwrap();
-        fs::write(root_b.path().join("data/beta/file.parquet"), b"identical").unwrap();
+        table
+            .write_parquet(
+                &root_b.path().join("data/beta/file.parquet"),
+                &test_catalog_encoding(),
+            )
+            .expect("write second valid unrelated Parquet sidecar");
         assert_eq!(
             logical_catalog_hash(root_a.path()).unwrap(),
             logical_catalog_hash(root_b.path()).unwrap(),
@@ -8118,6 +8543,7 @@ max_notional = "200000"
         let error = with_clean_catalog_root_guarded(
             &root,
             &root,
+            &test_catalog_encoding(),
             &OperatorWorkBudgetGuard::unbounded(),
             |_catalog, temp_root| -> Result<()> {
                 fs::create_dir(temp_root.join("data"))?;
@@ -8127,7 +8553,7 @@ max_notional = "200000"
         )
         .expect_err("injected failure must fail projection");
 
-        assert!(error.to_string().contains("injected projection failure"));
+        assert!(format!("{error:#}").contains("injected projection failure"));
         assert!(root.is_dir(), "caller-owned root must be preserved");
         assert!(
             fs::read_dir(&root)
@@ -8143,11 +8569,7 @@ max_notional = "200000"
             .map(|entry| entry.path())
             .collect::<Vec<_>>();
         assert_eq!(retained.len(), 1, "one failed unique root must be retained");
-        assert_eq!(
-            fs::read(retained[0].join("data/incomplete.parquet"))
-                .expect("read retained failed projection"),
-            b"incomplete"
-        );
+        assert_catalog_candidate_is_receipt_only(&retained[0]);
     }
 
     #[test]
@@ -8165,6 +8587,7 @@ max_notional = "200000"
                     with_clean_catalog_root_guarded(
                         root.as_path(),
                         root.as_path(),
+                        &test_catalog_encoding(),
                         &OperatorWorkBudgetGuard::unbounded(),
                         |_catalog, temp_root| {
                             fs::create_dir(temp_root.join("data"))?;
@@ -8199,18 +8622,13 @@ max_notional = "200000"
             2,
             "both unique roots must remain isolated after the publish race"
         );
-        assert_eq!(
-            retained
-                .iter()
-                .filter(|path| path.join("data/winner.parquet").is_file())
-                .count(),
-            1,
-            "only the losing publisher retains uncommitted data"
-        );
+        for candidate in &retained {
+            assert_catalog_candidate_is_receipt_only(candidate);
+        }
     }
 
     #[test]
-    fn identical_catalog_retry_succeeds_and_retains_only_retry_candidate_data() {
+    fn identical_catalog_retry_succeeds_and_compacts_both_candidates() {
         let parent = tempfile::TempDir::new().expect("temp dir");
         let root = parent.path().join("catalog");
         fs::create_dir(&root).expect("create caller-owned root");
@@ -8218,6 +8636,7 @@ max_notional = "200000"
             with_clean_catalog_root_guarded(
                 &root,
                 &root,
+                &test_catalog_encoding(),
                 &OperatorWorkBudgetGuard::unbounded(),
                 |_catalog, temp_root| {
                     fs::create_dir(temp_root.join("data"))?;
@@ -8237,14 +8656,9 @@ max_notional = "200000"
             .map(|entry| entry.path())
             .collect::<Vec<_>>();
         assert_eq!(retained.len(), 2, "each attempt keeps an ownership root");
-        assert_eq!(
-            retained
-                .iter()
-                .filter(|path| path.join("data/catalog.parquet").is_file())
-                .count(),
-            1,
-            "the first publication moves its candidate; only the create-conflict retry retains full data for lifecycle cleanup"
-        );
+        for candidate in &retained {
+            assert_catalog_candidate_is_receipt_only(candidate);
+        }
     }
 
     #[test]
@@ -8256,11 +8670,12 @@ max_notional = "200000"
         let error = with_clean_catalog_root_guarded(
             &catalog_root,
             &output,
+            &test_catalog_encoding(),
             &OperatorWorkBudgetGuard::unbounded(),
             |_catalog, candidate_root| -> Result<()> {
                 fs::create_dir(candidate_root.join("data"))?;
                 fs::write(
-                    candidate_root.join("data/incomplete.parquet"),
+                    candidate_root.join("data/incomplete.residue"),
                     b"incomplete",
                 )?;
                 anyhow::bail!("injected projection failure")
@@ -8268,7 +8683,7 @@ max_notional = "200000"
         )
         .expect_err("injected failure must fail projection");
 
-        assert!(error.to_string().contains("injected projection failure"));
+        assert!(format!("{error:#}").contains("injected projection failure"));
         assert!(output.is_dir(), "authoritative output must exist");
         assert!(
             fs::read_dir(&output)
@@ -8294,11 +8709,7 @@ max_notional = "200000"
             0o700,
             "external candidate workspace must remain private"
         );
-        assert_eq!(
-            fs::read(retained[0].join("data/incomplete.parquet"))
-                .expect("read retained external candidate"),
-            b"incomplete"
-        );
+        assert_catalog_candidate_is_receipt_only(&retained[0]);
     }
 
     #[test]
@@ -8318,6 +8729,7 @@ max_notional = "200000"
         with_clean_catalog_root_guarded(
             &catalog_root,
             &output,
+            &test_catalog_encoding(),
             &OperatorWorkBudgetGuard::unbounded(),
             |_catalog, candidate_root| {
                 fs::create_dir(candidate_root.join("data"))?;
@@ -8343,27 +8755,27 @@ max_notional = "200000"
     }
 
     #[test]
-    fn committed_projection_is_success_even_when_temp_cleanup_fails() {
+    fn projection_rejects_a_mutated_candidate_receipt() {
         let parent = tempfile::TempDir::new().expect("temp dir");
-        let final_root = parent.path().join("catalog/data");
-        fs::create_dir_all(&final_root).expect("create committed catalog root");
-        fs::write(final_root.join("committed.parquet"), b"committed")
-            .expect("seed committed catalog");
-        let temp_root = parent.path().join("catalog.tmp");
-        fs::create_dir(&temp_root).expect("create temp root");
-        fs::write(temp_root.join("late-residue"), b"force remove_dir failure")
-            .expect("seed cleanup residue");
+        let root = parent.path().join("catalog");
 
-        let result = finish_committed_catalog_publication(&temp_root, "published");
+        let error = with_clean_catalog_root_guarded(
+            &root,
+            &root,
+            &test_catalog_encoding(),
+            &OperatorWorkBudgetGuard::unbounded(),
+            |_catalog, candidate_root| {
+                fs::create_dir(candidate_root.join("data"))?;
+                fs::write(
+                    candidate_root.join(SOURCE_UNIVERSE_CANDIDATE_RECEIPT_FILE),
+                    b"mutated",
+                )?;
+                Ok(())
+            },
+        )
+        .expect_err("mutated candidate receipt must fail closed");
 
-        assert_eq!(result, "published");
-        assert_eq!(
-            fs::read(final_root.join("committed.parquet")).expect("read committed catalog"),
-            b"committed"
-        );
-        assert!(
-            temp_root.exists(),
-            "test setup must exercise the failed best-effort cleanup path"
-        );
+        assert!(format!("{error:#}").contains("unexpected length"));
+        assert!(!root.join("data").exists());
     }
 }

@@ -1,3 +1,6 @@
+use backtesting_vertical_slice::conversion_boundary::{
+    ConversionCatalogMetadata, ConversionCheckpoint, ConversionManifest,
+};
 use nautilus_model::data::{OrderBookDelta, TradeTick};
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use serde_json::Value;
@@ -16,6 +19,7 @@ fn pmxt_selected_source_conversion_reference_artifact_is_usable_nt_catalog() {
     let catalog_root = root.join("backtests/pmxt-run/nt-catalog");
     let selected_source = root.join("selected-source/selected-source.parquet");
     let conversion_manifest_path = root.join("backtests/pmxt-run/conversion-manifest.json");
+    let conversion_checkpoint_path = root.join("backtests/pmxt-run/conversion-checkpoint.json");
     let catalog_metadata_path = root.join("backtests/pmxt-run/catalog-metadata.json");
     let result_contract_path = root.join("backtests/pmxt-run/backtest-result-contract.json");
 
@@ -60,6 +64,10 @@ fn pmxt_selected_source_conversion_reference_artifact_is_usable_nt_catalog() {
     assert_eq!(sha256_file(&selected_source), SELECTED_SOURCE_SHA256);
 
     let conversion_manifest = read_json(&conversion_manifest_path);
+    assert_eq!(
+        conversion_manifest["manifest_version"],
+        "conversion-manifest.v1"
+    );
     assert_eq!(conversion_manifest["nt_data_type"], "OrderBookDelta");
     assert_eq!(conversion_manifest["nt_instrument_id"], INSTRUMENT_ID);
     assert_eq!(conversion_manifest["canonical_rows"], 103);
@@ -74,6 +82,7 @@ fn pmxt_selected_source_conversion_reference_artifact_is_usable_nt_catalog() {
     assert_eq!(conversion_manifest["catalog_hash"], CATALOG_HASH);
 
     let catalog_metadata = read_json(&catalog_metadata_path);
+    assert_eq!(catalog_metadata["metadata_version"], "catalog-metadata.v1");
     assert_eq!(catalog_metadata["catalog_hash"], CATALOG_HASH);
     assert_eq!(
         catalog_metadata["catalog_rows_by_nt_data_type"]["OrderBookDelta"],
@@ -94,6 +103,28 @@ fn pmxt_selected_source_conversion_reference_artifact_is_usable_nt_catalog() {
         SELECTED_SOURCE_SHA256
     );
     assert_eq!(result_contract["nt_result"]["iterations"], 104);
+
+    // These bytes are an immutable pre-boundary reference catalog, not a
+    // reusable current conversion. Current readers must reject all three
+    // legacy control artifacts rather than silently granting v4 identity.
+    assert!(
+        serde_json::from_slice::<ConversionManifest>(
+            &fs::read(&conversion_manifest_path).expect("read legacy conversion manifest")
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_slice::<ConversionCheckpoint>(
+            &fs::read(&conversion_checkpoint_path).expect("read legacy conversion checkpoint")
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_slice::<ConversionCatalogMetadata>(
+            &fs::read(&catalog_metadata_path).expect("read legacy catalog metadata")
+        )
+        .is_err()
+    );
 
     let mut catalog = ParquetDataCatalog::new(&catalog_root, None, None, None, None);
     let order_book_deltas: Vec<OrderBookDelta> = catalog

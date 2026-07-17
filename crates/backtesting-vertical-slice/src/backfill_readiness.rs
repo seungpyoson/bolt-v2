@@ -17,6 +17,9 @@ use crate::{
     backfill_preflight::{
         BackfillPreflightReport, BackfillPreflightSelectedRecord, BackfillPreflightStatus,
     },
+    retired_backfill_evidence::{
+        active_backfill_runtime_output_path, read_active_backfill_runtime_input,
+    },
     source_proof_migration_preflight::{
         SourceProofMigrationPreflightCandidate, SourceProofMigrationPreflightReport,
         SourceProofMigrationPreflightStatus,
@@ -324,11 +327,15 @@ pub fn write_backfill_readiness_report(
     output_dir: &Path,
     report: &BackfillReadinessReport,
 ) -> Result<BackfillReadinessArtifact, BackfillReadinessError> {
+    let path = active_backfill_runtime_output_path(output_dir, BACKFILL_READINESS_REPORT_FILE)
+        .map_err(|error| BackfillReadinessError::CreateDir {
+            path: output_dir.display().to_string(),
+            error: error.to_string(),
+        })?;
     fs::create_dir_all(output_dir).map_err(|error| BackfillReadinessError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
     })?;
-    let path = output_dir.join(BACKFILL_READINESS_REPORT_FILE);
     let written = crate::reference_artifact::write_reference_artifact_with_len_mapped(
         &path,
         BACKFILL_READINESS_REPORT_FILE,
@@ -352,13 +359,19 @@ pub fn write_backfill_readiness_report_from_spec_file(
     spec_path: &Path,
 ) -> Result<BackfillReadinessArtifact, BackfillReadinessError> {
     let path = spec_path.display().to_string();
+    let spec_bytes = read_active_backfill_runtime_input(None, spec_path).map_err(|error| {
+        BackfillReadinessError::ReadSpec {
+            path: path.clone(),
+            error: error.to_string(),
+        }
+    })?;
     let spec_text =
-        fs::read_to_string(spec_path).map_err(|error| BackfillReadinessError::ReadSpec {
+        std::str::from_utf8(&spec_bytes).map_err(|error| BackfillReadinessError::ReadSpec {
             path: path.clone(),
             error: error.to_string(),
         })?;
     let spec: BackfillReadinessSpec =
-        toml::from_str(&spec_text).map_err(|error| BackfillReadinessError::ParseSpecToml {
+        toml::from_str(spec_text).map_err(|error| BackfillReadinessError::ParseSpecToml {
             path: path.clone(),
             error: error.to_string(),
         })?;
@@ -381,9 +394,11 @@ pub fn write_backfill_readiness_report_from_spec_file(
 
 fn read_backfill_preflight(path: &Path) -> Result<BackfillPreflightReport, BackfillReadinessError> {
     let path_display = path.display().to_string();
-    let bytes = fs::read(path).map_err(|error| BackfillReadinessError::ReadBackfillPreflight {
-        path: path_display.clone(),
-        error: error.to_string(),
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
+        BackfillReadinessError::ReadBackfillPreflight {
+            path: path_display.clone(),
+            error: error.to_string(),
+        }
     })?;
     serde_json::from_slice(&bytes).map_err(|error| {
         BackfillReadinessError::ParseBackfillPreflightJson {
@@ -397,11 +412,12 @@ fn read_source_proof_preflight(
     path: &Path,
 ) -> Result<SourceProofMigrationPreflightReport, BackfillReadinessError> {
     let path_display = path.display().to_string();
-    let bytes =
-        fs::read(path).map_err(|error| BackfillReadinessError::ReadSourceProofPreflight {
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
+        BackfillReadinessError::ReadSourceProofPreflight {
             path: path_display.clone(),
             error: error.to_string(),
-        })?;
+        }
+    })?;
     serde_json::from_slice(&bytes).map_err(|error| {
         BackfillReadinessError::ParseSourceProofPreflightJson {
             path: path_display,
@@ -414,13 +430,12 @@ fn read_backfill_binding_coverage(
     path: &Path,
 ) -> Result<BackfillBindingCoverageReport, BackfillReadinessError> {
     let path_display = path.display().to_string();
-    let bytes =
-        fs::read(path).map_err(
-            |error| BackfillReadinessError::ReadBackfillBindingCoverage {
-                path: path_display.clone(),
-                error: error.to_string(),
-            },
-        )?;
+    let bytes = read_active_backfill_runtime_input(None, path).map_err(|error| {
+        BackfillReadinessError::ReadBackfillBindingCoverage {
+            path: path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
     serde_json::from_slice(&bytes).map_err(|error| {
         BackfillReadinessError::ParseBackfillBindingCoverageJson {
             path: path_display,

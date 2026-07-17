@@ -16,28 +16,37 @@ use backtesting_vertical_slice::{
         BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
         BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
     },
-    operator::{DurableRunReceipt, RunSpec},
+    conversion_boundary::CONVERSION_GENERATION_PATH_MARKER,
+    operator::{
+        DurableExecutionAttestation, DurableRunReceipt, RunSpec, VerifiedSourceBindingRegistry,
+        conversion_generation_sha256_for_run_spec,
+    },
     operator_work_budget::OperatorWorkBudgetGuard,
     source_proof::SourceBindingRegistry,
     source_universe_batch_execution::{
         CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
         LocalSourceUniverseOperatorRunner, ProcessIsolatedSourceUniverseOperatorRunner,
         SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT, SourceUniverseBatchArtifactPin,
-        SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionConfig,
+        SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionCompletionResolution,
+        SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionRecordProvenance,
         SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
-        SourceUniverseBatchExecutionRunOutput, SourceUniverseBatchLaunchArtifacts,
+        SourceUniverseBatchExecutionRunOutput,
+        SourceUniverseBatchLaunchArtifacts, SourceUniverseBatchResourceLimits,
         SourceUniverseCacheRunVerification, SourceUniverseObjectFetcher,
         SourceUniverseOperatorRunOutcome, SourceUniverseOperatorRunner,
-        SourceUniverseVerifiedControlArtifacts, VerifiedSourceObject,
-        execute_source_universe_batch_with_pinned_artifacts,
+        SourceUniverseVerifiedControlArtifacts, TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS,
+        VerifiedSourceObject, execute_source_universe_batch_with_pinned_artifacts,
         execute_source_universe_batch_with_pinned_artifacts_factories,
-        synthetic_test_durable_completion,
-        validate_source_universe_batch_execution_report,
+        synthetic_test_durable_completion, validate_source_universe_batch_execution_report,
         write_source_universe_batch_execution_report,
     },
     source_universe_execution_pack::{
         SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION, SourceUniverseExecutionPack,
         SourceUniverseExecutionPackRecord, SourceUniverseExecutionPackStatus,
+        validate_execution_pack_semantics,
+    },
+    source_universe_local_storage::{
+        SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_BYTES, SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_FILE,
     },
 };
 use flate2::{Compression, write::GzEncoder};
@@ -130,6 +139,7 @@ where
         &launch_artifacts,
         output_dir,
         config,
+        TEST_SOURCE_UNIVERSE_LIFECYCLE_CLEANUP_LIMITS,
         fetcher_factory,
         runner_factory,
     )
@@ -180,6 +190,19 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     assert_eq!(report.failed_record_count, 0);
     assert_eq!(report.total_canonical_rows, 7);
     assert_eq!(report.total_nt_catalog_rows, 7);
+    assert_eq!(
+        report.records[0].completion_provenance,
+        SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
+    );
+    assert_eq!(
+        report.records[0].completion_resolution,
+        SourceUniverseBatchExecutionCompletionResolution::Published
+    );
+    assert_eq!(report.records[0].attempt_worker_sha256.len(), 64);
+    assert_eq!(
+        report.records[0].attempt_worker_sha256,
+        report.records[0].terminal_publisher_worker_sha256
+    );
     assert_eq!(report.records[0].run_spec_sha256, run_spec_sha256);
     assert_eq!(
         report.records[0].accepted_tranche_sha256,
@@ -211,7 +234,6 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
         runner.calls[0].execution_plan_bytes,
         fs::read(&execution_plan_path).expect("read execution plan assertion")
     );
-    assert_eq!(runner.calls[0].output_dir, report.records[0].output_dir);
     assert_eq!(
         runner.calls[0].output_dir.parent(),
         Some(output_dir.as_path())
@@ -226,6 +248,25 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
                     && name.ends_with(".tmp")
             })
     );
+    let retained_attempt_entries = fs::read_dir(&runner.calls[0].output_dir)
+        .expect("read compacted record attempt")
+        .map(|entry| entry.expect("read record-attempt entry").file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retained_attempt_entries,
+        [std::ffi::OsString::from(
+            SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_FILE,
+        )]
+    );
+    assert_eq!(
+        fs::read(
+            runner.calls[0]
+                .output_dir
+                .join(SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_FILE),
+        )
+        .expect("read record-attempt receipt"),
+        SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_BYTES
+    );
 
     let artifact = write_source_universe_batch_execution_report(&output_dir, &report)
         .expect("write batch report");
@@ -234,7 +275,182 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
             .expect("parse report");
     assert_eq!(written["batch_id"], "source-universe-batch-synthetic");
     assert_eq!(written["completed_record_count"], 1);
+    assert!(
+        written["records"][0].get("output_dir").is_none(),
+        "ephemeral local attempt identity must not enter the durable success report"
+    );
+    assert_eq!(
+        written["records"][0]["completion_provenance"],
+        "executed_process_isolated"
+    );
+    assert_eq!(
+        written["records"][0]["attempt_worker_sha256"]
+            .as_str()
+            .map(str::len),
+        Some(64)
+    );
+    assert_eq!(written["records"][0]["completion_resolution"], "published");
+    assert_eq!(
+        written["records"][0]["attempt_worker_sha256"],
+        written["records"][0]["terminal_publisher_worker_sha256"]
+    );
     assert_eq!(artifact.completed_record_count, 1);
+}
+
+#[test]
+fn batch_report_separates_attempt_and_terminal_publisher_identity() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let mut fetcher = StaticFetcher {
+        expected_source_url: "https://synthetic.example/object-0".to_string(),
+        object_bytes: b"accepted object bytes".to_vec(),
+        calls: 0,
+    };
+    let pack: SourceUniverseExecutionPack = serde_json::from_slice(
+        &fs::read(&fixture.pack_path).expect("read pack"),
+    )
+    .expect("parse pack");
+    fetcher.expected_source_url = pack.records[0].source_url.clone();
+    let mut runner = RecordingRunner::default();
+    let report = execute_source_universe_batch(
+        "source-universe-batch-worker-identities",
+        &fixture.pack_path,
+        &fixture.output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("fresh publication report");
+
+    let mut discovered = report.clone();
+    discovered.records[0].completion_resolution =
+        SourceUniverseBatchExecutionCompletionResolution::Discovered;
+    discovered.records[0].terminal_publisher_worker_sha256 = sha256_hex(b"publisher generation A");
+    validate_source_universe_batch_execution_report(&discovered)
+        .expect("discovery may observe a terminal from an older worker generation");
+
+    let mut mismatched_publication = report.clone();
+    mismatched_publication.records[0].terminal_publisher_worker_sha256 =
+        sha256_hex(b"different publisher");
+    let mismatch = validate_source_universe_batch_execution_report(&mismatched_publication)
+        .expect_err("fresh publication must bind the attempt worker as terminal publisher");
+    assert!(format!("{mismatch:#}").contains("freshly published"));
+
+    discovered.records[0].terminal_publisher_worker_sha256 = "not-a-sha256".to_string();
+    let tamper = validate_source_universe_batch_execution_report(&discovered)
+        .expect_err("tampered terminal publisher identity must fail closed");
+    assert!(format!("{tamper:#}").contains("terminal_publisher_worker_sha256"));
+}
+
+#[test]
+fn execution_pack_semantics_reject_empty_ready_pack() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let mut pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read valid execution pack"))
+            .expect("parse valid execution pack");
+    pack.status = SourceUniverseExecutionPackStatus::Ready;
+    pack.planned_object_count = 0;
+    pack.executable_record_count = 0;
+    pack.withheld_record_count = 0;
+    pack.selected_record_count = 0;
+    pack.materialized_record_count = 0;
+    pack.skipped_executable_record_count = 0;
+    pack.executable_source_bytes = 0;
+    pack.materialized_source_bytes = 0;
+    pack.records.clear();
+    pack.blocking_reasons.clear();
+
+    let error = validate_execution_pack_semantics(&pack)
+        .expect_err("ready execution pack must retain executable records");
+
+    assert!(
+        error.to_string().contains("ready execution pack")
+            && error.to_string().contains("executable record"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn execution_pack_semantics_reject_inconsistent_record_and_byte_counters() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read valid execution pack"))
+            .expect("parse valid execution pack");
+
+    let mut wrong_record_count = pack.clone();
+    wrong_record_count.materialized_record_count = 2;
+    let record_error = validate_execution_pack_semantics(&wrong_record_count)
+        .expect_err("materialized record count drift must fail closed");
+    assert!(
+        record_error
+            .to_string()
+            .contains("materialized_record_count"),
+        "{record_error:#}"
+    );
+
+    let mut wrong_byte_count = pack;
+    wrong_byte_count.materialized_source_bytes = wrong_byte_count
+        .materialized_source_bytes
+        .checked_add(1)
+        .expect("fixture materialized byte total increments");
+    let byte_error = validate_execution_pack_semantics(&wrong_byte_count)
+        .expect_err("materialized source byte drift must fail closed");
+    assert!(
+        byte_error.to_string().contains("materialized_source_bytes"),
+        "{byte_error:#}"
+    );
+}
+
+#[test]
+fn execution_pack_semantics_reject_materialized_byte_sum_overflow() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let mut pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read valid execution pack"))
+            .expect("parse valid execution pack");
+    pack.records[0].selected_object_bytes = u64::MAX;
+    let mut second = pack.records[0].clone();
+    second.sequence = second.sequence.checked_add(1).expect("sequence increments");
+    second.operator_run_id.push_str("-second");
+    pack.records.push(second);
+    pack.planned_object_count = 2;
+    pack.executable_record_count = 2;
+    pack.selected_record_count = 2;
+    pack.materialized_record_count = 2;
+    pack.executable_source_bytes = u64::MAX;
+    pack.materialized_source_bytes = u64::MAX;
+
+    let error = validate_execution_pack_semantics(&pack)
+        .expect_err("materialized source byte overflow must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("materialized source byte total overflow"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn execution_pack_semantics_reject_ready_status_with_blocking_reasons() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    let mut pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&fixture.pack_path).expect("read valid execution pack"))
+            .expect("parse valid execution pack");
+    pack.blocking_reasons
+        .push("synthetic_unexplained_blocker".to_string());
+
+    let error = validate_execution_pack_semantics(&pack)
+        .expect_err("ready status cannot retain blocking reasons");
+
+    assert!(
+        error.to_string().contains("ready execution pack")
+            && error.to_string().contains("blocking_reasons"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -719,10 +935,81 @@ fn current_terminal_discovery_skips_fetch_and_execution() {
         runner.run_calls.is_empty(),
         "current-terminal discovery must not invoke BacktestNode execution"
     );
-    assert!(
-        report.records[0].output_dir.starts_with(&output),
-        "recovered record must own fresh protocol scratch"
+    let report_json = serde_json::to_value(&report).expect("serialize recovered report");
+    assert!(report_json["records"][0].get("output_dir").is_none());
+    assert_eq!(
+        report.records[0].completion_provenance,
+        SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
     );
+    assert_eq!(
+        report.records[0].completion_resolution,
+        SourceUniverseBatchExecutionCompletionResolution::Discovered
+    );
+    assert_eq!(
+        report.records[0].attempt_worker_sha256,
+        super::synthetic_test_current_attempt_worker_sha256()
+    );
+    assert_eq!(
+        report.records[0].terminal_publisher_worker_sha256,
+        super::synthetic_test_worker_executable_sha256()
+    );
+    assert_ne!(
+        report.records[0].attempt_worker_sha256,
+        report.records[0].terminal_publisher_worker_sha256,
+        "an exact current terminal may have been published by an older worker generation"
+    );
+}
+
+#[test]
+fn repeated_current_terminal_discovery_produces_identical_report_bytes() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let valid_object = valid_bybit_trade_object();
+    let objects = vec![(0_u64, valid_object)];
+    let fixture = write_valid_pack(temp_dir.path(), &objects);
+    let output = temp_dir.path().join("repeat-discovery-output");
+    let config = SourceUniverseBatchExecutionConfig {
+        start_sequence: None,
+        record_limit: Some(1),
+        continue_on_error: false,
+        max_concurrent_records: None,
+    };
+
+    let mut first_fetcher = SequencedFetcher::from_objects(&objects);
+    let mut first_runner = CurrentCompletionValidationRunner::exact();
+    let first_report = execute_source_universe_batch_with_config(
+        "source-universe-repeat-discovery",
+        &fixture.pack_path,
+        &output,
+        config.clone(),
+        &mut first_fetcher,
+        &mut first_runner,
+    )
+    .expect("first deterministic current-terminal discovery");
+    let first_artifact = write_source_universe_batch_execution_report(&output, &first_report)
+        .expect("publish first deterministic report");
+    let first_bytes = fs::read(&first_artifact.path).expect("read first report bytes");
+
+    let mut second_fetcher = SequencedFetcher::from_objects(&objects);
+    let mut second_runner = CurrentCompletionValidationRunner::exact();
+    let second_report = execute_source_universe_batch_with_config(
+        "source-universe-repeat-discovery",
+        &fixture.pack_path,
+        &output,
+        config,
+        &mut second_fetcher,
+        &mut second_runner,
+    )
+    .expect("second deterministic current-terminal discovery");
+    let second_bytes =
+        backtesting_vertical_slice::reference_artifact::canonical_json_bytes(&second_report)
+            .expect("serialize second report");
+
+    assert_eq!(
+        second_bytes, first_bytes,
+        "fresh protocol scratch identity must not alter durable report bytes"
+    );
+    write_source_universe_batch_execution_report(&output, &second_report)
+        .expect("identical restart report must satisfy FailOnDirty");
 }
 
 #[test]
@@ -773,6 +1060,30 @@ fn current_terminal_discovery_falls_through_to_fresh_work_per_record() {
         runner.run_calls,
         vec![1],
         "only the record without a current terminal may execute"
+    );
+    assert_eq!(
+        report.records[0].completion_provenance,
+        SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
+    );
+    assert_eq!(
+        report.records[0].completion_resolution,
+        SourceUniverseBatchExecutionCompletionResolution::Discovered
+    );
+    assert_ne!(
+        report.records[0].attempt_worker_sha256,
+        report.records[0].terminal_publisher_worker_sha256
+    );
+    assert_eq!(
+        report.records[1].completion_provenance,
+        SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated
+    );
+    assert_eq!(
+        report.records[1].completion_resolution,
+        SourceUniverseBatchExecutionCompletionResolution::Published
+    );
+    assert_eq!(
+        report.records[1].attempt_worker_sha256,
+        report.records[1].terminal_publisher_worker_sha256
     );
 }
 
@@ -920,8 +1231,9 @@ fn parallel_overlaps_and_matches_serial_report() {
         "parallel run actually overlapped records (high water = {})",
         high_water.load(Ordering::SeqCst)
     );
-    // Reports must be field-for-field identical except the per-record output_dir,
-    // which embeds the (distinct) batch output root. Compare everything else.
+    // Ephemeral local attempt directories are not report data, so distinct
+    // output roots cannot alter the durable batch result.
+    assert_eq!(parallel_report, serial_report);
     assert_eq!(parallel_report.status, serial_report.status);
     assert_eq!(
         parallel_report.completed_record_count,
@@ -1656,6 +1968,27 @@ fn deterministic_durable_preflight_rejects_missing_ssm_before_fetch() {
 }
 
 #[test]
+fn deterministic_durable_preflight_rejects_wrong_conversion_generation_before_fetch() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fixture = write_valid_single_record_pack(temp_dir.path());
+    rewrite_control_triple_without_generation_rebind(&fixture, 0, |run_spec, _| {
+        let base = output_prefix_without_conversion_generation(&run_spec.manifest.output_prefix);
+        run_spec.manifest.output_prefix = format!(
+            "{base}{CONVERSION_GENERATION_PATH_MARKER}{}",
+            "f".repeat(64)
+        );
+    });
+
+    let error = pack_preflight_error_before_external_work(&fixture);
+
+    assert!(error.contains("conversion generation suffix"), "{error}");
+    assert!(
+        !fixture.output_dir.exists(),
+        "generation mismatch must fail before output allocation"
+    );
+}
+
+#[test]
 fn deterministic_durable_preflight_rejects_stale_nt_before_fetch() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
@@ -1924,7 +2257,7 @@ fn fresh_discovery_scratch_is_the_only_output_during_fetch() {
     assert_eq!(report.completed_record_count, 1);
     assert_eq!(report.failed_record_count, 0);
     assert_eq!(runner.calls.len(), 1);
-    assert!(report.records[0].output_dir.is_dir());
+    assert!(runner.calls[0].output_dir.is_dir());
 }
 
 #[cfg(unix)]
@@ -2423,10 +2756,7 @@ fn missing_durable_capability_is_global_before_output_or_factories() {
     .expect_err("missing durable capability must abort the complete launch");
 
     let message = format!("{error:#}");
-    assert!(
-        message.contains("durable operator capability"),
-        "{message}"
-    );
+    assert!(message.contains("durable operator capability"), "{message}");
     assert!(message.contains("found 0"), "{message}");
     assert!(!fixture.output_dir.exists());
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
@@ -2434,13 +2764,13 @@ fn missing_durable_capability_is_global_before_output_or_factories() {
 }
 
 #[test]
-fn factory_entry_does_not_construct_dependencies_for_empty_selection() {
+fn factory_entry_rejects_empty_selection_before_output_or_dependencies() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
     let fetcher_factory_calls = AtomicUsize::new(0);
     let runner_factory_calls = AtomicUsize::new(0);
 
-    let report = execute_source_universe_batch_with_factories(
+    let error = execute_source_universe_batch_with_factories(
         "source-universe-batch-empty-selection",
         &fixture.pack_path,
         &fixture.output_dir,
@@ -2459,11 +2789,16 @@ fn factory_entry_does_not_construct_dependencies_for_empty_selection() {
             anyhow::bail!("empty selection must not construct a runner")
         },
     )
-    .expect("empty selection assembles without dependencies");
+    .expect_err("empty selection must fail before creating output");
 
-    assert_eq!(report.selected_record_count, 0);
-    assert_eq!(report.completed_record_count, 0);
-    assert_eq!(report.failed_record_count, 0);
+    assert!(
+        error.to_string().contains("selects zero records"),
+        "{error:#}"
+    );
+    assert!(
+        !fixture.output_dir.exists(),
+        "empty selection rejection must precede output creation"
+    );
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 0);
 }
@@ -2498,11 +2833,8 @@ fn factory_entry_constructs_one_discovery_runner_but_no_fetcher_for_current_term
     .expect("current terminal performs exact durable discovery");
 
     assert_eq!(report.completed_record_count, 1);
-    assert!(
-        report.records[0]
-            .output_dir
-            .starts_with(&fixture.output_dir)
-    );
+    let report_json = serde_json::to_value(&report).expect("serialize discovered report");
+    assert!(report_json["records"][0].get("output_dir").is_none());
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
     assert_eq!(runner_factory_calls.load(Ordering::SeqCst), 1);
 }
@@ -2573,8 +2905,13 @@ fn process_runner_parallelism_rejection_precedes_fetch_and_spawn() {
         || {
             ProcessIsolatedSourceUniverseOperatorRunner::new(
                 request_root.clone(),
+                fs::File::open("/dev/null").expect("open inert test descriptor"),
                 2,
                 Duration::from_secs(1),
+                SourceUniverseBatchResourceLimits {
+                    worker_max_virtual_memory_bytes: 1,
+                    worker_reserved_overhead_bytes: 1,
+                },
             )
         },
     )
@@ -2860,7 +3197,7 @@ impl SourceUniverseOperatorRunner for CurrentCompletionValidationRunner {
         control_artifacts: &SourceUniverseVerifiedControlArtifacts,
         _output_dir: &Path,
         _work_budget: &OperatorWorkBudgetGuard,
-    ) -> anyhow::Result<Option<DurableRunReceipt>> {
+    ) -> anyhow::Result<Option<super::SourceUniverseDiscoveredRunReceipt>> {
         self.discovery_calls.push(record.sequence);
         if record.sequence != 0 {
             return Ok(None);
@@ -2877,13 +3214,21 @@ impl SourceUniverseOperatorRunner for CurrentCompletionValidationRunner {
             }
             CurrentCompletionValidationBehavior::Exact => {}
         }
-        Ok(Some(DurableRunReceipt {
-            completion: synthetic_test_durable_completion(),
-            run_id: control_artifacts.run_spec.manifest.run_id.clone(),
-            submitted_manifest_hash: control_artifacts.run_spec.manifest.manifest_hash(),
-            canonical_rows: 1,
-            nt_catalog_rows: 1,
-            catalog_hash: sha256_hex(format!("remote-catalog-{}", record.sequence).as_bytes()),
+        Ok(Some(super::SourceUniverseDiscoveredRunReceipt {
+            attempt_worker_sha256: super::synthetic_test_current_attempt_worker_sha256(),
+            receipt: DurableRunReceipt {
+                completion: synthetic_test_durable_completion(),
+                execution_attestation: DurableExecutionAttestation::new_process_isolated(
+                    super::synthetic_test_worker_executable_sha256(),
+                )?,
+                run_id: control_artifacts.run_spec.manifest.run_id.clone(),
+                submitted_manifest_hash: control_artifacts.run_spec.manifest.manifest_hash(),
+                canonical_rows: 1,
+                nt_catalog_rows: 1,
+                catalog_hash: sha256_hex(
+                    format!("remote-catalog-{}", record.sequence).as_bytes(),
+                ),
+            },
         }))
     }
 }
@@ -3139,6 +3484,28 @@ fn rewrite_control_triple_and_regenerate_execution_plan(
     record_index: usize,
     mutate: impl FnOnce(&mut RunSpec, &mut BackfillAcceptedTrancheManifest),
 ) {
+    rewrite_control_triple(
+        fixture,
+        record_index,
+        true,
+        mutate,
+    );
+}
+
+fn rewrite_control_triple_without_generation_rebind(
+    fixture: &ValidSingleRecordPack,
+    record_index: usize,
+    mutate: impl FnOnce(&mut RunSpec, &mut BackfillAcceptedTrancheManifest),
+) {
+    rewrite_control_triple(fixture, record_index, false, mutate);
+}
+
+fn rewrite_control_triple(
+    fixture: &ValidSingleRecordPack,
+    record_index: usize,
+    rebind_generation: bool,
+    mutate: impl FnOnce(&mut RunSpec, &mut BackfillAcceptedTrancheManifest),
+) {
     let mut pack: SourceUniverseExecutionPack = serde_json::from_slice(
         &fs::read(&fixture.pack_path).expect("read execution pack for control rewrite"),
     )
@@ -3177,6 +3544,14 @@ fn rewrite_control_triple_and_regenerate_execution_plan(
         .expect("resolve rewritten source-bindings control");
     let source_bindings_bytes =
         fs::read(&resolved_source_bindings_path).expect("read rewritten source bindings");
+    if rebind_generation {
+        bind_run_spec_conversion_generation(
+            &mut run_spec,
+            &resolved_source_bindings_path,
+            &source_bindings_bytes,
+        );
+    }
+    record.output_prefix.clone_from(&run_spec.manifest.output_prefix);
     record.source_bindings_bytes = source_bindings_bytes.len() as u64;
     record.source_bindings_sha256 = sha256_hex(&source_bindings_bytes);
     let run_spec_bytes = toml::to_string_pretty(&run_spec)
@@ -3236,6 +3611,41 @@ fn rewrite_control_triple_and_regenerate_execution_plan(
         serde_json::to_vec_pretty(&pack).expect("serialize repinned execution pack"),
     )
     .expect("write repinned execution pack");
+}
+
+fn output_prefix_without_conversion_generation(output_prefix: &str) -> &str {
+    output_prefix
+        .rsplit_once(CONVERSION_GENERATION_PATH_MARKER)
+        .filter(|(_, generation)| {
+            generation.len() == 64
+                && generation
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
+        .map_or(output_prefix, |(base, _)| base)
+}
+
+fn bind_run_spec_conversion_generation(
+    run_spec: &mut RunSpec,
+    resolved_source_bindings_path: &Path,
+    source_bindings_bytes: &[u8],
+) {
+    let base =
+        output_prefix_without_conversion_generation(&run_spec.manifest.output_prefix).to_string();
+    let source_bindings_sha256 = sha256_hex(source_bindings_bytes);
+    let registry = VerifiedSourceBindingRegistry::from_frozen_pack_bytes(
+        run_spec,
+        resolved_source_bindings_path
+            .canonicalize()
+            .expect("canonicalize source bindings for conversion generation"),
+        std::sync::Arc::from(source_bindings_bytes),
+        &source_bindings_sha256,
+    )
+    .expect("verify source bindings for conversion generation");
+    let generation = conversion_generation_sha256_for_run_spec(run_spec, &registry)
+        .expect("derive conversion generation");
+    run_spec.manifest.output_prefix =
+        format!("{base}{CONVERSION_GENERATION_PATH_MARKER}{generation}");
 }
 
 fn pack_preflight_error_before_external_work(fixture: &ValidSingleRecordPack) -> String {
@@ -3365,7 +3775,9 @@ fn write_n_record_pack(
         run_spec.manifest.run_id.clone_from(&operator_run_id);
         run_spec.manifest.output_prefix = format!(
             "{}-synthetic-{sequence}",
-            committed.run_spec.manifest.output_prefix
+            output_prefix_without_conversion_generation(
+                &committed.run_spec.manifest.output_prefix,
+            )
         );
         run_spec.accepted_object.sha256.clone_from(&object_sha256);
         run_spec.accepted_object.bytes = object_bytes.len() as u64;
@@ -3385,6 +3797,11 @@ fn write_n_record_pack(
             .raw_payload
             .max_object_bytes
             .max(object_bytes.len() as u64);
+        bind_run_spec_conversion_generation(
+            &mut run_spec,
+            &source_bindings_path,
+            &fs::read(&source_bindings_path).expect("read generation source bindings"),
+        );
 
         let mut accepted_tranche = committed.accepted_tranche.clone();
         accepted_tranche.tranche_id.clone_from(&accepted_tranche_id);

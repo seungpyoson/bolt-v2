@@ -35,6 +35,15 @@ const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
 const INSTRUMENT_ID: &str = "BASEQUOTE";
 const BASE_EVENT_TIME: i64 = 1_700_000_000_000_000_000;
 
+fn test_catalog_encoding() -> backtesting_vertical_slice::artifact_store::CatalogEncodingConfig {
+    backtesting_vertical_slice::artifact_store::CatalogEncodingConfig::new(
+        5000,
+        5000,
+        backtesting_vertical_slice::artifact_store::CatalogCompression::Snappy,
+    )
+    .expect("positive test catalog encoding")
+}
+
 fn spec() -> SpotInstrumentSpec {
     SpotInstrumentSpec {
         nt_instrument_id: NT_INSTRUMENT_ID.to_string(),
@@ -214,8 +223,13 @@ fn deltas_round_trip_through_nt_catalog() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
 
-    let projection = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(
@@ -283,9 +297,13 @@ fn deltas_round_trip_through_binary_option_spec() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
 
-    let projection =
-        project_canonical_order_book_deltas_to_catalog(&table, &binary_option_spec(), dir.path())
-            .expect("project via binary option spec");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &binary_option_spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project via binary option spec");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert!(!projection.catalog_hash.is_empty());
@@ -372,7 +390,13 @@ fn zero_size_delete_round_trips_through_nt_catalog() {
     table.validate().expect("zero-size DELETE table validates");
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project");
 
     let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     loaded.sort_by_key(|delta| delta.sequence);
@@ -405,7 +429,13 @@ fn zero_size_delete_round_trips_through_nt_catalog() {
 fn snapshot_expands_to_clear_then_adds_with_f_last() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project");
     let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     loaded.sort_by_key(|delta| delta.sequence);
 
@@ -442,8 +472,13 @@ fn empty_book_snapshot_projects_to_single_clear_with_f_last() {
         flags,
     )]);
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let projection = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("project");
     assert_eq!(projection.trade_count, 1);
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
@@ -468,8 +503,13 @@ fn projection_refuses_dirty_catalog_root() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
     std::fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
-    let err = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect_err("dirty catalog root must be refused");
+    let err = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect_err("dirty catalog root must be refused");
     assert!(err.to_string().contains("not empty"), "{err}");
 }
 
@@ -501,8 +541,13 @@ fn delta_precision_widens_when_data_finer_than_tick() {
         ),
     ]);
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("projection widens precision instead of rejecting accepted data");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir.path(),
+        &test_catalog_encoding(),
+    )
+    .expect("projection widens precision instead of rejecting accepted data");
 
     let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     loaded.sort_by_key(|delta| delta.sequence);
@@ -522,8 +567,20 @@ fn delta_catalog_hash_is_stable() {
     let table = snapshot_then_delta_table();
     let dir_a = tempfile::TempDir::new().unwrap();
     let dir_b = tempfile::TempDir::new().unwrap();
-    let a = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir_a.path()).unwrap();
-    let b = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+    let a = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir_a.path(),
+        &test_catalog_encoding(),
+    )
+    .unwrap();
+    let b = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        dir_b.path(),
+        &test_catalog_encoding(),
+    )
+    .unwrap();
     assert_eq!(
         a.catalog_hash, b.catalog_hash,
         "same data must hash identically regardless of root"
@@ -538,10 +595,20 @@ fn delta_catalog_hash_changes_with_content() {
     table_b.rows[1].price = "0.42".to_string();
     let dir_a = tempfile::TempDir::new().unwrap();
     let dir_b = tempfile::TempDir::new().unwrap();
-    let a =
-        project_canonical_order_book_deltas_to_catalog(&table_a, &spec(), dir_a.path()).unwrap();
-    let b =
-        project_canonical_order_book_deltas_to_catalog(&table_b, &spec(), dir_b.path()).unwrap();
+    let a = project_canonical_order_book_deltas_to_catalog(
+        &table_a,
+        &spec(),
+        dir_a.path(),
+        &test_catalog_encoding(),
+    )
+    .unwrap();
+    let b = project_canonical_order_book_deltas_to_catalog(
+        &table_b,
+        &spec(),
+        dir_b.path(),
+        &test_catalog_encoding(),
+    )
+    .unwrap();
     assert_ne!(
         a.catalog_hash, b.catalog_hash,
         "different delta data must change the catalog hash"

@@ -3194,7 +3194,7 @@ table_families = ["order_book_snapshot_deltas"]
 
         assert!(
             format!("{error:#}").contains(
-                "compact-Thrift collection cardinality 4294967295 exceeds max_source_rows 8"
+                "compact-Thrift collection cardinality 4294967295 exceeds footer byte bound 7"
             ),
             "{error:#}"
         );

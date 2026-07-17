@@ -10,12 +10,26 @@ use backtesting_vertical_slice::{
         BackfillAcceptedTrancheStatus, write_backfill_accepted_tranche_manifest,
         write_backfill_accepted_tranche_manifest_from_spec_file,
     },
+    backfill_binding_coverage::{
+        BACKFILL_BINDING_COVERAGE_SCHEMA_VERSION, BackfillBindingCoverageReport,
+        BackfillBindingCoverageStatus, write_backfill_binding_coverage_report,
+        write_backfill_binding_coverage_report_from_spec_file,
+    },
     backfill_conversion_batch::write_backfill_conversion_batch_plan_from_spec_file,
     backfill_conversion_completion::write_backfill_conversion_completion_ledger_from_spec_file,
     backfill_coverage::write_coverage_ledger_artifact_from_spec_file,
     backfill_execution_plan::write_backfill_execution_plan_from_spec_file,
     backfill_execution_readiness::write_backfill_execution_readiness_report_from_spec_file,
     backfill_object_staging::stage_backfill_object_from_spec_file_with_resolver,
+    backfill_preflight::{
+        BACKFILL_PREFLIGHT_REPORT_SCHEMA_VERSION, BackfillPreflightReport,
+        BackfillPreflightSelection, BackfillPreflightStatus, write_backfill_preflight_report,
+        write_backfill_preflight_report_from_spec_file,
+    },
+    backfill_readiness::{
+        BACKFILL_READINESS_SCHEMA_VERSION, BackfillReadinessReport, BackfillReadinessStatus,
+        write_backfill_readiness_report, write_backfill_readiness_report_from_spec_file,
+    },
     backfill_run_spec_materialization::write_backfill_run_spec_from_materialization_spec_file,
     backfill_source_proof_scope::write_backfill_source_proof_scope_report_from_spec_file,
     reference_fixture_index::repo_root_from_manifest_dir,
@@ -25,6 +39,7 @@ use backtesting_vertical_slice::{
     },
     source_catalog_mapping_readiness::write_source_catalog_mapping_readiness_report_from_spec_file,
     source_proof::SourceProofUsageScope,
+    source_proof_migration_preflight::SourceProofMigrationPreflightStatus,
 };
 
 const REFERENCE_ROOT: &str = "specs/023-nt-research-analytics-platform/reference";
@@ -171,10 +186,16 @@ fn runtime_loaders_reject_retired_paths_before_filesystem_access() {
         );
     }
 
+    let repo_root = repo_root_from_manifest_dir();
     for active in ACTIVE_GOLDEN_RUN_SPECS {
+        let repo_relative = Path::new(REFERENCE_ROOT).join(active);
         assert!(
-            !is_retired_backfill_runtime_path(Path::new(active)),
+            !is_retired_backfill_runtime_path(&repo_relative),
             "active golden profile {active} must remain loadable"
+        );
+        assert!(
+            !is_retired_backfill_runtime_path(&repo_root.join(repo_relative)),
+            "absolute active golden profile {active} must remain loadable"
         );
     }
 }
@@ -196,25 +217,25 @@ fn public_legacy_loaders_reject_retired_specs_before_filesystem_access() {
 
     assert_retired_error_precedes_absence(
         write_backfill_accepted_tranche_manifest_from_spec_file(
-            &daily_root.join("backfill-accepted-tranche.toml"),
+            &daily_root.join("new-accepted-tranche-control.toml"),
         )
         .expect_err("accepted-tranche loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
         write_backfill_execution_plan_from_spec_file(
-            &daily_root.join("backfill-execution-plan.toml"),
+            &daily_root.join("new-execution-control.toml"),
         )
         .expect_err("execution-plan loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
         write_backfill_execution_readiness_report_from_spec_file(
-            &daily_root.join("backfill-execution-readiness.toml"),
+            &daily_root.join("new-execution-readiness-control.toml"),
         )
         .expect_err("execution-readiness loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
         write_backfill_run_spec_from_materialization_spec_file(
-            &daily_root.join("backfill-run-spec-materialization.toml"),
+            &daily_root.join("new-run-spec-materialization-control.toml"),
         )
         .expect_err("run-spec materialization loader must reject retired spec"),
     );
@@ -223,51 +244,182 @@ fn public_legacy_loaders_reject_retired_specs_before_filesystem_access() {
     };
     assert_retired_error_precedes_absence(
         stage_backfill_object_from_spec_file_with_resolver(
-            &daily_root.join("object-staging/backfill-object-staging-manifest.json"),
+            &daily_root.join("new-object-staging-control.toml"),
             &mut resolver,
         )
         .expect_err("object-staging loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
         write_backfill_source_proof_scope_report_from_spec_file(
-            &daily_root.join("backfill-source-proof-scope.toml"),
+            &daily_root.join("new-source-proof-scope-control.toml"),
         )
         .expect_err("source-proof-scope loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
         write_source_catalog_mapping_readiness_report_from_spec_file(
-            &daily_root.join("source-catalog-mapping-readiness.toml"),
+            &daily_root.join("new-catalog-mapping-control.toml"),
         )
         .expect_err("catalog-mapping loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
+        write_backfill_binding_coverage_report_from_spec_file(
+            &daily_root.join("new-binding-coverage-control.toml"),
+        )
+        .expect_err("binding-coverage loader must reject retired spec"),
+    );
+    assert_retired_error_precedes_absence(
+        write_backfill_preflight_report_from_spec_file(
+            &daily_root.join("new-preflight-control.toml"),
+        )
+        .expect_err("preflight loader must reject retired spec"),
+    );
+    assert_retired_error_precedes_absence(
+        write_backfill_readiness_report_from_spec_file(
+            &daily_root.join("new-readiness-control.toml"),
+        )
+        .expect_err("readiness loader must reject retired spec"),
+    );
+    assert_retired_error_precedes_absence(
         write_backfill_conversion_batch_plan_from_spec_file(
-            &aggregate_root.join("backfill-conversion-batch-plan.toml"),
+            &aggregate_root.join("new-conversion-batch-control.toml"),
         )
         .expect_err("conversion-batch loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
         write_coverage_ledger_artifact_from_spec_file(
-            &coverage_root.join("backfill-coverage-ledger.toml"),
+            &coverage_root.join("new-coverage-ledger-control.toml"),
         )
         .expect_err("coverage-ledger loader must reject retired spec"),
     );
     assert_retired_error_precedes_absence(
         write_backfill_conversion_completion_ledger_from_spec_file(
-            &completion_root.join("backfill-conversion-completion-ledger.toml"),
+            &completion_root.join("new-conversion-completion-control.toml"),
         )
         .expect_err("conversion-completion loader must reject retired spec"),
     );
 }
 
 #[test]
-fn public_legacy_loader_rejects_retired_nested_input_before_filesystem_access() {
+fn every_descendant_of_an_exact_retired_root_is_runtime_retired() {
+    for path in [
+        "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02",
+        "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/new-runtime-control.toml",
+        "specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/arbitrary/nested/evidence.json",
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31",
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/new-runtime-control.toml",
+        "specs/023-nt-research-analytics-platform/reference/backfill-coverage-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/arbitrary/nested/evidence.json",
+        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/new-runtime-control.toml",
+    ] {
+        assert!(
+            is_retired_backfill_runtime_path(Path::new(path)),
+            "exact retired root descendant {path:?} must stay retired"
+        );
+    }
+
+    let nested_reference_marker = Path::new("/")
+        .join("checkout")
+        .join(REFERENCE_ROOT)
+        .join("backfill-gates/binance-bnbusdc-2026-03-02/arbitrary")
+        .join(REFERENCE_ROOT)
+        .join("otherwise-active.json");
+    assert!(
+        is_retired_backfill_runtime_path(&nested_reference_marker),
+        "a nested reference marker must not hide an enclosing retired root"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_writers_reject_symlink_aliases_into_retired_roots() {
     let temp = tempfile::tempdir().expect("create temp root");
-    let active_spec_root = temp.path().join(
+    let retired_root = temp.path().join(
         "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02",
     );
-    fs::create_dir_all(&active_spec_root).expect("create isolated retired-root shape");
-    let retired_report = Path::new("source-proof-scope/backfill-source-proof-scope-report.json");
+    fs::create_dir_all(&retired_root).expect("create isolated retired root");
+    let alias = temp.path().join("active-output-alias");
+    std::os::unix::fs::symlink(&retired_root, &alias).expect("create output alias");
+
+    let preflight = BackfillPreflightReport {
+        schema_version: BACKFILL_PREFLIGHT_REPORT_SCHEMA_VERSION.to_string(),
+        preflight_id: "retired-alias-preflight".to_string(),
+        coverage_ledger_id: String::new(),
+        status: BackfillPreflightStatus::Blocked,
+        selection: BackfillPreflightSelection {
+            max_accepted_objects: 1,
+            max_accepted_bytes: 1,
+            require_canonical_ready: true,
+            allow_gaps: false,
+        },
+        total_records: 0,
+        accepted_records: 0,
+        accepted_with_gaps_records: 0,
+        canonical_ready_records: 0,
+        eligible_record_count: 0,
+        selected_record: None,
+        blocking_reasons: Vec::new(),
+    };
+    assert_retired_error_precedes_absence(
+        write_backfill_preflight_report(&alias, &preflight)
+            .expect_err("preflight writer must reject retired output alias"),
+    );
+
+    let binding_coverage = BackfillBindingCoverageReport {
+        schema_version: BACKFILL_BINDING_COVERAGE_SCHEMA_VERSION.to_string(),
+        report_id: "retired-alias-binding-coverage".to_string(),
+        status: BackfillBindingCoverageStatus::Blocked,
+        required_table_families: Vec::new(),
+        configured_required_binding_count: 0,
+        ledger_records_for_required_bindings: 0,
+        empty_source_binding_record_count: 0,
+        missing_table_family_record_count: 0,
+        unconfigured_source_bindings: Vec::new(),
+        bindings: Vec::new(),
+        blocking_issues: Vec::new(),
+    };
+    assert_retired_error_precedes_absence(
+        write_backfill_binding_coverage_report(&alias, &binding_coverage)
+            .expect_err("binding-coverage writer must reject retired output alias"),
+    );
+
+    let readiness = BackfillReadinessReport {
+        schema_version: BACKFILL_READINESS_SCHEMA_VERSION.to_string(),
+        readiness_id: "retired-alias-readiness".to_string(),
+        status: BackfillReadinessStatus::Blocked,
+        required_table_family: String::new(),
+        required_nt_data_type: String::new(),
+        supported_data_paths: Vec::new(),
+        backfill_preflight_id: String::new(),
+        backfill_preflight_status: BackfillPreflightStatus::Blocked,
+        source_proof_migration_preflight_id: String::new(),
+        source_proof_migration_preflight_status: SourceProofMigrationPreflightStatus::Blocked,
+        backfill_binding_coverage_id: String::new(),
+        backfill_binding_coverage_status: BackfillBindingCoverageStatus::Blocked,
+        selected_backfill_record: None,
+        selected_source_proof_candidate: None,
+        blockers: Vec::new(),
+    };
+    assert_retired_error_precedes_absence(
+        write_backfill_readiness_report(&alias, &readiness)
+            .expect_err("readiness writer must reject retired output alias"),
+    );
+
+    assert!(
+        fs::read_dir(&retired_root)
+            .expect("read retired root")
+            .next()
+            .is_none(),
+        "retirement guard must reject before any aliased output is created"
+    );
+}
+
+#[test]
+fn public_legacy_loader_rejects_retired_nested_input_before_filesystem_access() {
+    let temp = tempfile::tempdir().expect("create temp root");
+    let active_spec_root = temp.path().join("active");
+    fs::create_dir_all(&active_spec_root).expect("create active spec root");
+    let retired_report = temp.path().join(
+        "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/arbitrary/new-source-proof-scope-report.json",
+    );
     let spec_path = active_spec_root.join("active-accepted-tranche.toml");
     fs::write(
         &spec_path,
@@ -374,8 +526,6 @@ fn runtime_classifier_does_not_claim_future_or_unrelated_paths() {
         "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-06-01.toml",
         "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bybit-bnbusdc-2026-06-02.toml",
         "specs/023-nt-research-analytics-platform/reference/backfill-gates/okx-btcusdt-2026-03-02/materialized-run-spec/backfill-run-spec.toml",
-        "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/new-runtime-control.toml",
-        "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/new-runtime-control.toml",
         "unrelated/backfill-gates/binance-bnbusdc-2026-03-02/materialized-run-spec/backfill-run-spec.toml",
         "unrelated/specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02/materialized-run-spec/backfill-run-spec.toml",
     ] {

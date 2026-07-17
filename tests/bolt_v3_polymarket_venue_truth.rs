@@ -71,8 +71,8 @@ fn venue_source_product_id_matches_shared_derivation_and_reconciles_settlement()
         positions: vec![DataApiPosition {
             asset: "token123".to_string(),
             condition_id: "condition-token123".to_string(),
-            size: 10.0,
-            avg_price: Some(0.45),
+            size: Decimal::new(10, 0),
+            avg_price: Some(Decimal::new(45, 2)),
         }],
     })
     .expect("Polymarket venue-source baseline should build");
@@ -141,8 +141,8 @@ fn builds_snapshot_from_balance_orders_and_positions() {
         positions: vec![DataApiPosition {
             asset: "token123".to_string(),
             condition_id: "condition".to_string(),
-            size: 6.5,
-            avg_price: Some(0.42),
+            size: Decimal::new(65, 1),
+            avg_price: Some(Decimal::new(42, 2)),
         }],
     })
     .expect("valid venue truth input should convert");
@@ -221,7 +221,7 @@ fn accepted_order_event_explains_new_venue_open_order() {
                 1_200,
                 Decimal::new(50_000_000, 0),
                 Decimal::ZERO,
-                0.0,
+                Decimal::ZERO,
             ))
             .expect("accepted order should explain the venue order appearance"),
         VenueTruthReconciliation::DeltaExplained
@@ -250,7 +250,7 @@ fn accepted_order_event_does_not_explain_collateral_delta_without_fill() {
                 1_200,
                 Decimal::new(51_000_000, 0),
                 Decimal::ZERO,
-                0.0,
+                Decimal::ZERO,
             ))
             .expect("unexplained collateral movement should pend until its capture fence"),
         VenueTruthReconciliation::DeltaPending
@@ -261,7 +261,7 @@ fn accepted_order_event_does_not_explain_collateral_delta_without_fill() {
             1_300,
             Decimal::new(51_000_000, 0),
             Decimal::ZERO,
-            0.0,
+            Decimal::ZERO,
         ))
         .expect_err("accepted order alone must not explain collateral movement at fence");
 
@@ -291,7 +291,7 @@ fn filled_order_event_explains_open_order_and_position_delta() {
             1_200,
             Decimal::new(50_000_000, 0),
             Decimal::ZERO,
-            0.0,
+            Decimal::ZERO,
         ))
         .expect("accepted order should explain the venue order appearance");
 
@@ -314,7 +314,7 @@ fn filled_order_event_explains_open_order_and_position_delta() {
                 1_400,
                 Decimal::new(48_400_000, 0),
                 Decimal::new(4, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("fill should explain position and open-order matched deltas"),
         VenueTruthReconciliation::DeltaExplained
@@ -341,7 +341,7 @@ fn filled_order_event_uses_actual_fill_price_and_fee_for_collateral() {
             1_200,
             Decimal::new(50_000_000, 0),
             Decimal::ZERO,
-            0.0,
+            Decimal::ZERO,
         ))
         .expect("accepted order should explain the venue order appearance");
 
@@ -367,7 +367,7 @@ fn filled_order_event_uses_actual_fill_price_and_fee_for_collateral() {
                 1_400,
                 Decimal::new(48_390_000, 0),
                 Decimal::new(4, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("actual fill price plus explicit fee should explain collateral"),
         VenueTruthReconciliation::DeltaExplained
@@ -404,7 +404,7 @@ fn allowance_decrease_is_explained_by_consumed_fills() {
                 1_200,
                 Decimal::new(48_400_000, 0),
                 Decimal::new(38_400_000, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("finite allowance decrease should be explained by the consumed buy fill"),
         VenueTruthReconciliation::DeltaExplained
@@ -441,7 +441,7 @@ fn allowance_increase_is_unexplained_and_halts_at_fence() {
                 1_200,
                 Decimal::new(48_400_000, 0),
                 Decimal::new(41_000_000, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("allowance top-up should pend until the capture fence")[0]
             .outcome,
@@ -453,7 +453,7 @@ fn allowance_increase_is_unexplained_and_halts_at_fence() {
             1_300,
             Decimal::new(48_400_000, 0),
             Decimal::new(41_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect_err("allowance top-up must halt loudly at its fence");
 
@@ -494,7 +494,7 @@ fn zero_allowance_delta_after_fill_is_no_op() {
                 1_200,
                 Decimal::new(48_400_000, 0),
                 Decimal::new(40_000_000, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("infinite-approval behavior leaves allowance unchanged"),
         VenueTruthReconciliation::DeltaExplained
@@ -526,7 +526,7 @@ fn taker_fill_without_resting_open_order_explains_position_and_collateral() {
             .reconcile_snapshot(snapshot_with_position(
                 1_200,
                 Decimal::new(48_400_000, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("recorded taker fill should explain venue truth without an open-order row"),
         VenueTruthReconciliation::DeltaExplained
@@ -544,7 +544,7 @@ fn unexplained_capture_is_pending_until_next_capture_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_100,
             Decimal::new(48_400_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("unexplained delta before fence should be pending, not divergent");
 
@@ -569,7 +569,7 @@ fn pending_capture_accepts_after_interleaved_fill_at_next_capture_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_100,
             Decimal::new(48_400_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("unexplained delta before fence should be pending");
     record_order_event(
@@ -589,7 +589,7 @@ fn pending_capture_accepts_after_interleaved_fill_at_next_capture_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_200,
             Decimal::new(48_400_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("interleaved fill should explain the pending delta at fence");
 
@@ -620,7 +620,7 @@ fn new_open_order_cancel_before_judgment_accepts_at_capture_fence() {
         1_200,
         Decimal::new(50_000_000, 0),
         Decimal::ZERO,
-        0.0,
+        Decimal::ZERO,
     ));
     record_order_event(
         &mut reconciler,
@@ -669,7 +669,7 @@ fn partial_fill_cancel_before_judgment_accepts_at_capture_fence() {
             1_150,
             Decimal::new(50_000_000, 0),
             Decimal::ZERO,
-            0.0,
+            Decimal::ZERO,
         ))
         .expect("open order baseline should be accepted");
 
@@ -689,7 +689,7 @@ fn partial_fill_cancel_before_judgment_accepts_at_capture_fence() {
         1_250,
         Decimal::new(48_400_000, 0),
         Decimal::new(4, 0),
-        4.0,
+        Decimal::new(4, 0),
     ));
     record_order_event(
         &mut reconciler,
@@ -705,7 +705,7 @@ fn partial_fill_cancel_before_judgment_accepts_at_capture_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_300,
             Decimal::new(48_400_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("cancel after capture completion must not erase the partial-fill explanation");
 
@@ -747,14 +747,14 @@ fn accepted_order_during_in_flight_capture_explains_next_capture_without_false_h
             1_300,
             Decimal::new(50_000_000, 0),
             Decimal::ZERO,
-            0.0,
+            Decimal::ZERO,
         ))
         .expect("accepted order during capture 2 must be retained for capture 3");
     let capture_four = reconciler.record_snapshot_completion(snapshot_with_order(
         1_400,
         Decimal::new(50_000_000, 0),
         Decimal::ZERO,
-        0.0,
+        Decimal::ZERO,
     ));
 
     assert!(
@@ -794,7 +794,7 @@ fn accepted_order_before_snapshot_completion_survives_current_capture_boundary()
             1_300,
             Decimal::new(50_000_000, 0),
             Decimal::ZERO,
-            0.0,
+            Decimal::ZERO,
         ))
         .expect("next capture containing the order must explain it from the retained event");
 
@@ -852,14 +852,14 @@ fn accepted_partial_fill_during_in_flight_capture_explains_next_capture_without_
             1_300,
             Decimal::new(48_400_000, 0),
             Decimal::new(4, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("accepted partial fill during capture 2 must be retained for capture 3");
     let capture_four = reconciler.record_snapshot_completion(snapshot_with_order(
         1_400,
         Decimal::new(48_400_000, 0),
         Decimal::new(4, 0),
-        4.0,
+        Decimal::new(4, 0),
     ));
 
     assert!(
@@ -900,7 +900,7 @@ fn positions_fresher_than_balance_skew_pends_then_explains_at_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_200,
             Decimal::new(50_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("position-fresher-than-balance skew should pend before its fence");
 
@@ -911,7 +911,7 @@ fn positions_fresher_than_balance_skew_pends_then_explains_at_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_300,
             Decimal::new(46_800_000, 0),
-            8.0,
+            Decimal::new(8, 0),
         ))
         .expect("balance catch-up at the fence should explain the skew without durable halt");
 
@@ -934,7 +934,7 @@ fn settlement_explanation_consumes_winning_position_disappearance_and_payout() {
         .record_snapshot_completion(snapshot_with_position(
             1_000,
             Decimal::new(50_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("baseline should be accepted");
     reconciler
@@ -960,7 +960,7 @@ fn settlement_explanation_consumes_losing_position_disappearance_without_payout(
         .record_snapshot_completion(snapshot_with_position(
             1_000,
             Decimal::new(50_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("baseline should be accepted");
     reconciler
@@ -986,7 +986,7 @@ fn settlement_explanation_rejects_over_bound_payout_at_capture_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_000,
             Decimal::new(50_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("baseline should be accepted");
     reconciler
@@ -1040,14 +1040,14 @@ fn payout_shaped_collateral_delta_without_settlement_record_halts_at_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_000,
             Decimal::new(50_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("baseline should be accepted");
     reconciler
         .record_snapshot_completion(snapshot_with_position(
             1_100,
             Decimal::new(54_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("payout-shaped collateral delta without a settlement record should pend");
 
@@ -1055,7 +1055,7 @@ fn payout_shaped_collateral_delta_without_settlement_record_halts_at_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_200,
             Decimal::new(54_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect_err("payout-shaped collateral delta without a settlement record must halt");
 
@@ -1072,7 +1072,7 @@ fn settlement_position_and_payout_endpoint_skew_consumes_across_capture_fence() 
         .record_snapshot_completion(snapshot_with_position(
             1_000,
             Decimal::new(50_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("baseline should be accepted");
     reconciler
@@ -1114,7 +1114,7 @@ fn settlement_payout_first_skew_consumes_collateral_before_position_burn() {
         .record_snapshot_completion(snapshot_with_position(
             1_000,
             Decimal::new(50_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("baseline should be accepted");
     reconciler
@@ -1130,7 +1130,7 @@ fn settlement_payout_first_skew_consumes_collateral_before_position_burn() {
             .reconcile_snapshot(snapshot_with_position(
                 1_100,
                 Decimal::new(54_000_000, 0),
-                4.0
+                Decimal::new(4, 0)
             ))
             .expect("settlement payout should be consumable before the position burn"),
         VenueTruthReconciliation::DeltaExplained
@@ -1157,7 +1157,7 @@ fn replayed_settlement_explains_payout_first_skew_after_restart() {
         .record_snapshot_completion(snapshot_with_position(
             1_100,
             Decimal::new(54_000_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("restart baseline should be accepted after payout arrived");
 
@@ -1267,7 +1267,7 @@ fn stale_settlement_lot_cannot_explain_position_decrease_for_other_market_hint()
             1_000,
             Decimal::new(50_000_000, 0),
             "condition-other",
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("baseline should be accepted");
     reconciler
@@ -1282,7 +1282,7 @@ fn stale_settlement_lot_cannot_explain_position_decrease_for_other_market_hint()
             1_100,
             Decimal::new(50_000_000, 0),
             "condition-other",
-            0.0,
+            Decimal::ZERO,
         ))
         .expect("wrong-market position decrease should pend before its fence");
 
@@ -1291,7 +1291,7 @@ fn stale_settlement_lot_cannot_explain_position_decrease_for_other_market_hint()
             1_200,
             Decimal::new(50_000_000, 0),
             "condition-other",
-            0.0,
+            Decimal::ZERO,
         ))
         .expect_err("wrong-market settlement lot must not explain the position decrease");
 
@@ -1311,7 +1311,7 @@ fn pending_capture_without_channel_event_halts_as_silent_channel_at_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_100,
             Decimal::new(48_400_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect("unexplained delta before fence should be pending");
 
@@ -1319,7 +1319,7 @@ fn pending_capture_without_channel_event_halts_as_silent_channel_at_fence() {
         .record_snapshot_completion(snapshot_with_position(
             1_200,
             Decimal::new(48_400_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect_err("still-unexplained pending delta should halt at its fence");
 
@@ -1364,7 +1364,7 @@ fn same_domain_ordering_violation_halts_even_when_deltas_explain() {
         .record_snapshot_completion(snapshot_with_position(
             1_400,
             Decimal::new(46_800_000, 0),
-            8.0,
+            Decimal::new(8, 0),
         ))
         .expect_err("same-domain timestamp regression must halt even with explained deltas");
 
@@ -1406,7 +1406,7 @@ fn local_denied_terminal_timestamp_does_not_create_venue_ordering_violation() {
             .record_snapshot_completion(snapshot_with_position(
                 1_400,
                 Decimal::new(48_400_000, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("local terminal timestamp must not poison venue-domain ordering")[0]
             .outcome,
@@ -1423,7 +1423,7 @@ fn slow_reconcile_consumes_interleaved_events_when_fence_already_completed() {
     reconciler.record_snapshot_completion_without_processing(snapshot_with_position(
         1_100,
         Decimal::new(48_400_000, 0),
-        4.0,
+        Decimal::new(4, 0),
     ));
     record_order_event(
         &mut reconciler,
@@ -1440,7 +1440,7 @@ fn slow_reconcile_consumes_interleaved_events_when_fence_already_completed() {
     reconciler.record_snapshot_completion_without_processing(snapshot_with_position(
         1_200,
         Decimal::new(48_400_000, 0),
-        4.0,
+        Decimal::new(4, 0),
     ));
 
     let results = reconciler
@@ -1474,7 +1474,7 @@ fn filled_order_event_does_not_explain_unrelated_collateral_delta() {
             1_200,
             Decimal::new(50_000_000, 0),
             Decimal::ZERO,
-            0.0,
+            Decimal::ZERO,
         ))
         .expect("accepted order should explain the venue order appearance");
 
@@ -1497,7 +1497,7 @@ fn filled_order_event_does_not_explain_unrelated_collateral_delta() {
                 1_400,
                 Decimal::new(51_000_000, 0),
                 Decimal::new(4, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("unrelated collateral movement should pend until its capture fence"),
         VenueTruthReconciliation::DeltaPending
@@ -1508,7 +1508,7 @@ fn filled_order_event_does_not_explain_unrelated_collateral_delta() {
             1_500,
             Decimal::new(51_000_000, 0),
             Decimal::new(4, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect_err("unrelated collateral movement must not be explained by a valid fill at fence");
 
@@ -1548,7 +1548,7 @@ fn unexplained_balance_with_explained_allowance_reports_balance_evidence() {
                 1_200,
                 Decimal::new(51_000_000, 0),
                 Decimal::new(38_400_000, 0),
-                4.0,
+                Decimal::new(4, 0),
             ))
             .expect("unexplained balance movement should pend until the capture fence")[0]
             .outcome,
@@ -1560,7 +1560,7 @@ fn unexplained_balance_with_explained_allowance_reports_balance_evidence() {
             1_300,
             Decimal::new(51_000_000, 0),
             Decimal::new(38_400_000, 0),
-            4.0,
+            Decimal::new(4, 0),
         ))
         .expect_err("unexplained balance movement must halt loudly at its fence");
 
@@ -1676,7 +1676,7 @@ fn snapshot_with_order(
     captured_at: u64,
     collateral_balance: Decimal,
     size_matched: Decimal,
-    venue_position_quantity: f64,
+    venue_position_quantity: Decimal,
 ) -> VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
         captured_at: UnixNanos::from(captured_at),
@@ -1697,7 +1697,7 @@ fn snapshot_with_order(
             asset: "token123".to_string(),
             condition_id: "condition".to_string(),
             size: venue_position_quantity,
-            avg_price: Some(0.42),
+            avg_price: Some(Decimal::new(42, 2)),
         }],
     })
     .expect("test snapshot should be valid")
@@ -1706,7 +1706,7 @@ fn snapshot_with_order(
 fn snapshot_with_position(
     captured_at: u64,
     collateral_balance: Decimal,
-    venue_position_quantity: f64,
+    venue_position_quantity: Decimal,
 ) -> VenueTruthSnapshot {
     snapshot_with_position_and_allowance(
         captured_at,
@@ -1720,7 +1720,7 @@ fn snapshot_with_order_market_and_position(
     captured_at: u64,
     collateral_balance: Decimal,
     market_id: &str,
-    venue_position_quantity: f64,
+    venue_position_quantity: Decimal,
 ) -> VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
         captured_at: UnixNanos::from(captured_at),
@@ -1737,12 +1737,12 @@ fn snapshot_with_order_market_and_position(
             Decimal::new(1, 0),
             Decimal::ZERO,
         )],
-        positions: if venue_position_quantity > 0.0 {
+        positions: if venue_position_quantity > Decimal::ZERO {
             vec![DataApiPosition {
                 asset: "token123".to_string(),
                 condition_id: "condition".to_string(),
                 size: venue_position_quantity,
-                avg_price: Some(0.42),
+                avg_price: Some(Decimal::new(42, 2)),
             }]
         } else {
             Vec::new()
@@ -1755,7 +1755,7 @@ fn snapshot_with_position_and_allowance(
     captured_at: u64,
     collateral_balance: Decimal,
     collateral_allowance: Decimal,
-    venue_position_quantity: f64,
+    venue_position_quantity: Decimal,
 ) -> VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
         captured_at: UnixNanos::from(captured_at),
@@ -1770,7 +1770,7 @@ fn snapshot_with_position_and_allowance(
             asset: "token123".to_string(),
             condition_id: "condition".to_string(),
             size: venue_position_quantity,
-            avg_price: Some(0.42),
+            avg_price: Some(Decimal::new(42, 2)),
         }],
     })
     .expect("test snapshot should be valid")

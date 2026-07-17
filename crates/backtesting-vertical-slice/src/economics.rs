@@ -128,13 +128,15 @@ impl ReplayEconomicsAdmissionSource {
         let authority = self.snapshots[0].clone();
         bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
             std::sync::Arc::new(self),
-            &authority.execution_client_id,
-            &authority.account_id,
-            &authority.product_surface_id,
-            &authority.reporting_policy_id,
-            &authority.reporting_unit,
-            &authority.edge_basis.policy_id,
-            bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+            bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
+                execution_client_id: &authority.execution_client_id,
+                account_id: &authority.account_id,
+                product_surface_id: &authority.product_surface_id,
+                reporting_policy_id: &authority.reporting_policy_id,
+                reporting_unit: &authority.reporting_unit,
+                edge_basis_policy_id: &authority.edge_basis.policy_id,
+                carry_plan: bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+            },
         )
         .map_err(|_| EconomicsUnavailable::InvalidIdentifier {
             kind: "ReplayEconomicsAdmissionSource",

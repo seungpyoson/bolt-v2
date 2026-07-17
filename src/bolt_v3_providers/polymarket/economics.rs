@@ -2,8 +2,9 @@ use crate::economics::{
     AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
     EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
     LiquidityRoleAssumption, NativeUnitId, SignedNativeEffect, SnapshotId, SourceId,
-    SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
+    SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
 };
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Deserialize;
 
@@ -41,38 +42,125 @@ pub struct PolymarketEconomicsAdapterConfig {
     pub formula: PolymarketFormulaPolicy,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PolymarketMarketInfoSnapshot {
     snapshot_id: String,
     source_at_ns: u64,
     fetched_at_ns: u64,
     valid_until_ns: u64,
-    fees_enabled: bool,
     fd: Option<PolymarketFeeDescriptor>,
-    builder: Option<PolymarketBuilderDescriptor>,
+    maker_base_fee: Option<Decimal>,
+    taker_base_fee: Option<Decimal>,
 }
 
-impl PolymarketMarketInfoSnapshot {
-    pub fn from_json(json: &str) -> Result<Self, PolymarketEconomicsError> {
-        serde_json::from_str(json).map_err(|_| PolymarketEconomicsError::InvalidMarketInfo)
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolymarketSnapshotMetadata {
+    pub snapshot_id: String,
+    pub source_at_ns: u64,
+    pub fetched_at_ns: u64,
+    pub valid_until_ns: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
+struct PolymarketMarketInfoWire {
+    #[serde(rename = "gst")]
+    _game_start_time: Option<String>,
+    r: serde_json::Value,
+    t: Vec<PolymarketTokenWire>,
+    #[serde(rename = "c")]
+    _condition_id: Option<String>,
+    mos: Decimal,
+    mts: Decimal,
+    mbf: Option<Decimal>,
+    tbf: Option<Decimal>,
+    #[serde(rename = "rfqe")]
+    _rfq_enabled: Option<bool>,
+    #[serde(rename = "itode")]
+    _taker_order_delay_enabled: Option<bool>,
+    #[serde(rename = "ibce")]
+    _blockaid_check_enabled: bool,
+    fd: Option<PolymarketFeeDescriptorWire>,
+    #[serde(rename = "oas")]
+    _order_age_seconds: Option<u64>,
+    #[serde(rename = "ao")]
+    _accepting_orders: Option<bool>,
+    #[serde(rename = "nr")]
+    _negative_risk: Option<bool>,
+    #[serde(rename = "cbos")]
+    _closed_book_order_support: Option<bool>,
+    #[serde(rename = "aot")]
+    _accepting_orders_timestamp: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PolymarketTokenWire {
+    t: String,
+    o: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PolymarketFeeDescriptorWire {
+    r: Decimal,
+    e: Decimal,
+    to: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct PolymarketFeeDescriptor {
     r: Decimal,
     e: u32,
     to: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct PolymarketBuilderDescriptor {
-    profile_id: String,
-    maker_rate_bps: Decimal,
-    taker_rate_bps: Decimal,
+impl PolymarketMarketInfoSnapshot {
+    pub fn from_wire_json(
+        metadata: PolymarketSnapshotMetadata,
+        json: &str,
+    ) -> Result<Self, PolymarketEconomicsError> {
+        let wire: PolymarketMarketInfoWire =
+            serde_json::from_str(json).map_err(|_| PolymarketEconomicsError::InvalidMarketInfo)?;
+        if metadata.snapshot_id.trim().is_empty()
+            || wire.r.is_null()
+            || wire.t.is_empty()
+            || wire
+                .t
+                .iter()
+                .any(|token| token.t.trim().is_empty() || token.o.trim().is_empty())
+            || wire.mos <= Decimal::ZERO
+            || wire.mts <= Decimal::ZERO
+            || wire.mbf.is_some_and(|rate| rate < Decimal::ZERO)
+            || wire.tbf.is_some_and(|rate| rate < Decimal::ZERO)
+        {
+            return Err(PolymarketEconomicsError::InvalidMarketInfo);
+        }
+        let fd = wire
+            .fd
+            .map(|descriptor| {
+                let exponent = descriptor
+                    .e
+                    .to_u32()
+                    .filter(|exponent| Decimal::from(*exponent) == descriptor.e)
+                    .ok_or(PolymarketEconomicsError::UnsupportedExponent)?;
+                Ok(PolymarketFeeDescriptor {
+                    r: descriptor.r,
+                    e: exponent,
+                    to: descriptor.to,
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            snapshot_id: metadata.snapshot_id,
+            source_at_ns: metadata.source_at_ns,
+            fetched_at_ns: metadata.fetched_at_ns,
+            valid_until_ns: metadata.valid_until_ns,
+            fd,
+            maker_base_fee: wire.mbf,
+            taker_base_fee: wire.tbf,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,16 +195,15 @@ pub struct PolymarketEconomicsAdapter {
 
 enum PlatformQuotePlan {
     FeeFree,
-    PriceShaped { rate: Decimal, taker_only: bool },
+    PriceShaped {
+        rate: Decimal,
+        exponent: u32,
+        taker_only: bool,
+    },
 }
 
 enum BuilderQuotePlan {
     Unavailable,
-    Approved {
-        profile_id: String,
-        maker_rate_bps: Decimal,
-        taker_rate_bps: Decimal,
-    },
 }
 
 impl PolymarketEconomicsAdapter {
@@ -130,27 +217,36 @@ impl PolymarketEconomicsAdapter {
         {
             return Err(PolymarketEconomicsError::InvalidMarketInfo);
         }
-        let platform_plan = match (snapshot.fees_enabled, snapshot.fd.as_ref()) {
-            (false, _) => PlatformQuotePlan::FeeFree,
-            (true, None) => return Err(PolymarketEconomicsError::MissingFeeDescriptor),
-            (true, Some(descriptor)) if descriptor.e != 1 => {
+        let platform_plan = match (
+            snapshot.fd.as_ref(),
+            snapshot.maker_base_fee,
+            snapshot.taker_base_fee,
+        ) {
+            (None, None, None) => PlatformQuotePlan::FeeFree,
+            (Some(descriptor), Some(_), Some(_)) if !matches!(descriptor.e, 1 | 2) => {
                 return Err(PolymarketEconomicsError::UnsupportedExponent);
             }
-            (true, Some(descriptor)) if descriptor.r < Decimal::ZERO => {
+            (Some(descriptor), Some(_), Some(_)) if descriptor.r < Decimal::ZERO => {
                 return Err(PolymarketEconomicsError::InvalidRate);
             }
-            (true, Some(descriptor)) => PlatformQuotePlan::PriceShaped {
+            (Some(descriptor), Some(_), Some(_)) => PlatformQuotePlan::PriceShaped {
                 rate: descriptor.r,
+                exponent: descriptor.e,
                 taker_only: descriptor.to,
             },
+            _ => return Err(PolymarketEconomicsError::InvalidMarketInfo),
         };
         if let Some(projection) = nt_projection {
             let agrees = match &platform_plan {
                 PlatformQuotePlan::FeeFree => !projection.fees_enabled,
-                PlatformQuotePlan::PriceShaped { rate, taker_only } => {
+                PlatformQuotePlan::PriceShaped {
+                    rate,
+                    exponent,
+                    taker_only,
+                } => {
                     projection.fees_enabled
                         && projection.rate == *rate
-                        && projection.exponent == 1
+                        && projection.exponent == *exponent
                         && projection.taker_only == *taker_only
                 }
             };
@@ -158,20 +254,7 @@ impl PolymarketEconomicsAdapter {
                 return Err(PolymarketEconomicsError::NtProjectionDisagreement);
             }
         }
-        let builder_plan = match snapshot.builder.as_ref() {
-            None => BuilderQuotePlan::Unavailable,
-            Some(builder)
-                if builder.maker_rate_bps < Decimal::ZERO
-                    || builder.taker_rate_bps < Decimal::ZERO =>
-            {
-                return Err(PolymarketEconomicsError::InvalidRate);
-            }
-            Some(builder) => BuilderQuotePlan::Approved {
-                profile_id: builder.profile_id.clone(),
-                maker_rate_bps: builder.maker_rate_bps,
-                taker_rate_bps: builder.taker_rate_bps,
-            },
-        };
+        let builder_plan = BuilderQuotePlan::Unavailable;
         Ok(Self {
             config,
             snapshot,
@@ -188,10 +271,12 @@ impl PolymarketEconomicsAdapter {
         let mut components = Vec::new();
         match &self.platform_plan {
             PlatformQuotePlan::FeeFree => {}
-            PlatformQuotePlan::PriceShaped { rate, taker_only }
-                if !*taker_only || request.liquidity_role == LiquidityRoleAssumption::Taker =>
-            {
-                let amount = -self.platform_fee(request, *rate)?;
+            PlatformQuotePlan::PriceShaped {
+                rate,
+                exponent,
+                taker_only,
+            } if !*taker_only || request.liquidity_role == LiquidityRoleAssumption::Taker => {
+                let amount = -self.platform_fee(request, *rate, *exponent)?;
                 if !amount.is_zero() {
                     components.push(self.component(
                         request,
@@ -214,36 +299,6 @@ impl PolymarketEconomicsAdapter {
             (Some(_), BuilderQuotePlan::Unavailable) => {
                 return Err(PolymarketEconomicsError::MissingBuilderDescriptor);
             }
-            (
-                Some(attachment),
-                BuilderQuotePlan::Approved {
-                    profile_id,
-                    maker_rate_bps,
-                    taker_rate_bps,
-                },
-            ) => {
-                if profile_id != attachment.attachment_id.as_str() {
-                    return Err(PolymarketEconomicsError::BuilderProfileMismatch);
-                }
-                let rate_bps = match request.liquidity_role {
-                    LiquidityRoleAssumption::GuaranteedMaker => *maker_rate_bps,
-                    LiquidityRoleAssumption::Taker => *taker_rate_bps,
-                };
-                let amount = -self.builder_fee(request, rate_bps)?;
-                if !amount.is_zero() {
-                    components.push(self.component(
-                        request,
-                        ExecutionKind::AttachedRouting,
-                        self.config.builder_component_id.clone(),
-                        self.config.builder_formula_id.clone(),
-                        CalculationFactor {
-                            factor_id: self.config.builder_rate_factor_id.clone(),
-                            value: rate_bps,
-                        },
-                        amount,
-                    )?);
-                }
-            }
         }
         Ok(components)
     }
@@ -265,6 +320,7 @@ impl PolymarketEconomicsAdapter {
         &self,
         request: &EconomicQuoteRequest,
         rate: Decimal,
+        exponent: u32,
     ) -> Result<Decimal, PolymarketEconomicsError> {
         request
             .planned_fill_legs
@@ -276,35 +332,28 @@ impl PolymarketEconomicsAdapter {
                 {
                     return Err(PolymarketEconomicsError::InvalidFillLeg);
                 }
-                let fee = leg.quantity * rate * leg.price * (Decimal::ONE - leg.price);
+                let price_shape = leg
+                    .price
+                    .checked_mul(Decimal::ONE - leg.price)
+                    .ok_or(PolymarketEconomicsError::InvalidRate)?;
+                let price_shape = match exponent {
+                    1 => price_shape,
+                    2 => price_shape
+                        .checked_mul(price_shape)
+                        .ok_or(PolymarketEconomicsError::InvalidRate)?,
+                    _ => return Err(PolymarketEconomicsError::UnsupportedExponent),
+                };
+                let fee = leg
+                    .quantity
+                    .checked_mul(rate)
+                    .and_then(|amount| amount.checked_mul(price_shape))
+                    .ok_or(PolymarketEconomicsError::InvalidRate)?;
                 Ok(total
                     + fee.round_dp_with_strategy(
                         self.config.formula.fee_round_decimal_places,
                         self.config.formula.fee_rounding_mode.strategy(),
                     ))
             })
-    }
-
-    fn builder_fee(
-        &self,
-        request: &EconomicQuoteRequest,
-        rate_bps: Decimal,
-    ) -> Result<Decimal, PolymarketEconomicsError> {
-        let notional = request
-            .planned_fill_legs
-            .iter()
-            .try_fold(Decimal::ZERO, |total, leg| {
-                if leg.price <= Decimal::ZERO || leg.quantity <= Decimal::ZERO {
-                    return Err(PolymarketEconomicsError::InvalidFillLeg);
-                }
-                Ok(total + leg.price * leg.quantity)
-            })?;
-        Ok(
-            (notional * basis_points_to_fraction(rate_bps)).round_dp_with_strategy(
-                self.config.formula.fee_round_decimal_places,
-                self.config.formula.fee_rounding_mode.strategy(),
-            ),
-        )
     }
 
     fn component(

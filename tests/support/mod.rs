@@ -108,7 +108,8 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 },
                 request: intent.request,
                 gross_expected_value: intent.gross_expected_value,
-                valuations: Vec::new(),
+                valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(
+                ),
                 base_reservation_notional: intent.base_reservation_notional,
             },
         )
@@ -278,7 +279,7 @@ fn sample_economics_admission_with_component(
                 source_snapshot_ids: vec![source.snapshot_id],
                 valid_until_ns,
             },
-            valuations: Vec::new(),
+            valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(),
             base_reservation_notional,
         },
     )

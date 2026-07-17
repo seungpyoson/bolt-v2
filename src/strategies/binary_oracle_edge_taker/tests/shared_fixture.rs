@@ -283,7 +283,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
             },
             request: intent.request,
             gross_expected_value: intent.gross_expected_value,
-            valuations: Vec::new(),
+            valuation_provider: crate::bolt_v3_economics_runtime::identity_valuation_provider(),
             base_reservation_notional: intent.base_reservation_notional,
         })
     }

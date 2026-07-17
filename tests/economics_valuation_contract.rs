@@ -1,6 +1,14 @@
+use std::collections::BTreeMap;
+
+use bolt_v2::bolt_v3_economics_config::{
+    ValuationConfig, ValuationLegConfig, ValuationOrientation, ValuationRouteConfig,
+};
+use bolt_v2::bolt_v3_economics_runtime::{
+    AuthoritativeValuationObservation, ConfiguredValuationProvider,
+};
 use bolt_v2::economics::{
-    EconomicsUnavailable, SignedNativeEffect, SnapshotId, ValuationLegEvidence, ValuationRoute,
-    ValuationRouteId, value_with_route,
+    EconomicsUnavailable, ReportingPolicyId, SignedNativeEffect, SnapshotId, ValuationLegEvidence,
+    ValuationProvider, ValuationRequest, ValuationRoute, ValuationRouteId, value_with_route,
 };
 
 use super::economics_support::{decimal, native_unit};
@@ -14,6 +22,100 @@ fn leg(from: &str, to: &str, rate: &str) -> ValuationLegEvidence {
         observed_at_ns: 90,
         valid_until_ns: 110,
     }
+}
+
+#[test]
+fn configured_provider_resolves_exact_toml_route_from_fresh_market_observation() {
+    let config = ValuationConfig {
+        routes: BTreeMap::from([(
+            "pusd-usd".to_string(),
+            ValuationRouteConfig {
+                from_unit: "pUSD".to_string(),
+                to_currency: "USD".to_string(),
+                valuation_policy: "configured-market".to_string(),
+                client_id: "coinbase-data".to_string(),
+                instrument_id: "USDC-USD.COINBASE".to_string(),
+                orientation: ValuationOrientation::BaseToQuote,
+                max_age_ms: 1,
+                legs: vec![ValuationLegConfig {
+                    from_unit: "pUSD".to_string(),
+                    to_unit: "USD".to_string(),
+                    client_id: "coinbase-data".to_string(),
+                    instrument_id: "USDC-USD.COINBASE".to_string(),
+                    orientation: ValuationOrientation::BaseToQuote,
+                    max_age_ms: 1,
+                }],
+            },
+        )]),
+    };
+    let provider = ConfiguredValuationProvider::from_config(
+        &config,
+        &[AuthoritativeValuationObservation {
+            client_id: "coinbase-data".to_string(),
+            instrument_id: "USDC-USD.COINBASE".to_string(),
+            price: decimal("0.99"),
+            snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
+            observed_at_ns: 100,
+        }],
+    )
+    .unwrap();
+    let evidence = provider
+        .value(
+            &SignedNativeEffect::currency(decimal("-2"), native_unit("pUSD")).unwrap(),
+            &ValuationRequest {
+                reporting_unit: native_unit("USD"),
+                reporting_policy_id: ReportingPolicyId::new("primary-pnl").unwrap(),
+                requested_at_ns: 100,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(evidence.normalized_amount, decimal("-1.98"));
+    assert_eq!(
+        evidence.source_snapshot_ids,
+        vec![SnapshotId::new("coinbase-usdc-usd-100").unwrap()]
+    );
+}
+
+#[test]
+fn configured_provider_rejects_missing_or_duplicate_market_authority() {
+    let config = ValuationConfig {
+        routes: BTreeMap::from([(
+            "usdc-usd".to_string(),
+            ValuationRouteConfig {
+                from_unit: "USDC".to_string(),
+                to_currency: "USD".to_string(),
+                valuation_policy: "configured-market".to_string(),
+                client_id: "coinbase-data".to_string(),
+                instrument_id: "USDC-USD.COINBASE".to_string(),
+                orientation: ValuationOrientation::BaseToQuote,
+                max_age_ms: 1,
+                legs: vec![ValuationLegConfig {
+                    from_unit: "USDC".to_string(),
+                    to_unit: "USD".to_string(),
+                    client_id: "coinbase-data".to_string(),
+                    instrument_id: "USDC-USD.COINBASE".to_string(),
+                    orientation: ValuationOrientation::BaseToQuote,
+                    max_age_ms: 1,
+                }],
+            },
+        )]),
+    };
+    assert!(matches!(
+        ConfiguredValuationProvider::from_config(&config, &[]),
+        Err(EconomicsUnavailable::MissingQuoteAuthority)
+    ));
+    let observation = AuthoritativeValuationObservation {
+        client_id: "coinbase-data".to_string(),
+        instrument_id: "USDC-USD.COINBASE".to_string(),
+        price: decimal("1"),
+        snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
+        observed_at_ns: 100,
+    };
+    assert!(matches!(
+        ConfiguredValuationProvider::from_config(&config, &[observation.clone(), observation]),
+        Err(EconomicsUnavailable::AmbiguousQuoteAuthority)
+    ));
 }
 
 fn route(from: &str, to: &str, legs: Vec<ValuationLegEvidence>) -> ValuationRoute {

@@ -1,21 +1,25 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use rust_decimal::Decimal;
 
 use crate::economics::{
-    EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence, NetEdgeQuote,
-    SnapshotId, ValuationEvidence, VenueEconomicsAdapter, fold_net_edge,
-    validate_and_aggregate_quote,
+    EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence, NativeUnitId,
+    NetEdgeQuote, SignedNativeEffect, SnapshotId, ValuationProvider, ValuationRequest,
+    ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
+    validate_and_aggregate_quote, value_with_route,
 };
+
+use crate::bolt_v3_economics_config::{ValuationConfig, ValuationOrientation};
 
 pub struct EconomicsAdmissionIntent {
     pub request: EconomicQuoteRequest,
     pub gross_expected_value: Decimal,
     pub edge_basis: EdgeBasisEvidence,
-    pub valuations: Vec<ValuationEvidence>,
+    pub valuation_provider: Arc<dyn ValuationProvider>,
     pub base_reservation_notional: Decimal,
 }
 
@@ -38,7 +42,110 @@ pub struct AuthoritativeEconomicsQuoteDependencies {
     pub refreshed_at_ns: u64,
     pub adapter: Arc<dyn VenueEconomicsAdapter>,
     pub edge_basis: AuthoritativeEdgeBasis,
-    pub valuations: Vec<ValuationEvidence>,
+    pub valuation_provider: Arc<dyn ValuationProvider>,
+}
+
+pub struct ConfiguredValuationProvider {
+    routes: BTreeMap<(NativeUnitId, NativeUnitId), ValuationRoute>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeValuationObservation {
+    pub client_id: String,
+    pub instrument_id: String,
+    pub price: Decimal,
+    pub snapshot_id: SnapshotId,
+    pub observed_at_ns: u64,
+}
+
+impl ConfiguredValuationProvider {
+    pub fn from_routes(routes: Vec<ValuationRoute>) -> Result<Self, EconomicsUnavailable> {
+        let mut indexed = BTreeMap::new();
+        for route in routes {
+            let key = (route.from_unit.clone(), route.to_currency.clone());
+            if indexed.insert(key, route).is_some() {
+                return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+            }
+        }
+        Ok(Self { routes: indexed })
+    }
+
+    pub fn from_config(
+        config: &ValuationConfig,
+        observations: &[AuthoritativeValuationObservation],
+    ) -> Result<Self, EconomicsUnavailable> {
+        let mut routes = Vec::with_capacity(config.routes.len());
+        for (route_id, configured) in &config.routes {
+            let mut legs = Vec::with_capacity(configured.legs.len());
+            let mut route_valid_until_ns = u64::MAX;
+            for configured_leg in &configured.legs {
+                let mut matching = observations.iter().filter(|observation| {
+                    observation.client_id == configured_leg.client_id
+                        && observation.instrument_id == configured_leg.instrument_id
+                });
+                let observation = matching
+                    .next()
+                    .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
+                if matching.next().is_some() || observation.price <= Decimal::ZERO {
+                    return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+                }
+                let rate = match configured_leg.orientation {
+                    ValuationOrientation::BaseToQuote => observation.price,
+                    ValuationOrientation::QuoteToBase => Decimal::ONE
+                        .checked_div(observation.price)
+                        .ok_or(EconomicsUnavailable::InvalidDecimal)?,
+                };
+                let max_age_ns =
+                    u64::try_from(Duration::from_millis(configured_leg.max_age_ms).as_nanos())
+                        .map_err(|_| EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+                let valid_until_ns = observation
+                    .observed_at_ns
+                    .checked_add(max_age_ns)
+                    .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+                route_valid_until_ns = route_valid_until_ns.min(valid_until_ns);
+                legs.push(crate::economics::ValuationLegEvidence {
+                    from_unit: NativeUnitId::new(configured_leg.from_unit.clone())?,
+                    to_unit: NativeUnitId::new(configured_leg.to_unit.clone())?,
+                    rate,
+                    source_snapshot_id: observation.snapshot_id.clone(),
+                    observed_at_ns: observation.observed_at_ns,
+                    valid_until_ns,
+                });
+            }
+            routes.push(ValuationRoute {
+                route_id: ValuationRouteId::new(route_id.clone())?,
+                from_unit: NativeUnitId::new(configured.from_unit.clone())?,
+                to_currency: NativeUnitId::new(configured.to_currency.clone())?,
+                legs,
+                valid_until_ns: route_valid_until_ns,
+            });
+        }
+        Self::from_routes(routes)
+    }
+}
+
+impl ValuationProvider for ConfiguredValuationProvider {
+    fn value(
+        &self,
+        effect: &SignedNativeEffect,
+        request: &ValuationRequest,
+    ) -> Result<crate::economics::ValuationEvidence, EconomicsUnavailable> {
+        let route = self
+            .routes
+            .get(&(effect.unit().clone(), request.reporting_unit.clone()));
+        value_with_route(
+            effect,
+            &request.reporting_unit,
+            route,
+            request.requested_at_ns,
+        )
+    }
+}
+
+pub fn identity_valuation_provider() -> Arc<dyn ValuationProvider> {
+    Arc::new(ConfiguredValuationProvider {
+        routes: BTreeMap::new(),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,7 +291,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
             request: intent.request,
             gross_expected_value: intent.gross_expected_value,
             edge_basis,
-            valuations: dependencies.valuations,
+            valuation_provider: dependencies.valuation_provider,
             base_reservation_notional: intent.base_reservation_notional,
         })?;
         if requires_resting_margin {
@@ -274,8 +381,29 @@ impl BoltV3EconomicsRuntime {
             .iter()
             .map(|source| source.snapshot_id.clone())
             .collect::<Vec<_>>();
-        let mut quote =
-            validate_and_aggregate_quote(&intent.request, estimate, intent.valuations.as_slice())?;
+        let valuation_request = ValuationRequest {
+            reporting_unit: intent.request.reporting_unit.clone(),
+            reporting_policy_id: intent.request.reporting_policy_id.clone(),
+            requested_at_ns: intent.request.requested_at_ns,
+        };
+        let mut valuations = Vec::new();
+        for component in &estimate.components {
+            push_valuation(
+                &mut valuations,
+                intent.valuation_provider.as_ref(),
+                &component.point_effect,
+                &valuation_request,
+            )?;
+            if let Some(bound) = &component.debit_risk_bound {
+                push_valuation(
+                    &mut valuations,
+                    intent.valuation_provider.as_ref(),
+                    bound,
+                    &valuation_request,
+                )?;
+            }
+        }
+        let mut quote = validate_and_aggregate_quote(&intent.request, estimate, &valuations)?;
         let configured_valid_until_ns = intent
             .request
             .requested_at_ns
@@ -314,6 +442,21 @@ impl BoltV3EconomicsRuntime {
             source_snapshot_ids,
         })
     }
+}
+
+fn push_valuation(
+    valuations: &mut Vec<crate::economics::ValuationEvidence>,
+    provider: &dyn ValuationProvider,
+    effect: &SignedNativeEffect,
+    request: &ValuationRequest,
+) -> Result<(), EconomicsUnavailable> {
+    if valuations.iter().any(|evidence| {
+        evidence.native_effect == *effect && evidence.reporting_unit == request.reporting_unit
+    }) {
+        return Ok(());
+    }
+    valuations.push(provider.value(effect, request)?);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -417,7 +560,7 @@ pub(crate) fn test_economics_admission(base_reservation_notional: Decimal) -> Ec
             source_snapshot_ids: vec![source.snapshot_id],
             valid_until_ns,
         },
-        valuations: Vec::new(),
+        valuation_provider: identity_valuation_provider(),
         base_reservation_notional,
     })
     .expect("test economics admission should quote")
@@ -499,7 +642,7 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
             },
             request: intent.request,
             gross_expected_value: intent.gross_expected_value,
-            valuations: Vec::new(),
+            valuation_provider: identity_valuation_provider(),
             base_reservation_notional: intent.base_reservation_notional,
         })
     }

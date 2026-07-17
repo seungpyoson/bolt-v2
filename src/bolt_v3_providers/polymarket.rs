@@ -572,7 +572,7 @@ fn validate_quote_economics_policy(
             .formula
             .get("fee_round_decimal_places")
             .and_then(|value| value.parse::<u32>().ok())
-            .is_none_or(|value| value.is_zero())
+            .is_none_or(|value| value == u32::default())
         || !matches!(
             economics
                 .formula

@@ -479,6 +479,20 @@ fn validate_valuation_legs(
         }
         return errors;
     }
+    let first = route
+        .legs
+        .first()
+        .expect("non-empty valuation legs were checked above");
+    if route.client_id != first.client_id
+        || route.instrument_id != first.instrument_id
+        || route.orientation != first.orientation
+        || route.max_age_ms != first.max_age_ms
+    {
+        errors.push(EconomicsConfigError::DisconnectedValuationRoute {
+            route_id: route_id.to_string(),
+        });
+        return errors;
+    }
     let mut current = route.from_unit.as_str();
     let mut visited = BTreeSet::from([current]);
     for leg in &route.legs {

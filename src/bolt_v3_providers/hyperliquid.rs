@@ -694,7 +694,8 @@ fn validate_quote_economics_policy(
         "hip3_at_or_above_threshold_multiplier",
         "hip3_at_or_above_deployer_share",
     ]);
-    let actual_formula_keys = economics.formula.keys().map(String::as_str).collect();
+    let actual_formula_keys: BTreeSet<&str> =
+        economics.formula.keys().map(String::as_str).collect();
     if actual_formula_keys != expected_formula_keys
         || economics.formula.values().any(|value| {
             Decimal::from_str(value)

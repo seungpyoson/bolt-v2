@@ -4664,20 +4664,6 @@ def assert_test_archive_and_build_rules() -> None:
         )
 
 
-def pull_request_record(module, config_path: pathlib.Path, *, base_sha: str = "1" * 40) -> dict[str, object]:
-    record = valid_record(module, config_path)
-    record.update(
-        {
-            "event": "pull_request",
-            "head_branch": "feature",
-            "tested_sha": OTHER_SHA,
-            "pull_request": {"number": 960, "base_sha": base_sha},
-        }
-    )
-    return record
-
-
-
 def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
     jobs = {
         "ci-policy": "success",

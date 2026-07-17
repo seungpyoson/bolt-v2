@@ -5997,15 +5997,19 @@ impl BinaryOracleEdgeTaker {
             price.to_string(),
             &order,
         );
-        let exit_ev_bps = decision
-            .evaluation
-            .exit_ev_bps
-            .filter(|value| value.is_finite())
-            .ok_or_else(|| anyhow::anyhow!("exit economics requires a gross value assumption"))?;
-        let gross_expected_value = Decimal::from_f64(
-            price.as_f64() * quantity.as_f64() * exit_ev_bps / BPS_DENOMINATOR,
-        )
-        .ok_or_else(|| anyhow::anyhow!("exit gross value is not representable as Decimal"))?;
+        let entry_cost = self
+            .open_position_effective_entry_cost()
+            .filter(|value| is_positive_finite(*value))
+            .and_then(Decimal::from_f64)
+            .ok_or_else(|| anyhow::anyhow!("exit economics requires a valid entry cost basis"))?;
+        let exit_price = Decimal::from_str(&price.to_string())
+            .context("exit economics price is not representable as Decimal")?;
+        let exit_quantity = Decimal::from_str(&quantity.to_string())
+            .context("exit economics quantity is not representable as Decimal")?;
+        let gross_expected_value = exit_price
+            .checked_sub(entry_cost)
+            .and_then(|per_unit_value| per_unit_value.checked_mul(exit_quantity))
+            .ok_or_else(|| anyhow::anyhow!("exit gross value arithmetic overflow"))?;
 
         match self.submit_order_with_decision_evidence(
             intent,

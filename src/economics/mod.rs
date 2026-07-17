@@ -1,7 +1,14 @@
+mod edge;
+mod health;
 mod ports;
+mod quote;
 mod types;
+mod valuation;
 
+pub use edge::fold_net_edge;
+pub use health::EconomicsCapabilityHealth;
 pub use ports::{ValuationProvider, VenueEconomicsAdapter};
+pub use quote::validate_and_aggregate_quote;
 pub use types::{
     AccountId, ActionId, ActualEconomicEntry, ActualEntryKey, AdmissionTreatment, AuthorityEventId,
     CalculationFactor, CanonicalEconomicEventId, CarryKind, ComponentDiscriminator,
@@ -12,6 +19,7 @@ pub use types::{
     LifecycleKind, LifecyclePath, LiquidityRoleAssumption, MarketId, NativeUnitId, NetEdgeQuote,
     OrderId, OrderSide, PlannedFillLeg, PositionContext, PositionId, PositionSide,
     ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingContext, SignedNativeEffect,
-    SnapshotId, SourceId, SourceValidity, TransferKind, ValuationEvidence, ValuationRequest,
-    ValuationRouteId,
+    SnapshotId, SourceId, SourceValidity, TransferKind, ValuationEvidence, ValuationLegEvidence,
+    ValuationRequest, ValuationRoute, ValuationRouteId,
 };
+pub use valuation::value_with_route;

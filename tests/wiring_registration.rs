@@ -17,6 +17,9 @@ mod bolt_v3_readiness;
 mod bolt_v3_strategy_registration;
 mod bolt_v3_strategy_substrate_structure;
 mod economics_core_contract;
+mod economics_quote_contract;
+mod economics_support;
+mod economics_valuation_contract;
 
 // Shared helper module (tests/support/mod.rs); not a [[test]] member.
 mod support;

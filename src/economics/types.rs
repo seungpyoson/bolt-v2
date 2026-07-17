@@ -255,9 +255,28 @@ pub struct ValuationEvidence {
     pub native_effect: SignedNativeEffect,
     pub normalized_amount: Decimal,
     pub reporting_unit: NativeUnitId,
-    pub route_id: ValuationRouteId,
+    pub route_id: Option<ValuationRouteId>,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valued_at_ns: u64,
+    pub valid_until_ns: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValuationLegEvidence {
+    pub from_unit: NativeUnitId,
+    pub to_unit: NativeUnitId,
+    pub rate: Decimal,
+    pub source_snapshot_id: SnapshotId,
+    pub observed_at_ns: u64,
+    pub valid_until_ns: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValuationRoute {
+    pub route_id: ValuationRouteId,
+    pub from_unit: NativeUnitId,
+    pub to_currency: NativeUnitId,
+    pub legs: Vec<ValuationLegEvidence>,
     pub valid_until_ns: u64,
 }
 
@@ -339,6 +358,7 @@ pub struct EconomicQuoteRequest {
     pub position: Option<PositionContext>,
     pub lifecycle_path: LifecyclePath,
     pub reporting_policy_id: ReportingPolicyId,
+    pub reporting_unit: NativeUnitId,
     pub edge_basis_policy_id: EdgeBasisPolicyId,
     pub requested_at_ns: u64,
     pub decision_correlation_id: DecisionCorrelationId,
@@ -356,20 +376,86 @@ pub struct EdgeBasisEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EconomicQuote {
-    pub decision_correlation_id: DecisionCorrelationId,
-    pub components: Vec<EstimatedEconomicComponent>,
-    pub core_total: Decimal,
-    pub forecast_total: Decimal,
-    pub reporting_unit: NativeUnitId,
-    pub valid_until_ns: u64,
+    pub(super) decision_correlation_id: DecisionCorrelationId,
+    pub(super) requested_at_ns: u64,
+    pub(super) edge_basis_policy_id: EdgeBasisPolicyId,
+    pub(super) components: Vec<EstimatedEconomicComponent>,
+    pub(super) normalizations: Vec<ValuationEvidence>,
+    pub(super) core_total: Decimal,
+    pub(super) forecast_total: Decimal,
+    pub(super) forecast_complete: bool,
+    pub(super) reporting_unit: NativeUnitId,
+    pub(super) valid_until_ns: u64,
+}
+
+impl EconomicQuote {
+    pub fn decision_correlation_id(&self) -> &DecisionCorrelationId {
+        &self.decision_correlation_id
+    }
+
+    pub fn components(&self) -> &[EstimatedEconomicComponent] {
+        &self.components
+    }
+
+    pub fn normalizations(&self) -> &[ValuationEvidence] {
+        &self.normalizations
+    }
+
+    pub fn core_total(&self) -> Decimal {
+        self.core_total
+    }
+
+    pub fn forecast_total(&self) -> Decimal {
+        self.forecast_total
+    }
+
+    pub fn forecast_complete(&self) -> bool {
+        self.forecast_complete
+    }
+
+    pub fn reporting_unit(&self) -> &NativeUnitId {
+        &self.reporting_unit
+    }
+
+    pub fn valid_until_ns(&self) -> u64 {
+        self.valid_until_ns
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetEdgeQuote {
-    pub gross_expected_value: Decimal,
-    pub core_net_edge: Decimal,
-    pub forecast_net_edge: Decimal,
-    pub basis: EdgeBasisEvidence,
+    pub(super) gross_expected_value: Decimal,
+    pub(super) core_net_edge: Decimal,
+    pub(super) forecast_net_edge: Decimal,
+    pub(super) core_edge_ratio: Decimal,
+    pub(super) forecast_edge_ratio: Decimal,
+    pub(super) basis: EdgeBasisEvidence,
+}
+
+impl NetEdgeQuote {
+    pub fn gross_expected_value(&self) -> Decimal {
+        self.gross_expected_value
+    }
+
+    pub fn core_net_edge(&self) -> Decimal {
+        self.core_net_edge
+    }
+
+    pub fn forecast_net_edge(&self) -> Decimal {
+        self.forecast_net_edge
+    }
+
+    pub fn core_edge_ratio(&self) -> Decimal {
+        self.core_edge_ratio
+    }
+
+    pub fn forecast_edge_ratio(&self) -> Decimal {
+        self.forecast_edge_ratio
+    }
+
+    pub fn basis(&self) -> &EdgeBasisEvidence {
+        &self.basis
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -411,23 +497,61 @@ pub struct ValuationRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EconomicsUnavailable {
-    InvalidIdentifier { kind: &'static str },
+    InvalidIdentifier {
+        kind: &'static str,
+    },
     ZeroNativeEffect,
+    EmptyQuote,
+    InvalidPlannedFill,
+    InvalidSourceTimeline {
+        source_id: SourceId,
+    },
+    StaleSource {
+        source_id: SourceId,
+    },
+    DuplicateComponent {
+        component_id: EconomicComponentId,
+    },
+    MissingDebitRiskBound {
+        component_id: EconomicComponentId,
+    },
+    InvalidDebitRiskBound {
+        component_id: EconomicComponentId,
+    },
+    MissingValuation {
+        unit: NativeUnitId,
+    },
+    MissingValuationRoute {
+        from: NativeUnitId,
+        to: NativeUnitId,
+    },
+    DisconnectedValuationRoute {
+        route_id: ValuationRouteId,
+    },
+    CyclicValuationRoute {
+        route_id: ValuationRouteId,
+    },
+    StaleValuation {
+        route_id: ValuationRouteId,
+    },
+    InvalidValuationRate {
+        route_id: ValuationRouteId,
+    },
+    ValuationEvidenceMismatch,
+    InvalidEdgeBasis,
+    StaleEdgeBasis {
+        valid_until_ns: u64,
+    },
+    EdgeBasisPolicyMismatch,
+    RequiredCapabilityStale {
+        valid_until_ns: u64,
+    },
+    ActualAccountingUnavailable,
 }
 
 impl fmt::Display for EconomicsUnavailable {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidIdentifier { kind } => {
-                write!(
-                    formatter,
-                    "{kind} must be non-empty, trimmed, and control-free"
-                )
-            }
-            Self::ZeroNativeEffect => {
-                formatter.write_str("native economic effect must not be zero")
-            }
-        }
+        fmt::Debug::fmt(self, formatter)
     }
 }
 

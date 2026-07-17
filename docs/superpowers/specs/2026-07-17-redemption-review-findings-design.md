@@ -16,7 +16,7 @@ Compile-fail cases prove that external code cannot construct the permit, cannot 
 
 ### Zeroizing signer-key snapshot
 
-The existing provider boundary resolves the signer once and validates it through NT's `EvmPrivateKey`. The provider copies the validated 32-byte scalar into `ResolvedEvmSigningKey`, whose fixed-width storage is zeroized on drop. Redemption preparation borrows that snapshot, copies it into its own fixed-width zeroizing buffer, and passes the bytes to `PrivateKeySigner::from_slice`; it performs no second SSM lookup or heap-based hex decode. Validation and signer-construction failures remain redacted. Verification uses Rust behavior tests, direct diff inspection, and internal adversarial review; it does not infer safety from source spelling.
+The existing provider boundary resolves the signer once and validates it through NT's `EvmPrivateKey`. The provider copies the validated scalar directly into `Zeroizing<[u8; 32]>`; no plain fixed-width key array exists at the provider or request-preparation boundary. `ResolvedEvmSigningKey` accepts only that zeroizing wrapper and validates the secp256k1 scalar itself, so invalid bytes cannot construct the type. Its accessor returns `&[u8; 32]` through dereferencing rather than slice-shaped `AsRef` inference. Redemption preparation copies into another already-wrapped zeroizing buffer and performs no second SSM lookup or heap-based hex decode. Validation and signer-construction failures remain redacted.
 
 ### Existing application-resource authority
 
@@ -36,11 +36,17 @@ The resolved signing-key view retains private fields, zeroizing storage, no `Deb
 
 Polymarket SSM resolution remains owned by the existing provider boundary. That boundary resolves the private key once, validates it once, and retains a neutral opaque `ResolvedEvmSigningKey` inside the provider snapshot alongside the exact resolved string needed by existing NT consumers and redaction scans. Redemption preparation borrows that stored signing-key view; it performs no SSM lookup, does not depend on the concrete provider type, and has no credential fallback.
 
-Builder credentials remain grouped in TOML but are not resolved by this disabled preparation slice. Their first consumer belongs to the later submission work tracked by issue #1384.
+Builder credentials, AWS region, and the signer SSM path are not repeated in the redemption TOML or generated projection. The existing `clients.polymarket_main` provider configuration is their sole authority. Builder credential consumption belongs to the later submission work tracked by issue #1384 and must use that provider boundary when it lands.
+
+### Derived protocol selector and reproducible evidence
+
+The evidence TOML carries the canonical function signature but no independently editable selector. The generator derives the selector with an in-repository Ethereum Keccak-256 implementation that has known-answer tests; NIST SHA3 and external Python packages are not used.
+
+Each pinned upstream file has a repository-owned immutable snapshot path and SHA-256. The generator reads the vendored bytes and rejects any mismatch. The official Polymarket contracts page is captured as Markdown, hashed, and parsed structurally to prove chain ID, collateral address, and both adapter addresses against runtime TOML. CI performs no network fetch and has no cache, refresh, or missing-file fallback. Repository checks therefore reproduce the exact external bytes reviewed for this slice.
 
 ### Review-fix closure
 
-The request signer is copied into `Zeroizing<[u8; 32]>` before Alloy signer construction. An oversized request nonce reports a request-input error rather than a configuration error. The unused `output_asset` authority is removed from runtime config and deployment-fact evidence. Compiler-negative tests invoke `cargo` through governed `PATH`, never through the build-time absolute `CARGO` path. The PR body describes #1384 without a GitHub closing keyword.
+The fixed-width signer type is explicit at every boundary and has no unchecked constructor. An oversized request nonce reports a request-input error rather than a configuration error. The unused `output_asset` and credential-set authorities are removed from runtime config. Compiler-negative tests invoke `cargo` through governed `PATH`, never through the build-time absolute `CARGO` path. The PR body describes verification as a merge requirement, not exact-head evidence already obtained, and describes #1384 without a GitHub closing keyword.
 
 ## Evidence
 
@@ -55,6 +61,7 @@ The request signer is copied into `Zeroizing<[u8; 32]>` before Alloy signer cons
 
 - No redemption activation, submission, new durable authority, or production caller.
 - No new runtime configuration, secret source, dependency, or compatibility path.
+- No network-backed evidence refresh, conditional evidence source, or cache-as-proof path.
 - No changes to calldata, signing-domain, signature-packing, retry, lease, callback, or identity semantics.
 - No attempt to reproduce Rust compiler semantics in Python.
 - No output-asset/post-state binding, builder API resolution, network submission, query/finality handling, LiveNode wiring, deployment, activation, or trading. Those remain tracked by issue #1384; application-resource-ledger ownership was delivered separately by #1382/#1441.

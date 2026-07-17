@@ -189,3 +189,65 @@ Describe the provider's NT validation followed by a fixed-width zeroizing snapsh
 - [ ] **Step 4: Verify and publish without rewriting the PR branch**
 
 Run focused Python tests, generator/verifier checks, formatting, source-fence static checks, and `git diff --check`. Commit the fresh current-main tree, merge the old PR head only as a history parent while retaining the fresh tree, then publish to PR #1439's branch with `just sandbox-safe-push --branch codex/1384-disabled-redemption-preparation`. Report exact-head Rust CI as pending until remote evidence runs.
+
+### Task 6: Seal the fixed-width signer snapshot
+
+**Files:**
+- Modify: `src/bolt_v3_secrets.rs`
+- Modify: `src/bolt_v3_providers/polymarket.rs`
+- Modify: `src/bolt_v3_providers/mod.rs`
+- Modify: `src/bolt_v3_polymarket_redemption.rs`
+
+**Interfaces:**
+- Produces: `ResolvedEvmSigningKey::new(Zeroizing<[u8; 32]>) -> Result<Self, String>`.
+- Removes: `ResolvedEvmSigningKey::from_bytes([u8; 32])`.
+
+- [ ] Add a provider unit test proving an invalid scalar cannot construct `ResolvedEvmSigningKey`; record remote Rust RED because the current head does not compile and local compile-heavy Rust is forbidden.
+- [ ] Allocate `Zeroizing<[u8; 32]>` before copying NT-validated bytes, validate inside the signing-key constructor, and return `&self.bytes` from the fixed-width accessor.
+- [ ] Route all fixtures through the checked provider decode, copy request bytes into an already-zeroizing buffer, and remove the unused production `ZeroizeOnDrop` import.
+- [ ] Use exact-head remote build, clippy, Backtester, behavior, and compile-fail execution as GREEN evidence.
+
+### Task 7: Remove unused credential authorities
+
+**Files:**
+- Modify: `config/polymarket-redemption.toml`
+- Modify: `scripts/generate_polymarket_redemption_config.py`
+- Modify: `scripts/verify_polymarket_redemption_preparation.py`
+- Modify: both focused Python test suites.
+
+**Interfaces:**
+- Retains: `wallet_authority.root_client` solely to derive the SAFE wallet identity.
+- Removes: redemption-owned builder credential paths, AWS region, and signer SSM path.
+
+- [ ] Add failing tests that reject `[credential_set]` as an unknown runtime table and prove only `safe_address` is derived from the selected root client.
+- [ ] Delete the dead runtime fields, parser branches, authority-census entries, fixtures, and comments.
+- [ ] Run both focused Python suites and the deterministic verifier to GREEN.
+
+### Task 8: Derive the selector and own external evidence bytes
+
+**Files:**
+- Create: `scripts/ethereum_keccak.py`
+- Create: `config/polymarket-redemption-sources/**`
+- Modify: `config/polymarket-redemption-source-evidence.toml`
+- Modify: generator, verifier, generated projection, runtime-literal audit, and focused tests.
+
+**Interfaces:**
+- Produces: `ethereum_keccak.keccak_256(data: bytes) -> bytes`.
+- Consumes: evidence-relative immutable snapshot paths plus declared SHA-256 values.
+
+- [ ] Add known-answer RED tests for Keccak-256 of empty bytes and the canonical redemption signature; add mutation tests showing a handwritten selector is rejected and a changed signature changes the projection.
+- [ ] Add RED tests for missing, mutated, absolute, or parent-traversing snapshot paths and for deployment facts that disagree with the captured official Markdown.
+- [ ] Implement the dependency-free Keccak permutation and derive the four-byte selector from `function_signature`.
+- [ ] Vendor the five pinned source files and official contracts Markdown, bind each path to its SHA-256, and structurally compare chain ID plus three deployment addresses to runtime TOML.
+- [ ] Remove the self-referential deployment-fact hash and independently editable selector authority; regenerate Rust and run focused suites to GREEN.
+
+### Task 9: Publish honest exact-head evidence
+
+**Files:**
+- Modify: PR #1439 body.
+- Verify: complete changed-file set.
+
+- [ ] Rename the PR body's validation section to merge requirements and avoid claiming transient exact-head results.
+- [ ] Run `just fmt-check`, `just source-fence-static`, focused Python suites, generator `--check`, deterministic verification, and `git diff --check`.
+- [ ] Conduct an internal adversarial review for another signer constructor, dead authority, selector copy, unverified snapshot, network fallback, or stale PR scope.
+- [ ] Commit and publish with `just sandbox-safe-push --branch codex/1384-disabled-redemption-preparation`; report the exact head and leave Rust verification to the new remote run.

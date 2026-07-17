@@ -22,6 +22,7 @@ from verifier_io import require_nonempty
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_NT_GIT = "https://github.com/nautechsystems/nautilus_trader.git"
+GOVERNED_NT_REVISION = "d81be0bcc7a473c45d2dc8a8885638336073a218"
 FORBIDDEN_NT_REPOSITORY_SLUG = "seungpyoson/" + "nautilus_trader"
 REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
 WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
@@ -960,9 +961,15 @@ def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
     root_manifest = read_required_pin_surface(root, Path("Cargo.toml"), findings)
     if root_manifest is None:
         return
-    expected_revision = root_manifest_nt_revision(root_manifest, findings)
-    if expected_revision is None:
+    root_revision = root_manifest_nt_revision(root_manifest, findings)
+    if root_revision is None:
         return
+    expected_revision = GOVERNED_NT_REVISION
+    if root_revision != expected_revision:
+        findings.append(
+            "Cargo.toml: NautilusTrader pin census must use the governed official "
+            f"revision {expected_revision}, found {root_revision}"
+        )
 
     cargo_surfaces = set(CANONICAL_CARGO_PIN_SURFACES)
     for surface in tracked_cargo_surfaces(root, findings):

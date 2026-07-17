@@ -36,7 +36,8 @@ Checks:
  12. Every captured_now row's capture_stream / storage_format matches
      bolt-current-capture.yaml.
  13. Cargo.toml, the naming audit, and the pinned NT checkout path agree on
-     the NautilusTrader revision.
+     the NautilusTrader revision, and the Polymarket query fixture is byte-exact
+     to its governed artifact from that checkout.
  14. Every captured_now stream in bolt-current-capture.yaml is represented
      by nt-msgbus-surfaces.yaml and its listed tests exist.
  15. PortfolioSnapshot is either captured with source/current/spool proof or
@@ -51,7 +52,9 @@ Stdlib only, plus PyYAML.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -104,6 +107,18 @@ NT_API_PATH_TEMPLATE = (
     ".cargo/git/checkouts/nautilus_trader-*/*/"
     "crates/common/src/msgbus/api.rs"
 )
+NT_POLYMARKET_QUERY_PATH_TEMPLATE = (
+    ".cargo/git/checkouts/nautilus_trader-*/*/"
+    "crates/adapters/polymarket/src/http/query.rs"
+)
+POLYMARKET_QUERY_FIXTURE_PATH = (
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "nt_polymarket_query_post_order_params_d81be0bc.txt"
+)
+POLYMARKET_QUERY_RELATIVE_PATH = Path("crates/adapters/polymarket/src/http/query.rs")
+POLYMARKET_QUERY_EXTRACTED_RANGES = ((130, 137), (529, 547))
 
 ALLOWED_STORAGE = {
     "feather",
@@ -410,6 +425,71 @@ def find_pinned_nt_api_path(
         )
         return None
     return matches[0]
+
+
+def find_pinned_nt_polymarket_query_path(
+    findings: list[tuple[str, str]], nautilus_revision: str | None
+) -> Path | None:
+    if not nautilus_revision:
+        return None
+    short_rev = nautilus_revision[:7]
+    exact_matches = []
+    for path in Path.home().glob(NT_POLYMARKET_QUERY_PATH_TEMPLATE):
+        if path.parents[5].name != short_rev:
+            continue
+        checkout = path.parents[5]
+        result = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip() == nautilus_revision:
+            exact_matches.append(path)
+    if len(exact_matches) != 1:
+        findings.append(
+            (
+                "13.pinned_nt_polymarket_query_missing",
+                "expected exactly one official Polymarket query.rs checkout at "
+                f"revision {nautilus_revision}, found {len(exact_matches)}",
+            )
+        )
+        return None
+    return exact_matches[0]
+
+
+def verify_polymarket_query_fixture(
+    findings: list[tuple[str, str]],
+    nautilus_revision: str,
+    upstream_path: Path,
+) -> None:
+    check_id = "13.polymarket_fixture_provenance"
+    try:
+        fixture = POLYMARKET_QUERY_FIXTURE_PATH.read_bytes()
+        upstream = upstream_path.read_bytes()
+    except OSError as error:
+        findings.append((check_id, f"could not read Polymarket evidence: {error}"))
+        return
+
+    upstream_lines = upstream.splitlines(keepends=True)
+    expected_body = b"".join(
+        b"".join(upstream_lines[start - 1 : end])
+        for start, end in POLYMARKET_QUERY_EXTRACTED_RANGES
+    )
+    range_label = " and ".join(
+        f"{start}-{end}" for start, end in POLYMARKET_QUERY_EXTRACTED_RANGES
+    )
+    expected_fixture = (
+        "Source: NautilusTrader\n"
+        f"Revision: {nautilus_revision}\n"
+        f"Path: {POLYMARKET_QUERY_RELATIVE_PATH.as_posix()}\n"
+        f"Full source SHA-256: {hashlib.sha256(upstream).hexdigest()}\n"
+        f"Extracted ranges from pinned checkout: lines {range_label}\n\n"
+    ).encode("utf-8") + expected_body
+    if fixture != expected_fixture:
+        findings.append(
+            (check_id, "fixture must equal the governed official-source artifact")
+        )
 
 
 def rust_char_literal_end(text: str, start: int) -> int | None:
@@ -926,6 +1006,13 @@ def collect_failures() -> list[tuple[str, str]]:
                     "nt-msgbus-surfaces.yaml must not hardcode the NautilusTrader pin; "
                     "the verifier derives it from Cargo.toml",
                 )
+            )
+        polymarket_query_path = find_pinned_nt_polymarket_query_path(
+            findings, nautilus_revision
+        )
+        if polymarket_query_path is not None:
+            verify_polymarket_query_fixture(
+                findings, nautilus_revision, polymarket_query_path
             )
 
     # Check 14: bolt-current-capture.yaml must not retain stale streams, and

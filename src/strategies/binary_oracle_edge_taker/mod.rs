@@ -7571,8 +7571,10 @@ impl DataActor for BinaryOracleEdgeTaker {
         }
         Ok(())
     }
+}
 
-    fn on_order_filled(
+impl BinaryOracleEdgeTaker {
+    fn handle_order_filled(
         &mut self,
         event: &nautilus_model::events::OrderFilled,
     ) -> anyhow::Result<()> {
@@ -7761,7 +7763,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         Ok(())
     }
 
-    fn on_order_canceled(
+    fn handle_order_canceled(
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
@@ -7788,6 +7790,24 @@ impl DataActor for BinaryOracleEdgeTaker {
 }
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
+    fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) {
+        if let Err(error) = self.handle_order_filled(event) {
+            log::error!(
+                "binary_oracle_edge_taker fill handling failed: strategy_id={} error={error:#}",
+                self.config.strategy_id
+            );
+        }
+    }
+
+    fn on_order_canceled(&mut self, event: &nautilus_model::events::OrderCanceled) {
+        if let Err(error) = self.handle_order_canceled(event) {
+            log::error!(
+                "binary_oracle_edge_taker cancellation handling failed: strategy_id={} error={error:#}",
+                self.config.strategy_id
+            );
+        }
+    }
+
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
         self.record_entry_reject(&event);
         self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {

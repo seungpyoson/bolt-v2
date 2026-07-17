@@ -373,7 +373,7 @@ def test_source_guard_rejects_personal_repository_without_retaining_literal() ->
     assert_finding(scan_temp(mutate), "source guard forbids the personal repository")
 
 
-def test_pin_census_derives_revision_from_root_manifest() -> None:
+def test_pin_census_rejects_coherent_revision_substitution() -> None:
     alternate_revision = "2" * 40
 
     def mutate(root: Path) -> None:
@@ -386,10 +386,13 @@ def test_pin_census_derives_revision_from_root_manifest() -> None:
                 encoding="utf-8",
             )
 
-    assert scan_temp(mutate) == []
+    assert_finding(
+        scan_temp(mutate),
+        "Cargo.toml: NautilusTrader pin census must use the governed official revision",
+    )
 
 
-def test_pin_census_uses_root_revision_to_reject_stale_dependents() -> None:
+def test_pin_census_uses_governed_revision_to_reject_root_drift() -> None:
     alternate_revision = "2" * 40
 
     def mutate(root: Path) -> None:
@@ -402,15 +405,17 @@ def test_pin_census_uses_root_revision_to_reject_stale_dependents() -> None:
         )
 
     findings = scan_temp(mutate)
-    assert not any(
-        finding.startswith("Cargo.toml: NautilusTrader pin census")
-        for finding in findings
-    ), findings
-    assert_finding(findings, "Cargo.lock: NautilusTrader pin census")
     assert_finding(
         findings,
-        "crates/backtesting-vertical-slice/Cargo.toml: NautilusTrader pin census",
+        "Cargo.toml: NautilusTrader pin census must use the governed official revision",
     )
+    assert not any(
+        finding.startswith("Cargo.lock: NautilusTrader pin census")
+        or finding.startswith(
+            "crates/backtesting-vertical-slice/Cargo.toml: NautilusTrader pin census"
+        )
+        for finding in findings
+    ), findings
 
 
 def test_pin_census_rejects_ambiguous_binance_revision_in_root_manifest() -> None:

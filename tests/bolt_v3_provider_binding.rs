@@ -307,6 +307,12 @@ base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 proxy_url = "http://127.0.0.1:8080"
 http_timeout_secs = 60
 ws_timeout_secs = 30
+stale_stream_receive_timeout_secs = 0
+stream_health_check_interval_secs = 0
+stale_stream_warning_cooldown_secs = 60
+stale_stream_recovery_enabled = false
+stale_stream_recovery_cooldown_secs = 120
+stale_stream_max_targeted_resubscribes = 3
 update_instruments_interval_mins = {update_instruments_interval_mins}
 transport_backend = "sockudo"
 "#

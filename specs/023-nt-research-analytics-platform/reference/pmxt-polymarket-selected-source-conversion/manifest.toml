@@ -4,6 +4,7 @@ target_bolt_v2_branch = "codex/bte-clean-converter-nt-use-main-reconcile"
 target_bolt_v2_ref = "6dae311e854dc36ea7ea907a3c91403531790a80"
 # The Parquet file was schema-migrated for official NT 0.61 readability while
 # retaining this historical run's logical values; it is not a fresh conversion.
+# Its bounds remain NULL; a fresh conversion emits max=0.999 and min=0.001.
 resolved_nt_version = "6e059dcbb59ac1e582132fc431a581936c216c3c"
 market_structure_fixture = "binary-option"
 venue_binding_key = "polymarket-parquet-archive-index"

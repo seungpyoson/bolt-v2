@@ -289,7 +289,7 @@ contract_types = ["linear", "inverse"]
 load_spreads = false
 environment = "live"
 # Keep both NT 0.61 book-health disable controls at zero; timeout remains the
-# inert upstream default while monitoring is disabled.
+# warn-only upstream default while stale-book monitoring is disabled.
 book_stale_check_interval_secs = 0
 book_stale_threshold_secs = 0
 book_snapshot_timeout_secs = 3

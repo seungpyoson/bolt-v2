@@ -5220,6 +5220,26 @@ max_notional = "200000"
                 "error must identify the out-of-precision field: {error}"
             );
         }
+
+        let delta = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("0.49"),
+                Quantity::from("1.23"),
+                1,
+            ),
+            0,
+            0,
+            UnixNanos::from(1_u64),
+            UnixNanos::from(2_u64),
+        )
+        .expect("in-precision test delta should be valid");
+        let normalized = order_book_delta_at_precision(delta, 2, 2)
+            .expect("in-precision values must normalize without loss");
+        assert_eq!(normalized.order.price, Price::from("0.49"));
+        assert_eq!(normalized.order.size, Quantity::from("1.23"));
     }
 
     #[test]

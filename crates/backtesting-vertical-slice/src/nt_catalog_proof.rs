@@ -19,7 +19,7 @@ use nautilus_backtest::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::TradeTick,
+    data::{Data, TradeTick},
     enums::{AccountType, AggressorSide, BookType, OmsType},
     identifiers::{InstrumentId, Symbol, TradeId, Venue},
     instruments::{CurrencyPair, Instrument, InstrumentAny},
@@ -130,8 +130,9 @@ where
     let instrument_ids: Vec<InstrumentId> = instruments.iter().map(Instrument::id).collect();
     let instrument_id_strings: Vec<String> =
         instrument_ids.iter().map(ToString::to_string).collect();
-    let tick_batches = build_trade_tick_batches(spec, &instrument_ids)?;
-    let expected_trade_ticks = tick_batches.iter().map(Vec::len).sum();
+    let ticks = build_trade_ticks(spec, &instrument_ids)?;
+    let expected_trade_ticks = ticks.len();
+    let tick_data = ticks.iter().cloned().map(Data::Trade).collect::<Vec<_>>();
 
     let mut catalog = ParquetDataCatalog::from_uri(
         &spec.catalog_uri,
@@ -151,11 +152,9 @@ where
                 .collect(),
         )
         .context("write configured instruments through NT catalog")?;
-    for ticks in &tick_batches {
-        catalog
-            .write_to_parquet(ticks, None, None, None)
-            .context("write configured single-instrument TradeTick data through NT catalog")?;
-    }
+    catalog
+        .write_data_enum(&tick_data, None, None, None)
+        .context("write configured TradeTick data through NT identity grouping")?;
 
     let loaded_instruments = catalog
         .query_instruments(Some(&instrument_id_strings))
@@ -327,11 +326,11 @@ fn build_instrument(spec: &NtCatalogProofInstrumentSpec) -> Result<CurrencyPair>
     ))
 }
 
-fn build_trade_tick_batches(
+fn build_trade_ticks(
     spec: &NtCatalogProofSpec,
     instrument_ids: &[InstrumentId],
-) -> Result<Vec<Vec<TradeTick>>> {
-    let mut batches = Vec::with_capacity(instrument_ids.len());
+) -> Result<Vec<TradeTick>> {
+    let mut ticks = Vec::with_capacity(spec.ticks_per_instrument * instrument_ids.len());
     for (instrument_index, (instrument, instrument_id)) in spec
         .instruments
         .iter()
@@ -340,7 +339,6 @@ fn build_trade_tick_batches(
     {
         let price_start = parse_f64("price_start", &instrument.price_start)?;
         let quantity = parse_f64("quantity", &instrument.quantity)?;
-        let mut ticks = Vec::with_capacity(spec.ticks_per_instrument);
         for tick_index in 0..spec.ticks_per_instrument {
             let sequence = instrument_index * spec.ticks_per_instrument + tick_index;
             let ts = UnixNanos::from(
@@ -361,9 +359,8 @@ fn build_trade_tick_batches(
                 ts,
             ));
         }
-        batches.push(ticks);
     }
-    Ok(batches)
+    Ok(ticks)
 }
 
 fn parse_f64(field: &str, value: &str) -> Result<f64> {

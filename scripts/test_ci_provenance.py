@@ -51,6 +51,28 @@ max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
 
+[backtester.ra001a_durable_tracer.pack_limits]
+max_fetch_timeout_seconds = 300
+max_worker_virtual_memory_bytes = 2147483648
+min_worker_reserved_overhead_bytes = 536870912
+max_decoded_bytes = 1073741824
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_operator_wall_seconds = 1800
+max_terminal_commit_timeout_seconds = 60
+max_launch_artifact_bytes = 65536
+max_control_artifact_bytes = 65536
+max_retained_control_input_bytes = 262144
+max_final_object_bytes = 4194304
+max_workspace_bytes = 34359738368
+max_cache_bytes = 17179869184
+min_free_space_reserve_bytes = 10737418240
+min_one_record_worst_case_bytes = 4294967296
+cache_retention_age_seconds = 2592000
+candidate_retention_age_seconds = 86400
+max_lifecycle_cleanup_entries = 1000000
+max_lifecycle_cleanup_depth = 64
+
 [backtester.ra001a_durable_tracer.checkout]
 allowed_ignored_runtime_roots = [".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]
 max_ignored_entry_bytes = 4096
@@ -270,6 +292,28 @@ max_wall_seconds = 3600
 max_total_selected_object_bytes = 1073741824
 max_worker_executable_bytes = 1073741824
 max_registry_packs = 64
+
+[backtester.ra001a_durable_tracer.pack_limits]
+candidate_retention_age_seconds = 86400
+cache_retention_age_seconds = 2592000
+max_workspace_bytes = 34359738368
+max_worker_virtual_memory_bytes = 2147483648
+min_worker_reserved_overhead_bytes = 536870912
+max_retained_control_input_bytes = 262144
+max_terminal_commit_timeout_seconds = 60
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_operator_wall_seconds = 1800
+max_lifecycle_cleanup_entries = 1000000
+max_lifecycle_cleanup_depth = 64
+max_launch_artifact_bytes = 65536
+max_final_object_bytes = 4194304
+max_fetch_timeout_seconds = 300
+max_decoded_bytes = 1073741824
+max_control_artifact_bytes = 65536
+max_cache_bytes = 17179869184
+min_one_record_worst_case_bytes = 4294967296
+min_free_space_reserve_bytes = 10737418240
 
 [backtester.ra001a_durable_tracer.checkout]
 max_ignored_entries = 128
@@ -570,7 +614,57 @@ def run_cli_with_event_sender(args: list[str], sender: object) -> tuple[int, str
 
 
 def output_dict(stdout: str) -> dict[str, str]:
-    return dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+    pairs = [line.split("=", 1) for line in stdout.splitlines() if "=" in line]
+    counts: dict[str, int] = {}
+    for key, _value in pairs:
+        counts[key] = counts.get(key, 0) + 1
+    duplicates = sorted(key for key, count in counts.items() if count != 1)
+    if duplicates:
+        raise AssertionError(f"CLI emitted duplicate output keys: {duplicates}")
+    return dict(pairs)
+
+
+EXPECTED_RA001A_OUTPUT_KEYS = {
+    "ra001a_durable_tracer_required",
+    "ra001a_max_registry_packs",
+    "ra001a_max_total_selected_object_bytes",
+    "ra001a_max_worker_executable_bytes",
+    "ra001a_max_fetch_timeout_seconds",
+    "ra001a_max_worker_virtual_memory_bytes",
+    "ra001a_min_worker_reserved_overhead_bytes",
+    "ra001a_max_decoded_bytes",
+    "ra001a_max_source_rows",
+    "ra001a_max_projected_row_groups",
+    "ra001a_max_operator_wall_seconds",
+    "ra001a_max_terminal_commit_timeout_seconds",
+    "ra001a_max_launch_artifact_bytes",
+    "ra001a_max_control_artifact_bytes",
+    "ra001a_max_retained_control_input_bytes",
+    "ra001a_max_final_object_bytes",
+    "ra001a_max_workspace_bytes",
+    "ra001a_max_cache_bytes",
+    "ra001a_min_free_space_reserve_bytes",
+    "ra001a_min_one_record_worst_case_bytes",
+    "ra001a_cache_retention_age_seconds",
+    "ra001a_candidate_retention_age_seconds",
+    "ra001a_max_lifecycle_cleanup_entries",
+    "ra001a_max_lifecycle_cleanup_depth",
+    "ra001a_max_wall_seconds",
+    "ra001a_termination_grace_seconds",
+    "ra001a_allowed_ignored_runtime_roots",
+    "ra001a_max_ignored_entry_bytes",
+    "ra001a_max_ignored_entries",
+}
+
+
+def assert_exact_ra001a_output_keys(output: dict[str, str]) -> None:
+    actual = {key for key in output if key.startswith("ra001a_")}
+    if actual != EXPECTED_RA001A_OUTPUT_KEYS:
+        raise AssertionError(
+            "ci-policy RA-001a output set drifted: "
+            f"missing={sorted(EXPECTED_RA001A_OUTPUT_KEYS - actual)}, "
+            f"unexpected={sorted(actual - EXPECTED_RA001A_OUTPUT_KEYS)}"
+        )
 
 
 def assert_fails(fragment: str, args: list[str]) -> None:
@@ -983,6 +1077,158 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             ),
         ),
     ]
+    pack_limit_values = {
+        "max_fetch_timeout_seconds": "300",
+        "max_worker_virtual_memory_bytes": "2147483648",
+        "min_worker_reserved_overhead_bytes": "536870912",
+        "max_decoded_bytes": "1073741824",
+        "max_source_rows": "1000000",
+        "max_projected_row_groups": "128",
+        "max_operator_wall_seconds": "1800",
+        "max_terminal_commit_timeout_seconds": "60",
+        "max_launch_artifact_bytes": "65536",
+        "max_control_artifact_bytes": "65536",
+        "max_retained_control_input_bytes": "262144",
+        "max_final_object_bytes": "4194304",
+        "max_workspace_bytes": "34359738368",
+        "max_cache_bytes": "17179869184",
+        "min_free_space_reserve_bytes": "10737418240",
+        "min_one_record_worst_case_bytes": "4294967296",
+        "cache_retention_age_seconds": "2592000",
+        "candidate_retention_age_seconds": "86400",
+        "max_lifecycle_cleanup_entries": "1000000",
+        "max_lifecycle_cleanup_depth": "64",
+    }
+    pack_limit_cases = []
+    for key, value in pack_limit_values.items():
+        expected = (
+            f"backtester.ra001a_durable_tracer.pack_limits.{key} "
+            "must be a positive integer"
+        )
+        assignment = f"{key} = {value}"
+        pack_limit_cases.extend(
+            [
+                (expected, CONFIG_TOML.replace(f"{assignment}\n", "", 1)),
+                (expected, CONFIG_TOML.replace(assignment, f"{key} = 0", 1)),
+                (expected, CONFIG_TOML.replace(assignment, f"{key} = true", 1)),
+            ]
+        )
+    pack_limit_cases.extend(
+        [
+            (
+                "backtester.ra001a_durable_tracer.pack_limits has unexpected keys: ['rogue_limit']",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 300\nrogue_limit = 999",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_fetch_timeout_seconds must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 18446744073709551615",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_fetch_timeout_seconds must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 18446744073709551616",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.min_worker_reserved_overhead_bytes must be below max_worker_virtual_memory_bytes",
+                CONFIG_TOML.replace(
+                    "min_worker_reserved_overhead_bytes = 536870912",
+                    "min_worker_reserved_overhead_bytes = 2147483648",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_decoded_bytes must be below max_worker_virtual_memory_bytes",
+                CONFIG_TOML.replace(
+                    "max_decoded_bytes = 1073741824",
+                    "max_decoded_bytes = 2147483648",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_projected_row_groups must not exceed max_source_rows",
+                CONFIG_TOML.replace(
+                    "max_projected_row_groups = 128",
+                    "max_projected_row_groups = 1000001",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_fetch_timeout_seconds must not exceed max_operator_wall_seconds",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 1801",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_terminal_commit_timeout_seconds must not exceed max_operator_wall_seconds",
+                CONFIG_TOML.replace(
+                    "max_terminal_commit_timeout_seconds = 60",
+                    "max_terminal_commit_timeout_seconds = 1801",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_operator_wall_seconds must not exceed backtester.ra001a_durable_tracer.max_wall_seconds",
+                CONFIG_TOML.replace(
+                    "max_operator_wall_seconds = 1800",
+                    "max_operator_wall_seconds = 3601",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_control_artifact_bytes must not exceed max_retained_control_input_bytes",
+                CONFIG_TOML.replace(
+                    "max_retained_control_input_bytes = 262144",
+                    "max_retained_control_input_bytes = 32768",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_cache_bytes must not exceed max_workspace_bytes",
+                CONFIG_TOML.replace(
+                    "max_cache_bytes = 17179869184",
+                    "max_cache_bytes = 34359738369",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.min_one_record_worst_case_bytes must not exceed max_cache_bytes",
+                CONFIG_TOML.replace(
+                    "min_one_record_worst_case_bytes = 4294967296",
+                    "min_one_record_worst_case_bytes = 17179869185",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.candidate_retention_age_seconds must not exceed cache_retention_age_seconds",
+                CONFIG_TOML.replace(
+                    "candidate_retention_age_seconds = 86400",
+                    "candidate_retention_age_seconds = 2592001",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_lifecycle_cleanup_depth must not exceed max_lifecycle_cleanup_entries",
+                CONFIG_TOML.replace(
+                    "max_lifecycle_cleanup_depth = 64",
+                    "max_lifecycle_cleanup_depth = 1000001",
+                    1,
+                ),
+            ),
+        ]
+    )
     normalized_root_error = (
         "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
         "must contain normalized repository-relative directories"
@@ -1025,6 +1271,9 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
         for expected, text in issue_789_cases:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in pack_limit_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
         for expected, text in root_cases:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
@@ -1041,6 +1290,7 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         timeout.ra001a_durable_tracer_max_registry_packs,
         timeout.ra001a_durable_tracer_max_total_selected_object_bytes,
         timeout.ra001a_durable_tracer_max_worker_executable_bytes,
+        timeout.ra001a_pack_limits,
         timeout.ra001a_durable_tracer_max_wall_seconds,
         timeout.ra001a_durable_tracer_termination_grace_seconds,
         timeout.ra001a_allowed_ignored_runtime_roots,
@@ -1053,6 +1303,28 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         64,
         1073741824,
         1073741824,
+        module.Ra001aDurableTracerPackLimitsConfig(
+            max_fetch_timeout_seconds=300,
+            max_worker_virtual_memory_bytes=2147483648,
+            min_worker_reserved_overhead_bytes=536870912,
+            max_decoded_bytes=1073741824,
+            max_source_rows=1000000,
+            max_projected_row_groups=128,
+            max_operator_wall_seconds=1800,
+            max_terminal_commit_timeout_seconds=60,
+            max_launch_artifact_bytes=65536,
+            max_control_artifact_bytes=65536,
+            max_retained_control_input_bytes=262144,
+            max_final_object_bytes=4194304,
+            max_workspace_bytes=34359738368,
+            max_cache_bytes=17179869184,
+            min_free_space_reserve_bytes=10737418240,
+            min_one_record_worst_case_bytes=4294967296,
+            cache_retention_age_seconds=2592000,
+            candidate_retention_age_seconds=86400,
+            max_lifecycle_cleanup_entries=1000000,
+            max_lifecycle_cleanup_depth=64,
+        ),
         3600,
         30,
         (".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"),
@@ -1123,6 +1395,26 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
             64,
             1073741824,
             1073741824,
+            300,
+            2147483648,
+            536870912,
+            1073741824,
+            1000000,
+            128,
+            1800,
+            60,
+            65536,
+            65536,
+            262144,
+            4194304,
+            34359738368,
+            17179869184,
+            10737418240,
+            4294967296,
+            2592000,
+            86400,
+            1000000,
+            64,
             3600,
             30,
             ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
@@ -1133,6 +1425,26 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
             result.ra001a_max_registry_packs,
             result.ra001a_max_total_selected_object_bytes,
             result.ra001a_max_worker_executable_bytes,
+            result.ra001a_max_fetch_timeout_seconds,
+            result.ra001a_max_worker_virtual_memory_bytes,
+            result.ra001a_min_worker_reserved_overhead_bytes,
+            result.ra001a_max_decoded_bytes,
+            result.ra001a_max_source_rows,
+            result.ra001a_max_projected_row_groups,
+            result.ra001a_max_operator_wall_seconds,
+            result.ra001a_max_terminal_commit_timeout_seconds,
+            result.ra001a_max_launch_artifact_bytes,
+            result.ra001a_max_control_artifact_bytes,
+            result.ra001a_max_retained_control_input_bytes,
+            result.ra001a_max_final_object_bytes,
+            result.ra001a_max_workspace_bytes,
+            result.ra001a_max_cache_bytes,
+            result.ra001a_min_free_space_reserve_bytes,
+            result.ra001a_min_one_record_worst_case_bytes,
+            result.ra001a_cache_retention_age_seconds,
+            result.ra001a_candidate_retention_age_seconds,
+            result.ra001a_max_lifecycle_cleanup_entries,
+            result.ra001a_max_lifecycle_cleanup_depth,
             result.ra001a_max_wall_seconds,
             result.ra001a_termination_grace_seconds,
             result.ra001a_allowed_ignored_runtime_roots,
@@ -1157,7 +1469,8 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
         )
         if code != 0:
             raise AssertionError(f"RA-001a ci-policy CLI failed: {stderr}")
-        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        output = output_dict(stdout)
+        assert_exact_ra001a_output_keys(output)
         if output.get("ra001a_durable_tracer_required") != "true":
             raise AssertionError(f"RA-001a ci-policy CLI dropped the governed request: {output}")
         if output.get("backtester_test_archive_timeout_minutes") != "120":
@@ -1165,6 +1478,26 @@ def assert_ra001a_ci_policy_selects_trusted_limits() -> None:
                 f"RA-001a ci-policy CLI must expose the trusted tracer timeout: {output}"
             )
         for key, expected in {
+            "ra001a_max_fetch_timeout_seconds": "300",
+            "ra001a_max_worker_virtual_memory_bytes": "2147483648",
+            "ra001a_min_worker_reserved_overhead_bytes": "536870912",
+            "ra001a_max_decoded_bytes": "1073741824",
+            "ra001a_max_source_rows": "1000000",
+            "ra001a_max_projected_row_groups": "128",
+            "ra001a_max_operator_wall_seconds": "1800",
+            "ra001a_max_terminal_commit_timeout_seconds": "60",
+            "ra001a_max_launch_artifact_bytes": "65536",
+            "ra001a_max_control_artifact_bytes": "65536",
+            "ra001a_max_retained_control_input_bytes": "262144",
+            "ra001a_max_final_object_bytes": "4194304",
+            "ra001a_max_workspace_bytes": "34359738368",
+            "ra001a_max_cache_bytes": "17179869184",
+            "ra001a_min_free_space_reserve_bytes": "10737418240",
+            "ra001a_min_one_record_worst_case_bytes": "4294967296",
+            "ra001a_cache_retention_age_seconds": "2592000",
+            "ra001a_candidate_retention_age_seconds": "86400",
+            "ra001a_max_lifecycle_cleanup_entries": "1000000",
+            "ra001a_max_lifecycle_cleanup_depth": "64",
             "ra001a_allowed_ignored_runtime_roots": ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
             "ra001a_max_ignored_entry_bytes": "4096",
             "ra001a_max_ignored_entries": "128",
@@ -2993,7 +3326,8 @@ def assert_ci_policy_outputs_matrix() -> None:
             )
             if code != 0:
                 raise AssertionError(f"ci-policy failed for {event_name}/{action}: {stderr}")
-            output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+            output = output_dict(stdout)
+            assert_exact_ra001a_output_keys(output)
             if output.get("ci_policy_path") != expected:
                 raise AssertionError((event_name, action, draft, ref, expected, output))
             if output.get("full_ci_required") != str(expected == "full").lower():
@@ -3021,6 +3355,26 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "ra001a_max_registry_packs": "64",
                 "ra001a_max_total_selected_object_bytes": "1073741824",
                 "ra001a_max_worker_executable_bytes": "1073741824",
+                "ra001a_max_fetch_timeout_seconds": "300",
+                "ra001a_max_worker_virtual_memory_bytes": "2147483648",
+                "ra001a_min_worker_reserved_overhead_bytes": "536870912",
+                "ra001a_max_decoded_bytes": "1073741824",
+                "ra001a_max_source_rows": "1000000",
+                "ra001a_max_projected_row_groups": "128",
+                "ra001a_max_operator_wall_seconds": "1800",
+                "ra001a_max_terminal_commit_timeout_seconds": "60",
+                "ra001a_max_launch_artifact_bytes": "65536",
+                "ra001a_max_control_artifact_bytes": "65536",
+                "ra001a_max_retained_control_input_bytes": "262144",
+                "ra001a_max_final_object_bytes": "4194304",
+                "ra001a_max_workspace_bytes": "34359738368",
+                "ra001a_max_cache_bytes": "17179869184",
+                "ra001a_min_free_space_reserve_bytes": "10737418240",
+                "ra001a_min_one_record_worst_case_bytes": "4294967296",
+                "ra001a_cache_retention_age_seconds": "2592000",
+                "ra001a_candidate_retention_age_seconds": "86400",
+                "ra001a_max_lifecycle_cleanup_entries": "1000000",
+                "ra001a_max_lifecycle_cleanup_depth": "64",
                 "ra001a_max_wall_seconds": "3600",
                 "ra001a_termination_grace_seconds": "30",
             }

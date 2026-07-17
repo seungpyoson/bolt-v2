@@ -1,13 +1,13 @@
 use super::{
-    EconomicQuoteRequest, EconomicsUnavailable, EstimatedEconomicComponent, SignedNativeEffect,
-    ValuationEvidence, ValuationRequest,
+    EconomicQuoteRequest, EconomicsUnavailable, SignedNativeEffect, ValuationEvidence,
+    ValuationRequest, VenueQuoteEstimate,
 };
 
 pub trait VenueEconomicsAdapter: Send + Sync {
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
-    ) -> Result<Vec<EstimatedEconomicComponent>, EconomicsUnavailable>;
+    ) -> Result<VenueQuoteEstimate, EconomicsUnavailable>;
 }
 
 pub trait ValuationProvider: Send + Sync {

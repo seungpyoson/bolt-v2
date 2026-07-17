@@ -16,6 +16,7 @@ pub mod bolt_v3_complete_set_contract;
 pub mod bolt_v3_config;
 pub mod bolt_v3_decision_evidence;
 pub mod bolt_v3_deploy_target;
+pub mod bolt_v3_economics_config;
 pub mod bolt_v3_executable_cost;
 pub mod bolt_v3_fair_value_pricing;
 pub mod bolt_v3_feed_health;

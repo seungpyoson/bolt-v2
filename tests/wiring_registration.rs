@@ -16,6 +16,7 @@ mod bolt_v3_provider_binding;
 mod bolt_v3_readiness;
 mod bolt_v3_strategy_registration;
 mod bolt_v3_strategy_substrate_structure;
+mod economics_config_contract;
 mod economics_core_contract;
 mod economics_quote_contract;
 mod economics_support;

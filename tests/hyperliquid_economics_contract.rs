@@ -69,11 +69,12 @@ fn product(
 
 #[test]
 fn complete_perp_surface_applies_account_rate_and_builder_approval() {
-    let adapter = HyperliquidEconomicsAdapter::new(
+    let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("-0.00001"),
         product("perp", false, false, "1", "2"),
-    );
+    )
+    .unwrap();
     let mut request = canonical_fixture_request();
     request.planned_fill_legs[0].price = decimal("100");
     request.planned_fill_legs[0].quantity = decimal("100");
@@ -89,11 +90,12 @@ fn complete_perp_surface_applies_account_rate_and_builder_approval() {
 
 #[test]
 fn negative_maker_rate_is_guaranteed_credit_not_forecast_reward() {
-    let adapter = HyperliquidEconomicsAdapter::new(
+    let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("-0.00001"),
         product("perp", false, false, "0", "0"),
-    );
+    )
+    .unwrap();
     let mut request = canonical_fixture_request();
     request.liquidity_role = LiquidityRoleAssumption::GuaranteedMaker;
     request.planned_fill_legs[0].price = decimal("100");
@@ -107,26 +109,26 @@ fn negative_maker_rate_is_guaranteed_credit_not_forecast_reward() {
 
 #[test]
 fn aligned_and_unproved_spot_surfaces_are_explicitly_blocked() {
-    let aligned = HyperliquidEconomicsAdapter::new(
+    let aligned = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
         product("perp", true, false, "0", "0"),
     );
     assert_eq!(
-        aligned.quote_components(&canonical_fixture_request()),
-        Err(HyperliquidEconomicsError::BlockedUnsupported(
+        aligned.err(),
+        Some(HyperliquidEconomicsError::BlockedUnsupported(
             BlockedUnsupported::MissingGovernedAlignedStatusCapture
         ))
     );
 
-    let spot = HyperliquidEconomicsAdapter::new(
+    let spot = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
         product("spot", false, false, "0", "0"),
     );
     assert_eq!(
-        spot.quote_components(&canonical_fixture_request()),
-        Err(HyperliquidEconomicsError::BlockedUnsupported(
+        spot.err(),
+        Some(HyperliquidEconomicsError::BlockedUnsupported(
             BlockedUnsupported::SpotDustAuthorityIncomplete
         ))
     );
@@ -134,18 +136,14 @@ fn aligned_and_unproved_spot_surfaces_are_explicitly_blocked() {
 
 #[test]
 fn builder_rate_above_account_approval_fails_closed() {
-    let adapter = HyperliquidEconomicsAdapter::new(
+    let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
         product("perp", false, false, "3", "2"),
     );
-    let mut request = canonical_fixture_request();
-    request.routing.attached_charge = Some(RoutingAttachment {
-        attachment_id: RoutingAttachmentId::new("builder-profile").unwrap(),
-    });
     assert_eq!(
-        adapter.quote_components(&request),
-        Err(HyperliquidEconomicsError::BuilderApprovalExceeded)
+        adapter.err(),
+        Some(HyperliquidEconomicsError::BuilderApprovalExceeded)
     );
 }
 

@@ -6,7 +6,8 @@ use bolt_v2::economics::{
     EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId,
     InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderId, OrderSide,
     PlannedFillLeg, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingContext,
-    SignedNativeEffect, SnapshotId, SourceId, SourceValidity, validate_and_aggregate_quote,
+    SignedNativeEffect, SnapshotId, SourceId, SourceValidity, VenueQuoteEstimate,
+    validate_and_aggregate_quote,
 };
 use rust_decimal::Decimal;
 
@@ -117,7 +118,16 @@ pub fn quote_fixture(
 ) -> Result<EconomicQuote, EconomicsUnavailable> {
     validate_and_aggregate_quote(
         &canonical_fixture_request(),
-        components.into_iter().collect(),
+        VenueQuoteEstimate {
+            authority: SourceValidity {
+                source_id: SourceId::new("fixture-quote-authority").unwrap(),
+                snapshot_id: SnapshotId::new("fixture-quote-snapshot").unwrap(),
+                source_at_ns: 90,
+                fetched_at_ns: 95,
+                valid_until_ns: 110,
+            },
+            components: components.into_iter().collect(),
+        },
         &[],
     )
 }

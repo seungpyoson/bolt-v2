@@ -6,7 +6,7 @@ use bolt_v2::{
     },
     economics::{
         EconomicComponentId, FormulaId, LiquidityRoleAssumption, RoutingAttachment,
-        RoutingAttachmentId, SourceId,
+        RoutingAttachmentId, SourceId, VenueEconomicsAdapter, validate_and_aggregate_quote,
     },
 };
 
@@ -46,7 +46,7 @@ fn snapshot(fees_enabled: bool, exponent: u32) -> PolymarketMarketInfoSnapshot {
 
 #[test]
 fn taker_formula_matches_authoritative_price_shaped_example() {
-    let adapter = PolymarketEconomicsAdapter::new(config(), snapshot(true, 1), None);
+    let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 1), None).unwrap();
     let mut request = canonical_fixture_request();
     request.planned_fill_legs[0].quantity = decimal("100");
 
@@ -58,7 +58,7 @@ fn taker_formula_matches_authoritative_price_shaped_example() {
 
 #[test]
 fn taker_only_platform_fee_does_not_hide_attached_maker_builder_charge() {
-    let adapter = PolymarketEconomicsAdapter::new(config(), snapshot(true, 1), None);
+    let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 1), None).unwrap();
     let mut request = canonical_fixture_request();
     request.liquidity_role = LiquidityRoleAssumption::GuaranteedMaker;
     request.planned_fill_legs[0].quantity = decimal("200");
@@ -73,24 +73,23 @@ fn taker_only_platform_fee_does_not_hide_attached_maker_builder_charge() {
 
 #[test]
 fn authoritative_fee_free_snapshot_emits_no_zero_component() {
-    let adapter = PolymarketEconomicsAdapter::new(config(), snapshot(false, 1), None);
-    assert!(
-        adapter
-            .quote_components(&canonical_fixture_request())
-            .unwrap()
-            .is_empty()
-    );
+    let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(false, 1), None).unwrap();
+    let request = canonical_fixture_request();
+    let estimate = adapter.quote(&request).unwrap();
+    assert!(estimate.components.is_empty());
+    let quote = validate_and_aggregate_quote(&request, estimate, &[]).unwrap();
+    assert!(quote.components.is_empty());
+    assert!(quote.core_total.is_zero());
 }
 
 #[test]
 fn unsupported_descriptor_and_projection_disagreement_fail_closed() {
-    let unsupported = PolymarketEconomicsAdapter::new(config(), snapshot(true, 2), None);
-    assert_eq!(
-        unsupported.quote_components(&canonical_fixture_request()),
+    assert!(matches!(
+        PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 2), None),
         Err(PolymarketEconomicsError::UnsupportedExponent)
-    );
+    ));
 
-    let disagreement = PolymarketEconomicsAdapter::new(
+    let disagreement = PolymarketEconomicsAdapter::try_new(
         config(),
         snapshot(true, 1),
         Some(NtFeeProjection {
@@ -100,10 +99,10 @@ fn unsupported_descriptor_and_projection_disagreement_fail_closed() {
             taker_only: true,
         }),
     );
-    assert_eq!(
-        disagreement.quote_components(&canonical_fixture_request()),
+    assert!(matches!(
+        disagreement,
         Err(PolymarketEconomicsError::NtProjectionDisagreement)
-    );
+    ));
 }
 
 #[test]
@@ -113,11 +112,10 @@ fn market_info_parser_rejects_missing_or_unknown_economics_shape() {
         "validUntilNs":110,"feesEnabled":true,"builder":null
     }"#;
     let snapshot = PolymarketMarketInfoSnapshot::from_json(missing).unwrap();
-    let adapter = PolymarketEconomicsAdapter::new(config(), snapshot, None);
-    assert_eq!(
-        adapter.quote_components(&canonical_fixture_request()),
+    assert!(matches!(
+        PolymarketEconomicsAdapter::try_new(config(), snapshot, None),
         Err(PolymarketEconomicsError::MissingFeeDescriptor)
-    );
+    ));
 
     let unknown = r#"{
         "snapshotId":"market-snapshot","sourceAtNs":90,"fetchedAtNs":95,

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use bolt_v2::economics::{
     ActualEconomicEntry, AdmissionTreatment, EconomicQuoteRequest, EstimatedEconomicComponent,
     InventoryApplication, NativeUnitId, RiskBoundAuthority, SignedNativeEffect,
-    VenueEconomicsAdapter,
+    VenueEconomicsAdapter, VenueQuoteEstimate,
 };
 use rust_decimal::Decimal;
 
@@ -79,5 +79,5 @@ fn adapter_contract_uses_only_shared_types<T: VenueEconomicsAdapter>(
     adapter: &T,
     request: &EconomicQuoteRequest,
 ) {
-    let _: Result<Vec<EstimatedEconomicComponent>, _> = adapter.quote(request);
+    let _: Result<VenueQuoteEstimate, _> = adapter.quote(request);
 }

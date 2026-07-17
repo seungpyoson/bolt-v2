@@ -305,6 +305,12 @@ pub struct EstimatedEconomicComponent {
     pub normalized: Option<ValuationEvidence>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VenueQuoteEstimate {
+    pub authority: SourceValidity,
+    pub components: Vec<EstimatedEconomicComponent>,
+}
+
 impl EstimatedEconomicComponent {
     pub fn authorizes_admission(&self) -> bool {
         self.admission_treatment.authorizes_admission()
@@ -516,7 +522,6 @@ pub enum EconomicsUnavailable {
         kind: &'static str,
     },
     ZeroNativeEffect,
-    EmptyQuote,
     InvalidPlannedFill,
     InvalidSourceTimeline {
         source_id: SourceId,
@@ -534,6 +539,9 @@ pub enum EconomicsUnavailable {
         component_id: EconomicComponentId,
     },
     MissingValuation {
+        unit: NativeUnitId,
+    },
+    AmbiguousValuation {
         unit: NativeUnitId,
     },
     MissingValuationRoute {

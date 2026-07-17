@@ -2,7 +2,7 @@ use crate::economics::{
     AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
     EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
     LiquidityRoleAssumption, NativeUnitId, SignedNativeEffect, SnapshotId, SourceId,
-    SourceValidity, VenueEconomicsAdapter, basis_points_to_fraction,
+    SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -113,19 +113,110 @@ pub struct HyperliquidEconomicsAdapter {
     config: HyperliquidEconomicsAdapterConfig,
     user_fees: HyperliquidUserFeesSnapshot,
     product: HyperliquidProductEconomicsSnapshot,
+    rates: ProtocolRatePlan,
+    builder: BuilderQuotePlan,
+}
+
+struct ProtocolRatePlan {
+    maker: Decimal,
+    taker: Decimal,
+}
+
+enum BuilderQuotePlan {
+    Unavailable,
+    Approved {
+        profile_id: String,
+        rate_bps: Decimal,
+    },
+}
+
+enum ScalePlan {
+    Identity,
+    Multiply(Decimal),
+}
+
+impl ScalePlan {
+    fn apply(&self, rate: Decimal) -> Decimal {
+        match self {
+            Self::Identity => rate,
+            Self::Multiply(scale) => rate * scale,
+        }
+    }
 }
 
 impl HyperliquidEconomicsAdapter {
-    pub fn new(
+    pub fn try_new(
         config: HyperliquidEconomicsAdapterConfig,
         user_fees: HyperliquidUserFeesSnapshot,
         product: HyperliquidProductEconomicsSnapshot,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, HyperliquidEconomicsError> {
+        validate_authority_snapshots(&user_fees, &product)?;
+        let base_rates = match product.product_kind {
+            HyperliquidProductKind::Perp => ProtocolRatePlan {
+                maker: user_fees.perp_maker_base_rate,
+                taker: user_fees.perp_taker_base_rate,
+            },
+            HyperliquidProductKind::Spot => ProtocolRatePlan {
+                maker: user_fees.spot_maker_base_rate,
+                taker: user_fees.spot_taker_base_rate,
+            },
+        };
+        let stable = match product.stable_pair {
+            false => ScalePlan::Identity,
+            true => ScalePlan::Multiply(config.formula.stable_pair_scale),
+        };
+        let growth = match product.growth_mode {
+            false => ScalePlan::Identity,
+            true => ScalePlan::Multiply(config.formula.growth_mode_scale),
+        };
+        let hip3 = match (
+            product.hip3,
+            product.deployer_scale < config.formula.hip3_scale_threshold,
+        ) {
+            (false, _) => ScalePlan::Identity,
+            (true, true) => ScalePlan::Multiply(
+                config.formula.hip3_below_threshold_base + product.deployer_scale,
+            ),
+            (true, false) => ScalePlan::Multiply(
+                config.formula.hip3_at_or_above_threshold_multiplier * product.deployer_scale,
+            ),
+        };
+        let discount_scale = (Decimal::ONE - user_fees.active_referral_discount)
+            * (Decimal::ONE - user_fees.active_staking_discount);
+        let resolve_rate = |base| hip3.apply(growth.apply(stable.apply(base * discount_scale)));
+        let rates = ProtocolRatePlan {
+            maker: resolve_rate(base_rates.maker),
+            taker: resolve_rate(base_rates.taker),
+        };
+        if config.formula.hip3_at_or_above_deployer_share < Decimal::ZERO {
+            return Err(HyperliquidEconomicsError::InvalidFeeSurface);
+        }
+        let builder = match (
+            product.builder_profile_id.as_ref(),
+            product.builder_rate_bps,
+            product.builder_approved_max_bps,
+        ) {
+            (None, None, None) => BuilderQuotePlan::Unavailable,
+            (Some(profile_id), Some(rate_bps), Some(approved_max_bps))
+                if rate_bps >= Decimal::ZERO && rate_bps <= approved_max_bps =>
+            {
+                BuilderQuotePlan::Approved {
+                    profile_id: profile_id.clone(),
+                    rate_bps,
+                }
+            }
+            (Some(_), Some(_), Some(_)) => {
+                return Err(HyperliquidEconomicsError::BuilderApprovalExceeded);
+            }
+            _ => return Err(HyperliquidEconomicsError::MissingBuilderApproval),
+        };
+        Ok(Self {
             config,
             user_fees,
             product,
-        }
+            rates,
+            builder,
+        })
     }
 
     pub fn quote_components(
@@ -133,7 +224,10 @@ impl HyperliquidEconomicsAdapter {
         request: &EconomicQuoteRequest,
     ) -> Result<Vec<EstimatedEconomicComponent>, HyperliquidEconomicsError> {
         self.validate(request)?;
-        let rate = self.effective_protocol_rate(request)?;
+        let rate = match request.liquidity_role {
+            LiquidityRoleAssumption::GuaranteedMaker => self.rates.maker,
+            LiquidityRoleAssumption::Taker => self.rates.taker,
+        };
         let notional = self.notional(request)?;
         let signed_protocol_amount = -(notional * rate);
         let mut components = Vec::new();
@@ -149,37 +243,33 @@ impl HyperliquidEconomicsAdapter {
             )?);
         }
 
-        if let Some(attachment) = &request.routing.attached_charge {
-            let profile_id = self
-                .product
-                .builder_profile_id
-                .as_deref()
-                .ok_or(HyperliquidEconomicsError::MissingBuilderApproval)?;
-            if profile_id != attachment.attachment_id.as_str() {
-                return Err(HyperliquidEconomicsError::BuilderProfileMismatch);
+        match (&request.routing.attached_charge, &self.builder) {
+            (None, _) => {}
+            (Some(_), BuilderQuotePlan::Unavailable) => {
+                return Err(HyperliquidEconomicsError::MissingBuilderApproval);
             }
-            let rate_bps = self
-                .product
-                .builder_rate_bps
-                .ok_or(HyperliquidEconomicsError::MissingBuilderApproval)?;
-            let approved_max_bps = self
-                .product
-                .builder_approved_max_bps
-                .ok_or(HyperliquidEconomicsError::MissingBuilderApproval)?;
-            if rate_bps < Decimal::ZERO || rate_bps > approved_max_bps {
-                return Err(HyperliquidEconomicsError::BuilderApprovalExceeded);
-            }
-            let signed_builder_amount = -(notional * basis_points_to_fraction(rate_bps));
-            if !signed_builder_amount.is_zero() {
-                components.push(self.component(
-                    request,
-                    self.config.builder_component_id.clone(),
-                    self.config.builder_formula_id.clone(),
-                    self.config.builder_rate_factor_id.clone(),
+            (
+                Some(attachment),
+                BuilderQuotePlan::Approved {
+                    profile_id,
                     rate_bps,
-                    signed_builder_amount,
-                    ExecutionKind::AttachedRouting,
-                )?);
+                },
+            ) => {
+                if profile_id != attachment.attachment_id.as_str() {
+                    return Err(HyperliquidEconomicsError::BuilderProfileMismatch);
+                }
+                let signed_builder_amount = -(notional * basis_points_to_fraction(*rate_bps));
+                if !signed_builder_amount.is_zero() {
+                    components.push(self.component(
+                        request,
+                        self.config.builder_component_id.clone(),
+                        self.config.builder_formula_id.clone(),
+                        self.config.builder_rate_factor_id.clone(),
+                        *rate_bps,
+                        signed_builder_amount,
+                        ExecutionKind::AttachedRouting,
+                    )?);
+                }
             }
         }
         Ok(components)
@@ -189,86 +279,14 @@ impl HyperliquidEconomicsAdapter {
         if self.user_fees.account_id != request.account_id.as_str() {
             return Err(HyperliquidEconomicsError::InvalidAccountScope);
         }
-        if self.user_fees.source_at_ns > self.user_fees.fetched_at_ns
-            || self.user_fees.fetched_at_ns > request.requested_at_ns
+        if self.user_fees.fetched_at_ns > request.requested_at_ns
             || self.user_fees.valid_until_ns < request.requested_at_ns
-            || self.product.source_at_ns > self.product.fetched_at_ns
             || self.product.fetched_at_ns > request.requested_at_ns
             || self.product.valid_until_ns < request.requested_at_ns
         {
             return Err(HyperliquidEconomicsError::StaleSnapshot);
         }
-        if self.product.aligned_quote_or_collateral {
-            return Err(HyperliquidEconomicsError::BlockedUnsupported(
-                BlockedUnsupported::MissingGovernedAlignedStatusCapture,
-            ));
-        }
-        if self.product.product_kind == HyperliquidProductKind::Spot
-            && !self.product.spot_dust_authority_complete
-        {
-            return Err(HyperliquidEconomicsError::BlockedUnsupported(
-                BlockedUnsupported::SpotDustAuthorityIncomplete,
-            ));
-        }
-        let discounts = [
-            self.user_fees.active_referral_discount,
-            self.user_fees.active_staking_discount,
-        ];
-        if self.user_fees.fee_tier.trim().is_empty()
-            || self.user_fees.daily_user_volume < Decimal::ZERO
-            || self.user_fees.trial_credits < Decimal::ZERO
-            || discounts
-                .into_iter()
-                .any(|discount| discount < Decimal::ZERO || discount > Decimal::ONE)
-        {
-            return Err(HyperliquidEconomicsError::InvalidUserFees);
-        }
         Ok(())
-    }
-
-    fn effective_protocol_rate(
-        &self,
-        request: &EconomicQuoteRequest,
-    ) -> Result<Decimal, HyperliquidEconomicsError> {
-        let base = match (self.product.product_kind, request.liquidity_role) {
-            (HyperliquidProductKind::Perp, LiquidityRoleAssumption::Taker) => {
-                self.user_fees.perp_taker_base_rate
-            }
-            (HyperliquidProductKind::Perp, LiquidityRoleAssumption::GuaranteedMaker) => {
-                self.user_fees.perp_maker_base_rate
-            }
-            (HyperliquidProductKind::Spot, LiquidityRoleAssumption::Taker) => {
-                self.user_fees.spot_taker_base_rate
-            }
-            (HyperliquidProductKind::Spot, LiquidityRoleAssumption::GuaranteedMaker) => {
-                self.user_fees.spot_maker_base_rate
-            }
-        };
-        let mut rate = base
-            * (Decimal::ONE - self.user_fees.active_referral_discount)
-            * (Decimal::ONE - self.user_fees.active_staking_discount);
-        if self.product.stable_pair {
-            rate *= self.config.formula.stable_pair_scale;
-        }
-        if self.product.growth_mode {
-            rate *= self.config.formula.growth_mode_scale;
-        }
-        if self.product.hip3 {
-            let hip3_scale =
-                if self.product.deployer_scale < self.config.formula.hip3_scale_threshold {
-                    self.config.formula.hip3_below_threshold_base + self.product.deployer_scale
-                } else {
-                    self.config.formula.hip3_at_or_above_threshold_multiplier
-                        * self.product.deployer_scale
-                };
-            if self.config.formula.hip3_at_or_above_deployer_share < Decimal::ZERO
-                || hip3_scale < Decimal::ZERO
-            {
-                return Err(HyperliquidEconomicsError::InvalidFeeSurface);
-            }
-            rate *= hip3_scale;
-        }
-        Ok(rate)
     }
 
     fn notional(
@@ -336,14 +354,67 @@ impl HyperliquidEconomicsAdapter {
     }
 }
 
+fn validate_authority_snapshots(
+    user_fees: &HyperliquidUserFeesSnapshot,
+    product: &HyperliquidProductEconomicsSnapshot,
+) -> Result<(), HyperliquidEconomicsError> {
+    let user_fees_valid = user_fees.source_at_ns <= user_fees.fetched_at_ns
+        && user_fees.fetched_at_ns <= user_fees.valid_until_ns
+        && !user_fees.fee_tier.trim().is_empty()
+        && user_fees.daily_user_volume >= Decimal::ZERO
+        && user_fees.trial_credits >= Decimal::ZERO
+        && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_referral_discount)
+        && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_staking_discount);
+    let product_timeline_valid = product.source_at_ns <= product.fetched_at_ns
+        && product.fetched_at_ns <= product.valid_until_ns;
+    match (
+        user_fees_valid,
+        product_timeline_valid,
+        product.aligned_quote_or_collateral,
+        product.product_kind,
+        product.spot_dust_authority_complete,
+    ) {
+        (false, _, _, _, _) => Err(HyperliquidEconomicsError::InvalidUserFees),
+        (_, false, _, _, _) => Err(HyperliquidEconomicsError::InvalidProductMetadata),
+        (_, _, true, _, _) => Err(HyperliquidEconomicsError::BlockedUnsupported(
+            BlockedUnsupported::MissingGovernedAlignedStatusCapture,
+        )),
+        (_, _, _, HyperliquidProductKind::Spot, false) => {
+            Err(HyperliquidEconomicsError::BlockedUnsupported(
+                BlockedUnsupported::SpotDustAuthorityIncomplete,
+            ))
+        }
+        (true, true, false, _, _) => Ok(()),
+    }
+}
+
 impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
-    ) -> Result<Vec<EstimatedEconomicComponent>, EconomicsUnavailable> {
-        self.quote_components(request)
-            .map_err(|_| EconomicsUnavailable::ProviderQuoteUnavailable {
+    ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
+        let components = self.quote_components(request).map_err(|_| {
+            EconomicsUnavailable::ProviderQuoteUnavailable {
                 source_id: self.config.source_id.clone(),
-            })
+            }
+        })?;
+        let snapshot_id = SnapshotId::new(self.user_fees.snapshot_id.clone()).map_err(|_| {
+            EconomicsUnavailable::ProviderQuoteUnavailable {
+                source_id: self.config.source_id.clone(),
+            }
+        })?;
+        Ok(VenueQuoteEstimate {
+            authority: SourceValidity {
+                source_id: self.config.source_id.clone(),
+                snapshot_id,
+                source_at_ns: self.user_fees.source_at_ns.max(self.product.source_at_ns),
+                fetched_at_ns: self.user_fees.fetched_at_ns.max(self.product.fetched_at_ns),
+                valid_until_ns: self
+                    .user_fees
+                    .valid_until_ns
+                    .min(self.product.valid_until_ns),
+            },
+            components,
+        })
     }
 }

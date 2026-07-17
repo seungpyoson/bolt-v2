@@ -317,12 +317,16 @@ fn resolve_strategy_client_routes<'a>(
     let mut venues_by_client_id = BTreeMap::new();
     for (client_id, roles) in roles_by_client_id {
         let client = loaded.root.clients.get(client_id.as_str()).ok_or_else(|| {
-            binding_error(
-                strategy,
+            let message = if client_id == strategy.config.execution_client_id {
+                format!(
+                    "execution_client_id `{client_id}` is not present in loaded clients for execution-venue resolution"
+                )
+            } else {
                 format!(
                     "configured client `{client_id}` for {roles:?} is not present in loaded clients"
-                ),
-            )
+                )
+            };
+            binding_error(strategy, message)
         })?;
         clients_by_id.insert(client_id, client);
         venues_by_client_id.insert(client_id, client.venue);
@@ -460,11 +464,14 @@ pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Option<C
     }
 }
 
-fn binding_error(strategy: &LoadedStrategy, message: String) -> BoltV3StrategyRegistrationError {
+fn binding_error(
+    strategy: &LoadedStrategy,
+    message: impl Into<String>,
+) -> BoltV3StrategyRegistrationError {
     BoltV3StrategyRegistrationError::Binding {
         strategy_instance_id: strategy.config.strategy_instance_id.clone(),
         strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
-        message,
+        message: message.into(),
     }
 }
 

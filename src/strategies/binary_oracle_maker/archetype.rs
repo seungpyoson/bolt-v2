@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use toml::{Value, map::Map};
 
 use nautilus_model::data::{OrderBookDelta, TradeTick};
+use nautilus_model::identifiers::StrategyId;
 
 use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
 use crate::bolt_v3_maker_go_live_gate::{

@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 
+use nautilus_model::identifiers::StrategyId;
 use rust_decimal::Decimal;
 use toml::{Value, map::Map};
 

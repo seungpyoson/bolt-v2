@@ -639,7 +639,7 @@ impl BoltV3SubmitAdmissionState {
         let inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .map_err(|_| BoltV3SubmitAdmissionHealthReadError::StateLockPoisoned)?;
         Ok(BoltV3SubmitAdmissionOperatorHealthSnapshot {
             kill_switch_state: inner.kill_switch_state.clone(),
             capital_admission_state: inner
@@ -1533,7 +1533,7 @@ impl BoltV3SubmitAdmissionState {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .expect("submit admission state mutex should not be poisoned");
         let mut evaluation = self.evaluate(&mut inner, request, now_ns);
         let mut admitted_counter_update = None;
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
@@ -1823,7 +1823,7 @@ impl BoltV3SubmitAdmissionState {
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
             self.reject_episodes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .expect("submit admission state mutex should not be poisoned")
                 .clear();
         } else if evaluation.outcome != BoltV3AdmissionOutcome::RejectedLossGovernorHalted {
             // Loss-governor halts are MECE with order-level rejects; RC5 records loss halts.

@@ -45,9 +45,18 @@ pub struct ExecutionEconomicsConfig {
     pub carry_surfaces: BTreeSet<String>,
     pub sources: BTreeMap<String, String>,
     pub formula: BTreeMap<String, String>,
+    pub quote_components: BTreeMap<String, EconomicsQuoteComponentConfig>,
     pub assets: BTreeMap<String, EconomicsAssetIdentityConfig>,
     pub valuation: ValuationConfig,
     pub carry: Option<CarryQuotePolicyConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsQuoteComponentConfig {
+    pub component_id: String,
+    pub formula_id: String,
+    pub rate_factor_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -69,6 +78,7 @@ pub struct EconomicsAssetIdentityConfig {
 #[serde(deny_unknown_fields)]
 pub struct EdgeBasisResolverConfig {
     pub resolver_id: String,
+    pub policy_version: u64,
     pub product_metadata_source: String,
 }
 
@@ -83,12 +93,18 @@ pub struct ValuationConfig {
 pub struct ValuationRouteConfig {
     pub from_unit: String,
     pub to_currency: String,
-    pub valuation_policy: String,
+    pub valuation_policy: ValuationPolicy,
     pub client_id: String,
     pub instrument_id: String,
     pub orientation: ValuationOrientation,
     pub max_age_ms: u64,
     pub legs: Vec<ValuationLegConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ValuationPolicy {
+    TopOfBookMidpoint,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -113,6 +129,9 @@ pub enum ValuationOrientation {
 #[serde(deny_unknown_fields)]
 pub struct CarryQuotePolicyConfig {
     pub holding_horizon_secs: u64,
+    pub funding_interval_secs: u64,
+    pub funding_venue_rate_cap_bps_per_hour: String,
+    pub funding_standard_price_stress_multiplier: String,
     pub component_id: String,
     pub formula_id: String,
     pub point_rate_factor_id: String,
@@ -144,6 +163,9 @@ pub enum EconomicsConfigField {
     ValuationInstrument,
     SourcePolicy,
     FormulaPolicy,
+    QuoteComponent,
+    QuoteFormulaId,
+    QuoteRateFactorId,
     AssetIdentity,
     AssetEvidenceFixture,
 }
@@ -194,6 +216,7 @@ pub enum EconomicsConfigError {
     },
     EmptySourcePolicy,
     EmptyFormulaPolicy,
+    EmptyQuoteComponentMapping,
     EmptyAssetIdentityMapping,
     MissingValuationRoute {
         native_unit: String,
@@ -262,6 +285,9 @@ impl ExecutionEconomicsConfig {
         if self.formula.is_empty() {
             errors.push(EconomicsConfigError::EmptyFormulaPolicy);
         }
+        if self.quote_components.is_empty() {
+            errors.push(EconomicsConfigError::EmptyQuoteComponentMapping);
+        }
         if self.assets.is_empty() {
             errors.push(EconomicsConfigError::EmptyAssetIdentityMapping);
         }
@@ -296,6 +322,28 @@ impl ExecutionEconomicsConfig {
         for (parameter, value) in &self.formula {
             require_text(parameter, EconomicsConfigField::FormulaPolicy, &mut errors);
             require_text(value, EconomicsConfigField::FormulaPolicy, &mut errors);
+        }
+        for (component_key, component) in &self.quote_components {
+            require_text(
+                component_key,
+                EconomicsConfigField::QuoteComponent,
+                &mut errors,
+            );
+            require_text(
+                &component.component_id,
+                EconomicsConfigField::QuoteComponent,
+                &mut errors,
+            );
+            require_text(
+                &component.formula_id,
+                EconomicsConfigField::QuoteFormulaId,
+                &mut errors,
+            );
+            require_text(
+                &component.rate_factor_id,
+                EconomicsConfigField::QuoteRateFactorId,
+                &mut errors,
+            );
         }
         for (surface, policy_id) in &self.product_surface_policies {
             require_text(surface, EconomicsConfigField::ProductSurface, &mut errors);
@@ -333,14 +381,29 @@ impl ExecutionEconomicsConfig {
                 EconomicsConfigField::EdgeBasisMetadataSource,
                 &mut errors,
             );
+            if resolver.policy_version == 0 {
+                errors.push(EconomicsConfigError::InvalidQuoteWindow);
+            }
         }
         errors.extend(
             self.valuation
                 .validate(&reporting.pnl_currency, active_data_clients),
         );
         if let Some(carry) = &self.carry {
-            if is_zero(carry.holding_horizon_secs) {
+            if is_zero(carry.holding_horizon_secs) || is_zero(carry.funding_interval_secs) {
                 errors.push(EconomicsConfigError::ZeroCarryHorizon);
+            }
+            for value in [
+                &carry.funding_venue_rate_cap_bps_per_hour,
+                &carry.funding_standard_price_stress_multiplier,
+            ] {
+                if value
+                    .parse::<rust_decimal::Decimal>()
+                    .map(|value| value <= rust_decimal::Decimal::ZERO)
+                    .unwrap_or(true)
+                {
+                    errors.push(EconomicsConfigError::InvalidQuoteWindow);
+                }
             }
             require_text(
                 &carry.component_id,
@@ -420,10 +483,6 @@ impl ValuationConfig {
                 (
                     &route.to_currency,
                     EconomicsConfigField::ValuationDestination,
-                ),
-                (
-                    &route.valuation_policy,
-                    EconomicsConfigField::ValuationPolicy,
                 ),
                 (&route.client_id, EconomicsConfigField::ValuationClient),
                 (

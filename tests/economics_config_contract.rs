@@ -32,6 +32,11 @@ account_fees = "user_fees"
 [formula]
 rate_scale = "1"
 
+[quote_components.protocol]
+component_id = "protocol-execution"
+formula_id = "configured-protocol-formula"
+rate_factor_id = "configured-protocol-rate"
+
 [assets.settlement]
 native_unit = "pUSD"
 identity_kind = "currency"
@@ -39,6 +44,7 @@ evidence_fixture_id = "settlement-pusd-v1"
 
 [edge_basis.default]
 resolver_id = "perp-notional"
+policy_version = 1
 product_metadata_source = "product-snapshot"
 
 [valuation]
@@ -46,6 +52,9 @@ routes = {}
 
 [carry]
 holding_horizon_secs = 3600
+funding_interval_secs = 3600
+funding_venue_rate_cap_bps_per_hour = "400"
+funding_standard_price_stress_multiplier = "1.5"
 component_id = "funding-carry"
 formula_id = "funding-rate-bound"
 point_rate_factor_id = "funding-point-rate"
@@ -83,10 +92,11 @@ fn non_reporting_native_unit_requires_one_explicit_valuation_route() {
 }
 
 #[test]
-fn sources_formula_and_assets_are_required_policy_not_defaults() {
+fn sources_formula_components_and_assets_are_required_policy_not_defaults() {
     for block in [
         "[sources]\naccount_fees = \"user_fees\"\n",
         "[formula]\nrate_scale = \"1\"\n",
+        "[quote_components.protocol]\ncomponent_id = \"protocol-execution\"\nformula_id = \"configured-protocol-formula\"\nrate_factor_id = \"configured-protocol-rate\"\n",
         "[assets.settlement]\nnative_unit = \"pUSD\"\nidentity_kind = \"currency\"\nevidence_fixture_id = \"settlement-pusd-v1\"\n",
     ] {
         assert!(parse(&valid_config().replace(block, "")).is_err());
@@ -130,7 +140,7 @@ fn duplicate_disconnected_or_inactive_valuation_authority_fails_closed() {
 [valuation.routes.usdc]
 from_unit = "USDC"
 to_currency = "pUSD"
-valuation_policy = "configured-market"
+valuation_policy = "top_of_book_midpoint"
 client_id = "fx-data"
 instrument_id = "USDC-pUSD"
 orientation = "base_to_quote"
@@ -140,7 +150,7 @@ legs = []
 [valuation.routes.usdc-duplicate]
 from_unit = "USDC"
 to_currency = "pUSD"
-valuation_policy = "configured-market"
+valuation_policy = "top_of_book_midpoint"
 client_id = "fx-data"
 instrument_id = "USDC-pUSD-2"
 orientation = "base_to_quote"
@@ -167,7 +177,7 @@ fn non_identity_valuation_route_requires_connected_legs() {
 [valuation.routes.usdc]
 from_unit = "USDC"
 to_currency = "pUSD"
-valuation_policy = "configured-market"
+valuation_policy = "top_of_book_midpoint"
 client_id = "fx-data"
 instrument_id = "USDC-pUSD"
 orientation = "base_to_quote"
@@ -190,7 +200,7 @@ fn every_valuation_leg_requires_an_active_configured_source() {
 [valuation.routes.token]
 from_unit = "TOKEN"
 to_currency = "pUSD"
-valuation_policy = "configured-market"
+valuation_policy = "top_of_book_midpoint"
 client_id = "fx-data"
 instrument_id = "TOKEN-pUSD"
 orientation = "base_to_quote"

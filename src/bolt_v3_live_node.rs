@@ -52,7 +52,7 @@ use std::{
 };
 
 use ahash::AHashMap;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::LevelFilter;
 use nautilus_common::{
     component::Component,
@@ -363,6 +363,10 @@ pub struct BoltV3LiveNodeRuntime {
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
+    economics_inputs: crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore,
+    economics_authorities:
+        Vec<Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>>,
+    economics_valuation_subscriptions: Vec<EconomicsValuationSubscription>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -899,7 +903,72 @@ struct BoltV3LiveNodeRuntimeComponents {
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
+    economics_inputs: crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore,
+    economics_authorities:
+        Vec<Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>>,
+    economics_valuation_subscriptions: Vec<EconomicsValuationSubscription>,
     redaction_values: Vec<Zeroizing<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct EconomicsValuationSubscription {
+    client_id: ClientId,
+    instrument_id: InstrumentId,
+}
+
+fn economics_valuation_provider_from_cache(
+    config: &crate::bolt_v3_economics_config::ValuationConfig,
+    cache: &Rc<RefCell<nautilus_common::cache::Cache>>,
+) -> anyhow::Result<Arc<dyn crate::economics::ValuationProvider>> {
+    let cache = cache.borrow();
+    let mut observations = Vec::new();
+    let mut observed_sources = BTreeSet::new();
+    for route in config.routes.values() {
+        for leg in &route.legs {
+            if !observed_sources.insert((leg.client_id.as_str(), leg.instrument_id.as_str())) {
+                continue;
+            }
+            let instrument_id = InstrumentId::from_str(&leg.instrument_id)
+                .context("economics valuation instrument identifier is invalid")?;
+            let quote = cache
+                .quote(&instrument_id)
+                .context("economics valuation quote is unavailable")?;
+            let price = match route.valuation_policy {
+                crate::bolt_v3_economics_config::ValuationPolicy::TopOfBookMidpoint => quote
+                    .bid_price
+                    .as_decimal()
+                    .checked_add(quote.ask_price.as_decimal())
+                    .and_then(|sum| sum.checked_div(Decimal::TWO))
+                    .context("economics valuation midpoint overflow")?,
+            };
+            let snapshot_payload = format!(
+                "{}\0{}\0{}\0{}\0{}",
+                leg.client_id,
+                leg.instrument_id,
+                quote.bid_price,
+                quote.ask_price,
+                quote.ts_event.as_u64()
+            );
+            observations.push(
+                crate::bolt_v3_economics_runtime::AuthoritativeValuationObservation {
+                    client_id: leg.client_id.clone(),
+                    instrument_id: leg.instrument_id.clone(),
+                    price,
+                    snapshot_id: crate::economics::SnapshotId::new(format!(
+                        "sha256:{}",
+                        hex::encode(Sha256::digest(snapshot_payload.as_bytes()))
+                    ))?,
+                    observed_at_ns: quote.ts_event.as_u64(),
+                },
+            );
+        }
+    }
+    crate::bolt_v3_economics_runtime::ConfiguredValuationProvider::from_config(
+        config,
+        &observations,
+    )
+    .map(|provider| Arc::new(provider) as Arc<dyn crate::economics::ValuationProvider>)
+    .map_err(Into::into)
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -934,6 +1003,9 @@ impl BoltV3LiveNodeRuntime {
             input_health_configured_source_count: runtime_components
                 .input_health_configured_source_count,
             settlement_health: runtime_components.settlement_health,
+            economics_inputs: runtime_components.economics_inputs,
+            economics_authorities: runtime_components.economics_authorities,
+            economics_valuation_subscriptions: runtime_components.economics_valuation_subscriptions,
             redaction_values: runtime_components.redaction_values,
         }
     }
@@ -1081,6 +1153,143 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn redaction_values(&self) -> &[Zeroizing<String>] {
         &self.redaction_values
+    }
+
+    fn spawn_economics_authority_refresh_on_running(
+        &self,
+        root: &BoltV3RootConfig,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        let state_poll_interval =
+            Duration::from_millis(root.persistence.runtime_capture_start_poll_interval_ms);
+        let mut tasks = Vec::new();
+        if !self.economics_valuation_subscriptions.is_empty() {
+            let subscriptions = self.economics_valuation_subscriptions.clone();
+            let node_handle = self.node.handle();
+            tasks.push(tokio::task::spawn_local(async move {
+                loop {
+                    match node_handle.state() {
+                        NodeState::Running => break,
+                        NodeState::ShuttingDown | NodeState::Stopped => return,
+                        NodeState::Idle | NodeState::Starting => {
+                            tokio::time::sleep(state_poll_interval).await;
+                        }
+                    }
+                }
+                let sender = get_data_cmd_sender();
+                for subscription in subscriptions {
+                    sender.execute(DataCommand::Subscribe(SubscribeCommand::Quotes(
+                        SubscribeQuotes::new(
+                            subscription.instrument_id,
+                            Some(subscription.client_id),
+                            None,
+                            UUID4::new(),
+                            get_atomic_clock_realtime().get_time_ns(),
+                            None,
+                            None,
+                        ),
+                    )));
+                }
+            }));
+        }
+        let cache = self.node.kernel().cache();
+        for authority in &self.economics_authorities {
+            let authority = authority.clone();
+            let inputs = self.economics_inputs.clone();
+            let cache = cache.clone();
+            let node_handle = self.node.handle();
+            tasks.push(tokio::task::spawn_local(async move {
+                loop {
+                    match node_handle.state() {
+                        NodeState::Running => break,
+                        NodeState::ShuttingDown | NodeState::Stopped => return,
+                        NodeState::Idle | NodeState::Starting => {
+                            tokio::time::sleep(state_poll_interval).await;
+                        }
+                    }
+                }
+                let refresh_interval =
+                    Duration::from_secs(authority.economics_config().quote_refresh_secs);
+                loop {
+                    let valuation_provider = economics_valuation_provider_from_cache(
+                        &authority.economics_config().valuation,
+                        &cache,
+                    );
+                    let instruments = cache
+                        .borrow()
+                        .instruments(&authority.venue(), None)
+                        .into_iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    match valuation_provider {
+                        Ok(valuation_provider) => {
+                            for instrument in instruments {
+                                let instrument_id = instrument.id();
+                                let refreshed_at_ns = match current_unix_nanos() {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        log::error!(
+                                            "economics authority clock failed: execution_client_id={} error={error}",
+                                            authority.execution_client_id()
+                                        );
+                                        continue;
+                                    }
+                                };
+                                match authority.refresh(instrument, refreshed_at_ns).await {
+                                    Ok(snapshot) => {
+                                        if !authority
+                                            .economics_config()
+                                            .product_surface_policies
+                                            .contains_key(&snapshot.product_surface_id)
+                                        {
+                                            log::error!(
+                                                "economics authority selected an unconfigured product surface: execution_client_id={} surface={}",
+                                                authority.execution_client_id(),
+                                                snapshot.product_surface_id
+                                            );
+                                            continue;
+                                        }
+                                        if let Err(error) = inputs.publish(
+                                            authority.execution_client_id(),
+                                            instrument_id.as_str(),
+                                            &snapshot.product_surface_id,
+                                            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsQuoteDependencies {
+                                                provider_key: authority.provider_key().to_string(),
+                                                refreshed_at_ns,
+                                                adapter: snapshot.adapter,
+                                                edge_basis: snapshot.edge_basis,
+                                                valuation_provider: valuation_provider.clone(),
+                                            },
+                                        ) {
+                                            log::error!(
+                                                "economics authority publish failed: execution_client_id={} instrument_id={} error={error}",
+                                                authority.execution_client_id(),
+                                                instrument_id
+                                            );
+                                        }
+                                    }
+                                    Err(error) => log::error!(
+                                        "economics authority refresh failed: execution_client_id={} instrument_id={} error={error:#}",
+                                        authority.execution_client_id(),
+                                        instrument_id
+                                    ),
+                                }
+                            }
+                        }
+                        Err(error) => log::error!(
+                            "economics valuation authority unavailable: execution_client_id={} error={error:#}",
+                            authority.execution_client_id()
+                        ),
+                    }
+                    match node_handle.state() {
+                        NodeState::ShuttingDown | NodeState::Stopped => return,
+                        NodeState::Idle | NodeState::Starting | NodeState::Running => {
+                            tokio::time::sleep(refresh_interval).await;
+                        }
+                    }
+                }
+            }));
+        }
+        tasks
     }
 
     pub fn handle(&self) -> LiveNodeHandle {
@@ -2671,6 +2880,8 @@ pub async fn run_bolt_v3_live_node(
     .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
     let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
+    let economics_authority_tasks =
+        runtime.spawn_economics_authority_refresh_on_running(&loaded.root);
     let startup_timeout_secs = nautilus_startup_bound_secs(&loaded.root.nautilus)
         .map_err(|_| BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow)?;
     let startup_shutdown_grace_secs = live_node_startup_shutdown_grace_secs(loaded)?;
@@ -2704,6 +2915,9 @@ pub async fn run_bolt_v3_live_node(
         .await
     };
     if let Some(task) = iv_start_task {
+        task.abort();
+    }
+    for task in economics_authority_tasks {
         task.abort();
     }
     let iv_stop_result = runtime.stop_iv_engine_lifecycle(&loaded.root);
@@ -3006,12 +3220,80 @@ fn build_live_node_with_clients(
     )
 }
 
+fn build_economics_authorities(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<
+    Vec<Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>>,
+    BoltV3LiveNodeError,
+> {
+    let mut authorities = Vec::new();
+    for (execution_client_id, client) in &loaded.root.clients {
+        let Some(execution) = client.execution.as_ref() else {
+            continue;
+        };
+        let binding = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+            .ok_or_else(|| {
+                BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                    "execution client {execution_client_id} has no provider registry binding"
+                ))
+            })?;
+        let builder = binding.build_economics_authority.ok_or_else(|| {
+            BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "execution client {execution_client_id} has no production economics authority binding"
+            ))
+        })?;
+        let authority = builder(bolt_v3_providers::EconomicsAuthorityBuildContext {
+            execution_client_id,
+            venue: client.venue,
+            execution,
+            resolved_secrets: resolved.clients.get(execution_client_id),
+        })
+        .map_err(|error| {
+            BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "execution client {execution_client_id} economics authority build failed: {error}"
+            ))
+        })?;
+        authorities.push(authority);
+    }
+    Ok(authorities)
+}
+
+fn build_economics_valuation_subscriptions(
+    authorities: &[Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>],
+) -> Result<Vec<EconomicsValuationSubscription>, BoltV3LiveNodeError> {
+    let mut subscriptions = BTreeSet::new();
+    for authority in authorities {
+        for route in authority.economics_config().valuation.routes.values() {
+            for leg in &route.legs {
+                let instrument_id =
+                    InstrumentId::from_str(&leg.instrument_id).map_err(|error| {
+                        BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                            "economics valuation instrument {} is invalid: {error}",
+                            leg.instrument_id
+                        ))
+                    })?;
+                subscriptions.insert(EconomicsValuationSubscription {
+                    client_id: ClientId::new(leg.client_id.as_str()),
+                    instrument_id,
+                });
+            }
+        }
+    }
+    Ok(subscriptions.into_iter().collect())
+}
+
 fn build_live_node_with_clients_and_submit_approval_limits(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let economics_inputs =
+        crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default();
+    let economics_authorities = build_economics_authorities(loaded, resolved)?;
+    let economics_valuation_subscriptions =
+        build_economics_valuation_subscriptions(&economics_authorities)?;
     // Enabled kill-switch boot must fail closed on an unresolved/corrupt/missing
     // durable record before constructing NT clients or registering
     // submit-capable strategy runtime. A clean recovery returns the latched
@@ -3260,8 +3542,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         settlement_runtime_sink,
         settlement_recovery,
         settlement_health_transition_emitter: Some(settlement_health_transition_emitter),
-        economics_inputs:
-            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
+        economics_inputs: economics_inputs.clone(),
     };
     let iv_runtime = loaded
         .root
@@ -3436,6 +3717,9 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             operator_health_transition_logger,
             input_health_configured_source_count,
             settlement_health,
+            economics_inputs,
+            economics_authorities,
+            economics_valuation_subscriptions,
             redaction_values: resolved.redaction_values(),
         },
     );

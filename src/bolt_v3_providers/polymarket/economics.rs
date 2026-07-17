@@ -1,12 +1,30 @@
-use crate::economics::{
-    AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
-    EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
-    LiquidityRoleAssumption, NativeUnitId, SignedNativeEffect, SnapshotId, SourceId,
-    SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
+use crate::{
+    bolt_v3_economics_runtime::{
+        AuthoritativeEdgeBasis, ProviderEconomicsAuthority, ProviderEconomicsAuthoritySnapshot,
+    },
+    economics::{
+        AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
+        EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
+        LiquidityRoleAssumption, NativeUnitId, SignedNativeEffect, SnapshotId, SourceId,
+        SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
+    },
 };
+use anyhow::Context;
+use async_trait::async_trait;
+use nautilus_core::consts::NAUTILUS_USER_AGENT;
+use nautilus_model::{
+    identifiers::{InstrumentId, Venue},
+    instruments::{Instrument, InstrumentAny},
+};
+use nautilus_network::http::{HttpClient, USER_AGENT, Url};
+use nautilus_polymarket::providers::extract_condition_id;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FeeRoundingMode {
@@ -40,6 +58,70 @@ pub struct PolymarketEconomicsAdapterConfig {
     pub builder_rate_factor_id: FormulaId,
     pub source_id: SourceId,
     pub formula: PolymarketFormulaPolicy,
+}
+
+impl PolymarketEconomicsAdapterConfig {
+    pub fn from_execution_config(
+        economics: &crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+    ) -> Result<Self, PolymarketEconomicsError> {
+        let platform = economics
+            .quote_components
+            .get("platform")
+            .ok_or(PolymarketEconomicsError::InvalidIdentity)?;
+        let builder = economics
+            .quote_components
+            .get("builder")
+            .ok_or(PolymarketEconomicsError::InvalidIdentity)?;
+        let collateral = economics
+            .assets
+            .get("collateral")
+            .ok_or(PolymarketEconomicsError::InvalidIdentity)?;
+        let rounding_mode = match economics
+            .formula
+            .get("fee_rounding_mode")
+            .map(String::as_str)
+        {
+            Some("midpoint_away_from_zero") => FeeRoundingMode::MidpointAwayFromZero,
+            Some("to_zero") => FeeRoundingMode::ToZero,
+            _ => return Err(PolymarketEconomicsError::InvalidIdentity),
+        };
+        Ok(Self {
+            collateral_unit: NativeUnitId::new(collateral.native_unit.clone())
+                .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            platform_component_id: crate::economics::EconomicComponentId::new(
+                platform.component_id.clone(),
+            )
+            .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            platform_formula_id: FormulaId::new(platform.formula_id.clone())
+                .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            platform_rate_factor_id: FormulaId::new(platform.rate_factor_id.clone())
+                .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            builder_component_id: crate::economics::EconomicComponentId::new(
+                builder.component_id.clone(),
+            )
+            .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            builder_formula_id: FormulaId::new(builder.formula_id.clone())
+                .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            builder_rate_factor_id: FormulaId::new(builder.rate_factor_id.clone())
+                .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            source_id: SourceId::new(
+                economics
+                    .sources
+                    .get("schedule")
+                    .ok_or(PolymarketEconomicsError::InvalidIdentity)?
+                    .clone(),
+            )
+            .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
+            formula: PolymarketFormulaPolicy {
+                fee_round_decimal_places: economics
+                    .formula
+                    .get("fee_round_decimal_places")
+                    .and_then(|value| u32::from_str(value).ok())
+                    .ok_or(PolymarketEconomicsError::InvalidIdentity)?,
+                fee_rounding_mode: rounding_mode,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,6 +273,153 @@ pub struct PolymarketEconomicsAdapter {
     snapshot: PolymarketMarketInfoSnapshot,
     platform_plan: PlatformQuotePlan,
     builder_plan: BuilderQuotePlan,
+}
+
+pub struct PolymarketEconomicsAuthority {
+    execution_client_id: String,
+    venue: Venue,
+    economics: crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+    adapter_config: PolymarketEconomicsAdapterConfig,
+    product_surface_id: String,
+    edge_basis_policy_id: String,
+    base_url: Url,
+    http_timeout_secs: u64,
+    http_client: HttpClient,
+}
+
+impl PolymarketEconomicsAuthority {
+    pub fn try_new(
+        execution_client_id: &str,
+        venue: Venue,
+        execution: super::PolymarketExecutionConfig,
+    ) -> anyhow::Result<Self> {
+        let adapter_config =
+            PolymarketEconomicsAdapterConfig::from_execution_config(&execution.economics)
+                .map_err(|error| anyhow::anyhow!("invalid economics adapter config: {error:?}"))?;
+        let [(product_surface_id, edge_basis_policy_id)] = execution
+            .economics
+            .product_surface_policies
+            .iter()
+            .collect::<Vec<_>>()
+            .as_slice()
+        else {
+            anyhow::bail!("Polymarket economics requires exactly one configured product surface");
+        };
+        let base_url = Url::parse(&execution.base_url_http)
+            .context("invalid configured Polymarket HTTP base URL")?;
+        let http_client = HttpClient::new(
+            HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())]),
+            Vec::new(),
+            Vec::new(),
+            None,
+            Some(execution.http_timeout_secs),
+            None,
+        )
+        .context("could not build Polymarket economics HTTP client")?;
+        Ok(Self {
+            execution_client_id: execution_client_id.to_string(),
+            venue,
+            economics: execution.economics,
+            adapter_config,
+            product_surface_id: (*product_surface_id).clone(),
+            edge_basis_policy_id: (*edge_basis_policy_id).clone(),
+            base_url,
+            http_timeout_secs: execution.http_timeout_secs,
+            http_client,
+        })
+    }
+
+    fn market_info_url(&self, instrument_id: &InstrumentId) -> anyhow::Result<Url> {
+        let condition_id = extract_condition_id(instrument_id)
+            .context("Polymarket instrument has no condition identifier")?;
+        self.base_url
+            .join(&format!("clob-markets/{condition_id}"))
+            .context("configured Polymarket market-info URL is invalid")
+    }
+}
+
+#[async_trait(?Send)]
+impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
+    fn execution_client_id(&self) -> &str {
+        &self.execution_client_id
+    }
+
+    fn provider_key(&self) -> &str {
+        self.venue.as_str()
+    }
+
+    fn venue(&self) -> Venue {
+        self.venue
+    }
+
+    fn economics_config(&self) -> &crate::bolt_v3_economics_config::ExecutionEconomicsConfig {
+        &self.economics
+    }
+
+    async fn refresh(
+        &self,
+        instrument: InstrumentAny,
+        refreshed_at_ns: u64,
+    ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot> {
+        let instrument_id = instrument.id();
+        let response = self
+            .http_client
+            .get(
+                self.market_info_url(&instrument_id)?.to_string(),
+                None,
+                None,
+                Some(self.http_timeout_secs),
+                None,
+            )
+            .await
+            .context("Polymarket economics market-info fetch failed")?;
+        anyhow::ensure!(
+            response.status.is_success(),
+            "Polymarket economics market-info returned HTTP status {}",
+            response.status.as_u16()
+        );
+        let body = std::str::from_utf8(&response.body)
+            .context("Polymarket economics market-info was not UTF-8 JSON")?;
+        let snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&response.body)));
+        let max_age_ns = self
+            .economics
+            .quote_max_age_secs
+            .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
+            .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
+            .context("Polymarket economics maximum age overflows nanoseconds")?;
+        let valid_until_ns = refreshed_at_ns
+            .checked_add(max_age_ns)
+            .context("Polymarket economics validity deadline overflow")?;
+        let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(
+            PolymarketSnapshotMetadata {
+                snapshot_id: snapshot_id.clone(),
+                source_at_ns: refreshed_at_ns,
+                fetched_at_ns: refreshed_at_ns,
+                valid_until_ns,
+            },
+            body,
+        )
+        .map_err(|error| anyhow::anyhow!("invalid Polymarket market-info: {error:?}"))?;
+        let adapter =
+            PolymarketEconomicsAdapter::try_new(self.adapter_config.clone(), snapshot, None)
+                .map_err(|error| {
+                    anyhow::anyhow!("invalid Polymarket economics adapter: {error:?}")
+                })?;
+        let edge_policy = self
+            .economics
+            .edge_basis
+            .get(&self.edge_basis_policy_id)
+            .context("Polymarket economics edge-basis policy is missing")?;
+        Ok(ProviderEconomicsAuthoritySnapshot {
+            product_surface_id: self.product_surface_id.clone(),
+            adapter: Arc::new(adapter),
+            edge_basis: AuthoritativeEdgeBasis {
+                policy_version: edge_policy.policy_version,
+                source_snapshot_ids: vec![SnapshotId::new(snapshot_id)?],
+                valid_until_ns,
+            },
+        })
+    }
 }
 
 enum PlatformQuotePlan {

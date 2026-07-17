@@ -163,6 +163,34 @@ pub fn execution_economics_config(
         .map(|config| config.economics)
 }
 
+pub(crate) fn build_economics_authority(
+    context: super::EconomicsAuthorityBuildContext<'_>,
+) -> Result<Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>, String> {
+    let execution = context
+        .execution
+        .clone()
+        .try_into::<HyperliquidExecutionConfig>()
+        .map_err(|error| format!("invalid Hyperliquid execution economics config: {error}"))?;
+    let secrets = context
+        .resolved_secrets
+        .and_then(|secrets| {
+            secrets
+                .as_any()
+                .downcast_ref::<ResolvedBoltV3HyperliquidSecrets>()
+        })
+        .ok_or_else(|| {
+            "Hyperliquid economics authority requires SSM-resolved secrets".to_string()
+        })?;
+    economics::HyperliquidEconomicsAuthority::try_new(
+        context.execution_client_id,
+        context.venue,
+        execution,
+        secrets,
+    )
+    .map(|authority| Arc::new(authority) as Arc<_>)
+    .map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidLiveSubmitConfig {
@@ -705,6 +733,17 @@ fn validate_quote_economics_policy(
     {
         errors.push(format!(
             "clients.{key}.execution.economics.formula must provide all non-negative Hyperliquid developer-formula coefficients"
+        ));
+    }
+    if economics
+        .quote_components
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != BTreeSet::from(["builder", "protocol"])
+    {
+        errors.push(format!(
+            "clients.{key}.execution.economics.quote_components must bind exactly the protocol and builder component identities"
         ));
     }
     if economics.assets.len() != 1 || !economics.assets.contains_key("settlement") {

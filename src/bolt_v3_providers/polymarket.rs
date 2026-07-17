@@ -250,6 +250,23 @@ pub fn execution_economics_config(
         .map(|config| config.economics)
 }
 
+pub(crate) fn build_economics_authority(
+    context: super::EconomicsAuthorityBuildContext<'_>,
+) -> Result<Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>, String> {
+    let execution = context
+        .execution
+        .clone()
+        .try_into::<PolymarketExecutionConfig>()
+        .map_err(|error| format!("invalid Polymarket execution economics config: {error}"))?;
+    economics::PolymarketEconomicsAuthority::try_new(
+        context.execution_client_id,
+        context.venue,
+        execution,
+    )
+    .map(|authority| Arc::new(authority) as Arc<_>)
+    .map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PolymarketOnChainCollateralConfig {
@@ -566,7 +583,8 @@ fn validate_quote_economics_policy(
         "fee_rounding_mode",
         "sub_fee_quantum_behavior",
     ]);
-    let actual_formula_keys = economics.formula.keys().map(String::as_str).collect();
+    let actual_formula_keys: BTreeSet<&str> =
+        economics.formula.keys().map(String::as_str).collect();
     if actual_formula_keys != expected_formula_keys
         || economics
             .formula
@@ -588,6 +606,17 @@ fn validate_quote_economics_policy(
     {
         errors.push(format!(
             "clients.{key}.execution.economics.formula must provide the complete validated Polymarket rounding policy"
+        ));
+    }
+    if economics
+        .quote_components
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != BTreeSet::from(["builder", "platform"])
+    {
+        errors.push(format!(
+            "clients.{key}.execution.economics.quote_components must bind exactly the platform and builder component identities"
         ));
     }
     if economics.assets.len() != 1 || !economics.assets.contains_key("collateral") {

@@ -1,12 +1,30 @@
-use crate::economics::{
-    AdmissionTreatment, CalculationFactor, CarryKind, EconomicClass, EconomicKind,
-    EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent,
-    ExecutionKind, FormulaId, LiquidityRoleAssumption, NativeUnitId, PositionSide,
-    RiskBoundAuthority, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
-    VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
+use crate::{
+    bolt_v3_economics_runtime::{
+        AuthoritativeEdgeBasis, ProviderEconomicsAuthority, ProviderEconomicsAuthoritySnapshot,
+    },
+    economics::{
+        AdmissionTreatment, CalculationFactor, CarryKind, EconomicClass, EconomicKind,
+        EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent,
+        ExecutionKind, FormulaId, LiquidityRoleAssumption, NativeUnitId, PositionSide,
+        RiskBoundAuthority, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+        VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
+    },
 };
+use anyhow::Context;
+use async_trait::async_trait;
+use nautilus_core::consts::NAUTILUS_USER_AGENT;
+use nautilus_hyperliquid::http::models::PerpMetaAndCtxs;
+use nautilus_model::{
+    identifiers::Venue,
+    instruments::{Instrument, InstrumentAny},
+};
+use nautilus_network::http::{HttpClient, USER_AGENT};
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::str::FromStr;
+use std::{collections::HashMap, sync::Arc};
+use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidFormulaPolicy {
@@ -32,6 +50,108 @@ pub struct HyperliquidEconomicsAdapterConfig {
     pub carry: Option<HyperliquidCarryPolicy>,
 }
 
+impl HyperliquidEconomicsAdapterConfig {
+    pub fn from_execution_config(
+        economics: &crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+    ) -> Result<Self, HyperliquidEconomicsError> {
+        let protocol = economics
+            .quote_components
+            .get("protocol")
+            .ok_or(HyperliquidEconomicsError::InvalidIdentity)?;
+        let builder = economics
+            .quote_components
+            .get("builder")
+            .ok_or(HyperliquidEconomicsError::InvalidIdentity)?;
+        let settlement = economics
+            .assets
+            .get("settlement")
+            .ok_or(HyperliquidEconomicsError::InvalidIdentity)?;
+        let decimal = |key: &str| {
+            economics
+                .formula
+                .get(key)
+                .and_then(|value| Decimal::from_str(value).ok())
+                .ok_or(HyperliquidEconomicsError::InvalidIdentity)
+        };
+        let carry = economics
+            .carry
+            .as_ref()
+            .map(|carry| {
+                Ok(HyperliquidCarryPolicy {
+                    component_id: crate::economics::EconomicComponentId::new(
+                        carry.component_id.clone(),
+                    )
+                    .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    formula_id: FormulaId::new(carry.formula_id.clone())
+                        .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    point_rate_factor_id: FormulaId::new(carry.point_rate_factor_id.clone())
+                        .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    bound_rate_factor_id: FormulaId::new(carry.bound_rate_factor_id.clone())
+                        .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    risk_policy_id: FormulaId::new(carry.risk_policy_id.clone())
+                        .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    stress_fixture_id: FormulaId::new(carry.stress_fixture_id.clone())
+                        .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    funding_interval_ns: carry
+                        .funding_interval_secs
+                        .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
+                        .and_then(|value| {
+                            value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+                        })
+                        .ok_or(HyperliquidEconomicsError::InvalidIdentity)?,
+                    venue_rate_cap_fraction: basis_points_to_fraction(
+                        Decimal::from_str(&carry.funding_venue_rate_cap_bps_per_hour)
+                            .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    ),
+                    standard_price_stress_multiplier: Decimal::from_str(
+                        &carry.funding_standard_price_stress_multiplier,
+                    )
+                    .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            settlement_unit: NativeUnitId::new(settlement.native_unit.clone())
+                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            protocol_component_id: crate::economics::EconomicComponentId::new(
+                protocol.component_id.clone(),
+            )
+            .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            protocol_formula_id: FormulaId::new(protocol.formula_id.clone())
+                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            protocol_rate_factor_id: FormulaId::new(protocol.rate_factor_id.clone())
+                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            builder_component_id: crate::economics::EconomicComponentId::new(
+                builder.component_id.clone(),
+            )
+            .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            builder_formula_id: FormulaId::new(builder.formula_id.clone())
+                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            builder_rate_factor_id: FormulaId::new(builder.rate_factor_id.clone())
+                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            source_id: SourceId::new(
+                economics
+                    .sources
+                    .get("account_fees")
+                    .ok_or(HyperliquidEconomicsError::InvalidIdentity)?
+                    .clone(),
+            )
+            .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            formula: HyperliquidFormulaPolicy {
+                stable_pair_scale: decimal("stable_pair_scale")?,
+                growth_mode_scale: decimal("growth_mode_scale")?,
+                hip3_scale_threshold: decimal("hip3_scale_threshold")?,
+                hip3_below_threshold_base: decimal("hip3_below_threshold_base")?,
+                hip3_at_or_above_threshold_multiplier: decimal(
+                    "hip3_at_or_above_threshold_multiplier",
+                )?,
+                hip3_at_or_above_deployer_share: decimal("hip3_at_or_above_deployer_share")?,
+            },
+            carry,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidCarryPolicy {
     pub component_id: crate::economics::EconomicComponentId,
@@ -40,6 +160,9 @@ pub struct HyperliquidCarryPolicy {
     pub bound_rate_factor_id: FormulaId,
     pub risk_policy_id: FormulaId,
     pub stress_fixture_id: FormulaId,
+    pub funding_interval_ns: u64,
+    pub venue_rate_cap_fraction: Decimal,
+    pub standard_price_stress_multiplier: Decimal,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -347,6 +470,225 @@ pub struct HyperliquidEconomicsAdapter {
     builder: BuilderQuotePlan,
 }
 
+pub struct HyperliquidEconomicsAuthority {
+    execution_client_id: String,
+    account_id: String,
+    account_address: Zeroizing<String>,
+    venue: Venue,
+    economics: crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+    adapter_config: HyperliquidEconomicsAdapterConfig,
+    product_surface_id: String,
+    base_url_http: String,
+    http_timeout_secs: u64,
+    http_client: HttpClient,
+}
+
+impl HyperliquidEconomicsAuthority {
+    pub fn try_new(
+        execution_client_id: &str,
+        venue: Venue,
+        execution: super::HyperliquidExecutionConfig,
+        secrets: &super::ResolvedBoltV3HyperliquidSecrets,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            execution.product_surfaces == vec![super::HyperliquidProductSurface::StandardPerps],
+            "Hyperliquid quote authority currently requires exactly the configured standard_perps surface"
+        );
+        let adapter_config =
+            HyperliquidEconomicsAdapterConfig::from_execution_config(&execution.economics)
+                .map_err(|error| anyhow::anyhow!("invalid economics adapter config: {error:?}"))?;
+        let [(product_surface_id, _)] = execution
+            .economics
+            .product_surface_policies
+            .iter()
+            .collect::<Vec<_>>()
+            .as_slice()
+        else {
+            anyhow::bail!("Hyperliquid economics requires exactly one configured product surface");
+        };
+        let http_client = HttpClient::new(
+            HashMap::from([
+                (USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]),
+            Vec::new(),
+            Vec::new(),
+            None,
+            Some(execution.http_timeout_secs),
+            execution.proxy_url.clone(),
+        )
+        .context("could not build Hyperliquid economics HTTP client")?;
+        Ok(Self {
+            execution_client_id: execution_client_id.to_string(),
+            account_id: execution.account_id.to_string(),
+            account_address: Zeroizing::new(secrets.account_address.as_str().to_string()),
+            venue,
+            economics: execution.economics,
+            adapter_config,
+            product_surface_id: (*product_surface_id).clone(),
+            base_url_http: execution.base_url_http,
+            http_timeout_secs: execution.http_timeout_secs,
+            http_client,
+        })
+    }
+
+    async fn post_info(&self, body: serde_json::Value) -> anyhow::Result<Vec<u8>> {
+        let response = self
+            .http_client
+            .post(
+                self.base_url_http.clone(),
+                None,
+                None,
+                Some(serde_json::to_vec(&body)?),
+                Some(self.http_timeout_secs),
+                None,
+            )
+            .await
+            .context("Hyperliquid economics info request failed")?;
+        anyhow::ensure!(
+            response.status.is_success(),
+            "Hyperliquid economics info request returned HTTP status {}",
+            response.status.as_u16()
+        );
+        Ok(response.body)
+    }
+}
+
+#[async_trait(?Send)]
+impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
+    fn execution_client_id(&self) -> &str {
+        &self.execution_client_id
+    }
+
+    fn provider_key(&self) -> &str {
+        self.venue.as_str()
+    }
+
+    fn venue(&self) -> Venue {
+        self.venue
+    }
+
+    fn economics_config(&self) -> &crate::bolt_v3_economics_config::ExecutionEconomicsConfig {
+        &self.economics
+    }
+
+    async fn refresh(
+        &self,
+        instrument: InstrumentAny,
+        refreshed_at_ns: u64,
+    ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot> {
+        let user_fees_body = self
+            .post_info(serde_json::json!({
+                "type": "userFees",
+                "user": self.account_address.as_str(),
+            }))
+            .await?;
+        let product_body = self
+            .post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))
+            .await?;
+        let max_age_ns = self
+            .economics
+            .quote_max_age_secs
+            .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
+            .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
+            .context("Hyperliquid economics maximum age overflows nanoseconds")?;
+        let valid_until_ns = refreshed_at_ns
+            .checked_add(max_age_ns)
+            .context("Hyperliquid economics validity deadline overflow")?;
+        let user_snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&user_fees_body)));
+        let product_snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&product_body)));
+        let user_fees = HyperliquidUserFeesSnapshot::from_wire_json(
+            HyperliquidSnapshotMetadata {
+                snapshot_id: user_snapshot_id.clone(),
+                source_at_ns: refreshed_at_ns,
+                fetched_at_ns: refreshed_at_ns,
+                valid_until_ns,
+            },
+            &self.account_id,
+            std::str::from_utf8(&user_fees_body)
+                .context("Hyperliquid userFees response was not UTF-8 JSON")?,
+        )
+        .map_err(|error| anyhow::anyhow!("invalid Hyperliquid userFees response: {error:?}"))?;
+        let PerpMetaAndCtxs::Payload(payload) = serde_json::from_slice(&product_body)
+            .context("invalid Hyperliquid metaAndAssetCtxs response")?;
+        let (meta, contexts) = *payload;
+        anyhow::ensure!(
+            meta.universe.len() == contexts.len(),
+            "Hyperliquid product metadata/context cardinality mismatch"
+        );
+        let raw_symbol = instrument.raw_symbol();
+        let product_index = meta
+            .universe
+            .iter()
+            .position(|product| product.name == raw_symbol.as_str())
+            .context("Hyperliquid instrument is absent from authoritative product metadata")?;
+        let product = &meta.universe[product_index];
+        let product_context = &contexts[product_index];
+        let carry = self
+            .adapter_config
+            .carry
+            .as_ref()
+            .context("Hyperliquid perp surface has no carry policy")?;
+        let point_rate = product_context
+            .funding
+            .context("Hyperliquid product has no current funding rate")?
+            .checked_div(Decimal::from(carry.funding_interval_ns))
+            .context("Hyperliquid funding point-rate conversion failed")?;
+        let bound_rate = carry
+            .venue_rate_cap_fraction
+            .checked_div(Decimal::from(carry.funding_interval_ns))
+            .context("Hyperliquid funding bound-rate conversion failed")?;
+        let product_snapshot = HyperliquidProductEconomicsSnapshot {
+            snapshot_id: product_snapshot_id.clone(),
+            source_at_ns: refreshed_at_ns,
+            fetched_at_ns: refreshed_at_ns,
+            valid_until_ns,
+            product_kind: HyperliquidProductKind::Perp,
+            base_unit: None,
+            quote_unit: None,
+            stable_pair: false,
+            aligned_quote_or_collateral: false,
+            hip3: false,
+            deployer_scale: self.adapter_config.formula.hip3_below_threshold_base,
+            growth_mode: product.growth_mode.as_deref() == Some("enabled"),
+            builder_profile_id: None,
+            builder_rate_bps: None,
+            builder_approved_max_bps: None,
+            spot_dust_authority_complete: false,
+            carry_point_rate_per_ns: Some(point_rate),
+            carry_debit_rate_bound_per_ns: Some(bound_rate),
+        };
+        let adapter = HyperliquidEconomicsAdapter::try_new(
+            self.adapter_config.clone(),
+            user_fees,
+            product_snapshot,
+        )
+        .map_err(|error| anyhow::anyhow!("invalid Hyperliquid economics adapter: {error:?}"))?;
+        let edge_basis_policy_id = self
+            .economics
+            .product_surface_policies
+            .get(&self.product_surface_id)
+            .context("Hyperliquid product surface has no edge-basis policy")?;
+        let edge_policy = self
+            .economics
+            .edge_basis
+            .get(edge_basis_policy_id)
+            .context("Hyperliquid edge-basis policy is missing")?;
+        Ok(ProviderEconomicsAuthoritySnapshot {
+            product_surface_id: self.product_surface_id.clone(),
+            adapter: Arc::new(adapter),
+            edge_basis: AuthoritativeEdgeBasis {
+                policy_version: edge_policy.policy_version,
+                source_snapshot_ids: vec![
+                    SnapshotId::new(user_snapshot_id)?,
+                    SnapshotId::new(product_snapshot_id)?,
+                ],
+                valid_until_ns,
+            },
+        })
+    }
+}
+
 struct ProtocolRatePlan {
     maker: Decimal,
     taker: Decimal,
@@ -648,6 +990,9 @@ impl HyperliquidEconomicsAdapter {
             .quantity
             .checked_mul(average_price)
             .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        let stressed_position_notional = position_notional
+            .checked_mul(policy.standard_price_stress_multiplier)
+            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
         let directional_point_rate = match position.side {
             PositionSide::Long => -point_rate,
             PositionSide::Short => point_rate,
@@ -656,11 +1001,15 @@ impl HyperliquidEconomicsAdapter {
             .checked_mul(directional_point_rate)
             .and_then(|amount| amount.checked_mul(horizon))
             .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
-        let debit_bound = position_notional
+        let debit_bound = stressed_position_notional
             .checked_mul(-bound_rate)
             .and_then(|amount| amount.checked_mul(horizon))
             .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
         if debit_bound >= Decimal::ZERO {
+            return Err(HyperliquidEconomicsError::InvalidCarryBound);
+        }
+        let current_adverse_projection = point_amount.min(Decimal::ZERO).abs();
+        if current_adverse_projection > debit_bound.abs() {
             return Err(HyperliquidEconomicsError::InvalidCarryBound);
         }
         Ok(EstimatedEconomicComponent {
@@ -684,7 +1033,7 @@ impl HyperliquidEconomicsAdapter {
                     .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
             ),
             admission_treatment: AdmissionTreatment::RiskBound {
-                authority: RiskBoundAuthority::OperatorRiskLimit,
+                authority: RiskBoundAuthority::VenueRateCapWithPriceStress,
             },
             calculation_factors: vec![
                 CalculationFactor {

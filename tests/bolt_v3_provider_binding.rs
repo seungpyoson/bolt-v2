@@ -452,6 +452,16 @@ hip3_below_threshold_base = "1"
 hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 
+[execution.economics.quote_components.protocol]
+component_id = "hyperliquid-protocol-execution"
+formula_id = "hyperliquid-effective-account-rate"
+rate_factor_id = "hyperliquid-live-effective-rate"
+
+[execution.economics.quote_components.builder]
+component_id = "hyperliquid-builder-execution"
+formula_id = "hyperliquid-builder-notional-fee"
+rate_factor_id = "hyperliquid-live-builder-rate"
+
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -459,6 +469,9 @@ evidence_fixture_id = "hyperliquid-settlement-fixture"
 
 [execution.economics.carry]
 holding_horizon_secs = 3600
+funding_interval_secs = 3600
+funding_venue_rate_cap_bps_per_hour = "400"
+funding_standard_price_stress_multiplier = "1.5"
 component_id = "funding-carry"
 formula_id = "funding-rate-bound"
 point_rate_factor_id = "funding-point-rate"
@@ -468,6 +481,7 @@ stress_fixture_id = "funding-standard-stress"
 
 [execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"
+policy_version = 1
 product_metadata_source = "hyperliquid-meta"
 
 [execution.economics.product_surface_policies]

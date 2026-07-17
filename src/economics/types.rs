@@ -135,6 +135,7 @@ impl SignedNativeEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RiskBoundAuthority {
     VenueMaximum,
+    VenueRateCapWithPriceStress,
     OperatorRiskLimit,
 }
 

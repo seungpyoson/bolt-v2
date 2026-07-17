@@ -21391,3 +21391,387 @@ literal = '''"bolt-v3 submit admission final order no longer matches its sealed 
 context = '''"bolt-v3 submit admission final order no longer matches its sealed economics quote"'''
 classification = "diagnostic_template"
 reason = "Stable fail-closed seal-mismatch diagnostic; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"economics valuation quote is unavailable"'''
+context = '''.context("economics valuation quote is unavailable")?;'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed diagnostic for a missing configured valuation quote; the route and instrument remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"economics valuation midpoint overflow"'''
+context = '''.context("economics valuation midpoint overflow")?,'''
+classification = "diagnostic_template"
+reason = "Stable checked-arithmetic diagnostic; it provides no valuation fallback."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"{}\0{}\0{}\0{}\0{}"'''
+context = '''"{}\0{}\0{}\0{}\0{}",'''
+classification = "evidence_fingerprint_schema"
+reason = "Versioned, unambiguous field framing for a valuation evidence fingerprint; all field values come from configured routes and authoritative quote ticks."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"sha256:{}"'''
+context = '''"sha256:{}",'''
+classification = "evidence_fingerprint_schema"
+reason = "Stable algorithm-qualified snapshot identity prefix; the digest is derived from authoritative valuation evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"execution client {execution_client_id} has no provider registry binding"'''
+context = '''"execution client {execution_client_id} has no provider registry binding"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed composition diagnostic; the execution-client identity is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"execution client {execution_client_id} has no production economics authority binding"'''
+context = '''"execution client {execution_client_id} has no production economics authority binding"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed composition diagnostic requiring a registry-owned authority constructor."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"protocol"'''
+context = '''.get("protocol")'''
+classification = "hyperliquid_economics_component_schema_key"
+reason = "Stable provider-owned TOML component role; its component identifier and formula remain mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"builder"'''
+context = '''.get("builder")'''
+classification = "hyperliquid_economics_component_schema_key"
+reason = "Stable provider-owned TOML component role; its component identifier and formula remain mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"settlement"'''
+context = '''.get("settlement")'''
+classification = "hyperliquid_economics_asset_role_schema_key"
+reason = "Stable provider-owned TOML asset role; the selected unit remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"account_fees"'''
+context = '''.get("account_fees")'''
+classification = "hyperliquid_economics_source_schema_key"
+reason = "Stable provider-owned TOML authority role; the selected source remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"stable_pair_scale"'''
+context = '''stable_pair_scale: decimal("stable_pair_scale")?,'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"growth_mode_scale"'''
+context = '''growth_mode_scale: decimal("growth_mode_scale")?,'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"hip3_scale_threshold"'''
+context = '''hip3_scale_threshold: decimal("hip3_scale_threshold")?,'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"hip3_below_threshold_base"'''
+context = '''hip3_below_threshold_base: decimal("hip3_below_threshold_base")?,'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"hip3_at_or_above_threshold_multiplier"'''
+context = '''"hip3_at_or_above_threshold_multiplier",'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"hip3_at_or_above_deployer_share"'''
+context = '''hip3_at_or_above_deployer_share: decimal("hip3_at_or_above_deployer_share")?,'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"content-type"'''
+context = '''("content-type".to_string(), "application/json".to_string()),'''
+classification = "http_wire_header"
+reason = "Stable HTTP media-type header required by the provider protocol, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"application/json"'''
+context = '''("content-type".to_string(), "application/json".to_string()),'''
+classification = "http_wire_media_type"
+reason = "Stable JSON wire media type required by the provider protocol."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid economics info request returned HTTP status {}"'''
+context = '''"Hyperliquid economics info request returned HTTP status {}",'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed HTTP diagnostic; endpoint and timeout remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"type"'''
+context = '''"type": "userFees",'''
+classification = "hyperliquid_info_wire_field"
+reason = "Versioned official Info API request discriminator field, fenced by boundary fixtures."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"userFees"'''
+context = '''"type": "userFees",'''
+classification = "hyperliquid_info_wire_discriminator"
+reason = "Versioned official Info API request discriminator, fenced by boundary fixtures."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"user"'''
+context = '''"user": self.account_address.as_str(),'''
+classification = "hyperliquid_info_wire_field"
+reason = "Versioned official Info API account field; the account value comes from the sole SSM-backed credential set."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"type"'''
+context = '''.post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))'''
+classification = "hyperliquid_info_wire_field"
+reason = "Versioned official Info API request discriminator field, fenced by boundary fixtures."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"metaAndAssetCtxs"'''
+context = '''.post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))'''
+classification = "hyperliquid_info_wire_discriminator"
+reason = "Versioned official Info API product-metadata request discriminator, fenced by boundary fixtures."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid economics maximum age overflows nanoseconds"'''
+context = '''.context("Hyperliquid economics maximum age overflows nanoseconds")?;'''
+classification = "diagnostic_template"
+reason = "Stable checked-conversion diagnostic; maximum age remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid economics validity deadline overflow"'''
+context = '''.context("Hyperliquid economics validity deadline overflow")?;'''
+classification = "diagnostic_template"
+reason = "Stable checked-time diagnostic; quote validity remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid product metadata/context cardinality mismatch"'''
+context = '''"Hyperliquid product metadata/context cardinality mismatch"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed provider-boundary consistency diagnostic."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid instrument is absent from authoritative product metadata"'''
+context = '''.context("Hyperliquid instrument is absent from authoritative product metadata")?;'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed provider-boundary lookup diagnostic; the instrument remains configuration and runtime-data owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid perp surface has no carry policy"'''
+context = '''.context("Hyperliquid perp surface has no carry policy")?;'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed missing-policy diagnostic; carry policy remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid product has no current funding rate"'''
+context = '''.context("Hyperliquid product has no current funding rate")?'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed missing-authority diagnostic; no zero-rate fallback is supplied."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"enabled"'''
+context = '''growth_mode: product.growth_mode.as_deref() == Some("enabled"),'''
+classification = "hyperliquid_product_wire_discriminator"
+reason = "Versioned provider product-metadata discriminator; it is parsed only from authoritative wire evidence."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"Hyperliquid product surface has no edge-basis policy"'''
+context = '''.context("Hyperliquid product surface has no edge-basis policy")?;'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed missing-policy diagnostic; policy selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"builder"'''
+context = '''!= BTreeSet::from(["builder", "protocol"])'''
+classification = "hyperliquid_economics_component_schema_key"
+reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"protocol"'''
+context = '''!= BTreeSet::from(["builder", "protocol"])'''
+classification = "hyperliquid_economics_component_schema_key"
+reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"platform"'''
+context = '''.get("platform")'''
+classification = "polymarket_economics_component_schema_key"
+reason = "Stable provider-owned TOML component role; its identifier and formula remain mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"builder"'''
+context = '''.get("builder")'''
+classification = "polymarket_economics_component_schema_key"
+reason = "Stable provider-owned TOML component role; its identifier and formula remain mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"collateral"'''
+context = '''.get("collateral")'''
+classification = "polymarket_economics_asset_role_schema_key"
+reason = "Stable provider-owned TOML asset role; the selected native unit remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"fee_rounding_mode"'''
+context = '''.get("fee_rounding_mode")'''
+classification = "polymarket_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its selected policy remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"midpoint_away_from_zero"'''
+context = '''Some("midpoint_away_from_zero") => FeeRoundingMode::MidpointAwayFromZero,'''
+classification = "polymarket_economics_formula_discriminator"
+reason = "Closed TOML formula-policy discriminator; unrecognized values fail construction."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"to_zero"'''
+context = '''Some("to_zero") => FeeRoundingMode::ToZero,'''
+classification = "polymarket_economics_formula_discriminator"
+reason = "Closed TOML formula-policy discriminator; unrecognized values fail construction."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"schedule"'''
+context = '''.get("schedule")'''
+classification = "polymarket_economics_source_schema_key"
+reason = "Stable provider-owned TOML authority role; the selected source remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"fee_round_decimal_places"'''
+context = '''.get("fee_round_decimal_places")'''
+classification = "polymarket_economics_formula_schema_key"
+reason = "Stable provider-owned TOML formula field; its numeric value remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket instrument has no condition identifier"'''
+context = '''.context("Polymarket instrument has no condition identifier")?;'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed identifier diagnostic; no alternate identifier source is used."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket economics market-info returned HTTP status {}"'''
+context = '''"Polymarket economics market-info returned HTTP status {}",'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed HTTP diagnostic; endpoint and timeout remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket economics maximum age overflows nanoseconds"'''
+context = '''.context("Polymarket economics maximum age overflows nanoseconds")?;'''
+classification = "diagnostic_template"
+reason = "Stable checked-conversion diagnostic; maximum age remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket economics validity deadline overflow"'''
+context = '''.context("Polymarket economics validity deadline overflow")?;'''
+classification = "diagnostic_template"
+reason = "Stable checked-time diagnostic; quote validity remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"builder"'''
+context = '''!= BTreeSet::from(["builder", "platform"])'''
+classification = "polymarket_economics_component_schema_key"
+reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"platform"'''
+context = '''!= BTreeSet::from(["builder", "platform"])'''
+classification = "polymarket_economics_component_schema_key"
+reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."

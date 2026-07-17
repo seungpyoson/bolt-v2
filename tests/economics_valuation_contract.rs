@@ -32,7 +32,8 @@ fn configured_provider_resolves_exact_toml_route_from_fresh_market_observation()
             ValuationRouteConfig {
                 from_unit: "pUSD".to_string(),
                 to_currency: "USD".to_string(),
-                valuation_policy: "configured-market".to_string(),
+                valuation_policy:
+                    bolt_v2::bolt_v3_economics_config::ValuationPolicy::TopOfBookMidpoint,
                 client_id: "coinbase-data".to_string(),
                 instrument_id: "USDC-USD.COINBASE".to_string(),
                 orientation: ValuationOrientation::BaseToQuote,
@@ -85,7 +86,8 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
             ValuationRouteConfig {
                 from_unit: "USDC".to_string(),
                 to_currency: "USD".to_string(),
-                valuation_policy: "configured-market".to_string(),
+                valuation_policy:
+                    bolt_v2::bolt_v3_economics_config::ValuationPolicy::TopOfBookMidpoint,
                 client_id: "coinbase-data".to_string(),
                 instrument_id: "USDC-USD.COINBASE".to_string(),
                 orientation: ValuationOrientation::BaseToQuote,

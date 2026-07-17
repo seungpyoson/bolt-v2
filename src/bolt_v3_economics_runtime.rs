@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
+use nautilus_model::{identifiers::Venue, instruments::InstrumentAny};
 use rust_decimal::Decimal;
 
 use crate::economics::{
@@ -56,6 +58,26 @@ pub struct AuthoritativeEconomicsQuoteDependencies {
     pub adapter: Arc<dyn VenueEconomicsAdapter>,
     pub edge_basis: AuthoritativeEdgeBasis,
     pub valuation_provider: Arc<dyn ValuationProvider>,
+}
+
+pub struct ProviderEconomicsAuthoritySnapshot {
+    pub product_surface_id: String,
+    pub adapter: Arc<dyn VenueEconomicsAdapter>,
+    pub edge_basis: AuthoritativeEdgeBasis,
+}
+
+#[async_trait(?Send)]
+pub trait ProviderEconomicsAuthority: Send + Sync {
+    fn execution_client_id(&self) -> &str;
+    fn provider_key(&self) -> &str;
+    fn venue(&self) -> Venue;
+    fn economics_config(&self) -> &crate::bolt_v3_economics_config::ExecutionEconomicsConfig;
+
+    async fn refresh(
+        &self,
+        instrument: InstrumentAny,
+        refreshed_at_ns: u64,
+    ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot>;
 }
 
 pub struct ConfiguredValuationProvider {

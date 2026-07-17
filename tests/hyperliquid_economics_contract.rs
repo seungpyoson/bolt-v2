@@ -39,6 +39,9 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
             bound_rate_factor_id: FormulaId::new("funding-bound-rate").unwrap(),
             risk_policy_id: FormulaId::new("funding-risk-policy").unwrap(),
             stress_fixture_id: FormulaId::new("funding-stress-fixture").unwrap(),
+            funding_interval_ns: 3_600_000_000_000,
+            venue_rate_cap_fraction: decimal("0.04"),
+            standard_price_stress_multiplier: decimal("1.5"),
         }),
     }
 }

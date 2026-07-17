@@ -108,7 +108,6 @@ use crate::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy, OrderValuationContext,
         build_submit_admission_request_from_order, limit_notional_exceeds_sized_notional,
-        order_economics_facts,
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingConfig, TakerPricingRequest,
@@ -154,13 +153,13 @@ enum StrategyPlannedFillInput {
 impl StrategyPlannedFillInput {
     fn resolve(
         self,
-        request: &BoltV3SubmitAdmissionRequestInput<'_>,
+        _request: &BoltV3SubmitAdmissionRequestInput<'_>,
     ) -> Result<Vec<BoltV3PlannedFillLeg>> {
         match self {
             Self::Exact(legs) => Ok(legs),
             #[cfg(test)]
             Self::CompiledSingleLevelFixture => {
-                let facts = order_economics_facts(request)?;
+                let facts = crate::bolt_v3_submit_admission::order_economics_facts(_request)?;
                 Ok(vec![BoltV3PlannedFillLeg {
                     price: facts.price,
                     quantity: facts.planned_fill_quantity,
@@ -6082,7 +6081,7 @@ impl BinaryOracleEdgeTaker {
             .and_then(|per_unit_value| per_unit_value.checked_mul(exit_quantity))
             .ok_or_else(|| anyhow::anyhow!("exit gross value arithmetic overflow"))?;
 
-        match self.submit_order_with_decision_evidence(
+        match self.submit_order_with_decision_evidence_and_fill_plan(
             intent,
             order,
             BoltV3SubmitContext::with_client_id_and_position_id(

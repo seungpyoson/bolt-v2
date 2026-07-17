@@ -3,8 +3,9 @@ use std::sync::Arc;
 use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,
-        BoltV3EconomicsRuntime, ConfiguredEconomicsAdmissionSource, EconomicsAdmissionIntent,
-        EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
+        BoltV3EconomicsRuntime, ConfiguredEconomicsAdmissionSource,
+        ConfiguredEconomicsSourcePolicy, EconomicsAdmissionIntent, EconomicsAdmissionQuoteIntent,
+        EconomicsAdmissionSource,
     },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, SnapshotId,
@@ -116,6 +117,7 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
             request.product_surface_id.as_str(),
             AuthoritativeEconomicsQuoteDependencies {
                 provider_key: "configured-provider".to_string(),
+                refreshed_at_ns: request.requested_at_ns,
                 adapter: Arc::new(FixedVenue(VenueQuoteEstimate {
                     authority,
                     dependency_sources: Vec::new(),
@@ -126,8 +128,16 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
             },
         )
         .unwrap();
-    let source = ConfiguredEconomicsAdmissionSource::new("configured-provider", inputs, 5)
-        .expect("configured source should build");
+    let source = ConfiguredEconomicsAdmissionSource::new(
+        "configured-provider",
+        inputs,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: 5,
+            quote_validity_ns: 5,
+            resting_order_refresh_margin_ns: 1,
+        },
+    )
+    .expect("configured source should build");
 
     let admission = source
         .quote_admission(EconomicsAdmissionQuoteIntent {
@@ -139,6 +149,110 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
 
     assert_eq!(admission.quote().valid_until_ns(), 105);
     assert_eq!(admission.reservation_notional(), decimal("5.25"));
+}
+
+#[test]
+fn configured_source_rejects_dependencies_past_the_refresh_deadline() {
+    let request = canonical_fixture_request();
+    let component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    let authority = component.source.clone();
+    let inputs = AuthoritativeEconomicsInputStore::default();
+    inputs
+        .publish(
+            request.execution_client_id.as_str(),
+            request.instrument_id.as_str(),
+            request.product_surface_id.as_str(),
+            AuthoritativeEconomicsQuoteDependencies {
+                provider_key: "configured-provider".to_string(),
+                refreshed_at_ns: request.requested_at_ns - 6,
+                adapter: Arc::new(FixedVenue(VenueQuoteEstimate {
+                    authority,
+                    dependency_sources: Vec::new(),
+                    components: vec![component],
+                })),
+                edge_basis: intent(request.clone()).edge_basis,
+                valuations: Vec::new(),
+            },
+        )
+        .unwrap();
+    let source = ConfiguredEconomicsAdmissionSource::new(
+        "configured-provider",
+        inputs,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: 5,
+            quote_validity_ns: 5,
+            resting_order_refresh_margin_ns: 1,
+        },
+    )
+    .unwrap();
+
+    let error = source
+        .quote_admission(EconomicsAdmissionQuoteIntent {
+            request,
+            gross_expected_value: decimal("2"),
+            base_reservation_notional: decimal("5"),
+        })
+        .expect_err("expired refresh deadline must fail closed");
+
+    assert!(matches!(error, EconomicsUnavailable::StaleSource { .. }));
+}
+
+#[test]
+fn configured_source_rejects_maker_quote_shorter_than_resting_margin() {
+    let mut request = canonical_fixture_request();
+    request.liquidity_role = bolt_v2::economics::LiquidityRoleAssumption::GuaranteedMaker;
+    let mut component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    component.source.valid_until_ns = request.requested_at_ns + 5;
+    let authority = component.source.clone();
+    let inputs = AuthoritativeEconomicsInputStore::default();
+    inputs
+        .publish(
+            request.execution_client_id.as_str(),
+            request.instrument_id.as_str(),
+            request.product_surface_id.as_str(),
+            AuthoritativeEconomicsQuoteDependencies {
+                provider_key: "configured-provider".to_string(),
+                refreshed_at_ns: request.requested_at_ns,
+                adapter: Arc::new(FixedVenue(VenueQuoteEstimate {
+                    authority,
+                    dependency_sources: Vec::new(),
+                    components: vec![component],
+                })),
+                edge_basis: intent(request.clone()).edge_basis,
+                valuations: Vec::new(),
+            },
+        )
+        .unwrap();
+    let source = ConfiguredEconomicsAdmissionSource::new(
+        "configured-provider",
+        inputs,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: 10,
+            quote_validity_ns: 10,
+            resting_order_refresh_margin_ns: 6,
+        },
+    )
+    .unwrap();
+
+    let error = source
+        .quote_admission(EconomicsAdmissionQuoteIntent {
+            request,
+            gross_expected_value: decimal("2"),
+            base_reservation_notional: decimal("5"),
+        })
+        .expect_err("maker quote shorter than resting margin must fail closed");
+
+    assert!(matches!(error, EconomicsUnavailable::StaleSource { .. }));
 }
 
 #[test]

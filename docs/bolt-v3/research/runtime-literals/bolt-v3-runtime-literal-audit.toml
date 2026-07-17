@@ -21083,6 +21083,46 @@ reason = "Stable checked-conversion diagnostic; quote validity remains TOML-owne
 [[allowed]]
 path = "src/bolt_v3_strategy_registration.rs"
 kind = "string"
+literal = '''"execution economics quote refresh overflows nanoseconds"'''
+context = '''"execution economics quote refresh overflows nanoseconds".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable checked-conversion diagnostic; quote refresh remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"execution economics resting refresh margin overflows nanoseconds"'''
+context = '''"execution economics resting refresh margin overflows nanoseconds".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable checked-conversion diagnostic; the resting-order refresh margin remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_economics_runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| policy.quote_refresh_ns == 0'''
+classification = "invalid_sentinel"
+reason = "Zero is the invalid sentinel for a required positive TOML-derived quote-refresh duration."
+
+[[allowed]]
+path = "src/bolt_v3_economics_runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| policy.quote_validity_ns == 0'''
+classification = "invalid_sentinel"
+reason = "Zero is the invalid sentinel for a required positive TOML-derived quote-validity duration."
+
+[[allowed]]
+path = "src/bolt_v3_economics_runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| policy.resting_order_refresh_margin_ns == 0'''
+classification = "invalid_sentinel"
+reason = "Zero is the invalid sentinel for a required positive TOML-derived resting-order refresh margin."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
 literal = '''"carry-bearing product surface has no carry policy"'''
 context = '''"carry-bearing product surface has no carry policy".to_string(),'''
 classification = "diagnostic_template"

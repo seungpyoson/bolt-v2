@@ -10,6 +10,7 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_economics_runtime::{
     AuthoritativeEconomicsInputStore, ConfiguredEconomicsAdmissionSource,
+    ConfiguredEconomicsSourcePolicy,
 };
 use crate::bolt_v3_iv::{
     config::IvProfile,
@@ -186,6 +187,25 @@ fn build_order_routing_handle(
                 "execution economics quote validity overflows nanoseconds".to_string(),
             )
         })?;
+    let quote_refresh_ns = economics
+        .quote_refresh_secs
+        .checked_mul(MILLIS_PER_SECOND_U64)
+        .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
+        .ok_or_else(|| {
+            binding_message(
+                context,
+                "execution economics quote refresh overflows nanoseconds".to_string(),
+            )
+        })?;
+    let resting_order_refresh_margin_ns = economics
+        .resting_order_refresh_margin_ms
+        .checked_mul(NANOS_PER_MILLI_U64)
+        .ok_or_else(|| {
+            binding_message(
+                context,
+                "execution economics resting refresh margin overflows nanoseconds".to_string(),
+            )
+        })?;
     let carry_plan = if economics.carry_surfaces.contains(product_surface_id) {
         let carry = economics.carry.as_ref().ok_or_else(|| {
             binding_message(
@@ -210,7 +230,11 @@ fn build_order_routing_handle(
     let source = ConfiguredEconomicsAdmissionSource::new(
         client.venue.as_str(),
         context.economics_inputs.clone(),
-        quote_validity_ns,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns,
+            quote_validity_ns,
+            resting_order_refresh_margin_ns,
+        },
     )
     .map_err(|error| binding_message(context, format!("economics source: {error}")))?;
     let account_id =

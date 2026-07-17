@@ -35,6 +35,7 @@ pub trait EconomicsAdmissionSource: Send + Sync {
 #[derive(Clone)]
 pub struct AuthoritativeEconomicsQuoteDependencies {
     pub provider_key: String,
+    pub refreshed_at_ns: u64,
     pub adapter: Arc<dyn VenueEconomicsAdapter>,
     pub edge_basis: EdgeBasisEvidence,
     pub valuations: Vec<ValuationEvidence>,
@@ -100,22 +101,34 @@ impl AuthoritativeEconomicsInputStore {
 pub struct ConfiguredEconomicsAdmissionSource {
     provider_key: String,
     inputs: AuthoritativeEconomicsInputStore,
-    quote_validity_ns: u64,
+    policy: ConfiguredEconomicsSourcePolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConfiguredEconomicsSourcePolicy {
+    pub quote_refresh_ns: u64,
+    pub quote_validity_ns: u64,
+    pub resting_order_refresh_margin_ns: u64,
 }
 
 impl ConfiguredEconomicsAdmissionSource {
     pub fn new(
         provider_key: &str,
         inputs: AuthoritativeEconomicsInputStore,
-        quote_validity_ns: u64,
+        policy: ConfiguredEconomicsSourcePolicy,
     ) -> Result<Self, EconomicsUnavailable> {
-        if provider_key.trim().is_empty() || quote_validity_ns == 0 {
+        if provider_key.trim().is_empty()
+            || policy.quote_refresh_ns == 0
+            || policy.quote_validity_ns == 0
+            || policy.resting_order_refresh_margin_ns == 0
+            || policy.resting_order_refresh_margin_ns >= policy.quote_validity_ns
+        {
             return Err(EconomicsUnavailable::InvalidQuoteValidityPolicy);
         }
         Ok(Self {
             provider_key: provider_key.to_string(),
             inputs,
-            quote_validity_ns,
+            policy,
         })
     }
 }
@@ -129,14 +142,45 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         if dependencies.provider_key != self.provider_key {
             return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
-        BoltV3EconomicsRuntime::from_offline_adapter(dependencies.adapter, self.quote_validity_ns)?
-            .quote_admission(EconomicsAdmissionIntent {
-                request: intent.request,
-                gross_expected_value: intent.gross_expected_value,
-                edge_basis: dependencies.edge_basis,
-                valuations: dependencies.valuations,
-                base_reservation_notional: intent.base_reservation_notional,
-            })
+        let refresh_deadline_ns = dependencies
+            .refreshed_at_ns
+            .checked_add(self.policy.quote_refresh_ns)
+            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+        if dependencies.refreshed_at_ns > intent.request.requested_at_ns {
+            return Err(EconomicsUnavailable::InvalidSourceTimeline {
+                source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
+            });
+        }
+        if intent.request.requested_at_ns > refresh_deadline_ns {
+            return Err(EconomicsUnavailable::StaleSource {
+                source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
+            });
+        }
+        let requested_at_ns = intent.request.requested_at_ns;
+        let requires_resting_margin = intent.request.liquidity_role
+            == crate::economics::LiquidityRoleAssumption::GuaranteedMaker;
+        let admission = BoltV3EconomicsRuntime::from_offline_adapter(
+            dependencies.adapter,
+            self.policy.quote_validity_ns,
+        )?
+        .quote_admission(EconomicsAdmissionIntent {
+            request: intent.request,
+            gross_expected_value: intent.gross_expected_value,
+            edge_basis: dependencies.edge_basis,
+            valuations: dependencies.valuations,
+            base_reservation_notional: intent.base_reservation_notional,
+        })?;
+        if requires_resting_margin {
+            let required_valid_until_ns = requested_at_ns
+                .checked_add(self.policy.resting_order_refresh_margin_ns)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+            if admission.quote().valid_until_ns() < required_valid_until_ns {
+                return Err(EconomicsUnavailable::StaleSource {
+                    source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
+                });
+            }
+        }
+        Ok(admission)
     }
 }
 

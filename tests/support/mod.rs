@@ -67,6 +67,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
         let adapter = SampleEconomicsAdapter {
             estimate: VenueQuoteEstimate {
                 authority: source.clone(),
+                dependency_sources: Vec::new(),
                 components: vec![EstimatedEconomicComponent {
                     component_id: EconomicComponentId::new("test-core-credit")?,
                     class: EconomicClass::Credit,
@@ -87,9 +88,12 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 }],
             },
         };
-        bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(
-            adapter,
-        ))
+        bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(
+            Arc::new(adapter),
+            valid_until_ns
+                .checked_sub(intent.request.requested_at_ns)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
+        )?
         .quote_admission(
             bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
                 edge_basis: EdgeBasisEvidence {
@@ -229,6 +233,7 @@ fn sample_economics_admission_with_component(
     let adapter = SampleEconomicsAdapter {
         estimate: VenueQuoteEstimate {
             authority: source.clone(),
+            dependency_sources: Vec::new(),
             components: vec![EstimatedEconomicComponent {
                 component_id: EconomicComponentId::new(component_id)
                     .expect("valid test component id"),
@@ -248,9 +253,13 @@ fn sample_economics_admission_with_component(
             }],
         },
     };
-    bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(
-        adapter,
-    ))
+    bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(
+        Arc::new(adapter),
+        valid_until_ns
+            .checked_sub(requested_at_ns)
+            .expect("sample economics validity must follow request time"),
+    )
+    .expect("sample economics runtime policy should be valid")
     .quote_admission(
         bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
             request,

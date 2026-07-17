@@ -29,7 +29,12 @@ pub fn validate_and_aggregate_quote(
     let mut core_total = Decimal::ZERO;
     let mut forecast_total = Decimal::ZERO;
     let mut forecast_complete = true;
-    let mut required_valid_until_ns = estimate.authority.valid_until_ns;
+    let mut required_valid_until_ns = estimate
+        .dependency_sources
+        .iter()
+        .fold(estimate.authority.valid_until_ns, |deadline, source| {
+            deadline.min(source.valid_until_ns)
+        });
 
     for mut component in estimate.components {
         if !component_ids.insert(component.component_id.clone()) {
@@ -133,7 +138,17 @@ fn validate_authority_timeline(
     request: &EconomicQuoteRequest,
     estimate: &VenueQuoteEstimate,
 ) -> Result<(), EconomicsUnavailable> {
-    let source = &estimate.authority;
+    validate_required_source_timeline(request, &estimate.authority)?;
+    for source in &estimate.dependency_sources {
+        validate_required_source_timeline(request, source)?;
+    }
+    Ok(())
+}
+
+fn validate_required_source_timeline(
+    request: &EconomicQuoteRequest,
+    source: &super::SourceValidity,
+) -> Result<(), EconomicsUnavailable> {
     if source.source_at_ns > source.fetched_at_ns
         || source.fetched_at_ns > request.requested_at_ns
         || source.fetched_at_ns > source.valid_until_ns

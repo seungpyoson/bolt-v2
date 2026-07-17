@@ -143,8 +143,8 @@ use crate::{
         map_bolt_v3_adapters_with_runtime_approvals,
     },
     bolt_v3_capital_admission::{
-        CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
-        ProductAdmissionSnapshot, ProductKind,
+        CapitalAdmissionPolicy, PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
+        ProductKind,
     },
     bolt_v3_capital_admission_runtime_feed::{
         CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,

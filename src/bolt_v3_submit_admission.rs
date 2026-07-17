@@ -35,7 +35,7 @@ use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 use anyhow::Context;
 use nautilus_model::{
-    data::{QuoteTick, TradeTick},
+    data::QuoteTick,
     enums::{OrderSide, PositionSide},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
@@ -129,6 +129,9 @@ fn admission_outcome_key(outcome: &BoltV3AdmissionOutcome) -> &'static str {
         }
         BoltV3AdmissionOutcome::RejectedLossGovernorHalted => "rejected_loss_governor_halted",
         BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => "rejected_economics_quote_expired",
+        BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch => {
+            "rejected_economics_order_mismatch"
+        }
         BoltV3AdmissionOutcome::RejectedNonPositiveNotional => "rejected_non_positive_notional",
         BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => "rejected_notional_cap_exceeded",
         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
@@ -736,69 +739,6 @@ impl BoltV3SubmitAdmissionState {
                     .venue_truth_capture_failure_source
                     .is_none(),
         )
-    }
-
-    pub fn capital_admission_open_order_reservation_from_evidence(
-        &self,
-        evidence: BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
-    ) -> Option<BoltV3SubmitCapitalAdmissionOpenOrderReservation> {
-        if evidence.client_order_id.trim().is_empty()
-            || evidence.instrument_id.trim().is_empty()
-            || evidence.evidence_label.trim().is_empty()
-            || evidence.open_quantity <= Decimal::ZERO
-            || evidence.limit_price < Decimal::ZERO
-            || evidence.limit_price > Decimal::ONE
-        {
-            return None;
-        }
-        let inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        let capital_admission = inner.capital_admission.as_ref()?;
-        let state = capital_admission.state.as_ref()?;
-        let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &state.product_state;
-        if evidence.instrument_id != product.yes_instrument_id
-            && evidence.instrument_id != product.no_instrument_id
-        {
-            return None;
-        }
-        let additive_liability = checked_additive_liability(&capital_admission.policy)?;
-        if additive_liability < Decimal::ZERO {
-            return None;
-        }
-        let liability_factor = match evidence.side.to_capital_admission() {
-            IntentSide::Buy => evidence.limit_price,
-            IntentSide::Sell => Decimal::ZERO,
-        };
-        if liability_factor < Decimal::ZERO || liability_factor > Decimal::ONE {
-            return None;
-        }
-        let liability = checked_lifecycle_liability(
-            evidence.open_quantity,
-            liability_factor,
-            additive_liability,
-        )?;
-        Some(BoltV3SubmitCapitalAdmissionOpenOrderReservation {
-            client_order_id: evidence.client_order_id.clone(),
-            submit_reservation_id: format!(
-                "{}#{}",
-                evidence.client_order_id, evidence.observed_at_ns
-            ),
-            collateral_group_id: product.collateral_coupled_group_id.clone(),
-            liability,
-            instrument_id: evidence.instrument_id,
-            side: evidence.side,
-            open_quantity: evidence.open_quantity,
-            original_quantity: evidence.open_quantity,
-            filled_quantity: Decimal::ZERO,
-            liability_factor,
-            additive_liability,
-            seen_trade_ids: BTreeSet::new(),
-            recovered_from_startup: false,
-            observed_at_ns: evidence.observed_at_ns,
-            evidence_label: evidence.evidence_label,
-        })
     }
 
     pub fn capital_admission_open_order_reservation_from_known_metadata(
@@ -1671,6 +1611,9 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => {
                 Err(BoltV3SubmitAdmissionError::EconomicsQuoteExpired)
             }
+            BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch => {
+                Err(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)
+            }
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                 Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
             }
@@ -2051,6 +1994,9 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => {
                 Err(BoltV3SubmitAdmissionError::EconomicsQuoteExpired)
             }
+            BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch => {
+                Err(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)
+            }
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                 Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
             }
@@ -2303,6 +2249,12 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
+        if request.notional != request.economics_admission.reservation_notional() {
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch,
+                now_ns,
+            );
+        }
         if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 Self::evaluate_kill_switch_forced_reduction(inner, request),
@@ -2515,6 +2467,7 @@ fn basket_outcome_from_submit_outcome(
         | BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed
         | BoltV3AdmissionOutcome::RejectedLossGovernorHalted
         | BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired
+        | BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch
         | BoltV3AdmissionOutcome::RejectedNonPositiveNotional
         | BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
         | BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof
@@ -2575,6 +2528,9 @@ fn submit_admission_error_from_outcome(
         }
         BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => {
             BoltV3SubmitAdmissionError::EconomicsQuoteExpired
+        }
+        BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch => {
+            BoltV3SubmitAdmissionError::EconomicsOrderMismatch
         }
         BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
             BoltV3SubmitAdmissionError::NonPositiveNotional
@@ -3080,7 +3036,6 @@ fn basket_submit_request(
 #[derive(Debug, Clone)]
 pub struct OrderValuationContext<'a> {
     pub last_quote: Option<QuoteTick>,
-    pub last_trade: Option<TradeTick>,
     pub instrument: Option<&'a InstrumentAny>,
 }
 
@@ -3088,7 +3043,6 @@ impl OrderValuationContext<'_> {
     pub const fn empty() -> Self {
         Self {
             last_quote: None,
-            last_trade: None,
             instrument: None,
         }
     }
@@ -3107,9 +3061,7 @@ impl OrderValuationContext<'_> {
             _ => None,
         });
         let last_price = match order {
-            OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
-                quote_side_price.or_else(|| self.last_trade.map(|trade| trade.price))
-            }
+            OrderAny::Market(_) | OrderAny::MarketToLimit(_) => quote_side_price,
             OrderAny::StopMarket(_) | OrderAny::MarketIfTouched(_) => order.trigger_price(),
             OrderAny::TrailingStopMarket(_) | OrderAny::TrailingStopLimit(_) => {
                 order.trigger_price()
@@ -3165,24 +3117,20 @@ pub fn order_economics_facts(
                 client_order_id
             )
         })?;
-        match admission_base_notional_from_order(
+        admission_base_notional_from_order(
             input.order,
             instrument,
             price,
             quantity,
             quote_quantity_last_price,
             quote_quantity_reference_price,
-        ) {
-            Some(base_notional) => base_notional,
-            None => {
-                anyhow::ensure!(
-                    !instrument.is_inverse(),
-                    "bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",
-                    client_order_id
-                );
-                quantity
-            }
-        }
+        )
+        .with_context(|| {
+            format!(
+                "bolt-v3 submit admission cannot derive authoritative quote-quantity notional for client_order_id={}",
+                client_order_id
+            )
+        })?
     } else if input.order.price().is_none() {
         let price_ceiling = input
             .valuation
@@ -3251,14 +3199,43 @@ pub fn build_submit_admission_request_from_order(
         quote_request.order_side == expected_side,
         "bolt-v3 economics admission side does not match final order"
     );
-    anyhow::ensure!(
-        quote_request.planned_fill_legs.as_slice()
-            == [crate::economics::PlannedFillLeg {
-                price,
-                quantity: facts.planned_fill_quantity,
-            }],
-        "bolt-v3 economics admission planned fill does not match final order"
-    );
+    if input.order.is_quote_quantity() {
+        let planned_fill_notional = quote_request
+            .planned_fill_legs
+            .iter()
+            .try_fold(Decimal::ZERO, |total, leg| {
+                total.checked_add(leg.price.checked_mul(leg.quantity)?)
+            });
+        anyhow::ensure!(
+            planned_fill_notional == Some(facts.base_reservation_notional),
+            "bolt-v3 economics admission planned fill does not match final quote quantity"
+        );
+    } else {
+        let planned_fill_quantity = quote_request
+            .planned_fill_legs
+            .iter()
+            .try_fold(Decimal::ZERO, |total, leg| total.checked_add(leg.quantity))
+            .context("bolt-v3 economics admission planned fill quantity overflow")?;
+        anyhow::ensure!(
+            planned_fill_quantity == facts.planned_fill_quantity,
+            "bolt-v3 economics admission planned fill does not match final order quantity"
+        );
+    }
+    if input.order.price().is_some() {
+        let within_limit =
+            quote_request
+                .planned_fill_legs
+                .iter()
+                .all(|leg| match input.order.order_side() {
+                    OrderSide::Buy => leg.price <= price,
+                    OrderSide::Sell => leg.price >= price,
+                    _ => false,
+                });
+        anyhow::ensure!(
+            within_limit,
+            "bolt-v3 economics admission planned fill exceeds final order limit"
+        );
+    }
     anyhow::ensure!(
         economics_admission.base_reservation_notional() == facts.base_reservation_notional,
         "bolt-v3 economics admission base reservation does not match final order"
@@ -3548,6 +3525,7 @@ pub enum BoltV3SubmitAdmissionError {
         reasons: Vec<LossHaltReason>,
     },
     EconomicsQuoteExpired,
+    EconomicsOrderMismatch,
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
@@ -3599,6 +3577,12 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             }
             Self::EconomicsQuoteExpired => {
                 write!(f, "bolt-v3 submit admission economics quote is expired")
+            }
+            Self::EconomicsOrderMismatch => {
+                write!(
+                    f,
+                    "bolt-v3 submit admission final order no longer matches its sealed economics quote"
+                )
             }
             Self::CountCapExhausted => {
                 write!(f, "bolt-v3 submit admission order count cap is exhausted")
@@ -3782,6 +3766,7 @@ fn evaluate_capital_admission_submit(
         side: evidence.side.to_capital_admission(),
         quantity: evidence.quantity,
         limit_price: evidence.effective_price,
+        economics_debit_liability: request.economics_admission.debit_reservation(),
         order_kind: evidence.order_kind.to_capital_admission(),
         liquidity: evidence.liquidity.to_capital_admission(),
         quote_set_id: evidence.quote_set_id.clone(),
@@ -3814,15 +3799,7 @@ fn evaluate_capital_admission_submit(
     let reserved_liability = decision
         .reserved_liability
         .expect("accepted capital admission decision should carry liability");
-    let Some(additive_liability) = checked_additive_liability(&capital_admission.policy) else {
-        capital_admission.gate.rollback_uncommitted_reservation(
-            &capital_admission.capital_pool.pool_id,
-            &submit_reservation_id,
-        );
-        return rejected_capital_admission(
-            BoltV3CapitalAdmissionRejectReason::CapitalAdmissionRejected,
-        );
-    };
+    let additive_liability = request.economics_admission.debit_reservation();
     let liability_factor = match evidence.side.to_capital_admission() {
         IntentSide::Buy => evidence.effective_price,
         IntentSide::Sell => Decimal::ZERO,
@@ -3885,15 +3862,6 @@ fn compiled_order_side_matches_request(
         (BoltV3CompiledOrderSide::Buy, OrderSide::Buy)
             | (BoltV3CompiledOrderSide::Sell, OrderSide::Sell)
     )
-}
-
-fn checked_additive_liability(policy: &CapitalAdmissionPolicy) -> Option<Decimal> {
-    match policy.fee_slippage_policy.as_ref() {
-        Some(policy) => policy
-            .max_fee_liability
-            .checked_add(policy.max_slippage_liability),
-        None => Some(Decimal::ZERO),
-    }
 }
 
 fn checked_lifecycle_liability(

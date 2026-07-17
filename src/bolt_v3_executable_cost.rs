@@ -38,12 +38,19 @@ impl std::fmt::Debug for ExecutableCostBlockReason {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExactSizeVwap {
     pub(crate) vwap_price: f64,
     pub(crate) vwap_quantity: f64,
     pub(crate) limit_price: f64,
     pub(crate) exact_size_filled: bool,
+    pub(crate) fill_legs: Vec<ExecutableFillLeg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ExecutableFillLeg {
+    pub(crate) price: f64,
+    pub(crate) quantity: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +122,7 @@ pub(crate) fn price_exact_size_vwap(
     let mut filled_quantity = ZERO_F64;
     let mut filled_notional = ZERO_F64;
     let mut limit_price = None;
+    let mut fill_legs = Vec::new();
 
     match order_side {
         OrderSide::Buy => {
@@ -124,6 +132,7 @@ pub(crate) fn price_exact_size_vwap(
                     break;
                 }
                 let previous_remaining_notional = remaining_notional;
+                let previous_filled_quantity = filled_quantity;
                 consume_exact_notional_level(
                     price,
                     *size,
@@ -133,6 +142,10 @@ pub(crate) fn price_exact_size_vwap(
                 )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
+                    fill_legs.push(ExecutableFillLeg {
+                        price,
+                        quantity: filled_quantity - previous_filled_quantity,
+                    });
                 }
                 if remaining_notional <= ZERO_F64 {
                     break;
@@ -146,6 +159,7 @@ pub(crate) fn price_exact_size_vwap(
                     break;
                 }
                 let previous_remaining_notional = remaining_notional;
+                let previous_filled_quantity = filled_quantity;
                 consume_exact_notional_level(
                     price,
                     *size,
@@ -155,6 +169,10 @@ pub(crate) fn price_exact_size_vwap(
                 )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
+                    fill_legs.push(ExecutableFillLeg {
+                        price,
+                        quantity: filled_quantity - previous_filled_quantity,
+                    });
                 }
                 if remaining_notional <= ZERO_F64 {
                     break;
@@ -190,6 +208,7 @@ pub(crate) fn price_exact_size_vwap(
         vwap_quantity: filled_quantity,
         limit_price,
         exact_size_filled: true,
+        fill_legs,
     })
 }
 
@@ -324,6 +343,14 @@ mod tests {
         assert!((priced.vwap_quantity - expected_vwap_quantity).abs() < EPSILON);
         assert_eq!(priced.limit_price, second_level_price);
         assert!(priced.exact_size_filled);
+        assert_eq!(priced.fill_legs.len(), 2);
+        assert_eq!(priced.fill_legs[0].price, best_level_price);
+        assert_eq!(priced.fill_legs[0].quantity, best_level_quantity);
+        assert_eq!(priced.fill_legs[1].price, second_level_price);
+        assert!(
+            (priced.fill_legs[1].quantity - (second_level_notional / second_level_price)).abs()
+                < EPSILON
+        );
     }
 
     #[test]
@@ -359,6 +386,7 @@ mod tests {
             vwap_quantity: 10.0,
             limit_price: 0.50,
             exact_size_filled: true,
+            fill_legs: Vec::new(),
         };
 
         let breakdown = super::executable_cost_breakdown(vwap, 200).expect("cost should be valid");

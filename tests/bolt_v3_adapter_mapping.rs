@@ -1473,7 +1473,6 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
-fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 
 [clients.polymarket_main.execution.economics]

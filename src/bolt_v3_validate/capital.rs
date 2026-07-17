@@ -67,19 +67,6 @@ pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> 
                 &mut errors,
             );
         }
-        validate_positive_decimal(
-            &format!("{label}.capital_admission_policy.fee_slippage.max_fee_liability"),
-            &pool.capital_admission_policy.fee_slippage.max_fee_liability,
-            &mut errors,
-        );
-        validate_positive_decimal(
-            &format!("{label}.capital_admission_policy.fee_slippage.max_slippage_liability"),
-            &pool
-                .capital_admission_policy
-                .fee_slippage
-                .max_slippage_liability,
-            &mut errors,
-        );
     }
 
     if enforced_pool_count > 1 {

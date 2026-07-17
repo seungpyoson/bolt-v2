@@ -238,6 +238,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
         let adapter = RecordingEconomicsAdapterFixture {
             estimate: VenueQuoteEstimate {
                 authority: source.clone(),
+                dependency_sources: Vec::new(),
                 components: vec![EstimatedEconomicComponent {
                     component_id: EconomicComponentId::new("test-core-effect")?,
                     class: if effect.is_sign_negative() {
@@ -262,9 +263,12 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 }],
             },
         };
-        crate::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(
-            adapter,
-        ))
+        crate::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(
+            Arc::new(adapter),
+            valid_until_ns
+                .checked_sub(intent.request.requested_at_ns)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
+        )?
         .quote_admission(crate::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),

@@ -1,6 +1,6 @@
 use std::{any::type_name, cell::RefMut, str::FromStr, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nautilus_common::{
     factories::OrderFactory,
     messages::execution::{
@@ -43,8 +43,8 @@ use crate::{
         AccountId as EconomicsAccountId, DecisionCorrelationId, EconomicQuoteRequest,
         EdgeBasisPolicyId, ExecutionClientId as EconomicsExecutionClientId,
         InstrumentId as EconomicsInstrumentId, LifecyclePath, LiquidityRoleAssumption,
-        NativeUnitId, OrderSide as EconomicsOrderSide, PlannedFillLeg, ProductSurfaceId,
-        ReportingPolicyId, RoutingContext,
+        NativeUnitId, OrderSide as EconomicsOrderSide, PlannedFillLeg, PositionContext,
+        ProductSurfaceId, ReportingPolicyId, RoutingContext,
     },
 };
 
@@ -70,11 +70,19 @@ pub struct BoltV3OrderRoutingHandle {
 
 pub struct BoltV3OrderEconomicsIntent<'a> {
     pub request: &'a BoltV3SubmitAdmissionRequestInput<'a>,
+    pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
+    pub position: Option<PositionContext>,
     pub liquidity_role: LiquidityRoleAssumption,
     pub lifecycle_path: LifecyclePath,
     pub requested_at_ns: u64,
     pub decision_correlation_id: &'a str,
     pub gross_expected_value: Decimal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoltV3PlannedFillLeg {
+    pub price: Decimal,
+    pub quantity: Decimal,
 }
 
 impl BoltV3OrderRoutingHandle {
@@ -112,6 +120,8 @@ impl BoltV3OrderRoutingHandle {
             OrderSide::Sell => EconomicsOrderSide::Sell,
             _ => anyhow::bail!("bolt-v3 economics rejects unsupported order side"),
         };
+        let planned_fill_legs =
+            normalize_planned_fill_legs(intent.request.order, facts, intent.planned_fill_legs)?;
         let request = EconomicQuoteRequest {
             execution_client_id: self.execution_client_id.clone(),
             account_id: self.account_id.clone(),
@@ -121,14 +131,17 @@ impl BoltV3OrderRoutingHandle {
             product_surface_id: self.product_surface_id.clone(),
             order_side,
             liquidity_role: intent.liquidity_role,
-            planned_fill_legs: vec![PlannedFillLeg {
-                price: facts.price,
-                quantity: facts.planned_fill_quantity,
-            }],
+            planned_fill_legs: planned_fill_legs
+                .into_iter()
+                .map(|leg| PlannedFillLeg {
+                    price: leg.price,
+                    quantity: leg.quantity,
+                })
+                .collect(),
             routing: RoutingContext {
                 attached_charge: None,
             },
-            position: None,
+            position: intent.position,
             lifecycle_path: intent.lifecycle_path,
             reporting_policy_id: self.reporting_policy_id.clone(),
             reporting_unit: self.reporting_unit.clone(),
@@ -144,6 +157,67 @@ impl BoltV3OrderRoutingHandle {
             })
             .map_err(Into::into)
     }
+}
+
+fn normalize_planned_fill_legs(
+    order: &OrderAny,
+    facts: crate::bolt_v3_submit_admission::BoltV3OrderEconomicsFacts,
+    legs: Vec<BoltV3PlannedFillLeg>,
+) -> anyhow::Result<Vec<BoltV3PlannedFillLeg>> {
+    anyhow::ensure!(!legs.is_empty(), "economics requires planned fill levels");
+    let mut remaining = if order.is_quote_quantity() {
+        facts.base_reservation_notional
+    } else {
+        facts.planned_fill_quantity
+    };
+    let mut normalized = Vec::new();
+    for leg in legs {
+        anyhow::ensure!(
+            leg.price > Decimal::ZERO && leg.quantity > Decimal::ZERO,
+            "economics planned fill level must have positive price and quantity"
+        );
+        let available = if order.is_quote_quantity() {
+            leg.price
+                .checked_mul(leg.quantity)
+                .context("economics planned fill notional overflow")?
+        } else {
+            leg.quantity
+        };
+        let consumed = available.min(remaining);
+        let quantity = if order.is_quote_quantity() {
+            consumed
+                .checked_div(leg.price)
+                .context("economics planned fill quantity division failed")?
+        } else {
+            consumed
+        };
+        normalized.push(BoltV3PlannedFillLeg {
+            price: leg.price,
+            quantity,
+        });
+        remaining = remaining
+            .checked_sub(consumed)
+            .context("economics planned fill subtraction failed")?;
+        if remaining.is_zero() {
+            break;
+        }
+    }
+    anyhow::ensure!(
+        remaining.is_zero(),
+        "economics planned fill levels do not cover the final order"
+    );
+    if order.price().is_some() {
+        let within_limit = normalized.iter().all(|leg| match order.order_side() {
+            OrderSide::Buy => leg.price <= facts.price,
+            OrderSide::Sell => leg.price >= facts.price,
+            _ => false,
+        });
+        anyhow::ensure!(
+            within_limit,
+            "economics planned fill level exceeds the final order limit"
+        );
+    }
+    Ok(normalized)
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -735,6 +809,14 @@ where
             .order_routing
             .quote_admission(BoltV3OrderEconomicsIntent {
                 request: &admission_input,
+                planned_fill_legs: {
+                    let facts = order_economics_facts(&admission_input)?;
+                    vec![BoltV3PlannedFillLeg {
+                        price: facts.price,
+                        quantity: facts.planned_fill_quantity,
+                    }]
+                },
+                position: None,
                 liquidity_role: LiquidityRoleAssumption::Taker,
                 lifecycle_path: LifecyclePath::PlannedExit,
                 requested_at_ns: order.ts_init().as_u64(),
@@ -1029,6 +1111,14 @@ where
                 .order_routing
                 .quote_admission(BoltV3OrderEconomicsIntent {
                     request: &admission_input,
+                    planned_fill_legs: {
+                        let facts = order_economics_facts(&admission_input)?;
+                        vec![BoltV3PlannedFillLeg {
+                            price: facts.price,
+                            quantity: facts.planned_fill_quantity,
+                        }]
+                    },
+                    position: None,
                     liquidity_role: LiquidityRoleAssumption::GuaranteedMaker,
                     lifecycle_path: LifecyclePath::PlannedExit,
                     requested_at_ns: order.ts_init().as_u64(),
@@ -1151,8 +1241,8 @@ mod tests {
     };
     use crate::{
         bolt_v3_capital_admission::{
-            CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
-            ProductAdmissionSnapshot, ProductKind,
+            CapitalAdmissionPolicy, PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
+            ProductKind,
         },
         bolt_v3_capital_admission_runtime_feed::{
             CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
@@ -1640,7 +1730,7 @@ mod tests {
     }
 
     #[test]
-    fn live_risk_reducing_exit_clamps_submitted_quantity_to_venue_position() {
+    fn live_risk_reducing_exit_rejects_when_clamp_invalidates_sealed_economics() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
         let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
 
@@ -1654,7 +1744,7 @@ mod tests {
         );
         let policy = BoltV3OrderExecutionPolicy::from_mode(BoltV3OrderExecutionMode::Live);
 
-        let outcome = policy
+        let error = policy
             .route_submit_with_sink(
                 BoltV3SubmitRoutingRequest::new(
                     writer.as_ref(),
@@ -1666,12 +1756,15 @@ mod tests {
                 order,
                 BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
             )
-            .expect("live risk-reducing exit should clamp to venue position and submit");
+            .expect_err("a changed final quantity requires a fresh economics admission");
 
-        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
-        assert_eq!(sink.submit_calls, 1);
-        assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
-        assert_eq!(admission.admitted_order_count(), 1);
+        assert_eq!(
+            error.to_string(),
+            "bolt-v3 submit admission final order no longer matches its sealed economics quote"
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert!(sink.submitted_order_quantities.is_empty());
+        assert_eq!(admission.admitted_order_count(), 0);
         let records = writer.records();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].quantity, Quantity::new(3.0, 2).to_string());
@@ -1915,7 +2008,7 @@ mod tests {
     }
 
     #[test]
-    fn kill_switch_flatten_command_routes_forced_reduction_through_clamped_submit() {
+    fn kill_switch_flatten_rejects_when_clamp_invalidates_sealed_economics() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
         let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
         admission.replace_kill_switch_state(KillSwitchState::Flattening {
@@ -1973,7 +2066,7 @@ mod tests {
 
         let mut sink = RecordingVenueMutationSink::default();
         let mut order_factory = generic_order_factory();
-        let outcome = route_kill_switch_flatten_command_with_sink(
+        let error = route_kill_switch_flatten_command_with_sink(
             BoltV3OrderExecutionPolicy::live(),
             &mut sink,
             &mut order_factory,
@@ -1991,12 +2084,15 @@ mod tests {
             },
             command,
         )
-        .expect("flatten command should route through submit policy");
+        .expect_err("a clamped flatten requires a fresh economics admission");
 
-        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
-        assert_eq!(sink.submit_calls, 1);
-        assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
-        assert_eq!(admission.admitted_order_count(), 1);
+        assert_eq!(
+            error.to_string(),
+            "bolt-v3 submit admission final order no longer matches its sealed economics quote"
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert!(sink.submitted_order_quantities.is_empty());
+        assert_eq!(admission.admitted_order_count(), 0);
         assert_eq!(writer.records().len(), 1);
         assert_eq!(
             writer.records()[0].clamp_outcome,
@@ -2109,9 +2205,9 @@ mod tests {
     }
 
     #[test]
-    fn two_halt_cycles_release_terminal_forced_reduction_and_second_submits_clamped() {
+    fn two_halt_cycles_release_terminal_forced_reduction_and_second_submits() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(5, 0));
         admission.configure_kill_switch_forced_reduction_policy(
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 1, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
@@ -2133,8 +2229,8 @@ mod tests {
             &mut order_factory,
             &first,
         )
-        .expect("first halt should submit a clamped forced reduction");
-        assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
+        .expect("first halt should submit a forced reduction");
+        assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(5.0, 2)]);
 
         let first_terminal = OrderEventAny::Canceled(order_canceled_event(
             "halt-001-flatten-positions-POSITION-001",
@@ -2161,14 +2257,12 @@ mod tests {
 
         assert_eq!(
             sink.submitted_order_quantities,
-            vec![Quantity::new(3.0, 2), Quantity::new(3.0, 2)]
+            vec![Quantity::new(5.0, 2), Quantity::new(5.0, 2)]
         );
         let records = writer.records();
         assert_eq!(
             records.last().map(|record| record.clamp_outcome.clone()),
-            Some(Some(BoltV3OrderIntentClampOutcome::Clamped {
-                original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
-            }))
+            Some(Some(BoltV3OrderIntentClampOutcome::WithinBounds))
         );
     }
 
@@ -2403,7 +2497,7 @@ mod tests {
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
             economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
-                Decimal::ONE,
+                Decimal::new(25, 1),
             ),
             strategy_id: "strategy-a".to_string(),
             execution_client_id: "execution_client".to_string(),
@@ -2557,10 +2651,6 @@ mod tests {
             },
             policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: Decimal::new(10, 2),
-                    max_slippage_liability: Decimal::new(20, 2),
-                }),
             },
             dedupe_retention_ns: u64::MAX,
         }

@@ -6,7 +6,7 @@ use bolt_v2::{
     },
     economics::{
         EconomicComponentId, EconomicKind, ExecutionKind, FormulaId, LiquidityRoleAssumption,
-        RoutingAttachment, RoutingAttachmentId, SourceId, VenueEconomicsAdapter,
+        PlannedFillLeg, RoutingAttachment, RoutingAttachmentId, SourceId, VenueEconomicsAdapter,
         validate_and_aggregate_quote,
     },
 };
@@ -28,6 +28,27 @@ fn config() -> PolymarketEconomicsAdapterConfig {
             fee_rounding_mode: FeeRoundingMode::MidpointAwayFromZero,
         },
     }
+}
+
+#[test]
+fn nonlinear_fee_is_rounded_and_summed_per_planned_fill_level() {
+    let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 1), None).unwrap();
+    let mut request = canonical_fixture_request();
+    request.planned_fill_legs = vec![
+        PlannedFillLeg {
+            price: decimal("0.60"),
+            quantity: decimal("5"),
+        },
+        PlannedFillLeg {
+            price: decimal("0.80"),
+            quantity: decimal("5"),
+        },
+    ];
+
+    let components = adapter.quote_components(&request).unwrap();
+
+    assert_eq!(components[0].point_effect.amount(), decimal("-0.140000"));
+    assert_ne!(components[0].point_effect.amount(), decimal("-0.147000"));
 }
 
 fn snapshot(fees_enabled: bool, exponent: u32) -> PolymarketMarketInfoSnapshot {

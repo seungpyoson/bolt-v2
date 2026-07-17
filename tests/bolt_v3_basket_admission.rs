@@ -16,8 +16,8 @@ use bolt_v2::{
         BoltV3BasketAdmissionState,
     },
     bolt_v3_capital_admission::{
-        CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
-        ProductAdmissionSnapshot, ProductKind,
+        CapitalAdmissionPolicy, PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
+        ProductKind,
     },
     bolt_v3_capital_admission_state::{
         OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
@@ -946,10 +946,6 @@ fn capital_admission_submit_state(
             },
             policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: dec!(0.1),
-                    max_slippage_liability: dec!(0.2),
-                }),
             },
             dedupe_retention_ns: 1_000,
         },

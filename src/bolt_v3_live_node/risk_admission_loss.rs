@@ -903,16 +903,6 @@ fn capital_admission_policy_from_pool(
             "risk.capital_pools.capital_admission_policy.min_remaining_pool_balance",
             policy.min_remaining_pool_balance.as_deref(),
         )?,
-        fee_slippage_policy: Some(FeeSlippagePolicy {
-            max_fee_liability: required_pool_decimal(
-                "risk.capital_pools.capital_admission_policy.fee_slippage.max_fee_liability",
-                &policy.fee_slippage.max_fee_liability,
-            )?,
-            max_slippage_liability: required_pool_decimal(
-                "risk.capital_pools.capital_admission_policy.fee_slippage.max_slippage_liability",
-                &policy.fee_slippage.max_slippage_liability,
-            )?,
-        }),
     })
 }
 
@@ -1635,8 +1625,8 @@ mod tests {
 
     use crate::{
         bolt_v3_capital_admission::{
-            CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
-            ProductAdmissionSnapshot, ProductKind,
+            CapitalAdmissionPolicy, PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
+            ProductKind,
         },
         bolt_v3_capital_admission_runtime_feed::{
             CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
@@ -1728,7 +1718,6 @@ mod tests {
                 },
                 policy: CapitalAdmissionPolicy {
                     min_remaining_pool_balance: None,
-                    fee_slippage_policy: None,
                 },
                 dedupe_retention_ns: 500,
             },
@@ -2198,7 +2187,6 @@ mod tests {
                 },
                 policy: CapitalAdmissionPolicy {
                     min_remaining_pool_balance: None,
-                    fee_slippage_policy: None,
                 },
                 dedupe_retention_ns: 500,
             },
@@ -2233,7 +2221,6 @@ mod tests {
             },
             policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
-                fee_slippage_policy: None,
             },
             dedupe_retention_ns: 500,
         }
@@ -2794,10 +2781,6 @@ mod tests {
             },
             policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: Decimal::new(10, 2),
-                    max_slippage_liability: Decimal::new(20, 2),
-                }),
             },
             dedupe_retention_ns: u64::MAX,
         }

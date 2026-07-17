@@ -301,14 +301,6 @@ pub struct PredictionMarketBinaryProductBlock {
 #[serde(deny_unknown_fields)]
 pub struct CapitalAdmissionPolicyBlock {
     pub min_remaining_pool_balance: Option<String>,
-    pub fee_slippage: FeeSlippagePolicyBlock,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct FeeSlippagePolicyBlock {
-    pub max_fee_liability: String,
-    pub max_slippage_liability: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

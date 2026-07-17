@@ -62,8 +62,8 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
-        BoltV3OrderEconomicsIntent, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
-        BoltV3SubmitRoutingRequest,
+        BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg, BoltV3SubmitContext,
+        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     },
     bolt_v3_order_intent::{
         MarketQuoteBuyQuantityError, make_market_quote_buy_quantity, normalize_base_order_quantity,
@@ -227,7 +227,7 @@ use self::subscriptions::{
     ResolutionStrikeReportBoundary,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
@@ -460,6 +460,7 @@ fn executable_submission_vwap_from_evaluation(
             vwap_quantity: result.cost_breakdown.vwap_quantity?,
             limit_price: result.cost_breakdown.limit_price?,
             exact_size_filled: result.cost_breakdown.exact_size_filled,
+            fill_legs: Vec::new(),
         });
     }
     let result = match selected_side {
@@ -482,6 +483,7 @@ fn executable_submission_vwap_from_evaluation(
             .limit_price
             .filter(|value| is_positive_finite(*value))?,
         exact_size_filled: cost.exact_size_filled,
+        fill_legs: Vec::new(),
     })
 }
 
@@ -5144,6 +5146,7 @@ impl BinaryOracleEdgeTaker {
         order: nautilus_model::orders::OrderAny,
         submit_context: BoltV3SubmitContext,
         gross_expected_value: Decimal,
+        planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
     ) -> Result<BoltV3SubmitRoutingOutcome> {
         // A15: build the (fallible) admission request BEFORE recording the
         // order-intent evidence line. The request build can fail (e.g. a
@@ -5154,8 +5157,12 @@ impl BinaryOracleEdgeTaker {
         // order that was never submitted. Recording after the build keeps the
         // evidence chain truthful: an order-intent line exists only once the
         // order is fully valued and about to enter admission.
-        let request =
-            self.submit_admission_request_from_order(&intent, &order, gross_expected_value)?;
+        let request = self.submit_admission_request_from_order(
+            &intent,
+            &order,
+            gross_expected_value,
+            planned_fill_legs,
+        )?;
         let policy = self.context.order_execution_policy();
         let decision_evidence = self.context.decision_evidence_arc();
         let submit_admission = self.context.submit_admission_arc();
@@ -5187,6 +5194,7 @@ impl BinaryOracleEdgeTaker {
         intent: &BoltV3OrderIntentEvidence,
         order: &nautilus_model::orders::OrderAny,
         gross_expected_value: Decimal,
+        planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
     ) -> Result<BoltV3SubmitAdmissionRequest> {
         let client_order_id = order.client_order_id().to_string();
         let is_quote_quantity = order.is_quote_quantity();
@@ -5202,14 +5210,10 @@ impl BinaryOracleEdgeTaker {
         } else {
             None
         };
-        let (last_quote, last_trade) = if is_quote_quantity {
-            let cache = self.cache();
-            (
-                cache.quote(&order.instrument_id()),
-                cache.trade(&order.instrument_id()),
-            )
+        let last_quote = if is_quote_quantity {
+            self.cache().quote(&order.instrument_id())
         } else {
-            (None, None)
+            None
         };
         let risk_reducing_exit_position_context = if matches!(
             intent.intent_kind,
@@ -5254,7 +5258,6 @@ impl BinaryOracleEdgeTaker {
             order,
             valuation: OrderValuationContext {
                 last_quote,
-                last_trade,
                 instrument: instrument.as_ref(),
             },
             lifecycle_policy: self.submit_lifecycle_policy(),
@@ -5265,6 +5268,8 @@ impl BinaryOracleEdgeTaker {
                 .order_routing()?
                 .quote_admission(BoltV3OrderEconomicsIntent {
                     request: &admission_input,
+                    planned_fill_legs,
+                    position: None,
                     liquidity_role: LiquidityRoleAssumption::Taker,
                     lifecycle_path: LifecyclePath::PlannedExit,
                     requested_at_ns: order.ts_init().as_u64(),
@@ -6019,6 +6024,10 @@ impl BinaryOracleEdgeTaker {
                 managed_position.position.position_id,
             ),
             gross_expected_value,
+            vec![BoltV3PlannedFillLeg {
+                price: exit_price,
+                quantity: exit_quantity,
+            }],
         ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {}
@@ -6213,6 +6222,7 @@ impl BinaryOracleEdgeTaker {
             order_side: None,
             price: None,
             quantity_value: None,
+            planned_fill_legs: Vec::new(),
             client_order_id: None,
             blocked_reason: None,
         };
@@ -6331,11 +6341,31 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED);
             return decision;
         }
+        let planned_fill_legs =
+            match self.executable_entry_probe_for_side(selected_side, order_side, sized_notional) {
+                Ok(probe) => probe
+                    .vwap
+                    .fill_legs
+                    .into_iter()
+                    .map(|leg| {
+                        Some(BoltV3PlannedFillLeg {
+                            price: Decimal::from_f64(leg.price)?,
+                            quantity: Decimal::from_f64(leg.quantity)?,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>(),
+                Err(_) => None,
+            };
+        let Some(planned_fill_legs) = planned_fill_legs else {
+            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
+            return decision;
+        };
 
         decision.instrument_id = Some(instrument_id);
         decision.order_side = Some(order_side);
         decision.price = Some(price);
         decision.quantity_value = Some(quantity_value);
+        decision.planned_fill_legs = planned_fill_legs;
         decision
     }
 
@@ -6498,6 +6528,7 @@ impl BinaryOracleEdgeTaker {
                     order,
                     BoltV3SubmitContext::with_client_id(client_id),
                     gross_expected_value,
+                    decision.planned_fill_legs.clone(),
                 )
             }) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}

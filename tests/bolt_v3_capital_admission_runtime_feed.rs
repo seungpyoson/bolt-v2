@@ -6,8 +6,8 @@ use std::{
 };
 
 use bolt_v2::bolt_v3_capital_admission::{
-    CapitalAdmissionLifecycleAction, CapitalAdmissionPolicy, FeeSlippagePolicy,
-    PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot, ProductKind,
+    CapitalAdmissionLifecycleAction, CapitalAdmissionPolicy, PredictionMarketAdmissionSnapshot,
+    ProductAdmissionSnapshot, ProductKind,
 };
 use bolt_v2::bolt_v3_capital_admission_runtime_feed::{
     CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
@@ -2058,31 +2058,6 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
 }
 
 #[test]
-fn covered_sell_open_order_recovery_uses_additive_liability_only() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    admission.update_capital_admission_nt_components(fresh_components(900));
-
-    let reservation = admission
-        .capital_admission_open_order_reservation_from_evidence(
-            BoltV3SubmitCapitalAdmissionOpenOrderEvidence {
-                client_order_id: "client-order-1".to_string(),
-                instrument_id: "instrument-yes.VENUE-A".to_string(),
-                side: BoltV3CompiledOrderSide::Sell,
-                open_quantity: Decimal::new(10, 0),
-                limit_price: Decimal::new(40, 2),
-                observed_at_ns: 1_000,
-                evidence_label: "nt_open_order_cache".to_string(),
-            },
-        )
-        .expect("covered sell recovery should reserve fee/slippage add-ons only");
-
-    assert_eq!(reservation.liability_factor, Decimal::ZERO);
-    assert_eq!(reservation.liability, Decimal::new(30, 2));
-    assert_eq!(reservation.additive_liability, Decimal::new(30, 2));
-}
-
-#[test]
 fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     assert!(
@@ -2979,10 +2954,6 @@ fn capital_admission_configured_admission_with_writer_and_venue(
             },
             policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: Decimal::new(10, 2),
-                    max_slippage_liability: Decimal::new(20, 2),
-                }),
             },
             dedupe_retention_ns: 500,
         },
@@ -3059,12 +3030,15 @@ fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, CapitalA
 
 fn capital_admission_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
-        economics_admission: support::sample_economics_admission(Decimal::ONE),
+        economics_admission: support::sample_economics_admission_with_debit(
+            Decimal::new(4, 0),
+            Decimal::new(3, 1),
+        ),
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "execution-client-a".to_string(),
         client_order_id: client_order_id.to_string(),
         instrument_id: "instrument-yes.VENUE-A".to_string(),
-        notional: Decimal::new(4, 0),
+        notional: Decimal::new(43, 1),
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(10, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,

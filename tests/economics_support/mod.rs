@@ -126,6 +126,7 @@ pub fn quote_fixture(
                 fetched_at_ns: 95,
                 valid_until_ns: 110,
             },
+            dependency_sources: Vec::new(),
             components: components.into_iter().collect(),
         },
         &[],

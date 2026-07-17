@@ -14,13 +14,6 @@ use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapitalAdmissionPolicy {
     pub min_remaining_pool_balance: Option<Decimal>,
-    pub fee_slippage_policy: Option<FeeSlippagePolicy>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeeSlippagePolicy {
-    pub max_fee_liability: Decimal,
-    pub max_slippage_liability: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +26,7 @@ pub struct CapitalAdmissionRequest {
     pub side: IntentSide,
     pub quantity: Decimal,
     pub limit_price: Decimal,
+    pub economics_debit_liability: Decimal,
     pub order_kind: IntentOrderKind,
     pub liquidity: IntentLiquidity,
     pub quote_set_id: Option<String>,
@@ -91,8 +85,7 @@ pub struct LiabilityQuote {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiabilityError {
     MissingMarketState,
-    MissingFeePolicy,
-    MissingSlippagePolicy,
+    InvalidEconomicsDebit,
     InvalidIntentPrice,
     InvalidIntentQuantity,
     MissingQuoteSetId,
@@ -481,20 +474,17 @@ pub fn evaluate_capital_admission(inputs: CapitalAdmissionInputs<'_>) -> Capital
     }
 
     let calculator = PredictionMarketBinaryLiabilityCalculator;
-    let liability_quote = match calculator.worst_case_liability(
-        inputs.request,
-        &state.product_state,
-        inputs.policy,
-    ) {
-        Ok(liability_quote) => liability_quote,
-        Err(error) => {
-            return rejected_capital_admission(
-                original_quantity,
-                pool_id,
-                vec![CapitalAdmissionReason::Liability(error)],
-            );
-        }
-    };
+    let liability_quote =
+        match calculator.worst_case_liability(inputs.request, &state.product_state) {
+            Ok(liability_quote) => liability_quote,
+            Err(error) => {
+                return rejected_capital_admission(
+                    original_quantity,
+                    pool_id,
+                    vec![CapitalAdmissionReason::Liability(error)],
+                );
+            }
+        };
 
     let reservation_request = ReservationRequest {
         request_id: inputs.request.intent_id.clone(),
@@ -666,17 +656,10 @@ impl PredictionMarketBinaryLiabilityCalculator {
         &self,
         request: &CapitalAdmissionRequest,
         state: &ProductAdmissionSnapshot,
-        policy: &CapitalAdmissionPolicy,
     ) -> Result<LiabilityQuote, LiabilityError> {
         let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = state;
         validate_request(request)?;
         validate_liquidity(request)?;
-        let fee_policy = policy
-            .fee_slippage_policy
-            .as_ref()
-            .ok_or(LiabilityError::MissingFeePolicy)?;
-        validate_fee_slippage_policy(fee_policy)?;
-
         let base_liability = match request.side {
             IntentSide::Buy => request
                 .quantity
@@ -685,8 +668,7 @@ impl PredictionMarketBinaryLiabilityCalculator {
             IntentSide::Sell => Decimal::ZERO,
         };
         let liability = base_liability
-            .checked_add(fee_policy.max_fee_liability)
-            .and_then(|liability| liability.checked_add(fee_policy.max_slippage_liability))
+            .checked_add(request.economics_debit_liability)
             .ok_or(LiabilityError::ArithmeticOverflow)?;
 
         match request.side {
@@ -729,6 +711,9 @@ fn validate_request(request: &CapitalAdmissionRequest) -> Result<(), LiabilityEr
     if request.limit_price < Decimal::ZERO || request.limit_price > Decimal::ONE {
         return Err(LiabilityError::InvalidIntentPrice);
     }
+    if request.economics_debit_liability < Decimal::ZERO {
+        return Err(LiabilityError::InvalidEconomicsDebit);
+    }
     Ok(())
 }
 
@@ -737,16 +722,6 @@ fn validate_liquidity(request: &CapitalAdmissionRequest) -> Result<(), Liability
         && request.quote_set_id.as_deref().is_none_or(str::is_empty)
     {
         return Err(LiabilityError::MissingQuoteSetId);
-    }
-    Ok(())
-}
-
-fn validate_fee_slippage_policy(policy: &FeeSlippagePolicy) -> Result<(), LiabilityError> {
-    if policy.max_fee_liability < Decimal::ZERO {
-        return Err(LiabilityError::MissingFeePolicy);
-    }
-    if policy.max_slippage_liability < Decimal::ZERO {
-        return Err(LiabilityError::MissingSlippagePolicy);
     }
     Ok(())
 }
@@ -772,19 +747,14 @@ mod tests {
         CapitalAdmissionEvidenceKind, CapitalAdmissionGate, CapitalAdmissionGateInputs,
         CapitalAdmissionInputs, CapitalAdmissionLifecycleAction, CapitalAdmissionLifecycleKind,
         CapitalAdmissionLifecycleUpdate, CapitalAdmissionPolicy, CapitalAdmissionReason,
-        CapitalAdmissionRequest, FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide,
-        LiabilityError, PredictionMarketAdmissionSnapshot,
-        PredictionMarketBinaryLiabilityCalculator, ProductAdmissionSnapshot, ProductKind,
-        evaluate_capital_admission,
+        CapitalAdmissionRequest, IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
+        PredictionMarketAdmissionSnapshot, PredictionMarketBinaryLiabilityCalculator,
+        ProductAdmissionSnapshot, ProductKind, evaluate_capital_admission,
     };
 
     fn policy() -> CapitalAdmissionPolicy {
         CapitalAdmissionPolicy {
             min_remaining_pool_balance: None,
-            fee_slippage_policy: Some(FeeSlippagePolicy {
-                max_fee_liability: Decimal::new(10, 2),
-                max_slippage_liability: Decimal::new(20, 2),
-            }),
         }
     }
 
@@ -798,6 +768,7 @@ mod tests {
             side,
             quantity: Decimal::new(10, 0),
             limit_price: Decimal::new(40, 2),
+            economics_debit_liability: Decimal::new(30, 2),
             order_kind: IntentOrderKind::Limit,
             liquidity,
             quote_set_id: None,
@@ -978,38 +949,24 @@ mod tests {
         let calculator = PredictionMarketBinaryLiabilityCalculator;
 
         let buy = calculator
-            .worst_case_liability(
-                &request(IntentSide::Buy, IntentLiquidity::Taker),
-                &state(),
-                &policy(),
-            )
+            .worst_case_liability(&request(IntentSide::Buy, IntentLiquidity::Taker), &state())
             .expect("fresh buy state should price liability");
         assert_eq!(buy.calculated_liability, Decimal::new(430, 2));
         assert_eq!(buy.reserved_liability, Decimal::new(430, 2));
 
         let sell = calculator
-            .worst_case_liability(
-                &request(IntentSide::Sell, IntentLiquidity::Taker),
-                &state(),
-                &policy(),
-            )
+            .worst_case_liability(&request(IntentSide::Sell, IntentLiquidity::Taker), &state())
             .expect("fresh sell state should price liability");
         assert_eq!(sell.calculated_liability, Decimal::new(30, 2));
         assert_eq!(sell.reserved_liability, Decimal::new(30, 2));
 
-        let missing_fee_policy = CapitalAdmissionPolicy {
-            fee_slippage_policy: None,
-            ..policy()
-        };
+        let mut invalid_economics_debit = request(IntentSide::Buy, IntentLiquidity::Taker);
+        invalid_economics_debit.economics_debit_liability = Decimal::NEGATIVE_ONE;
         assert_eq!(
             calculator
-                .worst_case_liability(
-                    &request(IntentSide::Buy, IntentLiquidity::Taker),
-                    &state(),
-                    &missing_fee_policy,
-                )
-                .expect_err("missing fee/slippage policy must fail closed"),
-            LiabilityError::MissingFeePolicy
+                .worst_case_liability(&invalid_economics_debit, &state(),)
+                .expect_err("negative economics debit must fail closed"),
+            LiabilityError::InvalidEconomicsDebit
         );
 
         assert_eq!(
@@ -1017,7 +974,6 @@ mod tests {
                 .worst_case_liability(
                     &request(IntentSide::Buy, IntentLiquidity::RestingMaker),
                     &state(),
-                    &policy(),
                 )
                 .expect_err("resting maker intent must identify its quote set"),
             LiabilityError::MissingQuoteSetId
@@ -1027,22 +983,15 @@ mod tests {
     #[test]
     fn prediction_market_binary_liability_overflow_rejects_fail_closed() {
         let calculator = PredictionMarketBinaryLiabilityCalculator;
-        let mut overflow_policy = policy();
-        overflow_policy.fee_slippage_policy = Some(FeeSlippagePolicy {
-            max_fee_liability: Decimal::MAX,
-            max_slippage_liability: Decimal::ZERO,
-        });
+        let mut overflow_request = request(IntentSide::Buy, IntentLiquidity::Taker);
+        overflow_request.economics_debit_liability = Decimal::MAX;
         let mut overflow_state = state();
         let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = &mut overflow_state;
         snapshot.collateral_allowance = Decimal::MAX;
 
         assert_eq!(
             calculator
-                .worst_case_liability(
-                    &request(IntentSide::Buy, IntentLiquidity::Taker),
-                    &overflow_state,
-                    &overflow_policy,
-                )
+                .worst_case_liability(&overflow_request, &overflow_state,)
                 .expect_err("overflowing liability arithmetic must fail closed"),
             LiabilityError::ArithmeticOverflow
         );

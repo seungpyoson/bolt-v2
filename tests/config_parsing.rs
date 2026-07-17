@@ -209,7 +209,6 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
-fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 
 [economics]
@@ -251,7 +250,6 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
-fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 "#;
     let err = toml::from_str::<PolymarketExecutionConfig>(exec_toml)
@@ -5862,7 +5860,6 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
-fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 
 [clients.polymarket_main.execution.economics]
@@ -6333,7 +6330,6 @@ max_retries = 0
 retry_delay_initial_ms = 0
 retry_delay_max_ms = 0
 ack_timeout_secs = 0
-fee_cache_ttl_secs = 0
 transport_backend = "sockudo"
 
 [clients.polymarket_main.execution.economics]
@@ -6373,7 +6369,6 @@ passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
         "clients.polymarket_main.execution.retry_delay_initial_ms must be a positive integer",
         "clients.polymarket_main.execution.retry_delay_max_ms must be a positive integer",
         "clients.polymarket_main.execution.ack_timeout_secs must be a positive integer",
-        "clients.polymarket_main.execution.fee_cache_ttl_secs must be a positive integer",
     ];
     for needle in expected {
         assert!(
@@ -7771,18 +7766,6 @@ fn capital_pool_rejects_non_positive_thresholds() {
             "min_remaining_pool_balance = \"1.00\"",
             "min_remaining_pool_balance = \"0\"",
         ),
-        (
-            "[risk.capital_pools.capital_admission_policy.fee_slippage]",
-            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.fee_slippage.max_fee_liability",
-            "max_fee_liability = \"0.10\"",
-            "max_fee_liability = \"0\"",
-        ),
-        (
-            "[risk.capital_pools.capital_admission_policy.fee_slippage]",
-            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.fee_slippage.max_slippage_liability",
-            "max_slippage_liability = \"0.20\"",
-            "max_slippage_liability = \"0\"",
-        ),
     ] {
         let mutated = replace_in_fixture_section(section, &[(original, replacement)]);
         let root: BoltV3RootConfig = toml::from_str(&mutated)
@@ -7830,9 +7813,6 @@ collateral_coupled_group_id = "condition-secondary"
 [risk.capital_pools.capital_admission_policy]
 min_remaining_pool_balance = "1.00"
 
-[risk.capital_pools.capital_admission_policy.fee_slippage]
-max_fee_liability = "0.10"
-max_slippage_liability = "0.20"
 "#
     );
     let root: BoltV3RootConfig =
@@ -7877,9 +7857,6 @@ collateral_coupled_group_id = "condition-secondary"
 [risk.capital_pools.capital_admission_policy]
 min_remaining_pool_balance = "1.00"
 
-[risk.capital_pools.capital_admission_policy.fee_slippage]
-max_fee_liability = "0.10"
-max_slippage_liability = "0.20"
 "#
     );
     let root: BoltV3RootConfig =

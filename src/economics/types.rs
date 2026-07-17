@@ -308,6 +308,7 @@ pub struct EstimatedEconomicComponent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VenueQuoteEstimate {
     pub authority: SourceValidity,
+    pub dependency_sources: Vec<SourceValidity>,
     pub components: Vec<EstimatedEconomicComponent>,
 }
 
@@ -441,6 +442,10 @@ impl EconomicQuote {
     pub fn valid_until_ns(&self) -> u64 {
         self.valid_until_ns
     }
+
+    pub(crate) fn cap_valid_until_ns(&mut self, valid_until_ns: u64) {
+        self.valid_until_ns = self.valid_until_ns.min(valid_until_ns);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -523,6 +528,7 @@ pub enum EconomicsUnavailable {
     },
     ZeroNativeEffect,
     InvalidPlannedFill,
+    InvalidQuoteValidityPolicy,
     InvalidDecimal,
     EconomicClassSignMismatch,
     MissingQuoteAuthority,

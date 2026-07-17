@@ -50,11 +50,15 @@ fn quote_admission_reserves_authoritative_debits_once() {
         None,
     );
     let authority = component.source.clone();
-    let runtime =
-        BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
+        Arc::new(FixedVenue(VenueQuoteEstimate {
             authority,
+            dependency_sources: Vec::new(),
             components: vec![component],
-        })));
+        })),
+        10,
+    )
+    .unwrap();
     let admission = runtime.quote_admission(intent(request)).unwrap();
     assert_eq!(admission.reservation_notional(), decimal("5.25"));
     assert_eq!(admission.net_edge().core_net_edge(), decimal("1.75"));
@@ -63,6 +67,31 @@ fn quote_admission_reserves_authoritative_debits_once() {
             .source_snapshot_ids()
             .contains(&SnapshotId::new("basis-snapshot").unwrap())
     );
+}
+
+#[test]
+fn configured_quote_validity_caps_authoritative_source_window() {
+    let request = canonical_fixture_request();
+    let component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    let authority = component.source.clone();
+    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
+        Arc::new(FixedVenue(VenueQuoteEstimate {
+            authority,
+            dependency_sources: Vec::new(),
+            components: vec![component],
+        })),
+        5,
+    )
+    .unwrap();
+
+    let admission = runtime.quote_admission(intent(request)).unwrap();
+
+    assert_eq!(admission.quote().valid_until_ns(), 105);
 }
 
 #[test]
@@ -75,11 +104,15 @@ fn non_positive_core_net_edge_cannot_create_admission() {
         None,
     );
     let authority = component.source.clone();
-    let runtime =
-        BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
+        Arc::new(FixedVenue(VenueQuoteEstimate {
             authority,
+            dependency_sources: Vec::new(),
             components: vec![component],
-        })));
+        })),
+        10,
+    )
+    .unwrap();
     let mut admission_intent = intent(request);
     admission_intent.gross_expected_value = decimal("0.25");
 
@@ -100,11 +133,15 @@ fn stale_authority_cannot_create_admission() {
     );
     let mut authority = component.source.clone();
     authority.valid_until_ns = 99;
-    let runtime =
-        BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
+        Arc::new(FixedVenue(VenueQuoteEstimate {
             authority,
+            dependency_sources: Vec::new(),
             components: vec![component],
-        })));
+        })),
+        10,
+    )
+    .unwrap();
     assert!(matches!(
         runtime.quote_admission(intent(request)),
         Err(EconomicsUnavailable::StaleSource { .. })

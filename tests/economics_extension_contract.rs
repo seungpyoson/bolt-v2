@@ -23,6 +23,7 @@ impl VenueEconomicsAdapter for SyntheticVenue {
         };
         Ok(VenueQuoteEstimate {
             authority: authority.clone(),
+            dependency_sources: Vec::new(),
             components: vec![EstimatedEconomicComponent {
                 component_id: EconomicComponentId::new("synthetic-charge").unwrap(),
                 class: EconomicClass::Charge,

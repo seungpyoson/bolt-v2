@@ -223,6 +223,7 @@ pub(super) struct EntrySubmissionDecision {
     pub(super) order_side: Option<OrderSide>,
     pub(super) price: Option<f64>,
     pub(super) quantity_value: Option<f64>,
+    pub(super) planned_fill_legs: Vec<crate::bolt_v3_order_execution::BoltV3PlannedFillLeg>,
     pub(super) client_order_id: Option<ClientOrderId>,
     pub(super) blocked_reason: Option<&'static str>,
 }

@@ -161,7 +161,15 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         };
         let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
         let edge_basis = adapter.edge_basis(&intent.request)?;
-        BoltV3EconomicsRuntime::from_offline_adapter(std::sync::Arc::new(adapter)).quote_admission(
+        let quote_validity_ns = snapshot
+            .valid_until_ns
+            .checked_sub(intent.request.requested_at_ns)
+            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+        BoltV3EconomicsRuntime::from_offline_adapter(
+            std::sync::Arc::new(adapter),
+            quote_validity_ns,
+        )?
+        .quote_admission(
             EconomicsAdmissionIntent {
                 request: intent.request,
                 gross_expected_value: intent.gross_expected_value,
@@ -238,6 +246,7 @@ impl VenueEconomicsAdapter for ReplayEconomicsAdapter {
                 self.snapshot.fetched_at_ns,
                 self.snapshot.valid_until_ns,
             )?,
+            dependency_sources: Vec::new(),
             components,
         })
     }

@@ -1,6 +1,6 @@
 use crate::support;
 
-use bolt_v2::bolt_v3_capital_admission::{CapitalAdmissionPolicy, FeeSlippagePolicy, ProductKind};
+use bolt_v2::bolt_v3_capital_admission::{CapitalAdmissionPolicy, ProductKind};
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
@@ -161,6 +161,11 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
         .quote_admission(
             bolt_v2::bolt_v3_order_execution::BoltV3OrderEconomicsIntent {
                 request: &input,
+                planned_fill_legs: vec![bolt_v2::bolt_v3_order_execution::BoltV3PlannedFillLeg {
+                    price: Decimal::new(50, 2),
+                    quantity: Decimal::new(2, 0),
+                }],
+                position: None,
                 liquidity_role: bolt_v2::economics::LiquidityRoleAssumption::Taker,
                 lifecycle_path: bolt_v2::economics::LifecyclePath::PlannedExit,
                 requested_at_ns: 1,
@@ -259,7 +264,6 @@ fn order_valuation_context_selects_quote_quantity_prices_by_order_shape() {
     );
     let context = OrderValuationContext {
         last_quote: Some(quote),
-        last_trade: None,
         instrument: None,
     };
 
@@ -317,7 +321,6 @@ fn quote_quantity_order_maps_quote_amount_to_canonical_fill_quantity() {
         order: &order,
         valuation: OrderValuationContext {
             last_quote: None,
-            last_trade: None,
             instrument: Some(&instrument),
         },
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
@@ -379,6 +382,11 @@ fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
         .quote_admission(
             bolt_v2::bolt_v3_order_execution::BoltV3OrderEconomicsIntent {
                 request: &input,
+                planned_fill_legs: vec![bolt_v2::bolt_v3_order_execution::BoltV3PlannedFillLeg {
+                    price: Decimal::new(50, 2),
+                    quantity: Decimal::new(2, 0),
+                }],
+                position: None,
                 liquidity_role: bolt_v2::economics::LiquidityRoleAssumption::Taker,
                 lifecycle_path: bolt_v2::economics::LifecyclePath::PlannedExit,
                 requested_at_ns: 1,
@@ -413,6 +421,14 @@ fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
         !source.contains("impl DerefMut for BoltV3LiveNodeRuntime"),
         "runtime must not deref mutably into raw LiveNode"
     );
+}
+
+#[test]
+fn economics_valuation_has_no_last_trade_or_raw_quantity_fallback() {
+    let source = support::repo_text("src/bolt_v3_submit_admission.rs");
+
+    assert!(!source.contains("quote_side_price.or_else"));
+    assert!(!source.contains("from the raw quote quantity"));
 }
 
 #[test]
@@ -1003,7 +1019,7 @@ fn submit_request_with_kind_policy_and_exit_proof(
         BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
     };
     BoltV3SubmitAdmissionRequest {
-        economics_admission: support::sample_economics_admission(Decimal::ONE),
+        economics_admission: support::sample_economics_admission(notional),
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),
@@ -1075,10 +1091,6 @@ fn capital_admission_configured_admission_with_writer(
             },
             policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: Decimal::new(10, 2),
-                    max_slippage_liability: Decimal::new(20, 2),
-                }),
             },
             dedupe_retention_ns: 1_000,
         },
@@ -1157,7 +1169,6 @@ fn forced_reduction_request(
     claim: BoltV3KillSwitchForcedReductionClaim,
 ) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
-        economics_admission: support::sample_economics_admission(Decimal::ONE),
         kill_switch_forced_reduction: Some(claim),
         ..submit_request_with_kind(notional, BoltV3SubmitIntentKind::KillSwitchForcedReduction)
     }

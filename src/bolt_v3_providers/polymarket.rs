@@ -236,7 +236,6 @@ pub struct PolymarketExecutionConfig {
     pub retry_delay_initial_ms: u64,
     pub retry_delay_max_ms: u64,
     pub ack_timeout_secs: u64,
-    pub fee_cache_ttl_secs: u64,
     pub venue_truth_poll_interval_ms: Option<u64>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
@@ -527,7 +526,6 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         ("retry_delay_initial_ms", execution.retry_delay_initial_ms),
         ("retry_delay_max_ms", execution.retry_delay_max_ms),
         ("ack_timeout_secs", execution.ack_timeout_secs),
-        ("fee_cache_ttl_secs", execution.fee_cache_ttl_secs),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {

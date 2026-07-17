@@ -1,8 +1,9 @@
 use crate::economics::{
-    AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
-    EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
-    LiquidityRoleAssumption, NativeUnitId, SignedNativeEffect, SnapshotId, SourceId,
-    SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
+    AdmissionTreatment, CalculationFactor, CarryKind, EconomicClass, EconomicKind,
+    EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent,
+    ExecutionKind, FormulaId, LiquidityRoleAssumption, NativeUnitId, PositionSide,
+    RiskBoundAuthority, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+    VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -28,6 +29,17 @@ pub struct HyperliquidEconomicsAdapterConfig {
     pub builder_rate_factor_id: FormulaId,
     pub source_id: SourceId,
     pub formula: HyperliquidFormulaPolicy,
+    pub carry: Option<HyperliquidCarryPolicy>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HyperliquidCarryPolicy {
+    pub component_id: crate::economics::EconomicComponentId,
+    pub formula_id: FormulaId,
+    pub point_rate_factor_id: FormulaId,
+    pub bound_rate_factor_id: FormulaId,
+    pub risk_policy_id: FormulaId,
+    pub stress_fixture_id: FormulaId,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -70,6 +82,8 @@ pub struct HyperliquidProductEconomicsSnapshot {
     fetched_at_ns: u64,
     valid_until_ns: u64,
     product_kind: HyperliquidProductKind,
+    base_unit: Option<String>,
+    quote_unit: Option<String>,
     stable_pair: bool,
     aligned_quote_or_collateral: bool,
     hip3: bool,
@@ -79,6 +93,8 @@ pub struct HyperliquidProductEconomicsSnapshot {
     builder_rate_bps: Option<Decimal>,
     builder_approved_max_bps: Option<Decimal>,
     spot_dust_authority_complete: bool,
+    carry_point_rate_per_ns: Option<Decimal>,
+    carry_debit_rate_bound_per_ns: Option<Decimal>,
 }
 
 impl HyperliquidProductEconomicsSnapshot {
@@ -99,6 +115,10 @@ pub enum HyperliquidEconomicsError {
     InvalidProductMetadata,
     InvalidAccountScope,
     InvalidFeeSurface,
+    MissingSpotUnit,
+    MissingCarryPolicy,
+    MissingCarryContext,
+    InvalidCarryBound,
     StaleSnapshot,
     BlockedUnsupported(BlockedUnsupported),
     MissingBuilderApproval,
@@ -232,7 +252,33 @@ impl HyperliquidEconomicsAdapter {
             LiquidityRoleAssumption::Taker => self.rates.taker,
         };
         let notional = self.notional(request)?;
-        let signed_protocol_amount = -(notional * rate);
+        let (protocol_basis, protocol_unit) = match (self.product.product_kind, request.order_side)
+        {
+            (HyperliquidProductKind::Spot, crate::economics::OrderSide::Buy) => (
+                self.quantity(request)?,
+                NativeUnitId::new(
+                    self.product
+                        .base_unit
+                        .as_ref()
+                        .ok_or(HyperliquidEconomicsError::MissingSpotUnit)?
+                        .clone(),
+                )
+                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            ),
+            (HyperliquidProductKind::Spot, crate::economics::OrderSide::Sell) => (
+                notional,
+                NativeUnitId::new(
+                    self.product
+                        .quote_unit
+                        .as_ref()
+                        .ok_or(HyperliquidEconomicsError::MissingSpotUnit)?
+                        .clone(),
+                )
+                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            ),
+            (HyperliquidProductKind::Perp, _) => (notional, self.config.settlement_unit.clone()),
+        };
+        let signed_protocol_amount = -(protocol_basis * rate);
         let mut components = Vec::new();
         if !signed_protocol_amount.is_zero() {
             components.push(self.component(
@@ -243,12 +289,25 @@ impl HyperliquidEconomicsAdapter {
                 rate,
                 signed_protocol_amount,
                 ExecutionKind::ProtocolTrading,
+                protocol_unit.clone(),
             )?);
         }
 
-        match (&request.routing.attached_charge, &self.builder) {
-            (None, _) => {}
-            (Some(_), BuilderQuotePlan::Unavailable) => {
+        let builder_applies = !matches!(
+            (self.product.product_kind, request.order_side),
+            (
+                HyperliquidProductKind::Spot,
+                crate::economics::OrderSide::Buy
+            )
+        );
+        match (
+            &request.routing.attached_charge,
+            &self.builder,
+            builder_applies,
+        ) {
+            (_, _, false) => {}
+            (None, _, true) => {}
+            (Some(_), BuilderQuotePlan::Unavailable, true) => {
                 return Err(HyperliquidEconomicsError::MissingBuilderApproval);
             }
             (
@@ -257,6 +316,7 @@ impl HyperliquidEconomicsAdapter {
                     profile_id,
                     rate_bps,
                 },
+                true,
             ) => {
                 if profile_id != attachment.attachment_id.as_str() {
                     return Err(HyperliquidEconomicsError::BuilderProfileMismatch);
@@ -271,9 +331,13 @@ impl HyperliquidEconomicsAdapter {
                         *rate_bps,
                         signed_builder_amount,
                         ExecutionKind::AttachedRouting,
+                        protocol_unit,
                     )?);
                 }
             }
+        }
+        if self.product.product_kind == HyperliquidProductKind::Perp {
+            components.push(self.carry_component(request)?);
         }
         Ok(components)
     }
@@ -307,6 +371,128 @@ impl HyperliquidEconomicsAdapter {
             })
     }
 
+    fn quantity(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<Decimal, HyperliquidEconomicsError> {
+        request
+            .planned_fill_legs
+            .iter()
+            .try_fold(Decimal::ZERO, |total, leg| {
+                if leg.quantity <= Decimal::ZERO {
+                    return Err(HyperliquidEconomicsError::InvalidFillLeg);
+                }
+                total
+                    .checked_add(leg.quantity)
+                    .ok_or(HyperliquidEconomicsError::InvalidFillLeg)
+            })
+    }
+
+    fn carry_component(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<EstimatedEconomicComponent, HyperliquidEconomicsError> {
+        let policy = self
+            .config
+            .carry
+            .as_ref()
+            .ok_or(HyperliquidEconomicsError::MissingCarryPolicy)?;
+        let position = request
+            .position
+            .as_ref()
+            .ok_or(HyperliquidEconomicsError::MissingCarryContext)?;
+        if position.quantity <= Decimal::ZERO || position.holding_horizon_ns == 0 {
+            return Err(HyperliquidEconomicsError::MissingCarryContext);
+        }
+        let point_rate = self
+            .product
+            .carry_point_rate_per_ns
+            .ok_or(HyperliquidEconomicsError::MissingCarryPolicy)?;
+        let bound_rate = self
+            .product
+            .carry_debit_rate_bound_per_ns
+            .ok_or(HyperliquidEconomicsError::MissingCarryPolicy)?;
+        if bound_rate <= Decimal::ZERO || point_rate.is_zero() {
+            return Err(HyperliquidEconomicsError::InvalidCarryBound);
+        }
+        let average_price = self
+            .notional(request)?
+            .checked_div(self.quantity(request)?)
+            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        let horizon = Decimal::from(position.holding_horizon_ns);
+        let position_notional = position
+            .quantity
+            .checked_mul(average_price)
+            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        let directional_point_rate = match position.side {
+            PositionSide::Long => -point_rate,
+            PositionSide::Short => point_rate,
+        };
+        let point_amount = position_notional
+            .checked_mul(directional_point_rate)
+            .and_then(|amount| amount.checked_mul(horizon))
+            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        let debit_bound = position_notional
+            .checked_mul(-bound_rate)
+            .and_then(|amount| amount.checked_mul(horizon))
+            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        if debit_bound >= Decimal::ZERO {
+            return Err(HyperliquidEconomicsError::InvalidCarryBound);
+        }
+        Ok(EstimatedEconomicComponent {
+            component_id: policy.component_id.clone(),
+            class: if point_amount.is_sign_negative() {
+                EconomicClass::Charge
+            } else {
+                EconomicClass::Credit
+            },
+            kind: EconomicKind::Carry(CarryKind::Funding),
+            scope: EconomicScope::Decision {
+                decision_correlation_id: request.decision_correlation_id.clone(),
+            },
+            point_effect: SignedNativeEffect::currency(
+                point_amount,
+                self.config.settlement_unit.clone(),
+            )
+            .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
+            debit_risk_bound: Some(
+                SignedNativeEffect::currency(debit_bound, self.config.settlement_unit.clone())
+                    .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
+            ),
+            admission_treatment: AdmissionTreatment::RiskBound {
+                authority: RiskBoundAuthority::OperatorRiskLimit,
+            },
+            calculation_factors: vec![
+                CalculationFactor {
+                    factor_id: policy.point_rate_factor_id.clone(),
+                    value: point_rate,
+                },
+                CalculationFactor {
+                    factor_id: policy.bound_rate_factor_id.clone(),
+                    value: bound_rate,
+                },
+                CalculationFactor {
+                    factor_id: policy.risk_policy_id.clone(),
+                    value: horizon,
+                },
+                CalculationFactor {
+                    factor_id: policy.stress_fixture_id.clone(),
+                    value: average_price,
+                },
+            ],
+            formula_id: policy.formula_id.clone(),
+            source: SourceValidity {
+                source_id: self.config.source_id.clone(),
+                snapshot_id: SnapshotId::new(self.product.snapshot_id.clone())
+                    .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                source_at_ns: self.product.source_at_ns,
+                fetched_at_ns: self.product.fetched_at_ns,
+                valid_until_ns: self.product.valid_until_ns,
+            },
+            normalized: None,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn component(
         &self,
@@ -317,15 +503,15 @@ impl HyperliquidEconomicsAdapter {
         factor_value: Decimal,
         amount: Decimal,
         kind: ExecutionKind,
+        native_unit: NativeUnitId,
     ) -> Result<EstimatedEconomicComponent, HyperliquidEconomicsError> {
         let class = if amount.is_sign_negative() {
             EconomicClass::Charge
         } else {
             EconomicClass::Credit
         };
-        let point_effect =
-            SignedNativeEffect::currency(amount, self.config.settlement_unit.clone())
-                .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?;
+        let point_effect = SignedNativeEffect::currency(amount, native_unit)
+            .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?;
         Ok(EstimatedEconomicComponent {
             component_id,
             class,
@@ -370,24 +556,39 @@ fn validate_authority_snapshots(
         && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_staking_discount);
     let product_timeline_valid = product.source_at_ns <= product.fetched_at_ns
         && product.fetched_at_ns <= product.valid_until_ns;
+    let product_units_valid = match product.product_kind {
+        HyperliquidProductKind::Spot => {
+            product
+                .base_unit
+                .as_ref()
+                .is_some_and(|unit| !unit.trim().is_empty())
+                && product
+                    .quote_unit
+                    .as_ref()
+                    .is_some_and(|unit| !unit.trim().is_empty())
+        }
+        HyperliquidProductKind::Perp => true,
+    };
     match (
         user_fees_valid,
         product_timeline_valid,
+        product_units_valid,
         product.aligned_quote_or_collateral,
         product.product_kind,
         product.spot_dust_authority_complete,
     ) {
-        (false, _, _, _, _) => Err(HyperliquidEconomicsError::InvalidUserFees),
-        (_, false, _, _, _) => Err(HyperliquidEconomicsError::InvalidProductMetadata),
-        (_, _, true, _, _) => Err(HyperliquidEconomicsError::BlockedUnsupported(
+        (false, _, _, _, _, _) => Err(HyperliquidEconomicsError::InvalidUserFees),
+        (_, false, _, _, _, _) => Err(HyperliquidEconomicsError::InvalidProductMetadata),
+        (_, _, false, _, _, _) => Err(HyperliquidEconomicsError::MissingSpotUnit),
+        (_, _, _, true, _, _) => Err(HyperliquidEconomicsError::BlockedUnsupported(
             BlockedUnsupported::MissingGovernedAlignedStatusCapture,
         )),
-        (_, _, _, HyperliquidProductKind::Spot, false) => {
+        (_, _, _, _, HyperliquidProductKind::Spot, false) => {
             Err(HyperliquidEconomicsError::BlockedUnsupported(
                 BlockedUnsupported::SpotDustAuthorityIncomplete,
             ))
         }
-        (true, true, false, _, _) => Ok(()),
+        (true, true, true, false, _, _) => Ok(()),
     }
 }
 
@@ -406,6 +607,12 @@ impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
                 source_id: self.config.source_id.clone(),
             }
         })?;
+        let product_snapshot_id =
+            SnapshotId::new(self.product.snapshot_id.clone()).map_err(|_| {
+                EconomicsUnavailable::ProviderQuoteUnavailable {
+                    source_id: self.config.source_id.clone(),
+                }
+            })?;
         Ok(VenueQuoteEstimate {
             authority: SourceValidity {
                 source_id: self.config.source_id.clone(),
@@ -417,6 +624,13 @@ impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
                     .valid_until_ns
                     .min(self.product.valid_until_ns),
             },
+            dependency_sources: vec![SourceValidity {
+                source_id: self.config.source_id.clone(),
+                snapshot_id: product_snapshot_id,
+                source_at_ns: self.product.source_at_ns,
+                fetched_at_ns: self.product.fetched_at_ns,
+                valid_until_ns: self.product.valid_until_ns,
+            }],
             components,
         })
     }

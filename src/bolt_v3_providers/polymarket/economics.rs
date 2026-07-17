@@ -368,6 +368,7 @@ impl VenueEconomicsAdapter for PolymarketEconomicsAdapter {
                 fetched_at_ns: self.snapshot.fetched_at_ns,
                 valid_until_ns: self.snapshot.valid_until_ns,
             },
+            dependency_sources: Vec::new(),
             components,
         })
     }

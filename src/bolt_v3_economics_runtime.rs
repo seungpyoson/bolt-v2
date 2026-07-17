@@ -60,6 +60,10 @@ impl EconomicsAdmission {
         self.base_reservation_notional
     }
 
+    pub fn debit_reservation(&self) -> Decimal {
+        self.reservation_notional - self.base_reservation_notional
+    }
+
     pub fn source_snapshot_ids(&self) -> &[SnapshotId] {
         &self.source_snapshot_ids
     }
@@ -67,11 +71,21 @@ impl EconomicsAdmission {
 
 pub struct BoltV3EconomicsRuntime {
     adapter: Arc<dyn VenueEconomicsAdapter>,
+    quote_validity_ns: u64,
 }
 
 impl BoltV3EconomicsRuntime {
-    pub fn from_offline_adapter(adapter: Arc<dyn VenueEconomicsAdapter>) -> Self {
-        Self { adapter }
+    pub fn from_offline_adapter(
+        adapter: Arc<dyn VenueEconomicsAdapter>,
+        quote_validity_ns: u64,
+    ) -> Result<Self, EconomicsUnavailable> {
+        if quote_validity_ns == 0 {
+            return Err(EconomicsUnavailable::InvalidQuoteValidityPolicy);
+        }
+        Ok(Self {
+            adapter,
+            quote_validity_ns,
+        })
     }
 
     pub fn quote_admission(
@@ -83,8 +97,19 @@ impl BoltV3EconomicsRuntime {
         }
         let estimate = self.adapter.quote(&intent.request)?;
         let authority_snapshot_id = estimate.authority.snapshot_id.clone();
-        let quote =
+        let dependency_snapshot_ids = estimate
+            .dependency_sources
+            .iter()
+            .map(|source| source.snapshot_id.clone())
+            .collect::<Vec<_>>();
+        let mut quote =
             validate_and_aggregate_quote(&intent.request, estimate, intent.valuations.as_slice())?;
+        let configured_valid_until_ns = intent
+            .request
+            .requested_at_ns
+            .checked_add(self.quote_validity_ns)
+            .ok_or(EconomicsUnavailable::InvalidPlannedFill)?;
+        quote.cap_valid_until_ns(configured_valid_until_ns);
         let net_edge = fold_net_edge(intent.gross_expected_value, &quote, intent.edge_basis)?;
         if net_edge.core_net_edge() <= Decimal::ZERO {
             return Err(EconomicsUnavailable::NonPositiveNetEdge);
@@ -92,6 +117,7 @@ impl BoltV3EconomicsRuntime {
         let debit_reservation = (-quote.core_total()).max(Decimal::ZERO);
         let reservation_notional = intent.base_reservation_notional + debit_reservation;
         let mut source_snapshot_ids = vec![authority_snapshot_id];
+        source_snapshot_ids.extend(dependency_snapshot_ids);
         source_snapshot_ids.extend(
             quote
                 .components()
@@ -181,6 +207,7 @@ pub(crate) fn test_economics_admission(base_reservation_notional: Decimal) -> Ec
     };
     let adapter = TestAdapter(VenueQuoteEstimate {
         authority: source.clone(),
+        dependency_sources: Vec::new(),
         components: vec![EstimatedEconomicComponent {
             component_id: EconomicComponentId::new("test-core-credit")
                 .expect("valid test component id"),
@@ -199,25 +226,29 @@ pub(crate) fn test_economics_admission(base_reservation_notional: Decimal) -> Ec
             normalized: None,
         }],
     });
-    BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(adapter))
-        .quote_admission(EconomicsAdmissionIntent {
-            request,
-            gross_expected_value: Decimal::ONE,
-            edge_basis: EdgeBasisEvidence {
-                policy_id: EdgeBasisPolicyId::new("test-edge-policy")
-                    .expect("valid test edge policy id"),
-                policy_version: 1,
-                normalized_amount: base_reservation_notional,
-                scope: EconomicScope::Decision {
-                    decision_correlation_id,
-                },
-                source_snapshot_ids: vec![source.snapshot_id],
-                valid_until_ns,
+    BoltV3EconomicsRuntime::from_offline_adapter(
+        Arc::new(adapter),
+        valid_until_ns - requested_at_ns,
+    )
+    .expect("test economics runtime policy should be valid")
+    .quote_admission(EconomicsAdmissionIntent {
+        request,
+        gross_expected_value: Decimal::ONE,
+        edge_basis: EdgeBasisEvidence {
+            policy_id: EdgeBasisPolicyId::new("test-edge-policy")
+                .expect("valid test edge policy id"),
+            policy_version: 1,
+            normalized_amount: base_reservation_notional,
+            scope: EconomicScope::Decision {
+                decision_correlation_id,
             },
-            valuations: Vec::new(),
-            base_reservation_notional,
-        })
-        .expect("test economics admission should quote")
+            source_snapshot_ids: vec![source.snapshot_id],
+            valid_until_ns,
+        },
+        valuations: Vec::new(),
+        base_reservation_notional,
+    })
+    .expect("test economics admission should quote")
 }
 
 #[cfg(test)]
@@ -257,6 +288,7 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
         };
         let adapter = TestAdapter(VenueQuoteEstimate {
             authority: source.clone(),
+            dependency_sources: Vec::new(),
             components: vec![EstimatedEconomicComponent {
                 component_id: EconomicComponentId::new("test-core-credit")?,
                 class: EconomicClass::Credit,
@@ -276,24 +308,28 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
                 normalized: None,
             }],
         });
-        BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(adapter)).quote_admission(
-            EconomicsAdmissionIntent {
-                edge_basis: EdgeBasisEvidence {
-                    policy_id: intent.request.edge_basis_policy_id.clone(),
-                    policy_version: 1,
-                    normalized_amount: intent.base_reservation_notional,
-                    scope: EconomicScope::Decision {
-                        decision_correlation_id: intent.request.decision_correlation_id.clone(),
-                    },
-                    source_snapshot_ids: vec![source.snapshot_id],
-                    valid_until_ns,
+        BoltV3EconomicsRuntime::from_offline_adapter(
+            Arc::new(adapter),
+            valid_until_ns
+                .checked_sub(intent.request.requested_at_ns)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
+        )?
+        .quote_admission(EconomicsAdmissionIntent {
+            edge_basis: EdgeBasisEvidence {
+                policy_id: intent.request.edge_basis_policy_id.clone(),
+                policy_version: 1,
+                normalized_amount: intent.base_reservation_notional,
+                scope: EconomicScope::Decision {
+                    decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
-                request: intent.request,
-                gross_expected_value: intent.gross_expected_value,
-                valuations: Vec::new(),
-                base_reservation_notional: intent.base_reservation_notional,
+                source_snapshot_ids: vec![source.snapshot_id],
+                valid_until_ns,
             },
-        )
+            request: intent.request,
+            gross_expected_value: intent.gross_expected_value,
+            valuations: Vec::new(),
+            base_reservation_notional: intent.base_reservation_notional,
+        })
     }
 }
 

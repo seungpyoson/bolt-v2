@@ -130,6 +130,15 @@ URL. Reject non-GitHub URLs before preflight. Tests prove config mutation
 terminates rather than selecting a second preflight origin or implicit queue
 repository.
 
+Read the literal local remote URL without applying rewrites. Run every
+transport outside the source checkout with system/global config disabled and
+only the explicit GitHub credential helper configured; remove every ambient
+transport-affecting `GIT_*` variable first while preserving only the Trace2
+event sink used for maintenance evidence. Add a real-Git regression with exact `insteadOf`,
+`GIT_CONFIG_PARAMETERS`, repository-selector, executable, and SSH overrides,
+and prove base/head refs still come from the validated origin rather than the
+alternate repository.
+
 - [ ] **Step 1: Run permitted local repository gates**
 
 Run:

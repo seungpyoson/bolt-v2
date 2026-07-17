@@ -33,14 +33,24 @@ remote name, or unsafe resolved URL is terminal; no raw path, URL, default
 branch, or second config source is substituted. Origin and base are
 TOML-authoritative and have no CLI override.
 
-The operator passes only an opaque SHA-256 identity of that resolved URL to the
+The operator passes an opaque SHA-256 identity of that resolved URL to the
 preflight subprocess. Preflight independently resolves the configured name and
 must match that identity before fetching any ref; a source-checkout Git-config
-change therefore terminates instead of selecting another origin. The operator
-also derives one GitHub repository slug from the same URL, supplies it as
-`GH_REPO` for preflight evidence, and passes it explicitly to `gh pr comment`;
-non-GitHub remotes terminate before preflight or queueing. Neither the URL nor
-an alternate remote mapping crosses the subprocess boundary.
+change therefore terminates instead of selecting another origin. Resolution
+reads exactly one local `remote.<name>.url` value with `git config`, which does
+not apply URL rewrites. Every transport then runs outside the source checkout
+with system/global Git config disabled and only the explicit GitHub credential
+helper configured. Every transport-affecting ambient `GIT_*` variable is
+removed before those settings are installed; only the Trace2 event sink used
+for maintenance evidence is preserved. No inherited repository selector,
+executable override, command config, or `url.*.insteadOf` rule participates, so
+there is no rewrite winner, alternate URL, or retry path.
+
+The operator also derives one GitHub repository slug from the same URL,
+supplies it as `GH_REPO` for preflight evidence, and passes it explicitly to
+`gh pr comment`; non-GitHub remotes terminate before preflight or queueing. The
+credential-free URL exists only in process-private Git configuration and is
+never emitted in public output.
 
 `PrivateFetchRefs.fetch_origin()` resolves the same configured remote name
 against the source checkout. Its one normalized URL is used for private ref

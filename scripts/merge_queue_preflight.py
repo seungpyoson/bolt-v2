@@ -31,6 +31,7 @@ from ci_provenance import MERGIFY_CONFIG_EXPECTATIONS  # noqa: E402
 from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG  # noqa: E402
 from git_remote_utils import (  # noqa: E402
     fetchable_remote_url,
+    isolated_git_transport_environment,
     redact_remote_urls,
     remote_url_sha256,
     require_credential_free_remote_url as _require_credential_free_remote_url,
@@ -1994,15 +1995,18 @@ class PrivateFetchRefs:
             raise PreflightError(f"source repository directory {self.source_repo} does not exist")
         result = git(
             self.source_repo,
-            "remote",
-            "get-url",
-            origin,
+            "config",
+            "--local",
+            "--get-all",
+            f"remote.{origin}.url",
             check=False,
+            env=isolated_git_transport_environment(os.environ),
             timeout_seconds=self.input_timeout_seconds,
         )
-        remote_url = result.stdout.strip()
-        if result.returncode != 0 or not remote_url:
+        remote_urls = result.stdout.splitlines()
+        if result.returncode != 0 or len(remote_urls) != 1 or not remote_urls[0]:
             raise PreflightError("configured Git remote did not resolve to a URL")
+        remote_url = remote_urls[0]
         remote_url = fetchable_remote_url(remote_url, self.source_repo)
         remote_url = require_credential_free_remote_url(remote_url)
         self.remotes[origin] = remote_url
@@ -2348,11 +2352,12 @@ def git(
     timeout_seconds: int | None = None,
     redact_values: Sequence[str] = (),
 ) -> CommandResult:
+    process_env = isolated_git_transport_environment(os.environ) if env is None else env
     return run_command(
         ["git", *args],
         cwd=repo,
         check=check,
-        env=env,
+        env=process_env,
         input_text=input_text,
         timeout_seconds=timeout_seconds,
         redact_values=redact_values,
@@ -2899,15 +2904,9 @@ def run_verifier_commands(
                 if not parts:
                     raise PreflightError("verifier command must not be empty")
                 public_command = redact_remote_urls(command, (origin_url,))
-                env = None
+                env = isolated_git_transport_environment(os.environ)
                 if alternate_object_dir:
-                    env = os.environ.copy()
-                    existing_alternates = env.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-                    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = (
-                        alternate_object_dir
-                        if not existing_alternates
-                        else f"{alternate_object_dir}{os.pathsep}{existing_alternates}"
-                    )
+                    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = alternate_object_dir
                 print(
                     f"merge_queue_preflight: verifier running: {public_command}",
                     file=sys.stderr,

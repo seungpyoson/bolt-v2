@@ -27,6 +27,7 @@ import config_validators as _cv  # noqa: E402
 from git_remote_utils import (  # noqa: E402
     fetchable_remote_url,
     github_repository_slug,
+    isolated_git_transport_environment,
     remote_url_sha256,
     require_credential_free_remote_url as _require_credential_free_remote_url,
     require_remote_name as _require_remote_name,
@@ -163,31 +164,41 @@ def resolve_remote_url(
 ) -> str:
     require_remote_name(remote_name)
     result = runner(
-        ["git", "remote", "get-url", remote_name],
+        ["git", "config", "--local", "--get-all", f"remote.{remote_name}.url"],
         cwd=repo,
         check=False,
         timeout_seconds=timeout_seconds,
+        environment=isolated_git_transport_environment(os.environ),
     )
-    remote_url = result.stdout.strip()
-    if result.returncode != 0 or not remote_url:
+    remote_urls = result.stdout.splitlines()
+    if result.returncode != 0 or len(remote_urls) != 1 or not remote_urls[0]:
         raise OperatorError("configured Git remote did not resolve to a URL")
+    remote_url = remote_urls[0]
     remote_url = fetchable_remote_url(remote_url, repo)
     return require_credential_free_remote_url(remote_url)
 
 
 def preflight_environment(remote_url: str, queue_repository: str) -> dict[str, str]:
-    environment = os.environ.copy()
+    environment = isolated_git_transport_environment(os.environ)
     environment["MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"] = remote_url_sha256(remote_url)
     environment["GH_REPO"] = queue_repository
     return environment
 
 
-def remote_ref_sha(repo: pathlib.Path, remote_url: str, ref: str, runner: Runner, timeout_seconds: int) -> str:
+def remote_ref_sha(
+    repo: pathlib.Path,
+    remote_url: str,
+    ref: str,
+    runner: Runner,
+    timeout_seconds: int,
+    environment: Mapping[str, str],
+) -> str:
     result = runner(
         ["git", "ls-remote", "--exit-code", remote_url, ref],
         cwd=repo,
         check=False,
         timeout_seconds=timeout_seconds,
+        environment=environment,
     )
     if result.returncode != 0:
         raise OperatorError(f"configured Git remote did not resolve {ref}")
@@ -253,20 +264,23 @@ def run_preflight(
     queue_repository = github_repository_slug(remote_url)
     if queue_repository is None:
         raise OperatorError("configured Git remote must identify one GitHub repository")
+    environment = preflight_environment(remote_url, queue_repository)
     expected_base_sha = remote_ref_sha(
-        repo,
+        config.parent,
         remote_url,
         f"refs/heads/{operator_config.base}",
         runner,
         operator_config.ref_timeout_seconds,
+        environment,
     )
     expected_head_shas = {
         pr: remote_ref_sha(
-            repo,
+            config.parent,
             remote_url,
             f"refs/pull/{pr}/head",
             runner,
             operator_config.ref_timeout_seconds,
+            environment,
         )
         for pr in prs
     }
@@ -280,7 +294,7 @@ def run_preflight(
     result = runner(
         command,
         cwd=repo,
-        environment=preflight_environment(remote_url, queue_repository),
+        environment=environment,
     )
     try:
         payload = json.loads(result.stdout)

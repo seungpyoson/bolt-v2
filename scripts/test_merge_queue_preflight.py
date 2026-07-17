@@ -1626,6 +1626,86 @@ def assert_origin_identity_drift_is_terminal() -> None:
         ), findings
 
 
+def assert_exact_origin_identity_blocks_chained_git_url_rewrites() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        alternate = root / "alternate.git"
+        init_fixture_repo(alternate, "--bare")
+        origin_url = fixture.remote.resolve().as_uri()
+        alternate_url = alternate.resolve().as_uri()
+        git(fixture.repo, "config", "--local", f"url.{alternate_url}.insteadOf", origin_url)
+        git(fixture.repo, "remote", "set-url", "origin", origin_url)
+        resolved = git(fixture.repo, "config", "--local", "--get-all", "remote.origin.url")
+        assert_equal(resolved, origin_url, "literal configured origin")
+
+        ambient = dict(os.environ)
+        ambient["GIT_CONFIG_PARAMETERS"] = (
+            f"'url.{alternate_url}.insteadOf'='{origin_url}'"
+        )
+        ambient["GIT_DIR"] = str(fixture.repo / ".git")
+        ambient["GIT_EXEC_PATH"] = str(root / "alternate-exec-path")
+        ambient["GIT_SSH_COMMAND"] = "alternate-ssh"
+        env = git_remote_utils.isolated_git_transport_environment(ambient)
+        env["MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"] = hashlib.sha256(
+            origin_url.encode("utf-8")
+        ).hexdigest()
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--expected-base-sha",
+            fixture.base,
+            "--expected-head-sha",
+            f"1={head}",
+            "--no-gh",
+            "--verifier-profile",
+            "none",
+            "--json",
+            "1",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "rewrite-protected origin rc")
+        assert_equal(payload["actual_base_sha"], fixture.base, "rewrite-protected base")
+        assert_equal(payload["pr_heads"], {"1": head}, "rewrite-protected PR head")
+
+
+def assert_isolated_transport_environment_discards_ambient_git_config() -> None:
+    environment = git_remote_utils.isolated_git_transport_environment(
+        {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "url.file:///alternate/.insteadOf",
+            "GIT_CONFIG_VALUE_0": "https://github.com/example/",
+            "GIT_CONFIG_PARAMETERS": "'url.file:///alternate/.insteadOf'='https://github.com/example/'",
+            "GIT_DIR": "/tmp/alternate.git",
+            "GIT_EXEC_PATH": "/tmp/alternate-exec-path",
+            "GIT_SSH_COMMAND": "alternate-ssh",
+        }
+    )
+    assert environment["GIT_CONFIG_COUNT"] == "1", environment
+    assert environment["GIT_CONFIG_KEY_0"] == "credential.https://github.com.helper", environment
+    assert environment["GIT_CONFIG_VALUE_0"] == "!gh auth git-credential", environment
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1", environment
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull, environment
+    allowed_git_keys = {
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+    }
+    assert {key for key in environment if key.startswith("GIT_")} == allowed_git_keys, environment
+
+
 def assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote() -> None:
     module = load_preflight_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1977,8 +2057,8 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             "    stdout=subprocess.PIPE,\n"
             "    check=False,\n"
             ")\n"
-            "if preserved.returncode != 0 or preserved.stdout.strip() != 'preserved':\n"
-            "    print('existing Git command config was not preserved', file=sys.stderr)\n"
+            "if preserved.returncode == 0:\n"
+            "    print('ambient Git command config leaked into verifier', file=sys.stderr)\n"
             "    sys.exit(11)\n",
         )
         normalized_origin = str(fixture.remote.resolve())
@@ -5221,6 +5301,8 @@ def main() -> int:
     assert_private_fetches_resolve_checkout_remote_names()
     assert_base_fetch_uses_fully_qualified_branch_ref()
     assert_origin_identity_drift_is_terminal()
+    assert_exact_origin_identity_blocks_chained_git_url_rewrites()
+    assert_isolated_transport_environment_discards_ambient_git_config()
     assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
     assert_private_fetch_repo_persists_auto_maintenance_suppression()
     assert_private_fetch_sha_spawns_no_background_maintenance()

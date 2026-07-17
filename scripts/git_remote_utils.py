@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
 REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+SAFE_GIT_OBSERVABILITY_ENV = ("GIT_TRACE2_EVENT",)
 
 
 def is_direct_remote_url(remote_url: str) -> bool:
@@ -66,6 +67,27 @@ def require_remote_name(
 
 def remote_url_sha256(remote_url: str) -> str:
     return hashlib.sha256(remote_url.encode("utf-8")).hexdigest()
+
+
+def isolated_git_transport_environment(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    environment = dict(os.environ if environ is None else environ)
+    observability = {
+        key: environment[key]
+        for key in SAFE_GIT_OBSERVABILITY_ENV
+        if key in environment
+    }
+    for key in tuple(environment):
+        if key.startswith("GIT_"):
+            environment.pop(key)
+    environment.update(observability)
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_CONFIG_COUNT"] = "1"
+    environment["GIT_CONFIG_KEY_0"] = "credential.https://github.com.helper"
+    environment["GIT_CONFIG_VALUE_0"] = "!gh auth git-credential"
+    return environment
 
 
 def github_repository_slug(remote_url: str) -> str | None:

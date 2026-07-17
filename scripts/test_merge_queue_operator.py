@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -25,6 +26,7 @@ class FakeRunner:
     def __init__(self, preflight_payload: dict[str, object], preflight_returncode: int) -> None:
         self.commands: list[tuple[str, ...]] = []
         self.command_environments: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
+        self.command_cwds: list[tuple[tuple[str, ...], pathlib.Path]] = []
         self.preflight_payload = preflight_payload
         self.preflight_returncode = preflight_returncode
 
@@ -40,8 +42,9 @@ class FakeRunner:
     ) -> object:
         self.commands.append(tuple(command))
         self.command_environments.append((tuple(command), environment))
-        if command[:3] == ["git", "remote", "get-url"]:
-            assert command == ["git", "remote", "get-url", "origin"], command
+        self.command_cwds.append((tuple(command), cwd))
+        if command[:4] == ["git", "config", "--local", "--get-all"]:
+            assert command == ["git", "config", "--local", "--get-all", "remote.origin.url"], command
             assert timeout_seconds == 30, (command, timeout_seconds)
             return completed(command, stdout="https://github.com/example/repo.git\n")
         if command[:2] == ["git", "ls-remote"] and command[-1] == "refs/heads/main":
@@ -322,7 +325,7 @@ def assert_unconfigured_or_credential_bearing_origins_never_reach_ls_remote() ->
 def assert_credential_bearing_resolved_origin_never_reaches_ls_remote() -> None:
     class CredentialRemoteRunner(FakeRunner):
         def __call__(self, command: list[str], **kwargs: object) -> object:
-            if command[:3] == ["git", "remote", "get-url"]:
+            if command[:4] == ["git", "config", "--local", "--get-all"]:
                 self.commands.append(tuple(command))
                 return completed(
                     command,
@@ -347,7 +350,7 @@ def assert_operator_and_preflight_share_immutable_config_snapshot() -> None:
 
         class MutatingConfigRunner(FakeRunner):
             def __call__(self, command: list[str], **kwargs: object) -> object:
-                if command[:3] == ["git", "remote", "get-url"]:
+                if command[:4] == ["git", "config", "--local", "--get-all"]:
                     config.write_text(
                         original_text.replace('origin = "origin"', 'origin = "changed-origin"').replace(
                             'base = "main"', 'base = "changed-base"'
@@ -378,17 +381,39 @@ def assert_preflight_and_queue_use_pinned_remote_identity() -> None:
     )
     assert preflight_command
     assert environment is not None
+    resolution_command, resolution_environment = next(
+        item
+        for item in runner.command_environments
+        if item[0][:4] == ("git", "config", "--local", "--get-all")
+    )
+    assert resolution_command[-1] == "remote.origin.url"
+    assert resolution_environment is not None
+    assert {key for key in resolution_environment if key.startswith("GIT_")} == {
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+    }
     assert environment["MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"] == hashlib.sha256(
         b"https://github.com/example/repo.git"
     ).hexdigest()
     assert environment["GH_REPO"] == "example/repo"
+    config_count = int(environment["GIT_CONFIG_COUNT"])
+    assert config_count == 1
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert environment["GIT_CONFIG_KEY_0"] == "credential.https://github.com.helper"
+    assert environment["GIT_CONFIG_VALUE_0"] == "!gh auth git-credential"
     ls_remote_calls = [
         item for item in runner.command_environments if item[0][:2] == ("git", "ls-remote")
     ]
     assert ls_remote_calls
     for command, ls_remote_environment in ls_remote_calls:
         assert command[3] == "https://github.com/example/repo.git", command
-        assert ls_remote_environment is None
+        assert ls_remote_environment == environment
+        ls_remote_cwd = next(cwd for recorded, cwd in runner.command_cwds if recorded == command)
+        assert ls_remote_cwd != REPO_ROOT, ls_remote_cwd
     assert (
         "gh",
         "pr",
@@ -404,7 +429,7 @@ def assert_preflight_and_queue_use_pinned_remote_identity() -> None:
 def assert_non_github_remote_cannot_reach_preflight_or_queue() -> None:
     class NonGithubRemoteRunner(FakeRunner):
         def __call__(self, command: list[str], **kwargs: object) -> object:
-            if command[:3] == ["git", "remote", "get-url"]:
+            if command[:4] == ["git", "config", "--local", "--get-all"]:
                 self.commands.append(tuple(command))
                 return completed(command, stdout="https://example.invalid/repo.git\n")
             return super().__call__(command, **kwargs)

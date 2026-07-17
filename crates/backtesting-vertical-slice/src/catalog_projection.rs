@@ -5242,20 +5242,20 @@ max_notional = "200000"
         assert_eq!(clear.order.price.precision, 2);
         assert_eq!(clear.order.size.precision, 6);
         let add = OrderBookDelta::new_checked(
-                instrument_id,
-                BookAction::Add,
-                BookOrder::new(
-                    OrderSide::Buy,
-                    Price::from("0.49"),
-                    Quantity::new(10.0, 6),
-                    0,
-                ),
-                RecordFlag::F_LAST as u8,
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("0.49"),
+                Quantity::new(10.0, 6),
                 0,
-                UnixNanos::from(1_772_323_201_665_000_000u64),
-                ts_init,
-            )
-            .expect("bid delta");
+            ),
+            RecordFlag::F_LAST as u8,
+            0,
+            UnixNanos::from(1_772_323_201_665_000_000u64),
+            ts_init,
+        )
+        .expect("bid delta");
         assert_eq!(add.order.price.precision, 2);
         assert_eq!(add.order.size.precision, 6);
         let deltas = vec![clear, add];

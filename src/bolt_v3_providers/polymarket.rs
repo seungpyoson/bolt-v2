@@ -29,7 +29,6 @@ mod balance_allowance_cache;
 mod collateral_accounting_source;
 pub mod economics;
 mod fee_behavior_source;
-mod fees;
 mod venue_account_state_source;
 mod venue_truth_runtime_source;
 
@@ -49,7 +48,6 @@ use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
-    time::Duration,
 };
 
 use nautilus_core::string::secret::REDACTED;
@@ -66,7 +64,6 @@ use nautilus_polymarket::{
         EventQueryFilter, EventSlugFilter, GammaQueryFilter, InstrumentFilter, MarketSlugFilter,
         SearchFilter,
     },
-    http::clob::PolymarketClobHttpClient,
     http::query::{GetGammaMarketsParams, GetSearchParams},
 };
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -88,7 +85,7 @@ use crate::{
         GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind,
     },
     bolt_v3_providers::{
-        FeeProvider, ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
         ProviderVenueTruthRuntimeSource, ProviderVenueTruthSourceContext, ResolvedClientSecrets,
         SsmSecretResolver,
@@ -96,8 +93,6 @@ use crate::{
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     bolt_v3_wire_boundary::TransportBackend,
 };
-
-use self::fees::PolymarketClobFeeProvider;
 
 pub const KEY: &str = "POLYMARKET";
 const ECONOMICS_PRODUCT_SURFACE: &str = "binary_outcome";
@@ -761,65 +756,6 @@ pub fn map_adapters(
         None => None,
     };
     Ok(BoltV3ClientAdapterConfig { data, execution })
-}
-
-pub fn build_fee_provider(
-    client_key: &str,
-    client: &ClientBlock,
-    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
-) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError> {
-    let value = client.execution.as_ref().ok_or_else(|| {
-        BoltV3AdapterMappingError::ValidationInvariant {
-            client_key: client_key.to_string(),
-            field: "execution",
-            message: "is required by the existing taker fee-provider boundary".to_string(),
-        }
-    })?;
-    let cfg: PolymarketExecutionConfig =
-        value.clone().try_into().map_err(|error: toml::de::Error| {
-            BoltV3AdapterMappingError::SchemaParse {
-                client_key: client_key.to_string(),
-                block: "execution",
-                message: error.to_string(),
-            }
-        })?;
-    let secrets = secrets_for(client_key, resolved)?;
-    let secrets = PolymarketSecrets::resolve(
-        Some(secrets.private_key.as_str()),
-        Some(secrets.api_key.as_str().to_owned()),
-        Some(secrets.api_secret.as_str().to_owned()),
-        Some(secrets.passphrase.as_str().to_owned()),
-        cfg.funder.clone(),
-    )
-    .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
-        client_key: client_key.to_string(),
-        field: "execution",
-        message: format!("failed to resolve Polymarket fee credentials: {error}"),
-    })?;
-    if !cfg.base_url_http.starts_with("http://") && !cfg.base_url_http.starts_with("https://") {
-        return Err(BoltV3AdapterMappingError::ValidationInvariant {
-            client_key: client_key.to_string(),
-            field: "execution.base_url_http",
-            message: "failed to create Polymarket fee HTTP client: base_url_http must start with http:// or https://"
-                .to_string(),
-        });
-    }
-    let client = PolymarketClobHttpClient::new(
-        secrets.credential,
-        secrets.address,
-        Some(cfg.base_url_http),
-        cfg.http_timeout_secs,
-    )
-    .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
-        client_key: client_key.to_string(),
-        field: "execution.base_url_http",
-        message: format!("failed to create Polymarket fee HTTP client: {error}"),
-    })?;
-
-    Ok(Arc::new(PolymarketClobFeeProvider::new(
-        client,
-        Duration::from_secs(cfg.fee_cache_ttl_secs),
-    )))
 }
 
 pub fn build_venue_truth_runtime_source(

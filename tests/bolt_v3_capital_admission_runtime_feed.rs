@@ -3059,6 +3059,7 @@ fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, CapitalA
 
 fn capital_admission_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "execution-client-a".to_string(),
         client_order_id: client_order_id.to_string(),

@@ -17,6 +17,9 @@ pub enum QuoteSide {
 pub struct QuoteTargetLeg {
     pub side: QuoteSide,
     pub price: f64,
+    /// Strategy-local gross value assumption per filled unit. Shared execution
+    /// folds venue economics before admission.
+    pub gross_edge_per_unit: f64,
     /// Dollar order notional for this leg, sized off the protective half-spread
     /// (the GM/CG edge proxy) by `maker_robust_size`, never off directional EV.
     pub size_notional: f64,

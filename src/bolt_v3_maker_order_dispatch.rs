@@ -57,7 +57,7 @@ pub enum MakerOrderDispatchOutcome {
 pub trait MakerOrderCommandSink {
     fn order_factory(&mut self) -> RefMut<'_, OrderFactory>;
 
-    fn submit_maker_order(&mut self, order: OrderAny) -> Result<()>;
+    fn submit_maker_order(&mut self, order: OrderAny, gross_expected_value: f64) -> Result<()>;
 
     fn cancel_maker_order(
         &mut self,
@@ -93,6 +93,7 @@ pub fn dispatch_maker_order_command(
             template,
             inputs,
             fallback_price,
+            gross_expected_value,
         } => {
             let order = {
                 // `order_factory()` now yields a `RefMut` guard (NT moved the strategy
@@ -110,7 +111,7 @@ pub fn dispatch_maker_order_command(
             let instrument_id = order.instrument_id();
             let price = order.price().unwrap_or(*fallback_price);
             let quantity = order.quantity();
-            sink.submit_maker_order(order)?;
+            sink.submit_maker_order(order, *gross_expected_value)?;
             Ok(MakerOrderDispatchOutcome::Submitted {
                 leg: *leg,
                 instrument_id,

@@ -63,8 +63,6 @@ pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 /// Strategy parameter key for the normalized binary-oracle builder TOML.
 pub const STRATEGY_PARAM_CONFIG_TOML: &str = "config_toml";
-/// Strategy parameter key for the backtest fee-provider assumption.
-pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
 /// Strategy parameter key for the Bolt-v3 order execution policy mode.
 pub const STRATEGY_PARAM_ORDER_EXECUTION_MODE: &str = "order_execution_mode";
 /// Strategy parameter key for the number of delivered trades before the entry order.
@@ -140,12 +138,10 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => Some(&[
             STRATEGY_PARAM_CONFIG_TOML,
-            STRATEGY_PARAM_FEE_BPS,
             STRATEGY_PARAM_ORDER_EXECUTION_MODE,
         ]),
         STRATEGY_BINARY_ORACLE_MAKER => Some(&[
             STRATEGY_PARAM_CONFIG_TOML,
-            STRATEGY_PARAM_FEE_BPS,
             STRATEGY_PARAM_ORDER_EXECUTION_MODE,
         ]),
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => Some(&[
@@ -700,6 +696,9 @@ pub struct BacktestingRunManifest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub proof_pin_reason_detail: Option<String>,
     pub strategy: StrategySource,
+    /// Immutable point-in-time economics authority used by replay admission.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub economics_snapshots: Vec<crate::economics::HistoricalEconomicsSnapshot>,
     /// SHA-256 of the effective typed strategy config.
     pub strategy_config_hash: String,
     pub venue: ManifestVenueConfig,
@@ -1112,8 +1111,7 @@ fn validate_strategy_source(
                     message: "cannot be combined with strategy.parameters.config_toml".to_string(),
                 });
             }
-            let mut required_parameters =
-                vec![STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE];
+            let mut required_parameters = vec![STRATEGY_PARAM_ORDER_EXECUTION_MODE];
             if !has_config_overlay {
                 required_parameters.push(STRATEGY_PARAM_CONFIG_TOML);
             }
@@ -1121,7 +1119,6 @@ fn validate_strategy_source(
                 if !strategy.parameters.contains_key(parameter) {
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
-                        STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE => {
                             "strategy.parameters.order_execution_mode"
                         }
@@ -1139,15 +1136,6 @@ fn validate_strategy_source(
                     .map_err(|_| {
                         ManifestError::MissingField("strategy.parameters.order_execution_mode")
                     })?;
-            let fee_bps = strategy
-                .parameters
-                .get(STRATEGY_PARAM_FEE_BPS)
-                .expect("presence checked above");
-            let fee_bps = rust_decimal::Decimal::from_str(fee_bps)
-                .map_err(|_| ManifestError::MissingField("strategy.parameters.fee_bps"))?;
-            if fee_bps < rust_decimal::Decimal::ZERO {
-                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
-            }
             if !has_config_overlay {
                 let raw_config = strategy
                     .parameters
@@ -1182,13 +1170,11 @@ fn validate_strategy_source(
             }
             for parameter in [
                 STRATEGY_PARAM_CONFIG_TOML,
-                STRATEGY_PARAM_FEE_BPS,
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE,
             ] {
                 if !strategy.parameters.contains_key(parameter) {
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
-                        STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE => {
                             "strategy.parameters.order_execution_mode"
                         }
@@ -1206,15 +1192,6 @@ fn validate_strategy_source(
                     .map_err(|_| {
                         ManifestError::MissingField("strategy.parameters.order_execution_mode")
                     })?;
-            let fee_bps = strategy
-                .parameters
-                .get(STRATEGY_PARAM_FEE_BPS)
-                .expect("presence checked above");
-            let fee_bps = rust_decimal::Decimal::from_str(fee_bps)
-                .map_err(|_| ManifestError::MissingField("strategy.parameters.fee_bps"))?;
-            if fee_bps < rust_decimal::Decimal::ZERO {
-                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
-            }
             let raw_config = strategy
                 .parameters
                 .get(STRATEGY_PARAM_CONFIG_TOML)
@@ -2223,6 +2200,18 @@ impl BacktestingRunManifest {
         ensure_catalog_inputs_match_fidelity(&self.catalog_inputs, accepted.fidelity_class)?;
         ensure_order_book_delta_inputs_require_l2_mbp(&self.catalog_inputs, &self.venue.book_type)?;
         validate_strategy_source(&self.strategy, &self.artifact_root)?;
+        if matches!(
+            self.strategy.registry_key.as_str(),
+            STRATEGY_BINARY_ORACLE_EDGE_TAKER | STRATEGY_BINARY_ORACLE_MAKER
+        ) {
+            if self.economics_snapshots.is_empty() {
+                return Err(ManifestError::MissingField("economics_snapshots"));
+            }
+            for snapshot in &self.economics_snapshots {
+                crate::economics::ReplayEconomicsAdapter::from_snapshot(snapshot.clone())
+                    .map_err(|_| ManifestError::MissingField("economics_snapshots"))?;
+            }
+        }
         validate_starting_balances(&self.venue.starting_balances)?;
         for venue in &self.additional_venues {
             validate_starting_balances(&venue.starting_balances)?;
@@ -3585,6 +3574,7 @@ mod tests {
                 experiment_result_hash: None,
                 config_overlay: None,
             },
+            economics_snapshots: Vec::new(),
             strategy_config_hash: TEST_SHA256_ZERO.to_string(),
             venue: ManifestVenueConfig {
                 nt_venue: TEST_NT_VENUE.to_string(),
@@ -4801,7 +4791,6 @@ mod tests {
         let mut manifest = valid_manifest();
         manifest.strategy.registry_key = STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string();
         manifest.strategy.parameters = BTreeMap::from([
-            (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
             (
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                 "shadow".to_string(),
@@ -4853,7 +4842,6 @@ mod tests {
                 STRATEGY_PARAM_CONFIG_TOML.to_string(),
                 binary_oracle_maker_config_toml(),
             ),
-            (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
             (
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                 "shadow".to_string(),

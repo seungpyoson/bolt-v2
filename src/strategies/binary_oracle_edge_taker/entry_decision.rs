@@ -22,8 +22,7 @@ use crate::{
 use super::{
     ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED, ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED,
     ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING, ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED,
-    ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE, ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING,
-    ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE,
+    ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING, ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE,
     ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL, ENTRY_BLOCK_REASON_NO_SIDE_SELECTED,
     ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION,
     ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID, ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE,
@@ -42,7 +41,6 @@ pub(super) enum EntryBlockReason {
     BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
-    FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
     SpotSpikeCooldown,
@@ -91,7 +89,6 @@ pub(super) enum EntryPricingBlockReason {
     ThetaScalerUnavailable,
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
-    FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     /// The sized re-evaluation oscillated: the final re-priced edge does not
@@ -182,9 +179,6 @@ pub(super) fn push_executable_edge_pricing_block(
     reason: Option<BinaryOutcomeEdgeBlockReason>,
 ) {
     match reason {
-        Some(BinaryOutcomeEdgeBlockReason::FeeUnavailable) => {
-            reasons.push(EntryPricingBlockReason::FeeUnavailable(side));
-        }
         Some(
             reason @ (BinaryOutcomeEdgeBlockReason::MissingOrderBook
             | BinaryOutcomeEdgeBlockReason::InsufficientDepth
@@ -262,16 +256,12 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) lead_agreement_corr: Option<f64>,
     pub(super) fast_venue_age_ms: Option<u64>,
     pub(super) fast_venue_jitter_ms: Option<u64>,
-    pub(super) up_fee_bps: Option<f64>,
-    pub(super) down_fee_bps: Option<f64>,
     pub(super) up_entry_cost: Option<f64>,
     pub(super) down_entry_cost: Option<f64>,
     pub(super) up_entry_limit_price: Option<f64>,
     pub(super) down_entry_limit_price: Option<f64>,
     pub(super) up_gross_cost_cents: Option<f64>,
     pub(super) down_gross_cost_cents: Option<f64>,
-    pub(super) up_fee_cost_cents: Option<f64>,
-    pub(super) down_fee_cost_cents: Option<f64>,
     pub(super) up_slippage_buffer_cents: Option<f64>,
     pub(super) down_slippage_buffer_cents: Option<f64>,
     pub(super) up_total_adjusted_cost_cents: Option<f64>,
@@ -280,11 +270,9 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) down_edge_cents_per_share: Option<f64>,
     pub(super) up_worst_case_ev_bps: Option<f64>,
     pub(super) down_worst_case_ev_bps: Option<f64>,
-    pub(super) sized_fee_bps: Option<f64>,
     pub(super) sized_entry_cost: Option<f64>,
     pub(super) sized_entry_limit_price: Option<f64>,
     pub(super) sized_gross_cost_cents: Option<f64>,
-    pub(super) sized_fee_cost_cents: Option<f64>,
     pub(super) sized_slippage_buffer_cents: Option<f64>,
     pub(super) sized_total_adjusted_cost_cents: Option<f64>,
     pub(super) sized_edge_cents_per_share: Option<f64>,
@@ -303,8 +291,6 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) reference_current_price_available_without_fast_venue: bool,
     pub(super) lead_quality_policy_applied: bool,
     pub(super) lead_quality_reason: &'static str,
-    pub(super) final_fee_amount_known: bool,
-    pub(super) final_fee_amount_reason: &'static str,
     pub(super) submission_instrument_id: Option<InstrumentId>,
     pub(super) submission_order_side: Option<OrderSide>,
     pub(super) submission_price: Option<f64>,
@@ -490,8 +476,6 @@ impl BoltV3EntrySkipEvidence {
             sized_worst_case_ev_bps: option_evidence_number(fields.sized_worst_case_ev_bps),
             sized_edge_cents_per_share: option_evidence_number(fields.sized_edge_cents_per_share),
             theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
-            up_fee_bps: option_evidence_number(fields.up_fee_bps),
-            down_fee_bps: option_evidence_number(fields.down_fee_bps),
             submission_blocked_reason: fields
                 .submission_blocked_reason
                 .and_then(entry_skip_reason_category_from_str)
@@ -515,7 +499,6 @@ pub(super) fn entry_block_reason_to_evidence(reason: &EntryBlockReason) -> BoltV
         EntryBlockReason::BookCrossed => BoltV3EntryBlockReason::BookCrossed,
         EntryBlockReason::IntervalOpenMissing => BoltV3EntryBlockReason::IntervalOpenMissing,
         EntryBlockReason::WarmupIncomplete => BoltV3EntryBlockReason::WarmupIncomplete,
-        EntryBlockReason::FeesNotReady => BoltV3EntryBlockReason::FeesNotReady,
         EntryBlockReason::RecoveryMode => BoltV3EntryBlockReason::RecoveryMode,
         EntryBlockReason::MarketCoolingDown => BoltV3EntryBlockReason::MarketCoolingDown,
         EntryBlockReason::SpotSpikeCooldown => BoltV3EntryBlockReason::SpotSpikeCooldown,
@@ -553,9 +536,6 @@ fn binary_edge_block_reason_to_evidence(
         BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge => {
             BoltV3BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
         }
-        BinaryOutcomeEdgeBlockReason::FeeUnavailable => {
-            BoltV3BinaryOutcomeEdgeBlockReason::FeeUnavailable
-        }
     }
 }
 
@@ -586,9 +566,6 @@ pub(super) fn entry_pricing_block_reason_to_evidence(
         }
         EntryPricingBlockReason::FairProbabilityUnavailable => {
             BoltV3EntryPricingBlockReason::FairProbabilityUnavailable
-        }
-        EntryPricingBlockReason::FeeUnavailable(side) => {
-            BoltV3EntryPricingBlockReason::FeeUnavailable(outcome_side_to_evidence(*side))
         }
         EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
             BoltV3EntryPricingBlockReason::ExecutableEntryCostUnavailable(outcome_side_to_evidence(
@@ -647,9 +624,6 @@ pub(super) fn entry_skip_reason_category_from_str(
         }
         ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED => {
             Some(BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported)
-        }
-        ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE => {
-            Some(BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable)
         }
         ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION => {
             Some(BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation)

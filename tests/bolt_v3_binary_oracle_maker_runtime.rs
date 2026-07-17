@@ -25,7 +25,6 @@ use bolt_v2::{
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_quote_lifecycle::{
         Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote, MarketState,
     },
@@ -45,7 +44,6 @@ use bolt_v2::{
         BinaryOracleMakerRuntimeReferenceQuoteRouteInput, mu::MakerMuState,
     },
 };
-use futures_util::{FutureExt, future::BoxFuture};
 use nautilus_common::{
     actor::DataActorNative,
     cache::Cache,
@@ -119,6 +117,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
             client_order_id: ClientOrderId::from("MAKER-YES-1"),
         },
         fallback_price: Price::new(0.40, 2),
+        gross_expected_value: 0.02,
     };
 
     let outcome = maker
@@ -177,7 +176,6 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
@@ -250,7 +248,6 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
         price_precision: 2,
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
-        max_fee_bps: Decimal::ZERO,
         submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     };
 
@@ -325,7 +322,6 @@ fn maker_runtime_quote_surfaces_requote_throttle_write_failure_at_error_and_proc
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
             submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         },
     );
@@ -431,7 +427,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
@@ -520,7 +515,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
@@ -597,7 +591,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                     price_precision: 2,
                     quantity_precision: 2,
                     submit_order_prefix: "maker_submit",
-                    max_fee_bps: Decimal::ZERO,
                     submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
                 },
             )
@@ -654,7 +647,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
@@ -771,7 +763,6 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
             submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         })
         .expect("maker should route pre-paid replacement submit through shared context");
@@ -1139,19 +1130,6 @@ fn install_capturing_logger() -> &'static CapturingLogger {
     logger
 }
 
-#[derive(Debug)]
-struct NoopFeeProvider;
-
-impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        None
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async { Ok(()) }.boxed()
-    }
-}
-
 fn maker_context(
     writer: Arc<support::RecordingDecisionEvidenceWriter>,
     admission: Arc<BoltV3SubmitAdmissionState>,
@@ -1164,12 +1142,14 @@ fn maker_context_with_writer(
     admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer,
         admission,
         BoltV3OrderExecutionPolicy::shadow(),
         Venue::from("MAKER.TEST"),
     )
+    .with_order_routing(support::sample_order_routing_handle(
+        "maker_execution_client",
+    ))
 }
 
 fn register_maker_for_order_factory(maker: &mut BinaryOracleMaker) {
@@ -1295,15 +1275,12 @@ fn gate_cleared_informed_fraction() -> UsableMu {
         .expect("warmup flow clears the μ gate")
 }
 
-fn quote_set_inputs() -> MakerRuntimeQuoteSetInput<'static> {
+fn quote_set_inputs() -> MakerRuntimeQuoteSetInput {
     MakerRuntimeQuoteSetInput {
         yes_quantity: 2.0,
         no_quantity: 3.0,
         yes_resting_price: None,
         no_resting_price: None,
-        open_commitments: &[],
-        max_fee_bps: 0.0,
-        available_collateral: 100.0,
         requote_threshold: 0.001,
         eps: 0.001,
         now_ms: 1_000,
@@ -1346,7 +1323,6 @@ fn risk_route_input<'a>(
         price_precision: 2,
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
-        max_fee_bps: Decimal::ZERO,
         submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     }
 }
@@ -1762,12 +1738,14 @@ fn maker_sim_context(
     admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer,
         admission,
         BoltV3OrderExecutionPolicy::shadow(),
         Venue::from("SIM"),
     )
+    .with_order_routing(support::sample_order_routing_handle(
+        "maker_execution_client",
+    ))
 }
 
 /// Register the maker with a real NT core whose clock reads `RUNTIME_NOW_MS`, so
@@ -2032,7 +2010,6 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )

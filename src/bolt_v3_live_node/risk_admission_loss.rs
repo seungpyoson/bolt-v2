@@ -1173,7 +1173,7 @@ impl KillSwitchLossActionSink for NtReducingLossActionSink {
 fn live_node_kill_switch_flatten_executor(
     loaded: &LoadedBoltV3Config,
     node: &LiveNode,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    _decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<Option<Rc<dyn KillSwitchFlattenExecutor>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
@@ -1209,18 +1209,18 @@ fn live_node_kill_switch_flatten_executor(
             ),
         ));
     }
+    if flatten.route_kind == KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
+        return Err(BoltV3LiveNodeError::KillSwitchLossProtection(
+            anyhow::anyhow!(
+                "kill-switch flatten submission is unavailable while economics_slice=quote_only"
+            ),
+        ));
+    }
 
     let flatten_policy = flatten_policy_from_config(flatten)
         .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
     let order_template = flatten_order_template_from_config(flatten);
-    let execution_clients_by_venue = execution_clients_by_venue(loaded)
-        .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
     let cache = node.kernel().cache();
-    let risk_engine = node.kernel().risk_engine().clone();
-    let clock = node.kernel().clock();
-    let trader_id = node.kernel().trader_id();
-    let order_execution_policy =
-        BoltV3OrderExecutionPolicy::from_mode(loaded.root.runtime.order_execution_mode);
     let config_sha256 = loaded.config_bundle_checksum.clone();
     let policy_sha256 = kill_switch.forced_reduction_policy_sha256.clone();
     let executor = ClosureKillSwitchFlattenExecutor {
@@ -1261,91 +1261,10 @@ fn live_node_kill_switch_flatten_executor(
             )
             .map_err(domain_error)?;
 
-            route_planned_kill_switch_flatten_commands(&plan, |command| {
-                let instrument = {
-                    let cache = cache.borrow();
-                    cache.instrument(&command.instrument_id()).cloned()
-                }
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "kill switch flatten instrument not found in NT cache: instrument_id={}",
-                        command.instrument_id()
-                    )
-                })?;
-                let venue = command.instrument_id().venue;
-                let execution_client_id = execution_clients_by_venue
-                    .get(&venue)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "kill switch flatten execution client not configured for venue={venue}"
-                        )
-                    })?
-                    .as_str();
-                let mut order_factory = OrderFactory::new(
-                    trader_id,
-                    command.strategy_id(),
-                    None,
-                    None,
-                    clock.clone(),
-                    false,
-                    true,
-                );
-                let mut sink = BoltV3NtSubmitOnlySink::new(|order, context| {
-                    if order.status() != nautilus_model::enums::OrderStatus::Initialized {
-                        anyhow::bail!(
-                            "kill switch flatten order denied before NT risk engine: invalid status for {}, expected INITIALIZED",
-                            order.client_order_id()
-                        );
-                    }
-                    {
-                        cache.borrow_mut().add_order(
-                            order.clone(),
-                            context.position_id,
-                            context.client_id,
-                            true,
-                        )?;
-                    }
-                    publish_order_initialized(&order);
-                    let params = context.params.filter(|params| !params.is_empty());
-                    let command = SubmitOrder::new(
-                        trader_id,
-                        context.client_id,
-                        order.strategy_id(),
-                        order.instrument_id(),
-                        order.client_order_id(),
-                        order.init_event().clone(),
-                        order.exec_algorithm_id(),
-                        context.position_id,
-                        params,
-                        UUID4::new(),
-                        clock.borrow().timestamp_ns(),
-                        None,
-                    );
-                    risk_engine
-                        .borrow_mut()
-                        .execute(TradingCommand::SubmitOrder(command));
-                    Ok(())
-                });
-                let fallback_price = instrument
-                    .max_price()
-                    .map(|price| price.to_string())
-                    .unwrap_or_else(|| Decimal::ZERO.to_string());
-                route_kill_switch_flatten_command_with_sink(
-                    order_execution_policy,
-                    &mut sink,
-                    &mut order_factory,
-                    decision_evidence.as_ref(),
-                    submit_admission.as_ref(),
-                    BoltV3KillSwitchFlattenRoutingContext {
-                        execution_client_id,
-                        fallback_price: fallback_price.as_str(),
-                        instrument: Some(&instrument),
-                        max_fee_bps: Decimal::ZERO,
-                        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
-                    },
-                    command,
-                )?;
-                Ok(())
+            route_planned_kill_switch_flatten_commands(&plan, |_command| {
+                anyhow::bail!(
+                    "kill-switch flatten submission is unavailable while economics_slice=quote_only"
+                )
             })?;
             Ok(())
         },
@@ -2740,7 +2659,12 @@ mod tests {
                     execution_client_id: "execution_client",
                     fallback_price: "1",
                     instrument: Some(&instrument),
-                    max_fee_bps: Decimal::ZERO,
+                    order_routing: Box::leak(Box::new(
+                        crate::bolt_v3_economics_runtime::test_order_routing_handle(
+                            "execution_client",
+                        ),
+                    )),
+                    gross_expected_value: Decimal::ONE,
                     submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                 },
                 command,

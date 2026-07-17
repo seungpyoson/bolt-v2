@@ -173,28 +173,12 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::{Context, anyhow};
-    use futures_util::future::{BoxFuture, FutureExt};
-    use nautilus_model::identifiers::{InstrumentId, StrategyId, Venue};
+    use nautilus_model::identifiers::{StrategyId, Venue};
     use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 
-    use crate::{
-        bolt_v3_providers::FeeProvider, bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
-    };
+    use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 
     use super::*;
-
-    #[derive(Debug, Clone)]
-    struct NoopFeeProvider;
-
-    impl FeeProvider for NoopFeeProvider {
-        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<rust_decimal::Decimal> {
-            None
-        }
-
-        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-            async { Ok(()) }.boxed()
-        }
-    }
 
     #[derive(Debug)]
     struct NoopDecisionEvidenceWriter;
@@ -396,7 +380,6 @@ mod tests {
 
     fn test_context() -> StrategyBuildContext {
         StrategyBuildContext::new(
-            Arc::new(NoopFeeProvider),
             Arc::new(NoopDecisionEvidenceWriter),
             Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
                 NoopDecisionEvidenceWriter,

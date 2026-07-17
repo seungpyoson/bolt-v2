@@ -86,7 +86,6 @@ def test_scan_universe() -> None:
         "src/bolt_v3_providers/binance.rs",
         "src/bolt_v3_providers/mod.rs",
         "src/bolt_v3_providers/polymarket.rs",
-        "src/bolt_v3_providers/polymarket/fees.rs",
         "src/bolt_v3_readiness.rs",
         "src/bolt_v3_secrets.rs",
         "src/bolt_v3_strategy_registration.rs",

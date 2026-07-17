@@ -188,76 +188,115 @@ pub(super) fn valid_raw_config() -> Value {
     .into()
 }
 
-#[derive(Debug, Default)]
-pub(super) struct RecordingFeeProvider {
-    fees: Mutex<HashMap<String, Decimal>>,
-    entry_fees: Mutex<HashMap<String, Decimal>>,
-    warm_calls: Mutex<Vec<String>>,
+#[derive(Debug)]
+pub(super) struct RecordingEconomicsAdmissionSource {
+    core_effect: Mutex<Decimal>,
 }
 
-impl RecordingFeeProvider {
+impl Default for RecordingEconomicsAdmissionSource {
+    fn default() -> Self {
+        Self {
+            core_effect: Mutex::new(Decimal::new(-1, 2)),
+        }
+    }
+}
+
+impl RecordingEconomicsAdmissionSource {
     pub(super) fn cold() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
-    /// Build a provider that yields `fee_bps` for `instrument_id`. The
-    /// submit-admission path resolves the fee-inclusive notional through
-    /// `FeeProvider::max_entry_fee_bps`, which falls back to `fee_bps` in
-    /// `#[cfg(test)]` when the NT cache holds no instrument, so seeding the
-    /// fee here is sufficient to exercise the fee-inclusive cap check
-    /// without registering a full cache.
-    pub(super) fn with_fee(instrument_id: &str, fee_bps: Decimal) -> Arc<Self> {
-        let provider = Arc::new(Self::default());
-        provider.set_fee(instrument_id, fee_bps);
-        provider
-    }
-
-    pub(super) fn set_fee(&self, instrument_id: &str, fee_bps: Decimal) {
-        self.fees
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .insert(instrument_id.to_string(), fee_bps);
-    }
-
-    pub(super) fn set_entry_fee_bps(&self, instrument_id: &str, fee_bps: Decimal) {
-        self.entry_fees
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .insert(instrument_id.to_string(), fee_bps);
-    }
-
-    pub(super) fn warm_calls(&self) -> Vec<String> {
-        self.warm_calls
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .clone()
+    pub(super) fn with_core_effect(core_effect: Decimal) -> Arc<Self> {
+        Arc::new(Self {
+            core_effect: Mutex::new(core_effect),
+        })
     }
 }
 
-impl FeeProvider for RecordingFeeProvider {
-    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal> {
-        self.fees
+impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
+    for RecordingEconomicsAdmissionSource
+{
+    fn quote_admission(
+        &self,
+        intent: crate::bolt_v3_economics_runtime::EconomicsAdmissionQuoteIntent,
+    ) -> std::result::Result<
+        crate::bolt_v3_economics_runtime::EconomicsAdmission,
+        crate::economics::EconomicsUnavailable,
+    > {
+        use crate::economics::*;
+        let effect = *self
+            .core_effect
             .lock()
-            .expect("recording fee provider mutex poisoned")
-            .get(instrument_id.to_string().as_str())
-            .copied()
+            .expect("recording economics source mutex poisoned");
+        let source = SourceValidity {
+            source_id: SourceId::new("test-economics-source")?,
+            snapshot_id: SnapshotId::new("test-economics-snapshot")?,
+            source_at_ns: intent.request.requested_at_ns,
+            fetched_at_ns: intent.request.requested_at_ns,
+            valid_until_ns: intent.request.requested_at_ns.saturating_add(1),
+        };
+        let adapter = RecordingEconomicsAdapterFixture {
+            estimate: VenueQuoteEstimate {
+                authority: source.clone(),
+                components: vec![EstimatedEconomicComponent {
+                    component_id: EconomicComponentId::new("test-core-effect")?,
+                    class: if effect.is_sign_negative() {
+                        EconomicClass::Charge
+                    } else {
+                        EconomicClass::Credit
+                    },
+                    kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
+                    scope: EconomicScope::Decision {
+                        decision_correlation_id: intent.request.decision_correlation_id.clone(),
+                    },
+                    point_effect: SignedNativeEffect::currency(
+                        effect,
+                        intent.request.reporting_unit.clone(),
+                    )?,
+                    debit_risk_bound: None,
+                    admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
+                    calculation_factors: Vec::new(),
+                    formula_id: FormulaId::new("test-formula")?,
+                    source,
+                    normalized: None,
+                }],
+            },
+        };
+        crate::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(
+            adapter,
+        ))
+        .quote_admission(crate::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
+            edge_basis: EdgeBasisEvidence {
+                policy_id: intent.request.edge_basis_policy_id.clone(),
+                policy_version: 1,
+                normalized_amount: intent.base_reservation_notional,
+                scope: EconomicScope::Decision {
+                    decision_correlation_id: intent.request.decision_correlation_id.clone(),
+                },
+                source_snapshot_ids: vec![SnapshotId::new("test-basis-snapshot")?],
+                valid_until_ns: intent.request.requested_at_ns.saturating_add(1),
+            },
+            request: intent.request,
+            gross_expected_value: intent.gross_expected_value,
+            valuations: Vec::new(),
+            base_reservation_notional: intent.base_reservation_notional,
+        })
     }
+}
 
-    fn entry_fee_bps(&self, instrument: &InstrumentAny, _entry_price: Decimal) -> Option<Decimal> {
-        self.entry_fees
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .get(instrument.id().to_string().as_str())
-            .copied()
-            .or_else(|| self.fee_bps(instrument.id()))
-    }
+struct RecordingEconomicsAdapterFixture {
+    estimate: crate::economics::VenueQuoteEstimate,
+}
 
-    fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        self.warm_calls
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .push(instrument_id.to_string());
-        async { Ok(()) }.boxed()
+impl crate::economics::VenueEconomicsAdapter for RecordingEconomicsAdapterFixture {
+    fn quote(
+        &self,
+        _request: &crate::economics::EconomicQuoteRequest,
+    ) -> std::result::Result<
+        crate::economics::VenueQuoteEstimate,
+        crate::economics::EconomicsUnavailable,
+    > {
+        Ok(self.estimate.clone())
     }
 }
 
@@ -991,6 +1030,23 @@ pub(super) fn fixture_execution_venue() -> Venue {
     Venue::from("POLYMARKET")
 }
 
+pub(super) fn fixture_order_routing(
+    economics_source: Arc<dyn crate::bolt_v3_economics_runtime::EconomicsAdmissionSource>,
+) -> crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
+    let account_id = fixture_settlement_account_id();
+    let reporting_unit = fixture_settlement_currency();
+    crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
+        economics_source,
+        fixture_execution_venue().as_str(),
+        account_id.as_str(),
+        "prediction-market-binary",
+        "test-reporting-policy",
+        reporting_unit.code.as_str(),
+        "test-edge-basis-policy",
+    )
+    .expect("test economics routing should build")
+}
+
 pub(super) fn fixture_settlement_account_id() -> String {
     fixture_settlement_identity().0
 }
@@ -1047,7 +1103,25 @@ fn fixture_settlement_identity() -> (String, Currency) {
 }
 
 pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
-    test_strategy_with_fee_provider(RecordingFeeProvider::cold())
+    test_strategy_with_economics_source(RecordingEconomicsAdmissionSource::cold())
+}
+
+pub(super) fn test_build_context_with_economics_source(
+    economics_source: Arc<dyn crate::bolt_v3_economics_runtime::EconomicsAdmissionSource>,
+) -> StrategyBuildContext {
+    let decision_evidence = Arc::new(RecordingDecisionEvidenceWriter);
+    StrategyBuildContext::new(
+        decision_evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence),
+        ),
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        fixture_execution_venue(),
+    )
+    .with_order_routing(fixture_order_routing(economics_source))
+    .with_settlement_account_id(Some(fixture_settlement_account_id()))
+    .with_settlement_currency(Some(fixture_settlement_currency()))
+    .with_settlement_health_transition_emitter(Some(noop_settlement_health_transition_emitter()))
 }
 
 pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
@@ -1217,11 +1291,11 @@ pub(super) fn add_active_instruments_to_cache(
         .expect("test cache should accept active down instrument");
 }
 
-pub(super) fn test_strategy_with_fee_provider(
-    fee_provider: Arc<dyn FeeProvider>,
+pub(super) fn test_strategy_with_economics_source(
+    economics_source: Arc<dyn crate::bolt_v3_economics_runtime::EconomicsAdmissionSource>,
 ) -> BinaryOracleEdgeTaker {
-    test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        fee_provider,
+    test_strategy_with_economics_source_decision_evidence_and_submit_admission(
+        economics_source,
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
@@ -1231,12 +1305,12 @@ pub(super) fn test_strategy_with_fee_provider(
     )
 }
 
-pub(super) fn test_strategy_with_fee_provider_and_decision_evidence(
-    fee_provider: Arc<dyn FeeProvider>,
+pub(super) fn test_strategy_with_economics_source_and_decision_evidence(
+    economics_source: Arc<dyn crate::bolt_v3_economics_runtime::EconomicsAdmissionSource>,
     decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
 ) -> BinaryOracleEdgeTaker {
-    test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        fee_provider,
+    test_strategy_with_economics_source_decision_evidence_and_submit_admission(
+        economics_source,
         decision_evidence,
         Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
@@ -1246,8 +1320,8 @@ pub(super) fn test_strategy_with_fee_provider_and_decision_evidence(
     )
 }
 
-pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-    fee_provider: Arc<dyn FeeProvider>,
+pub(super) fn test_strategy_with_economics_source_decision_evidence_and_submit_admission(
+    economics_source: Arc<dyn crate::bolt_v3_economics_runtime::EconomicsAdmissionSource>,
     decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
 ) -> BinaryOracleEdgeTaker {
@@ -1360,12 +1434,12 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             reference_current_price: None,
         },
         StrategyBuildContext::new(
-            fee_provider,
             decision_evidence,
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
+        .with_order_routing(fixture_order_routing(economics_source))
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency()))
         .with_settlement_health_transition_emitter(Some(
@@ -1540,8 +1614,6 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy.active.interval_open = Some(3_100.0);
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.outcome_fees.up_ready = true;
-    strategy.active.outcome_fees.down_ready = true;
     strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
     strategy
         .active
@@ -1587,22 +1659,12 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy
 }
 
-pub(super) fn ready_to_trade_strategy_with_live_fees(
-    up_fee_bps: Decimal,
-    down_fee_bps: Decimal,
-) -> BinaryOracleEdgeTaker {
-    ready_to_trade_strategy_with_recording_fees(up_fee_bps, down_fee_bps).0
-}
-
-pub(super) fn ready_to_trade_strategy_with_recording_fees(
-    up_fee_bps: Decimal,
-    down_fee_bps: Decimal,
-) -> (BinaryOracleEdgeTaker, Arc<RecordingFeeProvider>) {
-    let fee_provider = RecordingFeeProvider::cold();
-    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", up_fee_bps);
-    fee_provider.set_fee("condition-MKT-1-MKT-1-DOWN.POLYMARKET", down_fee_bps);
-
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
+pub(super) fn ready_to_trade_strategy_with_recording_economics() -> (
+    BinaryOracleEdgeTaker,
+    Arc<RecordingEconomicsAdmissionSource>,
+) {
+    let economics_source = RecordingEconomicsAdmissionSource::cold();
+    let mut strategy = test_strategy_with_economics_source(economics_source.clone());
     configure_supported_market_quote_entry_order(&mut strategy);
     strategy.config.warmup_tick_count = 2;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
@@ -1610,7 +1672,6 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     strategy.active.interval_open = Some(3_100.0);
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.refresh_fee_readiness();
     strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
     strategy
         .active
@@ -1653,22 +1714,21 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
     strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
-    (strategy, fee_provider)
+    (strategy, economics_source)
 }
 
 pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
     decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
 ) -> BinaryOracleEdgeTaker {
-    let (mut strategy, fee_provider) =
-        ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+    let (mut strategy, economics_source) = ready_to_trade_strategy_with_recording_economics();
     strategy.context = StrategyBuildContext::new(
-        fee_provider,
         decision_evidence,
         submit_admission,
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
+    .with_order_routing(fixture_order_routing(economics_source))
     .with_settlement_account_id(Some(fixture_settlement_account_id()))
     .with_settlement_currency(Some(fixture_settlement_currency()))
     .with_settlement_health_transition_emitter(Some(noop_settlement_health_transition_emitter()));
@@ -1832,13 +1892,6 @@ pub(super) fn pending_entry_state(
             Some(300),
         ),
         instrument_id,
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy
-            .context
-            .fee_provider()
-            .fee_bps(instrument_id)
-            .and_then(|value| value.to_f64())
-            .or(Some(0.0)),
         book,
     }
 }
@@ -1885,17 +1938,22 @@ pub(super) fn materialize_configured_position(
         0,
     );
     seed_managed_position_lifecycle_from_active_fixture(strategy, instrument_id);
-    let mut position = managed_position_ref(strategy)
+    let position = managed_position_ref(strategy)
         .cloned()
         .expect("configured position should materialize as managed exposure");
-    position.historical_entry_fee_bps.get_or_insert(0.0);
     position
 }
 
 pub(super) fn configured_outcome_instruments(
     strategy: &BinaryOracleEdgeTaker,
 ) -> Vec<InstrumentId> {
-    let instrument_ids = strategy.active.outcome_fees.instrument_ids();
+    let instrument_ids = [
+        strategy.active.books.up.instrument_id,
+        strategy.active.books.down.instrument_id,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     assert!(
         !instrument_ids.is_empty(),
         "ready-to-trade fixture should expose configured outcome instruments"
@@ -1978,12 +2036,6 @@ pub(super) fn materialize_managed_position_with_resting_pending_entry(
             Some(300),
         ),
         instrument_id,
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy
-            .context
-            .fee_provider()
-            .fee_bps(instrument_id)
-            .and_then(|value| value.to_f64()),
         book: book.clone(),
     };
     let avg_px_open = book

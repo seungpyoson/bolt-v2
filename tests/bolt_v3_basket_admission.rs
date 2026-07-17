@@ -1,3 +1,5 @@
+use crate::support;
+
 use std::{
     collections::BTreeMap,
     sync::{
@@ -1009,6 +1011,7 @@ fn entry_claims(group: &OutcomeGroup, notional: Decimal) -> Vec<BoltV3BasketSubm
         .values()
         .take(2)
         .map(|leg| BoltV3BasketSubmitSlotClaim {
+            economics_admission: support::sample_economics_admission(Decimal::ONE),
             client_order_id: format!("{}-entry-order", leg.leg_id),
             instrument_id: leg.instrument_id.to_string(),
             order_side: OrderSide::Buy,
@@ -1027,6 +1030,7 @@ fn risk_reducing_claim(
     proof: BoltV3RiskReducingExitProof,
 ) -> BoltV3BasketSubmitSlotClaim {
     BoltV3BasketSubmitSlotClaim {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         client_order_id: format!("{}-exit-order", leg.leg_id),
         instrument_id: leg.instrument_id.to_string(),
         order_side: OrderSide::Sell,
@@ -1130,6 +1134,7 @@ fn valid_exit_proof(leg: &OutcomeLeg) -> BoltV3RiskReducingExitProof {
 
 fn single_order_request(client_order_id: &str, notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         strategy_id: "complete-set-arb".to_string(),
         execution_client_id: "polymarket_main".to_string(),
         client_order_id: client_order_id.to_string(),

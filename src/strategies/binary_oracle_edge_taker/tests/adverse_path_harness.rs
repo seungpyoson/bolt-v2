@@ -1139,8 +1139,6 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
         lifecycle: BoltV3PositionMarketLifecycle::missing(),
         instrument_id,
         position_id,
-        outcome_fees: OutcomeFeeState::empty(),
-        historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -1222,8 +1220,6 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
         lifecycle: BoltV3PositionMarketLifecycle::missing(),
         instrument_id,
         position_id,
-        outcome_fees: OutcomeFeeState::empty(),
-        historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -1315,8 +1311,6 @@ fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error
         lifecycle: BoltV3PositionMarketLifecycle::recover_from_instrument(Some(&instrument)),
         instrument_id,
         position_id,
-        outcome_fees: OutcomeFeeState::empty(),
-        historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2171,8 +2165,6 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
         ),
         instrument_id,
         position_id,
-        outcome_fees: OutcomeFeeState::empty(),
-        historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2298,8 +2290,6 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
         lifecycle: BoltV3PositionMarketLifecycle::missing(),
         instrument_id,
         position_id,
-        outcome_fees: OutcomeFeeState::empty(),
-        historical_entry_fee_bps: None,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2620,8 +2610,6 @@ fn roll_active_to_next_interval(
     strategy.active.interval_open = Some(next_strike_price);
     strategy.active.warmup_count = strategy.config.warmup_tick_count;
     strategy.active.last_reference_ts_ms = Some(next_interval_start_ms.saturating_add(1));
-    strategy.active.outcome_fees.up_ready = true;
-    strategy.active.outcome_fees.down_ready = true;
 }
 
 fn partial_fill_residual_is_managed_or_fresh_reexit(

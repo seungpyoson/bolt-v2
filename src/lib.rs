@@ -49,7 +49,6 @@ pub mod bolt_v3_maker_quote_control;
 pub mod bolt_v3_maker_quote_plan;
 pub mod bolt_v3_maker_quote_set;
 pub mod bolt_v3_maker_rate_budget;
-pub mod bolt_v3_maker_reservation;
 pub mod bolt_v3_maker_risk;
 pub mod bolt_v3_maker_runtime_order;
 pub mod bolt_v3_maker_runtime_quote;

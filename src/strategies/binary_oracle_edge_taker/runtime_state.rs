@@ -6,7 +6,6 @@ use crate::{
     bolt_v3_book_sizing::{OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks},
     bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
     bolt_v3_numeric::{MILLIS_PER_SECOND_U64, is_positive_finite},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_reference_price::ReferenceQuote,
     bolt_v3_trade_flow::SignedTradeFlow,
 };
@@ -73,7 +72,6 @@ pub(super) struct ActiveMarketState {
     pub(super) market_id: Option<String>,
     pub(super) source_identity: Option<SelectedMarketSourceIdentity>,
     pub(super) instrument_id: Option<InstrumentId>,
-    pub(super) outcome_fees: OutcomeFeeState,
     pub(super) price_to_beat: Option<f64>,
     pub(super) market_selection_outcome: MarketSelectionOutcome,
     pub(super) interval_start_ms: Option<u64>,
@@ -111,45 +109,6 @@ impl OutcomeBookSubscriptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OutcomeFeeState {
-    pub(super) up_instrument_id: Option<InstrumentId>,
-    pub(super) down_instrument_id: Option<InstrumentId>,
-    pub(super) up_ready: bool,
-    pub(super) down_ready: bool,
-}
-
-impl OutcomeFeeState {
-    pub(super) fn empty() -> Self {
-        Self {
-            up_instrument_id: None,
-            down_instrument_id: None,
-            up_ready: false,
-            down_ready: false,
-        }
-    }
-
-    fn from_market(market: &CandidateMarket) -> Self {
-        Self {
-            up_instrument_id: Some(InstrumentId::from(market.up.instrument_id.as_str())),
-            down_instrument_id: Some(InstrumentId::from(market.down.instrument_id.as_str())),
-            up_ready: false,
-            down_ready: false,
-        }
-    }
-
-    pub(super) fn instrument_ids(&self) -> Vec<InstrumentId> {
-        [self.up_instrument_id, self.down_instrument_id]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    pub(super) fn market_ready(&self) -> bool {
-        self.up_ready && self.down_ready
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MarketLifecycleLedger {
     pub(super) cooldown_expires_at_ms: Option<u64>,
     pub(super) churn_count: u64,
@@ -176,7 +135,6 @@ impl ActiveMarketState {
             market_id: None,
             source_identity: None,
             instrument_id: None,
-            outcome_fees: OutcomeFeeState::empty(),
             price_to_beat: None,
             market_selection_outcome: MarketSelectionOutcome::Current,
             interval_start_ms: None,
@@ -228,7 +186,6 @@ impl ActiveMarketState {
             market_id: Some(market.market_id.clone()),
             source_identity: Some(market.source_identity.clone()),
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
-            outcome_fees: OutcomeFeeState::from_market(market),
             price_to_beat: market.price_to_beat,
             market_selection_outcome: market.selection_outcome,
             interval_start_ms: Some(market.start_ts_ms),
@@ -436,20 +393,4 @@ pub(super) fn reference_current_price_boundary_changed(
         || previous.instrument_id != current.instrument_id
         || previous.interval_start_ms != current.interval_start_ms
         || previous.interval_end_ms != current.interval_end_ms
-}
-
-pub(super) fn refresh_fee_readiness_for_active(
-    active: &mut ActiveMarketState,
-    fee_provider: &dyn FeeProvider,
-) {
-    active.outcome_fees.up_ready = active
-        .outcome_fees
-        .up_instrument_id
-        .and_then(|instrument_id| fee_provider.fee_bps(instrument_id))
-        .is_some();
-    active.outcome_fees.down_ready = active
-        .outcome_fees
-        .down_instrument_id
-        .and_then(|instrument_id| fee_provider.fee_bps(instrument_id))
-        .is_some();
 }

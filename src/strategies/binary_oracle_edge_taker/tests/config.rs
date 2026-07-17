@@ -125,17 +125,8 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
         .insert("oms_type".to_string(), Value::String("hedging".to_string()));
     let config =
         BinaryOracleEdgeTakerBuilder::parse_config(&raw).expect("Hedging OMS should parse");
-    let context = StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
-        Arc::new(RecordingDecisionEvidenceWriter),
-        Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
-        ),
-        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        fixture_execution_venue(),
-    );
+    let context =
+        test_build_context_with_economics_source(RecordingEconomicsAdmissionSource::cold());
 
     let strategy = BinaryOracleEdgeTaker::new(config, context);
 
@@ -516,17 +507,7 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
     let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw).unwrap();
     let strategy = BinaryOracleEdgeTaker::new(
         config,
-        StrategyBuildContext::new(
-            RecordingFeeProvider::cold(),
-            Arc::new(RecordingDecisionEvidenceWriter),
-            Arc::new(
-                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                    RecordingDecisionEvidenceWriter,
-                )),
-            ),
-            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-            fixture_execution_venue(),
-        ),
+        test_build_context_with_economics_source(RecordingEconomicsAdmissionSource::cold()),
     );
 
     assert!(strategy.core.config.use_uuid_client_order_ids);

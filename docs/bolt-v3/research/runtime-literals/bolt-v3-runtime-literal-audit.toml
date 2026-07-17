@@ -1773,22 +1773,6 @@ classification = "retry_loop_control_constant"
 reason = "This consumes one configured provider snapshot retry attempt per confirmation iteration; the retry budget and delay values remain TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_providers/mod.rs"
-kind = "string"
-literal = '''"clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding"'''
-context = '''"clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding",'''
-classification = "provider_fee_binding_diagnostic"
-reason = "This diagnostic identifies a provider binding that intentionally lacks fee-provider capability; the runtime provider choice remains TOML-owned through clients.<id>.venue."
-
-[[allowed]]
-path = "src/bolt_v3_providers/mod.rs"
-kind = "string"
-literal = '''"clients.{client_key}.venue `{provider_key}` has no registered provider binding"'''
-context = '''"clients.{client_key}.venue `{provider_key}` has no registered provider binding",'''
-classification = "provider_binding_diagnostic"
-reason = "This diagnostic identifies an unsupported provider key selected by TOML-owned clients.<id>.venue; it is not a hidden provider default."
-
-[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "number"
 literal = '''4'''
@@ -1917,22 +1901,6 @@ classification = "validation_field_label"
 reason = "This label names the Polymarket execution config field being validated in a positive-integer check; the value itself is TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket/fees.rs"
-kind = "number"
-literal = '''10_000'''
-context = '''const ENTRY_FEE_BPS_SCALE: i64 = 10_000;'''
-classification = "fee_bps_unit_scale"
-reason = "This is the fixed basis-points unit scale used to convert NT pUSD commission into entry-fee bps; it is not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''10_000'''
-context = '''const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;'''
-classification = "fee_bps_unit_scale"
-reason = "This is the fixed basis-points unit scale used to convert a source-provided fee bound into fee-inclusive submit admission notional; it is not an operator runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = '''"http_timeout_secs"'''
@@ -1947,22 +1915,6 @@ literal = '''"http_timeout_secs"'''
 context = '''("http_timeout_secs", execution.http_timeout_secs),'''
 classification = "validation_field_label"
 reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
-literal = '''"http://"'''
-context = '''if !cfg.base_url_http.starts_with("http://") && !cfg.base_url_http.starts_with("https://") {'''
-classification = "url_scheme_validation_literal"
-reason = "This is the accepted HTTP URL scheme prefix used to fail closed on malformed TOML-owned Polymarket fee-provider URLs before NT client construction."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
-literal = '''"https://"'''
-context = '''if !cfg.base_url_http.starts_with("http://") && !cfg.base_url_http.starts_with("https://") {'''
-classification = "url_scheme_validation_literal"
-reason = "This is the accepted HTTPS URL scheme prefix used to fail closed on malformed TOML-owned Polymarket fee-provider URLs before NT client construction."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
@@ -5782,22 +5734,6 @@ reason = "This is Hyperliquid's documented fixed Info API userFees request weigh
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"userCrossRate"'''
-context = '''const USER_CROSS_RATE_FIELD: &str = "userCrossRate";'''
-classification = "hyperliquid_protocol_fee_field"
-reason = "This is the fixed Hyperliquid userFees response field used to read the account taker/cross rate; account selection and endpoints remain TOML/SSM-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "number"
-literal = '''10_000'''
-context = '''const BASIS_POINTS_PER_UNIT_RATE: i64 = 10_000;'''
-classification = "basis_point_conversion_factor"
-reason = "This is the fixed conversion from a unit fee rate to basis points; the fee rate itself comes from Hyperliquid userFees."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "number"
 literal = '''1200'''
 context = '''pub const REST_EGRESS_CAP_PER_MINUTE: u32 = 1200;'''
@@ -8031,14 +7967,6 @@ reason = "This is a named SI time-unit conversion constant, not an operator runt
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"captured_from_strategy_entry_state"'''
-context = '''"captured_from_strategy_entry_state";'''
-classification = "strategy_evidence_reason_code"
-reason = "This is a stable evidence reason code for fee provenance captured at entry."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
 literal = '''"derived_from_lead_gap_jitter_time_and_fee"'''
 context = '''"derived_from_lead_gap_jitter_time_and_fee";'''
 classification = "strategy_evidence_reason_code"
@@ -8231,22 +8159,6 @@ reason = "This is a stable decision-evidence reason code, not an operator runtim
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"final_fee_requires_side_price_and_size_selection"'''
-context = '''"final_fee_requires_side_price_and_size_selection";'''
-classification = "strategy_evidence_reason_code"
-reason = "This is a stable evidence reason code for final-fee unavailability before entry selection is complete."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
-literal = '''"final_fee_requires_side_price_size_and_actual_fill"'''
-context = '''"final_fee_requires_side_price_size_and_actual_fill";'''
-classification = "strategy_evidence_reason_code"
-reason = "This is a stable evidence reason code for final-fee unavailability before fill evidence exists."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
 literal = '''"instrument_id_missing"'''
 context = '''const ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING: &str = "instrument_id_missing";'''
 classification = "strategy_entry_block_reason_code"
@@ -8299,14 +8211,6 @@ literal = '''"no_fast_venue_cleared_lead_quality_thresholds"'''
 context = '''"no_fast_venue_cleared_lead_quality_thresholds";'''
 classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code; the lead-quality thresholds come from TOML."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
-literal = '''"no_managed_position"'''
-context = '''const EVIDENCE_REASON_NO_MANAGED_POSITION: &str = "no_managed_position";'''
-classification = "strategy_evidence_reason_code"
-reason = "This is a stable evidence reason code for absent managed position state, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
@@ -8423,14 +8327,6 @@ reason = "This is a stable decision-evidence reason code for invalid TOML-owned 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"position_state_missing_original_fee_rate"'''
-context = '''"position_state_missing_original_fee_rate";'''
-classification = "strategy_evidence_reason_code"
-reason = "This is a stable evidence reason code for missing in-memory position fee-rate state."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
 literal = '''"quantity_not_positive"'''
 context = '''const ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE: &str = "quantity_not_positive";'''
 classification = "strategy_entry_block_reason_code"
@@ -8443,14 +8339,6 @@ literal = '''"quantity_rounding_failed"'''
 context = '''const ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED: &str = "quantity_rounding_failed";'''
 classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code for NT instrument quantity construction failure."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
-literal = '''"recovery_bootstrap_position_missing_original_fee_rate"'''
-context = '''"recovery_bootstrap_position_missing_original_fee_rate";'''
-classification = "strategy_evidence_reason_code"
-reason = "This is a stable evidence reason code for missing recovered fee-rate state."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
@@ -11717,14 +11605,6 @@ reason = "Stable structured block-reason label for binary outcome edge output; i
 [[allowed]]
 path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
-literal = '''"fee_unavailable"'''
-context = '''Self::FeeUnavailable => "fee_unavailable",'''
-classification = "binary_outcome_edge_block_reason_label"
-reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
-
-[[allowed]]
-path = "src/bolt_v3_binary_outcome_edge.rs"
-kind = "string"
 literal = '''"invalid_probability"'''
 context = '''Self::InvalidProbability => "invalid_probability",'''
 classification = "binary_outcome_edge_block_reason_label"
@@ -11775,14 +11655,6 @@ path = "src/bolt_v3_executable_cost.rs"
 kind = "string"
 literal = '''"insufficient_depth"'''
 context = '''Self::InsufficientDepth => "insufficient_depth",'''
-classification = "executable_cost_block_reason_label"
-reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
-
-[[allowed]]
-path = "src/bolt_v3_executable_cost.rs"
-kind = "string"
-literal = '''"fee_unavailable"'''
-context = '''Self::FeeUnavailable => "fee_unavailable",'''
 classification = "executable_cost_block_reason_label"
 reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
 
@@ -13246,14 +13118,6 @@ path = "src/bolt_v3_outcome_group_scanner.rs"
 kind = "string"
 literal = '''"insufficient_depth"'''
 context = '''Self::InsufficientDepth => "insufficient_depth",'''
-classification = "scanner_block_reason_label"
-reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_scanner.rs"
-kind = "string"
-literal = '''"fee_unavailable"'''
-context = '''Self::FeeUnavailable => "fee_unavailable",'''
 classification = "scanner_block_reason_label"
 reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
 
@@ -19524,14 +19388,6 @@ reason = '''Fail-closed diagnostic for ambiguous settlement idempotency evidence
 [[allowed]]
 path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
 kind = '''string'''
-literal = '''"historical_entry_fee_unavailable"'''
-context = '''"historical_entry_fee_unavailable";'''
-classification = '''strategy_entry_block_reason_code'''
-reason = '''Stable entry-skip evidence reason code for missing historical fee evidence at the final pre-submit guard; it classifies a decision outcome and does not configure trading behavior.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
-kind = '''string'''
 literal = '''"one_position_invariant_violation"'''
 context = '''"one_position_invariant_violation";'''
 classification = '''strategy_entry_block_reason_code'''
@@ -20907,22 +20763,6 @@ classification = "kill_switch_flatten_command_failure_diagnostic_separator"
 reason = "Structural separator for the fail-loud aggregate kill-switch flatten command diagnostic; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_live_node/risk_admission_loss.rs"
-kind = "number"
-literal = '''Decimal::ZERO'''
-context = '''max_fee_bps: Decimal::ZERO,'''
-classification = "kill_switch_flatten_structural_fee_bound"
-reason = "Emergency kill-switch flatten routes bypass fee-adjusted entry admission and submit only venue-clamped risk reduction, so the max-fee bound is the structural zero-fee sentinel for that forced-reduction path, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_live_node/risk_admission_loss.rs"
-kind = "boolean"
-literal = '''false'''
-context = '''submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),'''
-classification = "kill_switch_flatten_no_replace_lifecycle_policy"
-reason = "Emergency kill-switch flatten creates fresh risk-reducing submits only; replacement lifecycle is structurally disabled for the submit-only flatten executor, not configured as an operator runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"no live input-health transition observed for reference_current_price source"'''
@@ -21192,3 +21032,26 @@ literal = '''"complete_set_arbitrage"'''
 context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
 classification = "strategy_archetype_key"
 reason = "Stable complete-set discriminator used by the shared submit-mode contract's NT order-template validation."
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"kill-switch flatten submission is unavailable while economics_slice=quote_only"'''
+context = '''"kill-switch flatten submission is unavailable while economics_slice=quote_only"'''
+classification = "quote_only_capability_diagnostic"
+reason = "Stable diagnostic for the configured Slice 1 capability boundary; quote_only is TOML-owned and cannot arm a forced-reduction submit path."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "string"
+literal = '''"unavailable_until_actual_ledger"'''
+context = '''actual_pnl_status: "unavailable_until_actual_ledger".to_string(),'''
+classification = "estimate_only_report_status"
+reason = "Stable report status declaring that Slice 1 quote estimates are not actual P&L; it cannot authorize trading or manufacture accounting facts."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"binary_oracle_edge_taker gross exit intent: strategy_id={} market_id={:?} exit_decision={:?} hold_ev_bps={:?} exit_ev_bps={:?} submission_blocked_reason={:?}"'''
+context = '''"binary_oracle_edge_taker gross exit intent: strategy_id={} market_id={:?} exit_decision={:?} hold_ev_bps={:?} exit_ev_bps={:?} submission_blocked_reason={:?}",'''
+classification = "strategy_diagnostic_template"
+reason = "Stable diagnostic template for gross strategy intent; it contains no economic rate, coefficient, or runtime selection."

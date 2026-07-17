@@ -16,7 +16,6 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
-use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::{
     BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
@@ -89,10 +88,7 @@ pub fn assemble_strategy_build_context(
                 ),
             )
         })?;
-    let fee_provider = resolve_fee_provider(context.loaded, execution_client_id, context.resolved)
-        .map_err(|error| binding_message(context, error.to_string()))?;
     let mut build_context = StrategyBuildContext::new(
-        fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         context.order_execution_policy,

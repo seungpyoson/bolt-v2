@@ -1,3 +1,5 @@
+use crate::support;
+
 use std::fs;
 use std::sync::Arc;
 
@@ -1455,6 +1457,7 @@ fn unwind_policy() -> BoltV3BasketUnwindPolicy {
 
 fn sample_submit_request() -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         strategy_id: "strategy-complete-set".to_string(),
         execution_client_id: "exec-poly".to_string(),
         client_order_id: "COID-NEW".to_string(),

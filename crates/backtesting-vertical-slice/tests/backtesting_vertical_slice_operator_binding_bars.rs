@@ -298,6 +298,7 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
             experiment_result_hash: None,
             config_overlay: None,
         },
+        economics_snapshots: Vec::new(),
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
         venue: venue_config(),

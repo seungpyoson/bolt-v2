@@ -523,6 +523,10 @@ pub enum EconomicsUnavailable {
     },
     ZeroNativeEffect,
     InvalidPlannedFill,
+    InvalidDecimal,
+    EconomicClassSignMismatch,
+    MissingQuoteAuthority,
+    AmbiguousQuoteAuthority,
     InvalidSourceTimeline {
         source_id: SourceId,
     },

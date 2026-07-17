@@ -14,7 +14,6 @@ use bolt_v2::{
     },
     bolt_v3_iv::config::IvRootConfig,
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_submit_admission::{
@@ -32,7 +31,6 @@ use bolt_v2::{
         registry::{StrategyBuilder, ValidationError},
     },
 };
-use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     enums::OrderSide,
@@ -40,8 +38,6 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 use std::{collections::BTreeMap, fs, sync::Arc};
-
-struct NoopFeeProvider;
 
 const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
 const RV_DATA_CLIENT_VENUE: &str = "OKX";
@@ -74,16 +70,6 @@ fn add_root_chainlink_feed_binding(root: &mut BoltV3RootConfig, instrument_id: &
         .push(toml::Value::Table(binding));
 }
 
-impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        None
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async { Ok(()) }.boxed()
-    }
-}
-
 fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &str) {
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
@@ -100,7 +86,6 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
     );
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -674,7 +659,6 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
 
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -851,6 +835,7 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
 
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),
@@ -1666,7 +1651,6 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
     );
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -1834,7 +1818,6 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
     );
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -2082,7 +2065,6 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
     );
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -2157,7 +2139,6 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
     );
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -2647,44 +2628,6 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
     assert_eq!(
         node.registered_strategy_ids(),
         vec![StrategyId::from("binary_oracle_edge_taker-001")]
-    );
-}
-
-#[test]
-fn strategy_registration_resolves_fee_provider_through_shared_provider_boundary() {
-    let source = include_str!("../src/bolt_v3_strategy_registration.rs");
-    assert!(
-        source.contains("resolve_fee_provider"),
-        "shared strategy assembly should call the generic fee-provider resolver"
-    );
-
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let temp = support::TempCaseDir::new("bolt-v3-fee-provider-boundary");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
-
-    let (node, _summary) =
-        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect("configured Polymarket strategy should register through provider boundary");
-
-    assert_eq!(
-        node.registered_strategy_ids(),
-        vec![StrategyId::from("binary_oracle_edge_taker-001")]
-    );
-}
-
-#[test]
-fn fee_provider_resolution_does_not_warm_during_registration() {
-    let resolver_source = include_str!("../src/bolt_v3_providers/mod.rs");
-    let archetype_source = include_str!("../src/strategies/binary_oracle_edge_taker/archetype.rs");
-
-    assert!(
-        !resolver_source.contains(".warm("),
-        "fee-provider resolver must construct only; fee warm remains in strategy runtime readiness"
-    );
-    assert!(
-        !archetype_source.contains(".warm("),
-        "runtime registration must not warm fee providers"
     );
 }
 

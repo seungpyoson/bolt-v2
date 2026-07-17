@@ -36,14 +36,12 @@ use bolt_v2::{
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::binary_oracle_edge_taker::archetype::raw_taker_config,
     strategies::production_strategy_registry,
 };
-use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_core::UnixNanos;
@@ -106,8 +104,6 @@ const PARAM_BAR_TYPE: &str = "bar_type";
 const PARAM_TRADE_SIZE: &str = "trade_size";
 /// Strategy parameter key for the normalized binary-oracle builder TOML.
 const PARAM_CONFIG_TOML: &str = "config_toml";
-/// Strategy parameter key for the backtest fee-provider assumption.
-const PARAM_FEE_BPS: &str = "fee_bps";
 
 #[derive(Debug, Default)]
 struct BacktestDecisionEvidenceState {
@@ -398,21 +394,6 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
     }
 }
 
-#[derive(Debug)]
-struct ManifestFeeProvider {
-    fee_bps: Decimal,
-}
-
-impl FeeProvider for ManifestFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        Some(self.fee_bps)
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 /// Strategy parameter key for the number of delivered trades before the entry order.
 const PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
 /// Strategy parameter key for the number of further delivered trades before the close.
@@ -667,17 +648,7 @@ fn effective_taker_subscription_data_client_ids(
 
 fn manifest_binary_oracle_execution_controls(
     strategy: &StrategySource,
-) -> Result<(Decimal, BoltV3OrderExecutionMode)> {
-    let fee_bps_raw = strategy
-        .parameters
-        .get(PARAM_FEE_BPS)
-        .with_context(|| format!("strategy parameter {PARAM_FEE_BPS} is required"))?;
-    let fee_bps = Decimal::from_str(fee_bps_raw)
-        .with_context(|| format!("invalid {PARAM_FEE_BPS} {fee_bps_raw:?}"))?;
-    ensure!(
-        fee_bps >= Decimal::ZERO,
-        "strategy parameter {PARAM_FEE_BPS} must be non-negative"
-    );
+) -> Result<BoltV3OrderExecutionMode> {
     let order_execution_mode_raw = strategy
         .parameters
         .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
@@ -692,7 +663,7 @@ fn manifest_binary_oracle_execution_controls(
                     "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
                 )
             })?;
-    Ok((fee_bps, order_execution_mode))
+    Ok(order_execution_mode)
 }
 
 fn inline_manifest_strategy_config(strategy: &StrategySource) -> Result<toml::Value> {
@@ -704,26 +675,34 @@ fn inline_manifest_strategy_config(strategy: &StrategySource) -> Result<toml::Va
         .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))
 }
 
+fn manifest_order_routing(
+    manifest: &BacktestingRunManifest,
+) -> Result<bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle> {
+    crate::economics::ReplayEconomicsAdmissionSource::from_snapshots(
+        manifest.economics_snapshots.clone(),
+    )
+    .and_then(crate::economics::ReplayEconomicsAdmissionSource::order_routing_handle)
+    .context("build immutable replay economics routing authority")
+}
+
 fn register_manifest_binary_oracle_strategy(
     engine: &mut BacktestEngine,
     manifest: &BacktestingRunManifest,
     registry_key: &str,
     raw_config: &toml::Value,
-    fee_bps: Decimal,
     order_execution_mode: BoltV3OrderExecutionMode,
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
 ) -> Result<Arc<BacktestDecisionEvidenceWriter>> {
     let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::default());
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
-    let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
     let mut build_context = StrategyBuildContext::new(
-        fee_provider,
         decision_evidence,
         submit_admission,
         BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
         Venue::from(manifest.venue.nt_venue.as_str()),
-    );
+    )
+    .with_order_routing(manifest_order_routing(manifest)?);
     if let Some(runtime) = realized_volatility_runtime {
         build_context = build_context.with_realized_volatility_runtime(runtime);
     }
@@ -781,16 +760,6 @@ fn add_manifest_strategy(
             Ok(AddedManifestStrategy::default())
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
-            let fee_bps_raw = strategy
-                .parameters
-                .get(PARAM_FEE_BPS)
-                .with_context(|| format!("strategy parameter {PARAM_FEE_BPS} is required"))?;
-            let fee_bps = Decimal::from_str(fee_bps_raw)
-                .with_context(|| format!("invalid {PARAM_FEE_BPS} {fee_bps_raw:?}"))?;
-            ensure!(
-                fee_bps >= Decimal::ZERO,
-                "strategy parameter {PARAM_FEE_BPS} must be non-negative"
-            );
             let order_execution_mode_raw = strategy
                 .parameters
                 .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
@@ -881,14 +850,13 @@ fn add_manifest_strategy(
             let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
             let submit_admission =
                 Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
-            let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
             let mut build_context = StrategyBuildContext::new(
-                fee_provider,
                 decision_evidence,
                 submit_admission,
                 BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
                 Venue::from(manifest.venue.nt_venue.as_str()),
-            );
+            )
+            .with_order_routing(manifest_order_routing(manifest)?);
             if let Some(runtime) = realized_volatility_runtime {
                 build_context = build_context.with_realized_volatility_runtime(runtime);
             }
@@ -916,15 +884,13 @@ fn add_manifest_strategy(
                 strategy.config_overlay.is_none(),
                 "strategy.config_overlay is not supported for strategy {STRATEGY_BINARY_ORACLE_MAKER:?}"
             );
-            let (fee_bps, order_execution_mode) =
-                manifest_binary_oracle_execution_controls(strategy)?;
+            let order_execution_mode = manifest_binary_oracle_execution_controls(strategy)?;
             let raw_config = inline_manifest_strategy_config(strategy)?;
             let run_guard_writer = register_manifest_binary_oracle_strategy(
                 engine,
                 manifest,
                 STRATEGY_BINARY_ORACLE_MAKER,
                 &raw_config,
-                fee_bps,
                 order_execution_mode,
                 None,
             )?;
@@ -2375,7 +2341,7 @@ mod tests {
         ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
         ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
         RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_FEE_BPS,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
         STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
         StrategySourceKind,
     };
@@ -2389,6 +2355,48 @@ mod tests {
     const MAKER_SMOKE_VENUE: &str = "POLYMARKET";
     const MAKER_SMOKE_YES_INSTRUMENT: &str = "SAMPLE-EVENT-YES.POLYMARKET";
     const MAKER_SMOKE_NO_INSTRUMENT: &str = "SAMPLE-EVENT-NO.POLYMARKET";
+
+    fn replay_economics_snapshot(
+        execution_client_id: &str,
+        reporting_unit: &str,
+    ) -> crate::economics::HistoricalEconomicsSnapshot {
+        crate::economics::HistoricalEconomicsSnapshot {
+            execution_client_id: execution_client_id.to_string(),
+            account_id: "test-replay-account".to_string(),
+            product_surface_id: "test-binary-surface".to_string(),
+            reporting_policy_id: "test-reporting-policy".to_string(),
+            reporting_unit: reporting_unit.to_string(),
+            snapshot_id: "test-replay-quote-snapshot".to_string(),
+            source_id: "test-replay-source".to_string(),
+            source_at_ns: 0,
+            fetched_at_ns: 0,
+            valid_until_ns: u64::MAX,
+            edge_basis: crate::economics::HistoricalEdgeBasisEvidence {
+                policy_id: "test-edge-policy".to_string(),
+                policy_version: 1,
+                normalized_amount: "1".to_string(),
+                source_snapshot_ids: vec!["test-edge-snapshot".to_string()],
+                valid_until_ns: u64::MAX,
+            },
+            components: vec![crate::economics::HistoricalEconomicComponent {
+                component_id: "test-protocol-charge".to_string(),
+                order_id: "test-replay-order".to_string(),
+                class: crate::economics::HistoricalEconomicClass::Charge,
+                treatment:
+                    crate::economics::HistoricalAdmissionTreatment::GuaranteedConditionalOnAction,
+                native_amount: "-0.01".to_string(),
+                native_unit: reporting_unit.to_string(),
+                debit_risk_bound: None,
+                formula_id: "test-replay-formula".to_string(),
+                source_id: "test-component-source".to_string(),
+                snapshot_id: "test-component-snapshot".to_string(),
+                source_at_ns: 0,
+                fetched_at_ns: 0,
+                valid_until_ns: u64::MAX,
+                valuation: None,
+            }],
+        }
+    }
     const MAKER_SMOKE_MARKET_SLUG: &str = "will-sample-event-resolve-yes";
     const MAKER_SMOKE_CONDITION_ID: &str = "condition-sample-event";
     const MAKER_SMOKE_QUESTION_ID: &str = "question-sample-event";
@@ -2959,7 +2967,6 @@ mod tests {
                 registry_key: STRATEGY_BINARY_ORACLE_MAKER.to_string(),
                 parameters: BTreeMap::from([
                     ("config_toml".to_string(), maker_smoke_config_toml()),
-                    (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
                     (
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                         "shadow".to_string(),
@@ -2971,6 +2978,10 @@ mod tests {
                 experiment_result_hash: None,
                 config_overlay: None,
             },
+            economics_snapshots: vec![replay_economics_snapshot(
+                "maker_execution_client",
+                "pUSD",
+            )],
             strategy_config_hash: sha256_hex(maker_smoke_config_toml().as_bytes()),
             venue: maker_smoke_venue(),
             additional_venues: Vec::new(),
@@ -4243,7 +4254,6 @@ mod tests {
                 source_kind: StrategySourceKind::CompiledRustRegistry,
                 registry_key: STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string(),
                 parameters: BTreeMap::from([
-                    (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
                     (
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                         "live".to_string(),
@@ -4275,6 +4285,7 @@ mod tests {
                     },
                 }),
             },
+            economics_snapshots: vec![replay_economics_snapshot("polymarket_main", "pUSD")],
             strategy_config_hash: "0".repeat(64),
             // POLYMARKET must be funded in the binary's settlement currency
             // (pUSD — the NT Polymarket adapter's collateral currency), not

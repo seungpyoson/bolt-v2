@@ -66,7 +66,8 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
-        BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        BoltV3OrderEconomicsIntent, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
+        BoltV3SubmitRoutingRequest,
     },
     bolt_v3_order_intent::{
         MarketQuoteBuyQuantityError, make_market_quote_buy_quantity, normalize_base_order_quantity,
@@ -123,6 +124,7 @@ use crate::{
     bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
+    economics::{LifecyclePath, LiquidityRoleAssumption},
     strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
 };
 
@@ -137,7 +139,6 @@ use crate::{
         BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason, BoltV3ExitDecisionOutcome,
     },
     bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
@@ -151,9 +152,8 @@ mod selection;
 use self::selection::CandidateMarket;
 use self::selection::{
     RuntimeSelectionSnapshot, SelectionPhase, SelectionState, apply_selection_snapshot_to_active,
-    idle_selection_snapshot, same_market_interval_rollover, selected_market_on_execution_venue,
-    selection_book_subscriptions, selection_snapshot_from_instruments,
-    strategy_input_market_selection_outcome,
+    idle_selection_snapshot, selected_market_on_execution_venue, selection_book_subscriptions,
+    selection_snapshot_from_instruments, strategy_input_market_selection_outcome,
 };
 
 mod config;
@@ -209,8 +209,7 @@ use self::orders::{
 mod runtime_state;
 
 use self::runtime_state::{
-    ActiveMarketState, MarketLifecycleLedger, OutcomeFeeState,
-    reference_current_price_boundary_changed, refresh_fee_readiness_for_active,
+    ActiveMarketState, MarketLifecycleLedger, reference_current_price_boundary_changed,
 };
 #[cfg(test)]
 use self::runtime_state::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind};
@@ -236,7 +235,6 @@ use self::subscriptions::{
 struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
-    fee_bps: f64,
 }
 
 const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: &str = "selection_boundary";
@@ -437,16 +435,6 @@ fn executable_edge_cost_component(
     }
     let value = component(&result.cost_breakdown);
     value.is_finite().then_some(value)
-}
-
-fn executable_edge_fee_bps(result: Option<BinaryOutcomeEdgeResult>) -> Option<f64> {
-    let result = result?;
-    let gross_cost_cents = result.cost_breakdown.gross_cost_cents;
-    if !is_positive_finite(gross_cost_cents) {
-        return None;
-    }
-    Some(result.cost_breakdown.fee_cost_cents / gross_cost_cents * BPS_DENOMINATOR)
-        .filter(|value| is_non_negative_finite(*value))
 }
 
 fn executable_edge_worst_case_ev_bps(result: Option<BinaryOutcomeEdgeResult>) -> Option<f64> {
@@ -843,8 +831,6 @@ impl BinaryOracleEdgeTaker {
     fn apply_selection_snapshot(&mut self, snapshot: RuntimeSelectionSnapshot) {
         let now_ms = snapshot.published_at_ms;
         let previous_active = self.active.clone();
-        let previous_phase = previous_active.phase;
-        let previous_fee_instrument_ids = previous_active.outcome_fees.instrument_ids();
         let next_selection_books = selection_book_subscriptions(&snapshot);
         apply_selection_snapshot_to_active(
             &mut self.active,
@@ -884,18 +870,6 @@ impl BinaryOracleEdgeTaker {
             if interval_changed || interval_open {
                 self.subscribe_resolution_strike();
             }
-        }
-        let reactivated_into_active =
-            previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
-        let same_market_interval_rollover =
-            same_market_interval_rollover(&previous_active, &self.active);
-        let next_fee_instrument_ids = self.active.outcome_fees.instrument_ids();
-        if previous_fee_instrument_ids != next_fee_instrument_ids
-            || (same_market_interval_rollover && !next_fee_instrument_ids.is_empty())
-            || (reactivated_into_active && !next_fee_instrument_ids.is_empty())
-        {
-            self.trigger_fee_warm_for_market();
-            self.refresh_fee_readiness();
         }
         self.apply_reference_price_selection_at(now_ms);
         self.sync_exposure_context_from_active();
@@ -1415,7 +1389,6 @@ impl BinaryOracleEdgeTaker {
         evaluation_receive_ms: LocalReceiveMs,
     ) {
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
-        self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
@@ -1450,7 +1423,6 @@ impl BinaryOracleEdgeTaker {
             self.config.lead_jitter_max_ms,
         );
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
-        self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
@@ -1502,26 +1474,6 @@ impl BinaryOracleEdgeTaker {
             now_ms,
         ) {
             self.pricing.observe_realized_vol_snapshot(snapshot);
-        }
-    }
-
-    fn refresh_fee_readiness(&mut self) {
-        refresh_fee_readiness_for_active(&mut self.active, self.context.fee_provider());
-    }
-
-    fn trigger_fee_warm_for_market(&self) {
-        let instrument_ids = self.active.outcome_fees.instrument_ids();
-        if instrument_ids.is_empty() {
-            return;
-        }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        for instrument_id in instrument_ids {
-            let fee_provider = self.context.fee_provider_arc();
-            handle.spawn(async move {
-                let _ = fee_provider.warm(instrument_id).await;
-            });
         }
     }
 
@@ -1713,7 +1665,6 @@ impl BinaryOracleEdgeTaker {
                     received_ts_ms: Some(selected_quote.received_ts_ms()),
                 });
             self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
-            self.refresh_fee_readiness();
         }
     }
 
@@ -2444,8 +2395,6 @@ impl BinaryOracleEdgeTaker {
                         lifecycle,
                         instrument_id: position.instrument_id,
                         position_id: position.id,
-                        outcome_fees: OutcomeFeeState::empty(),
-                        historical_entry_fee_bps: None,
                         entry_order_side: position.entry,
                         side: position.side,
                         quantity: position.quantity,
@@ -2467,8 +2416,6 @@ impl BinaryOracleEdgeTaker {
                             lifecycle,
                             instrument_id: position.instrument_id,
                             position_id: position.id,
-                            outcome_fees: OutcomeFeeState::empty(),
-                            historical_entry_fee_bps: None,
                             entry_order_side: position.entry,
                             side: position.side,
                             quantity: position.quantity,
@@ -3200,9 +3147,6 @@ impl BinaryOracleEdgeTaker {
         if !self.active.warmup_complete() {
             blocked_by.push(EntryBlockReason::WarmupIncomplete);
         }
-        if !self.active.outcome_fees.market_ready() {
-            blocked_by.push(EntryBlockReason::FeesNotReady);
-        }
         if self.exposure.is_recovering() {
             blocked_by.push(EntryBlockReason::RecoveryMode);
         }
@@ -3492,30 +3436,19 @@ impl BinaryOracleEdgeTaker {
         &self,
         now_ms: u64,
         receive_context: EntryEvaluationReceiveContext,
-        up_fee_bps: f64,
-        down_fee_bps: f64,
     ) -> Option<Probability> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_for_gate_at(receive_context.receive_ms())?;
-        self.uncertainty_band_probability_for_seconds(
-            seconds_to_expiry,
-            realized_vol,
-            up_fee_bps,
-            down_fee_bps,
-        )
+        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, realized_vol)
     }
 
     fn uncertainty_band_probability_for_seconds(
         &self,
         seconds_to_expiry: u64,
         realized_vol: f64,
-        up_fee_bps: f64,
-        down_fee_bps: f64,
     ) -> Option<Probability> {
         let time_uncertainty_probability =
             time_uncertainty_probability(realized_vol, seconds_to_expiry, SECONDS_PER_YEAR_F64)?;
-        let fee_uncertainty_probability =
-            Probability::clamped(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR)?;
         let lead_gap_probability = self.pricing.last_lead_gap_probability?;
         let jitter_penalty_probability = self.pricing.last_jitter_penalty_probability?;
 
@@ -3523,7 +3456,6 @@ impl BinaryOracleEdgeTaker {
             lead_gap_probability,
             jitter_penalty_probability,
             time_uncertainty_probability,
-            fee_uncertainty_probability,
         })
     }
 
@@ -3580,8 +3512,6 @@ impl BinaryOracleEdgeTaker {
                 .map(Probability::value),
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
-            up_fee_bps: executable_edge_fee_bps(evaluation.up_executable_edge),
-            down_fee_bps: executable_edge_fee_bps(evaluation.down_executable_edge),
             up_entry_cost: executable_edge_vwap_price(evaluation.up_executable_edge),
             down_entry_cost: executable_edge_vwap_price(evaluation.down_executable_edge),
             up_entry_limit_price: executable_edge_limit_price(evaluation.up_executable_edge),
@@ -3593,14 +3523,6 @@ impl BinaryOracleEdgeTaker {
             down_gross_cost_cents: executable_edge_cost_component(
                 evaluation.down_executable_edge,
                 |cost| cost.gross_cost_cents,
-            ),
-            up_fee_cost_cents: executable_edge_cost_component(
-                evaluation.up_executable_edge,
-                |cost| cost.fee_cost_cents,
-            ),
-            down_fee_cost_cents: executable_edge_cost_component(
-                evaluation.down_executable_edge,
-                |cost| cost.fee_cost_cents,
             ),
             up_slippage_buffer_cents: executable_edge_cost_component(
                 evaluation.up_executable_edge,
@@ -3624,16 +3546,11 @@ impl BinaryOracleEdgeTaker {
             ),
             up_worst_case_ev_bps: evaluation.up_worst_case_ev_bps,
             down_worst_case_ev_bps: evaluation.down_worst_case_ev_bps,
-            sized_fee_bps: executable_edge_fee_bps(evaluation.sized_executable_edge),
             sized_entry_cost: executable_edge_vwap_price(evaluation.sized_executable_edge),
             sized_entry_limit_price: executable_edge_limit_price(evaluation.sized_executable_edge),
             sized_gross_cost_cents: executable_edge_cost_component(
                 evaluation.sized_executable_edge,
                 |cost| cost.gross_cost_cents,
-            ),
-            sized_fee_cost_cents: executable_edge_cost_component(
-                evaluation.sized_executable_edge,
-                |cost| cost.fee_cost_cents,
             ),
             sized_slippage_buffer_cents: executable_edge_cost_component(
                 evaluation.sized_executable_edge,
@@ -3666,9 +3583,6 @@ impl BinaryOracleEdgeTaker {
             } else {
                 EVIDENCE_REASON_LEAD_QUALITY_THRESHOLDS_APPLIED_TO_LIVE_FAST_SPOT_SELECTION
             },
-            final_fee_amount_known: false,
-            final_fee_amount_reason:
-                EVIDENCE_REASON_FINAL_FEE_REQUIRES_SIDE_PRICE_AND_SIZE_SELECTION,
             submission_instrument_id: submission.instrument_id,
             submission_order_side: submission.order_side,
             submission_price: submission.price,
@@ -3680,206 +3594,33 @@ impl BinaryOracleEdgeTaker {
 
     fn log_entry_evaluation(&mut self, now_ms: u64, submission: &EntrySubmissionDecision) {
         let fields = self.entry_evaluation_log_fields_at(now_ms, submission);
-        let blocked = !fields.gate_blocked_by.is_empty() || !fields.pricing_blocked_by.is_empty();
-        log::debug!(
-            "binary_oracle_edge_taker entry realized-volatility receipt: strategy_id={} snapshot={:?}",
-            self.config.strategy_id,
-            fields.realized_volatility_evidence
+        let reason_sets = (
+            fields.gate_blocked_by.clone(),
+            fields.pricing_blocked_by.clone(),
         );
-
-        if blocked {
-            let reason_sets = (
-                fields.gate_blocked_by.clone(),
-                fields.pricing_blocked_by.clone(),
-            );
-            let reason_set_changed =
-                self.last_entry_block_reason_sets.as_ref() != Some(&reason_sets);
-            if reason_set_changed {
-                log::warn!(
-                    "binary_oracle_edge_taker entry blocked: strategy_id={} gate_blocked_by={:?} pricing_blocked_by={:?}",
-                    self.config.strategy_id,
-                    fields.gate_blocked_by,
-                    fields.pricing_blocked_by
-                );
-                if fields
-                    .gate_blocked_by
-                    .contains(&EntryBlockReason::FeesNotReady)
-                {
-                    log::warn!(
-                        "binary_oracle_edge_taker fee-rate unavailable: strategy_id={} entry remains fail-closed",
-                        self.config.strategy_id
-                    );
-                }
-                self.last_entry_block_reason_sets = Some(reason_sets);
-            }
-            // Full field dump every blocked tick is debug-only (state-change WARN above).
-            log::debug!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} realized_vol_gate_result={:?} realized_vol_receive_watermark_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+        let (gate_reasons, pricing_reasons) = &reason_sets;
+        let blocked = !gate_reasons.is_empty() || !pricing_reasons.is_empty();
+        if blocked && self.last_entry_block_reason_sets.as_ref() != Some(&reason_sets) {
+            log::warn!(
+                "binary_oracle_edge_taker entry blocked: strategy_id={} gate_blocked_by={:?} pricing_blocked_by={:?}",
                 self.config.strategy_id,
-                fields.market_id,
-                fields.phase,
                 fields.gate_blocked_by,
                 fields.pricing_blocked_by,
-                fields.spot_price,
-                fields.spot_venue_name,
-                fields.reference_current_price,
-                fields.interval_open,
-                fields.seconds_to_expiry,
-                fields.realized_vol,
-                fields.realized_vol_source_venue,
-                fields.realized_vol_source_ts_ms,
-                fields.realized_vol_gate_result,
-                fields.realized_vol_receive_watermark_ms,
-                fields.pricing_kurtosis,
-                fields.theta_decay_factor,
-                fields.theta_scaled_min_edge_bps,
-                fields.fair_probability_up,
-                fields.fair_probability_down,
-                fields.uncertainty_band_probability,
-                fields.uncertainty_band_live,
-                fields.uncertainty_band_reason,
-                fields.lead_agreement_corr,
-                fields.fast_venue_age_ms,
-                fields.fast_venue_jitter_ms,
-                fields.up_fee_bps,
-                fields.down_fee_bps,
-                fields.up_entry_cost,
-                fields.down_entry_cost,
-                fields.up_entry_limit_price,
-                fields.down_entry_limit_price,
-                fields.up_gross_cost_cents,
-                fields.down_gross_cost_cents,
-                fields.up_fee_cost_cents,
-                fields.down_fee_cost_cents,
-                fields.up_slippage_buffer_cents,
-                fields.down_slippage_buffer_cents,
-                fields.up_total_adjusted_cost_cents,
-                fields.down_total_adjusted_cost_cents,
-                fields.up_edge_cents_per_share,
-                fields.down_edge_cents_per_share,
-                fields.up_worst_case_ev_bps,
-                fields.down_worst_case_ev_bps,
-                fields.sized_fee_bps,
-                fields.sized_entry_cost,
-                fields.sized_entry_limit_price,
-                fields.sized_gross_cost_cents,
-                fields.sized_fee_cost_cents,
-                fields.sized_slippage_buffer_cents,
-                fields.sized_total_adjusted_cost_cents,
-                fields.sized_edge_cents_per_share,
-                fields.sized_worst_case_ev_bps,
-                fields.expected_ev_per_notional,
-                fields.order_notional_target,
-                fields.maximum_position_notional,
-                fields.risk_lambda,
-                fields.sizing_ev_reference_bps,
-                fields.book_impact_cap_bps,
-                fields.book_impact_cap_notional,
-                fields.sized_notional,
-                fields.selected_side,
-                fields.fast_venue_available,
-                fields.reference_current_price_available,
-                fields.reference_current_price_available_without_fast_venue,
-                fields.lead_quality_policy_applied,
-                fields.lead_quality_reason,
-                fields.final_fee_amount_known,
-                fields.final_fee_amount_reason,
-                fields.submission_instrument_id,
-                fields.submission_order_side,
-                fields.submission_price,
-                fields.submission_quantity_value,
-                fields.submission_client_order_id,
-                fields.submission_blocked_reason,
             );
-        } else {
-            // One INFO line only on the transition from blocked → unblocked.
-            if self.last_entry_block_reason_sets.take().is_some() {
-                log::info!(
-                    "binary_oracle_edge_taker entry unblocked: strategy_id={}",
-                    self.config.strategy_id
-                );
-            }
-            log::debug!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} realized_vol_gate_result={:?} realized_vol_receive_watermark_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
-                self.config.strategy_id,
-                fields.market_id,
-                fields.phase,
-                fields.gate_blocked_by,
-                fields.pricing_blocked_by,
-                fields.spot_price,
-                fields.spot_venue_name,
-                fields.reference_current_price,
-                fields.interval_open,
-                fields.seconds_to_expiry,
-                fields.realized_vol,
-                fields.realized_vol_source_venue,
-                fields.realized_vol_source_ts_ms,
-                fields.realized_vol_gate_result,
-                fields.realized_vol_receive_watermark_ms,
-                fields.pricing_kurtosis,
-                fields.theta_decay_factor,
-                fields.theta_scaled_min_edge_bps,
-                fields.fair_probability_up,
-                fields.fair_probability_down,
-                fields.uncertainty_band_probability,
-                fields.uncertainty_band_live,
-                fields.uncertainty_band_reason,
-                fields.lead_agreement_corr,
-                fields.fast_venue_age_ms,
-                fields.fast_venue_jitter_ms,
-                fields.up_fee_bps,
-                fields.down_fee_bps,
-                fields.up_entry_cost,
-                fields.down_entry_cost,
-                fields.up_entry_limit_price,
-                fields.down_entry_limit_price,
-                fields.up_gross_cost_cents,
-                fields.down_gross_cost_cents,
-                fields.up_fee_cost_cents,
-                fields.down_fee_cost_cents,
-                fields.up_slippage_buffer_cents,
-                fields.down_slippage_buffer_cents,
-                fields.up_total_adjusted_cost_cents,
-                fields.down_total_adjusted_cost_cents,
-                fields.up_edge_cents_per_share,
-                fields.down_edge_cents_per_share,
-                fields.up_worst_case_ev_bps,
-                fields.down_worst_case_ev_bps,
-                fields.sized_fee_bps,
-                fields.sized_entry_cost,
-                fields.sized_entry_limit_price,
-                fields.sized_gross_cost_cents,
-                fields.sized_fee_cost_cents,
-                fields.sized_slippage_buffer_cents,
-                fields.sized_total_adjusted_cost_cents,
-                fields.sized_edge_cents_per_share,
-                fields.sized_worst_case_ev_bps,
-                fields.expected_ev_per_notional,
-                fields.order_notional_target,
-                fields.maximum_position_notional,
-                fields.risk_lambda,
-                fields.sizing_ev_reference_bps,
-                fields.book_impact_cap_bps,
-                fields.book_impact_cap_notional,
-                fields.sized_notional,
-                fields.selected_side,
-                fields.fast_venue_available,
-                fields.reference_current_price_available,
-                fields.reference_current_price_available_without_fast_venue,
-                fields.lead_quality_policy_applied,
-                fields.lead_quality_reason,
-                fields.final_fee_amount_known,
-                fields.final_fee_amount_reason,
-                fields.submission_instrument_id,
-                fields.submission_order_side,
-                fields.submission_price,
-                fields.submission_quantity_value,
-                fields.submission_client_order_id,
-                fields.submission_blocked_reason,
-            );
+            self.last_entry_block_reason_sets = Some(reason_sets);
+        } else if !blocked {
+            self.last_entry_block_reason_sets = None;
         }
+        log::debug!(
+            "binary_oracle_edge_taker gross-intent evaluation: strategy_id={} market_id={:?} selected_side={:?} gross_edge_bps={:?} sized_notional={:?} submission_blocked_reason={:?}",
+            self.config.strategy_id,
+            fields.market_id,
+            fields.selected_side,
+            fields.sized_worst_case_ev_bps,
+            fields.sized_notional,
+            fields.submission_blocked_reason,
+        );
     }
-
     fn entry_forced_flat_evidence_inputs(&self) -> ForcedFlatEvidenceInputs {
         ForcedFlatEvidenceInputs {
             stale_reference_after_ms: Some(self.effective_stale_reference_after_ms()),
@@ -4074,56 +3815,6 @@ impl BinaryOracleEdgeTaker {
         Ok(())
     }
 
-    fn entry_fee_bps_at_price(&self, side: OutcomeSide, entry_price: f64) -> Option<f64> {
-        let instrument_id = self.instrument_id_for_side(side)?;
-        let instrument = self.current_instrument(instrument_id)?;
-        let entry_price = Decimal::from_f64(entry_price)?;
-        self.context
-            .fee_provider()
-            .entry_fee_bps(&instrument, entry_price)?
-            .to_f64()
-    }
-
-    /// Resolve the max entry fee bound (in bps) used to compute the
-    /// fee-inclusive admission notional from the configured fee provider.
-    /// Fail-closed: a missing instrument context or absent fee bound is a hard error so the
-    /// downstream cap check never silently passes a raw notional.
-    ///
-    /// SYMMETRIC-FEE ASSUMPTION (A12): both entry AND risk-reducing-exit
-    /// admission scale their notional by THIS entry-fee bound. Polymarket
-    /// charges the same fee on either leg, so the entry bound is the exact
-    /// exit bound today. Should a venue ever charge a strictly larger exit fee,
-    /// using the (smaller) entry bound here would UNDERSTATE an exit's
-    /// fee-inclusive notional. That direction fails OPEN for the cap, so a
-    /// venue with asymmetric (higher exit) fees MUST add an exit-fee bound and
-    /// route exits through it before being admitted — do not silently reuse the
-    /// entry bound for an asymmetric-fee venue.
-    fn max_entry_fee_bps_for_admission(
-        &self,
-        instrument_id: InstrumentId,
-        price: Decimal,
-    ) -> Result<Decimal> {
-        let instrument = self.current_instrument(instrument_id).with_context(|| {
-            format!(
-                "bolt-v3 submit admission requires cached instrument for instrument_id={instrument_id}"
-            )
-        })?;
-        let max_fee_bps = self
-            .context
-            .fee_provider()
-            .max_entry_fee_bps(&instrument, price)
-        .with_context(|| {
-            format!(
-                "bolt-v3 submit admission requires a max entry fee bound for instrument_id={instrument_id}"
-            )
-        })?;
-        anyhow::ensure!(
-            max_fee_bps >= Decimal::ZERO,
-            "bolt-v3 submit admission max entry fee bound must be non-negative for instrument_id={instrument_id}, got {max_fee_bps}"
-        );
-        Ok(max_fee_bps)
-    }
-
     fn active_book_for_outcome(&self, side: OutcomeSide) -> &OutcomeBookState {
         match side {
             OutcomeSide::Up => &self.active.books.up,
@@ -4233,15 +3924,7 @@ impl BinaryOracleEdgeTaker {
             edge_pricing_notional,
             self.config.vwap_depth_limit_bps,
         )?;
-        let fee_bps = self
-            .entry_fee_bps_at_price(side, vwap.vwap_price)
-            .filter(|value| is_non_negative_finite(*value))
-            .ok_or(BinaryOutcomeEdgeBlockReason::FeeUnavailable)?;
-        Ok(ExecutableEntryProbe {
-            order_side,
-            vwap,
-            fee_bps,
-        })
+        Ok(ExecutableEntryProbe { order_side, vwap })
     }
 
     fn executable_edge_for_side(
@@ -4255,14 +3938,11 @@ impl BinaryOracleEdgeTaker {
         if let Some(reason) = self.executable_edge_order_shape_block_reason() {
             return BinaryOutcomeEdgeResult::blocked(side, reason);
         }
-        let cost_breakdown = match executable_cost_breakdown(
-            probe.vwap,
-            probe.fee_bps,
-            self.config.slippage_buffer_bps,
-        ) {
-            Ok(cost_breakdown) => cost_breakdown,
-            Err(reason) => return BinaryOutcomeEdgeResult::blocked(side, reason.into()),
-        };
+        let cost_breakdown =
+            match executable_cost_breakdown(probe.vwap, self.config.slippage_buffer_bps) {
+                Ok(cost_breakdown) => cost_breakdown,
+                Err(reason) => return BinaryOutcomeEdgeResult::blocked(side, reason.into()),
+            };
         evaluate_binary_outcome_edge(&BinaryOutcomeEdgeInputs {
             side,
             fair_probability_up: Some(fair_probability_up),
@@ -4273,22 +3953,17 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
-    fn adjusted_probability_up_for_fee_uncertainty(
+    fn adjusted_probability_up_for_uncertainty(
         &self,
         now_ms: u64,
         receive_context: EntryEvaluationReceiveContext,
         side: OutcomeSide,
         fair_probability_up: Probability,
-        fee_uncertainty_bps: f64,
     ) -> Option<(Probability, Probability)> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_for_gate_at(receive_context.receive_ms())?;
-        let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
-            seconds_to_expiry,
-            realized_vol,
-            fee_uncertainty_bps,
-            fee_uncertainty_bps,
-        )?;
+        let uncertainty_band_probability =
+            self.uncertainty_band_probability_for_seconds(seconds_to_expiry, realized_vol)?;
         let adjusted_probability_up = match side {
             OutcomeSide::Up => fair_probability_up.narrowed(uncertainty_band_probability),
             OutcomeSide::Down => fair_probability_up.widened(uncertainty_band_probability),
@@ -4381,13 +4056,6 @@ impl BinaryOracleEdgeTaker {
             lifecycle,
             instrument_id: spec.instrument_id,
             position_id: spec.position_id,
-            outcome_fees: preserved
-                .map(|position| position.outcome_fees.clone())
-                .or_else(|| pending_context.map(|pending| pending.outcome_fees.clone()))
-                .unwrap_or_else(OutcomeFeeState::empty),
-            historical_entry_fee_bps: preserved
-                .and_then(|position| position.historical_entry_fee_bps)
-                .or_else(|| pending_context.and_then(|pending| pending.historical_entry_fee_bps)),
             entry_order_side: spec.entry_order_side,
             side: spec.side,
             quantity: spec.quantity,
@@ -4800,7 +4468,6 @@ impl BinaryOracleEdgeTaker {
 
     fn sync_exposure_context_from_active(&mut self) {
         let active_market_id = self.active.market_id.clone();
-        let active_outcome_fees = self.active.outcome_fees.clone();
         let active_strike_price = self.active.price_to_beat;
         let active_interval_end_ms = self.active.interval_end_ms;
         let active_interval_open = self.active.interval_open;
@@ -4846,9 +4513,6 @@ impl BinaryOracleEdgeTaker {
                 .lifecycle
                 .interval_end_matches(&active_lifecycle)
             {
-                if open_position.outcome_fees.instrument_ids().is_empty() {
-                    open_position.outcome_fees = active_outcome_fees.clone();
-                }
                 open_position.book = active_up_book;
             }
         } else if active_down_instrument_id == Some(open_position.instrument_id) {
@@ -4879,9 +4543,6 @@ impl BinaryOracleEdgeTaker {
                 .lifecycle
                 .interval_end_matches(&active_lifecycle)
             {
-                if open_position.outcome_fees.instrument_ids().is_empty() {
-                    open_position.outcome_fees = active_outcome_fees;
-                }
                 open_position.book = active_down_book;
             }
         }
@@ -5039,14 +4700,7 @@ impl BinaryOracleEdgeTaker {
             .position
             .lifecycle
             .seconds_to_expiry_at(now_ms)?;
-        let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
-        let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
-        self.uncertainty_band_probability_for_seconds(
-            seconds_to_expiry,
-            realized_vol,
-            up_fee_bps,
-            down_fee_bps,
-        )
+        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, realized_vol)
     }
 
     #[cfg(test)]
@@ -5069,9 +4723,7 @@ impl BinaryOracleEdgeTaker {
         fair_probability_up: Probability,
     ) -> Option<f64> {
         let effective_entry_cost = self.open_position_effective_entry_cost()?;
-        let fee_bps = self.open_position_historical_entry_fee_bps()?;
-        let total_entry_cost = effective_entry_cost * (UNIT_F64 + fee_bps / BPS_DENOMINATOR);
-        if !is_positive_finite(total_entry_cost) {
+        if !is_positive_finite(effective_entry_cost) {
             return None;
         }
         let success_probability = match side {
@@ -5080,7 +4732,8 @@ impl BinaryOracleEdgeTaker {
         };
 
         Some(
-            ((success_probability.value() - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR,
+            ((success_probability.value() - effective_entry_cost) / effective_entry_cost)
+                * BPS_DENOMINATOR,
         )
     }
 
@@ -5095,56 +4748,17 @@ impl BinaryOracleEdgeTaker {
         order_config: &ExitOrderExecutionConfig,
     ) -> Option<f64> {
         let effective_entry_cost = self.open_position_effective_entry_cost()?;
-        let historical_entry_fee_bps = self.open_position_historical_entry_fee_bps()?;
-        let current_exit_fee_bps = self.position_outcome_fee_bps(side)?;
-        let total_entry_cost =
-            effective_entry_cost * (UNIT_F64 + historical_entry_fee_bps / BPS_DENOMINATOR);
-        if !is_positive_finite(total_entry_cost) {
+        if !is_positive_finite(effective_entry_cost) {
             return None;
         }
 
         let current_exit_value =
             self.current_exit_value_for_open_position_with_config(order_config)?;
-        let net_exit_value =
-            current_exit_value * (UNIT_F64 - current_exit_fee_bps / BPS_DENOMINATOR);
-        if !is_positive_finite(net_exit_value) {
+        if !is_positive_finite(current_exit_value) {
             return None;
         }
 
-        Some(((net_exit_value - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR)
-    }
-
-    fn open_position_historical_entry_fee_bps(&self) -> Option<f64> {
-        self.managed_position()?.position.historical_entry_fee_bps
-    }
-
-    fn historical_entry_fee_log_fields(&self) -> (bool, &'static str) {
-        let Some(managed_position) = self.managed_position() else {
-            return (false, EVIDENCE_REASON_NO_MANAGED_POSITION);
-        };
-
-        if managed_position.position.historical_entry_fee_bps.is_some() {
-            (true, EVIDENCE_REASON_CAPTURED_FROM_STRATEGY_ENTRY_STATE)
-        } else if managed_position.origin == ManagedPositionOrigin::RecoveryBootstrap {
-            (
-                false,
-                EVIDENCE_REASON_RECOVERY_BOOTSTRAP_POSITION_MISSING_ORIGINAL_FEE_RATE,
-            )
-        } else {
-            (
-                false,
-                EVIDENCE_REASON_POSITION_STATE_MISSING_ORIGINAL_FEE_RATE,
-            )
-        }
-    }
-
-    fn position_outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
-        let open_position = &self.managed_position()?.position;
-        let instrument_id = match side {
-            OutcomeSide::Up => open_position.outcome_fees.up_instrument_id,
-            OutcomeSide::Down => open_position.outcome_fees.down_instrument_id,
-        }?;
-        self.context.fee_provider().fee_bps(instrument_id)?.to_f64()
+        Some(((current_exit_value - effective_entry_cost) / effective_entry_cost) * BPS_DENOMINATOR)
     }
 
     fn exit_realized_volatility_gate_receipt_at(
@@ -5436,8 +5050,6 @@ impl BinaryOracleEdgeTaker {
         decision: &ExitSubmissionDecision,
     ) -> ExitEvaluationLogFields {
         let open_position = self.managed_position().map(|managed| &managed.position);
-        let (historical_entry_fee_rate_known, historical_entry_fee_rate_reason) =
-            self.historical_entry_fee_log_fields();
         let receipt = &decision.evaluation.realized_volatility_receipt;
         let rv_snapshot_blockers = receipt
             .raw_snapshot_blockers
@@ -5493,16 +5105,9 @@ impl BinaryOracleEdgeTaker {
             fair_probability_up: receipt.fair_probability_up,
             fair_probability_down: receipt.fair_probability_down,
             uncertainty_band_probability: receipt.uncertainty_band_probability,
-            up_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Up),
-            down_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Down),
             hold_ev_bps: decision.evaluation.hold_ev_bps,
             exit_ev_bps: decision.evaluation.exit_ev_bps,
             exit_decision: decision.evaluation.exit_decision,
-            historical_entry_fee_rate_known,
-            historical_entry_fee_rate_reason,
-            final_fee_amount_known: false,
-            final_fee_amount_reason:
-                EVIDENCE_REASON_FINAL_FEE_REQUIRES_SIDE_PRICE_SIZE_AND_ACTUAL_FILL,
             submission_instrument_id: decision.instrument_id,
             submission_order_side: decision.order_side,
             submission_price: decision.price,
@@ -5519,140 +5124,30 @@ impl BinaryOracleEdgeTaker {
         decision: &ExitSubmissionDecision,
     ) {
         let fields = self.exit_evaluation_log_fields_at(now_ms, trigger_context, decision);
-        let blocked = fields.submission_blocked_reason.is_some();
-        if blocked {
-            if should_warn_on_exit_submission_block(fields.submission_blocked_reason) {
-                log::warn!(
-                    "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
-                    self.config.strategy_id,
-                    fields.market_id,
-                    fields.phase,
-                    fields.position_outcome_side,
-                    fields.position_id,
-                    fields.position_instrument_id,
-                    fields.position_quantity,
-                    fields.position_avg_px_open,
-                    fields.forced_flat_reasons,
-                    fields.spot_price,
-                    fields.spot_venue_name,
-                    fields.reference_current_price,
-                    fields.interval_open,
-                    fields.seconds_to_expiry,
-                    fields.realized_vol,
-                    fields.realized_vol_source_venue,
-                    fields.realized_vol_source_ts_ms,
-                    fields.pricing_kurtosis,
-                    fields.exit_hysteresis_bps,
-                    fields.fair_probability_up,
-                    fields.fair_probability_down,
-                    fields.uncertainty_band_probability,
-                    fields.up_fee_bps,
-                    fields.down_fee_bps,
-                    fields.hold_ev_bps,
-                    fields.exit_ev_bps,
-                    fields.exit_decision,
-                    fields.historical_entry_fee_rate_known,
-                    fields.historical_entry_fee_rate_reason,
-                    fields.final_fee_amount_known,
-                    fields.final_fee_amount_reason,
-                    fields.submission_instrument_id,
-                    fields.submission_order_side,
-                    fields.submission_price,
-                    fields.submission_quantity,
-                    fields.submission_client_order_id,
-                    fields.submission_blocked_reason,
-                );
-            } else {
-                log::debug!(
-                    "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
-                    self.config.strategy_id,
-                    fields.market_id,
-                    fields.phase,
-                    fields.position_outcome_side,
-                    fields.position_id,
-                    fields.position_instrument_id,
-                    fields.position_quantity,
-                    fields.position_avg_px_open,
-                    fields.forced_flat_reasons,
-                    fields.spot_price,
-                    fields.spot_venue_name,
-                    fields.reference_current_price,
-                    fields.interval_open,
-                    fields.seconds_to_expiry,
-                    fields.realized_vol,
-                    fields.realized_vol_source_venue,
-                    fields.realized_vol_source_ts_ms,
-                    fields.pricing_kurtosis,
-                    fields.exit_hysteresis_bps,
-                    fields.fair_probability_up,
-                    fields.fair_probability_down,
-                    fields.uncertainty_band_probability,
-                    fields.up_fee_bps,
-                    fields.down_fee_bps,
-                    fields.hold_ev_bps,
-                    fields.exit_ev_bps,
-                    fields.exit_decision,
-                    fields.historical_entry_fee_rate_known,
-                    fields.historical_entry_fee_rate_reason,
-                    fields.final_fee_amount_known,
-                    fields.final_fee_amount_reason,
-                    fields.submission_instrument_id,
-                    fields.submission_order_side,
-                    fields.submission_price,
-                    fields.submission_quantity,
-                    fields.submission_client_order_id,
-                    fields.submission_blocked_reason,
-                );
-            }
+        let level = if fields.submission_blocked_reason.is_some()
+            && should_warn_on_exit_submission_block(fields.submission_blocked_reason)
+        {
+            log::Level::Warn
         } else {
-            log::info!(
-                "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
-                self.config.strategy_id,
-                fields.market_id,
-                fields.phase,
-                fields.position_outcome_side,
-                fields.position_id,
-                fields.position_instrument_id,
-                fields.position_quantity,
-                fields.position_avg_px_open,
-                fields.forced_flat_reasons,
-                fields.spot_price,
-                fields.spot_venue_name,
-                fields.reference_current_price,
-                fields.interval_open,
-                fields.seconds_to_expiry,
-                fields.realized_vol,
-                fields.realized_vol_source_venue,
-                fields.realized_vol_source_ts_ms,
-                fields.pricing_kurtosis,
-                fields.exit_hysteresis_bps,
-                fields.fair_probability_up,
-                fields.fair_probability_down,
-                fields.uncertainty_band_probability,
-                fields.up_fee_bps,
-                fields.down_fee_bps,
-                fields.hold_ev_bps,
-                fields.exit_ev_bps,
-                fields.exit_decision,
-                fields.historical_entry_fee_rate_known,
-                fields.historical_entry_fee_rate_reason,
-                fields.final_fee_amount_known,
-                fields.final_fee_amount_reason,
-                fields.submission_instrument_id,
-                fields.submission_order_side,
-                fields.submission_price,
-                fields.submission_quantity,
-                fields.submission_client_order_id,
-                fields.submission_blocked_reason,
-            );
-        }
+            log::Level::Debug
+        };
+        log::log!(
+            level,
+            "binary_oracle_edge_taker gross exit intent: strategy_id={} market_id={:?} exit_decision={:?} hold_ev_bps={:?} exit_ev_bps={:?} submission_blocked_reason={:?}",
+            self.config.strategy_id,
+            fields.market_id,
+            fields.exit_decision,
+            fields.hold_ev_bps,
+            fields.exit_ev_bps,
+            fields.submission_blocked_reason,
+        );
     }
-
     fn submit_order_with_decision_evidence(
         &mut self,
         intent: BoltV3OrderIntentEvidence,
         order: nautilus_model::orders::OrderAny,
         submit_context: BoltV3SubmitContext,
+        gross_expected_value: Decimal,
     ) -> Result<BoltV3SubmitRoutingOutcome> {
         // A15: build the (fallible) admission request BEFORE recording the
         // order-intent evidence line. The request build can fail (e.g. a
@@ -5663,7 +5158,8 @@ impl BinaryOracleEdgeTaker {
         // order that was never submitted. Recording after the build keeps the
         // evidence chain truthful: an order-intent line exists only once the
         // order is fully valued and about to enter admission.
-        let request = self.submit_admission_request_from_order(&intent, &order)?;
+        let request =
+            self.submit_admission_request_from_order(&intent, &order, gross_expected_value)?;
         let policy = self.context.order_execution_policy();
         let decision_evidence = self.context.decision_evidence_arc();
         let submit_admission = self.context.submit_admission_arc();
@@ -5694,6 +5190,7 @@ impl BinaryOracleEdgeTaker {
         &self,
         intent: &BoltV3OrderIntentEvidence,
         order: &nautilus_model::orders::OrderAny,
+        gross_expected_value: Decimal,
     ) -> Result<BoltV3SubmitAdmissionRequest> {
         let client_order_id = order.client_order_id().to_string();
         let is_quote_quantity = order.is_quote_quantity();
@@ -5755,21 +5252,30 @@ impl BinaryOracleEdgeTaker {
             },
         );
 
-        build_submit_admission_request_from_order(
-            BoltV3SubmitAdmissionRequestInput {
-                execution_client_id: &self.config.client_id,
-                intent,
-                order,
-                valuation: OrderValuationContext {
-                    last_quote,
-                    last_trade,
-                    instrument: instrument.as_ref(),
-                },
-                lifecycle_policy: self.submit_lifecycle_policy(),
-                risk_reducing_exit_position,
+        let admission_input = BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: &self.config.client_id,
+            intent,
+            order,
+            valuation: OrderValuationContext {
+                last_quote,
+                last_trade,
+                instrument: instrument.as_ref(),
             },
-            |price| self.max_entry_fee_bps_for_admission(order.instrument_id(), price),
-        )
+            lifecycle_policy: self.submit_lifecycle_policy(),
+            risk_reducing_exit_position,
+        };
+        let economics_admission =
+            self.context
+                .order_routing()?
+                .quote_admission(BoltV3OrderEconomicsIntent {
+                    request: &admission_input,
+                    liquidity_role: LiquidityRoleAssumption::Taker,
+                    lifecycle_path: LifecyclePath::PlannedExit,
+                    requested_at_ns: order.ts_init().as_u64(),
+                    decision_correlation_id: order.client_order_id().as_str(),
+                    gross_expected_value,
+                })?;
+        build_submit_admission_request_from_order(admission_input, economics_admission)
     }
 
     #[cfg(test)]
@@ -6064,7 +5570,6 @@ impl BinaryOracleEdgeTaker {
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
             lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
-            fee_rate_basis_points: String::new(),
             selected_side: decision
                 .evaluation
                 .selected_side
@@ -6163,12 +5668,6 @@ impl BinaryOracleEdgeTaker {
         let selected_side = decision.evaluation.selected_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires selected side")
         })?;
-        let fee_rate_basis_points = self
-            .entry_fee_bps_at_price(selected_side, price.as_f64())
-            .filter(|value| is_non_negative_finite(*value))
-            .ok_or_else(|| {
-                anyhow::anyhow!("entry strategy input evidence requires selected outcome fee")
-            })?;
         let theta_scaled_min_edge_bps = decision
             .evaluation
             .min_worst_case_ev_bps
@@ -6349,7 +5848,6 @@ impl BinaryOracleEdgeTaker {
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
             fast_venue_incoherent: self.pricing.fast_venue_incoherent,
             lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
-            fee_rate_basis_points: evidence_number(fee_rate_basis_points),
             selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
             submission_instrument_id: instrument_id.to_string(),
             submission_order_side: order_side.to_string(),
@@ -6503,6 +6001,15 @@ impl BinaryOracleEdgeTaker {
             price.to_string(),
             &order,
         );
+        let exit_ev_bps = decision
+            .evaluation
+            .exit_ev_bps
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| anyhow::anyhow!("exit economics requires a gross value assumption"))?;
+        let gross_expected_value = Decimal::from_f64(
+            price.as_f64() * quantity.as_f64() * exit_ev_bps / BPS_DENOMINATOR,
+        )
+        .ok_or_else(|| anyhow::anyhow!("exit gross value is not representable as Decimal"))?;
 
         match self.submit_order_with_decision_evidence(
             intent,
@@ -6511,6 +6018,7 @@ impl BinaryOracleEdgeTaker {
                 client_id,
                 managed_position.position.position_id,
             ),
+            gross_expected_value,
         ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {}
@@ -6604,8 +6112,6 @@ impl BinaryOracleEdgeTaker {
             uncertainty_band_probability: option_evidence_number(
                 log_fields.uncertainty_band_probability,
             ),
-            up_fee_bps: option_evidence_number(log_fields.up_fee_bps),
-            down_fee_bps: option_evidence_number(log_fields.down_fee_bps),
             hold_ev_bps: option_evidence_number(log_fields.hold_ev_bps),
             exit_ev_bps: option_evidence_number(log_fields.exit_ev_bps),
             exit_decision: exit_decision_evidence_from_optional(decision.evaluation.exit_decision),
@@ -6884,18 +6390,6 @@ impl BinaryOracleEdgeTaker {
         let Some(quantity_value) = decision.quantity_value else {
             return Ok(None);
         };
-        let Some(historical_entry_fee_bps) = decision
-            .evaluation
-            .selected_side
-            .and_then(|selected_side| self.entry_fee_bps_at_price(selected_side, price))
-        else {
-            self.record_and_log_entry_skip(
-                now_ms,
-                &decision,
-                ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE,
-            )?;
-            return Ok(None);
-        };
         let instrument = self
             .current_instrument(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("entry instrument missing from cache"))?;
@@ -6955,8 +6449,6 @@ impl BinaryOracleEdgeTaker {
                 self.active.seconds_to_expiry_at_selection,
             ),
             instrument_id,
-            outcome_fees: self.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(historical_entry_fee_bps),
             book: match decision.evaluation.selected_side {
                 Some(OutcomeSide::Up)
                     if self.active.books.up.instrument_id == Some(instrument_id) =>
@@ -6987,6 +6479,14 @@ impl BinaryOracleEdgeTaker {
             price.to_string(),
             &order,
         );
+        let gross_expected_value = decision
+            .evaluation
+            .expected_ev_per_notional
+            .zip(decision.evaluation.sized_notional)
+            .and_then(|(expected_ev_per_notional, sized_notional)| {
+                Decimal::from_f64(expected_ev_per_notional * sized_notional)
+            })
+            .ok_or_else(|| anyhow::anyhow!("entry economics requires a gross value assumption"))?;
 
         match self
             .context
@@ -6997,6 +6497,7 @@ impl BinaryOracleEdgeTaker {
                     intent,
                     order,
                     BoltV3SubmitContext::with_client_id(client_id),
+                    gross_expected_value,
                 )
             }) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
@@ -7111,40 +6612,29 @@ impl BinaryOracleEdgeTaker {
                 Some(BinaryOutcomeEdgeResult::blocked(OutcomeSide::Down, reason));
         }
 
-        let fee_uncertainty_bps = match (up_probe.as_ref().ok(), down_probe.as_ref().ok()) {
-            (Some(up), Some(down)) => Some(up.fee_bps.max(down.fee_bps)),
-            (Some(up), None) => Some(up.fee_bps),
-            (None, Some(down)) => Some(down.fee_bps),
-            (None, None) => None,
-        };
-        let Some(fee_uncertainty_bps) = fee_uncertainty_bps else {
+        if up_probe.is_err() && down_probe.is_err() {
             push_executable_edge_pricing_block(
                 &mut evaluation.pricing_blocked_by,
                 OutcomeSide::Up,
-                up_probe.err(),
+                up_probe.as_ref().err().copied(),
             );
             push_executable_edge_pricing_block(
                 &mut evaluation.pricing_blocked_by,
                 OutcomeSide::Down,
-                down_probe.err(),
+                down_probe.as_ref().err().copied(),
             );
             return evaluation;
-        };
-        let uncertainty_band_probability = match self
-            .current_uncertainty_band_probability_for_gate_at(
-                now_ms,
-                receive_context,
-                fee_uncertainty_bps,
-                fee_uncertainty_bps,
-            ) {
-            Some(value) => value,
-            None => {
-                evaluation
-                    .pricing_blocked_by
-                    .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
-                return evaluation;
-            }
-        };
+        }
+        let uncertainty_band_probability =
+            match self.current_uncertainty_band_probability_for_gate_at(now_ms, receive_context) {
+                Some(value) => value,
+                None => {
+                    evaluation
+                        .pricing_blocked_by
+                        .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
+                    return evaluation;
+                }
+            };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
 
         let up_adjusted_probability_up = fair_probability_up.narrowed(uncertainty_band_probability);
@@ -7222,14 +6712,12 @@ impl BinaryOracleEdgeTaker {
                     sized_notional,
                 ) {
                     Ok(probe) => {
-                        let sized_fee_uncertainty_bps = fee_uncertainty_bps.max(probe.fee_bps);
                         let Some((selected_uncertainty_band, adjusted_probability_up)) = self
-                            .adjusted_probability_up_for_fee_uncertainty(
+                            .adjusted_probability_up_for_uncertainty(
                                 now_ms,
                                 receive_context,
                                 selected_side,
                                 fair_probability_up,
-                                sized_fee_uncertainty_bps,
                             )
                         else {
                             evaluation
@@ -7314,15 +6802,12 @@ impl BinaryOracleEdgeTaker {
                                 return evaluation;
                             }
                         };
-                        let resized_fee_uncertainty_bps =
-                            fee_uncertainty_bps.max(resized_probe.fee_bps);
                         let Some((resized_uncertainty_band, resized_adjusted_probability_up)) =
-                            self.adjusted_probability_up_for_fee_uncertainty(
+                            self.adjusted_probability_up_for_uncertainty(
                                 now_ms,
                                 receive_context,
                                 selected_side,
                                 fair_probability_up,
-                                resized_fee_uncertainty_bps,
                             )
                         else {
                             evaluation
@@ -7525,7 +7010,6 @@ impl DataActor for BinaryOracleEdgeTaker {
             return Ok(());
         }
 
-        self.refresh_fee_readiness();
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         if matches!(self.exposure, ExposureState::Managed(_))
             && let Err(error) = self.try_submit_exit_order_for_trigger(
@@ -8103,17 +7587,6 @@ const EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS: &str =
     "no_fast_venue_cleared_lead_quality_thresholds";
 const EVIDENCE_REASON_LEAD_QUALITY_THRESHOLDS_APPLIED_TO_LIVE_FAST_SPOT_SELECTION: &str =
     "lead_quality_thresholds_applied_to_live_fast_spot_selection";
-const EVIDENCE_REASON_FINAL_FEE_REQUIRES_SIDE_PRICE_AND_SIZE_SELECTION: &str =
-    "final_fee_requires_side_price_and_size_selection";
-const EVIDENCE_REASON_FINAL_FEE_REQUIRES_SIDE_PRICE_SIZE_AND_ACTUAL_FILL: &str =
-    "final_fee_requires_side_price_size_and_actual_fill";
-const EVIDENCE_REASON_NO_MANAGED_POSITION: &str = "no_managed_position";
-const EVIDENCE_REASON_CAPTURED_FROM_STRATEGY_ENTRY_STATE: &str =
-    "captured_from_strategy_entry_state";
-const EVIDENCE_REASON_RECOVERY_BOOTSTRAP_POSITION_MISSING_ORIGINAL_FEE_RATE: &str =
-    "recovery_bootstrap_position_missing_original_fee_rate";
-const EVIDENCE_REASON_POSITION_STATE_MISSING_ORIGINAL_FEE_RATE: &str =
-    "position_state_missing_original_fee_rate";
 const ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED: &str = "strategy_core_not_registered";
 const ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED: &str = "entry_gate_blocked";
 const ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED: &str = "entry_pricing_blocked";
@@ -8129,8 +7602,6 @@ const ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE: &str = "quantity_not_positive";
 const ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID: &str = "position_contract_invalid";
 const ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED: &str =
     "entry_position_contract_unsupported";
-const ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE: &str =
-    "historical_entry_fee_unavailable";
 const ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION: &str =
     "one_position_invariant_violation";
 const ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED: &str = "entry_malformed_rejected";

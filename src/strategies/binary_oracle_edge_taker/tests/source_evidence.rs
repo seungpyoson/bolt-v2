@@ -196,18 +196,9 @@ fn test_strategy_with_realized_volatility_surface(
     config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
     let mut surfaces = std::collections::BTreeMap::new();
     surfaces.insert(TEST_SURFACE_ID.to_string(), engine_config);
-    let decision_evidence = std::sync::Arc::new(RecordingDecisionEvidenceWriter);
-    let submit_admission = std::sync::Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
-    );
-    let context = StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
-        decision_evidence,
-        submit_admission,
-        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        fixture_execution_venue(),
-    )
-    .with_realized_volatility_surfaces(surfaces);
+    let context =
+        test_build_context_with_economics_source(RecordingEconomicsAdmissionSource::cold())
+            .with_realized_volatility_surfaces(surfaces);
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     register_test_strategy(&mut strategy);
     strategy
@@ -1359,8 +1350,6 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     strategy.active.price_to_beat = Some(replay.reference.price);
     strategy.active.interval_open = Some(replay.reference.price);
     strategy.active.warmup_count = strategy.config.warmup_tick_count;
-    strategy.active.outcome_fees.up_ready = true;
-    strategy.active.outcome_fees.down_ready = true;
     strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
     strategy
         .active
@@ -1919,14 +1908,6 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     assert_eq!(decision.fair_probability_up, None);
     assert_eq!(decision.fair_probability_down, None);
     assert_eq!(decision.uncertainty_band_probability, None);
-    assert!(
-        decision.up_fee_bps.is_some(),
-        "exit decision evidence must preserve the up-side fee input"
-    );
-    assert!(
-        decision.down_fee_bps.is_some(),
-        "exit decision evidence must preserve the down-side fee input"
-    );
     assert!(
         decision.submission_order_side.is_some(),
         "exit decision evidence must preserve the submitted order side"
@@ -2806,8 +2787,8 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
+    let mut strategy = test_strategy_with_economics_source_and_decision_evidence(
+        RecordingEconomicsAdmissionSource::cold(),
         Arc::new(FailingDecisionEvidenceWriter),
     );
     let strategy_id = unique_log_capture_strategy_id("exit");
@@ -3086,8 +3067,8 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
+    let mut strategy = test_strategy_with_economics_source_and_decision_evidence(
+        RecordingEconomicsAdmissionSource::cold(),
         Arc::new(FailingDecisionEvidenceWriter),
     );
     let strategy_id = unique_log_capture_strategy_id("entry");
@@ -3211,14 +3192,6 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
     assert!(
         record.uncertainty_band_probability.is_some(),
         "exit evaluation evidence must preserve the computed uncertainty band"
-    );
-    assert!(
-        record.up_fee_bps.is_some(),
-        "exit evaluation evidence must preserve the up-side fee input"
-    );
-    assert!(
-        record.down_fee_bps.is_some(),
-        "exit evaluation evidence must preserve the down-side fee input"
     );
 }
 
@@ -5309,8 +5282,8 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
 
 #[test]
 fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
+    let mut strategy = test_strategy_with_economics_source_and_decision_evidence(
+        RecordingEconomicsAdmissionSource::cold(),
         Arc::new(FailingDecisionEvidenceWriter),
     );
     let decision = minimal_entry_submission_decision();

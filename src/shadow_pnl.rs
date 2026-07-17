@@ -23,7 +23,6 @@ use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
 
 const SHADOW_PNL_COUNT_INCREMENT: u64 = 1;
 const SHADOW_PNL_LINE_NUMBER_BASE: usize = 1;
-const SHADOW_PNL_BASIS_POINTS_DENOMINATOR: u64 = crate::bolt_v3_numeric::BPS_DENOMINATOR as u64;
 const SHADOW_PNL_DECIMAL_SCALE: u32 = 6;
 const SHADOW_PNL_CSV_SEPARATOR: char = ',';
 const SHADOW_PNL_CSV_QUOTE: char = '"';
@@ -37,8 +36,9 @@ pub struct ShadowPnlReportRow {
     pub would_be_trades: u64,
     pub win_rate: String,
     pub gross_pnl: String,
-    pub fees: String,
-    pub net_pnl: String,
+    pub estimated_economics: String,
+    pub estimated_net_pnl: String,
+    pub actual_pnl_status: String,
     pub avg_edge_claimed_bps: String,
     pub avg_edge_realized_bps: String,
 }
@@ -55,9 +55,11 @@ impl Display for ShadowPnlReportRow {
         f.write_char(SHADOW_PNL_CSV_SEPARATOR)?;
         fmt_shadow_pnl_csv_field(f, &self.gross_pnl)?;
         f.write_char(SHADOW_PNL_CSV_SEPARATOR)?;
-        fmt_shadow_pnl_csv_field(f, &self.fees)?;
+        fmt_shadow_pnl_csv_field(f, &self.estimated_economics)?;
         f.write_char(SHADOW_PNL_CSV_SEPARATOR)?;
-        fmt_shadow_pnl_csv_field(f, &self.net_pnl)?;
+        fmt_shadow_pnl_csv_field(f, &self.estimated_net_pnl)?;
+        f.write_char(SHADOW_PNL_CSV_SEPARATOR)?;
+        fmt_shadow_pnl_csv_field(f, &self.actual_pnl_status)?;
         f.write_char(SHADOW_PNL_CSV_SEPARATOR)?;
         fmt_shadow_pnl_csv_field(f, &self.avg_edge_claimed_bps)?;
         f.write_char(SHADOW_PNL_CSV_SEPARATOR)?;
@@ -97,7 +99,7 @@ struct TradeAccumulator {
     trades: u64,
     wins: u64,
     gross_pnl: Decimal,
-    fees: Decimal,
+    estimated_economics: Decimal,
     claimed_edge_bps: Decimal,
     realized_edge_bps: Decimal,
 }
@@ -116,8 +118,6 @@ struct EvidenceEnvelope {
 struct StrategyInputSnapshotEvidence {
     market_id: Option<String>,
     selected_side: Option<String>,
-    expected_edge_basis_points: String,
-    fee_rate_basis_points: String,
     client_order_id: String,
 }
 
@@ -135,6 +135,8 @@ struct AdmissionDecisionEvidence {
     client_order_id: String,
     intent_kind: BoltV3SubmitIntentKind,
     outcome: BoltV3AdmissionOutcome,
+    economics_core_total: String,
+    economics_core_edge_ratio: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +153,7 @@ pub struct ShadowSettlementEvidence {
 struct TradeEvidence {
     snapshot: StrategyInputSnapshotEvidence,
     intent: OrderIntentEvidence,
+    admission: AdmissionDecisionEvidence,
 }
 
 pub fn build_shadow_pnl_report(
@@ -177,11 +180,11 @@ pub fn build_shadow_pnl_report(
         let entry_price = parse_decimal(&trade.intent.price)?;
         let quantity = parse_decimal(&trade.intent.quantity)?;
         let settlement_price = parse_decimal(&settlement.settlement_price)?;
-        let fee_bps = parse_decimal(&trade.snapshot.fee_rate_basis_points)?;
-        let claimed_edge = parse_decimal(&trade.snapshot.expected_edge_basis_points)?;
+        let claimed_edge = parse_decimal(&trade.admission.economics_core_edge_ratio)?
+            * Decimal::from(crate::bolt_v3_numeric::BPS_DENOMINATOR as u64);
         let notional = entry_price * quantity;
         let gross = (settlement_price - entry_price) * quantity;
-        let fees = notional * fee_bps / Decimal::from(SHADOW_PNL_BASIS_POINTS_DENOMINATOR);
+        let estimated_economics = parse_decimal(&trade.admission.economics_core_total)?;
         let realized_edge = if notional.is_zero() {
             Decimal::ZERO
         } else {
@@ -227,7 +230,7 @@ pub fn build_shadow_pnl_report(
             accumulator.wins += SHADOW_PNL_COUNT_INCREMENT;
         }
         accumulator.gross_pnl += gross;
-        accumulator.fees += fees;
+        accumulator.estimated_economics += estimated_economics;
         accumulator.claimed_edge_bps += claimed_edge;
         accumulator.realized_edge_bps += realized_edge;
     }
@@ -252,8 +255,9 @@ fn write_shadow_pnl_csv_header(writer: &mut impl Write) -> Result<()> {
     write!(writer, ",would_be_trades")?;
     write!(writer, ",win_rate")?;
     write!(writer, ",gross_pnl")?;
-    write!(writer, ",fees")?;
-    write!(writer, ",net_pnl")?;
+    write!(writer, ",estimated_economics")?;
+    write!(writer, ",estimated_net_pnl")?;
+    write!(writer, ",actual_pnl_status")?;
     write!(writer, ",avg_edge_claimed_bps")?;
     writeln!(writer, ",avg_edge_realized_bps")?;
     Ok(())
@@ -326,7 +330,7 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
     // Iterating intents instead would silently drop an admitted entry whose intent
     // line is missing or corrupted; here a missing intent or snapshot fails loud.
     let mut chains = Vec::new();
-    for client_order_id in admitted_entries.into_keys() {
+    for (client_order_id, admission) in admitted_entries {
         let intent = intents
             .get(&client_order_id)
             .cloned()
@@ -334,7 +338,11 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
         let snapshot = snapshots.get(&client_order_id).cloned().ok_or_else(|| {
             anyhow!("missing strategy input snapshot for admitted entry {client_order_id}")
         })?;
-        chains.push(TradeEvidence { snapshot, intent });
+        chains.push(TradeEvidence {
+            snapshot,
+            intent,
+            admission,
+        });
     }
     chains.sort_by(|left, right| {
         left.intent
@@ -481,15 +489,16 @@ fn outcome_side_is_recognized(candidate: &str) -> bool {
 fn report_row(day: NaiveDate, asset: String, accumulator: TradeAccumulator) -> ShadowPnlReportRow {
     let trades = Decimal::from(accumulator.trades);
     let win_rate = Decimal::from(accumulator.wins) / trades;
-    let net_pnl = accumulator.gross_pnl - accumulator.fees;
+    let estimated_net_pnl = accumulator.gross_pnl + accumulator.estimated_economics;
     ShadowPnlReportRow {
         day,
         asset,
         would_be_trades: accumulator.trades,
         win_rate: format_decimal(win_rate),
         gross_pnl: format_decimal(accumulator.gross_pnl),
-        fees: format_decimal(accumulator.fees),
-        net_pnl: format_decimal(net_pnl),
+        estimated_economics: format_decimal(accumulator.estimated_economics),
+        estimated_net_pnl: format_decimal(estimated_net_pnl),
+        actual_pnl_status: "unavailable_until_actual_ledger".to_string(),
         avg_edge_claimed_bps: format_decimal(accumulator.claimed_edge_bps / trades),
         avg_edge_realized_bps: format_decimal(accumulator.realized_edge_bps / trades),
     }

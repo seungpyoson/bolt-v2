@@ -5,25 +5,19 @@
 
 use crate::{
     bolt_v3_maker_quote_control::{QuoteControlDecision, QuoteControlInput, drive_quote_leg},
-    bolt_v3_maker_reservation::{
-        BuyCommitment, ReservationDecision, ReservationRequest, evaluate_reservation,
-    },
     bolt_v3_numeric::is_positive_finite,
-    bolt_v3_quote_lifecycle::{Leg, LifecycleAction, MarketAction, MarketQuote},
+    bolt_v3_quote_lifecycle::{Leg, MarketQuote},
     bolt_v3_quoting::{QuoteSide, QuoteTargetLeg, QuoteTargets},
     bolt_v3_requote_budget::RequoteBudgetPair,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct QuoteSetInput<'a> {
+pub struct QuoteSetInput {
     pub targets: QuoteTargets,
     pub yes_quantity: f64,
     pub no_quantity: f64,
     pub yes_resting_price: Option<f64>,
     pub no_resting_price: Option<f64>,
-    pub open_commitments: &'a [BuyCommitment],
-    pub max_fee_bps: f64,
-    pub available_collateral: f64,
     pub requote_threshold: f64,
     pub eps: f64,
     pub now_ms: u64,
@@ -33,14 +27,12 @@ pub struct QuoteSetInput<'a> {
 pub enum QuoteSetBlockReason {
     UnsupportedQuoteSide,
     InvalidQuantity,
-    ReservationRejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuoteSetLegDecision {
     pub control: QuoteControlDecision,
     pub blocked_by: Option<QuoteSetBlockReason>,
-    pub reservation: Option<ReservationDecision>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,20 +54,16 @@ pub struct QuoteSetDecision {
 pub fn drive_binary_quote_set(
     market: &mut MarketQuote,
     budget: &mut RequoteBudgetPair,
-    input: QuoteSetInput<'_>,
+    input: QuoteSetInput,
 ) -> QuoteSetDecision {
-    let mut accepted_commitments = input.open_commitments.to_vec();
     let yes = drive_quote_set_leg(
         market,
         budget,
-        &mut accepted_commitments,
         QuoteSetLegInput {
             leg: Leg::Yes,
             target: input.targets.leg_a,
             quantity: input.yes_quantity,
             resting_price: input.yes_resting_price,
-            max_fee_bps: input.max_fee_bps,
-            available_collateral: input.available_collateral,
             requote_threshold: input.requote_threshold,
             eps: input.eps,
             now_ms: input.now_ms,
@@ -84,14 +72,11 @@ pub fn drive_binary_quote_set(
     let no = drive_quote_set_leg(
         market,
         budget,
-        &mut accepted_commitments,
         QuoteSetLegInput {
             leg: Leg::No,
             target: input.targets.leg_b,
             quantity: input.no_quantity,
             resting_price: input.no_resting_price,
-            max_fee_bps: input.max_fee_bps,
-            available_collateral: input.available_collateral,
             requote_threshold: input.requote_threshold,
             eps: input.eps,
             now_ms: input.now_ms,
@@ -107,8 +92,6 @@ struct QuoteSetLegInput {
     target: QuoteTargetLeg,
     quantity: f64,
     resting_price: Option<f64>,
-    max_fee_bps: f64,
-    available_collateral: f64,
     requote_threshold: f64,
     eps: f64,
     now_ms: u64,
@@ -117,7 +100,6 @@ struct QuoteSetLegInput {
 fn drive_quote_set_leg(
     market: &mut MarketQuote,
     budget: &mut RequoteBudgetPair,
-    accepted_commitments: &mut Vec<BuyCommitment>,
     input: QuoteSetLegInput,
 ) -> QuoteSetLegDecision {
     if input.target.side != QuoteSide::Buy {
@@ -142,56 +124,19 @@ fn drive_quote_set_leg(
         },
     );
 
-    let mut reservation = None;
-    let submit_commitment = if is_submit_action(control.action) {
-        let candidate = BuyCommitment::new(input.target.price, input.quantity);
-        let decision = evaluate_reservation(ReservationRequest {
-            open: accepted_commitments,
-            candidate,
-            max_fee_bps: input.max_fee_bps,
-            available_collateral: input.available_collateral,
-        });
-        reservation = Some(decision);
-        if decision == ReservationDecision::Reject {
-            return QuoteSetLegDecision {
-                control: no_control_action(),
-                blocked_by: Some(QuoteSetBlockReason::ReservationRejected),
-                reservation,
-            };
-        }
-        Some(candidate)
-    } else {
-        None
-    };
-
     *market = candidate_market;
     *budget = candidate_budget;
-    if let Some(commitment) = submit_commitment {
-        accepted_commitments.push(commitment);
-    }
 
     QuoteSetLegDecision {
         control,
         blocked_by: None,
-        reservation,
     }
-}
-
-fn is_submit_action(action: Option<MarketAction>) -> bool {
-    matches!(
-        action,
-        Some(MarketAction::Leg {
-            action: LifecycleAction::Submit,
-            ..
-        })
-    )
 }
 
 fn blocked(reason: QuoteSetBlockReason) -> QuoteSetLegDecision {
     QuoteSetLegDecision {
         control: no_control_action(),
         blocked_by: Some(reason),
-        reservation: None,
     }
 }
 
@@ -206,7 +151,7 @@ fn no_control_action() -> QuoteControlDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_quote_lifecycle::{LegEvent, LegState};
+    use crate::bolt_v3_quote_lifecycle::{LegEvent, LegState, LifecycleAction, MarketAction};
     use crate::bolt_v3_requote_budget::RequoteBudget;
 
     const WINDOW_MS: u64 = 60_000;
@@ -232,10 +177,11 @@ mod tests {
             side: QuoteSide::Buy,
             price,
             size_notional: price,
+            gross_edge_per_unit: 0.01,
         }
     }
 
-    fn fresh_input(available_collateral: f64) -> QuoteSetInput<'static> {
+    fn fresh_input() -> QuoteSetInput {
         QuoteSetInput {
             targets: QuoteTargets {
                 leg_a: buy_leg(0.40),
@@ -245,9 +191,6 @@ mod tests {
             no_quantity: 1.0,
             yes_resting_price: None,
             no_resting_price: None,
-            open_commitments: &[],
-            max_fee_bps: 0.0,
-            available_collateral,
             requote_threshold: 0.01,
             eps: 1e-9,
             now_ms: NOW,
@@ -258,7 +201,7 @@ mod tests {
     fn two_fresh_submits_charge_two_submit_commands_and_two_rest_calls() {
         let mut market = MarketQuote::new(false);
         let mut budget = pair(4, 8);
-        let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input(1_000.0));
+        let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input());
         assert_eq!(
             decision.yes.control.action,
             Some(MarketAction::Leg {
@@ -287,7 +230,7 @@ mod tests {
         // must submit. This is the driver-level differential guard for that fix.
         let mut market = MarketQuote::new(false);
         let mut budget = pair_with_interval(4, 8, 500);
-        let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input(1_000.0));
+        let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input());
         assert_eq!(
             decision.yes.control.action,
             Some(MarketAction::Leg {
@@ -307,31 +250,6 @@ mod tests {
         assert_eq!(budget.rest_cost_in_window(), 2);
         assert_eq!(market.leg_state(Leg::Yes), LegState::SubmitPending);
         assert_eq!(market.leg_state(Leg::No), LegState::SubmitPending);
-    }
-
-    #[test]
-    fn a_rejected_reservation_refunds_the_requote_budget_pair() {
-        // Collateral is far below either leg's notional, so both reservations
-        // reject AFTER the fresh-submit budget was reserved on the candidate.
-        // The clone-and-commit must refund the pair: nothing charged on either
-        // budget, and neither leg leaves Idle.
-        let mut market = MarketQuote::new(false);
-        let mut budget = pair(4, 8);
-        let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input(0.10));
-        assert_eq!(
-            decision.yes.blocked_by,
-            Some(QuoteSetBlockReason::ReservationRejected)
-        );
-        assert_eq!(
-            decision.no.blocked_by,
-            Some(QuoteSetBlockReason::ReservationRejected)
-        );
-        assert_eq!(decision.yes.control.action, None);
-        assert_eq!(decision.no.control.action, None);
-        assert_eq!(budget.submit_commands_in_window(), 0);
-        assert_eq!(budget.rest_cost_in_window(), 0);
-        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
-        assert_eq!(market.leg_state(Leg::No), LegState::Idle);
     }
 
     #[test]
@@ -366,9 +284,6 @@ mod tests {
             no_quantity: 1.0,
             yes_resting_price: Some(0.40),
             no_resting_price: None,
-            open_commitments: &[],
-            max_fee_bps: 0.0,
-            available_collateral: 1_000.0,
             requote_threshold: 0.01,
             eps: 1e-9,
             now_ms: NOW,

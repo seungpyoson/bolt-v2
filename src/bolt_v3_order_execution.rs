@@ -1,4 +1,4 @@
-use std::{any::type_name, cell::RefMut};
+use std::{any::type_name, cell::RefMut, str::FromStr, sync::Arc};
 
 use anyhow::Result;
 use nautilus_common::{
@@ -27,6 +27,9 @@ use crate::{
         BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3OrderIntentOrderFields,
     },
+    bolt_v3_economics_runtime::{
+        EconomicsAdmission, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
+    },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
@@ -37,9 +40,105 @@ use crate::{
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
         BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-        build_submit_admission_request_from_order,
+        build_submit_admission_request_from_order, order_economics_facts,
+    },
+    economics::{
+        AccountId as EconomicsAccountId, DecisionCorrelationId, EconomicQuoteRequest,
+        EdgeBasisPolicyId, ExecutionClientId as EconomicsExecutionClientId,
+        InstrumentId as EconomicsInstrumentId, LifecyclePath, LiquidityRoleAssumption,
+        NativeUnitId, OrderSide as EconomicsOrderSide, PlannedFillLeg, ProductSurfaceId,
+        ReportingPolicyId, RoutingContext,
     },
 };
+
+#[derive(Clone)]
+pub struct BoltV3OrderRoutingHandle {
+    source: Arc<dyn EconomicsAdmissionSource>,
+    execution_client_id: EconomicsExecutionClientId,
+    account_id: EconomicsAccountId,
+    product_surface_id: ProductSurfaceId,
+    reporting_policy_id: ReportingPolicyId,
+    reporting_unit: NativeUnitId,
+    edge_basis_policy_id: EdgeBasisPolicyId,
+}
+
+pub struct BoltV3OrderEconomicsIntent<'a> {
+    pub request: &'a BoltV3SubmitAdmissionRequestInput<'a>,
+    pub liquidity_role: LiquidityRoleAssumption,
+    pub lifecycle_path: LifecyclePath,
+    pub requested_at_ns: u64,
+    pub decision_correlation_id: &'a str,
+    pub gross_expected_value: Decimal,
+}
+
+impl BoltV3OrderRoutingHandle {
+    pub fn new(
+        source: Arc<dyn EconomicsAdmissionSource>,
+        execution_client_id: &str,
+        account_id: &str,
+        product_surface_id: &str,
+        reporting_policy_id: &str,
+        reporting_unit: &str,
+        edge_basis_policy_id: &str,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            source,
+            execution_client_id: EconomicsExecutionClientId::new(execution_client_id)?,
+            account_id: EconomicsAccountId::new(account_id)?,
+            product_surface_id: ProductSurfaceId::new(product_surface_id)?,
+            reporting_policy_id: ReportingPolicyId::new(reporting_policy_id)?,
+            reporting_unit: NativeUnitId::new(reporting_unit)?,
+            edge_basis_policy_id: EdgeBasisPolicyId::new(edge_basis_policy_id)?,
+        })
+    }
+
+    pub fn quote_admission(
+        &self,
+        intent: BoltV3OrderEconomicsIntent<'_>,
+    ) -> anyhow::Result<EconomicsAdmission> {
+        let facts = order_economics_facts(intent.request)?;
+        anyhow::ensure!(
+            self.execution_client_id.as_str() == intent.request.execution_client_id,
+            "economics routing execution client does not match the final order route"
+        );
+        let order_side = match intent.request.order.order_side() {
+            OrderSide::Buy => EconomicsOrderSide::Buy,
+            OrderSide::Sell => EconomicsOrderSide::Sell,
+            _ => anyhow::bail!("bolt-v3 economics rejects unsupported order side"),
+        };
+        let request = EconomicQuoteRequest {
+            execution_client_id: self.execution_client_id.clone(),
+            account_id: self.account_id.clone(),
+            instrument_id: EconomicsInstrumentId::new(
+                intent.request.order.instrument_id().to_string(),
+            )?,
+            product_surface_id: self.product_surface_id.clone(),
+            order_side,
+            liquidity_role: intent.liquidity_role,
+            planned_fill_legs: vec![PlannedFillLeg {
+                price: facts.price,
+                quantity: facts.quantity,
+            }],
+            routing: RoutingContext {
+                attached_charge: None,
+            },
+            position: None,
+            lifecycle_path: intent.lifecycle_path,
+            reporting_policy_id: self.reporting_policy_id.clone(),
+            reporting_unit: self.reporting_unit.clone(),
+            edge_basis_policy_id: self.edge_basis_policy_id.clone(),
+            requested_at_ns: intent.requested_at_ns,
+            decision_correlation_id: DecisionCorrelationId::new(intent.decision_correlation_id)?,
+        };
+        self.source
+            .quote_admission(EconomicsAdmissionQuoteIntent {
+                request,
+                gross_expected_value: intent.gross_expected_value,
+                base_reservation_notional: facts.base_reservation_notional,
+            })
+            .map_err(Into::into)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -235,7 +334,7 @@ impl BoltV3OrderExecutionPolicy {
         // admission capacity before mutating the venue — an in-place modify carries
         // NONE of those admission/reservation/fee/intent checks. Routing one to the
         // venue in Live would bypass the risk gate: a live amend could lift a resting
-        // order's notional past the `max_order_notional`/`max_fee_bps` limits a submit
+        // order.s notional past the configured submit limits a submit
         // would block, with no capital-reservation delta recorded. Until the
         // admission-gated in-place modify lands (#835), the Live arm REFUSES the venue
         // mutation; the maker requotes through the already-admitted cancel+resubmit
@@ -567,7 +666,7 @@ pub enum BoltV3ModifyRoutingOutcome {
 pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub strategy_id: &'a str,
     pub execution_client_id: &'a str,
-    pub max_fee_bps: Decimal,
+    pub order_routing: &'a BoltV3OrderRoutingHandle,
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
@@ -576,7 +675,8 @@ pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
     pub execution_client_id: &'a str,
     pub fallback_price: &'a str,
     pub instrument: Option<&'a InstrumentAny>,
-    pub max_fee_bps: Decimal,
+    pub order_routing: &'a BoltV3OrderRoutingHandle,
+    pub gross_expected_value: Decimal,
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
@@ -611,20 +711,30 @@ where
         context.fallback_price.to_string(),
         &order,
     );
-    let mut request = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: context.execution_client_id,
-            intent: &intent,
-            order: &order,
-            valuation: crate::bolt_v3_submit_admission::OrderValuationContext {
-                instrument: context.instrument,
-                ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
-            },
-            lifecycle_policy: context.submit_lifecycle_policy,
-            risk_reducing_exit_position: None,
+    let admission_input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: context.execution_client_id,
+        intent: &intent,
+        order: &order,
+        valuation: crate::bolt_v3_submit_admission::OrderValuationContext {
+            instrument: context.instrument,
+            ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
         },
-        |_| Ok(context.max_fee_bps),
-    )?;
+        lifecycle_policy: context.submit_lifecycle_policy,
+        risk_reducing_exit_position: None,
+    };
+    let economics_admission =
+        context
+            .order_routing
+            .quote_admission(BoltV3OrderEconomicsIntent {
+                request: &admission_input,
+                liquidity_role: LiquidityRoleAssumption::Taker,
+                lifecycle_path: LifecyclePath::PlannedExit,
+                requested_at_ns: order.ts_init().as_u64(),
+                decision_correlation_id: order.client_order_id().as_str(),
+                gross_expected_value: context.gross_expected_value,
+            })?;
+    let mut request =
+        build_submit_admission_request_from_order(admission_input, economics_admission)?;
     request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
     request.risk_reducing_exit_proof = None;
     request.kill_switch_forced_reduction = Some(command.forced_reduction_claim().clone());
@@ -947,7 +1057,7 @@ where
         self.runtime.order_factory()
     }
 
-    fn submit_maker_order(&mut self, order: OrderAny) -> Result<()> {
+    fn submit_maker_order(&mut self, order: OrderAny, gross_expected_value: f64) -> Result<()> {
         let fallback_price = order
             .price()
             .map(|price| price.to_string())
@@ -963,17 +1073,27 @@ where
             fallback_price,
             &order,
         );
-        let request = build_submit_admission_request_from_order(
-            BoltV3SubmitAdmissionRequestInput {
-                execution_client_id: self.context.execution_client_id,
-                intent: &intent,
-                order: &order,
-                valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
-                lifecycle_policy: self.context.submit_lifecycle_policy,
-                risk_reducing_exit_position: None,
-            },
-            |_| Ok(self.context.max_fee_bps),
-        )?;
+        let admission_input = BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: self.context.execution_client_id,
+            intent: &intent,
+            order: &order,
+            valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
+            lifecycle_policy: self.context.submit_lifecycle_policy,
+            risk_reducing_exit_position: None,
+        };
+        let economics_admission =
+            self.context
+                .order_routing
+                .quote_admission(BoltV3OrderEconomicsIntent {
+                    request: &admission_input,
+                    liquidity_role: LiquidityRoleAssumption::GuaranteedMaker,
+                    lifecycle_path: LifecyclePath::PlannedExit,
+                    requested_at_ns: order.ts_init().as_u64(),
+                    decision_correlation_id: order.client_order_id().as_str(),
+                    gross_expected_value: Decimal::from_str(&gross_expected_value.to_string())?,
+                })?;
+        let request =
+            build_submit_admission_request_from_order(admission_input, economics_admission)?;
         let submit_context =
             BoltV3SubmitContext::with_client_id(ClientId::from(self.context.execution_client_id));
         self.policy.route_submit_with_sink(
@@ -1239,6 +1359,7 @@ mod tests {
                 client_order_id: ClientOrderId::from("MAKER-YES-1"),
             },
             fallback_price: Price::new(0.40, 2),
+            gross_expected_value: 0.02,
         };
 
         let outcome = route_maker_order_command_with_runtime(
@@ -1947,7 +2068,10 @@ mod tests {
                 execution_client_id: "execution_client",
                 fallback_price: "1",
                 instrument: Some(&instrument),
-                max_fee_bps: Decimal::ZERO,
+                order_routing: Box::leak(Box::new(
+                    crate::bolt_v3_economics_runtime::test_order_routing_handle("execution_client"),
+                )),
+                gross_expected_value: Decimal::ONE,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
@@ -2041,7 +2165,10 @@ mod tests {
                 execution_client_id: "execution_client",
                 fallback_price: "1",
                 instrument: Some(&instrument),
-                max_fee_bps: Decimal::ZERO,
+                order_routing: Box::leak(Box::new(
+                    crate::bolt_v3_economics_runtime::test_order_routing_handle("execution_client"),
+                )),
+                gross_expected_value: Decimal::ONE,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
@@ -2371,6 +2498,9 @@ mod tests {
         notional: Decimal,
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
+            economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
+                Decimal::ONE,
+            ),
             strategy_id: "strategy-a".to_string(),
             execution_client_id: "execution_client".to_string(),
             client_order_id: order.client_order_id().to_string(),
@@ -2412,6 +2542,9 @@ mod tests {
         position_quantity: Decimal,
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
+            economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
+                Decimal::ONE,
+            ),
             strategy_id: "strategy-a".to_string(),
             execution_client_id: "execution_client".to_string(),
             client_order_id: order.client_order_id().to_string(),
@@ -2495,7 +2628,11 @@ mod tests {
         BoltV3MakerOrderRoutingContext {
             strategy_id: "maker-strategy",
             execution_client_id: "maker_execution_client",
-            max_fee_bps: Decimal::ZERO,
+            order_routing: Box::leak(Box::new(
+                crate::bolt_v3_economics_runtime::test_order_routing_handle(
+                    "maker_execution_client",
+                ),
+            )),
             submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         }
     }
@@ -2680,7 +2817,10 @@ mod tests {
                 execution_client_id: "execution_client",
                 fallback_price: "1",
                 instrument: Some(instrument),
-                max_fee_bps: Decimal::ZERO,
+                order_routing: Box::leak(Box::new(
+                    crate::bolt_v3_economics_runtime::test_order_routing_handle("execution_client"),
+                )),
+                gross_expected_value: Decimal::ONE,
                 submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,

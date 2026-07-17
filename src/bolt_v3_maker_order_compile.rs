@@ -31,6 +31,7 @@ pub enum MakerCompiledOrderCommand {
         template: Box<NtOrderTemplate>,
         inputs: NtOrderBuildInputs,
         fallback_price: Price,
+        gross_expected_value: f64,
     },
     Cancel {
         leg: Leg,
@@ -75,6 +76,7 @@ pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrd
             order_identity,
             price,
             quantity,
+            gross_edge_per_unit,
             ..
         } => compile_submit(
             input,
@@ -84,6 +86,7 @@ pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrd
             order_identity,
             *price,
             *quantity,
+            *gross_edge_per_unit,
         ),
         MakerOrderIntent::Cancel {
             leg,
@@ -128,6 +131,7 @@ fn compile_submit(
     order_identity: &crate::bolt_v3_maker_event_fence::OrderIdentity,
     price: f64,
     quantity: f64,
+    gross_edge_per_unit: f64,
 ) -> MakerOrderCompileDecision {
     if !maker_submit_template_is_supported(input.submit_template) {
         return blocked(MakerOrderCompileBlockReason::UnsupportedSubmitTemplate);
@@ -135,7 +139,7 @@ fn compile_submit(
     if !is_positive_finite(price) {
         return blocked(MakerOrderCompileBlockReason::InvalidSubmitPrice);
     }
-    if !is_positive_finite(quantity) {
+    if !is_positive_finite(quantity) || !is_positive_finite(gross_edge_per_unit) {
         return blocked(MakerOrderCompileBlockReason::InvalidSubmitQuantity);
     }
 
@@ -152,6 +156,7 @@ fn compile_submit(
             client_order_id: nt_client_order_id(order_identity),
         },
         fallback_price: price,
+        gross_expected_value: gross_edge_per_unit * quantity,
     })
 }
 

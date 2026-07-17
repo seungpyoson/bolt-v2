@@ -1230,6 +1230,7 @@ fn loss_snapshot_at(observed_at_ns: u64) -> LossSnapshot {
 
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "execution-client-a".to_string(),
         client_order_id: "client-order-1".to_string(),

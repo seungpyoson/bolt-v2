@@ -218,14 +218,8 @@ fn repo_path(relative: &str) -> PathBuf {
 
 fn prod_strategy_build_context(
     loaded: &LoadedBoltV3Config,
-    loaded_strategy: &crate::bolt_v3_config::LoadedStrategy,
+    _loaded_strategy: &crate::bolt_v3_config::LoadedStrategy,
 ) -> StrategyBuildContext {
-    let execution_venue = loaded
-        .root
-        .clients
-        .get(loaded_strategy.config.execution_client_id.as_str())
-        .expect("strategy execution client should be present in composed root")
-        .venue;
     let surfaces = loaded
         .root
         .realized_volatility_surfaces
@@ -240,18 +234,8 @@ fn prod_strategy_build_context(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let decision_evidence = Arc::new(RecordingDecisionEvidenceWriter);
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
-    );
-    StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
-        decision_evidence,
-        submit_admission,
-        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        execution_venue,
-    )
-    .with_realized_volatility_surfaces(surfaces)
+    test_build_context_with_economics_source(RecordingEconomicsAdmissionSource::cold())
+        .with_realized_volatility_surfaces(surfaces)
 }
 
 fn expected_realized_volatility_requests(

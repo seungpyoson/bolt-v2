@@ -118,6 +118,12 @@ pub struct RuntimeBlock {
     pub order_execution_mode: crate::bolt_v3_order_execution::BoltV3OrderExecutionMode,
 }
 
+impl RuntimeBlock {
+    pub fn requests_live_order_execution(&self) -> bool {
+        self.order_execution_mode == crate::bolt_v3_order_execution::BoltV3OrderExecutionMode::Live
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusBlock {

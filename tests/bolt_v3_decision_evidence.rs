@@ -45,7 +45,6 @@ use bolt_v2::{
         read_submit_reservation_recovery_evidence, read_terminal_settlement_evidence,
     },
     bolt_v3_fair_value_pricing::classify_rv_gate,
-    bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
         RealizedVolSampleKind, RealizedVolSnapshot, RealizedVolSourceClass,
@@ -53,24 +52,11 @@ use bolt_v2::{
     },
     bolt_v3_timestamp_domain::LocalReceiveMs,
 };
-use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::enums::{OrderSide, OrderType, TimeInForce};
 use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 
-struct NoopFeeProvider;
-
 const EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION: u32 = 15;
-
-impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        None
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async { Ok(()) }.boxed()
-    }
-}
 
 #[test]
 fn decision_evidence_schema_version_tracks_reference_price_and_capital_admission_records() {
@@ -740,7 +726,6 @@ fn probability_wire_fields_remain_string_payload_bytes() {
             r#""fair_probability_up":"0.6","fair_probability_down":"0.4","selected_side":"up","#,
             r#""sized_notional":"25","sized_worst_case_ev_bps":"12.5","#,
             r#""sized_edge_cents_per_share":"1.25","theta_scaled_min_edge_bps":"10","#,
-            r#""up_fee_bps":"2","down_fee_bps":"3","#,
             r#""submission_blocked_reason":"entry_pricing_blocked","stale_reference_after_ms":1500,"#,
             r#""last_reference_ts_ms":1000,"min_liquidity_required":"100","#,
             r#""liquidity_available":"80","frozen":false,"metadata_matches_selection":true,"#,
@@ -814,8 +799,6 @@ fn exit_decision_evidence_writes_one_durable_line_and_readers_skip_it() {
         decoded.uncertainty_band_probability.as_deref(),
         Some("0.02")
     );
-    assert_eq!(decoded.up_fee_bps.as_deref(), Some("1.25"));
-    assert_eq!(decoded.down_fee_bps.as_deref(), Some("2.5"));
     assert_eq!(decoded.submission_order_side.as_deref(), Some("Sell"));
     assert_eq!(decoded.submission_price.as_deref(), Some("0.49"));
     assert_eq!(decoded.submission_quantity.as_deref(), Some("1"));
@@ -846,8 +829,6 @@ fn exit_decision_observed_inputs_default_absent_for_predeploy_lines() {
     assert_eq!(decoded.fair_probability_up, None);
     assert_eq!(decoded.fair_probability_down, None);
     assert_eq!(decoded.uncertainty_band_probability, None);
-    assert_eq!(decoded.up_fee_bps, None);
-    assert_eq!(decoded.down_fee_bps, None);
     assert_eq!(decoded.submission_order_side, None);
     assert_eq!(decoded.submission_price, None);
     assert_eq!(decoded.submission_quantity, None);
@@ -1014,8 +995,6 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
         sized_worst_case_ev_bps: Some("12.5".to_string()),
         sized_edge_cents_per_share: Some("1.25".to_string()),
         theta_scaled_min_edge_bps: Some("10".to_string()),
-        up_fee_bps: Some("2".to_string()),
-        down_fee_bps: Some("3".to_string()),
         submission_blocked_reason: Some(BoltV3EntrySkipReasonCategory::EntryPricingBlocked),
         stale_reference_after_ms: Some(1_500),
         last_reference_ts_ms: Some(1_000),
@@ -1165,8 +1144,6 @@ fn sample_exit_decision_evidence() -> BoltV3ExitDecisionEvidence {
         fair_probability_up: Some("0.55".to_string()),
         fair_probability_down: Some("0.45".to_string()),
         uncertainty_band_probability: Some("0.02".to_string()),
-        up_fee_bps: Some("1.25".to_string()),
-        down_fee_bps: Some("2.5".to_string()),
         hold_ev_bps: Some("2.5".to_string()),
         exit_ev_bps: Some("3.5".to_string()),
         realized_vol: None,
@@ -1326,6 +1303,13 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
+        economics_quote_id: "test-economics-quote".to_string(),
+        economics_core_total: "-0.01".to_string(),
+        economics_core_net_edge: "0.04".to_string(),
+        economics_core_edge_ratio: "0.08".to_string(),
+        economics_forecast_net_edge: "0.04".to_string(),
+        economics_valid_until_ns: 1_300,
+        economics_source_snapshot_ids: vec!["test-economics-snapshot".to_string()],
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::Admitted,
         loss_halt_reasons: Vec::new(),
@@ -1485,8 +1469,6 @@ fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvide
             fair_probability_up: Some("0.55".to_string()),
             fair_probability_down: Some("0.45".to_string()),
             uncertainty_band_probability: Some("0.02".to_string()),
-            up_fee_bps: Some("1.25".to_string()),
-            down_fee_bps: Some("2.5".to_string()),
             hold_ev_bps: Some("12.5".to_string()),
             exit_ev_bps: Some("-3.0".to_string()),
             exit_decision: BoltV3ExitDecisionOutcome::ExitFailClosed,
@@ -1524,8 +1506,6 @@ fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvide
             fair_probability_up: None,
             fair_probability_down: None,
             uncertainty_band_probability: None,
-            up_fee_bps: None,
-            down_fee_bps: None,
             hold_ev_bps: None,
             exit_ev_bps: None,
             exit_decision: BoltV3ExitDecisionOutcome::Hold,
@@ -1799,8 +1779,6 @@ fn exit_evaluation_observed_inputs_default_absent_for_predeploy_lines() {
     assert_eq!(decoded.fair_probability_up, None);
     assert_eq!(decoded.fair_probability_down, None);
     assert_eq!(decoded.uncertainty_band_probability, None);
-    assert_eq!(decoded.up_fee_bps, None);
-    assert_eq!(decoded.down_fee_bps, None);
 }
 
 #[test]
@@ -2334,8 +2312,6 @@ fn exit_evaluation_optional_number_serialization_uses_finite_option_path() {
         "fair_probability_up",
         "fair_probability_down",
         "uncertainty_band_probability",
-        "up_fee_bps",
-        "down_fee_bps",
         "hold_ev_bps",
         "exit_ev_bps",
         "submission_price",
@@ -2351,7 +2327,6 @@ fn exit_evaluation_optional_number_serialization_uses_finite_option_path() {
 #[test]
 fn strategy_build_context_requires_decision_evidence_value() {
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         Arc::new(NoopDecisionEvidenceWriter),
         Arc::new(
             bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(

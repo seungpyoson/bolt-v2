@@ -72,15 +72,9 @@ use bolt_v2::{
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
-use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
+use nautilus_model::identifiers::{ClientId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
-use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    task::JoinHandle,
-};
 
 /// Mutate a single field in the strategy's raw `[target]` TOML
 /// envelope. Mirrors the helper in `tests/bolt_v3_market_identity.rs`;
@@ -406,83 +400,6 @@ fn hyperliquid_standard_perps_live_submit_mut(
         .and_then(|live_submit| live_submit.get_mut("standard_perps"))
         .and_then(toml::Value::as_table_mut)
         .expect("test Hyperliquid live_submit.standard_perps should be a table")
-}
-
-fn set_hyperliquid_base_url_http(client: &mut ClientBlock, url: String) {
-    client
-        .execution
-        .as_mut()
-        .expect("test Hyperliquid client should have execution")
-        .as_table_mut()
-        .expect("test Hyperliquid execution should be a table")
-        .insert("base_url_http".to_string(), toml::Value::String(url));
-}
-
-async fn hyperliquid_user_fees_server() -> (String, JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("test HTTP listener should bind");
-    let address = listener
-        .local_addr()
-        .expect("test HTTP listener should expose address");
-    let handle = tokio::spawn(async move {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .expect("test HTTP listener should accept one request");
-        let mut request = Vec::new();
-        let mut buffer = [0_u8; 1024];
-        loop {
-            let read = stream
-                .read(&mut buffer)
-                .await
-                .expect("test HTTP listener should read request");
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..read]);
-            let header_end = request.windows(4).position(|window| window == b"\r\n\r\n");
-            if let Some(header_end) = header_end {
-                let headers = std::str::from_utf8(&request[..header_end])
-                    .expect("test HTTP request headers should be utf8");
-                let content_length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':').and_then(|(name, value)| {
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>())
-                        })
-                    })
-                    .transpose()
-                    .expect("test HTTP content-length should parse")
-                    .unwrap_or(0);
-                if request.len() >= header_end + 4 + content_length {
-                    break;
-                }
-            }
-        }
-        let request_text = std::str::from_utf8(&request).expect("test HTTP request should be utf8");
-        assert!(
-            request_text.contains(r#""type":"userFees""#),
-            "Hyperliquid fee warmup should request userFees: {request_text}"
-        );
-        assert!(
-            request_text.contains(r#""user":"0x2222222222222222222222222222222222222222""#),
-            "Hyperliquid fee warmup should query the SSM-resolved account address: {request_text}"
-        );
-        let body = r#"{"userCrossRate":"0.00045","userAddRate":"0.00015"}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream
-            .write_all(response.as_bytes())
-            .await
-            .expect("test HTTP listener should write response");
-    });
-
-    (format!("http://{address}/info"), handle)
 }
 
 fn hyperliquid_execution_client_with_secret_fields(secret_fields: &str) -> ClientBlock {
@@ -970,90 +887,6 @@ fn provider_binding_models_polymarket_market_quote_buy_egress() {
         .expect("Polymarket execution must have a REST egress model before live submit");
 
     assert_eq!(model.max_rest_requests_per_order_command, 3);
-}
-
-#[test]
-fn provider_binding_builds_hyperliquid_fee_provider_with_empty_cold_cache() {
-    let client = hyperliquid_execution_client(
-        "/bolt/hyperliquid/master_api_wallet/private_key",
-        "/bolt/hyperliquid/master_api_wallet/account_address",
-    );
-    let binding = binding_for_provider_key("HYPERLIQUID")
-        .expect("Hyperliquid provider binding should be registered");
-    let build_fee_provider = binding
-        .build_fee_provider
-        .expect("Hyperliquid execution must resolve fees through the provider boundary");
-    let provider = build_fee_provider("hyperliquid_perps", &client, &fixture_resolved_secrets())
-        .expect("Hyperliquid fee provider should construct from provider-owned config");
-
-    assert_eq!(
-        provider.fee_bps(InstrumentId::from("BTC-PERP.HYPERLIQUID")),
-        None,
-        "Hyperliquid fee provider must fail closed until userFees warmup succeeds"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn provider_binding_warms_hyperliquid_fee_provider_from_user_fees() {
-    let (base_url_http, server) = hyperliquid_user_fees_server().await;
-    let mut client = hyperliquid_execution_client(
-        "/bolt/hyperliquid/master_api_wallet/private_key",
-        "/bolt/hyperliquid/master_api_wallet/account_address",
-    );
-    set_hyperliquid_base_url_http(&mut client, base_url_http);
-    let binding = binding_for_provider_key("HYPERLIQUID")
-        .expect("Hyperliquid provider binding should be registered");
-    let build_fee_provider = binding
-        .build_fee_provider
-        .expect("Hyperliquid execution must resolve fees through the provider boundary");
-    let provider = build_fee_provider("hyperliquid_perps", &client, &fixture_resolved_secrets())
-        .expect("Hyperliquid fee provider should construct from provider-owned config");
-    let instrument_id = InstrumentId::from("BTC-PERP.HYPERLIQUID");
-
-    assert_eq!(provider.fee_bps(instrument_id), None);
-    provider
-        .warm(instrument_id)
-        .await
-        .expect("Hyperliquid fee provider should warm from userFees");
-    server
-        .await
-        .expect("test Hyperliquid userFees server should complete");
-
-    assert_eq!(provider.fee_bps(instrument_id), Some(Decimal::new(45, 1)));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn provider_binding_reuses_hyperliquid_user_fees_across_instruments() {
-    let (base_url_http, server) = hyperliquid_user_fees_server().await;
-    let mut client = hyperliquid_execution_client(
-        "/bolt/hyperliquid/master_api_wallet/private_key",
-        "/bolt/hyperliquid/master_api_wallet/account_address",
-    );
-    set_hyperliquid_base_url_http(&mut client, base_url_http);
-    let binding = binding_for_provider_key("HYPERLIQUID")
-        .expect("Hyperliquid provider binding should be registered");
-    let build_fee_provider = binding
-        .build_fee_provider
-        .expect("Hyperliquid execution must resolve fees through the provider boundary");
-    let provider = build_fee_provider("hyperliquid_perps", &client, &fixture_resolved_secrets())
-        .expect("Hyperliquid fee provider should construct from provider-owned config");
-    let btc = InstrumentId::from("BTC-PERP.HYPERLIQUID");
-    let eth = InstrumentId::from("ETH-PERP.HYPERLIQUID");
-
-    provider
-        .warm(btc)
-        .await
-        .expect("first Hyperliquid fee warm should query userFees");
-    server
-        .await
-        .expect("test Hyperliquid userFees server should complete");
-    provider
-        .warm(eth)
-        .await
-        .expect("second Hyperliquid fee warm should reuse account-wide userFees");
-
-    assert_eq!(provider.fee_bps(btc), Some(Decimal::new(45, 1)));
-    assert_eq!(provider.fee_bps(eth), Some(Decimal::new(45, 1)));
 }
 
 #[test]

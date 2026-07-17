@@ -122,7 +122,6 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
@@ -178,13 +177,12 @@ impl BoltV3RequoteThrottleEvidence {
 pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
     pub reference_fair_value: MakerRuntimeReferenceFairValueInput<'a>,
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub order_plan: MakerRuntimeOrderPlanInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
@@ -209,7 +207,6 @@ pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
@@ -232,7 +229,6 @@ pub struct BinaryOracleMakerRiskRouteInput<'a> {
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
@@ -292,12 +288,12 @@ impl BinaryOracleMaker {
         &mut self,
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
-        max_fee_bps: Decimal,
         submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     ) -> Result<MakerOrderDispatchOutcome> {
         let policy = self.context.order_execution_policy();
         let decision_evidence = self.context.decision_evidence_arc();
         let submit_admission = self.context.submit_admission_arc();
+        let order_routing = self.context.order_routing_handle()?;
         let strategy_id = self.config.strategy_id.clone();
         let execution_client_id = self.config.client_id.clone();
         route_maker_order_command_through_policy(
@@ -308,7 +304,7 @@ impl BinaryOracleMaker {
             BoltV3MakerOrderRoutingContext {
                 strategy_id: strategy_id.as_str(),
                 execution_client_id: execution_client_id.as_str(),
-                max_fee_bps,
+                order_routing: &order_routing,
                 submit_lifecycle_policy,
             },
             MakerOrderDispatchInput {
@@ -386,7 +382,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
             submit_lifecycle_policy,
         } = input;
 
@@ -417,7 +412,6 @@ impl BinaryOracleMaker {
                     self.route_maker_order_command(
                         command,
                         submit_order_prefix,
-                        max_fee_bps,
                         submit_lifecycle_policy,
                     )
                 };
@@ -457,7 +451,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
             submit_lifecycle_policy,
         } = input;
 
@@ -494,7 +487,6 @@ impl BinaryOracleMaker {
                 price_precision,
                 quantity_precision,
                 submit_order_prefix,
-                max_fee_bps,
                 submit_lifecycle_policy,
             },
         )?;
@@ -532,7 +524,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
             submit_lifecycle_policy,
         } = input;
 
@@ -540,12 +531,7 @@ impl BinaryOracleMaker {
         let order_plan = maker_order_plan_from_market_action(action);
 
         let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-            self.route_maker_order_command(
-                command,
-                submit_order_prefix,
-                max_fee_bps,
-                submit_lifecycle_policy,
-            )
+            self.route_maker_order_command(command, submit_order_prefix, submit_lifecycle_policy)
         };
         let orders = dispatch_maker_runtime_order_plan_with_command_router(
             MakerRuntimeOrderDispatchInput {
@@ -592,7 +578,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
             submit_lifecycle_policy,
         } = input;
         let mode = maker_risk_mode_for_loss_decision(&policy, loss_decision);
@@ -612,7 +597,6 @@ impl BinaryOracleMaker {
                     price_precision,
                     quantity_precision,
                     submit_order_prefix,
-                    max_fee_bps,
                     submit_lifecycle_policy,
                 })?
                 .orders,
@@ -751,12 +735,11 @@ fn requote_throttle_leg_label(leg: Leg) -> &'static str {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerQuoteCycleInput<'a> {
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
@@ -915,7 +898,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
             submit_lifecycle_policy,
         } = input;
         let outcome = self.route_maker_runtime_quote(
@@ -931,7 +913,6 @@ impl BinaryOracleMaker {
                 price_precision,
                 quantity_precision,
                 submit_order_prefix,
-                max_fee_bps,
                 submit_lifecycle_policy,
             },
         )?;
@@ -1051,10 +1032,8 @@ mod tests {
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
         bolt_v3_position_contract::BoltV3PositionMarketLifecycle,
-        bolt_v3_providers::FeeProvider,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
-    use futures_util::{FutureExt, future::BoxFuture};
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         enums::{AggressorSide, AssetClass},
@@ -1095,9 +1074,6 @@ mod tests {
     const TEST_MU_FLOOR: f64 = 0.05;
     const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
     const TEST_QUOTE_INTERVAL_MS: u64 = 1_000;
-
-    #[derive(Debug)]
-    struct NoopFeeProvider;
 
     #[allow(clippy::too_many_arguments)]
     fn maker_binary_option(
@@ -1155,16 +1131,6 @@ mod tests {
             1.into(),
             1.into(),
         ))
-    }
-
-    impl FeeProvider for NoopFeeProvider {
-        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-            None
-        }
-
-        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-            async { Ok(()) }.boxed()
-        }
     }
 
     #[derive(Debug)]
@@ -1267,12 +1233,14 @@ mod tests {
     fn test_context() -> StrategyBuildContext {
         let writer = Arc::new(NoopDecisionEvidenceWriter);
         StrategyBuildContext::new(
-            Arc::new(NoopFeeProvider),
             writer.clone(),
             Arc::new(BoltV3SubmitAdmissionState::new(writer)),
             BoltV3OrderExecutionPolicy::shadow(),
             Venue::from("MAKER.TEST"),
         )
+        .with_order_routing(crate::bolt_v3_economics_runtime::test_order_routing_handle(
+            "maker_execution_client",
+        ))
     }
 
     fn maker_config(

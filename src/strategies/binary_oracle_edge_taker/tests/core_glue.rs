@@ -37,8 +37,8 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
     // Seed a (zero) fee for the order's instrument so admission clears the
     // fee-bound guard and the FailingDecisionEvidenceWriter is what rejects
     // the order before NT submit — the behavior this test pins.
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_economics_source_and_decision_evidence(
+        RecordingEconomicsAdmissionSource::cold(),
         Arc::new(FailingDecisionEvidenceWriter),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -107,8 +107,8 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
             RecordingDecisionEvidenceWriter,
         )),
     );
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::cold(),
+    let mut strategy = test_strategy_with_economics_source_decision_evidence_and_submit_admission(
+        RecordingEconomicsAdmissionSource::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
@@ -133,8 +133,7 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
 
 #[test]
 fn limit_if_touched_rejects_nt_side_price_invariants_before_factory() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    let _cache = register_test_strategy(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(2.0, 2);
 
@@ -311,6 +310,9 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         .expect("position quantity should convert to decimal");
     rejecting_submit_admission
         .admit(&BoltV3SubmitAdmissionRequest {
+            economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
+                Decimal::ONE,
+            ),
             strategy_id: strategy.config.strategy_id.clone(),
             execution_client_id: strategy.config.client_id.clone(),
             client_order_id: "EXIT-SLOT-ALREADY-USED".to_string(),
@@ -345,176 +347,6 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
     );
     assert!(matches!(strategy.exposure, ExposureState::Managed(_)));
     assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
-}
-
-#[test]
-fn fees_ready_requires_both_outcome_tokens_before_refresh_can_succeed() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
-    strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
-
-    assert!(!strategy.active.outcome_fees.up_ready);
-    assert!(!strategy.active.outcome_fees.down_ready);
-
-    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(175, 2));
-    strategy.refresh_fee_readiness();
-    assert!(strategy.active.outcome_fees.up_ready);
-    assert!(!strategy.active.outcome_fees.down_ready);
-
-    fee_provider.set_fee(
-        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
-        Decimal::new(180, 2),
-    );
-    strategy.refresh_fee_readiness();
-
-    assert!(strategy.active.outcome_fees.up_ready);
-    assert!(strategy.active.outcome_fees.down_ready);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn market_activation_and_switch_warm_both_outcome_fee_tokens() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
-
-    strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
-    tokio::task::yield_now().await;
-    strategy.apply_selection_snapshot(active_snapshot("MKT-2"));
-    tokio::task::yield_now().await;
-
-    assert_eq!(
-        fee_provider.warm_calls(),
-        vec![
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-            "condition-MKT-2-MKT-2-UP.POLYMARKET".to_string(),
-            "condition-MKT-2-MKT-2-DOWN.POLYMARKET".to_string(),
-        ]
-    );
-}
-
-#[test]
-fn fee_readiness_stays_false_until_both_outcome_fees_are_available() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
-    strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
-
-    assert!(!strategy.active.outcome_fees.up_ready);
-    assert!(!strategy.active.outcome_fees.down_ready);
-
-    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(175, 2));
-    strategy.refresh_fee_readiness();
-    assert!(strategy.active.outcome_fees.up_ready);
-    assert!(!strategy.active.outcome_fees.down_ready);
-
-    fee_provider.set_fee(
-        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
-        Decimal::new(180, 2),
-    );
-    strategy.refresh_fee_readiness();
-    assert!(strategy.active.outcome_fees.up_ready);
-    assert!(strategy.active.outcome_fees.down_ready);
-}
-
-#[test]
-fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = ready_to_trade_strategy();
-    strategy.context = StrategyBuildContext::new(
-        fee_provider.clone(),
-        Arc::new(RecordingDecisionEvidenceWriter),
-        Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
-        ),
-        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        fixture_execution_venue(),
-    );
-    strategy.active.outcome_fees.up_ready = false;
-    strategy.active.outcome_fees.down_ready = false;
-    register_test_strategy_with_active_instruments(&mut strategy);
-
-    let up_instrument_id = strategy
-        .active
-        .outcome_fees
-        .up_instrument_id
-        .expect("test active market should have up outcome");
-    let down_instrument_id = strategy
-        .active
-        .outcome_fees
-        .down_instrument_id
-        .expect("test active market should have down outcome");
-    fee_provider.set_fee(up_instrument_id.to_string().as_str(), Decimal::new(100, 2));
-    fee_provider.set_fee(
-        down_instrument_id.to_string().as_str(),
-        Decimal::new(100, 2),
-    );
-
-    strategy
-        .on_book_deltas(&book_deltas(
-            up_instrument_id,
-            &[(BookAction::Update, OrderSide::Sell, 0.45, 500.0)],
-        ))
-        .expect("book delta should not escape actor loop");
-
-    assert!(strategy.active.outcome_fees.market_ready());
-}
-
-#[test]
-fn switch_resets_fee_readiness_fail_closed_even_if_provider_has_cached_fee() {
-    let fee_provider = RecordingFeeProvider::cold();
-    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(175, 2));
-    fee_provider.set_fee(
-        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
-        Decimal::new(180, 2),
-    );
-    let mut strategy = test_strategy_with_fee_provider(fee_provider);
-    {
-        let active = &mut strategy.active;
-        active.outcome_fees.up_ready = true;
-        active.outcome_fees.down_ready = true;
-    }
-
-    strategy.apply_selection_snapshot(active_snapshot("MKT-2"));
-
-    assert!(!strategy.active.outcome_fees.up_ready);
-    assert!(!strategy.active.outcome_fees.down_ready);
-}
-
-#[test]
-fn switch_with_cached_fee_rates_stays_ready_while_refresh_runs() {
-    let fee_provider = RecordingFeeProvider::cold();
-    fee_provider.set_fee("condition-MKT-2-MKT-2-UP.POLYMARKET", Decimal::new(175, 2));
-    fee_provider.set_fee(
-        "condition-MKT-2-MKT-2-DOWN.POLYMARKET",
-        Decimal::new(180, 2),
-    );
-    let mut strategy = test_strategy_with_fee_provider(fee_provider);
-
-    strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
-    strategy.apply_selection_snapshot(active_snapshot("MKT-2"));
-
-    assert!(strategy.active.outcome_fees.up_ready);
-    assert!(strategy.active.outcome_fees.down_ready);
-}
-
-#[test]
-fn same_market_new_interval_with_cached_fee_rates_stays_ready_while_refresh_runs() {
-    let fee_provider = RecordingFeeProvider::cold();
-    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(175, 2));
-    fee_provider.set_fee(
-        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
-        Decimal::new(180, 2),
-    );
-    let mut strategy = test_strategy_with_fee_provider(fee_provider);
-
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    assert!(strategy.active.outcome_fees.market_ready());
-
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 2_000));
-
-    assert!(strategy.active.outcome_fees.up_ready);
-    assert!(strategy.active.outcome_fees.down_ready);
 }
 
 #[test]

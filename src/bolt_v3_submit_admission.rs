@@ -23,6 +23,7 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3SubmitReservationMetadataEvidence, EpisodeFirstNs, compiled_order_price_source,
     evict_oldest_episodes_over_cap, loss_snapshot_source_to_evidence,
 };
+use crate::bolt_v3_economics_runtime::EconomicsAdmission;
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotDiagnostics,
@@ -50,7 +51,6 @@ use std::{
 
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
-const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 pub const VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE: &str = "venue_truth_capture_failure";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1729,6 +1729,35 @@ impl BoltV3SubmitAdmissionState {
             client_order_id: request.client_order_id.clone(),
             instrument_id: request.instrument_id.clone(),
             notional: request.notional.to_string(),
+            economics_quote_id: request
+                .economics_admission
+                .quote()
+                .decision_correlation_id()
+                .as_str()
+                .to_string(),
+            economics_core_total: request.economics_admission.quote().core_total().to_string(),
+            economics_core_net_edge: request
+                .economics_admission
+                .net_edge()
+                .core_net_edge()
+                .to_string(),
+            economics_core_edge_ratio: request
+                .economics_admission
+                .net_edge()
+                .core_edge_ratio()
+                .to_string(),
+            economics_forecast_net_edge: request
+                .economics_admission
+                .net_edge()
+                .forecast_net_edge()
+                .to_string(),
+            economics_valid_until_ns: request.economics_admission.quote().valid_until_ns(),
+            economics_source_snapshot_ids: request
+                .economics_admission
+                .source_snapshot_ids()
+                .iter()
+                .map(|snapshot_id| snapshot_id.as_str().to_string())
+                .collect(),
             intent_kind: request.intent_kind,
             outcome: evaluation.outcome.clone(),
             loss_halt_reasons: evaluation
@@ -2883,6 +2912,7 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
     pub admission_evidence: Option<BoltV3CompiledOrderAdmissionEvidence>,
+    pub economics_admission: EconomicsAdmission,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3006,6 +3036,7 @@ pub struct BoltV3BasketSubmitSlotClaim {
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub admission_evidence: Option<BoltV3CompiledOrderAdmissionEvidence>,
+    pub economics_admission: EconomicsAdmission,
 }
 
 fn basket_submit_request(
@@ -3026,6 +3057,7 @@ fn basket_submit_request(
         risk_reducing_exit_proof: claim.risk_reducing_exit_proof.clone(),
         kill_switch_forced_reduction: None,
         admission_evidence: claim.admission_evidence.clone(),
+        economics_admission: claim.economics_admission.clone(),
     }
 }
 
@@ -3082,13 +3114,16 @@ pub struct BoltV3SubmitAdmissionRequestInput<'a> {
     pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
 }
 
-pub fn build_submit_admission_request_from_order<F>(
-    input: BoltV3SubmitAdmissionRequestInput<'_>,
-    max_fee_bps_for_price: F,
-) -> anyhow::Result<BoltV3SubmitAdmissionRequest>
-where
-    F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
-{
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct BoltV3OrderEconomicsFacts {
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub base_reservation_notional: Decimal,
+}
+
+pub fn order_economics_facts(
+    input: &BoltV3SubmitAdmissionRequestInput<'_>,
+) -> anyhow::Result<BoltV3OrderEconomicsFacts> {
     let client_order_id = input.order.client_order_id().to_string();
     let quantity_source = input.order.quantity().to_string();
     let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
@@ -3106,7 +3141,7 @@ where
     })?;
     let (quote_quantity_last_price, quote_quantity_reference_price) =
         input.valuation.prices_for_order(input.order);
-    let notional = if input.order.is_quote_quantity() {
+    let base_reservation_notional = if input.order.is_quote_quantity() {
         let instrument = input.valuation.instrument.with_context(|| {
             format!(
                 "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
@@ -3131,11 +3166,7 @@ where
                 quantity
             }
         }
-    } else {
-        base_quantity_admission_notional(price, quantity)
-    };
-    let max_fee_bps = max_fee_bps_for_price(price)?;
-    let notional = if input.order.price().is_none() && !input.order.is_quote_quantity() {
+    } else if input.order.price().is_none() {
         let price_ceiling = input
             .valuation
             .instrument
@@ -3148,9 +3179,51 @@ where
             )
         })?
     } else {
-        notional
+        base_quantity_admission_notional(price, quantity)
     };
-    let notional = fee_inclusive_admission_notional(notional, max_fee_bps)?;
+    Ok(BoltV3OrderEconomicsFacts {
+        price,
+        quantity,
+        base_reservation_notional,
+    })
+}
+
+pub fn build_submit_admission_request_from_order(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+    economics_admission: EconomicsAdmission,
+) -> anyhow::Result<BoltV3SubmitAdmissionRequest> {
+    let client_order_id = input.order.client_order_id().to_string();
+    let facts = order_economics_facts(&input)?;
+    let price = facts.price;
+    let quantity = facts.quantity;
+    let quote_request = economics_admission.request();
+    anyhow::ensure!(
+        quote_request.execution_client_id.as_str() == input.execution_client_id,
+        "bolt-v3 economics admission execution client does not match final order"
+    );
+    anyhow::ensure!(
+        quote_request.instrument_id.as_str() == input.order.instrument_id().to_string(),
+        "bolt-v3 economics admission instrument does not match final order"
+    );
+    let expected_side = match input.order.order_side() {
+        OrderSide::Buy => crate::economics::OrderSide::Buy,
+        OrderSide::Sell => crate::economics::OrderSide::Sell,
+        _ => anyhow::bail!("bolt-v3 economics admission rejects unsupported order side"),
+    };
+    anyhow::ensure!(
+        quote_request.order_side == expected_side,
+        "bolt-v3 economics admission side does not match final order"
+    );
+    anyhow::ensure!(
+        quote_request.planned_fill_legs.as_slice()
+            == [crate::economics::PlannedFillLeg { price, quantity }],
+        "bolt-v3 economics admission planned fill does not match final order"
+    );
+    anyhow::ensure!(
+        economics_admission.base_reservation_notional() == facts.base_reservation_notional,
+        "bolt-v3 economics admission base reservation does not match final order"
+    );
+    let notional = economics_admission.reservation_notional();
     let intent_kind = match input.intent.intent_kind {
         BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
         BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
@@ -3184,6 +3257,7 @@ where
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
         admission_evidence: None,
+        economics_admission,
     })
 }
 
@@ -3358,61 +3432,6 @@ fn quote_quantity_effective_price(
         OrderSide::Sell => last_price.max(quote_reference_price),
         _ => last_price,
     }
-}
-
-pub fn fee_inclusive_admission_notional(
-    notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Result<Decimal, BoltV3SubmitAdmissionError> {
-    checked_fee_inclusive_admission_notional(notional, max_fee_bps)
-        .ok_or(BoltV3SubmitAdmissionError::NotionalArithmeticOverflow)
-}
-
-pub(crate) fn checked_fee_inclusive_admission_notional(
-    notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Option<Decimal> {
-    let fee_rate = max_fee_bps.checked_div(Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR))?;
-    let fee_multiplier = Decimal::ONE.checked_add(fee_rate)?;
-    notional.checked_mul(fee_multiplier)
-}
-
-/// Cap-bypass-via-rounding guard for submit paths that carry an operator
-/// intent SEPARATE from the order actually built.
-///
-/// Callers must pass the base notional of the already-rounded order
-/// (`rounded_base_notional`) — i.e. the product of the venue-precision
-/// `Price`/`Quantity` actually submitted — together with the operator-intended
-/// raw notional that authorized the order. Banker's rounding to venue precision
-/// can round a quantity or price UP, so the rounded base notional can exceed the
-/// intended notional. When that happens this helper fails CLOSED: a rounded
-/// order may never debit more than the operator approved, so admission is
-/// refused rather than letting the cap be bypassed by rounding.
-///
-/// On success it returns the fee-inclusive admission notional computed from the
-/// rounded base, so the cap check downstream sees the same cash debit the venue
-/// will incur.
-///
-/// Scope: this guard is required precisely for any path where the operator
-/// approves an explicit `order_intent.notional` BEFORE the venue-precision order
-/// is constructed. Paths that build the venue-precision order first and derive
-/// admission notional from that already-rounded order structurally do not need
-/// this guard: the strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`]
-/// already evaluates the exact order handed to the venue — there is no separate
-/// unrounded intent for rounding to bypass. Both paths share the same
-/// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
-pub fn rounded_order_admission_notional(
-    rounded_base_notional: Decimal,
-    intended_notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Result<Decimal, BoltV3SubmitAdmissionError> {
-    if rounded_base_notional > intended_notional {
-        return Err(BoltV3SubmitAdmissionError::RoundedNotionalExceedsIntent {
-            rounded_base_notional,
-            intended_notional,
-        });
-    }
-    fee_inclusive_admission_notional(rounded_base_notional, max_fee_bps)
 }
 
 pub(crate) fn limit_notional_exceeds_sized_notional(
@@ -4397,6 +4416,9 @@ mod loss_governor_halt_evidence_tests {
 
     fn entry_request(strategy_id: String, client_order_id: String) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
+            economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
+                Decimal::ONE,
+            ),
             strategy_id,
             execution_client_id: "execution-client-loss-halt".to_string(),
             client_order_id,

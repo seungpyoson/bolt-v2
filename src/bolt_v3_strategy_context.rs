@@ -9,8 +9,7 @@ use nautilus_model::{
 use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
-    bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
-    bolt_v3_providers::FeeProvider,
+    bolt_v3_order_execution::{BoltV3OrderExecutionPolicy, BoltV3OrderRoutingHandle},
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_settlement_runtime::{
@@ -64,11 +63,11 @@ impl SettlementCapability {
 
 #[derive(Clone)]
 pub struct StrategyBuildContext {
-    fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     order_execution_policy: BoltV3OrderExecutionPolicy,
     execution_venue: Venue,
+    order_routing: Option<BoltV3OrderRoutingHandle>,
     realized_volatility: Option<RealizedVolatilityCapability>,
     settlement: Option<SettlementCapability>,
 }
@@ -81,18 +80,17 @@ impl StrategyBuildContext {
     /// selected market's venue equals this one (a wrong-venue selection from the shared NT cache
     /// would otherwise be possible once a second venue's instruments coexist in the cache).
     pub fn new(
-        fee_provider: Arc<dyn FeeProvider>,
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         order_execution_policy: BoltV3OrderExecutionPolicy,
         execution_venue: Venue,
     ) -> Self {
         Self {
-            fee_provider,
             decision_evidence,
             submit_admission,
             order_execution_policy,
             execution_venue,
+            order_routing: None,
             realized_volatility: None,
             settlement: None,
         }
@@ -156,14 +154,6 @@ impl StrategyBuildContext {
         self
     }
 
-    pub fn fee_provider(&self) -> &dyn FeeProvider {
-        self.fee_provider.as_ref()
-    }
-
-    pub fn fee_provider_arc(&self) -> Arc<dyn FeeProvider> {
-        self.fee_provider.clone()
-    }
-
     pub fn decision_evidence(&self) -> &dyn BoltV3DecisionEvidenceWriter {
         self.decision_evidence.as_ref()
     }
@@ -182,6 +172,21 @@ impl StrategyBuildContext {
 
     pub fn order_execution_policy(&self) -> BoltV3OrderExecutionPolicy {
         self.order_execution_policy
+    }
+
+    pub fn with_order_routing(mut self, order_routing: BoltV3OrderRoutingHandle) -> Self {
+        self.order_routing = Some(order_routing);
+        self
+    }
+
+    pub fn order_routing(&self) -> anyhow::Result<&BoltV3OrderRoutingHandle> {
+        self.order_routing
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("economics-backed order routing is unavailable"))
+    }
+
+    pub fn order_routing_handle(&self) -> anyhow::Result<BoltV3OrderRoutingHandle> {
+        self.order_routing().cloned()
     }
 
     #[cfg(test)]

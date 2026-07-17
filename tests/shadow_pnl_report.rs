@@ -5,6 +5,7 @@ use bolt_v2::bolt_v3_decision_evidence::{
     BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
 };
+use rust_decimal::Decimal;
 
 #[test]
 fn shadow_pnl_report_joins_fixture_evidence_to_settlements() {
@@ -30,7 +31,7 @@ fn shadow_pnl_report_joins_fixture_evidence_to_settlements() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     assert_eq!(
         stdout,
-        "day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,2,0.5,3,0.055,2.945,175,2500\n"
+        "day,asset,would_be_trades,win_rate,gross_pnl,estimated_economics,estimated_net_pnl,actual_pnl_status,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,2,0.5,3,-0.055,2.945,unavailable_until_actual_ledger,175,2500\n"
     );
 }
 
@@ -97,7 +98,7 @@ fn shadow_pnl_report_matches_settlement_by_market_and_instrument() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     assert_eq!(
         stdout,
-        "day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,1,0,-3,0.015,-3.015,200,-10000\n"
+        "day,asset,would_be_trades,win_rate,gross_pnl,estimated_economics,estimated_net_pnl,actual_pnl_status,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,1,0,-3,-0.015,-3.015,unavailable_until_actual_ledger,200,-10000\n"
     );
 }
 
@@ -268,7 +269,7 @@ fn shadow_pnl_report_matches_unique_settlement_without_settlement_market_id() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     assert_eq!(
         stdout,
-        "day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,1,1,6,0.04,5.96,150,15000\n"
+        "day,asset,would_be_trades,win_rate,gross_pnl,estimated_economics,estimated_net_pnl,actual_pnl_status,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,1,1,6,-0.04,5.96,unavailable_until_actual_ledger,150,15000\n"
     );
 }
 
@@ -418,7 +419,7 @@ fn shadow_pnl_report_escapes_csv_asset_fields() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     assert_eq!(
         stdout,
-        "day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,\"BTC,PERP\",1,1,6,0.04,5.96,150,15000\n"
+        "day,asset,would_be_trades,win_rate,gross_pnl,estimated_economics,estimated_net_pnl,actual_pnl_status,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,\"BTC,PERP\",1,1,6,-0.04,5.96,unavailable_until_actual_ledger,150,15000\n"
     );
 }
 
@@ -710,7 +711,9 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
         "decision": {
             "client_order_id": client_order_id,
             "intent_kind": "entry",
-            "outcome": "admitted"
+            "outcome": "admitted",
+            "economics_core_total": "-0.01",
+            "economics_core_edge_ratio": "0.015"
         }
     });
     let evidence = [snapshot, admission]
@@ -834,6 +837,15 @@ fn push_trade_lines_with_snapshot_market_id(
     trade: TradeFixture,
     market_id: Option<&str>,
 ) {
+    let price = Decimal::from_str_exact(trade.price).expect("fixture price should parse");
+    let quantity = Decimal::from_str_exact(trade.quantity).expect("fixture quantity should parse");
+    let edge_bps = Decimal::from_str_exact(trade.expected_edge_basis_points)
+        .expect("fixture edge should parse");
+    let economics_bps = Decimal::from_str_exact(trade.fee_rate_basis_points)
+        .expect("fixture economics rate should parse");
+    let basis_points = Decimal::from(10_000_u64);
+    let economics_core_edge_ratio = edge_bps / basis_points;
+    let economics_core_total = -(price * quantity * economics_bps / basis_points);
     let mut snapshot_record = serde_json::json!({
             "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": trade.recorded_at_utc_ns,
@@ -842,8 +854,6 @@ fn push_trade_lines_with_snapshot_market_id(
             "kind": "strategy_input_snapshot",
             "snapshot": {
                 "selected_side": trade.selected_side,
-                "expected_edge_basis_points": trade.expected_edge_basis_points,
-                "fee_rate_basis_points": trade.fee_rate_basis_points,
                 "client_order_id": trade.client_order_id
             }
     });
@@ -878,7 +888,9 @@ fn push_trade_lines_with_snapshot_market_id(
             "decision": {
                 "client_order_id": trade.client_order_id,
                 "intent_kind": "entry",
-                "outcome": "admitted"
+                "outcome": "admitted",
+                "economics_core_total": economics_core_total.to_string(),
+                "economics_core_edge_ratio": economics_core_edge_ratio.to_string()
             }
         }))
         .expect("admission fixture should serialize"),

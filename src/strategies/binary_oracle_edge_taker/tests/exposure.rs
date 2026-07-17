@@ -28,8 +28,6 @@ fn position_events_update_live_position_state() {
     assert_eq!(managed_position.instrument_id, instrument_id);
     assert_eq!(managed_position.position_id, position_id);
     assert_eq!(managed_position.lifecycle.outcome_side(), None);
-    assert_eq!(managed_position.outcome_fees, OutcomeFeeState::empty());
-    assert_eq!(managed_position.historical_entry_fee_bps, None);
     assert_eq!(managed_position.entry_order_side, OrderSide::Buy);
     assert_eq!(managed_position.side, PositionSide::Long);
     assert_eq!(managed_position.quantity, Quantity::new(10.0, 2));
@@ -652,7 +650,6 @@ fn position_event_without_context_does_not_guess_side_from_suffix() {
     );
     let position = managed_position_ref(&strategy).expect("position should be tracked");
     assert_eq!(position.lifecycle.market_id(), None);
-    assert_eq!(position.outcome_fees, OutcomeFeeState::empty());
     assert_eq!(position.lifecycle.settlement_strike(), None);
     assert_eq!(position.lifecycle.selection_published_at_ms(), None);
     assert_eq!(position.lifecycle.seconds_to_expiry_at_selection(), None);
@@ -734,13 +731,6 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
     assert_eq!(
         managed_position_ref(&strategy).and_then(|p| p.lifecycle.seconds_to_expiry_at_selection()),
         Some(300)
-    );
-    assert_eq!(
-        managed_position_ref(&strategy)
-            .and_then(|p| p.outcome_fees.up_instrument_id)
-            .map(|instrument_id| instrument_id.to_string())
-            .as_deref(),
-        Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
     );
     assert_eq!(
         strategy.book_subscriptions.tracked_position_instrument_id,
@@ -841,11 +831,9 @@ fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
 
 #[test]
 fn forced_flat_exit_submits_despite_resting_pending_entry() {
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
     for instrument_id in configured_instruments {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy();
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -912,22 +900,15 @@ fn forced_flat_exit_submits_despite_resting_pending_entry() {
 
 #[test]
 fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
     for instrument_id in configured_instruments {
         let submit_admission = submit_admission_with_provider_cap(
             Decimal::new(10_000, 0),
             Arc::new(RecordingDecisionEvidenceWriter),
         );
-        let (mut strategy, fee_provider) =
-            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
-        strategy.context = StrategyBuildContext::new(
-            fee_provider,
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
-            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-            fixture_execution_venue(),
         );
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -1812,8 +1793,7 @@ fn late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_clos
 #[test]
 fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-MALFORMED-AMOUNTS");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -1923,8 +1903,7 @@ fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycl
 #[test]
 fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-FOK-NO-MATCH");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -1977,8 +1956,7 @@ fn incident_entry_reject_strings_pin_classifier_classes() {
 #[test]
 fn balance_entry_reject_stops_same_instrument_entry_decisions() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-BALANCE-REJECTED");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -2014,8 +1992,7 @@ fn balance_entry_reject_stops_same_instrument_entry_decisions() {
 #[test]
 fn unknown_entry_reject_waits_for_book_change_before_redeciding() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-UNKNOWN-REJECTED");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -2051,8 +2028,7 @@ fn unknown_entry_reject_waits_for_book_change_before_redeciding() {
 
 #[test]
 fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     let pending = pending_entry_state(
         &mut strategy,
         ClientOrderId::from("ENTRY-RECONCILE-BOOK-DELTA"),
@@ -2123,8 +2099,7 @@ fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
 
 #[test]
 fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    configure_limit_base_entry_order(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     let cache = register_test_strategy(&mut strategy);
@@ -2198,22 +2173,15 @@ fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
 
 #[test]
 fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
     for instrument_id in configured_instruments {
         let submit_admission = submit_admission_with_provider_cap(
             Decimal::new(10_000, 0),
             Arc::new(RecordingDecisionEvidenceWriter),
         );
-        let (mut strategy, fee_provider) =
-            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
-        strategy.context = StrategyBuildContext::new(
-            fee_provider,
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
-            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-            fixture_execution_venue(),
         );
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -2296,8 +2264,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
 
 #[test]
 fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    configure_limit_base_entry_order(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     set_shadow_order_execution_policy(&mut strategy);
@@ -2454,8 +2421,6 @@ fn position_closed_quarantines_foreign_venue_unsupported_position_id_collision()
             ),
             instrument_id,
             position_id,
-            outcome_fees: OutcomeFeeState::empty(),
-            historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(5.0, 2),
@@ -2491,8 +2456,6 @@ fn position_closed_releases_unsupported_observed_for_same_position() {
             ),
             instrument_id,
             position_id,
-            outcome_fees: OutcomeFeeState::empty(),
-            historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(5.0, 2),
@@ -2895,14 +2858,6 @@ fn position_opened_after_rotation_preserves_existing_position_context() {
         open_position.lifecycle.seconds_to_expiry_at_selection(),
         Some(300)
     );
-    assert_eq!(
-        open_position
-            .outcome_fees
-            .up_instrument_id
-            .map(|instrument_id| instrument_id.to_string())
-            .as_deref(),
-        Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
-    );
     assert_eq!(open_position.book.best_bid, preserved_book.best_bid);
 }
 
@@ -3104,8 +3059,6 @@ fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
             None,
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         book: strategy.active.books.up.clone(),
     };
     set_entry_reconcile_pending(
@@ -3150,8 +3103,6 @@ fn task5_one_position_invariant_panics_in_debug_or_rejects_in_release() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-INVARIANT-1"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(5.0, 2),
@@ -3193,8 +3144,6 @@ fn entry_gate_reports_one_position_invariant_only_on_occupancy_change() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-INVARIANT-2"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(5.0, 2),
@@ -3260,11 +3209,9 @@ fn taker_hardening_guards_are_entry_only_and_do_not_block_exits() {
     // Exits must always be able to fire (risk-off), even with a crossed book
     // and an armed spike cooldown. The exit path is structurally independent
     // of `entry_gate_decision_at`, so neither new gate reason can reach it.
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
     for instrument_id in configured_instruments {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy();
         strategy.config.exit_order.order_type = OrderType::Limit;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
         strategy.config.exit_order.is_post_only = true;
@@ -3354,25 +3301,13 @@ fn task5_cooldown_is_per_market_and_recovery_blocks_new_entries() {
 
 #[test]
 fn exit_evaluation_log_fields_use_position_context_after_rotation() {
-    let fee_provider = RecordingFeeProvider::cold();
-    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(100, 2));
-    fee_provider.set_fee(
-        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
-        Decimal::new(200, 2),
-    );
-    fee_provider.set_fee("condition-MKT-2-MKT-2-UP.POLYMARKET", Decimal::new(300, 2));
-    fee_provider.set_fee(
-        "condition-MKT-2-MKT-2-DOWN.POLYMARKET",
-        Decimal::new(400, 2),
-    );
-
-    let mut strategy = test_strategy_with_fee_provider(fee_provider);
+    let mut strategy =
+        test_strategy_with_economics_source(RecordingEconomicsAdmissionSource::cold());
     strategy.config.warmup_tick_count = 2;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     strategy.active.interval_open = Some(3_100.0);
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(2_000);
-    strategy.refresh_fee_readiness();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -3385,8 +3320,6 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-LOG-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(1.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -3428,14 +3361,11 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
         "receive-fresh RV source evidence remains available after market rotation"
     );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(2_000));
-    assert_eq!(fields.up_fee_bps, Some(1.0));
-    assert_eq!(fields.down_fee_bps, Some(2.0));
 }
 
 #[test]
 fn unknown_recovered_position_lifecycle_blocks_instead_of_liquidating_by_default() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
+    let mut strategy = ready_to_trade_strategy();
     let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
     tracked_book.last_observed_instrument_id = Some(instrument_id);
     tracked_book.best_bid = Some(0.520);
@@ -3447,8 +3377,6 @@ fn unknown_recovered_position_lifecycle_blocks_instead_of_liquidating_by_default
             lifecycle: BoltV3PositionMarketLifecycle::missing(),
             instrument_id,
             position_id: PositionId::from("P-UNKNOWN-001"),
-            outcome_fees: OutcomeFeeState::empty(),
-            historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(5.0, 2),
@@ -3488,8 +3416,6 @@ fn exposure_entry_reconcile_pending_preserves_context_and_blocks_new_entries() {
             Some(300),
         ),
         instrument_id,
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         book: strategy.active.books.up.clone(),
     };
     let exposure = ExposureState::EntryReconcilePending {
@@ -3523,8 +3449,6 @@ fn exposure_exit_pending_requires_both_fill_and_close_to_become_flat() {
             ),
             instrument_id,
             position_id: PositionId::from("P-EXIT-STATE-001"),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -3580,8 +3504,6 @@ fn residual_position_after_terminal_preserves_fill_precision() {
             ),
             instrument_id,
             position_id: PositionId::from("P-EXIT-PRECISION-001"),
-            outcome_fees: OutcomeFeeState::empty(),
-            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -3708,8 +3630,6 @@ fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
             ),
             instrument_id,
             position_id: PositionId::from("P-RECOVERY-001"),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(5.0, 2),
@@ -3755,8 +3675,6 @@ fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidenc
             Some(300),
         ),
         instrument_id,
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         book: configured_book_for_instrument(&mut strategy, instrument_id),
     };
     set_pending_entry(&mut strategy, pending);
@@ -3905,8 +3823,7 @@ fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
 
 #[test]
 fn new_entry_submit_clears_stale_flat_terminal_override() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     strategy.config.order_notional_target = 25.0;
     strategy.config.maximum_position_notional = 25.0;
@@ -3945,8 +3862,7 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
 #[test]
 fn live_entered_and_pending_adopted_positions_retain_interval_end_boundary() {
     let live_pending_entry = || {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        register_test_strategy_with_active_instruments(&mut strategy);
+        let mut strategy = ready_to_trade_strategy();
         set_active_books_best_prices(&mut strategy, 0.40, 0.41);
         strategy.config.order_notional_target = 25.0;
         strategy.config.maximum_position_notional = 25.0;
@@ -4049,7 +3965,6 @@ fn pending_entry_for_terminal_override(
     instrument_id: InstrumentId,
     client_order_id: ClientOrderId,
 ) -> PendingEntryState {
-    let outcome_fees = strategy.active.outcome_fees.clone();
     let book = configured_book_for_instrument(strategy, instrument_id);
     PendingEntryState {
         client_order_id,
@@ -4064,8 +3979,6 @@ fn pending_entry_for_terminal_override(
             Some(300),
         ),
         instrument_id,
-        outcome_fees,
-        historical_entry_fee_bps: Some(0.0),
         book,
     }
 }

@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -35,6 +35,199 @@ use nautilus_model::{
 
 const TEST_DELAY_POST_STOP_SECS: u64 = 0;
 const TEST_TRADER_ID: &str = "TESTER-001";
+
+#[derive(Clone)]
+struct SampleEconomicsAdapter {
+    estimate: bolt_v2::economics::VenueQuoteEstimate,
+}
+
+struct SampleEconomicsAdmissionSource;
+
+impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
+    for SampleEconomicsAdmissionSource
+{
+    fn quote_admission(
+        &self,
+        intent: bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionQuoteIntent,
+    ) -> Result<
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission,
+        bolt_v2::economics::EconomicsUnavailable,
+    > {
+        use bolt_v2::economics::*;
+        use rust_decimal::Decimal;
+
+        let valid_until_ns = intent.request.requested_at_ns.saturating_add(1);
+        let source = SourceValidity {
+            source_id: SourceId::new("test-economics-source")?,
+            snapshot_id: SnapshotId::new("test-economics-snapshot")?,
+            source_at_ns: intent.request.requested_at_ns,
+            fetched_at_ns: intent.request.requested_at_ns,
+            valid_until_ns,
+        };
+        let adapter = SampleEconomicsAdapter {
+            estimate: VenueQuoteEstimate {
+                authority: source.clone(),
+                components: vec![EstimatedEconomicComponent {
+                    component_id: EconomicComponentId::new("test-core-credit")?,
+                    class: EconomicClass::Credit,
+                    kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
+                    scope: EconomicScope::Decision {
+                        decision_correlation_id: intent.request.decision_correlation_id.clone(),
+                    },
+                    point_effect: SignedNativeEffect::currency(
+                        Decimal::ONE,
+                        intent.request.reporting_unit.clone(),
+                    )?,
+                    debit_risk_bound: None,
+                    admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
+                    calculation_factors: Vec::new(),
+                    formula_id: FormulaId::new("test-credit-formula")?,
+                    source: source.clone(),
+                    normalized: None,
+                }],
+            },
+        };
+        bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(
+            adapter,
+        ))
+        .quote_admission(
+            bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
+                edge_basis: EdgeBasisEvidence {
+                    policy_id: intent.request.edge_basis_policy_id.clone(),
+                    policy_version: 1,
+                    normalized_amount: intent.base_reservation_notional,
+                    scope: EconomicScope::Decision {
+                        decision_correlation_id: intent.request.decision_correlation_id.clone(),
+                    },
+                    source_snapshot_ids: vec![source.snapshot_id],
+                    valid_until_ns,
+                },
+                request: intent.request,
+                gross_expected_value: intent.gross_expected_value,
+                valuations: Vec::new(),
+                base_reservation_notional: intent.base_reservation_notional,
+            },
+        )
+    }
+}
+
+pub fn sample_order_routing_handle(
+    execution_client_id: &str,
+) -> bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
+    bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
+        Arc::new(SampleEconomicsAdmissionSource),
+        execution_client_id,
+        "test-account",
+        "test-product-surface",
+        "test-reporting-policy",
+        "test-reporting-unit",
+        "test-edge-policy",
+    )
+    .expect("sample order routing handle should build")
+}
+
+impl bolt_v2::economics::VenueEconomicsAdapter for SampleEconomicsAdapter {
+    fn quote(
+        &self,
+        _request: &bolt_v2::economics::EconomicQuoteRequest,
+    ) -> Result<bolt_v2::economics::VenueQuoteEstimate, bolt_v2::economics::EconomicsUnavailable>
+    {
+        Ok(self.estimate.clone())
+    }
+}
+
+pub fn sample_economics_admission(
+    base_reservation_notional: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    use bolt_v2::economics::*;
+    use rust_decimal::Decimal;
+
+    let requested_at_ns = 1;
+    let valid_until_ns = 2;
+    let reporting_unit = NativeUnitId::new("test-reporting-unit").expect("valid test unit");
+    let decision_correlation_id =
+        DecisionCorrelationId::new("test-decision").expect("valid test decision id");
+    let source = SourceValidity {
+        source_id: SourceId::new("test-economics-source").expect("valid test source id"),
+        snapshot_id: SnapshotId::new("test-economics-snapshot").expect("valid test snapshot id"),
+        source_at_ns: requested_at_ns,
+        fetched_at_ns: requested_at_ns,
+        valid_until_ns,
+    };
+    let request = EconomicQuoteRequest {
+        execution_client_id: ExecutionClientId::new("test-execution-client")
+            .expect("valid test execution client id"),
+        account_id: bolt_v2::economics::AccountId::new("test-account")
+            .expect("valid test account id"),
+        instrument_id: bolt_v2::economics::InstrumentId::new("test-instrument")
+            .expect("valid test instrument id"),
+        product_surface_id: ProductSurfaceId::new("test-product-surface")
+            .expect("valid test product surface id"),
+        order_side: OrderSide::Buy,
+        liquidity_role: LiquidityRoleAssumption::Taker,
+        planned_fill_legs: vec![PlannedFillLeg {
+            price: Decimal::ONE,
+            quantity: base_reservation_notional,
+        }],
+        routing: RoutingContext {
+            attached_charge: None,
+        },
+        position: None,
+        lifecycle_path: LifecyclePath::PlannedExit,
+        reporting_policy_id: ReportingPolicyId::new("test-reporting-policy")
+            .expect("valid test reporting policy id"),
+        reporting_unit: reporting_unit.clone(),
+        edge_basis_policy_id: EdgeBasisPolicyId::new("test-edge-policy")
+            .expect("valid test edge policy id"),
+        requested_at_ns,
+        decision_correlation_id: decision_correlation_id.clone(),
+    };
+    let adapter = SampleEconomicsAdapter {
+        estimate: VenueQuoteEstimate {
+            authority: source.clone(),
+            components: vec![EstimatedEconomicComponent {
+                component_id: EconomicComponentId::new("test-core-credit")
+                    .expect("valid test component id"),
+                class: EconomicClass::Credit,
+                kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
+                scope: EconomicScope::Decision {
+                    decision_correlation_id: decision_correlation_id.clone(),
+                },
+                point_effect: SignedNativeEffect::currency(Decimal::ONE, reporting_unit)
+                    .expect("valid test effect"),
+                debit_risk_bound: None,
+                admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
+                calculation_factors: Vec::new(),
+                formula_id: FormulaId::new("test-credit-formula").expect("valid test formula id"),
+                source: source.clone(),
+                normalized: None,
+            }],
+        },
+    };
+    bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(
+        adapter,
+    ))
+    .quote_admission(
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
+            request,
+            gross_expected_value: Decimal::ONE,
+            edge_basis: EdgeBasisEvidence {
+                policy_id: EdgeBasisPolicyId::new("test-edge-policy")
+                    .expect("valid test edge policy id"),
+                policy_version: 1,
+                normalized_amount: base_reservation_notional,
+                scope: EconomicScope::Decision {
+                    decision_correlation_id,
+                },
+                source_snapshot_ids: vec![source.snapshot_id],
+                valid_until_ns,
+            },
+            valuations: Vec::new(),
+            base_reservation_notional,
+        },
+    )
+    .expect("sample economics admission should quote")
+}
 
 #[track_caller]
 pub fn fast_test_live_node() -> LiveNode {

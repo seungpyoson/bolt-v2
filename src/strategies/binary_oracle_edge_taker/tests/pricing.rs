@@ -19,8 +19,6 @@ const TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE: f64 = TEST_PRICING_SNAPSHOT_NEWE
 const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
     TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
 
-struct PriceSensitiveEntryFeeProvider;
-
 const RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS: u64 = 3_201;
 #[derive(Clone, Copy, Debug)]
 enum RvClockDomainAmendmentSnapshot {
@@ -40,8 +38,7 @@ const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(RvClockDomainAmendmentSnapshot, u64, bo
 ];
 
 fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    rv_clock_domain_amendment_configure_surface(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     rv_clock_domain_amendment_prepare_non_rv_inputs(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
     assert_rv_clock_domain_amendment_non_rv_entry_gate_open(&strategy);
@@ -146,32 +143,6 @@ fn rv_clock_domain_amendment_set_snapshot(
     }
 }
 
-impl FeeProvider for PriceSensitiveEntryFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        Some(Decimal::ZERO)
-    }
-
-    fn entry_fee_bps(&self, _instrument: &InstrumentAny, entry_price: Decimal) -> Option<Decimal> {
-        if entry_price <= Decimal::new(55, 2) {
-            Some(Decimal::from(5_000))
-        } else {
-            Some(Decimal::ZERO)
-        }
-    }
-
-    fn max_entry_fee_bps(
-        &self,
-        _instrument: &InstrumentAny,
-        _entry_price: Decimal,
-    ) -> Option<Decimal> {
-        Some(Decimal::from(5_000))
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async move { Ok(()) }.boxed()
-    }
-}
-
 #[test]
 fn rv_clock_domain_amendment_initial_uncertainty_uses_entry_receive_stamp() {
     for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
@@ -193,7 +164,7 @@ fn rv_clock_domain_amendment_initial_uncertainty_uses_entry_receive_stamp() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
+fn rv_clock_domain_amendment_sized_edge_uses_entry_receive_stamp() {
     let strategy = rv_clock_domain_amendment_ready_entry();
     let evaluation = strategy.entry_evaluation_for_receive_at(
         RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
@@ -210,8 +181,7 @@ fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_resized_fee_regate_uses_entry_receive_stamp_before_fixed_point_rejection()
- {
+fn rv_clock_domain_amendment_resized_edge_uses_entry_receive_stamp_before_fixed_point_rejection() {
     fn cliff_strategy() -> BinaryOracleEdgeTaker {
         let mut strategy = rv_clock_domain_amendment_ready_entry();
         strategy.config.order_notional_target = 10.0;
@@ -841,8 +811,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
 
 #[test]
 fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.pricing.set_selected_pricing_spot(None);
+    let mut strategy = ready_to_trade_strategy();
     strategy
         .pricing
         .set_last_reference_fair_value(Some(3_101.0));
@@ -869,10 +838,7 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
 
 #[test]
 fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 1_200)));
+    let mut strategy = ready_to_trade_strategy();
     strategy.pricing.clear_latest_realized_vol_snapshot();
 
     let decision = strategy.entry_evaluation_at(1_200);
@@ -960,39 +926,6 @@ fn reference_current_price_does_not_open_interval_without_source_bound_price_to_
     assert_eq!(strategy.active.reference_current_price, Some(3_101.0));
     assert_eq!(strategy.active.last_reference_ts_ms, Some(1_000));
     assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
-}
-
-#[test]
-fn entry_evaluation_uses_price_adjusted_fee_bps_not_cached_base_fee_rate() {
-    let (mut strategy, fee_provider) =
-        ready_to_trade_strategy_with_recording_fees(Decimal::from(1000), Decimal::from(1000));
-    fee_provider.set_entry_fee_bps(
-        "condition-MKT-1-MKT-1-UP.POLYMARKET",
-        Decimal::from_str("511.111111111111").expect("test decimal should parse"),
-    );
-    fee_provider.set_entry_fee_bps(
-        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
-        Decimal::from_str("182.027027027027").expect("test decimal should parse"),
-    );
-    register_test_strategy_with_active_instruments(&mut strategy);
-
-    let decision = strategy.entry_submission_decision_at(1_200);
-    let fields = strategy.entry_evaluation_log_fields_at(1_200, &decision);
-
-    assert!(
-        fields
-            .up_fee_bps
-            .is_some_and(|value| (value - 511.111111111111).abs() < 1e-9),
-        "up fee bps should use price-adjusted fee: {:?}",
-        fields.up_fee_bps
-    );
-    assert!(
-        fields
-            .down_fee_bps
-            .is_some_and(|value| (value - 182.027027027027).abs() < 1e-9),
-        "down fee bps should use price-adjusted fee: {:?}",
-        fields.down_fee_bps
-    );
 }
 
 #[test]
@@ -1195,10 +1128,7 @@ fn task5_exit_decision_uses_hold_favoring_hysteresis_and_holds_on_missing_inputs
 
 #[test]
 fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 1_200)));
+    let mut strategy = ready_to_trade_strategy();
     strategy.pricing.clear_latest_realized_vol_snapshot();
 
     let decision = strategy.entry_evaluation_at(1_200);
@@ -1213,8 +1143,7 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 
 #[test]
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     // Both-sided cheap book so each outcome is unambiguously tradeable: the #789
     // diffusion-grounded uncertainty band is nonzero even at market open, so a
     // knife-edge near-strike book would correctly wipe the marginal side.
@@ -1301,14 +1230,7 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
 
 #[test]
 fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap_limit() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.order_notional_target = 5.0;
-    strategy.config.vwap_depth_limit_bps = 0;
-    strategy.config.slippage_buffer_bps = 0;
-    strategy.config.edge_threshold_basis_points = 0;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
+    let mut strategy = ready_to_trade_strategy();
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1358,8 +1280,7 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
 
 #[test]
 fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
     strategy.config.vwap_depth_limit_bps = 0;
@@ -1415,120 +1336,9 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
 }
 
 #[test]
-fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
-    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
-    configure_supported_market_quote_entry_order(&mut strategy);
-    strategy.config.order_notional_target = 10.0;
-    strategy.config.maximum_position_notional = 100.0;
-    strategy.config.risk_lambda = 1.0;
-    // A deliberately high EV reference scales the sized notional below the
-    // 0.50-level depth so the sized probe's limit price drops into the
-    // punitive <= 0.55 fee region and forces the sized re-evaluation block.
-    strategy.config.sizing_ev_reference_bps = 10_000;
-    strategy.config.book_impact_cap_bps = 5_000;
-    strategy.config.vwap_depth_limit_bps = 5_000;
-    strategy.config.edge_threshold_basis_points = i64::default();
-    strategy.config.slippage_buffer_bps = 0;
-    strategy.config.warmup_tick_count = 2;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    strategy.active.price_to_beat = Some(3_100.0);
-    strategy.active.interval_open = Some(3_100.0);
-    strategy.active.warmup_count = 2;
-    strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.fast_venue_incoherent = false;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_500.0, 1_200)));
-    strategy
-        .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
-    register_test_strategy_with_active_instruments(&mut strategy);
-
-    let up_instrument_id = strategy
-        .instrument_id_for_side(OutcomeSide::Up)
-        .expect("UP instrument should be configured");
-    let down_instrument_id = strategy
-        .instrument_id_for_side(OutcomeSide::Down)
-        .expect("DOWN instrument should be configured");
-    assert!(strategy.active.books.update_from_deltas(&book_deltas(
-        up_instrument_id,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
-            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
-        ],
-    )));
-    assert!(strategy.active.books.update_from_deltas(&book_deltas(
-        down_instrument_id,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
-        ],
-    )));
-
-    let evaluation = strategy.entry_evaluation_at(1_200);
-
-    assert_eq!(
-        evaluation.selected_side, None,
-        "sized re-evaluation must block when the sized limit price has a wider fee band: {evaluation:#?}"
-    );
-    assert!(
-        evaluation
-            .up_executable_edge
-            .is_some_and(|edge| edge.trade_allowed),
-        "preliminary UP edge should remain visible when sized re-evaluation blocks: {evaluation:#?}"
-    );
-    assert_eq!(
-        evaluation
-            .sized_executable_edge
-            .as_ref()
-            .and_then(|edge| edge.block_reason),
-        Some(BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge)
-    );
-    assert_eq!(
-        evaluation.pricing_blocked_by,
-        vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
-            OutcomeSide::Up,
-            BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
-        )],
-        "sized selected-side threshold failure should surface as a pricing block"
-    );
-    // lead_gap and jitter are 0 and the recomputed sized fee contributes a 0.5
-    // fee-uncertainty term, so the band is 0.5 plus the #789 diffusion-grounded
-    // time term (realized_vol 1.5 * sqrt(T)) at seconds_to_expiry = 300 (snapshot
-    // start 1_000ms, eval 1_200ms => 0 elapsed seconds). The prior inverted term
-    // was exactly 0 at market open, which is why this used to assert band == 0.5.
-    let expected_time_band = crate::bolt_v3_taker_updown_signal::time_uncertainty_probability(
-        1.5,
-        300,
-        crate::bolt_v3_numeric::SECONDS_PER_YEAR_F64,
-    )
-    .expect("finite realized vol yields a time-uncertainty band")
-    .value();
-    let expected_band = 0.5 + expected_time_band;
-    assert!(
-        evaluation
-            .uncertainty_band_probability
-            .is_some_and(|band| (band.value() - expected_band).abs() < 1e-9),
-        "final selected-side band should be the recomputed sized fee plus the diffusion time term: {evaluation:#?}"
-    );
-}
-
-/// PR #623 review reproduction: a cliff-shaped ask book (thin cheap level,
-/// expensive depth behind it) makes the sized re-evaluation oscillate — the
-/// small first-pass size fills entirely at the cheap level, the EV jumps, the
-/// resize saturates to the full target, and the final re-priced edge at the
-/// full target is thin again. Acceptance must never keep a notional larger
-/// than the robust size supported by the final re-priced edge.
-#[test]
 fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
     fn cliff_strategy() -> BinaryOracleEdgeTaker {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        register_test_strategy_with_active_instruments(&mut strategy);
+        let mut strategy = ready_to_trade_strategy();
         strategy.config.order_notional_target = 10.0;
         strategy.config.maximum_position_notional = 10.0;
         strategy.config.risk_lambda = 0.5;
@@ -1666,8 +1476,7 @@ fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
 
 #[test]
 fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_tolerance() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.order_notional_target = 10.0;
     strategy.config.maximum_position_notional = 10.0;
     strategy.config.risk_lambda = 0.5;
@@ -1762,113 +1571,8 @@ fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_toleran
 }
 
 #[test]
-fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
-    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
-    configure_supported_market_quote_entry_order(&mut strategy);
-    strategy.config.order_notional_target = 5.0;
-    strategy.config.maximum_position_notional = 5.0;
-    strategy.config.vwap_depth_limit_bps = 2_000;
-    strategy.config.edge_threshold_basis_points = 0;
-    strategy.config.slippage_buffer_bps = 0;
-    strategy.config.warmup_tick_count = 2;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    strategy.active.price_to_beat = Some(3_100.0);
-    strategy.active.interval_open = Some(3_100.0);
-    strategy.active.warmup_count = 2;
-    strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.fast_venue_incoherent = false;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
-    strategy
-        .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
-    register_test_strategy_with_active_instruments(&mut strategy);
-    set_configured_books_depth(
-        &mut strategy,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.50, 5.0),
-            (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
-        ],
-    );
-
-    let evaluation = strategy.entry_evaluation_at(1_200);
-
-    assert_eq!(
-        evaluation
-            .up_executable_edge
-            .as_ref()
-            .map(|edge| edge.cost_breakdown.limit_price),
-        Some(Some(0.60))
-    );
-    assert!(
-        evaluation
-            .up_executable_edge
-            .as_ref()
-            .and_then(|edge| executable_edge_fee_bps(Some(*edge)))
-            .is_some_and(|fee_bps| (fee_bps - 5_000.0).abs() < 1e-9),
-        "fee must be probed at exact-size VWAP price, not the last limit level: {evaluation:#?}"
-    );
-}
-
-#[test]
-fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
-    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
-    configure_supported_market_quote_entry_order(&mut strategy);
-    strategy.config.order_notional_target = 5.0;
-    strategy.config.maximum_position_notional = 5.0;
-    strategy.config.vwap_depth_limit_bps = 2_000;
-    strategy.config.edge_threshold_basis_points = 0;
-    strategy.config.slippage_buffer_bps = 0;
-    strategy.config.warmup_tick_count = 2;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    strategy.active.price_to_beat = Some(3_100.0);
-    strategy.active.interval_open = Some(3_100.0);
-    strategy.active.warmup_count = 2;
-    strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.fast_venue_incoherent = false;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
-    strategy
-        .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
-    set_configured_books_depth(
-        &mut strategy,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
-        ],
-    );
-
-    let evaluation = strategy.entry_evaluation_at(1_200);
-
-    assert_eq!(
-        evaluation.pricing_blocked_by,
-        vec![
-            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up),
-            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down),
-        ],
-        "test builds must not fall back to FeeProvider::fee_bps when the NT instrument is missing: {evaluation:#?}"
-    );
-    assert_eq!(evaluation.selected_side, None);
-}
-
-#[test]
 fn executable_edge_blocks_unsupported_post_only_entry_shape() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-    strategy.config.entry_order.is_post_only = true;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
+    let mut strategy = ready_to_trade_strategy();
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1893,8 +1597,7 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
 
 #[test]
 fn entry_submission_blocks_legacy_limit_base_entry_shape_before_liability_sizing() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    configure_limit_base_entry_order(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
@@ -1974,8 +1677,7 @@ fn entry_submission_notional_guard_blocks_non_finite_inputs() {
 
 #[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.config.order_notional_target = UNIT_F64;
     strategy.config.maximum_position_notional = UNIT_F64;
     strategy.config.edge_threshold_basis_points = 0;
@@ -2025,8 +1727,7 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
 
 #[test]
 fn task6_entry_evaluation_requires_live_uncertainty_components() {
-    let mut strategy =
-        ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
+    let mut strategy = ready_to_trade_strategy();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy
         .pricing
@@ -2048,8 +1749,7 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
 
 #[test]
 fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
@@ -2095,8 +1795,7 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
 
 #[test]
 fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let mut strategy = ready_to_trade_strategy();
     strategy.observe_reference_snapshot(
         &ReferenceSnapshot {
             ts_ms: 1_200,
@@ -2196,7 +1895,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
 
 #[test]
 fn exit_hold_ev_does_not_require_uncertainty_band_components() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -2209,8 +1908,6 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-MISSING-UNCERTAINTY"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2239,7 +1936,7 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
 
 #[test]
 fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -2252,8 +1949,6 @@ fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-SYMMETRIC-HOLD"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2289,7 +1984,7 @@ fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
 
 #[test]
 fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatility() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -2302,8 +1997,6 @@ fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatili
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-ZERO-RV"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),

@@ -41,11 +41,13 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
         leg_a: QuoteTargetLeg {
             side: QuoteSide::Buy,
             price: legs.yes_price,
+            gross_edge_per_unit: inputs.band.half_spread(),
             size_notional,
         },
         leg_b: QuoteTargetLeg {
             side: QuoteSide::Buy,
             price: legs.no_price,
+            gross_edge_per_unit: inputs.band.half_spread(),
             size_notional,
         },
     })

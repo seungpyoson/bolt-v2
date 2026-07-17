@@ -48,6 +48,7 @@ pub enum MakerOrderIntent {
         order_identity: OrderIdentity,
         price: f64,
         quantity: f64,
+        gross_edge_per_unit: f64,
     },
     Cancel {
         leg: Leg,
@@ -96,6 +97,7 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
             quote_side: input.targets.leg_a.side,
             price: input.targets.leg_a.price,
             quantity: input.yes_quantity,
+            gross_edge_per_unit: input.targets.leg_a.gross_edge_per_unit,
             binding: input.yes,
         }),
         no: maker_leg_order_intent(MakerLegOrderInput {
@@ -104,6 +106,7 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
             quote_side: input.targets.leg_b.side,
             price: input.targets.leg_b.price,
             quantity: input.no_quantity,
+            gross_edge_per_unit: input.targets.leg_b.gross_edge_per_unit,
             binding: input.no,
         }),
     }
@@ -131,6 +134,7 @@ pub fn maker_order_plan_from_market_action(input: MakerMarketActionOrderInput) -
                 quote_side: input.targets.leg_a.side,
                 price: input.targets.leg_a.price,
                 quantity: input.yes_quantity,
+                gross_edge_per_unit: input.targets.leg_a.gross_edge_per_unit,
                 binding: input.yes,
             })
         }
@@ -140,6 +144,7 @@ pub fn maker_order_plan_from_market_action(input: MakerMarketActionOrderInput) -
             quote_side: input.targets.leg_b.side,
             price: input.targets.leg_b.price,
             quantity: input.no_quantity,
+            gross_edge_per_unit: input.targets.leg_b.gross_edge_per_unit,
             binding: input.no,
         }),
         MarketAction::CancelAllBothLegs => cancel_all_both_legs_intent(input.yes, input.no),
@@ -214,6 +219,7 @@ struct MakerLegOrderInput {
     quote_side: QuoteSide,
     price: f64,
     quantity: f64,
+    gross_edge_per_unit: f64,
     binding: MakerLegBinding,
 }
 
@@ -248,6 +254,7 @@ fn submit_intent(input: MakerLegOrderInput) -> MakerLegOrderPlan {
             order_identity,
             price: input.price,
             quantity: input.quantity,
+            gross_edge_per_unit: input.gross_edge_per_unit,
         }),
         blocked_by: None,
     }

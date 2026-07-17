@@ -18,7 +18,6 @@ use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
 };
-use bolt_v2::bolt_v3_providers::FeeProvider;
 use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3KillSwitchForcedReductionClaim,
@@ -28,10 +27,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
     BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
     OrderValuationContext, build_submit_admission_request_from_order,
-    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
-    market_style_admission_ceiling_notional, rounded_order_admission_notional,
+    conservative_quote_quantity_admission_notional, market_style_admission_ceiling_notional,
 };
-use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::data::QuoteTick;
 use nautilus_model::enums::{AssetClass, OrderSide, PositionSide, TimeInForce};
 use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId};
@@ -151,18 +148,28 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
         &order,
     );
 
-    let request = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "hyperliquid_perps",
-            intent: &intent,
-            order: &order,
-            valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
-        },
-        |_| Ok(Decimal::ZERO),
-    )
-    .expect("base limit admission request should build in shared admission module");
+    let input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: "hyperliquid_perps",
+        intent: &intent,
+        order: &order,
+        valuation: OrderValuationContext::empty(),
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        risk_reducing_exit_position: None,
+    };
+    let economics_admission = support::sample_order_routing_handle("hyperliquid_perps")
+        .quote_admission(
+            bolt_v2::bolt_v3_order_execution::BoltV3OrderEconomicsIntent {
+                request: &input,
+                liquidity_role: bolt_v2::economics::LiquidityRoleAssumption::Taker,
+                lifecycle_path: bolt_v2::economics::LifecyclePath::PlannedExit,
+                requested_at_ns: 1,
+                decision_correlation_id: "O-19700101-000000-001-A9-1",
+                gross_expected_value: Decimal::ONE,
+            },
+        )
+        .expect("sample economics admission should quote");
+    let request = build_submit_admission_request_from_order(input, economics_admission)
+        .expect("base limit admission request should build in shared admission module");
 
     assert_eq!(request.strategy_id, "strategy-a");
     assert_eq!(request.execution_client_id, "hyperliquid_perps");
@@ -178,65 +185,6 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
         Decimal::from_str_exact("2.00").expect("expected decimal should parse")
     );
     assert_eq!(request.intent_kind, BoltV3SubmitIntentKind::Entry);
-}
-
-#[test]
-fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() {
-    let fallback_price = Price::new(0.50, 2);
-    let quantity = Quantity::new(2.0, 2);
-    let order = OrderAny::Market(
-        MarketOrder::new_checked(
-            TraderId::from("TRADER-001"),
-            StrategyId::from("strategy-a"),
-            InstrumentId::from("INSTRUMENT.SOURCE"),
-            ClientOrderId::from("O-19700101-000000-001-A9-2"),
-            OrderSide::Buy,
-            quantity,
-            TimeInForce::Gtc,
-            nautilus_core::UUID4::new(),
-            nautilus_core::UnixNanos::from(1_u64),
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("market order should be valid"),
-    );
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
-        "strategy-a".to_string(),
-        BoltV3OrderIntentKind::Entry,
-        fallback_price.to_string(),
-        &order,
-    );
-
-    let error = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "hyperliquid_perps",
-            intent: &intent,
-            order: &order,
-            valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
-        },
-        |_| anyhow::bail!("fee lookup failed before ceiling valuation"),
-    )
-    .expect_err("fee lookup should preserve the old strategy error order");
-
-    let message = error.to_string();
-    assert!(
-        message.contains("fee lookup failed before ceiling valuation"),
-        "{message}"
-    );
-    assert!(
-        !message.contains("structural price ceiling"),
-        "market ceiling validation must not run before fee lookup: {message}"
-    );
 }
 
 #[test]
@@ -356,21 +304,31 @@ fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
         &order,
     );
 
-    let request = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "hyperliquid_perps",
-            intent: &intent,
-            order: &order,
-            valuation: OrderValuationContext {
-                instrument: Some(&instrument),
-                ..OrderValuationContext::empty()
-            },
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
+    let input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: "hyperliquid_perps",
+        intent: &intent,
+        order: &order,
+        valuation: OrderValuationContext {
+            instrument: Some(&instrument),
+            ..OrderValuationContext::empty()
         },
-        |_| Ok(Decimal::ZERO),
-    )
-    .expect("non-Polymarket market order should use the shared ceiling valuation");
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        risk_reducing_exit_position: None,
+    };
+    let economics_admission = support::sample_order_routing_handle("hyperliquid_perps")
+        .quote_admission(
+            bolt_v2::bolt_v3_order_execution::BoltV3OrderEconomicsIntent {
+                request: &input,
+                liquidity_role: bolt_v2::economics::LiquidityRoleAssumption::Taker,
+                lifecycle_path: bolt_v2::economics::LifecyclePath::PlannedExit,
+                requested_at_ns: 1,
+                decision_correlation_id: "O-19700101-000000-001-A9-5",
+                gross_expected_value: Decimal::ONE,
+            },
+        )
+        .expect("sample economics admission should quote");
+    let request = build_submit_admission_request_from_order(input, economics_admission)
+        .expect("non-Polymarket market order should use the shared ceiling valuation");
 
     assert_eq!(request.execution_client_id, "hyperliquid_perps");
     assert_eq!(
@@ -649,149 +607,6 @@ fn notional_equal_to_cap_is_admitted() {
 }
 
 #[test]
-fn fee_inclusive_notional_rejects_when_fee_pushes_cash_debit_over_cap() {
-    // Drive through the SAME production helper that turns a rounded order into
-    // its admission notional. The raw base notional
-    // (4.98) is within the 5.0 cap, but a positive max entry fee (700 bps)
-    // scales the admission notional above the cap. If the fee wrapper were
-    // deleted from `rounded_order_admission_notional`, this would no longer
-    // exceed the cap and the test would fail — it is not tautological.
-    let admission = limited_admission(1, Decimal::new(5, 0));
-    let raw_base_notional = Decimal::new(498, 2);
-    let intended_notional = raw_base_notional;
-    let max_entry_fee_bps = Decimal::new(700, 0);
-    let admission_notional =
-        rounded_order_admission_notional(raw_base_notional, intended_notional, max_entry_fee_bps)
-            .expect("within-intent base notional must not trip the rounding-growth guard");
-
-    let error = admission
-        .admit(&submit_request(admission_notional))
-        .expect_err("fee-inclusive cash debit above cap must reject");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::NotionalCapExceeded
-    ));
-    assert_eq!(admission.admitted_order_count(), 0);
-}
-
-#[test]
-fn fee_inclusive_notional_admits_same_base_when_fee_is_zero() {
-    // Control arm for the fee boundary above: the IDENTICAL within-cap raw base
-    // notional (4.98 < cap 5.0) with ZERO fee must be ADMITTED. This proves the
-    // rejection above is produced by the fee path, not by the base notional —
-    // remove the fee scaling and the over-cap test would collapse into this one.
-    let admission = limited_admission(1, Decimal::new(5, 0));
-    let raw_base_notional = Decimal::new(498, 2);
-    let intended_notional = raw_base_notional;
-    let admission_notional =
-        rounded_order_admission_notional(raw_base_notional, intended_notional, Decimal::ZERO)
-            .expect("zero-fee within-intent base notional must not trip any guard");
-
-    assert_eq!(
-        admission_notional, raw_base_notional,
-        "zero fee must leave the rounded base notional unscaled"
-    );
-    admission
-        .admit(&submit_request(admission_notional))
-        .expect("within-cap zero-fee admission notional must be admitted")
-        .commit_submitted();
-    assert_eq!(admission.admitted_order_count(), 1);
-}
-
-#[test]
-fn fee_inclusive_notional_cannot_exceed_operator_cap() {
-    // F1 invariant: the fee-inclusive admission notional — the cash debit the
-    // venue actually incurs — is hard-bounded by the operator-approved per-order
-    // cap. Arm the gate with a report whose `max_notional_per_order()` IS the
-    // cap, then build an admission request whose notional is exactly the
-    // fee-inclusive notional of an order priced AT the cap with a positive fee.
-    // Because any positive fee scales the notional strictly above the cap, the
-    // strict-`>` cap check in `evaluate`/`admit` must reject it; admission can
-    // never let a fee push the cash debit past the operator cap.
-    let cap = Decimal::new(5, 0);
-    let positive_fee_bps = Decimal::new(700, 0);
-    let fee_inclusive_notional = fee_inclusive_admission_notional(cap, positive_fee_bps)
-        .expect("fee-inclusive notional should fit for the fixture cap");
-    assert!(
-        fee_inclusive_notional > cap,
-        "a positive fee must push the fee-inclusive notional strictly above the cap"
-    );
-
-    let admission = limited_admission(1, cap);
-
-    let result = admission.admit(&submit_request(fee_inclusive_notional));
-    let nt_submit_called = result.is_ok();
-    let error = result.expect_err("fee-inclusive notional above the operator cap must reject");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::NotionalCapExceeded
-    ));
-    assert_eq!(admission.admitted_order_count(), 0);
-    assert!(!nt_submit_called, "NT submit must not be reached");
-}
-
-#[test]
-fn fee_inclusive_notional_overflow_returns_admission_error() {
-    let error = fee_inclusive_admission_notional(Decimal::MAX, Decimal::new(1, 0))
-        .expect_err("overflowing fee-inclusive notional must fail closed");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::NotionalArithmeticOverflow
-    ));
-}
-
-#[test]
-fn rounded_order_admission_notional_fails_closed_when_rounding_grows_past_intent() {
-    // FIX #1 regression: banker's rounding to venue precision can round a
-    // quantity (or price) UP, so the submitted order's base notional can exceed
-    // the operator-approved intended notional. An intended notional of 5.30 USD
-    // (qty 10.6 @ 0.50, cap 5.3053) rounds to qty 11 @ 0.50 = 5.50 base — 3.7%
-    // over intent. The shared admission helper must refuse it before any cap or
-    // fee scaling so a rounded order can never debit more than approved.
-    let intended_notional = Decimal::new(530, 2);
-    let rounded_base_notional = Decimal::new(550, 2);
-    let max_entry_fee_bps = Decimal::ZERO;
-
-    let error = rounded_order_admission_notional(
-        rounded_base_notional,
-        intended_notional,
-        max_entry_fee_bps,
-    )
-    .expect_err("rounding-induced notional growth past operator intent must fail closed");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::RoundedNotionalExceedsIntent {
-            rounded_base_notional: r,
-            intended_notional: i,
-        } if r == rounded_base_notional && i == intended_notional
-    ));
-}
-
-#[test]
-fn rounded_order_admission_notional_admits_when_rounded_base_equals_intent() {
-    // Boundary control for the fail-closed guard above: when rounding does NOT
-    // grow the order (rounded base == intended notional), admission proceeds and
-    // the helper returns the fee-inclusive notional. This proves the guard
-    // rejects only genuine rounding-induced growth, not every rounded order.
-    let intended_notional = Decimal::new(530, 2);
-    let rounded_base_notional = intended_notional;
-    let max_entry_fee_bps = Decimal::ZERO;
-
-    let admission_notional = rounded_order_admission_notional(
-        rounded_base_notional,
-        intended_notional,
-        max_entry_fee_bps,
-    )
-    .expect("rounded base equal to intent must admit");
-
-    assert_eq!(admission_notional, intended_notional);
-}
-
-#[test]
 fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
     let admission = limited_admission(1, Decimal::new(1, 0));
 
@@ -1037,7 +852,6 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
         support::RecordingDecisionEvidenceWriter::default(),
     )));
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         admission.clone(),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -1051,19 +865,6 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
         .expect("shared context admission should allow ungated production submits")
         .commit_submitted();
     assert_eq!(admission.admitted_order_count(), 1);
-}
-
-#[derive(Debug)]
-struct NoopFeeProvider;
-
-impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        None
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, anyhow::Result<()>> {
-        async { Ok(()) }.boxed()
-    }
 }
 
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
@@ -1126,6 +927,7 @@ fn submit_request_with_kind_policy_and_exit_proof(
         BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
     };
     BoltV3SubmitAdmissionRequest {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),
@@ -1279,6 +1081,7 @@ fn forced_reduction_request(
     claim: BoltV3KillSwitchForcedReductionClaim,
 ) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
+        economics_admission: support::sample_economics_admission(Decimal::ONE),
         kill_switch_forced_reduction: Some(claim),
         ..submit_request_with_kind(notional, BoltV3SubmitIntentKind::KillSwitchForcedReduction)
     }

@@ -523,7 +523,6 @@ mod tests {
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
         build_venue_truth_runtime_source: None,
     };
 
@@ -545,7 +544,6 @@ mod tests {
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
         build_venue_truth_runtime_source: None,
     };
 
@@ -567,7 +565,6 @@ mod tests {
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
         build_venue_truth_runtime_source: None,
     };
 

@@ -22,14 +22,30 @@ dependency-direction verifier, weaken its fail-closed behavior, add a second
 secret or fetch path, touch the operator's source checkout Git metadata, or
 alter queue eligibility rules.
 
-PR #1439 remains outside the eligible wave until its required code-owner
-approval lands.
-
 ## Design
 
-`PrivateFetchRefs.fetch_origin()` remains the single place that resolves a
-configured remote name or URL against the source checkout. The normalized URL
-is passed with the existing alternate-object context into verifier execution.
+The operator copies the TOML bytes into a private immutable-per-run snapshot.
+It reads the configured Git remote name and base only from that snapshot,
+resolves that name before `ls-remote`, and uses fully qualified
+`refs/heads/<base>` and `refs/pull/<number>/head` refs. The same snapshot is
+passed to preflight. A missing remote, mutable-source config change, invalid
+remote name, or unsafe resolved URL is terminal; no raw path, URL, default
+branch, or second config source is substituted. Origin and base are
+TOML-authoritative and have no CLI override.
+
+The operator passes only an opaque SHA-256 identity of that resolved URL to the
+preflight subprocess. Preflight independently resolves the configured name and
+must match that identity before fetching any ref; a source-checkout Git-config
+change therefore terminates instead of selecting another origin. The operator
+also derives one GitHub repository slug from the same URL, supplies it as
+`GH_REPO` for preflight evidence, and passes it explicitly to `gh pr comment`;
+non-GitHub remotes terminate before preflight or queueing. Neither the URL nor
+an alternate remote mapping crosses the subprocess boundary.
+
+`PrivateFetchRefs.fetch_origin()` resolves the same configured remote name
+against the source checkout. Its one normalized URL is used for private ref
+fetches and passed with the existing alternate-object context into verifier
+execution.
 
 Before adding a verifier worktree, the temporary private repository enables
 Git's worktree-specific configuration extension. The worktree records
@@ -41,9 +57,11 @@ from the user's checkout.
 Remote setup must fail closed through the existing `PreflightError` path. The
 remote URL remains temporary Git configuration and must not be added to JSON,
 plain-text diagnostics, or command arguments emitted by the preflight result.
-HTTP(S) URLs containing userinfo and URLs containing passwords are rejected
-before any Git call. Configuration errors and verifier streams redact the exact
-normalized URL as `<remote-url>`.
+Passwords, URL query or fragment components, and userinfo on non-SSH schemes
+are rejected before any Git fetch or config call. Credential-free standard SSH
+and SCP usernames remain supported; preflight never retries or switches origin
+sources. Configuration errors, verifier streams, progress diagnostics, and
+public verifier-command JSON redact the exact normalized URL as `<remote-url>`.
 
 ## Verification
 
@@ -54,9 +72,18 @@ test must fail on the current implementation with a verifier failure and pass
 after the worktree installs its temporary remote configuration. Existing tests
 continue to prove that the private bare repository itself has no remotes. The
 regression uses a checkout-relative remote and checks the normalized worktree
-value directly. Negative tests prove credential-bearing URLs never reach Git,
-configuration errors do not expose the URL, and failed verifier streams redact
-the URL in both JSON and plain diagnostics.
+value directly. Negative tests cover password, query-token, fragment-token, and
+non-SSH-userinfo URLs while preserving credential-free SSH/SCP usernames. They
+prove rejected URLs never reach Git and prove configuration errors, verifier
+streams, progress diagnostics, and public verifier commands redact the URL.
+Dedicated negative tests prove raw path-like origin inputs cannot select an
+alternate fetch route. Operator tests prove raw URL/path config values and
+unsafe resolved URLs never reach `ls-remote`, base fetch tests require the
+fully qualified branch ref, and a mutation test proves operator and preflight
+consume the same private TOML snapshot. Remote-identity tests prove the opaque
+preflight identity and explicit queue repository remain bound to the
+operator's one resolved URL, and that later checkout metadata drift is
+terminal.
 
 Run the targeted merge-queue preflight suite, Python syntax checks for changed
 scripts, the permitted repository static gates, and the original direct JSON

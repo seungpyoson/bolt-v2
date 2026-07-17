@@ -17,7 +17,6 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-import urllib.parse
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -30,13 +29,21 @@ if str(SCRIPT_DIR) not in sys.path:
 import config_validators as _cv  # noqa: E402
 from ci_provenance import MERGIFY_CONFIG_EXPECTATIONS  # noqa: E402
 from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG  # noqa: E402
-from git_remote_utils import fetchable_origin_argument, fetchable_remote_url  # noqa: E402
+from git_remote_utils import (  # noqa: E402
+    fetchable_remote_url,
+    redact_remote_urls,
+    remote_url_sha256,
+    require_credential_free_remote_url as _require_credential_free_remote_url,
+    require_remote_name as _require_remote_name,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "rust-verification.toml"
 MERGIFY_CONFIG_PATH = ".mergify.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+EXPECTED_ORIGIN_URL_SHA256_ENV = "MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"
 EXPECTED_HEAD_SHA_RE = re.compile(r"^(?P<pr>[1-9][0-9]*)=(?P<sha>[0-9a-f]{40})$")
 MERGIFY_REQUIRED_REVIEWER_RE = re.compile(r"(?:^|\n)approved-reviews-by = (?P<reviewer>[^\n]+)")
 MERGIFY_CHECK_SUCCESS_RE = re.compile(r"(?:^|\n)check-success = (?P<check>[^\n]+)")
@@ -626,22 +633,11 @@ class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
 
 
-def redact_remote_urls(text: str, remote_urls: Sequence[str]) -> str:
-    redacted = text
-    for remote_url in remote_urls:
-        if remote_url:
-            redacted = redacted.replace(remote_url, "<remote-url>")
-    return redacted
-
-
-def require_credential_free_remote_url(remote_url: str) -> str:
-    parsed = urllib.parse.urlsplit(remote_url)
-    has_http_userinfo = parsed.scheme in ("http", "https") and parsed.username is not None
-    if parsed.password is not None or has_http_userinfo:
-        raise PreflightError(
-            "Git remote URLs must not contain embedded credentials; use a credential helper or SSH agent auth"
-        )
-    return remote_url
+require_credential_free_remote_url = functools.partial(
+    _require_credential_free_remote_url,
+    error_cls=PreflightError,
+)
+require_remote_name = functools.partial(_require_remote_name, error_cls=PreflightError)
 
 
 require_table = functools.partial(_cv.require_table, error_cls=PreflightError)
@@ -1990,7 +1986,7 @@ class PrivateFetchRefs:
         )
 
     def fetch_origin(self, origin: str) -> str:
-        require_credential_free_remote_url(origin)
+        require_remote_name(origin)
         cached = self.remotes.get(origin)
         if cached is not None:
             return cached
@@ -2006,9 +2002,8 @@ class PrivateFetchRefs:
         )
         remote_url = result.stdout.strip()
         if result.returncode != 0 or not remote_url:
-            remote_url = fetchable_origin_argument(origin, self.source_repo)
-        else:
-            remote_url = fetchable_remote_url(remote_url, self.source_repo)
+            raise PreflightError("configured Git remote did not resolve to a URL")
+        remote_url = fetchable_remote_url(remote_url, self.source_repo)
         remote_url = require_credential_free_remote_url(remote_url)
         self.remotes[origin] = remote_url
         return remote_url
@@ -2721,7 +2716,7 @@ def unique_preserving_order(values: Sequence[int]) -> tuple[int, ...]:
 
 
 def fetch_base(fetch_refs: PrivateFetchRefs, origin: str, base: str) -> str:
-    sha = fetch_refs.fetch_sha(origin, base, "base")
+    sha = fetch_refs.fetch_sha(origin, f"refs/heads/{base}", f"base-{base}")
     if SHA_RE.fullmatch(sha) is None:
         raise PreflightError(f"base {base!r} did not resolve to a commit SHA")
     return sha
@@ -2903,6 +2898,7 @@ def run_verifier_commands(
                 parts = shlex.split(command)
                 if not parts:
                     raise PreflightError("verifier command must not be empty")
+                public_command = redact_remote_urls(command, (origin_url,))
                 env = None
                 if alternate_object_dir:
                     env = os.environ.copy()
@@ -2913,7 +2909,7 @@ def run_verifier_commands(
                         else f"{alternate_object_dir}{os.pathsep}{existing_alternates}"
                     )
                 print(
-                    f"merge_queue_preflight: verifier running: {command}",
+                    f"merge_queue_preflight: verifier running: {public_command}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -2926,7 +2922,7 @@ def run_verifier_commands(
                     process_group=True,
                 )
                 verifier_result = VerifierResult(
-                    command=command,
+                    command=public_command,
                     returncode=completed.returncode,
                     stdout=redact_remote_urls(completed.stdout, (origin_url,)),
                     stderr=redact_remote_urls(completed.stderr, (origin_url,)),
@@ -2936,7 +2932,7 @@ def run_verifier_commands(
                 status = "passed" if verifier_result.returncode == 0 else "failed"
                 print(
                     "merge_queue_preflight: verifier "
-                    f"{status}: {command} (exit {verifier_result.returncode})",
+                    f"{status}: {public_command} (exit {verifier_result.returncode})",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -3788,6 +3784,7 @@ def preflight(
     origin: str,
     base: str,
     expected_base_sha: str,
+    expected_origin_url_sha256: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
@@ -3806,6 +3803,7 @@ def preflight(
             origin=origin,
             base=base,
             expected_base_sha=expected_base_sha,
+            expected_origin_url_sha256=expected_origin_url_sha256,
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
             verifier_commands=verifier_commands,
@@ -3828,6 +3826,7 @@ def preflight_with_fetch_refs(
     origin: str,
     base: str,
     expected_base_sha: str,
+    expected_origin_url_sha256: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
@@ -3845,6 +3844,9 @@ def preflight_with_fetch_refs(
     expected_heads = expected_head_map(expected_head_inputs, requested)
     git_repo = fetch_refs.git_repo
     try:
+        origin_url = fetch_refs.fetch_origin(origin)
+        if remote_url_sha256(origin_url) != expected_origin_url_sha256:
+            raise PreflightError("configured Git remote identity changed during merge queue preflight")
         actual_base_sha = fetch_base(fetch_refs, origin, base)
     except PreflightError as exc:
         return unavailable_base_payload(
@@ -3936,7 +3938,7 @@ def preflight_with_fetch_refs(
         input_timeout_seconds=input_timeout_seconds,
         output_policy=output_policy,
         alternate_object_dir=fetch_refs.source_objects,
-        origin_url=fetch_refs.fetch_origin(origin),
+        origin_url=origin_url,
     )
     conflicts = [
         conflict
@@ -4108,10 +4110,8 @@ def plain_text(payload: dict[str, object]) -> str:
 def parser() -> argparse.ArgumentParser:
     root = PreflightArgumentParser(prog="merge_queue_preflight.py")
     root.add_argument("prs", nargs="+", type=positive_pr_number)
-    root.add_argument("--base")
     root.add_argument("--expected-base-sha", required=True, type=commit_sha)
     root.add_argument("--expected-head-sha", action="append", required=True, type=expected_head_sha)
-    root.add_argument("--origin")
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     root.add_argument("--verifier-profile")
     root.add_argument("--run-verifier", action="append", default=[])
@@ -4132,15 +4132,24 @@ def verifier_commands(config: PreflightConfig, profile: str | None, extra: Seque
     return (*config.verifier_profiles[selected], *extra)
 
 
+def expected_origin_url_sha256(environ: Mapping[str, str] | None = None) -> str:
+    source = os.environ if environ is None else environ
+    value = source.get(EXPECTED_ORIGIN_URL_SHA256_ENV, "")
+    if SHA256_RE.fullmatch(value) is None:
+        raise PreflightError(f"{EXPECTED_ORIGIN_URL_SHA256_ENV} must contain one SHA-256 digest")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         config = load_config(args.config)
         payload, exit_code = preflight(
             repo=pathlib.Path.cwd(),
-            origin=args.origin or config.origin,
-            base=args.base or config.base,
+            origin=config.origin,
+            base=config.base,
             expected_base_sha=args.expected_base_sha,
+            expected_origin_url_sha256=expected_origin_url_sha256(),
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),

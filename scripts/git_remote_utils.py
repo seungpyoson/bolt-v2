@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import pathlib
 import re
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 
 REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
+REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def is_direct_remote_url(remote_url: str) -> bool:
@@ -19,29 +21,51 @@ def is_direct_remote_url(remote_url: str) -> bool:
 
 
 def fetchable_remote_url(remote_url: str, source_repo: pathlib.Path) -> str:
+    if pathlib.Path(remote_url).is_absolute():
+        return str(pathlib.Path(remote_url).resolve(strict=False))
     if (
-        pathlib.Path(remote_url).is_absolute()
-        or remote_url.startswith("~")
+        remote_url.startswith("~")
         or is_direct_remote_url(remote_url)
     ):
         return remote_url
     return str((source_repo / remote_url).resolve(strict=False))
 
 
-def looks_like_local_path(value: str) -> bool:
-    return (
-        pathlib.Path(value).is_absolute()
-        or value.startswith(("~", ".", "/", "\\"))
-        or value.endswith(".git")
-        or "/" in value
-        or "\\" in value
-    )
+def redact_remote_urls(text: str, remote_urls: Sequence[str]) -> str:
+    redacted = text
+    for remote_url in remote_urls:
+        if remote_url:
+            redacted = redacted.replace(remote_url, "<remote-url>")
+    return redacted
 
 
-def fetchable_origin_argument(origin: str, source_repo: pathlib.Path) -> str:
-    if is_direct_remote_url(origin) or looks_like_local_path(origin):
-        return fetchable_remote_url(origin, source_repo)
-    return origin
+def require_credential_free_remote_url(
+    remote_url: str,
+    *,
+    error_cls: type[Exception] = ValueError,
+) -> str:
+    parsed = urllib.parse.urlsplit(remote_url)
+    has_forbidden_userinfo = parsed.username is not None and parsed.scheme != "ssh"
+    if parsed.password is not None or has_forbidden_userinfo or parsed.query or parsed.fragment:
+        raise error_cls(
+            "Git remote URLs must not contain embedded credentials or URL query/fragment components; "
+            "use a credential helper or SSH agent auth"
+        )
+    return remote_url
+
+
+def require_remote_name(
+    remote_name: str,
+    *,
+    error_cls: type[Exception] = ValueError,
+) -> str:
+    if REMOTE_NAME_RE.fullmatch(remote_name) is None:
+        raise error_cls("configured Git origin must be a remote name")
+    return remote_name
+
+
+def remote_url_sha256(remote_url: str) -> str:
+    return hashlib.sha256(remote_url.encode("utf-8")).hexdigest()
 
 
 def github_repository_slug(remote_url: str) -> str | None:

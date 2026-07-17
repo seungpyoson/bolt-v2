@@ -4790,12 +4790,10 @@ mod tests {
     fn binary_oracle_overlay_manifest() -> BacktestingRunManifest {
         let mut manifest = valid_manifest();
         manifest.strategy.registry_key = STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string();
-        manifest.strategy.parameters = BTreeMap::from([
-            (
-                STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
-                "shadow".to_string(),
-            ),
-        ]);
+        manifest.strategy.parameters = BTreeMap::from([(
+            STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
+            "shadow".to_string(),
+        )]);
         manifest.strategy.config_overlay = Some(binary_oracle_config_overlay());
         manifest.strategy_config_hash =
             "2222222222222222222222222222222222222222222222222222222222222222".to_string();

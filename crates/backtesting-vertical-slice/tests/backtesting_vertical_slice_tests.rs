@@ -50,10 +50,10 @@ mod backtesting_vertical_slice_catalog_and_node;
 mod backtesting_vertical_slice_conversion_boundary;
 #[path = "backtesting_vertical_slice_custom_data_replay.rs"]
 mod backtesting_vertical_slice_custom_data_replay;
-#[path = "backtesting_vertical_slice_end_to_end.rs"]
-mod backtesting_vertical_slice_end_to_end;
 #[path = "backtesting_vertical_slice_economics.rs"]
 mod backtesting_vertical_slice_economics;
+#[path = "backtesting_vertical_slice_end_to_end.rs"]
+mod backtesting_vertical_slice_end_to_end;
 #[path = "backtesting_vertical_slice_first_proof_selector.rs"]
 mod backtesting_vertical_slice_first_proof_selector;
 #[path = "backtesting_vertical_slice_hash_what_you_write.rs"]

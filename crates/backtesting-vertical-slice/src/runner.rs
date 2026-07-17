@@ -2341,9 +2341,8 @@ mod tests {
         ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
         ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
         RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
-        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
-        StrategySourceKind,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+        StrategyConfigOverlaySource, StrategySource, StrategySourceKind,
     };
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
@@ -2978,10 +2977,7 @@ mod tests {
                 experiment_result_hash: None,
                 config_overlay: None,
             },
-            economics_snapshots: vec![replay_economics_snapshot(
-                "maker_execution_client",
-                "pUSD",
-            )],
+            economics_snapshots: vec![replay_economics_snapshot("maker_execution_client", "pUSD")],
             strategy_config_hash: sha256_hex(maker_smoke_config_toml().as_bytes()),
             venue: maker_smoke_venue(),
             additional_venues: Vec::new(),
@@ -4253,12 +4249,10 @@ mod tests {
             strategy: StrategySource {
                 source_kind: StrategySourceKind::CompiledRustRegistry,
                 registry_key: STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string(),
-                parameters: BTreeMap::from([
-                    (
-                        STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
-                        "live".to_string(),
-                    ),
-                ]),
+                parameters: BTreeMap::from([(
+                    STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
+                    "live".to_string(),
+                )]),
                 typed_config_uri: None,
                 typed_config_hash: None,
                 experiment_result_uri: None,

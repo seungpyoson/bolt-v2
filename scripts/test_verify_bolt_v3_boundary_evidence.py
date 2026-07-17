@@ -28,7 +28,7 @@ def fixture_nt_revision() -> str:
         for specification in dependencies.values()
         if isinstance(specification, dict)
         and specification.get("git")
-        == "https://github.com/seungpyoson/nautilus_trader.git"
+        == "https://github.com/nautechsystems/nautilus_trader.git"
         and isinstance(specification.get("rev"), str)
     }
     if len(revisions) != 1:
@@ -40,19 +40,6 @@ def fixture_nt_revision() -> str:
 
 EXPECTED_NT_REV = fixture_nt_revision()
 OLD_NT_REV = "0000000000000000000000000000000000000000"
-BINANCE_TIMESTAMP_TEST_TARGET = "binance_sbe_quote_timestamps"
-BINANCE_TIMESTAMP_TEST_PATH = "tests/binance_sbe_quote_timestamps.rs"
-BINANCE_TIMESTAMP_PARSER_ALIAS = "nt_binance_sbe_parse"
-BINANCE_TIMESTAMP_PARSER_IMPORT = (
-    "use ::nautilus_binance::spot::websocket::streams::parse "
-    f"as {BINANCE_TIMESTAMP_PARSER_ALIAS};"
-)
-BINANCE_TIMESTAMP_TEST_CASES = (
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
-)
 REQUIRED_PIN_SURFACES = (
     "Cargo.toml",
     "Cargo.lock",
@@ -62,7 +49,7 @@ REQUIRED_PIN_SURFACES = (
     "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
-    "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
+    "tests/fixtures/nt_polymarket_query_post_order_params_d81be0bc.txt",
 )
 
 
@@ -85,84 +72,14 @@ def write(root: Path, rel: str, text: str | bytes) -> None:
         path.write_text(text, encoding="utf-8")
 
 
-def binance_timestamp_test_source() -> str:
-    return """
-use ::nautilus_binance::spot::websocket::streams::parse as nt_binance_sbe_parse;
-
-#[test]
-fn sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let transact_time_us = 1_700_000_000_100_000_i64;
-    let expected_ts_event = UnixNanos::from_micros(transact_time_us as u64);
-    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
-    let event = TradesStreamEvent { transact_time_us };
-    let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);
-    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(trades.len(), 2);
-    for data in trades {
-        let Data::Trade(trade) = data else { panic!() };
-        ::core::assert_eq!(trade.ts_event, expected_ts_event);
-        ::core::assert_eq!(trade.ts_init, adapter_ts_init);
-    }
-}
-
-#[test]
-fn sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let event_time_us = 1_700_000_000_000_000_i64;
-    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
-    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
-    let event = BestBidAskStreamEvent { event_time_us };
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);
-}
-
-#[test]
-fn sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let event_time_us = 1_700_000_000_000_000_i64;
-    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
-    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
-    let event = DepthSnapshotStreamEvent { event_time_us };
-    let deltas = nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)
-        .expect("non-empty SBE depth snapshot must produce deltas");
-    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(deltas.deltas.len(), 3);
-    ::core::assert_eq!(deltas.ts_event, expected_ts_event);
-    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
-    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
-    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
-}
-
-#[test]
-fn sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps() {
-    let event_time_us = 1_700_000_000_000_000_i64;
-    let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);
-    let adapter_ts_init = UnixNanos::from(1_800_000_000_000_000_000_u64);
-    let event = DepthDiffStreamEvent { event_time_us };
-    let deltas = nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)
-        .expect("non-empty SBE depth diff must produce deltas");
-    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(deltas.deltas.len(), 3);
-    ::core::assert_eq!(deltas.ts_event, expected_ts_event);
-    ::core::assert_eq!(deltas.ts_init, adapter_ts_init);
-    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_event == expected_ts_event));
-    ::core::assert!(deltas.deltas.iter().all(|delta| delta.ts_init == adapter_ts_init));
-}
-"""
-
-
 def clean_files(root: Path) -> None:
     write(
         root,
         "Cargo.toml",
         "[dependencies]\n"
-        f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
-        f'nautilus-network = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
-        "[[test]]\n"
-        f'name = "{BINANCE_TIMESTAMP_TEST_TARGET}"\n'
-        f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n',
+        f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+        f'nautilus-network = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
     )
-    write(root, BINANCE_TIMESTAMP_TEST_PATH, binance_timestamp_test_source())
     write(
         root,
         "Cargo.lock",
@@ -170,13 +87,13 @@ def clean_files(root: Path) -> None:
         "[[package]]\n"
         'name = "nautilus-network"\n'
         'version = "0.59.0"\n'
-        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+        f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
     )
     write(
         root,
         "crates/backtesting-vertical-slice/Cargo.toml",
         "[dependencies]\n"
-        f'nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
+        f'nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n',
     )
     write(
         root,
@@ -185,7 +102,7 @@ def clean_files(root: Path) -> None:
         "[[package]]\n"
         'name = "nautilus-model"\n'
         'version = "0.59.0"\n'
-        f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
+        f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"\n',
     )
     write(
         root,
@@ -204,7 +121,8 @@ def clean_files(root: Path) -> None:
         "`RealizedVolatilityObservation`\n"
         "`StrategySignalObservation`\n"
         "## 13. CLOB V2 Readiness Gate\n"
-        f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork\n",
+        "Current status: this branch pins the official NautilusTrader repository at\n"
+        f"merge commit `{EXPECTED_NT_REV}` for upstream PR #4474.\n",
     )
     write(
         root,
@@ -230,7 +148,7 @@ def clean_files(root: Path) -> None:
     )
     write(
         root,
-        "tests/fixtures/nt_polymarket_query_post_order_params_d636f176.txt",
+        "tests/fixtures/nt_polymarket_query_post_order_params_d81be0bc.txt",
         "Source: NautilusTrader\n"
         f"Revision: {EXPECTED_NT_REV}\n"
         "Path: crates/adapters/polymarket/src/http/query.rs\n",
@@ -410,7 +328,7 @@ def initialize_fixture_repo(root: Path) -> None:
     init_fixture_repo(root, "-q")
     subprocess.run(repo_git_command("config", "user.name", "Boundary Test"), cwd=root, check=True)
     subprocess.run(repo_git_command("config", "user.email", "boundary-test@example.invalid"), cwd=root, check=True)
-    subprocess.run(repo_git_command("add", ".github/workflows/ci.yml"), cwd=root, check=True)
+    subprocess.run(repo_git_command("add", "."), cwd=root, check=True)
     subprocess.run(
         repo_git_command("commit", "--no-verify", "-q", "-m", "seed workflow"),
         cwd=root,
@@ -443,6 +361,16 @@ def test_pin_census_rejects_each_mismatched_surface() -> None:
             )
 
         assert_finding(scan_temp(mutate), f"{surface}: NautilusTrader pin census")
+
+
+def test_source_guard_rejects_personal_repository_without_retaining_literal() -> None:
+    forbidden = "https://github.com/" + "seungpyoson/" + "nautilus_trader.git"
+
+    def mutate(root: Path) -> None:
+        write(root, "forbidden-source.txt", forbidden)
+        subprocess.run(repo_git_command("add", "forbidden-source.txt"), cwd=root, check=True)
+
+    assert_finding(scan_temp(mutate), "source guard forbids the personal repository")
 
 
 def test_pin_census_derives_revision_from_root_manifest() -> None:
@@ -492,8 +420,8 @@ def test_pin_census_rejects_ambiguous_binance_revision_in_root_manifest() -> Non
         manifest = root / "Cargo.toml"
         manifest.write_text(
             manifest.read_text(encoding="utf-8").replace(
-                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
-                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{alternate_revision}" }}',
+                f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{alternate_revision}" }}',
             ),
             encoding="utf-8",
         )
@@ -527,8 +455,8 @@ def test_pin_census_checks_binance_dependency_against_derived_revision() -> None
         manifest = root / "Cargo.toml"
         manifest.write_text(
             manifest.read_text(encoding="utf-8").replace(
-                f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
-                'nautilus-binance = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "not-an-immutable-commit" }',
+                f'nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                'nautilus-binance = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "not-an-immutable-commit" }',
             ),
             encoding="utf-8",
         )
@@ -622,23 +550,19 @@ def test_pin_census_reports_one_pin_finding_for_each_missing_required_surface() 
 def test_manifest_pin_census_accepts_order_multiline_and_dependency_scopes() -> None:
     manifest = f'''
 [dependencies]
-nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
-nautilus-common = {{ rev = "{EXPECTED_NT_REV}", git = "https://github.com/seungpyoson/nautilus_trader.git" }}
+nautilus-binance = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nautilus-common = {{ rev = "{EXPECTED_NT_REV}", git = "https://github.com/nautechsystems/nautilus_trader.git" }}
 
 [dev-dependencies.nautilus-core]
 rev = "{EXPECTED_NT_REV}"
-git = "https://github.com/seungpyoson/nautilus_trader.git"
+git = "https://github.com/nautechsystems/nautilus_trader.git"
 
 [build-dependencies]
-nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 
 [target.'cfg(unix)'.dependencies.nautilus-network]
-git = "https://github.com/seungpyoson/nautilus_trader.git"
+git = "https://github.com/nautechsystems/nautilus_trader.git"
 rev = "{EXPECTED_NT_REV}"
-
-[[test]]
-name = "{BINANCE_TIMESTAMP_TEST_TARGET}"
-path = "{BINANCE_TIMESTAMP_TEST_PATH}"
 '''
 
     def mutate(root: Path) -> None:
@@ -649,16 +573,17 @@ path = "{BINANCE_TIMESTAMP_TEST_PATH}"
 
 
 def test_manifest_pin_census_rejects_hidden_mixed_and_malformed_sources() -> None:
+    personal_source = "https://github.com/" + "seungpyoson/" + "nautilus_trader.git"
     cases = {
-        "reordered inline old pin": f'{{ rev = "{OLD_NT_REV}", git = "https://github.com/seungpyoson/nautilus_trader.git" }}',
-        "alternate source": f'{{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
-        "unpinned source": '{ git = "https://github.com/seungpyoson/nautilus_trader.git" }',
-        "branch source": '{ git = "https://github.com/seungpyoson/nautilus_trader.git", branch = "develop" }',
+        "reordered inline old pin": f'{{ rev = "{OLD_NT_REV}", git = "https://github.com/nautechsystems/nautilus_trader.git" }}',
+        "alternate source": f'{{ git = "{personal_source}", rev = "{EXPECTED_NT_REV}" }}',
+        "unpinned source": '{ git = "https://github.com/nautechsystems/nautilus_trader.git" }',
+        "branch source": '{ git = "https://github.com/nautechsystems/nautilus_trader.git", branch = "develop" }',
     }
     for label, bad_dependency in cases.items():
         manifest = (
             "[dependencies]\n"
-            f'nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
+            f'nautilus-common = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n'
             f"nautilus-core = {bad_dependency}\n"
         )
 
@@ -686,9 +611,9 @@ def test_manifest_pin_census_rejects_target_dev_and_build_mismatches() -> None:
     for scope in scopes:
         manifest = (
             "[dependencies]\n"
-            f'nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n\n'
+            f'nautilus-common = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}\n\n'
             f"{scope}\n"
-            f'nautilus-core = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n'
+            f'nautilus-core = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n'
         )
 
         def mutate(root: Path, manifest: str = manifest) -> None:
@@ -700,24 +625,11 @@ def test_manifest_pin_census_rejects_target_dev_and_build_mismatches() -> None:
 def test_manifest_pin_census_rejects_multiline_old_pin_with_valid_decoy() -> None:
     manifest = f'''
 [dependencies]
-nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+nautilus-common = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 
 [dependencies.nautilus-core]
-git = "https://github.com/seungpyoson/nautilus_trader.git"
+git = "https://github.com/nautechsystems/nautilus_trader.git"
 rev = "{OLD_NT_REV}"
-'''
-
-    def mutate(root: Path) -> None:
-        write(root, "Cargo.toml", manifest)
-
-    assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
-
-
-def test_manifest_pin_census_rejects_aliased_nautilus_package_mismatch() -> None:
-    manifest = f'''
-[dependencies]
-nautilus-common = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
-nt-core = {{ package = "nautilus-core", git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 '''
 
     def mutate(root: Path) -> None:
@@ -737,12 +649,12 @@ nautilus-model = { path = "vendor/nautilus-model" }
 nt-model = { package = "nautilus-model", path = "vendor/nautilus-model" }
 """,
         """
-[patch."https://github.com/seungpyoson/nautilus_trader.git"]
+[patch."https://github.com/nautechsystems/nautilus_trader.git"]
 model-fork = { path = "vendor/nautilus-model" }
 """,
         f"""
 [patch.crates-io]
-model-fork = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
+model-fork = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}
 """,
         """
 [replace]
@@ -754,7 +666,7 @@ model-fork = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev 
 """,
         """
 [replace]
-"https://github.com/seungpyoson/nautilus_trader.git#nautilus-model@0.59.0" = { path = "vendor/nautilus-model" }
+"https://github.com/nautechsystems/nautilus_trader.git#nautilus-model@0.59.0" = { path = "vendor/nautilus-model" }
 """,
     )
     for override in overrides:
@@ -809,7 +721,7 @@ def test_manifest_pin_census_governs_actual_cargo_dependency_scopes() -> None:
                 '[package]\nname = "actual-scope"\nversion = "0.1.0"\n\n'
                 + scope
                 + "\n"
-                + f'nt-binance = {{ package = "nautilus-binance", git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
+                + f'nt-binance = {{ package = "nautilus-binance", git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
             )
             subprocess.run(repo_git_command("add", surface), cwd=root, check=True)
 
@@ -889,7 +801,7 @@ def test_pin_census_uses_tracked_lockfile_as_override_backstop() -> None:
             "[[package]]\n"
             'name = "nautilus-model"\n'
             'version = "0.59.0"\n'
-            f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
+            f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
         )
         subprocess.run(
             repo_git_command("add", manifest, lockfile),
@@ -911,7 +823,7 @@ def test_pin_census_rejects_tracked_new_standalone_workspace_with_stale_nt_pin()
             root,
             manifest,
             "[dependencies]\n"
-            f'nautilus-model = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
+            f'nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
         )
         write(
             root,
@@ -920,7 +832,7 @@ def test_pin_census_rejects_tracked_new_standalone_workspace_with_stale_nt_pin()
             "[[package]]\n"
             'name = "nautilus-model"\n'
             'version = "0.59.0"\n'
-            f'source = "git+https://github.com/seungpyoson/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
+            f'source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={OLD_NT_REV}#{OLD_NT_REV}"\n',
         )
         subprocess.run(
             repo_git_command("add", manifest, lockfile),
@@ -989,7 +901,7 @@ def test_pin_census_rejects_workspace_inheritance_on_canonical_pin_roots() -> No
             path = root / manifest
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    f'{{ git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
+                    f'{{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{EXPECTED_NT_REV}" }}',
                     "{ workspace = true }",
                 ),
                 encoding="utf-8",
@@ -1003,7 +915,7 @@ def test_pin_census_rejects_workspace_inheritance_on_canonical_pin_roots() -> No
 
 def test_lock_pin_census_accepts_reordered_package_fields() -> None:
     source = (
-        "git+https://github.com/seungpyoson/nautilus_trader.git"
+        "git+https://github.com/nautechsystems/nautilus_trader.git"
         f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
     )
     lock = f'''
@@ -1023,24 +935,23 @@ name = "nautilus-common"
 
 def test_lock_pin_census_rejects_hidden_mixed_and_malformed_sources() -> None:
     canonical = (
-        "git+https://github.com/seungpyoson/nautilus_trader.git"
+        "git+https://github.com/nautechsystems/nautilus_trader.git"
         f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
     )
+    personal_source = "git+https://github.com/" + "seungpyoson/" + "nautilus_trader.git"
     cases = {
-        "alternate source": (
-            "git+https://github.com/nautechsystems/nautilus_trader.git"
-            f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}"
-        ),
+        "alternate source": personal_source
+        + f"?rev={EXPECTED_NT_REV}#{EXPECTED_NT_REV}",
         "missing rev": (
-            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            "git+https://github.com/nautechsystems/nautilus_trader.git"
             f"#{EXPECTED_NT_REV}"
         ),
         "old rev": (
-            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            "git+https://github.com/nautechsystems/nautilus_trader.git"
             f"?rev={OLD_NT_REV}#{OLD_NT_REV}"
         ),
         "wrong commit": (
-            "git+https://github.com/seungpyoson/nautilus_trader.git"
+            "git+https://github.com/nautechsystems/nautilus_trader.git"
             f"?rev={EXPECTED_NT_REV}#{OLD_NT_REV}"
         ),
     }
@@ -1080,1138 +991,14 @@ def test_binance_registry_row_alone_cannot_masquerade_as_sha_provenance() -> Non
     )
 
 
-def test_binance_timestamp_behavioral_contract_requires_exact_test_file() -> None:
-    def mutate(root: Path) -> None:
-        (root / BINANCE_TIMESTAMP_TEST_PATH).unlink()
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{BINANCE_TIMESTAMP_TEST_PATH}: required Binance SBE timestamp behavioral proof file is missing",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_requires_exact_target_registration() -> None:
-    mutations = (
-        (
-            f'name = "{BINANCE_TIMESTAMP_TEST_TARGET}"',
-            'name = "replacement_timestamp_test"',
-        ),
-        (
-            f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"',
-            'path = "tests/replacement_timestamp_test.rs"',
-        ),
-    )
-    for original, replacement in mutations:
-        def mutate(
-            root: Path,
-            original: str = original,
-            replacement: str = replacement,
-        ) -> None:
-            manifest = root / "Cargo.toml"
-            manifest.write_text(
-                manifest.read_text(encoding="utf-8").replace(original, replacement),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"Cargo.toml: required [[test]] target {BINANCE_TIMESTAMP_TEST_TARGET}",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_accepts_explicit_execution_enabling_fields() -> None:
-    def mutate(root: Path) -> None:
-        manifest = root / "Cargo.toml"
-        manifest.write_text(
-            manifest.read_text(encoding="utf-8").replace(
-                f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n',
-                f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\nharness = true\ntest = true\n',
-                1,
-            ),
-            encoding="utf-8",
-        )
-
-    assert scan_temp(mutate) == []
-
-
-def test_binance_timestamp_behavioral_contract_rejects_execution_disabling_target_fields() -> None:
-    mutations = (
-        (
-            'required-features = ["never-enabled"]',
-            "has execution-unsafe field(s): required-features",
-        ),
-        ("harness = false", "harness must be true when specified"),
-        ("test = false", "test must be true when specified"),
-        (
-            'crate-type = ["rlib"]',
-            "has execution-unsafe field(s): crate-type",
-        ),
-    )
-    for target_field, expected_finding in mutations:
-        def mutate(root: Path, target_field: str = target_field) -> None:
-            manifest = root / "Cargo.toml"
-            manifest.write_text(
-                manifest.read_text(encoding="utf-8").replace(
-                    f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n',
-                    f'path = "{BINANCE_TIMESTAMP_TEST_PATH}"\n{target_field}\n',
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"Cargo.toml: required [[test]] target {BINANCE_TIMESTAMP_TEST_TARGET} "
-            f"{expected_finding}",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_requires_every_case() -> None:
-    for case_name in BINANCE_TIMESTAMP_TEST_CASES:
-        def mutate(root: Path, case_name: str = case_name) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    f"fn {case_name}()",
-                    f"fn removed_{case_name}()",
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"missing required #[test] function {case_name}",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_requires_case_symbols() -> None:
-    mutations = (
-        (
-            "nt_binance_sbe_parse::parse_depth_snapshot(&event",
-            "removed_depth_snapshot_parser(&event",
-            "missing pinned parse_depth_snapshot call",
-        ),
-        (
-            "delta.ts_init == adapter_ts_init",
-            "delta.ts_init != adapter_ts_init",
-            "missing all inner initialization timestamps assertion",
-        ),
-    )
-    for original, replacement, expected_finding in mutations:
-        def mutate(
-            root: Path,
-            original: str = original,
-            replacement: str = replacement,
-        ) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(original, replacement, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps "
-            f"{expected_finding}",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_requires_pinned_parser_import() -> None:
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                BINANCE_TIMESTAMP_PARSER_IMPORT,
-                f"use crate::fake_parse as {BINANCE_TIMESTAMP_PARSER_ALIAS};",
-                1,
-            ),
-            encoding="utf-8",
-        )
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{BINANCE_TIMESTAMP_TEST_PATH}: required pinned NautilusTrader parser import is missing",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_requires_core_assertion_paths() -> None:
-    mutations = (
-        ("::core::assert_ne!", "assert_ne!"),
-        ("::core::assert_eq!", "assert_eq!"),
-        ("::core::assert!", "assert!"),
-    )
-    for canonical, unqualified in mutations:
-        def mutate(
-            root: Path,
-            canonical: str = canonical,
-            unqualified: str = unqualified,
-        ) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(canonical, unqualified, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed assertions must use canonical "
-            "::core paths without local shadowing",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_accepts_canonical_fixture() -> None:
-    assert scan_temp() == []
-
-
-def test_binance_timestamp_behavioral_contract_rejects_assertion_macro_shadowing() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    function_header = f"#[test]\nfn {function_name}() {{"
-    mutations = (
-        "macro_rules! assert_eq { ($($token:tt)*) => {}; }\n",
-        "macro_rules! assert_ne { ($($token:tt)*) => {}; }\n",
-        "macro_rules! assert { ($($token:tt)*) => {}; }\n",
-        (
-            function_header,
-            f"{function_header}\n    macro_rules! assert_eq {{ ($($token:tt)*) => {{}}; }}",
-        ),
-    )
-    for mutation in mutations:
-        def mutate(root: Path, mutation=mutation) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            text = path.read_text(encoding="utf-8")
-            if isinstance(mutation, tuple):
-                original, replacement = mutation
-                text = text.replace(original, replacement, 1)
-            else:
-                text = mutation + text
-            path.write_text(text, encoding="utf-8")
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed assertions must use canonical "
-            "::core paths without local shadowing",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_unreachable_assertions() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
-    wrappers = (
-        "if false {\n        " + canonical.replace("\n", "\n        ") + "\n    }",
-        "if quote.ts_event != expected_ts_event {\n        "
-        + canonical.replace("\n", "\n        ")
-        + "\n    }",
-        "{\n        " + canonical.replace("\n", "\n        ") + "\n    }",
-        "for _ in 0..0 {\n        " + canonical.replace("\n", "\n        ") + "\n    }",
-        "match false {\n        true => {\n            "
-        + canonical.replace("\n", "\n            ")
-        + "\n        }\n        false => {}\n    }",
-        "let _proof = || {\n        "
-        + canonical.replace("\n", "\n        ")
-        + "\n    };",
-    )
-    for wrapper in wrappers:
-        def mutate(root: Path, wrapper: str = wrapper) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(canonical, wrapper, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
-            "must remain at its canonical control-flow depth",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_bare_closure_assertions() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
-    closure_prefixes = ("||", "move ||", "|_ignored: ()|")
-    for closure_prefix in closure_prefixes:
-        replacement = (
-            f"let _a = {closure_prefix} ::core::assert_ne!(expected_ts_event, adapter_ts_init);\n"
-            f"    let _b = {closure_prefix} ::core::assert_eq!(quote.ts_event, expected_ts_event);\n"
-            f"    let _c = {closure_prefix} ::core::assert_eq!(quote.ts_init, adapter_ts_init);"
-        )
-
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
-            "must be a complete expression statement in its canonical control-flow block",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_trade_bare_closure_assertions() -> None:
-    function_name = "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical = """::core::assert_eq!(trade.ts_event, expected_ts_event);
-        ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
-    replacement = """let _event_proof = || ::core::assert_eq!(trade.ts_event, expected_ts_event);
-        let _init_proof = move || ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
-
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
-            encoding="utf-8",
-        )
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
-        "must be a complete expression statement in its canonical control-flow block",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_preserves_trade_per_item_shape() -> None:
-    function_name = "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical = """::core::assert_eq!(trade.ts_event, expected_ts_event);
-        ::core::assert_eq!(trade.ts_init, adapter_ts_init);"""
-    mutations = (
-        "if false {\n            " + canonical.replace("\n", "\n            ") + "\n        }",
-        "{\n            " + canonical.replace("\n", "\n            ") + "\n        }",
-    )
-    for replacement in mutations:
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} governed assertion "
-            "must remain inside the canonical per-item trade loop",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_early_exit_bypasses() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical_parser = (
-        "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
-    )
-    bypasses = (
-        "return;",
-        "if quote.ts_event == expected_ts_event { return; }",
-        "fallible()?;",
-        "::std::process::exit(0);",
-        "#[cfg(any())]",
-    )
-    for bypass in bypasses:
-        def mutate(root: Path, bypass: str = bypass) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    canonical_parser,
-                    f"{canonical_parser}\n    {bypass}",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must not contain "
-            "early-exit or conditional-compilation proof bypasses",
-        )
-
-    trade_assertion = "::core::assert_eq!(trade.ts_event, expected_ts_event);"
-    for bypass in ("break;", "continue;"):
-        def mutate(root: Path, bypass: str = bypass) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    trade_assertion,
-                    f"{bypass}\n        {trade_assertion}",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps "
-            "must not contain early-exit or conditional-compilation proof bypasses",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_requires_expected_event_provenance() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical_expected = (
-        "let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);"
-    )
-    canonical_event = "let event = BestBidAskStreamEvent { event_time_us };"
-    canonical_parser = (
-        "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
-    )
-    mutations = (
-        (
-            canonical_expected,
-            "let expected_ts_event = UnixNanos::from(event_time_us as u64);",
-        ),
-        (
-            canonical_expected,
-            "let mut expected_ts_event = UnixNanos::from_micros(event_time_us as u64);",
-        ),
-        (
-            canonical_event,
-            "let other_time_us = event_time_us + 1;\n"
-            "    let event = BestBidAskStreamEvent { event_time_us: other_time_us };",
-        ),
-        (
-            f"{canonical_expected}\n    let adapter_ts_init",
-            "let adapter_ts_init",
-        ),
-        (
-            canonical_parser,
-            f"{canonical_parser}\n"
-            "    let expected_ts_event = quote.ts_event;",
-        ),
-    )
-    for original, replacement in mutations:
-        def mutate(
-            root: Path,
-            original: str = original,
-            replacement: str = replacement,
-        ) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(original, replacement, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must derive expected_ts_event "
-            "once from the event's canonical provider-time scalar before parsing",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_expected_event_shadowing() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical_parser = (
-        "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
-    )
-    planted_patterns = (
-        "let r#expected_ts_event = quote.ts_event;",
-        "let (_, expected_ts_event) = ((), quote.ts_event);",
-        "let closure = |expected_ts_event| expected_ts_event;",
-        "for expected_ts_event in [quote.ts_event] {}",
-        "match quote.ts_event { expected_ts_event => {} }",
-        "fn helper(expected_ts_event: UnixNanos) {}",
-    )
-    for planted_pattern in planted_patterns:
-        def mutate(root: Path, planted_pattern: str = planted_pattern) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    canonical_parser,
-                    f"{canonical_parser}\n    {planted_pattern}",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must derive expected_ts_event "
-            "once from the event's canonical provider-time scalar before parsing",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_output_derived_expected_event() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    canonical_expected = (
-        "let expected_ts_event = UnixNanos::from_micros(event_time_us as u64);"
-    )
-    canonical_parser = (
-        "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
-    )
-    mutations = (
-        f"{canonical_parser}\n    let expected_ts_event = quote.ts_event;",
-        f"{canonical_parser}\n    expected_ts_event = quote.ts_event;",
-    )
-    for replacement in mutations:
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            text = path.read_text(encoding="utf-8")
-            if "let expected_ts_event" in replacement:
-                text = text.replace(canonical_expected, "", 1)
-            path.write_text(
-                text.replace(canonical_parser, replacement, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: {function_name} must derive expected_ts_event "
-            "once from the event's canonical provider-time scalar before parsing",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_parser_identity_shadowing() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    function_header = f"#[test]\nfn {function_name}() {{"
-    mutations = (
-        f"mod {BINANCE_TIMESTAMP_PARSER_ALIAS} {{}}",
-        f"use crate::fake_parse as {BINANCE_TIMESTAMP_PARSER_ALIAS};",
-        f"let {BINANCE_TIMESTAMP_PARSER_ALIAS} = fake_parse;",
-        "fn parse_bbo_event() {}",
-        "let parse_bbo_event = || ();",
-        "use crate::fake_parse::parse_bbo_event;",
-    )
-    for planted_shadow in mutations:
-        def mutate(root: Path, planted_shadow: str = planted_shadow) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    function_header,
-                    f"{function_header}\n    {planted_shadow}",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: governed NautilusTrader parser identity must not be shadowed",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_fake_crate_identity_across_test_scopes() -> None:
-    canonical = (
-        f'nautilus-binance = {{ git = "https://github.com/seungpyoson/nautilus_trader.git", '
-        f'rev = "{EXPECTED_NT_REV}" }}'
-    )
-    renamed_pin = (
-        'pinned-binance = { package = "nautilus-binance", '
-        'git = "https://github.com/seungpyoson/nautilus_trader.git", '
-        f'rev = "{EXPECTED_NT_REV}" }}'
-    )
-    mutations = [
-        renamed_pin
-        + '\nnautilus_binance = { package = "parser-shim", path = "parser-shim" }',
-        renamed_pin
-        + '\nnautilus-binance = { package = "parser-shim", path = "parser-shim" }',
-    ]
-    for scope in (
-        "[dev-dependencies]",
-        "[target.'cfg(unix)'.dependencies]",
-        "[target.'cfg(unix)'.dev-dependencies]",
-    ):
-        for exposed_key in ("nautilus-binance", "nautilus_binance"):
-            mutations.append(
-                f"{canonical}\n\n{scope}\n{exposed_key} = "
-                '{ package = "parser-shim", path = "parser-shim" }'
-            )
-    mutations.append(
-        renamed_pin
-        + '\n\n[workspace.dependencies]\n'
-        + 'nautilus-binance = { package = "parser-shim", path = "parser-shim" }\n'
-        + '\n[dev-dependencies]\nnautilus-binance = { workspace = true }'
-    )
-    for replacement in mutations:
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            manifest = root / "Cargo.toml"
-            manifest.write_text(
-                manifest.read_text(encoding="utf-8").replace(canonical, replacement, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "Cargo.toml: required Binance SBE timestamp proof dependency identity",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_ignores_non_test_crate_identity_namespaces() -> None:
-    for exposed_key in ("nautilus-binance", "nautilus_binance"):
-        def mutate(root: Path, exposed_key: str = exposed_key) -> None:
-            manifest = root / "Cargo.toml"
-            manifest.write_text(
-                manifest.read_text(encoding="utf-8")
-                + f'\n[build-dependencies]\n{exposed_key} = '
-                + '{ package = "parser-shim", path = "parser-shim" }\n',
-                encoding="utf-8",
-            )
-            unrelated = "tools/parser-helper/Cargo.toml"
-            write(
-                root,
-                unrelated,
-                '[package]\nname = "parser-helper"\nversion = "0.1.0"\n'
-                + f'[dependencies]\n{exposed_key} = '
-                + '{ package = "parser-shim", path = "parser-shim" }\n',
-            )
-            subprocess.run(repo_git_command("add", unrelated), cwd=root, check=True)
-            harness = root / BINANCE_TIMESTAMP_TEST_PATH
-            harness.write_text(
-                "mod nautilus_binance {}\n" + harness.read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
-
-        assert scan_temp(mutate) == []
-
-
-def test_manifest_pin_census_governs_real_nt_build_dependency_alias() -> None:
-    def mutate(root: Path) -> None:
-        manifest = root / "Cargo.toml"
-        manifest.write_text(
-            manifest.read_text(encoding="utf-8")
-            + '\n[build-dependencies]\nparser-shim = '
-            + f'{{ package = "nautilus-binance", git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "{OLD_NT_REV}" }}\n',
-            encoding="utf-8",
-        )
-
-    assert_finding(scan_temp(mutate), "Cargo.toml: NautilusTrader pin census")
-
-
-def test_binance_timestamp_behavioral_contract_accepts_builtin_lint_attributes() -> None:
-    for lint_level in ("allow", "warn", "deny", "forbid"):
-        def mutate(root: Path, lint_level: str = lint_level) -> None:
-            harness = root / BINANCE_TIMESTAMP_TEST_PATH
-            harness.write_text(
-                f"#[{lint_level}(dead_code)]\nfn harmless_helper() {{}}\n"
-                + harness.read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
-
-        assert scan_temp(mutate) == []
-
-
-def test_binance_timestamp_behavioral_contract_rejects_crate_root_extern_aliases() -> None:
-    aliases = (
-        "extern crate parser_shim as nautilus_binance;\n",
-        "extern crate self as nautilus_binance;\n",
-    )
-    for alias in aliases:
-        def mutate(root: Path, alias: str = alias) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(alias + path.read_text(encoding="utf-8"), encoding="utf-8")
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-root identity substitution is forbidden",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_crate_root_identity_injection() -> None:
-    mutations = (
-        ('include!("crate_identity.rs");\n', 'extern crate parser_shim as nautilus_binance;\n'),
-        (
-            "macro_rules! install_crate_alias { () => { extern crate self as nautilus_binance; }; }\n"
-            "install_crate_alias!();\n",
-            None,
-        ),
-        (
-            "#[inject_crate_identity]\n",
-            None,
-        ),
-        (
-            "#[cfg_attr(all(), allow(dead_code))]\n",
-            None,
-        ),
-    )
-    for injected, sidecar in mutations:
-        def mutate(
-            root: Path,
-            injected: str = injected,
-            sidecar: str | None = sidecar,
-        ) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            text = path.read_text(encoding="utf-8")
-            if injected.startswith("#["):
-                text = text.replace(BINANCE_TIMESTAMP_PARSER_IMPORT, injected + BINANCE_TIMESTAMP_PARSER_IMPORT, 1)
-            else:
-                text = injected + text
-            path.write_text(text, encoding="utf-8")
-            if sidecar is not None:
-                write(root, "tests/crate_identity.rs", sidecar)
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-root identity substitution is forbidden",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_requires_direct_top_level_parser_call() -> None:
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "let trades = nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init);",
-                "let parse = || {\n"
-                "        nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init)\n"
-                "    };\n"
-                "    let trades = parse();",
-                1,
-            ),
-            encoding="utf-8",
-        )
-
-    assert_finding(
-        scan_temp(mutate),
-        "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps "
-        "must bind trades directly to pinned parse_trades_event exactly once without "
-        "rebinding or reassignment",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_binds_asserted_result_to_parser_call() -> None:
-    canonical = (
-        "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
-    )
-    mutations = (
-        (
-            "struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }\n"
-            "    let _real_quote = "
-            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);\n"
-            "    let quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };"
-        ),
-        (
-            f"{canonical}\n"
-            "    let quote = quote;"
-        ),
-        (
-            "let mut quote = "
-            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);\n"
-            "    quote = quote;"
-        ),
-    )
-    for replacement in mutations:
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(canonical, replacement, 1),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
-            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_postfix_result_laundering_for_every_parser() -> None:
-    cases = (
-        (
-            "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
-            "trades",
-            "parse_trades_event",
-            "nt_binance_sbe_parse::parse_trades_event(&event, &instrument, adapter_ts_init)",
-            "",
-            "fabricated_trades()",
-        ),
-        (
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
-            "quote",
-            "parse_bbo_event",
-            "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init)",
-            "",
-            "fabricated_quote()",
-        ),
-        (
-            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
-            "deltas",
-            "parse_depth_snapshot",
-            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)",
-            '.expect("non-empty SBE depth snapshot must produce deltas")',
-            "fabricated_deltas()",
-        ),
-        (
-            "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
-            "deltas",
-            "parse_depth_diff",
-            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)",
-            '.expect("non-empty SBE depth diff must produce deltas")',
-            "fabricated_deltas()",
-        ),
-    )
-    for function_name, result_variable, parser_symbol, parser_call, tail, fabricated in cases:
-        canonical_separator = "\n        " if tail else ""
-        canonical = (
-            f"let {result_variable} = {parser_call}{canonical_separator}{tail};"
-        )
-        mutations = (
-            f"let {result_variable} = {parser_call}{tail}.clone();",
-            (
-                f"let {result_variable} = {parser_call}.map(|_| {fabricated})"
-                f"{tail};"
-            ),
-            (
-                f"let {result_variable} = {parser_call}"
-                ".fabricate(expected_ts_event, adapter_ts_init)"
-                f"{tail};"
-            ),
-        )
-        for replacement in mutations:
-            def mutate(root: Path, canonical: str = canonical, replacement: str = replacement) -> None:
-                path = root / BINANCE_TIMESTAMP_TEST_PATH
-                text = path.read_text(encoding="utf-8")
-                if canonical not in text:
-                    raise AssertionError(f"missing canonical parser initializer: {canonical}")
-                path.write_text(
-                    text.replace(
-                        canonical,
-                        replacement,
-                        1,
-                    ),
-                    encoding="utf-8",
-                )
-
-            assert_finding(
-                scan_temp(mutate),
-                f"{function_name} must bind {result_variable} directly to pinned "
-                f"{parser_symbol} exactly once without rebinding or reassignment",
-            )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_noncanonical_depth_expect_chain() -> None:
-    cases = (
-        (
-            "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
-            "parse_depth_snapshot",
-            "nt_binance_sbe_parse::parse_depth_snapshot(&event, &instrument, adapter_ts_init)",
-            "non-empty SBE depth snapshot must produce deltas",
-        ),
-        (
-            "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
-            "parse_depth_diff",
-            "nt_binance_sbe_parse::parse_depth_diff(&event, &instrument, adapter_ts_init)",
-            "non-empty SBE depth diff must produce deltas",
-        ),
-    )
-    for function_name, parser_symbol, parser_call, message in cases:
-        canonical = (
-            f"let deltas = {parser_call}\n"
-            f'        .expect("{message}");'
-        )
-        mutations = (
-            f'let deltas = {parser_call}.expect("altered proof message");',
-            (
-                f'let deltas = {parser_call}.expect("{message}")'
-                f'.expect("{message}");'
-            ),
-            (
-                f'let deltas = {parser_call}.expect("{message}")'
-                ".fabricate(expected_ts_event, adapter_ts_init);"
-            ),
-        )
-        for replacement in mutations:
-            def mutate(root: Path, canonical: str = canonical, replacement: str = replacement) -> None:
-                path = root / BINANCE_TIMESTAMP_TEST_PATH
-                text = path.read_text(encoding="utf-8")
-                if canonical not in text:
-                    raise AssertionError(f"missing canonical parser initializer: {canonical}")
-                path.write_text(
-                    text.replace(
-                        canonical,
-                        replacement,
-                        1,
-                    ),
-                    encoding="utf-8",
-                )
-
-            assert_finding(
-                scan_temp(mutate),
-                f"{function_name} must bind deltas directly to pinned {parser_symbol} "
-                "exactly once without rebinding or reassignment",
-            )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_for_and_match_result_fabrication() -> None:
-    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
-    asserted_block = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
-        ::core::assert_eq!(quote.ts_event, expected_ts_event);
-        ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
-    replacements = (
-        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    let _ = &quote;
-    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
-    for (_, quote) in [((), fabricated_quote)] {
-        """
-        + asserted_block
-        + "\n    }",
-        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    struct Wrapper { quote: FakeQuote }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    let _ = &quote;
-    let fabricated_wrapper = Wrapper {
-        quote: FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init },
-    };
-    match fabricated_wrapper {
-        Wrapper { quote } => {
-            """
-        + asserted_block
-        + "\n        }\n    }",
-    )
-    for replacement in replacements:
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    canonical_block,
-                    replacement,
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
-            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_nested_binding_patterns() -> None:
-    canonical = (
-        "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
-    )
-    planted_patterns = (
-        "for (_, Some(ref mut quote)) in values {}",
-        "let (_, ref mut quote @ Some(_)) = value;",
-        "match value { Wrapper { inner: ref mut quote @ Some(_) } => {} }",
-        "let closure = |(ref mut quote, _)| quote;",
-        "fn helper((ref mut quote, _): (&mut Quote, ())) {}",
-    )
-    for planted_pattern in planted_patterns:
-        def mutate(root: Path, planted_pattern: str = planted_pattern) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    canonical,
-                    f"{canonical}\n    {planted_pattern}",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
-            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_raw_identifier_result_fabrication() -> None:
-    canonical_block = """let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    ::core::assert_ne!(expected_ts_event, adapter_ts_init);
-    ::core::assert_eq!(quote.ts_event, expected_ts_event);
-    ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
-    asserted_block = """::core::assert_ne!(expected_ts_event, adapter_ts_init);
-        ::core::assert_eq!(quote.ts_event, expected_ts_event);
-        ::core::assert_eq!(quote.ts_init, adapter_ts_init);"""
-    replacements = (
-        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    let _ = &quote;
-    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
-    for (_, r#quote) in [((), fabricated_quote)] {
-        """
-        + asserted_block
-        + "\n    }",
-        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    let _ = &quote;
-    let fabricated_quote = FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init };
-    let (_, r#quote) = ((), fabricated_quote);
-    """
-        + asserted_block,
-        """struct FakeQuote { ts_event: UnixNanos, ts_init: UnixNanos }
-    struct Wrapper { quote: FakeQuote }
-    let quote = nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);
-    let _ = &quote;
-    let fabricated_wrapper = Wrapper {
-        quote: FakeQuote { ts_event: expected_ts_event, ts_init: adapter_ts_init },
-    };
-    match fabricated_wrapper {
-        Wrapper { quote: r#quote } => {
-            """
-        + asserted_block
-        + "\n        }\n    }",
-    )
-    for replacement in replacements:
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    canonical_block,
-                    replacement,
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
-            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_fails_closed_on_ambiguous_binding_syntax() -> None:
-    canonical = (
-        "let quote = "
-        "nt_binance_sbe_parse::parse_bbo_event(&event, &instrument, adapter_ts_init);"
-    )
-    planted_patterns = (
-        "let (quote = value;",
-        "let closure = |quote;",
-    )
-    for planted_pattern in planted_patterns:
-        def mutate(root: Path, planted_pattern: str = planted_pattern) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    canonical,
-                    f"{canonical}\n    {planted_pattern}",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps must bind "
-            "quote directly to pinned parse_bbo_event exactly once without rebinding or reassignment",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_nonordinary_test_attributes() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-    ordinary_header = f"#[test]\nfn {function_name}()"
-    mutations = (
-        f"#[ignore]\n{ordinary_header}",
-        f"#[should_panic]\n{ordinary_header}",
-        f"#[cfg(any())]\n{ordinary_header}",
-        f"#[cfg_attr(all(), ignore)]\n{ordinary_header}",
-        f"#[test]\n#[ignore]\nfn {function_name}()",
-        f"#[test]\n#[test]\nfn {function_name}()",
-    )
-    for replacement in mutations:
-        def mutate(root: Path, replacement: str = replacement) -> None:
-            path = root / BINANCE_TIMESTAMP_TEST_PATH
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    ordinary_header,
-                    replacement,
-                    1,
-                ),
-                encoding="utf-8",
-            )
-
-        assert_finding(
-            scan_temp(mutate),
-            f"{function_name} must use exactly one ordinary #[test] outer attribute",
-        )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_crate_cfg_inner_attribute() -> None:
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        path.write_text(
-            f"#![cfg(any())]\n{path.read_text(encoding='utf-8')}",
-            encoding="utf-8",
-        )
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-level inner attribute is forbidden: cfg(any())",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_crate_cfg_attr_inner_attribute() -> None:
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        path.write_text(
-            f"#![cfg_attr(all(), cfg(any()))]\n{path.read_text(encoding='utf-8')}",
-            encoding="utf-8",
-        )
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{BINANCE_TIMESTAMP_TEST_PATH}: crate-level inner attribute is forbidden: "
-        "cfg_attr(all(),cfg(any()))",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_requires_top_level_test_functions() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        text = path.read_text(encoding="utf-8")
-        path.write_text(
-            f"#[cfg(any())]\nmod disabled {{\n{text}\n}}\n",
-            encoding="utf-8",
-        )
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{function_name} must use exactly one ordinary #[test] outer attribute",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_parenthesized_macro_wrapper() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        text = path.read_text(encoding="utf-8")
-        path.write_text(f"discard!(\n{text}\n);\n", encoding="utf-8")
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{function_name} must use exactly one ordinary #[test] outer attribute",
-    )
-
-
-def test_binance_timestamp_behavioral_contract_rejects_bracketed_macro_wrapper() -> None:
-    function_name = "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps"
-
-    def mutate(root: Path) -> None:
-        path = root / BINANCE_TIMESTAMP_TEST_PATH
-        text = path.read_text(encoding="utf-8")
-        path.write_text(f"discard![\n{text}\n];\n", encoding="utf-8")
-
-    assert_finding(
-        scan_temp(mutate),
-        f"{function_name} must use exactly one ordinary #[test] outer attribute",
-    )
-
-
 def test_pin_census_rejects_one_conflicting_runtime_contract_occurrence() -> None:
     def mutate(root: Path) -> None:
         path = root / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
         text = path.read_text(encoding="utf-8")
         path.write_text(
             text.replace(
-                f"Current status: this branch pins NautilusTrader to `{EXPECTED_NT_REV}` on the bolt pin-fork",
-                f"Current status: this branch pins NautilusTrader to `{OLD_NT_REV}` on the bolt pin-fork",
+                f"merge commit `{EXPECTED_NT_REV}` for upstream PR #4474.",
+                f"merge commit `{OLD_NT_REV}` for upstream PR #4474.",
             ),
             encoding="utf-8",
         )

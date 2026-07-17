@@ -769,6 +769,17 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("13.pin_revision_missing", mutate)
 
+    def test_collect_failures_rejects_personal_nautilus_source(self) -> None:
+        personal_source = "https://github.com/" + "seungpyoson/" + "nautilus_trader.git"
+
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["cargo_text"] = (
+                "[dependencies]\n"
+                f'nautilus-common = {{ git = "{personal_source}", rev = "{self.PINNED_REV}" }}\n'
+            )
+
+        self.assert_collects("13.pin_revision_mismatch", mutate)
+
     def test_collect_failures_accepts_quoted_table_cargo_pin(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["cargo_text"] = (

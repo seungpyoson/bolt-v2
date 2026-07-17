@@ -12,7 +12,7 @@ use nautilus_common::factories::{ClientConfig, DataClientFactory};
 use nautilus_deribit::{config::DeribitDataClientConfig, factories::DeribitDataClientFactory};
 use nautilus_kraken::{config::KrakenDataClientConfig, factories::KrakenDataClientFactory};
 use nautilus_okx::{config::OKXDataClientConfig, factories::OKXDataClientFactory};
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::{
     bolt_v3_adapters::{
@@ -199,11 +199,6 @@ const OKX_DATA_FIELDS: &[&str] = &[
     "vip_level",
     "transport_backend",
 ];
-const OKX_REQUIRED_DATA_FIELDS: &[&str] = &[
-    "book_stale_check_interval_secs",
-    "book_stale_threshold_secs",
-    "book_snapshot_timeout_secs",
-];
 const KRAKEN_DATA_FIELDS: &[&str] = &[
     "api_key",
     "api_secret",
@@ -221,16 +216,38 @@ const KRAKEN_DATA_FIELDS: &[&str] = &[
     "max_requests_per_second",
     "transport_backend",
 ];
-/// Optional NT-side config invariant validator for a data-only provider.
-///
-/// Some pinned NT data-client configs expose a `validate()` method that
-/// enforces venue-specific invariants the bolt-v3 field/credential checks do
-/// not (e.g. Kraken's Spot/demo-environment rule). Threading it through the
-/// shared [`validate_data_only_client`] path keeps the `.validate()` call a
-/// uniform capability of the data-provider binding — a single dispatch path —
-/// instead of a per-venue special case. Providers whose NT config exposes no
-/// `validate()` method pass [`None`].
-type NtDataConfigValidator<T> = fn(&T) -> anyhow::Result<()>;
+type DataConfigParser<T> = fn(&toml::Value) -> Result<T, String>;
+type DataConfigValidator<T> = fn(&T) -> anyhow::Result<()>;
+
+#[derive(Debug, Deserialize)]
+struct RequiredOkxBookHealthControls {
+    book_stale_check_interval_secs: u64,
+    book_stale_threshold_secs: u64,
+    book_snapshot_timeout_secs: u64,
+}
+
+fn deserialize_data_config<T>(value: &toml::Value) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    value
+        .clone()
+        .try_into()
+        .map_err(|error: toml::de::Error| error.to_string())
+}
+
+fn parse_okx_data_config(value: &toml::Value) -> Result<OKXDataClientConfig, String> {
+    let controls = deserialize_data_config::<RequiredOkxBookHealthControls>(value)?;
+    let mut config = deserialize_data_config::<OKXDataClientConfig>(value)?;
+    config.book_stale_check_interval_secs = controls.book_stale_check_interval_secs;
+    config.book_stale_threshold_secs = controls.book_stale_threshold_secs;
+    config.book_snapshot_timeout_secs = controls.book_snapshot_timeout_secs;
+    Ok(config)
+}
+
+fn accept_data_config<T>(_config: &T) -> anyhow::Result<()> {
+    Ok(())
+}
 
 pub fn validate_bitmex_client(key: &str, client: &ClientBlock) -> Vec<String> {
     validate_data_only_client::<BitmexDataClientConfig>(
@@ -238,7 +255,8 @@ pub fn validate_bitmex_client(key: &str, client: &ClientBlock) -> Vec<String> {
         key,
         client,
         BITMEX_DATA_FIELDS,
-        None,
+        deserialize_data_config::<BitmexDataClientConfig>,
+        accept_data_config::<BitmexDataClientConfig>,
     )
 }
 
@@ -248,7 +266,8 @@ pub fn validate_bybit_client(key: &str, client: &ClientBlock) -> Vec<String> {
         key,
         client,
         BYBIT_DATA_FIELDS,
-        None,
+        deserialize_data_config::<BybitDataClientConfig>,
+        accept_data_config::<BybitDataClientConfig>,
     )
 }
 
@@ -258,7 +277,8 @@ pub fn validate_coinbase_client(key: &str, client: &ClientBlock) -> Vec<String> 
         key,
         client,
         COINBASE_DATA_FIELDS,
-        None,
+        deserialize_data_config::<CoinbaseDataClientConfig>,
+        accept_data_config::<CoinbaseDataClientConfig>,
     )
 }
 
@@ -268,28 +288,20 @@ pub fn validate_deribit_client(key: &str, client: &ClientBlock) -> Vec<String> {
         key,
         client,
         DERIBIT_DATA_FIELDS,
-        None,
+        deserialize_data_config::<DeribitDataClientConfig>,
+        accept_data_config::<DeribitDataClientConfig>,
     )
 }
 
 pub fn validate_okx_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    let mut errors = validate_data_only_client::<OKXDataClientConfig>(
+    validate_data_only_client::<OKXDataClientConfig>(
         OKX_KEY,
         key,
         client,
         OKX_DATA_FIELDS,
-        None,
-    );
-    if let Some(data) = &client.data {
-        errors.extend(missing_data_fields(data, OKX_REQUIRED_DATA_FIELDS).into_iter().map(
-            |field| {
-                format!(
-                    "clients.{key}.data.{field} must be explicitly configured for provider={OKX_KEY}"
-                )
-            },
-        ));
-    }
-    errors
+        parse_okx_data_config,
+        accept_data_config::<OKXDataClientConfig>,
+    )
 }
 
 pub fn validate_kraken_client(key: &str, client: &ClientBlock) -> Vec<String> {
@@ -298,7 +310,8 @@ pub fn validate_kraken_client(key: &str, client: &ClientBlock) -> Vec<String> {
         key,
         client,
         KRAKEN_DATA_FIELDS,
-        Some(KrakenDataClientConfig::validate),
+        deserialize_data_config::<KrakenDataClientConfig>,
+        KrakenDataClientConfig::validate,
     )
 }
 
@@ -307,7 +320,8 @@ fn validate_data_only_client<T>(
     key: &str,
     client: &ClientBlock,
     allowed_fields: &[&str],
-    nt_validate: Option<NtDataConfigValidator<T>>,
+    parse_config: DataConfigParser<T>,
+    validate_config: DataConfigValidator<T>,
 ) -> Vec<String>
 where
     T: DeserializeOwned,
@@ -340,14 +354,9 @@ where
         data,
         allowed_fields,
     ));
-    match data.clone().try_into::<T>() {
+    match parse_config(data) {
         Ok(parsed) => {
-            // Run the NT config's own invariant validator (where one exists)
-            // through the shared path so the `.validate()` call is uniform
-            // across every data provider rather than a per-venue add-on.
-            if let Some(nt_validate) = nt_validate
-                && let Err(error) = nt_validate(&parsed)
-            {
+            if let Err(error) = validate_config(&parsed) {
                 errors.push(format!("clients.{key}.data: {error}"));
             }
         }
@@ -404,17 +413,6 @@ fn unknown_data_fields(data: &toml::Value, allowed_fields: &[&str]) -> Vec<Strin
     fields
 }
 
-fn missing_data_fields(data: &toml::Value, required_fields: &[&str]) -> Vec<String> {
-    let Some(table) = data.as_table() else {
-        return required_fields.iter().map(ToString::to_string).collect();
-    };
-    required_fields
-        .iter()
-        .filter(|field| !table.contains_key(**field))
-        .map(ToString::to_string)
-        .collect()
-}
-
 pub fn resolve_unsupported_secrets(
     context: ProviderSecretResolveContext<'_>,
     _resolver: &mut dyn SsmSecretResolver,
@@ -454,6 +452,7 @@ pub fn map_bitmex_adapters(
         BitmexDataClientFactory::new(),
         BITMEX_KEY,
         BITMEX_DATA_FIELDS,
+        deserialize_data_config::<BitmexDataClientConfig>,
     )
 }
 
@@ -465,6 +464,7 @@ pub fn map_bybit_adapters(
         BybitDataClientFactory::new(),
         BYBIT_KEY,
         BYBIT_DATA_FIELDS,
+        deserialize_data_config::<BybitDataClientConfig>,
     )
 }
 
@@ -476,6 +476,7 @@ pub fn map_coinbase_adapters(
         CoinbaseDataClientFactory::new(),
         COINBASE_KEY,
         COINBASE_DATA_FIELDS,
+        deserialize_data_config::<CoinbaseDataClientConfig>,
     )
 }
 
@@ -487,46 +488,20 @@ pub fn map_deribit_adapters(
         DeribitDataClientFactory::new(),
         DERIBIT_KEY,
         DERIBIT_DATA_FIELDS,
+        deserialize_data_config::<DeribitDataClientConfig>,
     )
 }
 
 pub fn map_okx_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
-    if let Some(value) = &context.client.data {
-        reject_missing_data_fields_for_mapping(
-            context.client_key,
-            OKX_KEY,
-            value,
-            OKX_REQUIRED_DATA_FIELDS,
-        )?;
-    }
     map_data_only_adapters::<OKXDataClientConfig, _>(
         context,
         OKXDataClientFactory::new(),
         OKX_KEY,
         OKX_DATA_FIELDS,
+        parse_okx_data_config,
     )
-}
-
-fn reject_missing_data_fields_for_mapping(
-    client_key: &str,
-    provider_key: &'static str,
-    value: &toml::Value,
-    required_fields: &[&str],
-) -> Result<(), BoltV3AdapterMappingError> {
-    let missing_fields = missing_data_fields(value, required_fields);
-    if missing_fields.is_empty() {
-        Ok(())
-    } else {
-        Err(BoltV3AdapterMappingError::SchemaParse {
-            client_key: client_key.to_string(),
-            block: "data",
-            message: format!(
-                "provider {provider_key} data config is missing required field(s): {missing_fields:?}"
-            ),
-        })
-    }
 }
 
 pub fn map_kraken_adapters(
@@ -537,6 +512,7 @@ pub fn map_kraken_adapters(
         KrakenDataClientFactory::new(),
         KRAKEN_KEY,
         KRAKEN_DATA_FIELDS,
+        deserialize_data_config::<KrakenDataClientConfig>,
     )
 }
 
@@ -545,28 +521,33 @@ fn map_data_only_adapters<T, F>(
     factory: F,
     provider_key: &'static str,
     allowed_fields: &[&str],
+    parse_config: DataConfigParser<T>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>
 where
     T: ClientConfig + DeserializeOwned + 'static,
     F: DataClientFactory + 'static,
 {
-    let data = match &context.client.data {
-        Some(value) => {
-            reject_unknown_data_fields_for_mapping(
-                context.client_key,
-                provider_key,
-                value,
-                allowed_fields,
-            )?;
-            Some(BoltV3DataClientAdapterConfig {
-                factory: Box::new(factory),
-                config: Box::new(parse_data_config::<T>(context.client_key, value)?),
-            })
-        }
-        None => None,
-    };
+    let value =
+        context
+            .client
+            .data
+            .as_ref()
+            .ok_or_else(|| BoltV3AdapterMappingError::SchemaParse {
+                client_key: context.client_key.to_string(),
+                block: "data",
+                message: format!("provider {provider_key} requires a [data] block"),
+            })?;
+    reject_unknown_data_fields_for_mapping(
+        context.client_key,
+        provider_key,
+        value,
+        allowed_fields,
+    )?;
     Ok(BoltV3ClientAdapterConfig {
-        data,
+        data: Some(BoltV3DataClientAdapterConfig {
+            factory: Box::new(factory),
+            config: Box::new(parse_data_config(context.client_key, value, parse_config)?),
+        }),
         execution: None,
     })
 }
@@ -595,16 +576,12 @@ fn reject_unknown_data_fields_for_mapping(
 fn parse_data_config<T>(
     client_key: &str,
     value: &toml::Value,
-) -> Result<T, BoltV3AdapterMappingError>
-where
-    T: DeserializeOwned,
-{
-    value.clone().try_into().map_err(|error: toml::de::Error| {
-        BoltV3AdapterMappingError::SchemaParse {
-            client_key: client_key.to_string(),
-            block: "data",
-            message: error.to_string(),
-        }
+    parse_config: DataConfigParser<T>,
+) -> Result<T, BoltV3AdapterMappingError> {
+    parse_config(value).map_err(|message| BoltV3AdapterMappingError::SchemaParse {
+        client_key: client_key.to_string(),
+        block: "data",
+        message,
     })
 }
 

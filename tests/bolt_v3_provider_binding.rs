@@ -174,7 +174,7 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
 }
 
 #[test]
-fn okx_monitor_compatibility_fields_are_required_at_validation_and_mapping_boundaries() {
+fn okx_monitor_controls_are_required_by_typed_config_boundary() {
     for field in [
         "book_stale_check_interval_secs",
         "book_stale_threshold_secs",
@@ -206,7 +206,7 @@ fn okx_monitor_compatibility_fields_are_required_at_validation_and_mapping_bound
         let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
         let error =
             map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
-                .expect_err("mapping must reject a missing OKX compatibility field");
+                .expect_err("mapping must reject a missing required OKX monitor control");
         assert!(
             error.to_string().contains(field),
             "mapping error must name missing OKX field {field}: {error}"

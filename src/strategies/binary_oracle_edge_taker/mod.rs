@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
+use nautilus_common::{actor::DataActor, timer::TimeEvent};
 use nautilus_core::UnixNanos;
 #[cfg(test)]
 use nautilus_model::enums::PositionSide;

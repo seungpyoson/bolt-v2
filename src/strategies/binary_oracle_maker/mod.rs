@@ -14,7 +14,7 @@
 //! it does not copy taker behaviour.
 
 use anyhow::Result;
-use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
+use nautilus_common::{actor::DataActor, timer::TimeEvent};
 use nautilus_model::{
     data::TradeTick,
     enums::OmsType,

@@ -9,7 +9,7 @@ pub mod archetype;
 use std::{collections::BTreeMap, fmt};
 
 use anyhow::{Context, Result};
-use nautilus_common::{actor::DataActor, component::Component};
+use nautilus_common::actor::DataActor;
 use nautilus_model::{
     enums::{OmsType as NtOmsType, TimeInForce},
     events::{OrderAccepted, OrderCancelRejected, OrderFilled},

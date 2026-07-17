@@ -404,8 +404,21 @@ fn is_test_source_path(path: &Path) -> bool {
         .any(|component| component.as_os_str() == "tests")
 }
 
-fn strategy_test_module_edges_are_cfg_gated(_tokens: &[Token]) -> bool {
-    false
+fn cfg_test_attribute_start(tokens: &[Token], item: usize) -> Option<usize> {
+    let start = item.checked_sub(7)?;
+    (texts(&tokens[start..item]) == ["#", "[", "cfg", "(", "test", ")", "]"]).then_some(start)
+}
+
+fn strategy_test_module_edges_are_cfg_gated(tokens: &[Token]) -> bool {
+    tokens.iter().enumerate().all(|(index, token)| {
+        token.text != "mod"
+            || tokens.get(index + 1).map(|token| token.text.as_str()) != Some("tests")
+            || !matches!(
+                tokens.get(index + 2).map(|token| token.text.as_str()),
+                Some(";" | "{")
+            )
+            || cfg_test_attribute_start(tokens, index).is_some()
+    })
 }
 
 fn production_strategy_files() -> Vec<PathBuf> {
@@ -1348,15 +1361,41 @@ fn venue_call_is_followed_by_ok_or_else(tokens: &[Token], call: usize) -> bool {
         .is_some_and(|suffix| texts(suffix) == [".", "ok_or_else", "("])
 }
 
-fn call_arguments_contain_once(tokens: &[Token], callee: &str, identifier: &str) -> bool {
+fn call_argument_is_exact_identifier(
+    tokens: &[Token],
+    callee: &str,
+    argument_index: usize,
+    identifier: &str,
+) -> bool {
     let calls = tokens
         .windows(2)
         .enumerate()
         .filter_map(|(index, window)| (texts(window) == [callee, "("]).then_some(index + 1))
         .collect::<Vec<_>>();
-    calls.len() == 1
-        && matching_delimiter(tokens, calls[0], "(", ")")
-            .is_some_and(|end| count_sequence(&tokens[calls[0] + 1..end], &[identifier]) == 1)
+    if calls.len() != 1 {
+        return false;
+    }
+    let Some(end) = matching_delimiter(tokens, calls[0], "(", ")") else {
+        return false;
+    };
+    let mut argument = 0usize;
+    let mut start = calls[0] + 1;
+    let mut delimiter_depth = 0usize;
+    for cursor in start..end {
+        match tokens[cursor].text.as_str() {
+            "(" | "[" | "{" => delimiter_depth += 1,
+            ")" | "]" | "}" => delimiter_depth = delimiter_depth.saturating_sub(1),
+            "," if delimiter_depth == 0 => {
+                if argument == argument_index {
+                    return texts(&tokens[start..cursor]) == [identifier];
+                }
+                argument += 1;
+                start = cursor + 1;
+            }
+            _ => {}
+        }
+    }
+    argument == argument_index && texts(&tokens[start..end]) == [identifier]
 }
 
 fn pr1_venue_dataflow_errors(tokens: &[Token]) -> Vec<String> {
@@ -1393,9 +1432,10 @@ fn pr1_venue_dataflow_errors(tokens: &[Token]) -> Vec<String> {
         );
     }
     if count_sequence(body, &["execution_venue"]) != 3
-        || !call_arguments_contain_once(
+        || !call_argument_is_exact_identifier(
             body,
             "settlement_currency_for_execution_account",
+            1,
             "execution_venue",
         )
     {
@@ -1469,9 +1509,10 @@ fn pr2_resolver_dataflow_errors(tokens: &[Token]) -> Vec<String> {
             contains_sequence(&body[start..end], &["{", "execution_venue", ","])
         });
     if count_sequence(body, &["execution_venue"]) != 3
-        || !call_arguments_contain_once(
+        || !call_argument_is_exact_identifier(
             body,
             "settlement_currency_for_execution_account",
+            1,
             "execution_venue",
         )
         || !resolved_field
@@ -1608,6 +1649,20 @@ fn shared_venue_ownership_errors(tokens: &[Token]) -> Vec<String> {
     }
     let (callers, caller_errors) = top_level_direct_callers(tokens, "venue_for_client");
     errors.extend(caller_errors);
+    let attributed_calls = callers.values().sum::<usize>();
+    let direct_calls = tokens
+        .windows(2)
+        .enumerate()
+        .filter(|(index, window)| {
+            *index != function + 1 && texts(window) == ["venue_for_client", "("]
+        })
+        .count();
+    if attributed_calls != direct_calls {
+        errors.push(
+            "every venue_for_client call must belong to an attributed top-level production function"
+                .to_string(),
+        );
+    }
     let pr1_callers = BTreeMap::from([("assemble_strategy_build_context".to_string(), 1usize)]);
     let pr2_callers = BTreeMap::from([
         ("execution_venue_for_context".to_string(), 1usize),
@@ -1747,9 +1802,9 @@ fn strategy_bindings_surface_errors(tokens: &[Token]) -> Vec<String> {
         tokens.get(index + 2).map(|token| token.text.as_str()) == Some("{")
             && top_level.last() == Some(&(index + 2))
     });
-    let production_end = test_module
-        .and_then(|index| index.checked_sub(7))
-        .unwrap_or(tokens.len());
+    let test_attribute_start =
+        test_module.and_then(|index| cfg_test_attribute_start(tokens, index));
+    let production_end = test_attribute_start.unwrap_or(tokens.len());
     let production_text = texts(&tokens[..production_end]);
     let forbidden_item_heads = [
         "impl",
@@ -1797,6 +1852,7 @@ fn strategy_bindings_surface_errors(tokens: &[Token]) -> Vec<String> {
             ]
         || module_names != ["tests"]
         || !test_module_is_final
+        || test_attribute_start.is_none()
         || forbidden_item_heads
             .iter()
             .any(|head| top_level_text.contains(head))
@@ -2364,6 +2420,18 @@ fn excluded_strategy_test_modules_require_cfg_test_edges() {
     assert!(!strategy_test_module_edges_are_cfg_gated(&tokenize(
         "mod tests;"
     )));
+    let unguarded = production_strategy_files()
+        .into_iter()
+        .filter(|path| {
+            let source = std::fs::read_to_string(path).expect("strategy source should be readable");
+            !strategy_test_module_edges_are_cfg_gated(&tokenize(&source))
+        })
+        .map(|path| relative(&path))
+        .collect::<Vec<_>>();
+    assert!(
+        unguarded.is_empty(),
+        "production strategy modules expose unguarded tests/ edges: {unguarded:?}"
+    );
 }
 
 #[test]

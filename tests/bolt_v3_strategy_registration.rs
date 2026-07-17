@@ -1078,6 +1078,75 @@ fn fee_provider_preflight_failure_for_second_strategy_runs_no_binding_callback()
 }
 
 #[test]
+fn invalid_second_signal_client_fails_before_any_strategy_is_registered() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let valid = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_archetype.as_str() == "binary_oracle_edge_taker")
+        .expect("fixture should include an edge-taker strategy")
+        .clone();
+    let mut invalid = valid.clone();
+    invalid.config.strategy_instance_id = "invalid-second-signal-client".to_string();
+    invalid.config.order_id_tag = "902".to_string();
+    invalid
+        .config
+        .signal_data
+        .values_mut()
+        .next()
+        .expect("edge fixture must declare one signal source")
+        .data_client_id = ClientId::from("missing_signal");
+
+    let mut empty_loaded = loaded.clone();
+    empty_loaded.strategies.clear();
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve");
+    let decision_evidence: Arc<
+        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let execution_controls =
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
+            submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
+            order_execution_policy:
+                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            settlement_runtime_sink: None,
+            settlement_recovery: None,
+            settlement_health_transition_emitter: None,
+        };
+    let adapters =
+        map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
+    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration");
+    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
+        .expect("fixture data clients should register before strategy registration");
+    let mut node = builder
+        .build()
+        .expect("v3 LiveNode should build before strategy registration");
+    loaded.strategies = vec![valid, invalid];
+
+    let error =
+        bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            &loaded,
+            &resolved,
+            bolt_v2::strategy_bindings::production_runtime_bindings(),
+            execution_controls,
+            decision_evidence,
+        )
+        .expect_err("an unknown signal client must fail registration");
+
+    assert!(
+        error.to_string().contains("missing_signal"),
+        "registration error must identify the missing configured signal client: {error}"
+    );
+    assert!(
+        node.kernel().trader().borrow().strategy_ids().is_empty(),
+        "deterministic preparation failure must precede every NT registration"
+    );
+}
+
+#[test]
 fn strategy_validation_rejects_unknown_settlement_currency_without_unwinding() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

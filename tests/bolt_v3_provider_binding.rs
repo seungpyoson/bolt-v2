@@ -407,6 +407,10 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
             "registration bindings must not directly access `{forbidden_public_field}`"
         );
     }
+    assert!(
+        !context_fields.contains("ResolvedBoltV3Secrets") && !context_fields.contains("resolved:"),
+        "registration context must not store resolved secrets, even in a private field"
+    );
 }
 
 #[test]
@@ -550,12 +554,12 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
         .map(|(body, _)| body)
         .expect("raw taker config should remain inspectable");
-    assert!(
-        !raw_taker.contains(
-            "venue_for_client(&loaded.root, strategy.config.execution_client_id.as_str())"
-        ),
-        "raw taker config must not repeat execution-client venue resolution"
-    );
+    for forbidden_client_lookup in ["venue_for_client(", "root.clients"] {
+        assert!(
+            !raw_taker.contains(forbidden_client_lookup),
+            "raw taker config must consume prepared client routes, not `{forbidden_client_lookup}`"
+        );
+    }
 
     let complete = support::repo_text("src/strategies/complete_set_arbitrage/archetype.rs");
     let raw_complete = complete

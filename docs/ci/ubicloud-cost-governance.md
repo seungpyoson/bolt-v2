@@ -12,9 +12,9 @@ Remote-first Rust verification remains the invariant:
 2. For Rust debugging, run `just rust-probe suggest` and choose the smallest targeted remote probe.
 3. Commit and push.
 4. Open or update a PR.
-5. For ready-PR final proof, use exact-head PR CI evidence through `just verify-remote`; draft `verify-remote` is feedback only.
+5. When Rust claims require remote proof, use exact-head PR CI evidence through `just verify-remote`; draft `verify-remote` is feedback only.
 
-This policy does not move broad Rust verification back to local cargo and does not weaken the required final-head green CI gate.
+This policy does not move broad Rust verification back to local cargo. CI remains evidence governed by the changed requirement and does not grant merge authority.
 
 ## Meter
 
@@ -132,10 +132,10 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 - Do not use CI pushes as a formatting loop; run local non-compile gates first.
 - Current `CI_DEBUG_SSH_WAIT_MINUTES` is `30`. Do not raise it for normal debugging; cancel `ci-runner-debug` runs immediately after use.
 - During the first week, run the meter daily and compare the runner-minute trend to the Ubicloud dashboard. After the first week, run weekly or before/after CI topology changes.
-- Default to a **draft** PR while iterating. Draft pushes use non-required `gate-iteration` / `backtester-gate-iteration` feedback and skip full-CI merge-proof lanes. Iterate with targeted checks such as `just rust-probe`; mark the PR ready only when its head is the intended merge candidate. `ready_for_review` then triggers the pull-request full-CI proof on that exact head SHA, and the merge queue remains the final gate. This is a major run-volume lever: draft-stage was ~26% of `managed_heavy` minutes in the slice 2b meter (2374.694 / 9023.518) — an upper bound that mixes historical feedback and full-proof dispatches, i.e. heavy work spent on intermediate commits a later push replaces.
-- Do not push exploratory or fixup commits to a **ready** PR. Each push re-runs full heavy CI on the new SHA and a prior green does not carry over, so return the PR to draft (or keep iterating on draft) until the next coherent slice.
-- Treat ready-PR full CI as a high-cost proof run for the intended merge candidate, not a debug loop. Use draft iteration runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback.
-- Queue merge-ready PRs with `just merge-queue <pr...>`. The command performs the merge-queue preflight against exact remote SHAs and posts the configured Mergify queue command only when the preflight verdict is `queue_as_one_wave`; split, blocked, or inconclusive results stop there.
+- Default to a **draft** PR while iterating. Iterate with targeted checks such as `just rust-probe`; mark the PR ready only when its head is the intended merge candidate. This is a major run-volume lever: draft-stage was ~26% of `managed_heavy` minutes in the slice 2b meter (2374.694 / 9023.518) — an upper bound that mixes historical feedback and full-proof dispatches, i.e. heavy work spent on intermediate commits a later push replaces.
+- Do not push exploratory or fixup commits to a **ready** PR. Each push can re-run heavy advisory CI on the new SHA and a prior result does not prove the new head, so return the PR to draft until the next coherent slice.
+- Treat ready-PR full CI as high-cost evidence for the intended merge candidate, not a debug loop. Use draft iteration runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback.
+- Queue one merge-ready PR at a time with `just merge-queue <pr>`. The command checks exact remote identity and existing native-review mechanics, then posts the configured Mergify command only for `queue_as_one_wave`; split, blocked, or inconclusive results stop there.
 
 ## Lever Decisions
 
@@ -181,9 +181,9 @@ The meter generated the report at `2026-06-13T05:10:26Z`. It reported `9023.518`
 
 Slice 2b implements Lever B only for `.github/workflows/ci.yml`. `backtester-ci.yml` remains measured by the same meter, but its draft-stage policy is out of scope for this slice.
 
-Draft CI publishes only the non-required `gate-iteration` / `backtester-gate-iteration` check names. A draft PR push skips the root full-CI merge-proof lanes (deny, clippy, build, test, check-aarch64, source-fence, nextest fingerprint/reuse, and test-archive — gated on `full_ci_required`, with runner tiers that vary). Manual `workflow_dispatch` feedback runs keep the same non-required iteration names and cannot satisfy merge readiness. Use `just rust-probe suggest` for debugging, then mark the PR ready for pull-request full CI or use the merge queue gate for proof.
+Draft CI publishes `gate-iteration` / `backtester-gate-iteration` evidence. A draft PR push skips the root full-CI lanes (deny, clippy, build, test, check-aarch64, source-fence, nextest fingerprint/reuse, and test-archive — gated on `full_ci_required`, with runner tiers that vary). Manual `workflow_dispatch` runs are also advisory. Use `just rust-probe suggest` for debugging and request broader exact-head evidence only when the changed risk requires it.
 
-For draft PRs, `just verify-remote` no longer dispatches full CI. It fails closed with guidance to mark the PR ready for pull-request full CI, or to use `just rust-probe` for targeted Rust feedback while the PR remains draft. Merge readiness still requires the ready/non-draft `pull_request` full run, or a later queue-produced required gate, to go green on the merge candidate.
+For draft PRs, `just verify-remote` does not dispatch full CI. It directs operators to use `just rust-probe` for targeted feedback or mark the PR ready when broader exact-head evidence is warranted. Neither path replaces native review authority.
 
 Draft PRs fail closed because `workflow_dispatch` no longer runs full CI. The operator message is:
 

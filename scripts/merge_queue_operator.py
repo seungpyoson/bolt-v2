@@ -161,7 +161,6 @@ def build_preflight_command(
     config: pathlib.Path,
     expected_base_sha: str,
     expected_head_shas: dict[int, str],
-    verifier_profile: str | None,
 ) -> list[str]:
     command = [
         "python3",
@@ -179,8 +178,6 @@ def build_preflight_command(
     ]
     for pr in prs:
         command.extend(["--expected-head-sha", expected_head_arg(pr, expected_head_shas[pr])])
-    if verifier_profile is not None:
-        command.extend(["--verifier-profile", verifier_profile])
     return command
 
 
@@ -190,7 +187,6 @@ def run_preflight(
     prs: Sequence[int],
     config: pathlib.Path,
     operator_config: OperatorConfig,
-    verifier_profile: str | None,
     runner: Runner,
 ) -> tuple[dict[str, object], int]:
     expected_base_sha = remote_ref_sha(
@@ -217,7 +213,6 @@ def run_preflight(
         config=config,
         expected_base_sha=expected_base_sha,
         expected_head_shas=expected_head_shas,
-        verifier_profile=verifier_profile,
     )
     result = runner(command, cwd=repo)
     try:
@@ -268,7 +263,6 @@ def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> 
         prs=args.prs,
         config=config_path,
         operator_config=operator_config,
-        verifier_profile=args.verifier_profile,
         runner=runner,
     )
     verdict = payload.get("verdict")
@@ -296,7 +290,6 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="merge_queue_operator.py", allow_abbrev=False)
     root.add_argument("prs", nargs="+", type=positive_pr_number)
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
-    root.add_argument("--verifier-profile")
     root.add_argument("--dry-run", action="store_true")
     return root
 

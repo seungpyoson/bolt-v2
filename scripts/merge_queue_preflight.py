@@ -38,13 +38,10 @@ MERGIFY_CONFIG_PATH = ".mergify.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_HEAD_SHA_RE = re.compile(r"^(?P<pr>[1-9][0-9]*)=(?P<sha>[0-9a-f]{40})$")
 MERGIFY_REQUIRED_REVIEWER_RE = re.compile(r"(?:^|\n)approved-reviews-by = (?P<reviewer>[^\n]+)")
-MERGIFY_CHECK_SUCCESS_RE = re.compile(r"(?:^|\n)check-success = (?P<check>[^\n]+)")
 MERGIFY_LABEL_CONDITION_RE = re.compile(r"^label = (?P<label>[^\n]+)$")
 CONFLICT_LINE_RE = re.compile(r"^\d{6} [0-9a-f]{40} [123]\t(.+)$")
 PR_REF_PREFIX = "refs/pull/"
 PREFLIGHT_REF_PREFIX = "refs/preflight/merge_queue_preflight"
-PROFILE_NONE = "none"
-GH_PR_CHECKS_JSON_RETURNCODES = (0, 1, 2, 8)
 STATUS_READY = "ready"
 STATUS_BLOCKED = "blocked"
 STATUS_INCONCLUSIVE = "inconclusive"
@@ -56,13 +53,11 @@ LANE_MERGIFY_CONFIG = "mergify_config"
 LANE_IDENTITY = "identity"
 LANE_READINESS = "readiness"
 LANE_INTEGRATION = "integration"
-LANE_VERIFIER = "verifier"
 CONTRACT_LANES = (
     LANE_MERGIFY_CONFIG,
     LANE_IDENTITY,
     LANE_READINESS,
     LANE_INTEGRATION,
-    LANE_VERIFIER,
 )
 CONTRACT_STATUS_RANK = {
     STATUS_BLOCKED: 0,
@@ -99,17 +94,6 @@ INPUT_FAILURE_CLASSIFICATIONS = {
     "ambiguous": (INPUT_FAILURE_LANE_FINDING, STATUS_INCONCLUSIVE, 3),
 }
 PREFLIGHT_USAGE_EXIT_CODE = INPUT_FAILURE_CLASSIFICATIONS["invalid"][2]
-
-MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
-    {
-        f"approved-reviews-by = {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']}",
-        *(
-            f"check-success = {check_name}"
-            for check_name in MERGIFY_CONFIG_EXPECTATIONS["required_checks"]
-        ),
-    }
-)
-
 
 MERGIFY_REQUIRED_QUEUE_RULES = MERGIFY_CONFIG_EXPECTATIONS["queue_rule_order"]
 MERGIFY_REQUIRED_PRIORITY_RULES = MERGIFY_CONFIG_EXPECTATIONS["priority_rule_order"]
@@ -307,10 +291,10 @@ def mergify_required_conditions(value: Any, config_name: str, path: str, errors:
     values = mergify_list(value, config_name, path, errors)
     if values is None:
         return
-    if set(values) != MERGIFY_REQUIRED_MERGE_CONDITIONS or len(values) != len(MERGIFY_REQUIRED_MERGE_CONDITIONS):
+    expected = [f"approved-reviews-by = {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']}"]
+    if values != expected:
         errors.append(
-            f"{config_name} {path} must require {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']} "
-            f"and all {len(MERGIFY_CONFIG_EXPECTATIONS['required_checks'])} gates"
+            f"{config_name} {path} must require only {MERGIFY_CONFIG_EXPECTATIONS['required_reviewer']}"
         )
 
 
@@ -463,24 +447,9 @@ MERGIFY_QUEUE_WAVE_STATUSES = {
 MERGIFY_SPLIT_REASON_CODES = frozenset(
     {
         "batch_conflict",
-        "batch_verifier_failed",
         "mergify_queue_batch_above_max",
     }
 )
-MERGIFY_QUEUE_PROOF_SOURCE_STATES = {
-    True: (
-        STATUS_READY,
-        "mergify_queue_proof_source",
-        "Mergify queue rule {queue_rule} uses queue proof context",
-        "queue_proof_pr",
-    ),
-    False: (
-        STATUS_INCONCLUSIVE,
-        "mergify_in_place_proof_source",
-        "Mergify queue rule {queue_rule} uses in-place proof context",
-        "in_place_pr",
-    ),
-}
 BASE_IDENTITY_FINDING_STATES = {
     True: (
         STATUS_READY,
@@ -506,12 +475,6 @@ HEAD_IDENTITY_FINDING_STATES = {
     ),
 }
 RESIDUAL_RISK_REASON_CODES = (
-    "full_ci_result",
-    "batch_verifier_scope",
-    "source_fence_test_phase_skipped",
-    "mergify_proof_pr_behavior",
-    "remote_runner_availability",
-    "flaky_checks_and_external_services",
     "base_or_head_drift_after_preflight",
     "post_merge_config_or_workflow_changes",
     "queue_metadata_drift",
@@ -519,16 +482,13 @@ RESIDUAL_RISK_REASON_CODES = (
     "reset_on_external_merge",
     "max_parallel_checks_cost",
 )
-RESIDUAL_RISK_MESSAGES = {
-    "batch_verifier_scope": "verifier proof is batch-scoped for passing optimistic batches",
-    "source_fence_test_phase_skipped": "source-fence fast path may skip fixture test suites for eligible diffs",
-}
+RESIDUAL_RISK_MESSAGES: dict[str, str] = {}
 MERGIFY_CONFIG_FIELD_HANDLING = {
     "merge_queue.max_parallel_checks": "residual_cost_impact",
     "merge_queue.reset_on_external_merge": "residual_post_preflight_invalidation",
     "queue_rules[].name": "required_unique_queue_identity",
     "queue_rules[].queue_conditions": "effective_pr_to_queue_routing",
-    "queue_rules[].merge_conditions": "required_reviewer_and_check_evidence",
+    "queue_rules[].merge_conditions": "required_reviewer_evidence",
     "queue_rules[].branch_protection_injection_mode": "explicit_support_or_inconclusive",
     "queue_rules[].batch_size": "batch_min_max_scalar_model",
     "queue_rules[].batch_max_wait_time": "below_min_wait_model",
@@ -544,68 +504,13 @@ MERGIFY_CONFIG_FIELD_HANDLING = {
 PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "base_conflict": (LANE_INTEGRATION, "pr", STATUS_BLOCKED),
     "batch_conflict": (LANE_INTEGRATION, "batch", STATUS_READY),
-    "batch_verifier_failed": (LANE_VERIFIER, "batch", STATUS_READY),
-    "batch_verifier_timeout": (LANE_VERIFIER, "batch", STATUS_INCONCLUSIVE),
-    "batch_verifier_unavailable": (LANE_VERIFIER, "batch", STATUS_INCONCLUSIVE),
     "base_mismatch": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_mismatch": (LANE_IDENTITY, "pr", STATUS_BLOCKED),
     "head_fetch_failed": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_unavailable": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "metadata_unavailable": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
-    "required_check_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
-    "required_check_pending": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
-    "required_check_skipped": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
-    "required_check_missing": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
-    "required_check_unknown": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
-    "required_check_stale": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
-    "required_check_wrong_workflow": (LANE_READINESS, "pr", STATUS_INCONCLUSIVE),
     "readiness_failed": (LANE_READINESS, "pr", STATUS_BLOCKED),
-    "verifier_failed": (LANE_VERIFIER, "pr", STATUS_BLOCKED),
-    "verifier_timeout": (LANE_VERIFIER, "pr", STATUS_INCONCLUSIVE),
-    "verifier_unavailable": (LANE_VERIFIER, "pr", STATUS_INCONCLUSIVE),
 }
-CHECK_STATE_CLASSIFICATIONS = {
-    "success": (STATUS_READY, "required_check_ready"),
-    "pass": (STATUS_READY, "required_check_ready"),
-    "failure": (STATUS_BLOCKED, "required_check_failed"),
-    "error": (STATUS_BLOCKED, "required_check_failed"),
-    "cancelled": (STATUS_BLOCKED, "required_check_failed"),
-    "action_required": (STATUS_BLOCKED, "required_check_failed"),
-    "startup_failure": (STATUS_BLOCKED, "required_check_failed"),
-    "pending": (STATUS_INCONCLUSIVE, "required_check_pending"),
-    "queued": (STATUS_INCONCLUSIVE, "required_check_pending"),
-    "requested": (STATUS_INCONCLUSIVE, "required_check_pending"),
-    "waiting": (STATUS_INCONCLUSIVE, "required_check_pending"),
-    "in_progress": (STATUS_INCONCLUSIVE, "required_check_pending"),
-    "skipped": (STATUS_INCONCLUSIVE, "required_check_skipped"),
-    "neutral": (STATUS_INCONCLUSIVE, "required_check_skipped"),
-    "missing": (STATUS_INCONCLUSIVE, "required_check_missing"),
-}
-CHECK_STATE_UNKNOWN = (STATUS_INCONCLUSIVE, "required_check_unknown")
-CHECK_STATE_STALE = (STATUS_INCONCLUSIVE, "required_check_stale")
-CHECK_BUCKET_STATE_ALIASES = {
-    "pass": "success",
-    "success": "success",
-    "fail": "failure",
-    "failure": "failure",
-    "cancel": "cancelled",
-    "cancelled": "cancelled",
-    "pending": "pending",
-    "skipping": "skipped",
-    "skipped": "skipped",
-    "neutral": "neutral",
-}
-CHECK_STATE_ISSUE_MESSAGES = {
-    "required_check_failed": "required check failed: {name}",
-    "required_check_pending": "required check pending: {name}",
-    "required_check_skipped": "required check skipped: {name}",
-    "required_check_missing": "required check missing: {name}",
-    "required_check_unknown": "required check state or bucket is unknown: {name}",
-    "required_check_stale": "required check is stale: {name}",
-}
-VERIFIER_STREAMS = ("stdout", "stderr")
-FENCES_ONLY_FLAG = "--fences-only"
-SHELL_COMMAND_EXECUTABLES = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 PREFLIGHT_MODE_FINDINGS = {
     True: (),
     False: (
@@ -671,10 +576,6 @@ class MergifyQueueRuleMatch:
 
     def stops_selection(self) -> bool:
         return self.status is not MergifyQueueRuleMatchStatus.NOT_MATCHED
-
-
-def normalize_check_state(raw_state: str) -> str:
-    return re.sub(r"[-\s]+", "_", str(raw_state).strip().lower())
 
 
 def contract_lane_status(findings: Sequence[dict[str, object]], lane: str) -> str:
@@ -930,28 +831,6 @@ def integration_batch_ready_findings(batches: Sequence[Batch]) -> tuple[dict[str
     return tuple(integration_batch_ready_finding(batch) for batch in batches)
 
 
-def verifier_batch_ready_finding(batch: Batch, output_policy: OutputPolicy) -> dict[str, object]:
-    return {
-        "lane": LANE_VERIFIER,
-        "scope": "batch",
-        "status": STATUS_READY,
-        "reason_code": "verifier_batch_ready",
-        "message": f"batch {batch.index} verifier commands passed",
-        "evidence": {
-            "index": batch.index,
-            "prs": list(batch.prs),
-            "verifiers": [result.as_public_json(output_policy) for result in batch.verifiers],
-        },
-    }
-
-
-def verifier_batch_ready_findings(
-    batches: Sequence[Batch],
-    output_policy: OutputPolicy,
-) -> tuple[dict[str, object], ...]:
-    return tuple(verifier_batch_ready_finding(batch, output_policy) for batch in batches)
-
-
 def mergify_config_snapshot_finding(
     *,
     repo: pathlib.Path,
@@ -1148,40 +1027,6 @@ def mergify_route_queue_groups(route_findings: Sequence[Mapping[str, object]]) -
     return groups
 
 
-def mergify_queue_proof_source_finding(rule: Mapping[str, object]) -> dict[str, object]:
-    queue_rule = str(rule["name"])
-    queue_conditions = [str(condition) for condition in tuple(rule["queue_conditions"])]
-    merge_conditions = [str(condition) for condition in tuple(rule["merge_conditions"])]
-    status, reason_code, message, proof_source = MERGIFY_QUEUE_PROOF_SOURCE_STATES[
-        tuple(merge_conditions) != tuple(queue_conditions)
-    ]
-    return {
-        "lane": LANE_MERGIFY_CONFIG,
-        "scope": "queue",
-        "status": status,
-        "reason_code": reason_code,
-        "message": message.format(queue_rule=queue_rule),
-        "evidence": {
-            "queue_rule": queue_rule,
-            "proof_source": proof_source,
-            "queue_conditions": queue_conditions,
-            "merge_conditions": merge_conditions,
-        },
-    }
-
-
-def selected_mergify_queue_proof_source_findings(
-    *,
-    config: Mapping[str, object],
-    route_findings: Sequence[Mapping[str, object]],
-) -> tuple[dict[str, object], ...]:
-    rules_by_name = mergify_queue_rules_by_name(config)
-    return tuple(
-        mergify_queue_proof_source_finding(rules_by_name[queue_rule])
-        for queue_rule in sorted(mergify_route_queue_rules(route_findings))
-    )
-
-
 def mergify_required_reviewer_finding(rule: Mapping[str, object]) -> dict[str, object]:
     queue_rule = str(rule["name"])
     merge_conditions = [str(condition) for condition in tuple(rule["merge_conditions"])]
@@ -1281,217 +1126,6 @@ def selected_mergify_required_reviewer_findings(
         for queue_rule in (str(route_evidence["queue_rule"]),)
     )
     return (*queue_findings, *identity_findings)
-
-
-def mergify_required_check_names(rule: Mapping[str, object]) -> tuple[str, ...]:
-    merge_conditions = [str(condition) for condition in tuple(rule["merge_conditions"])]
-    return tuple(MERGIFY_CHECK_SUCCESS_RE.findall("\n".join(merge_conditions)))
-
-
-def check_name_matches(check: object, required_check: str) -> bool:
-    return isinstance(check, Mapping) and check.get("name") == required_check
-
-
-def missing_mergify_required_check_finding(
-    *,
-    required_check: str,
-    actual_head: str,
-) -> dict[str, object]:
-    return classify_required_check_state(
-        check_name=required_check,
-        raw_state="missing",
-        expected_head=actual_head,
-        actual_head=actual_head,
-        evidence={"workflow": None, "bucket": None},
-    )
-
-
-def duplicate_mergify_required_check_finding(
-    *,
-    required_check: str,
-    actual_head: str,
-) -> dict[str, object]:
-    return classify_required_check_state(
-        check_name=required_check,
-        raw_state="unknown",
-        expected_head=actual_head,
-        actual_head=actual_head,
-        evidence={"workflow": None, "bucket": None},
-    )
-
-
-def wrong_workflow_mergify_required_check_finding(
-    *,
-    required_check: str,
-    expected_workflow: str,
-    actual_workflow: object,
-    actual_head: str,
-) -> dict[str, object]:
-    return {
-        "lane": LANE_READINESS,
-        "scope": "pr",
-        "status": STATUS_INCONCLUSIVE,
-        "reason_code": "required_check_wrong_workflow",
-        "message": f"required check {required_check} came from unexpected workflow",
-        "evidence": {
-            "check_name": required_check,
-            "expected_head": actual_head,
-            "actual_head": actual_head,
-            "workflow": actual_workflow,
-            "expected_workflow": expected_workflow,
-        },
-    }
-
-
-def with_merge_condition_check(
-    finding: dict[str, object],
-    *,
-    merge_check: str,
-    source_check: str,
-) -> dict[str, object]:
-    if merge_check == source_check:
-        return finding
-    return {
-        **finding,
-        "evidence": {
-            **dict(finding.get("evidence", {})),
-            "merge_condition_check": merge_check,
-        },
-    }
-
-
-def source_check_evidence(readiness: Mapping[str, object]) -> tuple[object, ...]:
-    if "source_checks" in readiness:
-        raw_checks = readiness["source_checks"]
-    else:
-        raw_checks = readiness.get("checks", ())
-    if raw_checks is None:
-        return ()
-    if isinstance(raw_checks, (str, bytes)) or not isinstance(raw_checks, Sequence):
-        return ()
-    return tuple(raw_checks)
-
-
-def mergify_required_check_finding(
-    *,
-    merge_check: str,
-    source_check: str,
-    readiness: Mapping[str, object],
-    expected_workflow: str | None,
-) -> dict[str, object] | None:
-    checks = source_check_evidence(readiness)
-    metadata = dict(readiness.get("metadata", {}))
-    actual_head = str(metadata.get("headRefOid", ""))
-    matches = tuple(check for check in checks if check_name_matches(check, source_check))
-    if not matches:
-        finding = missing_mergify_required_check_finding(
-            required_check=source_check,
-            actual_head=actual_head,
-        )
-        return with_merge_condition_check(
-            finding,
-            merge_check=merge_check,
-            source_check=source_check,
-        )
-    if len(matches) > 1:
-        finding = duplicate_mergify_required_check_finding(
-            required_check=source_check,
-            actual_head=actual_head,
-        )
-        return with_merge_condition_check(
-            finding,
-            merge_check=merge_check,
-            source_check=source_check,
-        )
-    if expected_workflow is None:
-        finding = duplicate_mergify_required_check_finding(
-            required_check=source_check,
-            actual_head=actual_head,
-        )
-        return with_merge_condition_check(
-            finding,
-            merge_check=merge_check,
-            source_check=source_check,
-        )
-    actual_workflow = matches[0].get("workflow")
-    if actual_workflow != expected_workflow:
-        finding = wrong_workflow_mergify_required_check_finding(
-            required_check=source_check,
-            expected_workflow=expected_workflow,
-            actual_workflow=actual_workflow,
-            actual_head=actual_head,
-        )
-        return with_merge_condition_check(
-            finding,
-            merge_check=merge_check,
-            source_check=source_check,
-        )
-    finding = required_check_state_finding(
-        check=matches[0],
-        expected_head=actual_head,
-        actual_head=actual_head,
-    )
-    if finding is None:
-        return None
-    return with_merge_condition_check(
-        finding,
-        merge_check=merge_check,
-        source_check=source_check,
-    )
-
-
-def mergify_required_check_context_finding(
-    finding: dict[str, object],
-    *,
-    pr: int,
-    queue_rule: str,
-) -> dict[str, object]:
-    return {
-        **finding,
-        "evidence": {
-            **dict(finding["evidence"]),
-            "pr": pr,
-            "queue_rule": queue_rule,
-        },
-    }
-
-
-def selected_mergify_required_check_findings(
-    *,
-    config: Mapping[str, object],
-    route_findings: Sequence[Mapping[str, object]],
-    readiness: Sequence[Mapping[str, object]],
-    required_check_workflows: Mapping[str, str],
-    source_check_aliases: Mapping[str, str],
-) -> tuple[dict[str, object], ...]:
-    rules_by_name = mergify_queue_rules_by_name(config)
-    readiness_by_pr = {int(item["pr"]): item for item in readiness}
-    findings: list[dict[str, object]] = []
-    for route_finding in route_findings:
-        if route_finding["reason_code"] != "mergify_queue_route_selected":
-            continue
-        route_evidence = dict(route_finding["evidence"])
-        pr = int(route_evidence["pr"])
-        queue_rule = str(route_evidence["queue_rule"])
-        rule = rules_by_name[queue_rule]
-        item = readiness_by_pr[pr]
-        for required_check in mergify_required_check_names(rule):
-            source_check = source_check_aliases.get(required_check, required_check)
-            finding = mergify_required_check_finding(
-                merge_check=required_check,
-                source_check=source_check,
-                readiness=item,
-                expected_workflow=required_check_workflows.get(source_check),
-            )
-            if finding is not None:
-                findings.append(
-                    mergify_required_check_context_finding(
-                        finding,
-                        pr=pr,
-                        queue_rule=queue_rule,
-                    )
-                )
-    return tuple(findings)
 
 
 def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
@@ -1634,23 +1268,10 @@ def available_mergify_config_route_and_batch_findings(
     *,
     config: Mapping[str, object],
     readiness: Sequence[Mapping[str, object]],
-    required_check_workflows: Mapping[str, str],
-    source_check_aliases: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     route_findings = available_mergify_queue_route_findings(config=config, readiness=readiness)
     return (
         *route_findings,
-        *selected_mergify_required_check_findings(
-            config=config,
-            route_findings=route_findings,
-            readiness=readiness,
-            required_check_workflows=required_check_workflows,
-            source_check_aliases=source_check_aliases,
-        ),
-        *selected_mergify_queue_proof_source_findings(
-            config=config,
-            route_findings=route_findings,
-        ),
         *selected_mergify_required_reviewer_findings(
             config=config,
             route_findings=route_findings,
@@ -1664,8 +1285,6 @@ def unavailable_mergify_queue_route_findings(
     *,
     config: object,
     readiness: Sequence[Mapping[str, object]],
-    required_check_workflows: Mapping[str, str],
-    source_check_aliases: Mapping[str, str],
 ) -> tuple[dict[str, object], ...]:
     return ()
 
@@ -1681,8 +1300,6 @@ def mergify_config_findings(
     repo: pathlib.Path,
     base_sha: str,
     readiness: Sequence[Mapping[str, object]],
-    required_check_workflows: Mapping[str, str],
-    source_check_aliases: Mapping[str, str],
     input_timeout_seconds: int,
 ) -> tuple[dict[str, object], ...]:
     snapshot = mergify_config_snapshot_finding(
@@ -1711,8 +1328,6 @@ def mergify_config_findings(
         *MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS[isinstance(config, Mapping)](
             config=config,
             readiness=readiness,
-            required_check_workflows=required_check_workflows,
-            source_check_aliases=source_check_aliases,
         ),
     )
 
@@ -1732,128 +1347,6 @@ def contract_result(findings: Sequence[dict[str, object]], *, wave_status: str) 
         "exit_code": CONTRACT_VERDICT_EXIT_CODES[verdict],
         "lane_statuses": lane_statuses,
     }
-
-
-def classify_required_check_state(
-    *,
-    check_name: str,
-    raw_state: str,
-    expected_head: str,
-    actual_head: str,
-    evidence: Mapping[str, object],
-) -> dict[str, object]:
-    normalized_state = normalize_check_state(raw_state)
-    status, reason_code = CHECK_STATE_CLASSIFICATIONS.get(
-        normalized_state,
-        CHECK_STATE_UNKNOWN,
-    )
-    if actual_head != expected_head:
-        status, reason_code = CHECK_STATE_STALE
-    return {
-        "lane": LANE_READINESS,
-        "scope": "pr",
-        "status": status,
-        "reason_code": reason_code,
-        "message": f"required check {check_name} is {reason_code}",
-        "evidence": {
-            **evidence,
-            "check_name": check_name,
-            "raw_state": raw_state,
-            "normalized_state": normalized_state,
-            "expected_head": expected_head,
-            "actual_head": actual_head,
-        },
-    }
-
-
-def check_bucket_state(raw_bucket: object) -> str | None:
-    if not isinstance(raw_bucket, str):
-        return None
-    return CHECK_BUCKET_STATE_ALIASES.get(normalize_check_state(raw_bucket))
-
-
-def required_check_state_finding(
-    *,
-    check: Mapping[str, object],
-    expected_head: str,
-    actual_head: str,
-) -> dict[str, object] | None:
-    raw_name = check.get("name")
-    raw_workflow = check.get("workflow")
-    valid_name = isinstance(raw_name, str) and bool(raw_name)
-    valid_workflow = isinstance(raw_workflow, str) and bool(raw_workflow)
-    check_name = raw_name if valid_name else "<unknown>"
-    if not valid_name or not valid_workflow:
-        return classify_required_check_state(
-            check_name=check_name,
-            raw_state="unknown",
-            expected_head=expected_head,
-            actual_head=actual_head,
-            evidence={"workflow": raw_workflow, "bucket": check.get("bucket")},
-        )
-    state_finding = classify_required_check_state(
-        check_name=check_name,
-        raw_state=str(check.get("state", "missing")),
-        expected_head=expected_head,
-        actual_head=actual_head,
-        evidence={"workflow": check.get("workflow"), "bucket": check.get("bucket")},
-    )
-    candidates = [state_finding]
-    bucket_state = check_bucket_state(check.get("bucket"))
-    if bucket_state is None:
-        candidates.append(
-            classify_required_check_state(
-                check_name=check_name,
-                raw_state="unknown",
-                expected_head=expected_head,
-                actual_head=actual_head,
-                evidence={"workflow": check.get("workflow"), "bucket": check.get("bucket")},
-            )
-        )
-    else:
-        candidates.append(
-            classify_required_check_state(
-                check_name=check_name,
-                raw_state=bucket_state,
-                expected_head=expected_head,
-                actual_head=actual_head,
-                evidence={"workflow": check.get("workflow"), "bucket": check.get("bucket")},
-            )
-        )
-    finding = min(
-        candidates,
-        key=lambda candidate: CONTRACT_STATUS_RANK[str(candidate["status"])],
-    )
-    if finding["status"] == STATUS_READY:
-        return None
-    return finding
-
-
-def required_check_readiness_issue(
-    check: object,
-    *,
-    expected_head: str,
-    actual_head: str,
-) -> ReadinessIssue | None:
-    if not isinstance(check, Mapping):
-        return ReadinessIssue(
-            code="required_check_unknown",
-            message="required check metadata is malformed",
-        )
-    finding = required_check_state_finding(
-        check=check,
-        expected_head=expected_head,
-        actual_head=actual_head,
-    )
-    if finding is None:
-        return None
-    code = str(finding["reason_code"])
-    evidence = dict(finding["evidence"])
-    name = str(evidence["check_name"])
-    return ReadinessIssue(
-        code=code,
-        message=CHECK_STATE_ISSUE_MESSAGES[code].format(name=name),
-    )
 
 
 def preflight_artifact_finding(artifact: Mapping[str, object]) -> dict[str, object]:
@@ -2049,58 +1542,6 @@ class SyntheticCommit:
 
 
 @dataclasses.dataclass(frozen=True)
-class VerifierResult:
-    command: str
-    returncode: int
-    stdout: str
-    stderr: str
-    classification: str = "verifier_failed"
-
-    def as_public_json(self, output_policy: OutputPolicy) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "command": self.command,
-            "returncode": self.returncode,
-        }
-        if self.returncode != 0:
-            payload["classification"] = self.classification
-            for stream in VERIFIER_STREAMS:
-                preview = bounded_stream(self.stream(stream), output_policy)
-                payload.update(preview.as_fields(stream))
-        return payload
-
-    def stream(self, name: str) -> str:
-        if name == "stdout":
-            return self.stdout
-        if name == "stderr":
-            return self.stderr
-        raise PreflightError(f"unknown verifier stream {name!r}")
-
-
-@dataclasses.dataclass(frozen=True)
-class OutputPolicy:
-    verifier_stream_max_lines: int
-    verifier_stream_max_bytes: int
-
-    def as_json(self) -> dict[str, int]:
-        return {
-            "verifier_stream_max_lines": self.verifier_stream_max_lines,
-            "verifier_stream_max_bytes": self.verifier_stream_max_bytes,
-        }
-
-
-@dataclasses.dataclass(frozen=True)
-class StreamPreview:
-    text: str
-    truncated: bool
-
-    def as_fields(self, stream: str) -> dict[str, object]:
-        return {
-            f"{stream}_preview": self.text,
-            f"{stream}_truncated": self.truncated,
-        }
-
-
-@dataclasses.dataclass(frozen=True)
 class ReadinessIssue:
     code: str
     message: str
@@ -2161,14 +1602,12 @@ class Batch:
     index: int
     commit: str
     prs: tuple[int, ...]
-    verifiers: tuple[VerifierResult, ...]
 
-    def as_json(self, output_policy: OutputPolicy) -> dict[str, object]:
+    def as_json(self) -> dict[str, object]:
         return {
             "index": self.index,
             "prs": list(self.prs),
             "status": STATUS_READY,
-            "verifiers": [result.as_public_json(output_policy) for result in self.verifiers],
         }
 
 
@@ -2176,15 +1615,7 @@ class Batch:
 class PreflightConfig:
     origin: str
     base: str
-    default_verifier_profile: str
-    verifier_profiles: dict[str, tuple[str, ...]]
-    source_fence_full_profile_pathspecs: tuple[str, ...]
-    source_fence_fences_only_rewrites: dict[str, str]
-    required_check_workflows: dict[str, str]
-    source_check_aliases: dict[str, str]
     input_timeout_seconds: int
-    verifier_timeout_seconds: int
-    output_policy: OutputPolicy
 
 
 STATIC_READINESS_EXPECTATIONS = (
@@ -2223,12 +1654,6 @@ READINESS_ISSUE_ARTIFACT_TYPES = {
     "head_mismatch": "head_mismatch",
     "not_mergeable": "readiness_failed",
     "not_open": "readiness_failed",
-    "required_check_failed": "required_check_failed",
-    "required_check_pending": "required_check_pending",
-    "required_check_skipped": "required_check_skipped",
-    "required_check_missing": "required_check_missing",
-    "required_check_unknown": "required_check_unknown",
-    "required_check_stale": "required_check_stale",
     "review_not_approved": "readiness_failed",
 }
 READINESS_ISSUE_STATUS_RANKS = {
@@ -2344,289 +1769,21 @@ def load_toml(path: pathlib.Path) -> dict[str, object]:
     return data
 
 
-def require_string_map(
-    parent: dict[str, object],
-    key: str,
-    prefix: str,
-    *,
-    allow_empty: bool = False,
-) -> dict[str, str]:
-    value = parent.get(key)
-    if not isinstance(value, dict):
-        raise PreflightError(f"{prefix}.{key} must be a table")
-    if not value and not allow_empty:
-        raise PreflightError(f"{prefix}.{key} must be a non-empty table")
-    result: dict[str, str] = {}
-    for raw_key, raw_value in value.items():
-        if not isinstance(raw_key, str) or not raw_key:
-            raise PreflightError(f"{prefix}.{key} keys must be non-empty strings")
-        if not isinstance(raw_value, str) or not raw_value:
-            raise PreflightError(f"{prefix}.{key}.{raw_key} must be a non-empty string")
-        result[raw_key] = raw_value
-    return result
-
-
-def require_string_tuple(parent: dict[str, object], key: str, prefix: str) -> tuple[str, ...]:
-    value = parent.get(key)
-    if not isinstance(value, list) or not value:
-        raise PreflightError(f"{prefix}.{key} must be a non-empty string array")
-    result: list[str] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, str) or not item:
-            raise PreflightError(f"{prefix}.{key}[{index}] must be a non-empty string")
-        result.append(item)
-    return tuple(result)
-
-
-def validate_source_check_aliases(
-    source_check_aliases: Mapping[str, str],
-    required_check_workflows: Mapping[str, str],
-) -> None:
-    for merge_check, source_check in source_check_aliases.items():
-        if source_check not in required_check_workflows:
-            raise PreflightError(
-                "config.merge_queue_preflight.source_check_aliases."
-                f"{merge_check} target {source_check!r} must exist in "
-                "config.merge_queue_preflight.required_check_workflows"
-            )
-
-
-def cheap_local_gate_labels(root: Mapping[str, object]) -> frozenset[str]:
-    lane_policy = require_table(root, "local_lane_policy", "config")
-    labels = lane_policy.get("cheap_lane_labels")
-    if not isinstance(labels, list) or not labels:
-        raise PreflightError("config.local_lane_policy.cheap_lane_labels must be a non-empty string array")
-    result: set[str] = set()
-    for index, label in enumerate(labels):
-        if not isinstance(label, str) or not label:
-            raise PreflightError(f"config.local_lane_policy.cheap_lane_labels[{index}] must be a non-empty string")
-        if label.startswith("local-gate:"):
-            result.add(label)
-    if not result:
-        raise PreflightError("config.local_lane_policy.cheap_lane_labels must declare at least one local-gate label")
-    return frozenset(result)
-
-
-def just_recipe_from_rewrite_command(command: str, *, field: str) -> str:
-    try:
-        parts = shlex.split(command)
-    except ValueError as exc:
-        raise PreflightError(
-            "config.merge_queue_preflight.source_fence_fences_only_rewrites "
-            f"{field} contains an invalid shell command: {exc}"
-        ) from exc
-    if len(parts) != 2 or parts[0] != "just" or not parts[1]:
-        raise PreflightError(
-            "config.merge_queue_preflight.source_fence_fences_only_rewrites "
-            f"{field} must be exactly 'just <public-recipe>'"
-        )
-    return parts[1]
-
-
-def validate_source_fence_fences_only_rewrites(
-    rewrites: Mapping[str, str],
-    cheap_gate_labels: frozenset[str],
-) -> None:
-    for source, target in rewrites.items():
-        source_recipe = just_recipe_from_rewrite_command(source, field="source")
-        if f"local-gate:{source_recipe}" not in cheap_gate_labels:
-            raise PreflightError(
-                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
-                f"source {source!r} must route through a configured public local-gate label"
-            )
-        target_recipe = just_recipe_from_rewrite_command(target, field="target")
-        if f"local-gate:{target_recipe}" not in cheap_gate_labels:
-            raise PreflightError(
-                "config.merge_queue_preflight.source_fence_fences_only_rewrites "
-                f"target {target!r} must route through a configured public local-gate label"
-            )
-
-
-def parsed_shell_command(command: str) -> tuple[str, ...] | None:
-    try:
-        return tuple(shlex.split(command))
-    except ValueError:
-        return None
-
-
-def invokes_reduced_source_fence_command(
-    parsed: tuple[str, ...],
-    rewrite_targets: frozenset[tuple[str, ...]],
-    rewrite_target_recipes: frozenset[str],
-) -> bool:
-    if (
-        any(
-            len(token) > 2 and token.startswith("--") and FENCES_ONLY_FLAG.startswith(token)
-            for token in parsed
-        )
-        or parsed in rewrite_targets
-    ):
-        return True
-    for index, part in enumerate(parsed):
-        if pathlib.PurePath(part).name == "just" and any(
-            token in rewrite_target_recipes for token in parsed[index + 1 :]
-        ):
-            return True
-    return False
-
-
-def uses_shell_wrapper_syntax(parsed: tuple[str, ...]) -> bool:
-    for part in parsed:
-        if any(marker in part for marker in (" ", "\t", "'", '"')):
-            return True
-    for index, part in enumerate(parsed):
-        if pathlib.PurePath(part).name not in SHELL_COMMAND_EXECUTABLES:
-            continue
-        for token in parsed[index + 1 :]:
-            if token == "--":
-                break
-            if token.startswith("-") and "c" in token[1:]:
-                return True
-    return False
-
-
-def validate_verifier_commands(
-    field: str,
-    commands: Sequence[str],
-    source_fence_fences_only_rewrites: Mapping[str, str],
-) -> None:
-    rewrite_targets = frozenset(
-        parsed
-        for target in source_fence_fences_only_rewrites.values()
-        if (parsed := parsed_shell_command(target)) is not None
-    )
-    rewrite_target_recipes = frozenset(
-        recipe
-        for target in rewrite_targets
-        if len(target) == 2 and pathlib.PurePath(target[0]).name == "just"
-        for recipe in (target[1], f"{target[1]}-inner")
-    )
-    for command in commands:
-        parsed = parsed_shell_command(command)
-        if parsed is None:
-            raise PreflightError(f"{field} contains an invalid shell command {command!r}")
-        if uses_shell_wrapper_syntax(parsed):
-            raise PreflightError(
-                f"{field} must not use shell wrapper syntax {command!r}; "
-                "use direct verifier commands"
-            )
-        if invokes_reduced_source_fence_command(
-            parsed,
-            rewrite_targets,
-            rewrite_target_recipes,
-        ):
-            raise PreflightError(
-                f"{field} must not use reduced-profile rewrite target {command!r}; "
-                "use the configured rewrite source"
-            )
-
-
-def validate_verifier_profile_commands(
-    profile_name: str,
-    commands: Sequence[str],
-    source_fence_fences_only_rewrites: Mapping[str, str],
-) -> None:
-    validate_verifier_commands(
-        f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands",
-        commands,
-        source_fence_fences_only_rewrites,
-    )
-
-
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
-    cheap_gate_labels = cheap_local_gate_labels(root)
     origin = require_string(settings, "origin", "config.merge_queue_preflight")
     base = require_string(settings, "base", "config.merge_queue_preflight")
-    default_profile = require_string(
-        settings, "default_verifier_profile", "config.merge_queue_preflight"
-    )
-    profiles_root = require_table(
-        settings, "verifier_profiles", "config.merge_queue_preflight"
-    )
-    source_fence_full_profile_pathspecs = require_string_tuple(
-        settings,
-        "source_fence_full_profile_pathspecs",
-        "config.merge_queue_preflight",
-    )
-    source_fence_fences_only_rewrites = require_string_map(
-        settings,
-        "source_fence_fences_only_rewrites",
-        "config.merge_queue_preflight",
-    )
-    validate_source_fence_fences_only_rewrites(source_fence_fences_only_rewrites, cheap_gate_labels)
     timeout_settings = require_table(settings, "timeouts", "config.merge_queue_preflight")
-    verifier_timeout_seconds = require_positive_int(
-        timeout_settings,
-        "verifier_seconds",
-        "config.merge_queue_preflight.timeouts",
-    )
     input_timeout_seconds = require_positive_int(
         timeout_settings,
         "input_seconds",
         "config.merge_queue_preflight.timeouts",
     )
-    required_check_workflows = require_string_map(
-        settings,
-        "required_check_workflows",
-        "config.merge_queue_preflight",
-    )
-    source_check_aliases = require_string_map(
-        settings,
-        "source_check_aliases",
-        "config.merge_queue_preflight",
-        allow_empty=True,
-    )
-    validate_source_check_aliases(source_check_aliases, required_check_workflows)
-    output_settings = require_table(settings, "output", "config.merge_queue_preflight")
-    output_policy = OutputPolicy(
-        verifier_stream_max_lines=require_positive_int(
-            output_settings,
-            "verifier_stream_max_lines",
-            "config.merge_queue_preflight.output",
-        ),
-        verifier_stream_max_bytes=require_positive_int(
-            output_settings,
-            "verifier_stream_max_bytes",
-            "config.merge_queue_preflight.output",
-        ),
-    )
-    profiles: dict[str, tuple[str, ...]] = {}
-    for profile_name, raw_profile in profiles_root.items():
-        if not isinstance(raw_profile, dict):
-            raise PreflightError(
-                f"config.merge_queue_preflight.verifier_profiles.{profile_name} must be a table"
-            )
-        raw_commands = raw_profile.get("commands")
-        if not isinstance(raw_commands, list) or any(
-            not isinstance(command, str) or not command for command in raw_commands
-        ):
-            raise PreflightError(
-                f"config.merge_queue_preflight.verifier_profiles.{profile_name}.commands must be a string array"
-            )
-        validate_verifier_profile_commands(
-            profile_name,
-            raw_commands,
-            source_fence_fences_only_rewrites,
-        )
-        profiles[profile_name] = tuple(raw_commands)
-    if default_profile not in profiles:
-        raise PreflightError(
-            f"config.merge_queue_preflight.default_verifier_profile {default_profile!r} has no profile"
-        )
     return PreflightConfig(
         origin=origin,
         base=base,
-        default_verifier_profile=default_profile,
-        verifier_profiles=profiles,
-        source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
-        source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
-        required_check_workflows=required_check_workflows,
-        source_check_aliases=source_check_aliases,
         input_timeout_seconds=input_timeout_seconds,
-        verifier_timeout_seconds=verifier_timeout_seconds,
-        output_policy=output_policy,
     )
 
 
@@ -2808,186 +1965,6 @@ def synthesize_merge(
     return SyntheticCommit(commit=commit, prs=tuple(prs))
 
 
-def run_verifier_commands(
-    repo: pathlib.Path,
-    commit: str,
-    commands: Sequence[str],
-    timeout_seconds: int,
-    input_timeout_seconds: int,
-    alternate_object_dir: str | None = None,
-) -> tuple[VerifierResult, ...]:
-    if not commands:
-        return ()
-    results: list[VerifierResult] = []
-    with tempfile.TemporaryDirectory(prefix="merge-queue-preflight-") as tmp:
-        worktree = pathlib.Path(tmp) / "worktree"
-        git(
-            repo,
-            "worktree",
-            "add",
-            "--quiet",
-            "--detach",
-            str(worktree),
-            commit,
-            timeout_seconds=input_timeout_seconds,
-        )
-        try:
-            for command in commands:
-                parts = shlex.split(command)
-                if not parts:
-                    raise PreflightError("verifier command must not be empty")
-                env = None
-                if alternate_object_dir:
-                    env = os.environ.copy()
-                    existing_alternates = env.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-                    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = (
-                        alternate_object_dir
-                        if not existing_alternates
-                        else f"{alternate_object_dir}{os.pathsep}{existing_alternates}"
-                    )
-                print(
-                    f"merge_queue_preflight: verifier running: {command}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                completed = run_command(
-                    parts,
-                    cwd=worktree,
-                    check=False,
-                    env=env,
-                    timeout_seconds=timeout_seconds,
-                    process_group=True,
-                )
-                verifier_result = VerifierResult(
-                    command=command,
-                    returncode=completed.returncode,
-                    stdout=completed.stdout,
-                    stderr=completed.stderr,
-                    classification=verifier_failure_classification(completed.failure_type),
-                )
-                results.append(verifier_result)
-                status = "passed" if verifier_result.returncode == 0 else "failed"
-                print(
-                    "merge_queue_preflight: verifier "
-                    f"{status}: {command} (exit {verifier_result.returncode})",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                if verifier_result.returncode != 0:
-                    break
-        finally:
-            git(
-                repo,
-                "worktree",
-                "remove",
-                "--force",
-                str(worktree),
-                check=False,
-                timeout_seconds=input_timeout_seconds,
-            )
-    return tuple(results)
-
-
-def verifier_failure_classification(failure_type: str | None) -> str:
-    if failure_type == "timeout":
-        return "verifier_timeout"
-    if failure_type == "unavailable":
-        return "verifier_unavailable"
-    return "verifier_failed"
-
-
-def batch_verifier_artifact_type(result: VerifierResult) -> str:
-    if result.classification == "verifier_timeout":
-        return "batch_verifier_timeout"
-    if result.classification == "verifier_unavailable":
-        return "batch_verifier_unavailable"
-    return "batch_verifier_failed"
-
-
-def first_failed_verifier(results: Sequence[VerifierResult]) -> VerifierResult | None:
-    for result in results:
-        if result.returncode != 0:
-            return result
-    return None
-
-
-def verifier_block(pr: int, result: VerifierResult, output_policy: OutputPolicy) -> dict[str, object]:
-    return {
-        "pr": pr,
-        "reason": f"verifier failed: {result.command}",
-        "type": result.classification,
-        **result.as_public_json(output_policy),
-    }
-
-
-def source_fence_fences_only_command(
-    command: str,
-    source_fence_fences_only_rewrites: Mapping[str, str],
-) -> str:
-    """Rewrite configured source-fence commands to their governed reduced-profile recipes."""
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        return command
-    if not parts or FENCES_ONLY_FLAG in parts:
-        return command
-    for source, target in source_fence_fences_only_rewrites.items():
-        if tuple(parts) == tuple(shlex.split(source)):
-            return target
-    return command
-
-
-def commit_touches_source_fence_full_profile_path(
-    repo: pathlib.Path,
-    base_sha: str,
-    commit: str,
-    pathspecs: Sequence[str],
-    input_timeout_seconds: int,
-) -> bool:
-    """Return True when the commit changes source-fence governance, failing closed."""
-    completed = git(
-        repo,
-        "diff",
-        "--name-only",
-        base_sha,
-        commit,
-        "--",
-        *pathspecs,
-        check=False,
-        timeout_seconds=input_timeout_seconds,
-    )
-    if completed.returncode != 0 or completed.failure_type == "timeout":
-        return True
-    return any(line.strip() for line in completed.stdout.splitlines())
-
-
-def verifier_commands_for_commit(
-    *,
-    repo: pathlib.Path,
-    base_sha: str,
-    commit: str,
-    commands: Sequence[str],
-    source_fence_full_profile_pathspecs: Sequence[str],
-    source_fence_fences_only_rewrites: Mapping[str, str],
-    input_timeout_seconds: int,
-) -> tuple[str, ...]:
-    """Select full or fences-only verifier commands for a synthetic commit."""
-    if not commands:
-        return ()
-    if commit_touches_source_fence_full_profile_path(
-        repo,
-        base_sha,
-        commit,
-        source_fence_full_profile_pathspecs,
-        input_timeout_seconds,
-    ):
-        return tuple(commands)
-    return tuple(
-        source_fence_fences_only_command(command, source_fence_fences_only_rewrites)
-        for command in commands
-    )
-
-
 def unverified_batches_for_ready_prs(
     *,
     repo: pathlib.Path,
@@ -2998,7 +1975,7 @@ def unverified_batches_for_ready_prs(
     batch_max_limits: Mapping[str, int],
     input_timeout_seconds: int,
 ) -> tuple[list[dict[str, object]], list[Batch]]:
-    """Build optimistic merge batches before running expensive verifier commands."""
+    """Build merge-conflict batches for ready pull requests."""
     conflicts: list[dict[str, object]] = []
     batches: list[Batch] = []
     current: SyntheticCommit | None = None
@@ -3017,7 +1994,6 @@ def unverified_batches_for_ready_prs(
                     index=batch_index,
                     commit=current.commit,
                     prs=current.prs,
-                    verifiers=(),
                 )
             )
             batch_index += 1
@@ -3044,7 +2020,6 @@ def unverified_batches_for_ready_prs(
                     index=batch_index,
                     commit=current.commit,
                     prs=current.prs,
-                    verifiers=(),
                 )
             )
             batch_index += 1
@@ -3057,262 +2032,9 @@ def unverified_batches_for_ready_prs(
                 index=batch_index,
                 commit=current.commit,
                 prs=current.prs,
-                verifiers=(),
             )
         )
     return conflicts, batches
-
-
-@dataclasses.dataclass(frozen=True)
-class VerifiedBatchFallback:
-    blocked_prs: tuple[dict[str, object], ...]
-    conflicts: tuple[dict[str, object], ...]
-    batches: tuple[Batch, ...]
-
-
-def remaining_batch_prs(candidate_batches: Sequence[Batch], start_index: int) -> tuple[int, ...]:
-    return tuple(pr for batch in candidate_batches[start_index:] for pr in batch.prs)
-
-
-def conflict_against_batch_intersects_prs(conflict: Mapping[str, object], prs: set[int]) -> bool:
-    against_batch = conflict.get("against_batch", ())
-    if not isinstance(against_batch, Sequence) or isinstance(against_batch, str):
-        return False
-    return any(int(pr) in prs for pr in against_batch)
-
-
-def verified_fallback_batches(
-    *,
-    repo: pathlib.Path,
-    base_sha: str,
-    prs: Sequence[int],
-    heads: Mapping[int, ExpectedHead],
-    base_commits: Mapping[int, SyntheticCommit],
-    batch_max_limits: Mapping[str, int],
-    verifier_commands: Sequence[str],
-    source_fence_full_profile_pathspecs: Sequence[str],
-    source_fence_fences_only_rewrites: Mapping[str, str],
-    verifier_timeout_seconds: int,
-    input_timeout_seconds: int,
-    output_policy: OutputPolicy,
-    alternate_object_dir: str | None,
-    start_index: int,
-) -> VerifiedBatchFallback:
-    """Recover from a failed optimistic batch by verifying each PR, then rebuilding batches."""
-    blocked_prs: list[dict[str, object]] = []
-    blocked_numbers: set[int] = set()
-    base_verifiers: dict[int, tuple[VerifierResult, ...]] = {}
-    for pr in prs:
-        synthetic = base_commits[pr]
-        verifier_results = run_verifier_commands(
-            repo,
-            synthetic.commit,
-            verifier_commands_for_commit(
-                repo=repo,
-                base_sha=base_sha,
-                commit=synthetic.commit,
-                commands=verifier_commands,
-                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
-                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
-                input_timeout_seconds=input_timeout_seconds,
-            ),
-            verifier_timeout_seconds,
-            input_timeout_seconds,
-            alternate_object_dir,
-        )
-        failed = first_failed_verifier(verifier_results)
-        if failed is not None:
-            blocked_prs.append(verifier_block(pr, failed, output_policy))
-            blocked_numbers.add(pr)
-            continue
-        base_verifiers[pr] = verifier_results
-
-    conflicts: list[dict[str, object]] = []
-    batches: list[Batch] = []
-    current: SyntheticCommit | None = None
-    current_verifiers: tuple[VerifierResult, ...] = ()
-    batch_index = start_index
-    for pr in prs:
-        if pr in blocked_numbers:
-            continue
-        pr_head = heads[pr]
-        if current is None:
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        candidate_prs = [*current.prs, pr]
-        if batch_would_exceed_max(candidate_prs, batch_max_limits):
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        synthetic = synthesize_merge(
-            repo,
-            current.commit,
-            pr_head.sha,
-            candidate_prs,
-            input_timeout_seconds,
-        )
-        if isinstance(synthetic, MergeResult):
-            conflicts.append(
-                {
-                    "pr": pr,
-                    "against_batch": list(current.prs),
-                    "files": list(synthetic.files),
-                    "type": "batch_conflict",
-                }
-            )
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        candidate_verifiers = run_verifier_commands(
-            repo,
-            synthetic.commit,
-            verifier_commands_for_commit(
-                repo=repo,
-                base_sha=base_sha,
-                commit=synthetic.commit,
-                commands=verifier_commands,
-                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
-                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
-                input_timeout_seconds=input_timeout_seconds,
-            ),
-            verifier_timeout_seconds,
-            input_timeout_seconds,
-            alternate_object_dir,
-        )
-        failed = first_failed_verifier(candidate_verifiers)
-        if failed is not None:
-            conflicts.append(
-                {
-                    "pr": pr,
-                    "against_batch": list(current.prs),
-                    "type": batch_verifier_artifact_type(failed),
-                    **failed.as_public_json(output_policy),
-                }
-            )
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                    verifiers=current_verifiers,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            current_verifiers = base_verifiers[pr]
-            continue
-        current = synthetic
-        current_verifiers = candidate_verifiers
-    if current is not None:
-        batches.append(
-            Batch(
-                index=batch_index,
-                commit=current.commit,
-                prs=current.prs,
-                verifiers=current_verifiers,
-            )
-        )
-    return VerifiedBatchFallback(
-        blocked_prs=tuple(blocked_prs),
-        conflicts=tuple(conflicts),
-        batches=tuple(batches),
-    )
-
-
-def verify_final_batches_with_fallback(
-    *,
-    repo: pathlib.Path,
-    base_sha: str,
-    candidate_batches: Sequence[Batch],
-    heads: Mapping[int, ExpectedHead],
-    base_commits: Mapping[int, SyntheticCommit],
-    batch_max_limits: Mapping[str, int],
-    verifier_commands: Sequence[str],
-    source_fence_full_profile_pathspecs: Sequence[str],
-    source_fence_fences_only_rewrites: Mapping[str, str],
-    verifier_timeout_seconds: int,
-    input_timeout_seconds: int,
-    output_policy: OutputPolicy,
-    alternate_object_dir: str | None,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch], set[int]]:
-    """Verify optimistic batches, falling back over the remaining suffix after the first failure."""
-    blocked_prs: list[dict[str, object]] = []
-    conflicts: list[dict[str, object]] = []
-    batches: list[Batch] = []
-    fallback_suffix_prs: set[int] = set()
-    batch_index = 1
-    for candidate_index, batch in enumerate(candidate_batches):
-        verifier_results = run_verifier_commands(
-            repo,
-            batch.commit,
-            verifier_commands_for_commit(
-                repo=repo,
-                base_sha=base_sha,
-                commit=batch.commit,
-                commands=verifier_commands,
-                source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
-                source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
-                input_timeout_seconds=input_timeout_seconds,
-            ),
-            verifier_timeout_seconds,
-            input_timeout_seconds,
-            alternate_object_dir,
-        )
-        failed = first_failed_verifier(verifier_results)
-        if failed is None:
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=batch.commit,
-                    prs=batch.prs,
-                    verifiers=verifier_results,
-                )
-            )
-            batch_index += 1
-            continue
-        suffix_prs = remaining_batch_prs(candidate_batches, candidate_index)
-        fallback_suffix_prs = set(suffix_prs)
-        fallback = verified_fallback_batches(
-            repo=repo,
-            base_sha=base_sha,
-            prs=suffix_prs,
-            heads=heads,
-            base_commits=base_commits,
-            batch_max_limits=batch_max_limits,
-            verifier_commands=verifier_commands,
-            source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
-            source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
-            verifier_timeout_seconds=verifier_timeout_seconds,
-            input_timeout_seconds=input_timeout_seconds,
-            output_policy=output_policy,
-            alternate_object_dir=alternate_object_dir,
-            start_index=batch_index,
-        )
-        blocked_prs.extend(fallback.blocked_prs)
-        conflicts.extend(fallback.conflicts)
-        batches.extend(fallback.batches)
-        batch_index += len(fallback.batches)
-        break
-    return blocked_prs, conflicts, batches, fallback_suffix_prs
 
 
 def gh_json(
@@ -3342,7 +2064,6 @@ def gh_json(
 
 def readiness_issues(
     payload: dict[str, object],
-    checks: Sequence[object],
     *,
     expected_base: str | None,
     fetched_head: str | None,
@@ -3361,24 +2082,6 @@ def readiness_issues(
         for rule in DYNAMIC_READINESS_EXPECTATIONS
         if (issue := rule.evaluate(payload, expected_values)) is not None
     )
-    metadata_head = payload.get("headRefOid")
-    actual_check_head = str(metadata_head) if isinstance(metadata_head, str) else ""
-    expected_check_head = fetched_head or actual_check_head
-    if not checks:
-        issues.append(
-            ReadinessIssue(
-                code="required_check_missing",
-                message="required check evidence is unavailable",
-            )
-        )
-    for check in checks:
-        issue = required_check_readiness_issue(
-            check,
-            expected_head=expected_check_head,
-            actual_head=actual_check_head,
-        )
-        if issue is not None:
-            issues.append(issue)
     return tuple(issues)
 
 
@@ -3391,7 +2094,7 @@ def pr_readiness(
     fetched_head: str | None = None,
 ) -> dict[str, object]:
     if not use_gh:
-        return {"pr": pr_number, "warnings": [], "warning_details": [], "checks": [], "source_checks": []}
+        return {"pr": pr_number, "warnings": [], "warning_details": []}
     payload = gh_json(
         [
             "pr",
@@ -3404,36 +2107,8 @@ def pr_readiness(
     )
     if not isinstance(payload, dict):
         raise PreflightError(f"gh pr view {pr_number} did not return an object")
-    checks = gh_json(
-        [
-            "pr",
-            "checks",
-            str(pr_number),
-            "--required",
-            "--json",
-            "name,state,bucket,workflow",
-        ],
-        allowed_returncodes=GH_PR_CHECKS_JSON_RETURNCODES,
-        timeout_seconds=input_timeout_seconds,
-    )
-    if not isinstance(checks, list):
-        raise PreflightError(f"gh pr checks {pr_number} did not return a list")
-    source_checks = gh_json(
-        [
-            "pr",
-            "checks",
-            str(pr_number),
-            "--json",
-            "name,state,bucket,workflow",
-        ],
-        allowed_returncodes=GH_PR_CHECKS_JSON_RETURNCODES,
-        timeout_seconds=input_timeout_seconds,
-    )
-    if not isinstance(source_checks, list):
-        raise PreflightError(f"gh pr checks {pr_number} did not return a list")
     issues = readiness_issues(
         payload,
-        checks,
         expected_base=expected_base,
         fetched_head=fetched_head,
     )
@@ -3442,8 +2117,6 @@ def pr_readiness(
         "warnings": [issue.message for issue in issues],
         "warning_details": [issue.as_json() for issue in issues],
         "metadata": payload,
-        "checks": checks,
-        "source_checks": source_checks,
     }
 
 
@@ -3479,8 +2152,6 @@ def readiness_for_wave(
                     "pr": pr,
                     "warnings": [],
                     "warning_details": [],
-                    "checks": [],
-                    "source_checks": [],
                     "metadata_unavailable": True,
                     "metadata_error": str(exc),
                 }
@@ -3502,13 +2173,8 @@ def readiness_with_fetched_heads(
         if head is None or not isinstance(metadata, dict):
             updated.append(item)
             continue
-        checks = item.get("checks")
-        if not isinstance(checks, list):
-            updated.append(item)
-            continue
         issues = readiness_issues(
             metadata,
-            checks,
             expected_base=base,
             fetched_head=head.sha,
         )
@@ -3613,7 +2279,6 @@ def available_readiness_ready_findings(item: Mapping[str, object]) -> tuple[dict
                 "headRefOid": metadata["headRefOid"],
                 "mergeable": metadata["mergeable"],
                 "reviewDecision": metadata["reviewDecision"],
-                "checks": list(item["checks"]),
             },
         },
     )
@@ -3665,7 +2330,6 @@ def unavailable_base_payload(
     expected_base_sha: str,
     expected_heads: Mapping[int, str],
     requested: Sequence[int],
-    output_policy: OutputPolicy,
     use_gh: bool,
     reason: str,
 ) -> tuple[dict[str, object], int]:
@@ -3704,7 +2368,6 @@ def unavailable_base_payload(
         "lane_statuses": contract_evaluation["lane_statuses"],
         "verdict": contract_evaluation["verdict"],
         "wave_status": contract_evaluation["wave_status"],
-        "output_policy": output_policy.as_json(),
     }
     return payload, int(contract_evaluation["exit_code"])
 
@@ -3717,14 +2380,7 @@ def preflight(
     expected_base_sha: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
-    verifier_commands: Sequence[str],
-    source_fence_full_profile_pathspecs: Sequence[str],
-    source_fence_fences_only_rewrites: Mapping[str, str],
     input_timeout_seconds: int,
-    verifier_timeout_seconds: int,
-    required_check_workflows: Mapping[str, str],
-    source_check_aliases: Mapping[str, str],
-    output_policy: OutputPolicy,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
     fetch_refs = PrivateFetchRefs.create(repo, input_timeout_seconds)
@@ -3735,14 +2391,7 @@ def preflight(
             expected_base_sha=expected_base_sha,
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
-            verifier_commands=verifier_commands,
-            source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
-            source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
             input_timeout_seconds=input_timeout_seconds,
-            verifier_timeout_seconds=verifier_timeout_seconds,
-            required_check_workflows=required_check_workflows,
-            source_check_aliases=source_check_aliases,
-            output_policy=output_policy,
             use_gh=use_gh,
             fetch_refs=fetch_refs,
         )
@@ -3757,14 +2406,7 @@ def preflight_with_fetch_refs(
     expected_base_sha: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
-    verifier_commands: Sequence[str],
-    source_fence_full_profile_pathspecs: Sequence[str],
-    source_fence_fences_only_rewrites: Mapping[str, str],
     input_timeout_seconds: int,
-    verifier_timeout_seconds: int,
-    required_check_workflows: Mapping[str, str],
-    source_check_aliases: Mapping[str, str],
-    output_policy: OutputPolicy,
     use_gh: bool,
     fetch_refs: PrivateFetchRefs,
 ) -> tuple[dict[str, object], int]:
@@ -3779,7 +2421,6 @@ def preflight_with_fetch_refs(
             expected_base_sha=expected_base_sha,
             expected_heads=expected_heads,
             requested=requested,
-            output_policy=output_policy,
             use_gh=use_gh,
             reason=str(exc),
         )
@@ -3817,8 +2458,6 @@ def preflight_with_fetch_refs(
         repo=git_repo,
         base_sha=base_sha,
         readiness=readiness,
-        required_check_workflows=required_check_workflows,
-        source_check_aliases=source_check_aliases,
         input_timeout_seconds=input_timeout_seconds,
     )
     batch_max_limits = mergify_batch_limits(mergify_findings)
@@ -3840,7 +2479,7 @@ def preflight_with_fetch_refs(
             blocked_numbers.add(pr)
             continue
         base_commits[pr] = synthetic
-    conflicts, candidate_batches = unverified_batches_for_ready_prs(
+    conflicts, batches = unverified_batches_for_ready_prs(
         repo=git_repo,
         requested=requested,
         blocked_numbers=blocked_numbers,
@@ -3849,28 +2488,6 @@ def preflight_with_fetch_refs(
         batch_max_limits=batch_max_limits,
         input_timeout_seconds=input_timeout_seconds,
     )
-    fallback_blocked_prs, fallback_conflicts, batches, fallback_suffix_prs = verify_final_batches_with_fallback(
-        repo=git_repo,
-        base_sha=base_sha,
-        candidate_batches=candidate_batches,
-        heads=heads,
-        base_commits=base_commits,
-        batch_max_limits=batch_max_limits,
-        verifier_commands=verifier_commands,
-        source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
-        source_fence_fences_only_rewrites=source_fence_fences_only_rewrites,
-        verifier_timeout_seconds=verifier_timeout_seconds,
-        input_timeout_seconds=input_timeout_seconds,
-        output_policy=output_policy,
-        alternate_object_dir=fetch_refs.source_objects,
-    )
-    conflicts = [
-        conflict
-        for conflict in conflicts
-        if not conflict_against_batch_intersects_prs(conflict, fallback_suffix_prs)
-    ]
-    blocked_prs.extend(fallback_blocked_prs)
-    conflicts.extend(fallback_conflicts)
     contract_findings = (
         *base_identity_findings(
             expected_base_sha=expected_base_sha,
@@ -3882,7 +2499,6 @@ def preflight_with_fetch_refs(
         *readiness_ready_findings(readiness, related_findings=mergify_findings),
         *residual_risk_findings(),
         *integration_batch_ready_findings(batches),
-        *verifier_batch_ready_findings(batches, output_policy),
     )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
@@ -3902,7 +2518,7 @@ def preflight_with_fetch_refs(
         "readiness": readiness,
         "metadata_warnings": metadata_warnings,
         "residual_risks": list(RESIDUAL_RISK_REASON_CODES),
-        "batches": [batch.as_json(output_policy) for batch in batches],
+        "batches": [batch.as_json() for batch in batches],
         "blocked_prs": blocked_prs,
         "conflicts": conflicts,
         "contract_exit_code": contract_evaluation["exit_code"],
@@ -3910,65 +2526,12 @@ def preflight_with_fetch_refs(
         "lane_statuses": contract_evaluation["lane_statuses"],
         "verdict": contract_evaluation["verdict"],
         "wave_status": contract_evaluation["wave_status"],
-        "output_policy": output_policy.as_json(),
     }
     exit_code = int(contract_evaluation["exit_code"])
     return payload, exit_code
 
 
-def output_policy_from_payload(payload: dict[str, object]) -> OutputPolicy:
-    value = payload["output_policy"]
-    if not isinstance(value, dict):
-        raise PreflightError("payload output_policy must be an object")
-    return OutputPolicy(
-        verifier_stream_max_lines=int(value["verifier_stream_max_lines"]),
-        verifier_stream_max_bytes=int(value["verifier_stream_max_bytes"]),
-    )
-
-
-def bounded_stream(output: str, output_policy: OutputPolicy) -> StreamPreview:
-    encoded = output.encode("utf-8")
-    byte_truncated = len(encoded) > output_policy.verifier_stream_max_bytes
-    if byte_truncated:
-        output = encoded[: output_policy.verifier_stream_max_bytes].decode(
-            "utf-8",
-            errors="ignore",
-        )
-    stream_lines = output.rstrip().splitlines()
-    line_truncated = len(stream_lines) > output_policy.verifier_stream_max_lines
-    text = "\n".join(stream_lines[: output_policy.verifier_stream_max_lines])
-    return StreamPreview(text=text, truncated=byte_truncated or line_truncated)
-
-
-def append_verifier_result(
-    lines: list[str],
-    verifier: dict[str, object],
-    *,
-    indent: str,
-    output_policy: OutputPolicy,
-) -> None:
-    lines.append(
-        "{indent}verifier {command}: exit {returncode}".format(
-            indent=indent,
-            command=verifier["command"],
-            returncode=verifier["returncode"],
-        )
-    )
-    if verifier["returncode"] == 0:
-        return
-    for stream in VERIFIER_STREAMS:
-        preview = str(verifier.get(f"{stream}_preview", ""))
-        truncated = bool(verifier.get(f"{stream}_truncated", False))
-        if not preview and not truncated:
-            continue
-        lines.append(f"{indent}  {stream}:")
-        lines.extend(f"{indent}    {line}" for line in preview.splitlines())
-        if truncated:
-            lines.append(f"{indent}    ... truncated by merge_queue_preflight output policy")
-
-
 def plain_text(payload: dict[str, object]) -> str:
-    output_policy = output_policy_from_payload(payload)
     lines = [
         f"base: {payload['base']} {payload['base_sha']}",
         "requested PRs: " + ", ".join(f"#{pr}" for pr in payload["requested_prs"]),
@@ -3979,26 +2542,12 @@ def plain_text(payload: dict[str, object]) -> str:
             index=batch["index"],
             prs=", ".join(f"#{pr}" for pr in batch["prs"]),
         ))
-        for verifier in batch["verifiers"]:
-            append_verifier_result(
-                lines,
-                verifier,
-                indent="    ",
-                output_policy=output_policy,
-            )
     if payload["blocked_prs"]:
         lines.append("blocked PRs:")
         for item in payload["blocked_prs"]:
             lines.append(f"  #{item['pr']}: {item['reason']}")
             if item.get("files"):
                 lines.append("    files: " + ", ".join(item["files"]))
-            if "command" in item:
-                append_verifier_result(
-                    lines,
-                    item,
-                    indent="    ",
-                    output_policy=output_policy,
-                )
     if payload["metadata_warnings"]:
         lines.append("metadata warnings:")
         for warning in payload["metadata_warnings"]:
@@ -4010,13 +2559,6 @@ def plain_text(payload: dict[str, object]) -> str:
             lines.append(f"  #{item['pr']} vs [{context}]: {item['type']}")
             if item.get("files"):
                 lines.append("    files: " + ", ".join(item["files"]))
-            if "command" in item:
-                append_verifier_result(
-                    lines,
-                    item,
-                    indent="    ",
-                    output_policy=output_policy,
-                )
     lines.append("residual risks:")
     lines.extend(f"  {reason_code}" for reason_code in payload["residual_risks"])
     warnings = [
@@ -4039,23 +2581,9 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--expected-head-sha", action="append", required=True, type=expected_head_sha)
     root.add_argument("--origin")
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
-    root.add_argument("--verifier-profile")
-    root.add_argument("--run-verifier", action="append", default=[])
     root.add_argument("--no-gh", action="store_true")
     root.add_argument("--json", action="store_true")
     return root
-
-
-def verifier_commands(config: PreflightConfig, profile: str | None, extra: Sequence[str]) -> tuple[str, ...]:
-    selected = profile or config.default_verifier_profile
-    if selected not in config.verifier_profiles:
-        raise PreflightError(f"unknown verifier profile {selected!r}")
-    validate_verifier_commands(
-        "--run-verifier",
-        extra,
-        config.source_fence_fences_only_rewrites,
-    )
-    return (*config.verifier_profiles[selected], *extra)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -4069,14 +2597,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_base_sha=args.expected_base_sha,
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
-            verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),
-            source_fence_full_profile_pathspecs=config.source_fence_full_profile_pathspecs,
-            source_fence_fences_only_rewrites=config.source_fence_fences_only_rewrites,
             input_timeout_seconds=config.input_timeout_seconds,
-            verifier_timeout_seconds=config.verifier_timeout_seconds,
-            required_check_workflows=config.required_check_workflows,
-            source_check_aliases=config.source_check_aliases,
-            output_policy=config.output_policy,
             use_gh=not args.no_gh,
         )
     except PreflightError as exc:

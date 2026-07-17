@@ -83,7 +83,6 @@ def write_config(root: pathlib.Path) -> pathlib.Path:
                 "[merge_queue_preflight]",
                 'origin = "origin"',
                 'base = "main"',
-                'default_verifier_profile = "static"',
                 "",
                 "[merge_queue_preflight.operator]",
                 'queue_command = "@mergifyio queue"',
@@ -92,13 +91,6 @@ def write_config(root: pathlib.Path) -> pathlib.Path:
                 "",
                 "[merge_queue_preflight.timeouts]",
                 "input_seconds = 30",
-                "verifier_seconds = 10",
-                "",
-                "[merge_queue_preflight.verifier_profiles.static]",
-                'commands = ["just source-fence-static"]',
-                "",
-                "[merge_queue_preflight.verifier_profiles.local]",
-                'commands = ["just fmt-check", "just source-fence-static", "just ci-lint-workflow"]',
                 "",
             )
         ),
@@ -353,6 +345,19 @@ def assert_ad_hoc_run_verifier_is_not_an_operator_flag() -> None:
     assert stderr.getvalue(), "argparse should explain why the flag was rejected"
 
 
+def assert_verifier_profile_is_not_an_operator_flag() -> None:
+    module = load_operator_module()
+    stderr = io.StringIO()
+    try:
+        with redirect_stderr(stderr):
+            module.parser().parse_args(["--verifier-profile", "local", "1"])
+    except SystemExit as exc:
+        assert exc.code == 2, exc.code
+    else:
+        raise AssertionError("--verifier-profile should not be accepted by merge_queue_operator")
+    assert stderr.getvalue(), "argparse should explain why the flag was rejected"
+
+
 def main() -> int:
     assert_operator_imports_preflight_verdict_constants()
     assert_queue_as_one_wave_posts_mergify_comments()
@@ -371,6 +376,7 @@ def main() -> int:
     assert_run_command_timeout_is_operator_error()
     assert_run_command_timeout_reports_operator_error()
     assert_ad_hoc_run_verifier_is_not_an_operator_flag()
+    assert_verifier_profile_is_not_an_operator_flag()
     print("OK: merge_queue_operator tests passed.")
     return 0
 

@@ -94,7 +94,7 @@ def assert_minimal_toml_accepts_quoted_keys() -> None:
         path.write_text(
             textwrap.dedent(
                 """\
-                [merge_queue_preflight.required_check_workflows]
+                [quoted_keys]
                 "backtester-gate" = "Backtester CI"
                 "host-health" = "CI"
                 """
@@ -102,7 +102,7 @@ def assert_minimal_toml_accepts_quoted_keys() -> None:
             encoding="utf-8",
         )
         parsed = owner.parse_minimal_toml(path)
-    workflows = parsed["merge_queue_preflight"]["required_check_workflows"]
+    workflows = parsed["quoted_keys"]
     if workflows != {"backtester-gate": "Backtester CI", "host-health": "CI"}:
         raise AssertionError(workflows)
 
@@ -114,8 +114,8 @@ def assert_minimal_toml_accepts_multiline_string_arrays() -> None:
         path.write_text(
             textwrap.dedent(
                 """\
-                [merge_queue_preflight]
-                source_fence_full_profile_pathspecs = [
+                [multiline_values]
+                paths = [
                   "scripts",
                   "justfile",
                   "ci/rust-verification.toml",
@@ -125,7 +125,7 @@ def assert_minimal_toml_accepts_multiline_string_arrays() -> None:
             encoding="utf-8",
         )
         parsed = owner.parse_minimal_toml(path)
-    pathspecs = parsed["merge_queue_preflight"]["source_fence_full_profile_pathspecs"]
+    pathspecs = parsed["multiline_values"]["paths"]
     if pathspecs != ["scripts", "justfile", "ci/rust-verification.toml"]:
         raise AssertionError(pathspecs)
 

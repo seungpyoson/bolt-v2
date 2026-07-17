@@ -6373,7 +6373,6 @@ def assert_relocated_symbols_keep_legacy_exports() -> None:
                     missing.append(f"{path.name}:{name}")
     import merge_queue_preflight as preflight
     for name in (
-        "MERGIFY_REQUIRED_MERGE_CONDITIONS",
         "MERGIFY_REQUIRED_QUEUE_RULES",
         "MERGIFY_REQUIRED_PRIORITY_RULES",
         "MERGIFY_TOP_LEVEL_KEYS",

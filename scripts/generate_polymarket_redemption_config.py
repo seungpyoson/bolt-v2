@@ -20,7 +20,7 @@ from ethereum_keccak import keccak_256
 HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 LOWER_HEX_DIGITS = frozenset("0123456789abcdef")
 CANONICAL_HOST_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
-CANONICAL_URL_PATH_CHARS = frozenset(
+CANONICAL_PROVENANCE_PATH_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-._~"
 )
 MAX_U256 = (1 << 256) - 1
@@ -147,12 +147,23 @@ def _sha256(value: object, field: str) -> str:
     return text
 
 
+def _canonical_relative_path(text: str) -> str:
+    return posixpath.normpath(
+        "/"
+        + "".join(
+            character
+            for character in text
+            if character in CANONICAL_PROVENANCE_PATH_CHARS
+        ).lstrip("/")
+    ).removeprefix("/")
+
+
 def _source_path(value: object, field: str) -> str:
     text = _string(value, field)
-    path = pathlib.PurePosixPath(text)
-    if path.is_absolute() or ".." in path.parts or path.as_posix() != text:
+    canonical_path = _canonical_relative_path(text)
+    if not canonical_path or text != canonical_path:
         raise ConfigError(f"{field} must be a normalized repository-relative path")
-    return text
+    return canonical_path
 
 
 def _verified_snapshot(
@@ -202,18 +213,11 @@ def _https_snapshot_root(value: object, field: str) -> pathlib.PurePosixPath:
         for label in hostname.rstrip(".").split(".")
         if label
     )
-    canonical_path = posixpath.normpath(
-        "/"
-        + "".join(
-            character
-            for character in parsed.path
-            if character in CANONICAL_URL_PATH_CHARS
-        ).lstrip("/")
-    )
+    canonical_path = "/" + _canonical_relative_path(parsed.path)
     canonical_url = urllib.parse.urlunsplit(
         ("https", canonical_hostname, canonical_path, "", "")
     )
-    if source_url != canonical_url or canonical_path == "/":
+    if not canonical_hostname or source_url != canonical_url or canonical_path == "/":
         raise ConfigError(f"{field} must be a canonical HTTPS URL")
     path_parts = canonical_path.removeprefix("/").split("/")
     return pathlib.PurePosixPath(

@@ -230,6 +230,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             "https://github.com:443/Polymarket/ctf-exchange-v2",
             "https://github.com/Polymarket/ctf-exchange-v2?ref=main",
             "https://github.com/Polymarket/ctf-exchange-v2#source",
+            "https:///github.com/Polymarket/ctf-exchange-v2",
         )
         for alias in aliases:
             with self.subTest(alias=alias):
@@ -250,6 +251,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
             "https://docs.polymarket.com/resources/%2e%2e/resources/contracts",
             "https://docs.polymarket.com./resources/contracts",
             r"https://docs.polymarket.com/resources\\contracts",
+            "https:///docs.polymarket.com/resources/contracts",
         )
         for alias in aliases:
             with self.subTest(alias=alias):
@@ -316,6 +318,36 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                 'builder_source_path = "src/builder/safe.ts"',
                 'builder_source_path = "src//builder/safe.ts"',
                 "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "."',
+                "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                r'builder_source_path = "src\\builder\\safe.ts"',
+                "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "src/%2E%2E/safe.ts"',
+                "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "src/☃.ts"',
+                "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "src/safe?.ts"',
+                "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = ""',
+                "non-empty trimmed string",
             ),
             (
                 'revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"',

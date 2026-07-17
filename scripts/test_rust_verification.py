@@ -642,7 +642,7 @@ class VerifyRemoteHarness:
             return subprocess.CompletedProcess(argv, 1 if error else 0, json.dumps(payload), error or "")
         if argv[:3] == ["gh", "pr", "checks"]:
             self.pr_checks_calls += 1
-            stale_deferred_gate = [
+            older_failed_gate = [
                 {
                     "name": "gate",
                     "bucket": "fail",
@@ -651,7 +651,7 @@ class VerifyRemoteHarness:
                     "workflow": "CI",
                 }
             ]
-            return subprocess.CompletedProcess(argv, 0, json.dumps(stale_deferred_gate), "")
+            return subprocess.CompletedProcess(argv, 0, json.dumps(older_failed_gate), "")
         raise AssertionError(f"unexpected command: {argv}")
 
     def fake_monotonic(self) -> float:
@@ -695,9 +695,9 @@ def assert_verify_remote_rejects_draft_full_ci_dispatch_removed() -> None:
             raise AssertionError(stderr)
 
 
-def assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate() -> None:
+def assert_verify_remote_waits_on_pending_full_run_over_older_failed_gate() -> None:
     owner = load_owner_module()
-    stale_deferred = workflow_run(
+    older_failed = workflow_run(
         301,
         event="pull_request",
         status="completed",
@@ -726,7 +726,7 @@ def assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate() ->
             owner,
             repo,
             pr=verify_remote_pr(is_draft=False),
-            run_lists=[[stale_deferred, pending_full], [stale_deferred, green_full]],
+            run_lists=[[older_failed, pending_full], [older_failed, green_full]],
         ) as harness:
             result, stdout, stderr = run_verify_remote_with_harness(harness)
         if result != 0:
@@ -735,9 +735,9 @@ def assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate() ->
             raise AssertionError("expected verify-remote to wait on the pending full-CI run")
 
 
-def assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate() -> None:
+def assert_verify_remote_ready_pr_waits_for_full_run_after_older_failed_gate() -> None:
     owner = load_owner_module()
-    stale_deferred = workflow_run(
+    older_failed = workflow_run(
         303,
         event="pull_request",
         status="completed",
@@ -766,18 +766,18 @@ def assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate()
             owner,
             repo,
             pr=verify_remote_pr(is_draft=False),
-            run_lists=[[stale_deferred], [stale_deferred, pending_full], [stale_deferred, green_full]],
+            run_lists=[[older_failed], [older_failed, pending_full], [older_failed, green_full]],
         ) as harness:
             result, stdout, stderr = run_verify_remote_with_harness(harness)
         if result != 0:
             raise AssertionError((result, stdout, stderr))
         if harness.sleep_calls < 1:
-            raise AssertionError("expected verify-remote to wait past stale deferred gate for ready full-CI run")
+            raise AssertionError("expected verify-remote to wait past older failed gate for ready full-CI run")
 
 
-def assert_verify_remote_uses_green_full_run_over_stale_deferred_gate() -> None:
+def assert_verify_remote_uses_green_full_run_over_older_failed_gate() -> None:
     owner = load_owner_module()
-    stale_deferred = workflow_run(
+    older_failed = workflow_run(
         401,
         event="pull_request",
         status="completed",
@@ -799,7 +799,7 @@ def assert_verify_remote_uses_green_full_run_over_stale_deferred_gate() -> None:
             owner,
             repo,
             pr=verify_remote_pr(is_draft=False),
-            run_lists=[[stale_deferred, green_full]],
+            run_lists=[[older_failed, green_full]],
         ) as harness:
             result, stdout, stderr = run_verify_remote_with_harness(harness)
         if result != 0:
@@ -1976,9 +1976,9 @@ def main() -> int:
     assert_validate_policy_rejects_unknown_cheap_lane_just_recipe()
     assert_remote_diagnostics_policy_loads()
     assert_verify_remote_rejects_draft_full_ci_dispatch_removed()
-    assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate()
-    assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate()
-    assert_verify_remote_uses_green_full_run_over_stale_deferred_gate()
+    assert_verify_remote_waits_on_pending_full_run_over_older_failed_gate()
+    assert_verify_remote_ready_pr_waits_for_full_run_after_older_failed_gate()
+    assert_verify_remote_uses_green_full_run_over_older_failed_gate()
     assert_verify_remote_fork_draft_fails_closed()
     assert_verify_remote_api_error_fails_closed()
     assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci()

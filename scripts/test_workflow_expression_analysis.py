@@ -52,7 +52,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
     # (i) merge_group policy value flipped away from required proof → config contract error.
     flipped_config = ci_provenance_config_fixture().replace(
-        'merge_group = "full"', 'merge_group = "defer"'
+        'merge_group = "full"', 'merge_group = "iteration"'
     )
     if flipped_config == ci_provenance_config_fixture():
         raise AssertionError("merge_group policy fixture fragment not found")
@@ -770,22 +770,6 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
                 workflow,
                 '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
                 '--expected-event-class "iteration"',
-            ),
-        ),
-        (
-            "gate shared verdict call must include --full-ci-deferred",
-            replace_once(
-                workflow,
-                '--full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"',
-                '--full-ci-deferred "false"',
-            ),
-        ),
-        (
-            "gate shared verdict call must include carry_forward_args=()",
-            replace_once(
-                workflow,
-                "carry_forward_args=()",
-                "carry_forward_args=(--carry-forward-verified false)",
             ),
         ),
         (

@@ -267,6 +267,16 @@ def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> 
     )
     verdict = payload.get("verdict")
     if preflight_returncode == 0 and verdict == VERDICT_QUEUE_AS_ONE_WAVE:
+        if len(args.prs) != 1:
+            raise OperatorError("queue_as_one_wave must select a single PR")
+        batches = payload.get("batches")
+        if (
+            not isinstance(batches, list)
+            or len(batches) != 1
+            or not isinstance(batches[0], dict)
+            or batches[0].get("prs") != args.prs
+        ):
+            raise OperatorError("queue_as_one_wave batch must match the requested PR")
         if args.dry_run:
             for pr in args.prs:
                 print(f"would queue PR #{pr}")

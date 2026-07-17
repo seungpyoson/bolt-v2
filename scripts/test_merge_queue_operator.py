@@ -114,25 +114,22 @@ def assert_queue_as_one_wave_posts_mergify_comments() -> None:
         runner = FakeRunner(
             {
                 "verdict": "queue_as_one_wave",
-                "batches": [{"prs": [1, 2]}],
-                "summary": "queue together",
+                "batches": [{"prs": [1]}],
+                "summary": "queue one",
             },
             0,
         )
-        rc, stdout, stderr = run_operator(["--config", str(config), "1", "2"], runner)
+        rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
     assert rc == 0, (rc, stdout, stderr)
     assert "queued PR #1" in stdout, stdout
-    assert "queued PR #2" in stdout, stdout
     assert ("gh", "pr", "comment", "1", "--body-file", "-") in runner.commands, runner.commands
-    assert ("gh", "pr", "comment", "2", "--body-file", "-") in runner.commands, runner.commands
     preflight_command = next(command for command in runner.commands if "merge_queue_preflight.py" in command[1])
     assert "--expected-base-sha" in preflight_command, preflight_command
     assert BASE_SHA in preflight_command, preflight_command
     assert f"1={HEAD_ONE}" in preflight_command, preflight_command
-    assert f"2={HEAD_TWO}" in preflight_command, preflight_command
 
 
-def assert_preflight_owns_its_own_timeout() -> None:
+def assert_multi_pr_ready_verdict_does_not_queue() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp))
         runner = FakeRunner(
@@ -143,10 +140,27 @@ def assert_preflight_owns_its_own_timeout() -> None:
             },
             0,
         )
-        rc, stdout, stderr = run_operator(["--config", str(config), "--verifier-profile", "local", "1", "2"], runner)
-    assert rc == 0, (rc, stdout, stderr)
-    preflight_command = next(command for command in runner.commands if "merge_queue_preflight.py" in command[1])
-    assert "--verifier-profile" in preflight_command, preflight_command
+        rc, stdout, stderr = run_operator(["--config", str(config), "1", "2"], runner)
+    assert rc == 4, (rc, stdout, stderr)
+    assert "single PR" in stderr, stderr
+    assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
+
+
+def assert_ready_batch_must_match_requested_pr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        runner = FakeRunner(
+            {
+                "verdict": "queue_as_one_wave",
+                "batches": [{"prs": [2]}],
+                "summary": "mismatched batch",
+            },
+            0,
+        )
+        rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+    assert rc == 4, (rc, stdout, stderr)
+    assert "requested PR" in stderr, stderr
+    assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
 
 
 def assert_split_advised_prints_subsets_without_queueing() -> None:
@@ -260,7 +274,10 @@ def assert_nonzero_preflight_ready_payload_does_not_queue() -> None:
 def assert_dry_run_does_not_queue() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
+        runner = FakeRunner(
+            {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}], "summary": "ready"},
+            0,
+        )
         rc, stdout, stderr = run_operator(["--config", str(config), "--dry-run", "1"], runner)
     assert rc == 0, (rc, stdout, stderr)
     assert "would queue PR #1" in stdout, stdout
@@ -361,7 +378,8 @@ def assert_verifier_profile_is_not_an_operator_flag() -> None:
 def main() -> int:
     assert_operator_imports_preflight_verdict_constants()
     assert_queue_as_one_wave_posts_mergify_comments()
-    assert_preflight_owns_its_own_timeout()
+    assert_multi_pr_ready_verdict_does_not_queue()
+    assert_ready_batch_must_match_requested_pr()
     assert_split_advised_prints_subsets_without_queueing()
     assert_blocked_verdict_does_not_queue()
     assert_unexpected_success_payload_is_operator_error()

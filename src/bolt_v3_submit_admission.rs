@@ -4453,8 +4453,9 @@ mod loss_governor_halt_evidence_tests {
         let provider_submit_count = AtomicU64::new(0);
 
         let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if admission.admit_at(&request, 1_000).is_ok() {
+            if let Ok(permit) = admission.admit_at(&request, 1_000) {
                 provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                std::mem::forget(permit);
             }
         }));
 
@@ -4488,8 +4489,9 @@ mod loss_governor_halt_evidence_tests {
         let provider_submit_count = AtomicU64::new(0);
 
         let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if admission.admit_at(&request, 1_000).is_ok() {
+            if let Ok(permit) = admission.admit_at(&request, 1_000) {
                 provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                std::mem::forget(permit);
             }
         }));
 

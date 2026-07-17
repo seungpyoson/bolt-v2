@@ -7574,10 +7574,7 @@ impl DataActor for BinaryOracleEdgeTaker {
 }
 
 impl BinaryOracleEdgeTaker {
-    fn handle_order_filled(
-        &mut self,
-        event: &nautilus_model::events::OrderFilled,
-    ) -> anyhow::Result<()> {
+    fn handle_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) {
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         let entry_fill = self
             .pending_entry()
@@ -7610,7 +7607,7 @@ impl BinaryOracleEdgeTaker {
                 });
             if managed_entry_fill {
                 if !self.event_instrument_matches_held_exposure(event.instrument_id) {
-                    return Ok(());
+                    return;
                 }
                 if let Some(exit_pending) = self.exposure.exit_pending_mut() {
                     exit_pending
@@ -7630,7 +7627,7 @@ impl BinaryOracleEdgeTaker {
                 // into Managed — the exit path would submit against it. Same
                 // venue-adoption class as the position-event path above.
                 if self.quarantine_foreign_venue_event(event.instrument_id) {
-                    return Ok(());
+                    return;
                 }
                 self.last_flat_terminal_entry_override = None;
                 self.exposure = ExposureState::Managed(ManagedPositionState {
@@ -7730,7 +7727,7 @@ impl BinaryOracleEdgeTaker {
             }
         } else if exit_fill {
             if !self.event_instrument_matches_held_exposure(event.instrument_id) {
-                return Ok(());
+                return;
             }
             if let Some(market_id) = self
                 .exposure
@@ -7760,13 +7757,9 @@ impl BinaryOracleEdgeTaker {
             }
         }
         self.prune_market_lifecycle(now_ms);
-        Ok(())
     }
 
-    fn handle_order_canceled(
-        &mut self,
-        event: &nautilus_model::events::OrderCanceled,
-    ) -> anyhow::Result<()> {
+    fn handle_order_canceled(&mut self, event: &nautilus_model::events::OrderCanceled) {
         self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
             client_order_id: event.client_order_id,
             event_instrument_id: event.instrument_id,
@@ -7785,27 +7778,16 @@ impl BinaryOracleEdgeTaker {
             event.ts_event.as_u64(),
         );
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
-        Ok(())
     }
 }
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) {
-        if let Err(error) = self.handle_order_filled(event) {
-            log::error!(
-                "binary_oracle_edge_taker fill handling failed: strategy_id={} error={error:#}",
-                self.config.strategy_id
-            );
-        }
+        self.handle_order_filled(event);
     }
 
     fn on_order_canceled(&mut self, event: &nautilus_model::events::OrderCanceled) {
-        if let Err(error) = self.handle_order_canceled(event) {
-            log::error!(
-                "binary_oracle_edge_taker cancellation handling failed: strategy_id={} error={error:#}",
-                self.config.strategy_id
-            );
-        }
+        self.handle_order_canceled(event);
     }
 
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {

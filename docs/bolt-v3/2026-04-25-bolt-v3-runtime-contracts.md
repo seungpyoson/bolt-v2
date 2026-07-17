@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `b25a99ccf6b3c00f62c67db88c3e63e9e60a1019`
+  - current value: `e7af3dce0c7656862c33acb962aff5ae738eecb6`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1374,7 +1374,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`b25a99ccf6b3c00f62c67db88c3e63e9e60a1019`. WebSocket frames flow through
+`e7af3dce0c7656862c33acb962aff5ae738eecb6`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1503,11 +1503,13 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins NautilusTrader to
-`b25a99ccf6b3c00f62c67db88c3e63e9e60a1019` on the bolt pin-fork
-(`seungpyoson/nautilus_trader`, branch `pin/v1.230.0-sbe-3-5-ts-init`). The
-fork commit has official `v1.230.0` release commit
-`8160730c7c550480b0a439fb11086a4c4de15f0b` as its sole parent and ports the
-Binance Spot SBE schema 3:5 instrument-loading fix (upstream
+`e7af3dce0c7656862c33acb962aff5ae738eecb6` on the bolt pin-fork
+(`seungpyoson/nautilus_trader`). It extends the prior composite fork revision
+`d636f17604cdbddc28ad40e0e15720e2d19bf860` with two Polymarket provenance
+guards: Gamma parsing rejects missing `negRisk`, and execution denies orders
+when a cached or directly constructed instrument lacks boolean `neg_risk`
+metadata. The underlying composite fork ports the Binance Spot SBE schema 3:5
+instrument-loading fix (upstream
 `9a2e7a5155ffaa515c0279951eb1a06a8652ca33`), schema 3:5 request negotiation
 (upstream `3b59b08c9e651075a462f243c01664f4ccbd9b21`), and reviewed adapter receive-clock
 ownership from fork source `fa3391d90c1aace4733fc73dae082b4cfee6b8fa`.

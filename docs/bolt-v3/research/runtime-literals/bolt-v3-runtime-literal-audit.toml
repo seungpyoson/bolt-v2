@@ -17188,6 +17188,14 @@ reason = "This validation code labels a missing required maker strategy_id envel
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"
 kind = "string"
+literal = '''"invalid_strategy_id"'''
+context = '''const INVALID_STRATEGY_ID_CODE: &str = "invalid_strategy_id";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a maker strategy_id that is empty or externally padded; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
 literal = '''"missing_order_id_tag"'''
 context = '''const MISSING_ORDER_ID_TAG_CODE: &str = "missing_order_id_tag";'''
 classification = "strategy_runtime_validation_code"
@@ -17223,7 +17231,7 @@ kind = "string"
 literal = '''"invalid_order_id_tag"'''
 context = '''const INVALID_ORDER_ID_TAG_CODE: &str = "invalid_order_id_tag";'''
 classification = "strategy_runtime_validation_code"
-reason = "This validation code labels a maker order_id_tag that contains the `-` delimiter the per-leg client order id is joined on, which would make the positional id encoding ambiguous; it is a stable diagnostic tag, not an operator runtime value."
+reason = "This validation code labels a maker order_id_tag that is non-canonical or contains the `-` delimiter used by the positional client-order-id encoding; it is a stable diagnostic tag, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_maker_runtime_order.rs"

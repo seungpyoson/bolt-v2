@@ -57,7 +57,10 @@ NT_BOUNDARY_DOCTRINE_PIN_SURFACE = Path(
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md"
 )
 POLYMARKET_QUERY_FIXTURE_PIN_SURFACE = Path(
-    "tests/fixtures/nt_polymarket_query_post_order_params_b25a99cc.txt"
+    "tests/fixtures/nt_polymarket_query_post_order_params_e7af3dce.txt"
+)
+POLYMARKET_NEG_RISK_FIXTURE_PIN_SURFACE = Path(
+    "tests/fixtures/nt_polymarket_neg_risk_contract_e7af3dce.txt"
 )
 NON_CARGO_PIN_SURFACES = (
     RUNTIME_CONTRACT_PIN_SURFACE,
@@ -65,6 +68,7 @@ NON_CARGO_PIN_SURFACES = (
     NT_BOUNDARY_DOCTRINE_PIN_SURFACE,
     NT_NAMING_LEDGER_PIN_SURFACE,
     POLYMARKET_QUERY_FIXTURE_PIN_SURFACE,
+    POLYMARKET_NEG_RISK_FIXTURE_PIN_SURFACE,
 )
 BINANCE_SOURCE_SYMBOLS = (
     "BinanceSpotDataClient::handle_ws_message",
@@ -279,6 +283,9 @@ PIN_TEXT_PATTERNS = {
         re.compile(r'^nautilus_trader_revision:\s*"([0-9a-f]{40})"$', re.MULTILINE),
     ),
     POLYMARKET_QUERY_FIXTURE_PIN_SURFACE: (
+        re.compile(r"^Revision: ([0-9a-f]{40})$", re.MULTILINE),
+    ),
+    POLYMARKET_NEG_RISK_FIXTURE_PIN_SURFACE: (
         re.compile(r"^Revision: ([0-9a-f]{40})$", re.MULTILINE),
     ),
 }

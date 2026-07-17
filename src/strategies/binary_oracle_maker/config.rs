@@ -28,6 +28,7 @@ use crate::{
         MakerRuntimeParameterBoundInputs, maker_market_portfolio_declaration_blockers,
         maker_market_portfolio_policy_input_blockers, maker_runtime_parameter_input_blockers,
     },
+    bolt_v3_target_identity::stable_identity_field_is_canonical,
     strategies::registry::ValidationError,
 };
 
@@ -119,6 +120,7 @@ const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";
 const MISSING_CLIENT_ID_CODE: &str = "missing_client_id";
 const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";
 const INVALID_ORDER_ID_TAG_CODE: &str = "invalid_order_id_tag";
+const INVALID_STRATEGY_ID_CODE: &str = "invalid_strategy_id";
 const UNKNOWN_FIELD_CODE: &str = "unknown_field";
 const POSITIVE_REQUIRED_CODE: &str = stringify!(positive_required);
 const VALUE_OUT_OF_RANGE_CODE: &str = stringify!(value_out_of_range);
@@ -203,9 +205,19 @@ impl BinaryOracleMakerFieldType {
 /// missing required envelope fields or carries unknown keys (via
 /// `deny_unknown_fields`).
 pub fn parse_config(raw: &Value) -> Result<BinaryOracleMakerConfig> {
-    raw.clone()
+    let config: BinaryOracleMakerConfig = raw
+        .clone()
         .try_into()
-        .context("binary_oracle_maker builder requires a valid config table")
+        .context("binary_oracle_maker builder requires a valid config table")?;
+    anyhow::ensure!(
+        stable_identity_field_is_canonical(config.strategy_id.as_str()),
+        "binary_oracle_maker strategy_id must be a non-empty, unpadded string"
+    );
+    anyhow::ensure!(
+        stable_identity_field_is_canonical(config.order_id_tag.as_str()),
+        "binary_oracle_maker order_id_tag must be a non-empty, unpadded string"
+    );
+    Ok(config)
 }
 
 /// Push validation errors for the flat maker config into `errors`: unknown keys,
@@ -256,11 +268,25 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_STRATEGY_ID_CODE,
         errors,
     );
+    validate_canonical_identity_field(
+        table,
+        field_prefix,
+        STRATEGY_ID_FIELD,
+        INVALID_STRATEGY_ID_CODE,
+        errors,
+    );
     validate_string_field(
         table,
         field_prefix,
         ORDER_ID_TAG_FIELD,
         MISSING_ORDER_ID_TAG_CODE,
+        errors,
+    );
+    validate_canonical_identity_field(
+        table,
+        field_prefix,
+        ORDER_ID_TAG_FIELD,
+        INVALID_ORDER_ID_TAG_CODE,
         errors,
     );
     validate_string_field(
@@ -741,6 +767,25 @@ fn field_type_matches(field_type: BinaryOracleMakerFieldType, value: &Value) -> 
     }
 }
 
+fn validate_canonical_identity_field(
+    table: &toml::map::Map<String, Value>,
+    field_prefix: &str,
+    field: &str,
+    code: &'static str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(value) = table.get(field).and_then(Value::as_str) else {
+        return;
+    };
+    if !stable_identity_field_is_canonical(value) {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{field}"),
+            code,
+            message: "must be a non-empty, unpadded string".to_string(),
+        });
+    }
+}
+
 /// Fail loud at load when `order_id_tag` contains the `-` delimiter the maker's
 /// per-leg client order id is joined on (`runtime::make_leg_identity`). The tag is
 /// the leading, free-form id component; constraining it to be delimiter-free keeps
@@ -875,6 +920,50 @@ mod tests {
         let mut errors = Vec::new();
         validate_config(&valid_raw(), "strategy", &mut errors);
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn parse_and_validation_reject_noncanonical_strategy_and_order_identities() {
+        for (field, value) in [
+            (STRATEGY_ID_FIELD, ""),
+            (STRATEGY_ID_FIELD, "   "),
+            (STRATEGY_ID_FIELD, " maker"),
+            (STRATEGY_ID_FIELD, "maker "),
+            (ORDER_ID_TAG_FIELD, ""),
+            (ORDER_ID_TAG_FIELD, "   "),
+            (ORDER_ID_TAG_FIELD, " 001"),
+            (ORDER_ID_TAG_FIELD, "001 "),
+        ] {
+            let mut raw = valid_raw();
+            raw.as_table_mut()
+                .expect("config is a table")
+                .insert(field.to_string(), Value::String(value.to_string()));
+            let mut errors = Vec::new();
+            validate_config(&raw, "strategy", &mut errors);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.field == format!("strategy.{field}")),
+                "validation accepted {field}={value:?}: {errors:?}"
+            );
+            assert!(
+                parse_config(&raw).is_err(),
+                "builder parsing accepted {field}={value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_and_validation_accept_internal_identity_whitespace() {
+        let mut raw = valid_raw();
+        raw.as_table_mut().expect("config is a table").insert(
+            STRATEGY_ID_FIELD.to_string(),
+            Value::String("Maker New York".to_string()),
+        );
+        let mut errors = Vec::new();
+        validate_config(&raw, "strategy", &mut errors);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(parse_config(&raw).is_ok());
     }
 
     #[test]

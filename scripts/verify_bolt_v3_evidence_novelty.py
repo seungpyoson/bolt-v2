@@ -30,6 +30,40 @@ FROZEN_MARKET_ALLOCATIONS = (
     ("terminal_closed_window_skip", 240, 256),
 )
 FROZEN_MARKET_FAMILY_CAPACITY = FROZEN_MARKET_ALLOCATIONS[-1][2]
+FROZEN_MARKET_RUST_VARIANTS = (
+    "BlockedStrategyInputAcceptedWatermarkAbsent",
+    "BlockedStrategyInputAcceptedWatermarkPresent",
+    "BlockedStrategyInputMissingSnapshotWatermarkAbsent",
+    "BlockedStrategyInputMissingSnapshotWatermarkPresent",
+    "BlockedStrategyInputMissingEvaluationEventTimeWatermarkAbsent",
+    "BlockedStrategyInputMissingEvaluationEventTimeWatermarkPresent",
+    "BlockedStrategyInputRejectedFutureDatedWatermarkAbsent",
+    "BlockedStrategyInputRejectedFutureDatedWatermarkPresent",
+    "BlockedStrategyInputRejectedStaleWatermarkAbsent",
+    "BlockedStrategyInputRejectedStaleWatermarkPresent",
+    "BlockedStrategyInputRejectedNotReadyWatermarkAbsent",
+    "BlockedStrategyInputRejectedNotReadyWatermarkPresent",
+    "EntrySkipStrategyCoreNotRegistered",
+    "EntrySkipEntryGateBlocked",
+    "EntrySkipEntryPricingBlocked",
+    "EntrySkipNoSideSelected",
+    "EntrySkipSizedNotionalNotPositive",
+    "EntrySkipInstrumentIdMissing",
+    "EntrySkipInstrumentMissingFromCache",
+    "EntrySkipEntryPriceMissing",
+    "EntrySkipQuantityRoundingFailed",
+    "EntrySkipLimitNotionalExceedsSizedNotional",
+    "EntrySkipEntryQuoteNotionalBelowVenueMinimum",
+    "EntrySkipEntryQuoteNotionalMinimumUnmodeled",
+    "EntrySkipQuantityNotPositive",
+    "EntrySkipPositionContractInvalid",
+    "EntrySkipEntryPositionContractUnsupported",
+    "EntrySkipHistoricalEntryFeeUnavailable",
+    "EntrySkipOnePositionInvariantViolation",
+    "EntrySkipEntryMalformedRejected",
+    "EntrySkipEntryBalanceRejected",
+    "EntrySkipEntryUnfillableRejectedUnchangedBook",
+)
 FROZEN_MARKET_STATES = (
     (144, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.accepted.watermark_absent"),
     (145, "strategy_input_snapshot", "strategy_input_snapshot.blocked_rv.accepted.watermark_present"),
@@ -71,6 +105,32 @@ FROZEN_MARKET_STATES = (
     (173, "entry_skip", "entry_skip.entry_malformed_rejected"),
     (174, "entry_skip", "entry_skip.entry_balance_rejected"),
     (175, "entry_skip", "entry_skip.entry_unfillable_rejected_unchanged_book"),
+)
+FROZEN_ENTRY_REASON_CATEGORY_MAPPINGS = (
+    ("ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED", "StrategyCoreNotRegistered"),
+    ("ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED", "EntryGateBlocked"),
+    ("ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED", "EntryPricingBlocked"),
+    ("ENTRY_BLOCK_REASON_NO_SIDE_SELECTED", "NoSideSelected"),
+    ("ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE", "SizedNotionalNotPositive"),
+    ("ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING", "InstrumentIdMissing"),
+    ("ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE", "InstrumentMissingFromCache"),
+    ("ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING", "EntryPriceMissing"),
+    ("ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED", "QuantityRoundingFailed"),
+    ("ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL", "LimitNotionalExceedsSizedNotional"),
+    ("ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM", "EntryQuoteNotionalBelowVenueMinimum"),
+    ("ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED", "EntryQuoteNotionalMinimumUnmodeled"),
+    ("ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE", "QuantityNotPositive"),
+    ("ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID", "PositionContractInvalid"),
+    ("ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED", "EntryPositionContractUnsupported"),
+    ("ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE", "HistoricalEntryFeeUnavailable"),
+    ("ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION", "OnePositionInvariantViolation"),
+    ("ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED", "EntryMalformedRejected"),
+    ("ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED", "EntryBalanceRejected"),
+    ("ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK", "EntryUnfillableRejectedUnchangedBook"),
+)
+FROZEN_ENTRY_CATEGORY_STATE_MAPPINGS = tuple(
+    (category, f"EntrySkip{category}")
+    for _, category in FROZEN_ENTRY_REASON_CATEGORY_MAPPINGS
 )
 OWNER_BY_PRODUCER = {
     "entry_skip": "EntrySkip",
@@ -208,8 +268,9 @@ def load_registry(path: pathlib.Path) -> Registry:
     actual_states = tuple(
         (row.id, row.producer_kind, row.semantic_state) for row in ordered
     )
-    if actual_states != FROZEN_MARKET_STATES:
-        raise ValueError("states must match frozen id-owner-semantic mappings")
+    actual_variants = tuple(row.rust_variant for row in ordered)
+    if actual_states != FROZEN_MARKET_STATES or actual_variants != FROZEN_MARKET_RUST_VARIANTS:
+        raise ValueError("states must match frozen id-variant-owner-semantic mappings")
     return Registry(family_name, family_capacity, tuple(allocations), tuple(ordered))
 
 
@@ -394,6 +455,44 @@ def verification_findings(root: pathlib.Path) -> list[str]:
             f"missing={sorted(entry_reason_constants - mapped_entry_reasons)} "
             f"unknown={sorted(mapped_entry_reasons - entry_reason_constants)}"
         )
+    if reason_mapping is not None:
+        reason_mapping_body = re.sub(
+            r"//[^\n]*|/\*.*?\*/", "", reason_mapping.group(0), flags=re.S
+        )
+        actual_reason_category_pairs = tuple(
+            re.findall(
+                r"(ENTRY_BLOCK_REASON_[A-Z0-9_]+)\s*=>\s*(?:\{\s*)?"
+                r"Some\(BoltV3EntrySkipReasonCategory::([A-Za-z0-9_]+)\)",
+                reason_mapping_body,
+                re.S,
+            )
+        )
+        if actual_reason_category_pairs != FROZEN_ENTRY_REASON_CATEGORY_MAPPINGS:
+            findings.append(
+                f"{ENTRY_DECISION_PATH}: reason-to-category mappings must match frozen pairs"
+            )
+
+    canonical_mapping = re.search(
+        r"fn entry_skip_canonical_state\(.*?\n\}", producer_text, re.S
+    )
+    if canonical_mapping is None:
+        findings.append(f"{PRODUCER_PATH}: entry-skip canonical-state mapping missing")
+    else:
+        canonical_mapping_body = re.sub(
+            r"//[^\n]*|/\*.*?\*/", "", canonical_mapping.group(0), flags=re.S
+        )
+        actual_category_state_pairs = tuple(
+            re.findall(
+                r"BoltV3EntrySkipReasonCategory::([A-Za-z0-9_]+)\s*=>\s*(?:\{\s*)?"
+                r"EvidenceCanonicalState::([A-Za-z0-9_]+)",
+                canonical_mapping_body,
+                re.S,
+            )
+        )
+        if actual_category_state_pairs != FROZEN_ENTRY_CATEGORY_STATE_MAPPINGS:
+            findings.append(
+                f"{PRODUCER_PATH}: category-to-canonical-state mappings must match frozen pairs"
+            )
     registered_entry_reasons = {
         row.semantic_state.removeprefix("entry_skip.")
         for row in registry.states

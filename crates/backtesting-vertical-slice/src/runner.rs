@@ -4054,6 +4054,7 @@ mod tests {
   "closed": false,
   "acceptingOrders": true,
   "enableOrderBook": true,
+  "negRisk": false,
   "orderPriceMinTickSize": 0.001,
   "orderMinSize": 5,
   "slug": "{slug}"

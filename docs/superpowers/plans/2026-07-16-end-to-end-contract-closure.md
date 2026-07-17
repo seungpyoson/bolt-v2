@@ -42,7 +42,7 @@
 
 **Interfaces:**
 - Consumes: `Registry.states: tuple[StateRow, ...]` loaded from `config/evidence-novelty.toml`.
-- Produces: `FROZEN_MARKET_STATES: tuple[tuple[int, str], ...]` and generated `EVIDENCE_NOVELTY_WORD_COUNT` using `usize::div_ceil`.
+- Produces: frozen id/variant/owner/semantic registry tuples, frozen reason/category/state pairs, and generated `EVIDENCE_NOVELTY_WORD_COUNT` using `usize::div_ceil`.
 
 - [ ] **Step 1: Add a mutation test that swaps two semantic IDs**
 
@@ -332,7 +332,7 @@ impl<'de> Deserialize<'de> for ConfiguredTargetId {
     where D: serde::Deserializer<'de> {
         let value = String::deserialize(deserializer)?;
         Self::try_from(value.as_str()).map_err(|_| {
-            serde::de::Error::custom("configured_target_id must be a non-empty, unpadded string")
+            serde::de::Error::custom("must be a non-empty, unpadded string")
         })
     }
 }

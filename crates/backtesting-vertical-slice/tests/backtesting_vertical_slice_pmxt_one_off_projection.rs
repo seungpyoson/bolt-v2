@@ -1504,6 +1504,7 @@ fn gamma_markets_json() -> &'static str {
   "closed": false,
   "acceptingOrders": true,
   "enableOrderBook": true,
+  "negRisk": false,
   "orderPriceMinTickSize": 0.01,
   "orderMinSize": 5,
   "feeSchedule": {

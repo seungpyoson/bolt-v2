@@ -149,7 +149,7 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
         text = text.replace("id = 147", "id = 146", 1)
         text = text.replace("id = 999", "id = 147", 1)
         with self.assertRaisesRegex(
-            ValueError, "states must match frozen id-owner-semantic mappings"
+            ValueError, "states must match frozen id-variant-owner-semantic mappings"
         ):
             self.load_text(text)
 
@@ -165,7 +165,19 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
             1,
         )
         with self.assertRaisesRegex(
-            ValueError, "states must match frozen id-owner-semantic mappings"
+            ValueError, "states must match frozen id-variant-owner-semantic mappings"
+        ):
+            self.load_text(text)
+
+    def test_permanent_ids_cannot_change_rust_variant(self) -> None:
+        text = self.registry_text()
+        text = text.replace(
+            'rust_variant = "BlockedStrategyInputAcceptedWatermarkAbsent"',
+            'rust_variant = "TemporaryVariant"',
+            1,
+        )
+        with self.assertRaisesRegex(
+            ValueError, "states must match frozen id-variant-owner-semantic mappings"
         ):
             self.load_text(text)
 
@@ -200,6 +212,52 @@ class EvidenceNoveltyVerifierTests(unittest.TestCase):
             any("entry-block reason mappings are incomplete" in item for item in findings),
             findings,
         )
+
+    def test_reason_to_category_pairing_is_frozen(self) -> None:
+        root = self.mutated_repository(
+            VERIFIER.ENTRY_DECISION_PATH,
+            "Some(BoltV3EntrySkipReasonCategory::EntryGateBlocked)",
+            "Some(BoltV3EntrySkipReasonCategory::NoSideSelected)",
+        )
+        findings = VERIFIER.verification_findings(root)
+        self.assertTrue(
+            any("reason-to-category mappings must match frozen pairs" in item for item in findings),
+            findings,
+        )
+
+    def test_category_to_canonical_state_pairing_is_frozen(self) -> None:
+        root = self.mutated_repository(
+            VERIFIER.PRODUCER_PATH,
+            "EvidenceCanonicalState::EntrySkipEntryGateBlocked",
+            "EvidenceCanonicalState::EntrySkipNoSideSelected",
+        )
+        findings = VERIFIER.verification_findings(root)
+        self.assertTrue(
+            any("category-to-canonical-state mappings must match frozen pairs" in item for item in findings),
+            findings,
+        )
+
+    def mutated_repository(
+        self, relative_path: pathlib.Path, old: str, new: str
+    ) -> pathlib.Path:
+        directory = tempfile.mkdtemp()
+        root = pathlib.Path(directory)
+        for path in (
+            VERIFIER.REGISTRY_PATH,
+            VERIFIER.GENERATED_PATH,
+            VERIFIER.PRODUCER_PATH,
+            VERIFIER.ENTRY_DECISION_PATH,
+            VERIFIER.NOVELTY_PATH,
+        ):
+            destination = root / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = (VERIFIER.REPO_ROOT / path).read_text(encoding="utf-8")
+            if path == relative_path:
+                self.assertIn(old, source)
+                source = source.replace(old, new, 1)
+            destination.write_text(source, encoding="utf-8")
+        self.addCleanup(lambda: __import__("shutil").rmtree(root))
+        return root
 
     def test_unassigned_ids_remain_non_emittable(self) -> None:
         registry = VERIFIER.load_registry(VERIFIER.REPO_ROOT / VERIFIER.REGISTRY_PATH)

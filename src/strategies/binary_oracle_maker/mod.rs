@@ -254,13 +254,27 @@ impl std::fmt::Debug for BinaryOracleMaker {
 }
 
 impl BinaryOracleMaker {
-    pub fn new(config: BinaryOracleMakerConfig, context: StrategyBuildContext) -> Self {
-        let oms_type = config
-            .oms_type
-            .parse::<OmsType>()
-            .expect("validated binary_oracle_maker oms_type");
+    pub fn new(config: BinaryOracleMakerConfig, context: StrategyBuildContext) -> Result<Self> {
+        anyhow::ensure!(
+            crate::bolt_v3_target_identity::stable_identity_field_is_canonical(
+                config.strategy_id.as_str()
+            ),
+            "binary_oracle_maker strategy_id must be a non-empty, unpadded string"
+        );
+        anyhow::ensure!(
+            crate::bolt_v3_target_identity::stable_identity_field_is_canonical(
+                config.order_id_tag.as_str()
+            ),
+            "binary_oracle_maker order_id_tag must be a non-empty, unpadded string"
+        );
+        let oms_type = config.oms_type.parse::<OmsType>().map_err(|_| {
+            anyhow::anyhow!(
+                "binary_oracle_maker oms_type is invalid: {}",
+                config.oms_type
+            )
+        })?;
         let mu = build_mu_state(&config);
-        Self {
+        Ok(Self {
             core: StrategyCore::new(
                 StrategyConfig::builder()
                     .strategy_id(StrategyId::from(config.strategy_id.as_str()))
@@ -274,7 +288,7 @@ impl BinaryOracleMaker {
             mu,
             runtime: MakerRuntime::empty(),
             last_requote_throttle_blocks: Vec::new(),
-        }
+        })
     }
 
     /// The parsed maker config (read by later slices once they add behaviour).
@@ -1019,7 +1033,7 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
         Ok(Box::new(BinaryOracleMaker::new(
             parse_config(raw)?,
             context.clone(),
-        )))
+        )?))
     }
 
     fn register(
@@ -1027,7 +1041,7 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
         context: &StrategyBuildContext,
         trader: &Rc<RefCell<Trader>>,
     ) -> Result<StrategyId> {
-        let strategy = BinaryOracleMaker::new(parse_config(raw)?, context.clone());
+        let strategy = BinaryOracleMaker::new(parse_config(raw)?, context.clone())?;
         let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
         trader.borrow_mut().add_strategy(strategy)?;
         Ok(strategy_id)
@@ -1304,6 +1318,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn direct_constructor_rejects_noncanonical_strategy_id() {
+        let mut config = maker_config(600, 1000, 4);
+        config.strategy_id = "maker ".to_string();
+        assert!(BinaryOracleMaker::new(config, test_context()).is_err());
+    }
+
+    #[test]
+    fn direct_constructor_rejects_noncanonical_order_id_tag() {
+        let mut config = maker_config(600, 1000, 4);
+        config.order_id_tag = " 001".to_string();
+        assert!(BinaryOracleMaker::new(config, test_context()).is_err());
+    }
+
     // Observe one trade per `side` at ts 1000, 2000, ... ms (so the newest is ~46s
     // before QUERY_NOW_MS), routing through the maker's own `MakerMuState`.
     fn observe_sides(state: &mut MakerMuState, instrument: InstrumentId, sides: &[AggressorSide]) {
@@ -1396,7 +1424,8 @@ mod tests {
         // and the gate `Err(Absent)`, so the post-flow `Ok(1.0)` assertion fails on
         // that buggy variant. Asserts through the μ side-effect channel the handler
         // is supposed to drive.
-        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4), test_context());
+        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4), test_context())
+            .expect("valid maker config");
         let instrument = InstrumentId::from("MAKER.SIM");
         assert_eq!(
             maker.mu.usable_mu_for(&instrument, QUERY_NOW_MS),

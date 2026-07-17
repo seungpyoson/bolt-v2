@@ -29,7 +29,9 @@ use super::*;
 // Selection types used only by the test fixtures (the production parent module
 // imports the rest via `use self::selection::{…}`). Imported here at test
 // scope so the production build does not flag them as unused.
-use super::selection::{CandidateOutcome, SelectionDecision};
+use super::selection::{
+    CandidateOutcome, SelectionDecision, TARGET_MARKET_EVIDENCE_IDENTITY_UNAVAILABLE_REASON,
+};
 use crate::{
     bolt_v3_submit_admission::BoltV3OrderLifecycleIntent,
     strategies::{production_strategy_registry, registry::StrategyBuilder},

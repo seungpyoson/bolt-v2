@@ -1,0 +1,14 @@
+Source: NautilusTrader
+Revision: e7af3dce0c7656862c33acb962aff5ae738eecb6
+
+Path: crates/adapters/polymarket/src/http/parse.rs
+Full source SHA-256: 3117c64fa1e7360ec85e5a47a6eba143c520e0f2e8b1dfffe2b844b33f4f98ec
+Contract: Gamma parsing requires provider negRisk before instrument construction.
+
+Path: crates/adapters/polymarket/src/execution/lifecycle.rs
+Full source SHA-256: 7eaa1bb306006799cc52bc912d03a8f177662e2225f93e430880a5aebec1f2fd
+Contract: execution lookup preserves explicit booleans, removes missing/wrong-type entries, and lookup returns an error instead of false.
+
+Path: crates/adapters/polymarket/src/execution/orders.rs
+Full source SHA-256: c847dd50aaa6f26a89665eb258dad85e0e8bdbaf86bf6c5ab71bcea58b5de67b
+Contract: limit, market, and batch order paths deny lookup errors before constructing a signing request.

@@ -272,7 +272,8 @@ mod tests {
 
         let errors = validate_target_block("strategy `fixture`", &target);
         assert!(errors.iter().any(|error| {
-            error.contains("configured_target_id must be a non-empty, unpadded string")
+            error.contains("configured_target_id")
+                && error.contains("must be a non-empty, unpadded string")
         }));
     }
 }

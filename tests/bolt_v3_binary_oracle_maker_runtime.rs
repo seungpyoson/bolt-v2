@@ -103,7 +103,7 @@ fn ready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolS
 fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -154,7 +154,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
 fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -230,7 +230,7 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
 fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -302,7 +302,7 @@ fn maker_runtime_quote_surfaces_requote_throttle_write_failure_at_error_and_proc
         failure_message,
     ));
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context_with_writer(writer.clone(), admission),
     );
@@ -369,7 +369,7 @@ fn maker_runtime_quote_surfaces_requote_throttle_write_failure_at_error_and_proc
 fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_before_quote() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -486,7 +486,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
 
     let blocked_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let blocked_admission = Arc::new(BoltV3SubmitAdmissionState::new(blocked_writer.clone()));
-    let mut blocked_maker = BinaryOracleMaker::new(
+    let mut blocked_maker = new_maker(
         maker_config(),
         maker_context(blocked_writer.clone(), blocked_admission),
     );
@@ -566,7 +566,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         let missing_input_admission = Arc::new(BoltV3SubmitAdmissionState::new(
             missing_input_writer.clone(),
         ));
-        let mut missing_input_maker = BinaryOracleMaker::new(
+        let mut missing_input_maker = new_maker(
             maker_config(),
             maker_context(missing_input_writer.clone(), missing_input_admission),
         );
@@ -620,7 +620,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     let unsupported_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let unsupported_admission =
         Arc::new(BoltV3SubmitAdmissionState::new(unsupported_writer.clone()));
-    let mut unsupported_maker = BinaryOracleMaker::new(
+    let mut unsupported_maker = new_maker(
         maker_config(),
         maker_context(unsupported_writer.clone(), unsupported_admission),
     );
@@ -685,7 +685,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
 fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -808,7 +808,7 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
 fn maker_loss_risk_route_soft_holds_without_order_mutation() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -845,7 +845,7 @@ fn maker_loss_risk_route_soft_holds_without_order_mutation() {
 fn maker_loss_risk_route_drains_quotes_for_untrusted_loss_snapshot() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -900,7 +900,7 @@ fn maker_loss_risk_route_drains_quotes_for_untrusted_loss_snapshot() {
 fn maker_loss_risk_route_hard_flat_does_not_hide_unsupported_active_reduce() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
@@ -1214,6 +1214,10 @@ fn maker_config() -> BinaryOracleMakerConfig {
             .to_string(),
         markets: Vec::new(),
     }
+}
+
+fn new_maker(config: BinaryOracleMakerConfig, context: StrategyBuildContext) -> BinaryOracleMaker {
+    BinaryOracleMaker::new(config, context).expect("valid maker config")
 }
 
 fn quote_plan_inputs(family_key: &str) -> MakerQuotePlanInputs<'_> {
@@ -1833,7 +1837,7 @@ fn maker_on_start_resolves_declared_markets_from_the_execution_venue_cache() {
     // the declared market becomes active (an empty cache would leave it idle).
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config_with_static_market(),
         maker_sim_context(writer, admission),
     );
@@ -1876,7 +1880,7 @@ fn maker_on_stop_resets_runtime_so_a_restart_re_resolves_and_re_subscribes() {
     // removed (the count would stay 1, and no re-subscribe would be emitted).
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config_with_static_market(),
         maker_sim_context(writer, admission),
     );
@@ -1923,7 +1927,7 @@ fn maker_on_start_fails_loud_when_quote_interval_overflows_the_nanosecond_clock(
         quote_interval_ms: u64::MAX,
         ..maker_config_with_static_market()
     };
-    let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer, admission));
+    let mut maker = new_maker(config, maker_sim_context(writer, admission));
     let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
     for instrument in runtime_static_instruments() {
         cache
@@ -1963,7 +1967,7 @@ fn maker_on_start_fails_loud_when_the_quote_timer_cannot_register() {
     // on_start returns Ok and this expect_err fails.
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config_with_static_market(),
         maker_sim_context(writer, admission),
     );
@@ -2003,7 +2007,7 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
     // produced but nothing is admitted.
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
+    let mut maker = new_maker(
         maker_config_with_static_market(),
         maker_sim_context(writer, admission.clone()),
     );

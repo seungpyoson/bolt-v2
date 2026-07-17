@@ -146,6 +146,7 @@ mod tests {
 
     use anyhow::{Context, anyhow};
     use futures_util::future::{BoxFuture, FutureExt};
+    use nautilus_common::actor::DataActor;
     use nautilus_model::identifiers::{InstrumentId, StrategyId, Venue};
     use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 

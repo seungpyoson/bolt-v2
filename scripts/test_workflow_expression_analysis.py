@@ -289,6 +289,16 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "            echo \"trusted policy resolver must emit exactly one normalized ignored-runtime root list\" >&2\n"
         "            exit 1\n"
         "          }\n"
+        "          tracer_required_counts=\"$(awk -F= '$1 == \"ra001a_durable_tracer_required\" { all += 1; if ($2 == \"true\" || $2 == \"false\") valid += 1 } END { printf \"%d:%d\", all, valid }' \"$policy_output\")\"\n"
+        "          [[ \"$tracer_required_counts\" == \"1:1\" ]] || {\n"
+        "            echo \"trusted policy resolver must emit exactly one boolean ra001a_durable_tracer_required\" >&2\n"
+        "            exit 1\n"
+        "          }\n"
+        "          tracer_required=\"$(awk -F= '$1 == \"ra001a_durable_tracer_required\" { print $2 }' \"$policy_output\")\"\n"
+        "          [[ \"$tracer_required\" == \"$RA001A_DURABLE_TRACER_REQUESTED\" ]] || {\n"
+        "            echo \"trusted policy resolver tracer decision does not match the dispatch request\" >&2\n"
+        "            exit 1\n"
+        "          }\n"
         "          cat \"$policy_output\" >> \"$GITHUB_OUTPUT\"\n"
     )
     for label, fragment in (
@@ -608,7 +618,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
     # (i) merge_group policy value flipped away from required proof → config contract error.
     flipped_config = ci_provenance_config_fixture().replace(
-        'merge_group = "full"', 'merge_group = "defer"'
+        'merge_group = "full"', 'merge_group = "iteration"'
     )
     if flipped_config == ci_provenance_config_fixture():
         raise AssertionError("merge_group policy fixture fragment not found")
@@ -1329,22 +1339,6 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
                 workflow,
                 '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
                 '--expected-event-class "iteration"',
-            ),
-        ),
-        (
-            "gate shared verdict call must include --full-ci-deferred",
-            replace_once(
-                workflow,
-                '--full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"',
-                '--full-ci-deferred "false"',
-            ),
-        ),
-        (
-            "gate shared verdict call must include carry_forward_args=()",
-            replace_once(
-                workflow,
-                "carry_forward_args=()",
-                "carry_forward_args=(--carry-forward-verified false)",
             ),
         ),
         (
@@ -2438,9 +2432,6 @@ def assert_ra001a_dispatch_cancel_guard_is_fail_closed() -> None:
     ${{ github.event_name == 'pull_request'
         && !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
              || startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/'))
-        && !(github.event.pull_request.draft == false
-             && (github.event.action == 'reopened'
-                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false))))
         || (github.event_name == 'workflow_dispatch'
             && inputs.ra001a_durable_tracer != true) }}"""
     if not verifier.cancel_in_progress_is_merge_group_safe(guarded_cancel):

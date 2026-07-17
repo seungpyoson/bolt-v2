@@ -44,31 +44,19 @@ BACKTESTER_RA001A_SAFE_CANCEL_FORM = (
     "${{ github.event_name == 'pull_request' "
     "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
     "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-    "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
-    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))) "
     "|| (github.event_name == 'workflow_dispatch' "
     "&& inputs.ra001a_durable_tracer != true) }}"
 )
 KNOWN_SAFE_CANCEL_FORMS = frozenset(
     {
-        "${{ github.event_name == 'pull_request' && !(github.event.pull_request.draft == false "
-        "&& (github.event.action == 'reopened' || (github.event.action == 'edited' "
-        "&& !(github.event.changes.base.ref.from && true || false)))) || github.event_name == 'workflow_dispatch' }}",
         "${{ github.event_name == 'pull_request' "
         "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
         "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-        "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
-        "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))) "
         "|| github.event_name == 'workflow_dispatch' }}",
         BACKTESTER_RA001A_SAFE_CANCEL_FORM,
         "${{ github.event_name == 'pull_request' "
         "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
         "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) }}",
-        "${{ github.event_name == 'pull_request' "
-        "&& !(startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
-        "|| startsWith(github.event.pull_request.head.ref, 'tmp-mergify/merge-queue/')) "
-        "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
-        "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from && true || false)))) }}",
     }
 )
 
@@ -200,13 +188,7 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     for required in (
         "--policy-path \"${{ needs.ci-policy.outputs.ci_policy_path }}\"",
         "--expected-event-class \"${{ needs.ci-policy.outputs.expected_event_class }}\"",
-        "--full-ci-deferred \"${{ needs.ci-policy.outputs.full_ci_deferred }}\"",
         "--ignore-emit-failure \"${{ needs.ci-policy.outputs.ignore_emit_failure }}\"",
-        "carry_forward_args=()",
-        "carry_forward_verified=\"${{ steps.carry_forward.outputs.carry_forward_verified }}\"",
-        "if [[ -n \"$carry_forward_verified\" ]]; then",
-        "carry_forward_args+=(--carry-forward-verified \"$carry_forward_verified\")",
-        "\"${carry_forward_args[@]}\"",
         "--build-required \"${{ needs.detector.outputs.build_required || 'false' }}\"",
         "--job ci-policy=${{ needs.ci-policy.result }}",
         "--job detector=${{ needs.detector.result }}",
@@ -229,10 +211,15 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         required = f"--job {job}=${{{{ needs.{job}.result }}}}"
         if required not in gate_text:
             errors.append(f"gate shared verdict call must include {required}")
-    if 'python3 "$verdict_script" resolve-gate-carry-forward' not in gate_text:
-        errors.append("gate must verify carry-forward through trusted base-tree ci_provenance.py")
-    if "--require-provenance-base true" not in gate_text:
-        errors.append("gate carry-forward must require provenance base match")
+    for forbidden in (
+        "resolve-gate-carry-forward",
+        "carry_forward",
+        "--carry-forward-verified",
+        "--full-ci-deferred",
+        "full_ci_deferred",
+    ):
+        if forbidden in gate_text:
+            errors.append(f"gate must not retain PR metadata carry-forward plumbing ({forbidden})")
     return errors
 def one_indexed_sequence(values: tuple[int, ...]) -> bool:
     return values == tuple(range(1, len(values) + 1))

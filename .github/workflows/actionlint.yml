@@ -20,9 +20,9 @@ on:
     # not only retargets, so this also re-runs actionlint on every title/body
     # edit. We accept that cost because there is no narrower event for base-ref
     # changes.
-    # Note: ci.yml includes converted_to_draft because it defers some lanes when
-    # a PR is in draft. actionlint has no draft-deferral path, so we deliberately
-    # omit converted_to_draft.
+    # Note: ci.yml includes converted_to_draft because draft PR events use
+    # iteration routing. actionlint has no draft-iteration path, so we
+    # deliberately omit converted_to_draft.
     types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]

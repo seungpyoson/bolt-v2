@@ -1,9 +1,12 @@
-use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
+use bolt_v2::{
+    bolt_v3_strategy_context::StrategyBuildContext,
+    bolt_v3_strategy_registration::PreparedStrategyRegistration,
+};
 
 use std::cell::RefCell;
 
 use anyhow::{Context, Result};
-use bolt_v2::strategies::registry::{StrategyBuilder, ValidationError};
+use bolt_v2::strategies::registry::{StrategyBuilder, StrategyRegistry, ValidationError};
 use nautilus_common::actor::DataActor;
 use nautilus_model::identifiers::StrategyId;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
@@ -69,4 +72,14 @@ impl StrategyBuilder for StubRuntimeStrategyBuilder {
             .context("stub runtime strategy requires strategy_id")?;
         Ok(StubRuntimeStrategy::new(strategy_id))
     }
+}
+
+pub(crate) fn prepare_stub_runtime_strategy(
+    strategy_id: &str,
+    context: &StrategyBuildContext,
+) -> Result<PreparedStrategyRegistration> {
+    let mut registry = StrategyRegistry::new();
+    registry.register::<StubRuntimeStrategyBuilder>()?;
+    let raw = toml::toml! { strategy_id = strategy_id }.into();
+    registry.prepare_strategy(StubRuntimeStrategyBuilder::kind(), &raw, context)
 }

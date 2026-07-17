@@ -23,7 +23,6 @@ use crate::bolt_v3_settlement_runtime::{
 };
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
-use anyhow::Context;
 use nautilus_common::{actor::DataActorNative, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
@@ -68,7 +67,7 @@ pub struct PreparedStrategyRegistration {
 }
 
 impl PreparedStrategyRegistration {
-    pub fn from_strategy<T>(strategy: T) -> Self
+    pub(crate) fn from_strategy<T>(strategy: T) -> Self
     where
         T: Strategy + StrategyNative + DataActorNative + Component + std::fmt::Debug + 'static,
     {
@@ -78,23 +77,83 @@ impl PreparedStrategyRegistration {
         }
     }
 
-    pub fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId> {
+    fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId> {
         let strategy_id = self.strategy.prepare_registration(trader)?;
         self.strategy_id = Some(strategy_id);
         Ok(strategy_id)
     }
 
-    pub fn strategy_id(&self) -> Option<StrategyId> {
-        self.strategy_id
+    fn commit(self, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.strategy_id.is_some(),
+            stringify!(prepared_strategy_registration_has_no_preflighted_nt_strategy_id)
+        );
+        self.strategy.commit(trader)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("prepared strategy at batch index {failed_index} failed: {source}")]
+pub struct PreparedStrategyBatchError {
+    failed_index: usize,
+    #[source]
+    source: anyhow::Error,
+}
+
+impl PreparedStrategyBatchError {
+    fn new(failed_index: usize, source: impl Into<anyhow::Error>) -> Self {
+        Self {
+            failed_index,
+            source: source.into(),
+        }
     }
 
-    pub fn commit(self, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<StrategyId> {
-        let strategy_id = self.strategy_id.context(stringify!(
-            prepared_strategy_registration_has_no_preflighted_nt_strategy_id
-        ))?;
-        self.strategy.commit(trader)?;
-        Ok(strategy_id)
+    pub fn failed_index(&self) -> usize {
+        self.failed_index
     }
+}
+
+pub fn register_prepared_strategy_batch(
+    trader: &Rc<RefCell<Trader>>,
+    mut prepared: Vec<PreparedStrategyRegistration>,
+) -> Result<Vec<StrategyId>, PreparedStrategyBatchError> {
+    let mut prepared_strategy_ids = BTreeSet::new();
+    let mut prepared_order_id_tags = BTreeSet::new();
+    let mut strategy_ids = Vec::with_capacity(prepared.len());
+    {
+        let trader = trader.borrow();
+        for (index, prepared_registration) in prepared.iter_mut().enumerate() {
+            let strategy_id = prepared_registration
+                .prepare_registration(&trader)
+                .map_err(|error| PreparedStrategyBatchError::new(index, error))?;
+            if !prepared_strategy_ids.insert(strategy_id) {
+                return Err(PreparedStrategyBatchError::new(
+                    index,
+                    anyhow::anyhow!(
+                        "prepared NT strategy ID `{strategy_id}` is duplicated in the batch"
+                    ),
+                ));
+            }
+            let order_id_tag = strategy_id.get_tag().to_string();
+            if !prepared_order_id_tags.insert(order_id_tag.clone()) {
+                return Err(PreparedStrategyBatchError::new(
+                    index,
+                    anyhow::anyhow!(
+                        "prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"
+                    ),
+                ));
+            }
+            strategy_ids.push(strategy_id);
+        }
+    }
+
+    for (index, prepared_registration) in prepared.into_iter().enumerate() {
+        prepared_registration
+            .commit(trader)
+            .map_err(|error| PreparedStrategyBatchError::new(index, error))?;
+    }
+    Ok(strategy_ids)
 }
 
 #[derive(Clone, Copy)]
@@ -914,7 +973,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
         })
         .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
 
-    let mut prepared = contexts
+    let prepared = contexts
         .into_iter()
         .map(|(binding, context)| {
             let strategy = context.strategy;
@@ -922,39 +981,16 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
             Ok((strategy, prepared))
         })
         .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
+    let (prepared_metadata, prepared_registrations): (Vec<_>, Vec<_>) =
+        prepared.into_iter().unzip();
+    let registered_strategy_ids =
+        register_prepared_strategy_batch(node.kernel().trader(), prepared_registrations).map_err(
+            |error| binding_error(prepared_metadata[error.failed_index()], error.to_string()),
+        )?;
 
-    let mut prepared_strategy_ids = BTreeSet::new();
-    let mut prepared_order_id_tags = BTreeSet::new();
+    for (strategy, registered_strategy_id) in
+        prepared_metadata.into_iter().zip(registered_strategy_ids)
     {
-        let trader = node.kernel().trader().borrow();
-        for (strategy, prepared_registration) in &mut prepared {
-            let strategy_id = prepared_registration
-                .prepare_registration(&trader)
-                .map_err(|error| binding_error(strategy, error.to_string()))?;
-            if !prepared_strategy_ids.insert(strategy_id) {
-                return Err(binding_error(
-                    strategy,
-                    format!("prepared NT strategy ID `{strategy_id}` is duplicated in the batch"),
-                ));
-            }
-            let order_id_tag = strategy_id.get_tag().to_string();
-            if !prepared_order_id_tags.insert(order_id_tag.clone()) {
-                return Err(binding_error(
-                    strategy,
-                    format!("prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"),
-                ));
-            }
-        }
-    }
-
-    for (strategy, prepared_registration) in prepared {
-        // All repository-owned parsing, client resolution, registry selection,
-        // construction, and identity checks have completed. NT add_strategy is
-        // the external commit boundary and is intentionally not wrapped in a
-        // repository-level rollback path.
-        let registered_strategy_id = prepared_registration
-            .commit(node.kernel().trader())
-            .map_err(|error| binding_error(strategy, error.to_string()))?;
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             strategy_archetype: strategy.config.strategy_archetype.clone(),

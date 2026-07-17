@@ -632,6 +632,16 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
 #[test]
 fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
     let registration = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let prepared_impl = registration
+        .split_once("impl PreparedStrategyRegistration {")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("prepared strategy implementation should remain inspectable");
+    assert!(
+        !prepared_impl.contains("pub fn "),
+        "prepared strategies must expose no direct construction, preparation, getter, or commit method"
+    );
+    assert!(registration.contains("pub fn register_prepared_strategy_batch("));
     let binding_fields = registration
         .split_once("pub struct StrategyRuntimeBinding {")
         .and_then(|(_, tail)| tail.split_once("\n}"))
@@ -651,22 +661,28 @@ fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
         .find("let contexts = loaded")
         .expect("all shared contexts must be collected first");
     let prepared_position = dispatcher
-        .find("let mut prepared = contexts")
+        .find("let prepared = contexts")
         .expect("all concrete strategies must be prepared second");
-    let identity_position = dispatcher
+    let coordinator_position = dispatcher
+        .find("register_prepared_strategy_batch(")
+        .expect("the dispatcher must delegate to the sole batch coordinator");
+    assert!(contexts_position < prepared_position && prepared_position < coordinator_position);
+
+    let coordinator = registration
+        .split_once("pub fn register_prepared_strategy_batch(")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n#[derive(Clone, Copy)]"))
+        .map(|(body, _)| body)
+        .expect("prepared batch coordinator should remain inspectable");
+    let identity_position = coordinator
         .find(".prepare_registration(&trader)")
         .expect("all NT identities must be prepared before commit");
-    let commit_position = dispatcher
-        .find(".commit(node.kernel().trader())")
-        .expect("the dispatcher must have one final commit path");
-    assert!(
-        contexts_position < prepared_position
-            && prepared_position < identity_position
-            && identity_position < commit_position
-    );
+    let commit_position = coordinator
+        .find(".commit(trader)")
+        .expect("the coordinator must have one final commit path");
+    assert!(identity_position < commit_position);
 
-    let commit_loop = dispatcher
-        .split_once("for (strategy, prepared_registration) in prepared {")
+    let commit_loop = coordinator
+        .split_once("for (index, prepared_registration) in prepared.into_iter().enumerate() {")
         .map(|(_, body)| body)
         .expect("final commit loop should remain inspectable");
     for forbidden_deferred_work in [
@@ -675,6 +691,7 @@ fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
         "raw_taker_config(",
         "production_strategy_registry(",
         "prepare_strategy(",
+        "prepare_registration(",
     ] {
         assert!(
             !commit_loop.contains(forbidden_deferred_work),

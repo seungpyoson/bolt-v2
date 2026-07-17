@@ -452,8 +452,7 @@ mod tests {
         registration.validate_config(&raw, "strategies[0].config", &mut errors);
         assert!(errors.is_empty());
 
-        let prepared = registration.prepare(&raw, &test_context()).unwrap();
-        assert_eq!(prepared.strategy_id(), None);
+        registration.prepare(&raw, &test_context()).unwrap();
     }
 
     #[test]

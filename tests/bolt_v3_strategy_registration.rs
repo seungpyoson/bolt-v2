@@ -792,10 +792,14 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 settlement: true,
             }
         );
+        let build_context =
+            bolt_v2::bolt_v3_strategy_registration::assemble_strategy_build_context(&context)?;
         Ok(
-            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
-                support::stub_runtime_strategy::StubRuntimeStrategy::new("BOLT-V3-PHASE3-BINDING"),
-            ),
+            support::stub_runtime_strategy::prepare_stub_runtime_strategy(
+                "BOLT-V3-PHASE3-BINDING",
+                &build_context,
+            )
+            .expect("stub runtime strategy should prepare through the registry"),
         )
     }
 
@@ -955,12 +959,14 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
     > {
         PREPARATION_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
+        let build_context =
+            bolt_v2::bolt_v3_strategy_registration::assemble_strategy_build_context(&_context)?;
         Ok(
-            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
-                support::stub_runtime_strategy::StubRuntimeStrategy::new(
-                    "BOLT-V3-PREFLIGHT-CALLBACK",
-                ),
-            ),
+            support::stub_runtime_strategy::prepare_stub_runtime_strategy(
+                "BOLT-V3-PREFLIGHT-CALLBACK",
+                &build_context,
+            )
+            .expect("stub runtime strategy should prepare through the registry"),
         )
     }
 
@@ -1215,12 +1221,14 @@ fn duplicate_prepared_strategy_ids_fail_before_any_strategy_is_registered() {
         bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
     > {
+        let build_context =
+            bolt_v2::bolt_v3_strategy_registration::assemble_strategy_build_context(&_context)?;
         Ok(
-            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
-                support::stub_runtime_strategy::StubRuntimeStrategy::new(
-                    "BOLT-V3-DUPLICATE-PREPARED",
-                ),
-            ),
+            support::stub_runtime_strategy::prepare_stub_runtime_strategy(
+                "BOLT-V3-DUPLICATE-PREPARED",
+                &build_context,
+            )
+            .expect("stub runtime strategy should prepare through the registry"),
         )
     }
 
@@ -1281,12 +1289,14 @@ fn already_registered_strategy_id_fails_before_any_new_strategy_is_registered() 
         bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
     > {
+        let build_context =
+            bolt_v2::bolt_v3_strategy_registration::assemble_strategy_build_context(&_context)?;
         Ok(
-            bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration::from_strategy(
-                support::stub_runtime_strategy::StubRuntimeStrategy::new(
-                    "BOLT-V3-ALREADY-REGISTERED",
-                ),
-            ),
+            support::stub_runtime_strategy::prepare_stub_runtime_strategy(
+                "BOLT-V3-ALREADY-REGISTERED",
+                &build_context,
+            )
+            .expect("stub runtime strategy should prepare through the registry"),
         )
     }
 

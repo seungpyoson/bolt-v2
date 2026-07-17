@@ -41,6 +41,7 @@ use bolt_v2::{
     bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_strategy_registration::{
         StrategyPreparationConfig, prepare_strategy_client_routes,
+        register_prepared_strategy_batch,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::binary_oracle_edge_taker::archetype::raw_taker_config,
@@ -731,14 +732,11 @@ fn register_manifest_binary_oracle_strategy(
         build_context = build_context.with_realized_volatility_runtime(runtime);
     }
     let registry = production_strategy_registry().context("build production strategy registry")?;
-    registry
-        .register_strategy(
-            registry_key,
-            raw_config,
-            &build_context,
-            engine.kernel().trader(),
-        )
-        .with_context(|| format!("register {registry_key} strategy through production registry"))?;
+    let prepared = registry
+        .prepare_strategy(registry_key, raw_config, &build_context)
+        .with_context(|| format!("prepare {registry_key} strategy through production registry"))?;
+    register_prepared_strategy_batch(engine.kernel().trader(), vec![prepared])
+        .with_context(|| format!("register {registry_key} prepared strategy batch"))?;
     Ok(run_guard_writer)
 }
 
@@ -904,16 +902,17 @@ fn add_manifest_strategy(
             }
             let registry =
                 production_strategy_registry().context("build production strategy registry")?;
-            registry
-                .register_strategy(
+            let prepared = registry
+                .prepare_strategy(
                     STRATEGY_BINARY_ORACLE_EDGE_TAKER,
                     &raw_config,
                     &build_context,
-                    engine.kernel().trader(),
                 )
                 .context(
-                    "register binary_oracle_edge_taker strategy through production registry",
+                    "prepare binary_oracle_edge_taker strategy through production registry",
                 )?;
+            register_prepared_strategy_batch(engine.kernel().trader(), vec![prepared])
+                .context("register binary_oracle_edge_taker prepared strategy batch")?;
             Ok(AddedManifestStrategy {
                 config_override_report,
                 run_guard_writer: Some(run_guard_writer),

@@ -324,6 +324,29 @@ fn trailing_stop_trigger_only_keeps_activation_unset() {
 }
 
 #[test]
+fn trailing_stop_activation_only_keeps_trigger_unset() {
+    let mut factory = generic_order_factory();
+    let mut template = base_template(OrderType::TrailingStopMarket);
+    let activation_price = trigger_price_below_limit();
+    template.activation_price = Some(activation_price);
+    template.trailing_offset = Some(positive_trailing_offset());
+
+    let order = build_nt_order(
+        &mut factory,
+        "generic_order",
+        &template,
+        base_inputs(OrderSide::Sell),
+    )
+    .expect("activation-only trailing stop should build through NT factory");
+
+    let OrderAny::TrailingStopMarket(order) = order else {
+        panic!("expected NT TrailingStopMarket order");
+    };
+    assert_eq!(order.trigger_price(), None);
+    assert_eq!(order.activation_price(), Some(activation_price));
+}
+
+#[test]
 fn shared_nt_order_template_price_is_required_only_for_limit_price_factories() {
     let mut factory = generic_order_factory();
 

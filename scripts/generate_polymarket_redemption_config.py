@@ -188,21 +188,24 @@ def _https_snapshot_root(value: object, field: str) -> pathlib.PurePosixPath:
         port = parsed.port
     except ValueError as error:
         raise ConfigError(f"{field} must be a canonical HTTPS URL") from error
-    if (
-        parsed.scheme != "https"
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-        or port is not None
-        or parsed.query
-        or parsed.fragment
+    path_parts = parsed.path.removeprefix("/").split("/")
+    canonical_url = urllib.parse.urlunsplit(
+        ("https", parsed.hostname or "", parsed.path, "", "")
+    )
+    if not (
+        source_url == canonical_url
+        and parsed.scheme == "https"
+        and parsed.netloc == parsed.hostname
+        and port is None
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path.startswith("/")
+        and urllib.parse.unquote(parsed.path) == parsed.path
+        and all(part not in {"", ".", ".."} for part in path_parts)
     ):
         raise ConfigError(f"{field} must be a canonical HTTPS URL")
-    source_path = pathlib.PurePosixPath(parsed.path.removeprefix("/"))
-    if not source_path.parts:
-        raise ConfigError(f"{field} must include a path")
     return pathlib.PurePosixPath(
-        "polymarket-redemption-sources", parsed.netloc, *source_path.parts
+        "polymarket-redemption-sources", parsed.netloc, *path_parts
     )
 
 
@@ -608,6 +611,33 @@ pub(super) const POLYMARKET_REDEMPTION_PROTOCOL: RedemptionProtocolFacts =
 """
 
 
+def render_projection(
+    runtime_path: pathlib.Path,
+    evidence_path: pathlib.Path,
+    root_path: pathlib.Path,
+) -> str:
+    return render_rust(
+        load_config(runtime_path, evidence_path, root_path),
+        runtime_path.name,
+        evidence_path.name,
+        root_path.name,
+    )
+
+
+def check_generated_projection(
+    runtime_path: pathlib.Path,
+    evidence_path: pathlib.Path,
+    root_path: pathlib.Path,
+    output_path: pathlib.Path,
+) -> None:
+    if output_path.read_text(encoding="utf-8") != render_projection(
+        runtime_path,
+        evidence_path,
+        root_path,
+    ):
+        raise ConfigError("generated redemption projection is stale; regenerate it")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-source", type=pathlib.Path, required=True)
@@ -617,22 +647,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args(argv)
     try:
-        rendered = render_rust(
-            load_config(
+        if arguments.check:
+            check_generated_projection(
+                arguments.runtime_source,
+                arguments.evidence_source,
+                arguments.root_source,
+                arguments.output,
+            )
+            return 0
+        arguments.output.write_text(
+            render_projection(
                 arguments.runtime_source,
                 arguments.evidence_source,
                 arguments.root_source,
             ),
-            arguments.runtime_source.name,
-            arguments.evidence_source.name,
-            arguments.root_source.name,
+            encoding="utf-8",
         )
-        if arguments.check:
-            current = arguments.output.read_text(encoding="utf-8")
-            if current != rendered:
-                raise ConfigError(f"{arguments.output} is stale; regenerate it")
-            return 0
-        arguments.output.write_text(rendered, encoding="utf-8")
     except (ConfigError, OSError, UnicodeDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

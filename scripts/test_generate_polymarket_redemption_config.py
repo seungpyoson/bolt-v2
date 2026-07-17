@@ -217,6 +217,42 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                 )
             )
 
+    def test_repository_url_aliases_are_rejected(self) -> None:
+        aliases = (
+            "https://github.com/Polymarket/../Polymarket/ctf-exchange-v2",
+            "https://github.com//Polymarket/ctf-exchange-v2",
+            "https://github.com/Polymarket/%2e%2e/Polymarket/ctf-exchange-v2",
+        )
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                with self.assertRaisesRegex(
+                    generator.ConfigError, "canonical HTTPS URL"
+                ):
+                    self.load(
+                        evidence_text=EVIDENCE_TOML.replace(
+                            "https://github.com/Polymarket/ctf-exchange-v2",
+                            alias,
+                        )
+                    )
+
+    def test_deployment_url_aliases_are_rejected(self) -> None:
+        aliases = (
+            "https://docs.polymarket.com/resources/../resources/contracts",
+            "https://docs.polymarket.com//resources/contracts",
+            "https://docs.polymarket.com/resources/%2e%2e/resources/contracts",
+        )
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                with self.assertRaisesRegex(
+                    generator.ConfigError, "canonical HTTPS URL"
+                ):
+                    self.load(
+                        evidence_text=EVIDENCE_TOML.replace(
+                            "https://docs.polymarket.com/resources/contracts",
+                            alias,
+                        )
+                    )
+
     def test_deployment_snapshot_must_match_runtime_targets(self) -> None:
         mutations = (
             (
@@ -249,14 +285,35 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                 }
             )
 
-    def test_snapshot_paths_cannot_escape_evidence_directory(self) -> None:
-        with self.assertRaisesRegex(generator.ConfigError, "repository-relative path"):
-            self.load(
-                evidence_text=EVIDENCE_TOML.replace(
-                    'builder_source_path = "src/builder/safe.ts"',
-                    'builder_source_path = "../safe.ts"',
-                )
-            )
+    def test_snapshot_path_components_cannot_escape_evidence_directory(self) -> None:
+        mutations = (
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "../safe.ts"',
+                "repository-relative path",
+            ),
+            (
+                'builder_source_path = "src/builder/safe.ts"',
+                'builder_source_path = "/src/builder/safe.ts"',
+                "repository-relative path",
+            ),
+            (
+                'revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"',
+                'revision = "../9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"',
+                "40 lowercase hexadecimal",
+            ),
+            (
+                'deployment_observed_date = "2026-07-17"',
+                'deployment_observed_date = "../2026-07-17"',
+                "ISO calendar date",
+            ),
+        )
+        for expected, replacement, message in mutations:
+            with self.subTest(replacement=replacement):
+                with self.assertRaisesRegex(generator.ConfigError, message):
+                    self.load(
+                        evidence_text=EVIDENCE_TOML.replace(expected, replacement)
+                    )
 
     def test_missing_derived_snapshot_is_rejected(self) -> None:
         with self.assertRaisesRegex(generator.ConfigError, "cannot read derived"):

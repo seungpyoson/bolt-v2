@@ -722,10 +722,6 @@ mod tests {
     -> crate::bolt_v3_providers::polymarket::ResolvedBoltV3PolymarketSecrets {
         crate::bolt_v3_providers::polymarket::ResolvedBoltV3PolymarketSecrets {
             private_key: Zeroizing::new(FIXTURE_PRIVATE_KEY.to_string()),
-            redemption_signing_key: crate::bolt_v3_providers::polymarket::decode_private_key(
-                FIXTURE_PRIVATE_KEY,
-            )
-            .expect("fixture private key must decode through the provider boundary"),
             api_key: Zeroizing::new("fixture-builder-key".to_string()),
             api_secret: Zeroizing::new("fixture-builder-secret".to_string()),
             passphrase: Zeroizing::new("fixture-builder-passphrase".to_string()),
@@ -1085,11 +1081,12 @@ mod tests {
     }
 
     #[test]
-    fn provider_snapshot_is_redacted_and_drives_request_preparation() {
+    fn provider_and_prepared_request_evidence_exclude_secret_material() {
         fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
 
         let config = test_config();
         let provider_secrets = test_provider_secrets();
+        let signing_key = test_credentials();
         let debug = format!("{provider_secrets:?}");
         let sentinels = [
             FIXTURE_PRIVATE_KEY,
@@ -1109,7 +1106,7 @@ mod tests {
             test_preparation_permit(),
             &mut lease,
             &config,
-            provider_secrets.redemption_signing_key(),
+            &signing_key,
             original_input(RedemptionMarketKind::Standard),
             AttemptKind::Original,
             |prepared| {
@@ -1132,7 +1129,7 @@ mod tests {
                 }
             },
         )
-        .expect("provider snapshot must prepare redacted evidence");
+        .expect("checked signing key must prepare redacted evidence");
     }
 
     #[test]

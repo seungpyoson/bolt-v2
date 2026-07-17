@@ -105,9 +105,6 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
         (root / "src/bolt_v3_polymarket_redemption.rs").write_text(
             "// implementation is compiler-verified\n", encoding="utf-8"
         )
-        (root / "src/bolt_v3_polymarket_redemption/generated.rs").write_text(
-            "// generated projection\n", encoding="utf-8"
-        )
         (root / "config/polymarket-redemption.toml").write_text(
             RUNTIME, encoding="utf-8"
         )
@@ -127,6 +124,14 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             "// compiler evidence\n", encoding="utf-8"
         )
         (root / "Cargo.toml").write_text(CARGO, encoding="utf-8")
+        (root / verifier.GENERATED).write_text(
+            verifier.generator.render_projection(
+                root / verifier.RUNTIME,
+                root / verifier.EVIDENCE,
+                root / verifier.ROOT_RUNTIME,
+            ),
+            encoding="utf-8",
+        )
         return temporary, root
 
     def test_closed_fixture_passes(self) -> None:
@@ -141,6 +146,21 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             "fn main() { prepare_redemption_request(); }\n", encoding="utf-8"
         )
         self.assertEqual(verifier.boundary_errors(root), [])
+
+    def test_generated_projection_drift_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        generated = root / verifier.GENERATED
+        generated.write_text(
+            generated.read_text(encoding="utf-8") + "// hand-edited\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any(
+                "generated redemption projection is stale" in error
+                for error in verifier.boundary_errors(root)
+            )
+        )
 
     def test_missing_required_artifact_is_rejected(self) -> None:
         temporary, root = self.fixture()

@@ -277,11 +277,9 @@ pub struct ResolvedBoltV3PolymarketSecrets {
     /// Each secret field is wrapped in [`Zeroizing`] so the individual secret
     /// bytes are scrubbed on drop even when a field is moved out of the
     /// container — per-field zeroize in addition to the container-level
-    /// `ZeroizeOnDrop`. The four text fields deref to `String`; the fixed-width
-    /// signing view is also zeroized. The redacting `Debug` impl below keeps
-    /// every representation out of logs.
+    /// `ZeroizeOnDrop`. The four text fields deref to `String`. The redacting
+    /// `Debug` impl below keeps every field out of logs.
     pub private_key: Zeroizing<String>,
-    pub(crate) redemption_signing_key: ResolvedEvmSigningKey,
     pub api_key: Zeroizing<String>,
     /// Canonical URL-safe base64 `api_secret` (padded) handed to the NT
     /// Polymarket credential, which decodes it with the padded `URL_SAFE`
@@ -293,12 +291,6 @@ pub struct ResolvedBoltV3PolymarketSecrets {
     /// [`redaction_values`](Self::redaction_values), which redacts both forms.
     pub api_secret: Zeroizing<String>,
     pub passphrase: Zeroizing<String>,
-}
-
-impl ResolvedBoltV3PolymarketSecrets {
-    pub(crate) fn redemption_signing_key(&self) -> &ResolvedEvmSigningKey {
-        &self.redemption_signing_key
-    }
 }
 
 impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
@@ -593,7 +585,7 @@ pub fn resolve_secrets(
         &secrets.private_key_ssm_path,
         resolver,
     )?;
-    let redemption_signing_key = decode_private_key(&private_key).map_err(|reason| {
+    decode_private_key(&private_key).map_err(|reason| {
         BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: "private_key_ssm_path".to_string(),
@@ -640,7 +632,6 @@ pub fn resolve_secrets(
     )?;
     Ok(Arc::new(ResolvedBoltV3PolymarketSecrets {
         private_key: Zeroizing::new(private_key),
-        redemption_signing_key,
         api_key: Zeroizing::new(api_key),
         api_secret: Zeroizing::new(api_secret),
         passphrase: Zeroizing::new(passphrase),

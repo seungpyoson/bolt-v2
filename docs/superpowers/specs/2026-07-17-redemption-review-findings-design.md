@@ -14,9 +14,9 @@ The owner module's tests construct the private permit and call the same producti
 
 Compile-fail cases prove that external code cannot construct the permit, cannot clone it, cannot substitute a new-risk reservation for the recovery lease, cannot let prepared bytes escape the callback, and cannot serialize resolved credentials.
 
-### Zeroizing signer-key snapshot
+### Zeroizing signing-key value
 
-The existing provider boundary resolves the signer once and validates it through NT's `EvmPrivateKey`. The provider copies the validated scalar directly into `Zeroizing<[u8; 32]>`; no plain fixed-width key array exists at the provider or request-preparation boundary. `ResolvedEvmSigningKey` accepts only that zeroizing wrapper and validates the secp256k1 scalar itself, so invalid bytes cannot construct the type. Its accessor returns `&[u8; 32]` through dereferencing rather than slice-shaped `AsRef` inference. Redemption preparation copies into another already-wrapped zeroizing buffer and performs no second SSM lookup or heap-based hex decode. Validation and signer-construction failures remain redacted.
+The existing provider boundary resolves the signer once and validates it through NT's `EvmPrivateKey`. `ResolvedEvmSigningKey` copies validated scalar bytes directly into `Zeroizing<[u8; 32]>` and validates the secp256k1 scalar itself, so invalid bytes cannot construct the type and no plain fixed-width key array exists at the boundary. Its accessor returns `&[u8; 32]` through dereferencing rather than slice-shaped `AsRef` inference. Redemption preparation borrows this opaque value, copies into another already-wrapped zeroizing buffer, and performs no SSM lookup or heap-based hex decode. Validation and signer-construction failures remain redacted.
 
 ### Existing application-resource authority
 
@@ -30,11 +30,11 @@ TOML authority checks walk parsed key trees. Comments, whitespace, file layout, 
 
 ### Secret-output finding
 
-The resolved signing-key view retains private fields, zeroizing storage, no `Debug` implementation, and no serialization implementation. The provider snapshot retains its redacted `Debug` implementation. The implementation contains no logging or output sink. Evidence is direct inspection plus compile-fail serialization proof and internal adversarial review, not a predictive macro-name scanner.
+The resolved signing-key value retains private fields, zeroizing storage, no `Debug` implementation, and no serialization implementation. The provider secrets retain their redacted `Debug` implementation. The implementation contains no logging or output sink. Evidence is direct inspection plus compile-fail serialization proof and internal adversarial review, not a predictive macro-name scanner.
 
-### One resolved signer snapshot
+### One provider secret representation
 
-Polymarket SSM resolution remains owned by the existing provider boundary. That boundary resolves the private key once, validates it once, and retains a neutral opaque `ResolvedEvmSigningKey` inside the provider snapshot alongside the exact resolved string needed by existing NT consumers and redaction scans. Redemption preparation borrows that stored signing-key view; it performs no SSM lookup, does not depend on the concrete provider type, and has no credential fallback.
+Polymarket SSM resolution remains owned by the existing provider boundary. That boundary resolves the private key once, validates it, and retains only the exact zeroizing string needed by existing NT consumers and redaction scans. It does not retain a second fixed-width representation that could disagree with the string. The disabled redemption primitive consumes a checked `ResolvedEvmSigningKey` directly; its future production binding remains in issue #1384 and must choose one representation rather than adding parallel fields or a fallback.
 
 Builder credentials, AWS region, and the signer SSM path are not repeated in the redemption TOML or generated projection. The existing `clients.polymarket_main` provider configuration is their sole authority. Builder credential consumption belongs to the later submission work tracked by issue #1384 and must use that provider boundary when it lands.
 

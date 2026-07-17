@@ -596,8 +596,6 @@ mod tests {
         let private_key = "0x4242424242424242424242424242424242424242424242424242424242424242";
         ResolvedBoltV3PolymarketSecrets {
             private_key: zeroize::Zeroizing::new(private_key.to_string()),
-            redemption_signing_key: polymarket::decode_private_key(private_key)
-                .expect("fixture private key must decode through the provider boundary"),
             api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
             api_secret: zeroize::Zeroizing::new("fixture-poly-api-secret".to_string()),
             passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),

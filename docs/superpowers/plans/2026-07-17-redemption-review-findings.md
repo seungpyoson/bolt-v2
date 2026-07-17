@@ -140,7 +140,7 @@ Review the complete diff for a constructible permit, alternate preparation path,
 - Modify: generator, verifier, generated projection, and focused tests.
 
 **Interfaces:**
-- Consumes: `ResolvedEvmSigningKey`, an opaque view stored inside the single provider-owned SSM snapshot.
+- Consumes: `ResolvedEvmSigningKey`, an opaque checked signing value supplied directly to the disabled primitive.
 - Produces: disabled request preparation with no independent credential resolver.
 
 - [ ] **Step 1: Update regression evidence**
@@ -149,7 +149,7 @@ Change owner and compile-fail tests to pass `ResolvedEvmSigningKey`, add an over
 
 - [ ] **Step 2: Remove the duplicate credential path**
 
-Decode the provider-resolved key once into a neutral zeroizing fixed-width snapshot. Delete `ResolvedRedemptionCredentials`, its SSM resolver, and its duplicate secret validation. Make `prepare_redemption_request` borrow that provider-stored view and copy its key bytes into `Zeroizing<[u8; 32]>` before signer construction.
+Delete `ResolvedRedemptionCredentials`, its SSM resolver, and its duplicate secret validation. Keep provider resolution as the single SSM path and validate the resolved key there without retaining a second representation. Make `prepare_redemption_request` borrow a checked `ResolvedEvmSigningKey` and copy its key bytes into `Zeroizing<[u8; 32]>` before signer construction.
 
 - [ ] **Step 3: Close the mechanical findings**
 
@@ -184,13 +184,13 @@ Change imports to `bolt_v3_application_resource_ledger`. Add only a `#[cfg(test)
 
 - [ ] **Step 3: Correct review documentation and PR scope**
 
-Describe the provider's NT validation followed by a fixed-width zeroizing snapshot accurately. State that #1384 still owns output-asset/post-state binding and live redemption work, while #1382/#1441 already supplied application-resource-ledger ownership.
+Describe the provider's single zeroizing string representation and checked signing-key value accurately. State that #1384 still owns their production binding, output-asset/post-state binding, and live redemption work, while #1382/#1441 already supplied application-resource-ledger ownership.
 
 - [ ] **Step 4: Verify and publish without rewriting the PR branch**
 
 Run focused Python tests, generator/verifier checks, formatting, source-fence static checks, and `git diff --check`. Commit the fresh current-main tree, merge the old PR head only as a history parent while retaining the fresh tree, then publish to PR #1439's branch with `just sandbox-safe-push --branch codex/1384-disabled-redemption-preparation`. Report exact-head Rust CI as pending until remote evidence runs.
 
-### Task 6: Seal the fixed-width signer snapshot
+### Task 6: Seal the fixed-width signing-key value
 
 **Files:**
 - Modify: `src/bolt_v3_secrets.rs`
@@ -206,6 +206,20 @@ Run focused Python tests, generator/verifier checks, formatting, source-fence st
 - [ ] Allocate `Zeroizing<[u8; 32]>` before copying NT-validated bytes, validate inside the signing-key constructor, and return `&self.bytes` from the fixed-width accessor.
 - [ ] Route fixtures through the checked constructor or provider decode, copy request bytes into an already-zeroizing buffer, and remove the unused production `ZeroizeOnDrop` import.
 - [ ] Use exact-head remote build, clippy, Backtester, behavior, and compile-fail execution as GREEN evidence.
+
+### Task 6A: Remove the premature provider signer field
+
+**Files:**
+- Modify: `src/bolt_v3_providers/polymarket.rs`
+- Modify: provider fixtures and redemption owner tests.
+
+**Interfaces:**
+- Preserves: `ResolvedBoltV3PolymarketSecrets` as one zeroizing string representation per resolved secret.
+- Preserves: `ResolvedEvmSigningKey` as the checked direct input to request preparation.
+
+- [ ] Delete the stored `redemption_signing_key` field and dead accessor so external fixtures remain constructible and one logical secret cannot diverge across two fields.
+- [ ] Keep provider resolution validation through `decode_private_key`, then discard the temporary checked value instead of retaining a parallel representation.
+- [ ] Pass a separately checked owner-test key directly to the disabled preparation primitive; leave production provider binding to the remaining #1384 scope.
 
 ### Task 7: Remove unused credential authorities
 

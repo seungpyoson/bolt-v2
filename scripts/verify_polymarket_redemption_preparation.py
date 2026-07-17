@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import pathlib
-import subprocess
 import sys
 import tomllib
 from collections.abc import Iterator, Mapping
@@ -19,8 +18,6 @@ ROOT_RUNTIME = pathlib.Path("config/root.toml")
 EVIDENCE = pathlib.Path("config/polymarket-redemption-source-evidence.toml")
 COMPILE_TEST = pathlib.Path("tests/polymarket_redemption_preparation.rs")
 COMPILE_FAIL = pathlib.Path("tests/polymarket_redemption_preparation_compile_fail.rs")
-GENERATOR = pathlib.Path("scripts/generate_polymarket_redemption_config.py")
-
 EXPECTED_RUNTIME_AUTHORITY_PATHS = {
     "standard_adapter_target": ("redemption", "standard_adapter_target"),
     "negative_risk_adapter_target": ("redemption", "negative_risk_adapter_target"),
@@ -139,8 +136,13 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         )
 
     try:
-        generator.load_config(root / RUNTIME, root / EVIDENCE, root / ROOT_RUNTIME)
-    except generator.ConfigError as error:
+        generator.check_generated_projection(
+            root / RUNTIME,
+            root / EVIDENCE,
+            root / ROOT_RUNTIME,
+            root / GENERATED,
+        )
+    except (generator.ConfigError, OSError, UnicodeDecodeError) as error:
         errors.append(f"redemption configuration evidence is invalid: {error}")
 
     errors.extend(_manifest_errors(cargo))
@@ -150,28 +152,6 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
 def main() -> int:
     root = pathlib.Path(__file__).resolve().parents[1]
     errors = boundary_errors(root)
-    generation = subprocess.run(
-        [
-            sys.executable,
-            str(root / GENERATOR),
-            "--runtime-source",
-            str(root / RUNTIME),
-            "--evidence-source",
-            str(root / EVIDENCE),
-            "--root-source",
-            str(root / ROOT_RUNTIME),
-            "--output",
-            str(root / GENERATED),
-            "--check",
-        ],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if generation.returncode != 0:
-        detail = generation.stderr.strip() or generation.stdout.strip()
-        errors.append(f"generated redemption projection is stale: {detail}")
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

@@ -108,10 +108,6 @@ pub fn settlement_payout_from_reference_prices(
     }
 }
 
-pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
-    super::binary_outcome::maker_binary_fee_curve(fee_rate, price)
-}
-
 /// Updown rotating-cadence target block. Owned by the updown market-
 /// family binding because `cadence_secs`, `underlying_asset`,
 /// `rotating_market_family`, `cadence_slug_token`, and

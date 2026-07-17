@@ -363,10 +363,6 @@ pub fn settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64
     super::binary_outcome::settlement_payout(payout, leg)
 }
 
-pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
-    super::binary_outcome::maker_binary_fee_curve(fee_rate, price)
-}
-
 fn validate_static_target_block(context: &str, block: &TargetBlock) -> Vec<String> {
     let mut errors = Vec::new();
     validate_non_empty(

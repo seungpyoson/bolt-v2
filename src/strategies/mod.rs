@@ -37,4 +37,31 @@ mod tests {
             "maker archetype must be registered, got: {kinds:?}"
         );
     }
+
+    #[test]
+    fn production_strategies_override_the_fill_voided_no_op() {
+        for (kind, source) in [
+            (
+                binary_oracle_edge_taker::KEY,
+                include_str!("binary_oracle_edge_taker/mod.rs"),
+            ),
+            (
+                binary_oracle_maker::KEY,
+                include_str!("binary_oracle_maker/mod.rs"),
+            ),
+            (
+                complete_set_arbitrage::KEY,
+                include_str!("complete_set_arbitrage/mod.rs"),
+            ),
+        ] {
+            assert!(
+                source.contains("fn on_order_fill_voided"),
+                "registered strategy {kind} must override NT's fill-voided no-op"
+            );
+            assert!(
+                source.contains("fail_closed_on_order_fill_voided(event)"),
+                "registered strategy {kind} must use the shared fill-voided boundary"
+            );
+        }
+    }
 }

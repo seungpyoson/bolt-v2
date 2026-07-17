@@ -1004,7 +1004,11 @@ impl DataActor for BinaryOracleMaker {
     }
 }
 
-nautilus_strategy!(BinaryOracleMaker);
+nautilus_strategy!(BinaryOracleMaker, {
+    fn on_order_fill_voided(&mut self, event: &nautilus_model::events::OrderFillVoided) {
+        crate::bolt_v3_order_execution::fail_closed_on_order_fill_voided(event);
+    }
+});
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     fn kind() -> &'static str {

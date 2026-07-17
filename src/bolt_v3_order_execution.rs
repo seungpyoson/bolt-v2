@@ -82,7 +82,7 @@ pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
 /// accepting NT's default no-op would leave Bolt's state diverged from venue
 /// truth, so both strategy callbacks share this fail-closed boundary.
 pub(crate) fn fail_closed_on_order_fill_voided(event: &OrderFillVoided) -> ! {
-    panic!("order fill correction requires an explicit reversal protocol: {event}")
+    panic!("order fill correction requires an explicit reversal protocol: {event:?}")
 }
 
 impl BoltV3OrderExecutionPolicy {

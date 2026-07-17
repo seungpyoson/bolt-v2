@@ -636,7 +636,7 @@ pub fn build_nt_order(
                 .expect("validated TrailingStopMarket trailing offset"),
             template.trailing_offset_type,
             template.activation_price,
-            template.trigger_price,
+            template.trigger_price.or(template.activation_price),
             template.trigger_type,
             Some(template.time_in_force),
             template.expire_time,

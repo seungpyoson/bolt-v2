@@ -1158,10 +1158,20 @@ pub(crate) fn order_book_delta_at_precision(
     price_precision: u8,
     size_precision: u8,
 ) -> Result<OrderBookDelta> {
-    let price = Price::from_decimal_dp(delta.order.price.as_decimal(), price_precision)
+    let original_price = delta.order.price.as_decimal();
+    let original_size = delta.order.size.as_decimal();
+    let price = Price::from_decimal_dp(original_price, price_precision)
         .context("represent order-book delta price at instrument precision")?;
-    let size = Quantity::from_decimal_dp(delta.order.size.as_decimal(), size_precision)
+    let size = Quantity::from_decimal_dp(original_size, size_precision)
         .context("represent order-book delta size at instrument precision")?;
+    ensure!(
+        price.as_decimal() == original_price,
+        "order-book delta price {original_price} exceeds instrument precision {price_precision}"
+    );
+    ensure!(
+        size.as_decimal() == original_size,
+        "order-book delta size {original_size} exceeds instrument precision {size_precision}"
+    );
     OrderBookDelta::new_checked(
         delta.instrument_id,
         delta.action,
@@ -5192,6 +5202,37 @@ max_notional = "200000"
             datafusion_catalog_file_path(root, "data/trades/X.V/part-0.parquet"),
             "/catalog/root/data/trades/X.V/part-0.parquet"
         );
+    }
+
+    #[test]
+    fn order_book_delta_precision_normalization_rejects_rounding() {
+        let instrument_id = InstrumentId::from("YES.TESTVENUE");
+        for (price, size, expected_field) in [
+            ("0.491", "1.23", "price"),
+            ("0.49", "1.234", "size"),
+        ] {
+            let delta = OrderBookDelta::new_checked(
+                instrument_id,
+                BookAction::Add,
+                BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from(price),
+                    Quantity::from(size),
+                    1,
+                ),
+                0,
+                0,
+                UnixNanos::from(1_u64),
+                UnixNanos::from(2_u64),
+            )
+            .expect("test delta should be valid before precision normalization");
+            let error = order_book_delta_at_precision(delta, 2, 2)
+                .expect_err("precision normalization must not round data");
+            assert!(
+                error.to_string().contains(expected_field),
+                "error must identify the out-of-precision field: {error}"
+            );
+        }
     }
 
     #[test]

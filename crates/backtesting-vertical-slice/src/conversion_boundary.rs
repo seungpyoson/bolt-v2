@@ -42,8 +42,9 @@ pub const CONVERSION_TABLES_FILE: &str = "conversion-tables.json";
 // output-determining semantics.
 pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v4";
 pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v4";
-// Metadata contains the manifest/checkpoint hashes, not the fingerprint
-// itself, so its wire schema is unchanged by the v4 identity expansion.
+// v3 embeds a catalog publication receipt whose immutable identity requires a
+// non-empty ETag; v2 metadata must fail closed. The v4 conversion fingerprint
+// remains indirect through the embedded manifest/checkpoint hashes.
 pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v3";
 
 /// Converter identity fields that must match before output can be reused.

@@ -643,8 +643,8 @@ impl ProductionSourceGraph {
                     };
                     self.visit_file(
                         &target,
-                        &include.module_dir,
-                        include.inside_inline_context,
+                        target.parent().expect("included production source parent"),
+                        false,
                         include.textual_macros,
                     );
                 }
@@ -888,8 +888,6 @@ struct ProductionIncludeCollector {
 
 struct ProductionIncludeReference {
     expression: syn::Expr,
-    module_dir: PathBuf,
-    inside_inline_context: bool,
     textual_macros: MacroAuthorities,
 }
 
@@ -914,8 +912,6 @@ impl ProductionIncludeCollector {
         match syn::parse2::<syn::Expr>(node.tokens.clone()) {
             Ok(expression) => self.references.push(ProductionIncludeReference {
                 expression,
-                module_dir: self.current_module_dir.clone(),
-                inside_inline_context: self.inline_depth > 0,
                 textual_macros: self.macros.clone(),
             }),
             Err(error) => self
@@ -1794,7 +1790,7 @@ fn path_resolution_uses_the_compiler_source_base_and_explicit_children_are_mod_l
 }
 
 #[test]
-fn inline_include_carries_its_module_context_into_included_children() {
+fn inline_include_resets_child_resolution_to_the_included_file_parent() {
     let fixture = tempfile::tempdir().expect("temporary crate");
     let crate_root = fixture.path().join("crate");
     write_synthetic_source(
@@ -1810,25 +1806,26 @@ mod inline_scope {
     write_synthetic_source(
         &crate_root,
         "src/child.rs",
-        "const OUTER_CONTEXT_DECOY: &str = \"synthetic\";\n",
+        "const LEAKED_VENUE: &str = \"bybit\";\n",
     );
     write_synthetic_source(
         &crate_root,
         "src/inline_scope/child.rs",
-        "const LEAKED_VENUE: &str = \"bybit\";\n",
+        "const INLINE_CONTEXT_DECOY: &str = \"synthetic\";\n",
     );
 
     let (sources, errors) = production_source_graph(&crate_root, &synthetic_manifest());
     assert!(errors.is_empty(), "inline include graph errors: {errors:?}");
     let failures = sample_venue_violations(&crate_root, &sources);
     assert!(
-        failures.iter().any(|failure| {
-            failure.contains("inline_scope/child.rs") && failure.contains("bybit")
-        }),
-        "included child must resolve in its inline module context: {failures:?}"
+        failures
+            .iter()
+            .any(|failure| failure.contains("child.rs") && failure.contains("bybit")),
+        "included child must resolve from the included file parent: {failures:?}"
     );
     assert!(!sources.contains_key(
-        &fs::canonicalize(crate_root.join("src/child.rs")).expect("canonical outer decoy")
+        &fs::canonicalize(crate_root.join("src/inline_scope/child.rs"))
+            .expect("canonical inline-context decoy")
     ));
 }
 

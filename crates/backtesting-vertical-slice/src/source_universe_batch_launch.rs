@@ -286,6 +286,49 @@ fn inventory_committed_registry_scopes(
     Ok(scopes)
 }
 
+fn pin_authoritative_registry_scopes(
+    registry: &PinnedDirectoryLease,
+    scope_names: &[String],
+) -> Result<Vec<CommittedRegistryScopeSnapshot>> {
+    ensure!(
+        !scope_names.is_empty()
+            && scope_names
+                .windows(2)
+                .all(|pair| pair[0].as_str() < pair[1].as_str()),
+        "source-revision registry scope names must be non-empty, sorted, and unique"
+    );
+    registry.revalidate()?;
+    let scopes = scope_names
+        .iter()
+        .map(|name| {
+            validate_portable_path_component("committed_execution_pack_scope", name)?;
+            let path = registry.canonical_path.join(name);
+            let metadata = fs::symlink_metadata(&path).with_context(|| {
+                format!("lstat source-revision execution-pack scope {}", path.display())
+            })?;
+            let identity = DirectoryIdentitySnapshot::capture(&path, &metadata)?;
+            let canonical_path = path.canonicalize().with_context(|| {
+                format!(
+                    "canonicalize source-revision execution-pack scope {}",
+                    path.display()
+                )
+            })?;
+            ensure!(
+                canonical_path.parent() == Some(registry.canonical_path.as_path()),
+                "source-revision execution-pack scope {} is not one direct registry child",
+                canonical_path.display()
+            );
+            Ok(CommittedRegistryScopeSnapshot {
+                name: name.clone(),
+                path,
+                identity,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    registry.revalidate()?;
+    Ok(scopes)
+}
+
 #[derive(Debug)]
 pub struct CommittedSourceUniverseExecutionPack {
     pub scope_dir: PathBuf,
@@ -461,6 +504,26 @@ impl SourceUniverseBatchTransportSpec {
 pub fn discover_committed_source_universe_execution_packs(
     repo_root: &Path,
 ) -> Result<Vec<CommittedSourceUniverseExecutionPack>> {
+    discover_committed_source_universe_execution_packs_with_scopes(repo_root, None)
+}
+
+/// Discover only the immutable membership named by an exact source revision.
+/// Additional mutable-worktree entries are deliberately inert and cannot join
+/// an already admitted registry snapshot.
+pub(crate) fn discover_committed_source_universe_execution_packs_from_scope_names(
+    repo_root: &Path,
+    scope_names: &[String],
+) -> Result<Vec<CommittedSourceUniverseExecutionPack>> {
+    discover_committed_source_universe_execution_packs_with_scopes(
+        repo_root,
+        Some(scope_names),
+    )
+}
+
+fn discover_committed_source_universe_execution_packs_with_scopes(
+    repo_root: &Path,
+    authoritative_scope_names: Option<&[String]>,
+) -> Result<Vec<CommittedSourceUniverseExecutionPack>> {
     let repo_root_metadata = fs::symlink_metadata(repo_root)
         .with_context(|| format!("stat repository root {}", repo_root.display()))?;
     ensure!(
@@ -482,7 +545,10 @@ pub fn discover_committed_source_universe_execution_packs(
         registry_lease.canonical_path.display(),
         canonical_repo_root.display()
     );
-    let initial_scopes = inventory_committed_registry_scopes(&registry_lease)?;
+    let initial_scopes = match authoritative_scope_names {
+        Some(scope_names) => pin_authoritative_registry_scopes(&registry_lease, scope_names)?,
+        None => inventory_committed_registry_scopes(&registry_lease)?,
+    };
 
     let mut pack_ids = BTreeSet::new();
     let mut summary_paths = BTreeSet::new();
@@ -683,7 +749,10 @@ pub fn discover_committed_source_universe_execution_packs(
     for lease in &read_leases {
         lease.revalidate()?;
     }
-    let final_scopes = inventory_committed_registry_scopes(&registry_lease)?;
+    let final_scopes = match authoritative_scope_names {
+        Some(scope_names) => pin_authoritative_registry_scopes(&registry_lease, scope_names)?,
+        None => inventory_committed_registry_scopes(&registry_lease)?,
+    };
     ensure!(
         final_scopes == initial_scopes,
         "committed source-universe execution-pack registry membership changed during discovery"
@@ -756,7 +825,9 @@ mod tests {
     use super::{
         COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT, PinnedDirectoryLease,
         SOURCE_UNIVERSE_BATCH_LAUNCH_SPEC_FILE, SOURCE_UNIVERSE_EXECUTION_PACK_GENERATOR_SPEC_FILE,
-        discover_committed_source_universe_execution_packs, inventory_committed_registry_scopes,
+        discover_committed_source_universe_execution_packs,
+        discover_committed_source_universe_execution_packs_from_scope_names,
+        inventory_committed_registry_scopes,
     };
     use crate::{
         hashing::sha256_hex, source_universe_execution_pack::SOURCE_UNIVERSE_EXECUTION_PACK_FILE,
@@ -1003,6 +1074,23 @@ max_lifecycle_cleanup_depth = 64
                     > 0
             );
         }
+    }
+
+    #[test]
+    fn source_revision_scope_snapshot_makes_late_worktree_entries_inert() {
+        let repo = TempDir::new().expect("temporary repository");
+        write_committed_pack(repo.path(), "committed-scope", "committed-pack");
+        let admitted_names = vec!["committed-scope".to_string()];
+
+        write_committed_pack(repo.path(), "late-worktree-scope", "late-worktree-pack");
+
+        let packs = discover_committed_source_universe_execution_packs_from_scope_names(
+            repo.path(),
+            &admitted_names,
+        )
+        .expect("discover only source-revision-authoritative membership");
+        assert_eq!(packs.len(), 1);
+        assert_eq!(packs[0].pack_id, "committed-pack");
     }
 
     #[test]

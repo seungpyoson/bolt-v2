@@ -263,6 +263,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     tracer_byte_env = (
         "          BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: "
         "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}\n"
+        "${{ needs.ci-policy.outputs.ra001a_max_worker_executable_bytes }}\n"
     )
     tracer_checkout_policy_env = (
         "          BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS: "
@@ -441,6 +442,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "            backtester_issue_789_timeout_minutes \\\n"
         "            ra001a_max_registry_packs \\\n"
         "            ra001a_max_total_selected_object_bytes \\\n"
+        "            ra001a_max_worker_executable_bytes \\\n"
         "            ra001a_max_wall_seconds \\\n"
         "            ra001a_termination_grace_seconds \\\n"
         "            ra001a_max_ignored_entry_bytes \\\n"

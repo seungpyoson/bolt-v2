@@ -27,11 +27,12 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt};
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::{
+    ffi::CString,
     io::Read,
     process::{Child, ChildStdout, Command, Stdio},
     sync::mpsc::{RecvTimeoutError, sync_channel},
@@ -1919,7 +1920,7 @@ impl ProcessIsolatedSourceUniverseOperatorRunner {
 
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
-struct PinnedWorkerExecutable {
+pub(crate) struct PinnedWorkerExecutable {
     file: fs::File,
     byte_len: u64,
     device: u64,
@@ -1928,11 +1929,12 @@ struct PinnedWorkerExecutable {
     modified_nanoseconds: i64,
     changed_seconds: i64,
     changed_nanoseconds: i64,
+    required_seals: Option<i32>,
 }
 
 #[cfg(not(target_os = "linux"))]
 #[derive(Debug)]
-struct PinnedWorkerExecutable;
+pub(crate) struct PinnedWorkerExecutable;
 
 impl PinnedWorkerExecutable {
     #[cfg(target_os = "linux")]
@@ -1959,7 +1961,128 @@ impl PinnedWorkerExecutable {
             modified_nanoseconds: metadata.mtime_nsec(),
             changed_seconds: metadata.ctime(),
             changed_nanoseconds: metadata.ctime_nsec(),
+            required_seals: None,
         })
+    }
+
+    /// Copy one reviewed external worker into a kernel-sealed anonymous file.
+    ///
+    /// The original pathname is never reopened for execution. Hash validation
+    /// happens after the copy is sealed, so pathname replacement and same-inode
+    /// mutation can only make capture fail; they cannot change executed bytes.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn capture_external_sealed(
+        path: &Path,
+        expected_sha256: &str,
+        max_bytes: u64,
+    ) -> Result<Self> {
+        ensure!(path.is_absolute(), "worker executable path must be absolute");
+        ensure!(
+            crate::hashing::is_lowercase_sha256_hex(expected_sha256),
+            "expected worker executable SHA-256 must be lowercase hex"
+        );
+        ensure!(max_bytes > 0, "worker executable byte ceiling must be positive");
+
+        let mut source_options = fs::OpenOptions::new();
+        source_options.read(true).custom_flags(
+            libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        );
+        let mut source = source_options
+            .open(path)
+            .with_context(|| format!("open reviewed worker executable {}", path.display()))?;
+        let source_before = source
+            .metadata()
+            .with_context(|| format!("fstat reviewed worker executable {}", path.display()))?;
+        ensure!(
+            source_before.file_type().is_file()
+                && source_before.len() > 0
+                && source_before.len() <= max_bytes
+                && source_before.permissions().mode() & 0o111 != 0,
+            "reviewed worker executable must be one executable regular file within the configured byte ceiling: {}",
+            path.display()
+        );
+
+        let name = CString::new("bolt-ra001a-worker")
+            .expect("sealed worker executable name contains no NUL");
+        // SAFETY: `name` is a live NUL-terminated string and the flags request
+        // one close-on-exec anonymous file which explicitly permits sealing.
+        let raw_fd = unsafe {
+            libc::memfd_create(
+                name.as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        if raw_fd < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("create anonymous sealable worker executable");
+        }
+        // SAFETY: `memfd_create` returned one newly owned descriptor.
+        let mut sealed = unsafe { fs::File::from_raw_fd(raw_fd) };
+        let copy_limit = max_bytes.saturating_add(1);
+        let copied = std::io::copy(&mut (&mut source).take(copy_limit), &mut sealed)
+            .context("copy reviewed worker into anonymous execution capability")?;
+        ensure!(
+            copied == source_before.len() && copied <= max_bytes,
+            "reviewed worker executable changed length while capturing: expected {}, copied {copied}",
+            source_before.len()
+        );
+        let source_after = source
+            .metadata()
+            .with_context(|| format!("re-fstat reviewed worker executable {}", path.display()))?;
+        ensure!(
+            source_after.file_type().is_file()
+                && source_after.len() == source_before.len()
+                && source_after.dev() == source_before.dev()
+                && source_after.ino() == source_before.ino()
+                && source_after.mtime() == source_before.mtime()
+                && source_after.mtime_nsec() == source_before.mtime_nsec()
+                && source_after.ctime() == source_before.ctime()
+                && source_after.ctime_nsec() == source_before.ctime_nsec(),
+            "reviewed worker executable identity changed while capturing"
+        );
+
+        sealed
+            .set_permissions(fs::Permissions::from_mode(0o500))
+            .context("make anonymous worker capability owner-executable")?;
+        let required_seals =
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        // SAFETY: `sealed` is a live memfd created with MFD_ALLOW_SEALING.
+        if unsafe { libc::fcntl(sealed.as_raw_fd(), libc::F_ADD_SEALS, required_seals) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("seal anonymous worker execution capability");
+        }
+        let metadata = sealed
+            .metadata()
+            .context("fstat sealed worker execution capability")?;
+        let executable = Self {
+            file: sealed,
+            byte_len: metadata.len(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
+            required_seals: Some(required_seals),
+        };
+        let actual_sha256 = executable.hash_and_revalidate(
+            Some(expected_sha256),
+            &OperatorWorkBudgetGuard::unbounded(),
+        )?;
+        ensure!(
+            actual_sha256 == expected_sha256,
+            "sealed worker executable SHA-256 mismatch"
+        );
+        Ok(executable)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn capture_external_sealed(
+        _path: &Path,
+        _expected_sha256: &str,
+        _max_bytes: u64,
+    ) -> Result<Self> {
+        bail!("sealed external worker execution is unsupported on this platform")
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1968,12 +2091,12 @@ impl PinnedWorkerExecutable {
     }
 
     #[cfg(target_os = "linux")]
-    fn exec_path(&self) -> PathBuf {
+    pub(crate) fn exec_path(&self) -> PathBuf {
         PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
     }
 
     #[cfg(target_os = "linux")]
-    fn revalidate_identity(&self) -> Result<()> {
+    pub(crate) fn revalidate_identity(&self) -> Result<()> {
         let metadata = self
             .file
             .metadata()
@@ -1989,6 +2112,14 @@ impl PinnedWorkerExecutable {
                 && metadata.ctime_nsec() == self.changed_nanoseconds,
             "worker executable capability identity changed"
         );
+        if let Some(required_seals) = self.required_seals {
+            // SAFETY: `self.file` is a live descriptor; F_GET_SEALS is read-only.
+            let actual_seals = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GET_SEALS) };
+            ensure!(
+                actual_seals >= 0 && actual_seals & required_seals == required_seals,
+                "worker executable capability seals changed"
+            );
+        }
         Ok(())
     }
 
@@ -6923,6 +7054,7 @@ mod tests {
             modified_nanoseconds: metadata.mtime_nsec(),
             changed_seconds: metadata.ctime(),
             changed_nanoseconds: metadata.ctime_nsec(),
+            required_seals: None,
         };
         let work_budget = one_second_process_budget();
         let expected_sha256 = executable
@@ -6947,6 +7079,81 @@ mod tests {
         executable
             .hash_and_revalidate(Some(&expected_sha256), &work_budget)
             .expect("pinned executable hash remains stable after replacement");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_external_worker_executes_reviewed_bytes_after_origin_mutation() {
+        let temp = tempfile::tempdir().expect("external worker executable tempdir");
+        let origin = temp.path().join("worker");
+        let displaced = temp.path().join("worker.displaced");
+        fs::copy("/usr/bin/true", &origin).expect("copy reviewed executable");
+        let reviewed_bytes = fs::read(&origin).expect("read reviewed executable");
+        let reviewed_sha256 = crate::hashing::sha256_hex(&reviewed_bytes);
+        let max_bytes = u64::try_from(reviewed_bytes.len()).expect("worker bytes fit u64");
+        let executable = PinnedWorkerExecutable::capture_external_sealed(
+            &origin,
+            &reviewed_sha256,
+            max_bytes,
+        )
+        .expect("capture sealed reviewed worker");
+
+        fs::rename(&origin, &displaced).expect("displace reviewed worker pathname");
+        fs::copy("/usr/bin/false", &origin).expect("replace reviewed worker pathname");
+        fs::copy("/usr/bin/false", &displaced).expect("mutate original inode after capture");
+
+        for _ in 0..2 {
+            let status = Command::new(executable.exec_path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("execute sealed reviewed worker");
+            assert!(status.success(), "replacement bytes executed instead of sealed bytes");
+        }
+        executable
+            .revalidate_identity()
+            .expect("sealed worker identity remains stable");
+
+        if let Ok(mut write_attempt) = fs::OpenOptions::new()
+            .write(true)
+            .open(executable.exec_path())
+        {
+            assert!(
+                write_attempt.write_all(b"mutation").is_err(),
+                "sealed worker capability unexpectedly accepted a write"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_external_worker_rejects_hash_and_byte_ceiling_before_execution() {
+        let temp = tempfile::tempdir().expect("external worker executable tempdir");
+        let origin = temp.path().join("worker");
+        fs::copy("/usr/bin/true", &origin).expect("copy reviewed executable");
+        let reviewed_bytes = fs::read(&origin).expect("read reviewed executable");
+        let reviewed_sha256 = crate::hashing::sha256_hex(&reviewed_bytes);
+        let reviewed_len = u64::try_from(reviewed_bytes.len()).expect("worker bytes fit u64");
+
+        let mismatch = PinnedWorkerExecutable::capture_external_sealed(
+            &origin,
+            &crate::hashing::sha256_hex(b"different reviewed worker"),
+            reviewed_len,
+        )
+        .expect_err("mismatched reviewed digest must fail before execution");
+        assert!(mismatch.to_string().contains("hash changed"), "{mismatch:#}");
+
+        let too_large = PinnedWorkerExecutable::capture_external_sealed(
+            &origin,
+            &reviewed_sha256,
+            reviewed_len - 1,
+        )
+        .expect_err("worker above the configured ceiling must fail before execution");
+        assert!(
+            too_large.to_string().contains("configured byte ceiling"),
+            "{too_large:#}"
+        );
     }
 
     #[test]
@@ -7095,6 +7302,7 @@ mod tests {
             modified_nanoseconds: metadata.mtime_nsec(),
             changed_seconds: metadata.ctime(),
             changed_nanoseconds: metadata.ctime_nsec(),
+            required_seals: None,
         };
         let work_budget = one_second_process_budget();
         let expected_sha256 = executable

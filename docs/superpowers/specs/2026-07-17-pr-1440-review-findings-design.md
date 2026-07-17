@@ -80,9 +80,11 @@ the Binance WebSocket feeders. No redundant prose-symbol fence is added.
   sources receive the startup exception.
 - Python mutation tests prove additive stale capability prose and one-byte
   Polymarket fixture drift are rejected.
-- Python fences and formatting run locally. Rust red/green evidence uses the
-  governed remote probe or exact-head CI path; no local compile-heavy Rust
-  command is used.
+- Python fences and formatting run locally. Rust behavior is implemented with
+  targeted regression coverage and verified through the governed remote probe
+  or exact-head CI path; red-first sequencing is optional under the repository's
+  Evidence-Driven Verification policy. No local compile-heavy Rust command is
+  used.
 - Completion requires fresh exact-head root and backtester evidence, resolved
   findings, independent adversarial review, and the required native reviewer.
 

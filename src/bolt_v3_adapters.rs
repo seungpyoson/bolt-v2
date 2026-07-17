@@ -479,6 +479,13 @@ mod tests {
         Ok(Vec::new())
     }
 
+    fn fake_new_risk_market_data_available(
+        _client_key: &str,
+        _client: &crate::bolt_v3_config::ClientBlock,
+    ) -> Result<bool, String> {
+        Ok(true)
+    }
+
     fn map_fake_provider_adapters(
         context: ProviderAdapterMapContext<'_>,
     ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
@@ -512,6 +519,7 @@ mod tests {
         supported_market_families: &[updown::KEY],
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: fake_new_risk_market_data_available,
         required_secret_blocks: &[],
         secret_field_names: &[],
         credential_log_modules: &[],
@@ -534,6 +542,7 @@ mod tests {
         supported_market_families: &[],
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: fake_new_risk_market_data_available,
         required_secret_blocks: &[],
         secret_field_names: &[],
         credential_log_modules: &[],
@@ -556,6 +565,7 @@ mod tests {
         supported_market_families: &[],
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
+        new_risk_market_data_available: fake_new_risk_market_data_available,
         required_secret_blocks: &[],
         secret_field_names: &[],
         credential_log_modules: &[],

@@ -2396,6 +2396,29 @@ fn unavailable_provider_capability_rejects_entry_without_consuming_capacity() {
 }
 
 #[test]
+fn unavailable_new_risk_provider_capability_rejects_replace_submit() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
+    let mut replace = submit_request(Decimal::new(1, 0));
+    replace.intent_kind = BoltV3SubmitIntentKind::ReplaceSubmit;
+    replace.new_risk_provider_capabilities_available = false;
+
+    let error = admission
+        .admit(&replace)
+        .expect_err("unavailable provider capability must reject replacement new risk");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::ProviderCapabilityUnavailable
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        writer.admission_decisions()[0].outcome,
+        BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable
+    );
+}
+
+#[test]
 fn unavailable_new_risk_provider_capability_does_not_block_proven_exit() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));

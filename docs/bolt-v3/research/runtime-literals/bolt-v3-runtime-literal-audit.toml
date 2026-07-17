@@ -21152,3 +21152,27 @@ literal = '''"/nautilus_source_capabilities.rs"'''
 context = '''include!(concat!(env!("OUT_DIR"), "/nautilus_source_capabilities.rs"));'''
 classification = "nautilus_source_capability_codegen_include"
 reason = "Build-time file name for the generated immutable Nautilus source-capability manifest; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/mod.rs"
+kind = "string"
+literal = '''"clients.{client_key}.venue `{}` has no provider binding for new-risk market-data capability"'''
+context = '''"clients.{client_key}.venue `{}` has no provider binding for new-risk market-data capability",'''
+classification = "provider_capability_binding_diagnostic"
+reason = "This diagnostic identifies an unsupported TOML-selected provider instead of assigning it an available default; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission provider capability is unavailable for new risk"'''
+context = '''"bolt-v3 submit admission provider capability is unavailable for new risk"'''
+classification = "diagnostic_template"
+reason = "This is the typed provider-capability admission rejection message; capability authority comes from the generated Nautilus source-capability manifest."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_provider_capability_unavailable"'''
+context = '''"rejected_provider_capability_unavailable"'''
+classification = "submit_admission_outcome_label"
+reason = "Stable durable-evidence label for the typed provider-capability admission rejection; it reports behavior and does not configure it."

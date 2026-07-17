@@ -2294,8 +2294,10 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
-        if request.intent_kind == BoltV3SubmitIntentKind::Entry
-            && !request.new_risk_provider_capabilities_available
+        if matches!(
+            request.intent_kind,
+            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+        ) && !request.new_risk_provider_capabilities_available
         {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable,

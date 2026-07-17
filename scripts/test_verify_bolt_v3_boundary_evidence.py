@@ -337,7 +337,40 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding { key: chainlink_reference::KEY },
     ProviderBinding { key: polyresearch::KEY },
 ];
+const BINANCE_CAPABILITY_BINDING: ProviderCapabilityBinding = ProviderCapabilityBinding {
+    new_risk_market_data_available: binance::new_risk_market_data_available,
+};
 """,
+    )
+    write(
+        root,
+        "src/bolt_v3_providers/binance.rs",
+        "fn new_risk_market_data_available() -> bool {\n"
+        "    NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_new_risk_quorum\n"
+        "}\n",
+    )
+    write(
+        root,
+        "src/strategies/binary_oracle_edge_taker/mod.rs",
+        "fn admission_input(&self) -> AdmissionInput {\n"
+        "    AdmissionInput {\n"
+        "        new_risk_provider_capabilities_available: self.config.signal_new_risk_available,\n"
+        "    }\n"
+        "}\n",
+    )
+    write(
+        root,
+        "src/bolt_v3_submit_admission.rs",
+        "fn evaluate(request: &Request) -> Outcome {\n"
+        "    if matches!(\n"
+        "        request.intent_kind,\n"
+        "        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit\n"
+        "    ) && !request.new_risk_provider_capabilities_available\n"
+        "    {\n"
+        "        return BoltV3AdmissionOutcome::RejectedProviderCapabilityUnavailable;\n"
+        "    }\n"
+        "    BoltV3AdmissionOutcome::Admitted\n"
+        "}\n",
     )
     write(
         root,
@@ -728,6 +761,78 @@ def test_capability_manifest_rejects_personal_source_and_unavailable_true_claims
             )
 
         assert_finding(scan_temp(mutate), expected)
+
+
+def test_binance_capability_source_fence_rejects_removed_generated_capability_use() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/binance.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_new_risk_quorum",
+                "false",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "Binance provider availability must consume the generated pin capability",
+    )
+
+
+def test_binance_capability_source_fence_rejects_provider_dispatch_bypass() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/mod.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "new_risk_market_data_available: binance::new_risk_market_data_available",
+                "new_risk_market_data_available: always_available_new_risk_market_data",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "provider binding must dispatch Binance new-risk capability ownership",
+    )
+
+
+def test_binance_capability_source_fence_rejects_submit_admission_bypass() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/strategies/binary_oracle_edge_taker/mod.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "new_risk_provider_capabilities_available: self.config.signal_new_risk_available",
+                "new_risk_provider_capabilities_available: true",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "binary-oracle submit admission must carry the derived signal capability",
+    )
+
+
+def test_binance_capability_source_fence_rejects_shared_admission_gate_bypass() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_submit_admission.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit",
+                "BoltV3SubmitIntentKind::Entry",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "shared admission must reject entry and replace-submit intent",
+    )
 
 
 def test_current_status_map_rejects_stale_available_binance_capability_claim() -> None:

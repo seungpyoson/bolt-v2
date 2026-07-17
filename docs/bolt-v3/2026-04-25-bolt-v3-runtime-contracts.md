@@ -1392,9 +1392,9 @@ other configured providers are sufficient. The same provider-owned decision
 suppresses the affected strategy signal subscription and observation path, and
 removes a client used only by unavailable new-risk inputs from the live
 transport. The derived signal capability is carried into shared submit
-admission, which rejects entry intent before constructing a permit while
-leaving risk-reducing exit admission reachable. It does not restamp, infer, or
-substitute timestamps. Startup,
+admission, which rejects entry and replace-submit intent before constructing a
+permit while leaving risk-reducing exit admission reachable. It does not
+restamp, infer, or substitute timestamps. Startup,
 recovery, exits, reconciliation, and settlement remain reachable because the
 capability gate is confined to new-risk market-data inputs; an RV surface whose
 subscriptions are absent solely because of that registered provider capability

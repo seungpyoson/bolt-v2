@@ -92,6 +92,45 @@ BINANCE_SOURCE_SYMBOLS = (
     "parse_depth_snapshot",
     "parse_depth_diff",
 )
+BINANCE_CAPABILITY_SOURCE_REQUIREMENTS = (
+    (
+        Path("src/bolt_v3_providers/binance.rs"),
+        "Binance provider availability must consume the generated pin capability",
+        re.compile(
+            r"\bNAUTILUS_SOURCE_CAPABILITIES\s*\.\s*"
+            r"binance_spot_sbe_new_risk_quorum\b"
+        ),
+    ),
+    (
+        Path("src/bolt_v3_providers/mod.rs"),
+        "provider binding must dispatch Binance new-risk capability ownership",
+        re.compile(
+            r"\bnew_risk_market_data_available\s*:\s*"
+            r"binance\s*::\s*new_risk_market_data_available\b"
+        ),
+    ),
+    (
+        Path("src/strategies/binary_oracle_edge_taker/mod.rs"),
+        "binary-oracle submit admission must carry the derived signal capability",
+        re.compile(
+            r"\bnew_risk_provider_capabilities_available\s*:\s*"
+            r"self\s*\.\s*config\s*\.\s*signal_new_risk_available\b"
+        ),
+    ),
+    (
+        Path("src/bolt_v3_submit_admission.rs"),
+        "shared admission must reject entry and replace-submit intent when the provider capability is unavailable",
+        re.compile(
+            r"if\s+matches!\s*\(\s*request\s*\.\s*intent_kind\s*,\s*"
+            r"BoltV3SubmitIntentKind\s*::\s*Entry\s*\|\s*"
+            r"BoltV3SubmitIntentKind\s*::\s*ReplaceSubmit\s*\)\s*"
+            r"&&\s*!\s*request\s*\.\s*new_risk_provider_capabilities_available\s*"
+            r"\{[^}]*BoltV3AdmissionOutcome\s*::\s*"
+            r"RejectedProviderCapabilityUnavailable",
+            re.DOTALL,
+        ),
+    ),
+)
 BINANCE_BOUNDARY_CONSUMERS = (
     "RealizedVolatilityObservation",
     "StrategySignalObservation",
@@ -2170,6 +2209,21 @@ def scan_runtime_contract_pin(
             )
 
 
+def scan_binance_capability_source_contract(root: Path, findings: list[str]) -> None:
+    for surface, requirement, pattern in BINANCE_CAPABILITY_SOURCE_REQUIREMENTS:
+        try:
+            source = read(root, surface)
+        except OSError as error:
+            findings.append(
+                f"{surface}: Binance capability source fence could not read source: {error}"
+            )
+            continue
+        if pattern.search(_mask_rust_non_code(source)) is None:
+            findings.append(
+                f"{surface}: Binance capability source fence requires {requirement}"
+            )
+
+
 def scan_nt_pin_census(root: Path, findings: list[str]) -> None:
     root_manifest = read_required_pin_surface(root, Path("Cargo.toml"), findings)
     if root_manifest is None:
@@ -2304,6 +2358,7 @@ def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
     scan_wire_boundary(root, findings, source_paths)
     scan_static_wiring(root, findings)
     scan_binance_timestamp_behavioral_contract(root, findings)
+    scan_binance_capability_source_contract(root, findings)
     scan_nt_pin_census(root, findings)
     return findings
 

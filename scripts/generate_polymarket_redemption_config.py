@@ -25,6 +25,8 @@ CANONICAL_PROVENANCE_PATH_CHARS = frozenset(
 )
 MAX_DNS_LABEL_OCTETS = 63
 MAX_DNS_HOSTNAME_OCTETS = 253
+REPOSITORY_CAPTURE_NAMESPACE = "@repository"
+DEPLOYMENT_CAPTURE_NAMESPACE = "@deployment"
 MAX_U256 = (1 << 256) - 1
 
 
@@ -236,7 +238,12 @@ def _repository_snapshot_path(
     root = _https_snapshot_root(repository, f"{field}.repository")
     pinned_revision = _revision(revision, f"{field}.revision")
     pinned_source_path = _source_path(source_path, f"{field}.source_path")
-    return root / pinned_revision / f"{pinned_source_path}.hex"
+    return (
+        root
+        / REPOSITORY_CAPTURE_NAMESPACE
+        / pinned_revision
+        / f"{pinned_source_path}.hex"
+    )
 
 
 def _deployment_snapshot_path(
@@ -254,13 +261,7 @@ def _deployment_snapshot_path(
         raise ConfigError(
             "adapter_abi.deployment_observed_date must be a canonical ISO calendar date"
         )
-    return pathlib.PurePosixPath(
-        "polymarket-redemption-sources",
-        root.parts[1],
-        observed,
-        *root.parts[2:-1],
-        f"{root.name}.md.hex",
-    )
+    return root / DEPLOYMENT_CAPTURE_NAMESPACE / observed / "snapshot.md.hex"
 
 
 def _markdown_contract_address(snapshot: str, contract: str) -> str:

@@ -61,12 +61,12 @@ All Polymarket contracts are deployed on **Polygon mainnet** (Chain ID: 137).
 """.encode("utf-8")
 
 SNAPSHOTS = {
-    "polymarket-redemption-sources/docs.polymarket.com/2026-07-17/resources/contracts.md.hex": DEPLOYMENT_SNAPSHOT,
-    "polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol.hex": STANDARD_SNAPSHOT,
-    "polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol.hex": NEGATIVE_RISK_SNAPSHOT,
-    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex": BUILDER_SNAPSHOT,
-    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts.hex": TYPES_SNAPSHOT,
-    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts.hex": SIGNATURE_PACK_SNAPSHOT,
+    "polymarket-redemption-sources/docs.polymarket.com/resources/contracts/@deployment/2026-07-17/snapshot.md.hex": DEPLOYMENT_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/@repository/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol.hex": STANDARD_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/@repository/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol.hex": NEGATIVE_RISK_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex": BUILDER_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts.hex": TYPES_SNAPSHOT,
+    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts.hex": SIGNATURE_PACK_SNAPSHOT,
 }
 
 
@@ -82,22 +82,22 @@ repository = "https://github.com/Polymarket/ctf-exchange-v2"
 revision = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
 deployment_source_url = "https://docs.polymarket.com/resources/contracts"
 deployment_observed_date = "2026-07-17"
-deployment_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/docs.polymarket.com/2026-07-17/resources/contracts.md")}"
+deployment_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/docs.polymarket.com/resources/contracts/@deployment/2026-07-17/snapshot.md")}"
 standard_source_path = "src/adapters/CtfCollateralAdapter.sol"
-standard_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol")}"
+standard_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/@repository/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol")}"
 negative_risk_source_path = "src/adapters/NegRiskCtfCollateralAdapter.sol"
-negative_risk_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol")}"
+negative_risk_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/@repository/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol")}"
 function_signature = "redeemPositions(address,bytes32,bytes32,uint256[])"
 
 [safe_request]
 repository = "https://github.com/Polymarket/builder-relayer-client"
 revision = "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290"
 builder_source_path = "src/builder/safe.ts"
-builder_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts")}"
+builder_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts")}"
 types_source_path = "src/types.ts"
-types_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts")}"
+types_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts")}"
 signature_pack_source_path = "src/utils/index.ts"
-signature_pack_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts")}"
+signature_pack_snapshot_sha256 = "{snapshot_sha256("polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts")}"
 operation = 0
 value = "0"
 safe_tx_gas = "0"
@@ -269,6 +269,50 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
                         )
                     )
 
+    def test_capture_path_composition_is_injective(self) -> None:
+        repository_collision_left = generator._repository_snapshot_path(
+            "https://github.com/Polymarket/ctf-exchange-v2/"
+            "ccc0596074f4dfd62c944fbca4de252893b82b4b",
+            "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290",
+            "src/adapters/CtfCollateralAdapter.sol",
+            "left",
+        )
+        repository_collision_right = generator._repository_snapshot_path(
+            "https://github.com/Polymarket/ctf-exchange-v2",
+            "ccc0596074f4dfd62c944fbca4de252893b82b4b",
+            "9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/"
+            "src/adapters/CtfCollateralAdapter.sol",
+            "right",
+        )
+        cross_family_repository = generator._repository_snapshot_path(
+            "https://github.com/2026-07-17/y",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "foo.md",
+            "repository",
+        )
+        cross_family_deployment = generator._deployment_snapshot_path(
+            "https://github.com/y/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/foo",
+            "2026-07-17",
+        )
+
+        self.assertNotEqual(
+            repository_collision_left,
+            repository_collision_right,
+        )
+        self.assertNotEqual(
+            cross_family_repository,
+            cross_family_deployment,
+        )
+        self.assertIn(generator.REPOSITORY_CAPTURE_NAMESPACE, repository_collision_left.parts)
+        self.assertIn(generator.DEPLOYMENT_CAPTURE_NAMESPACE, cross_family_deployment.parts)
+        with self.assertRaisesRegex(generator.ConfigError, "repository-relative path"):
+            generator._source_path("src/@repository/source.ts", "source_path")
+        with self.assertRaisesRegex(generator.ConfigError, "canonical HTTPS URL"):
+            generator._https_snapshot_root(
+                "https://github.com/owner/@deployment/source",
+                "repository",
+            )
+
     def test_deployment_snapshot_must_match_runtime_targets(self) -> None:
         mutations = (
             (
@@ -297,7 +341,7 @@ class GeneratePolymarketRedemptionConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.ConfigError, "does not match captured bytes"):
             self.load(
                 snapshot_overrides={
-                    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex": b"mutated\n"
+                    "polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex": b"mutated\n"
                 }
             )
 

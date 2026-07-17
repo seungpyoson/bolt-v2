@@ -69,12 +69,12 @@ metadata = ""
 """
 
 SNAPSHOT_RELATIVE_PATHS = (
-    "config/polymarket-redemption-sources/docs.polymarket.com/2026-07-17/resources/contracts.md.hex",
-    "config/polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol.hex",
-    "config/polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol.hex",
-    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex",
-    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts.hex",
-    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts.hex",
+    "config/polymarket-redemption-sources/docs.polymarket.com/resources/contracts/@deployment/2026-07-17/snapshot.md.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/@repository/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/CtfCollateralAdapter.sol.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/ctf-exchange-v2/@repository/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/adapters/NegRiskCtfCollateralAdapter.sol.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/builder/safe.ts.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/types.ts.hex",
+    "config/polymarket-redemption-sources/github.com/Polymarket/builder-relayer-client/@repository/9122f6fb1856f1ecfe4406685bfa19a2c5a7b290/src/utils/index.ts.hex",
 )
 
 CARGO = """\

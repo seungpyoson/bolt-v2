@@ -81,7 +81,7 @@ fn write_catalog() -> (TempDir, InstrumentId) {
         trade(instrument_id, 1, 2_000),
         trade(instrument_id, 2, 3_000),
     ];
-    let mut catalog = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None);
+    let catalog = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None);
     catalog
         .write_instruments(vec![InstrumentAny::CurrencyPair(instrument)])
         .expect("write instrument");

@@ -27,7 +27,6 @@ use rust_decimal::{
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
-use crate::strategies::nautilus_strategy_with_fill_void_guard;
 
 use crate::{
     bolt_v3_binary_outcome_edge::{
@@ -7782,7 +7781,7 @@ impl BinaryOracleEdgeTaker {
     }
 }
 
-nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker, {
+crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker, {
     fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) {
         self.handle_order_filled(event);
     }

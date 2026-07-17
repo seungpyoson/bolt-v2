@@ -29,7 +29,6 @@ use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
-use crate::strategies::nautilus_strategy_with_fill_void_guard;
 
 use crate::{
     bolt_v3_decision_evidence::{
@@ -1005,7 +1004,7 @@ impl DataActor for BinaryOracleMaker {
     }
 }
 
-nautilus_strategy_with_fill_void_guard!(BinaryOracleMaker, {});
+crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleMaker, {});
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     fn kind() -> &'static str {

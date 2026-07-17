@@ -30,10 +30,7 @@ use crate::{
         COMPLETE_SET_ARBITRAGE_KEY, CompleteSetSubmitMode, submit_mode_contract,
     },
     bolt_v3_strategy_context::StrategyBuildContext,
-    strategies::{
-        nautilus_strategy_with_fill_void_guard,
-        registry::{BoxedStrategy, StrategyBuilder, ValidationError},
-    },
+    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
@@ -214,7 +211,7 @@ impl CompleteSetArbitrage {
 
 impl DataActor for CompleteSetArbitrage {}
 
-nautilus_strategy_with_fill_void_guard!(CompleteSetArbitrage, {
+crate::strategies::nautilus_strategy_with_fill_void_guard!(CompleteSetArbitrage, {
     fn on_order_filled(&mut self, event: &OrderFilled) {
         self.event_forwarder
             .forward_order_filled(event)

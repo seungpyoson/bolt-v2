@@ -61,8 +61,20 @@ ordinary_max_job_minutes = 360
 ra001a_durable_tracer_max_job_minutes = 120
 
 [backtester.ra001a_durable_tracer]
+max_registry_packs = 64
+max_total_selected_object_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
+
+[backtester.ra001a_durable_tracer.checkout]
+allowed_ignored_runtime_roots = [
+  ".nextest-archive/",
+  ".rust-verification/",
+  "scripts/__pycache__/",
+  "target/",
+]
+max_ignored_entry_bytes = 4096
+max_ignored_entries = 128
 
 [workflows.flaky_test_detection]
 flaky-detection-rust-root = "managed_heavy"

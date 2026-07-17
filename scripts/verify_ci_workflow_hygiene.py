@@ -2188,16 +2188,10 @@ def evaluate_ci_policy(
         base_config,
         policy={key: str(value) for key, value in policy.items() if key != "override"},
         gate_names=dict(gate_names),
-        mergify_temp_pr_head_ref_prefix=(
-            mergify_temp_pr_head_ref_prefix
-            if mergify_temp_pr_head_ref_prefix
-            else base_config.mergify_temp_pr_head_ref_prefix
-        ),
-        mergify_temp_pr_actor_id=(
-            mergify_temp_pr_actor_id
-            if mergify_temp_pr_actor_id > 0
-            else base_config.mergify_temp_pr_actor_id
-        ),
+        # The defaults are deliberate never-match sentinels for synthetic policy
+        # rows. Tests that exercise Mergify identity must opt in explicitly.
+        mergify_temp_pr_head_ref_prefix=mergify_temp_pr_head_ref_prefix,
+        mergify_temp_pr_actor_id=mergify_temp_pr_actor_id,
         force_full_ci=force_full_ci,
     )
     try:

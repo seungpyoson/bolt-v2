@@ -1188,6 +1188,24 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
 
+    sentinel_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        event_sender_id=actor_id,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if sentinel_result.reason == "mergify_temp_pr" or sentinel_result.ci_policy_path != "iteration":
+        raise AssertionError(
+            "omitted Mergify identity overrides must preserve never-match sentinels: "
+            f"{sentinel_result}"
+        )
+
     mergify_sync_result = verifier.evaluate_ci_policy(
         policy,
         gate_names,

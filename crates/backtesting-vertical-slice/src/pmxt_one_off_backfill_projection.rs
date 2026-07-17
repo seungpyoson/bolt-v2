@@ -53,7 +53,10 @@ use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::{
-    catalog_projection::{ensure_binary_option_catalog_persistable, logical_catalog_hash},
+    catalog_projection::{
+        ensure_binary_option_catalog_persistable, logical_catalog_hash,
+        normalize_clear_order_precision,
+    },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
@@ -957,7 +960,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     timestamp: row.timestamp_ms,
                     hash: None,
                 };
-                let parsed = parse_book_snapshot(
+                let mut parsed = parse_book_snapshot(
                     &snapshot,
                     instrument_id,
                     price_precision,
@@ -965,6 +968,9 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     row.ts_init,
                 )
                 .context("parse PMXT one-off book snapshot with NT Polymarket parser")?;
+                for delta in &mut parsed.deltas {
+                    normalize_clear_order_precision(delta, price_precision, size_precision);
+                }
                 for delta in &parsed.deltas {
                     reconstructed_levels.apply(delta);
                 }

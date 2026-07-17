@@ -1226,6 +1226,7 @@ fn canonical_row_to_order_book_delta(
         // F_LAST when the row closes a snapshot expansion), which validate()
         // has already enforced.
         let mut clear = OrderBookDelta::clear(instrument_id, row.sequence, ts_event, ts_init);
+        normalize_clear_order_precision(&mut clear, price_precision, size_precision);
         clear.flags = row.flags;
         return Ok(clear);
     }
@@ -1262,6 +1263,26 @@ fn canonical_row_to_order_book_delta(
             row.sequence
         )
     })
+}
+
+/// Align a CLEAR delta's null order metadata with the surrounding instrument.
+///
+/// NT's catalog writer requires every row in a batch to carry identical
+/// instrument and precision metadata, while `OrderBookDelta::clear` constructs
+/// its null price and size at precision zero.
+pub(crate) fn normalize_clear_order_precision(
+    delta: &mut OrderBookDelta,
+    price_precision: u8,
+    size_precision: u8,
+) {
+    if delta.action == BookAction::Clear {
+        delta.order = BookOrder::new(
+            OrderSide::NoOrderSide,
+            Price::new(0.0, price_precision),
+            Quantity::new(0.0, size_precision),
+            0,
+        );
+    }
 }
 
 /// Project a canonical order-book-delta table into a NautilusTrader
@@ -5389,12 +5410,16 @@ max_notional = "200000"
         );
         let instrument_id = instrument.id();
         let deltas = vec![
-            OrderBookDelta::clear(
-                instrument_id,
-                0,
-                UnixNanos::from(1_772_323_201_665_000_000u64),
-                ts_init,
-            ),
+            {
+                let mut clear = OrderBookDelta::clear(
+                    instrument_id,
+                    0,
+                    UnixNanos::from(1_772_323_201_665_000_000u64),
+                    ts_init,
+                );
+                normalize_clear_order_precision(&mut clear, 2, 6);
+                clear
+            },
             OrderBookDelta::new_checked(
                 instrument_id,
                 BookAction::Add,

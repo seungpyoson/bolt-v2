@@ -57,16 +57,4 @@ fn bte_records_nt_dynamic_tick_size_backtest_surface_boundary() {
         proof.backtest_instrument_epoch_replay_support,
         BacktestInstrumentEpochReplaySupport::StaticCatalogInstrumentLoadOnly
     );
-    assert!(
-        proof
-            .nt_evidence_refs
-            .iter()
-            .any(|reference| reference.contains("backtest/src/node.rs:165"))
-    );
-    assert!(
-        proof
-            .nt_evidence_refs
-            .iter()
-            .any(|reference| reference.contains("model/src/data/mod.rs:97"))
-    );
 }

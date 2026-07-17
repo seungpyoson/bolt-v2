@@ -145,8 +145,15 @@ fn proof_binary_option() -> BinaryOption {
 fn synthetic_l2_deltas(instrument_id: InstrumentId) -> Vec<OrderBookDelta> {
     let ts_event = UnixNanos::from(L2_BASE_TIMESTAMP_NANOS);
     let ts_init = UnixNanos::from(1_000_000_000u64);
+    let mut clear = OrderBookDelta::clear(instrument_id, 0, ts_event, ts_init);
+    clear.order = BookOrder::new(
+        OrderSide::NoOrderSide,
+        Price::new(0.0, PRICE_PRECISION),
+        Quantity::new(0.0, L2_SIZE_PRECISION),
+        0,
+    );
     vec![
-        OrderBookDelta::clear(instrument_id, 0, ts_event, ts_init),
+        clear,
         OrderBookDelta::new_checked(
             instrument_id,
             BookAction::Add,

@@ -86,7 +86,6 @@ pub struct PolymarketDynamicInstrumentEpochProof {
     pub backtest_data_config_instrument_definition_stream_supported: bool,
     pub backtest_instrument_epoch_replay_support: BacktestInstrumentEpochReplaySupport,
     pub nt_type_evidence: Vec<String>,
-    pub nt_evidence_refs: Vec<&'static str>,
 }
 
 /// Compile-time witness that NT's market websocket envelope carries a
@@ -146,16 +145,6 @@ pub fn prove_polymarket_dynamic_instrument_epoch_surfaces() -> PolymarketDynamic
             instrument_type,
             type_name::<InstrumentStatus>().to_string(),
             type_name::<InstrumentClose>().to_string(),
-        ],
-        nt_evidence_refs: vec![
-            "nt://crates/adapters/polymarket/src/data.rs:877",
-            "nt://crates/adapters/polymarket/src/http/parse.rs:261",
-            "nt://crates/persistence/src/backend/catalog.rs:703",
-            "nt://crates/backtest/src/node.rs:165",
-            "nt://crates/backtest/src/node.rs:176",
-            "nt://crates/backtest/src/node.rs:381",
-            "nt://crates/backtest/src/node.rs:539",
-            "nt://crates/model/src/data/mod.rs:97",
         ],
     }
 }

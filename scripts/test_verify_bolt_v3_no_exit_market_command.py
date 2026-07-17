@@ -105,11 +105,12 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
             self.submit_order_list(order_list)?;
             self.cancel_orders(client_order_ids, None)?;
             self.modify_order(client_order_id, params)?;
+            self.modify_orders(updates, None, None)?;
             Strategy::submit_order_list(self, order_list)?;
             """,
         )
 
-        self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
+        self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5, 6})
 
     def test_policy_module_allows_only_routed_chokepoint_apis(self) -> None:
         # The chokepoint file exempts ONLY the APIs Bolt routes through the

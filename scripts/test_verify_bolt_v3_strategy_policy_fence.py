@@ -398,6 +398,20 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "aliases, casts, and generic command types must remain fenced",
         )
 
+    def test_detects_pinned_nt_batch_mutation_surface(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            <Self as Strategy>::modify_orders(self, updates, None, None)?;
+            use nt::{ModifyOrders, BatchModifyOrders, BatchCancelOrders};
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            4,
+            "the pinned NT batch-modification surface must remain fenced",
+        )
+
     def test_detects_strategy_local_execution_policy_construction(self) -> None:
         labels = self.labels_for(
             """

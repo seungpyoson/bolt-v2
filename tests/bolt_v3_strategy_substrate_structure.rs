@@ -933,20 +933,30 @@ fn strategy_mutation_surface_matcher_has_complete_controls() {
         named_strategy_mutation_surfaces(&tokenize("submit_order_intent();")).is_empty(),
         "near-neighbor intent helper must not trip the exact mutation fence"
     );
-    assert!(
+    assert_eq!(
         named_strategy_mutation_surfaces(&tokenize(
             "enum ExitAction { CancelOrder } let action = ExitAction::CancelOrder; let choices = [ExitAction::CancelOrder]; match intent { ExitAction::CancelOrder => emit_order_intent() }"
-        ))
-        .is_empty(),
-        "Bolt-local intent variants must not be mistaken for NT command surfaces"
+        )),
+        vec!["CancelOrder"],
+        "exact NT command-surface names stay reserved even for local intent enums"
     );
     assert_eq!(
         named_strategy_mutation_surfaces(&tokenize(
-            "enum LocalAction { Emit = generic::<Signal, CancelOrder>() }"
+            "enum LocalAction { Emit = generic::<Signal, CancelOrder, Other>() }"
         )),
         vec!["CancelOrder"],
         "commas in generic expressions must not manufacture local-enum exemptions"
     );
+    for collision in [
+        "enum Cmd { CancelOrder } fn bypass() { use nt::Cmd; let command = Cmd::CancelOrder; }",
+        "mod intent { enum Routed { CancelOrder } } fn bypass() { crate::nt_aliases::Routed::CancelOrder(command); }",
+    ] {
+        assert_eq!(
+            named_strategy_mutation_surfaces(&tokenize(collision)),
+            vec!["CancelOrder"],
+            "unrelated local enums must not exempt NT command references"
+        );
+    }
 }
 
 #[test]
@@ -962,6 +972,41 @@ fn production_tokenizer_keeps_ambiguous_test_only_generic_tail_fail_closed() {
         &tokens,
         &["production", ":", "ProductionField"]
     ));
+}
+
+#[test]
+fn production_tokenizer_retains_malformed_cfg_gated_regions() {
+    for source in [
+        "struct State { #[cfg(test)] fixture: Wrapper<(CancelOrder>, production: SubmitOrder, } fn production_after() {}",
+        "struct State { #[cfg(test)] fixture: Wrapper<[CancelOrder>, production: SubmitOrder, } fn production_after() {}",
+        "struct State { #[cfg(test)] fixture: Wrapper<{CancelOrder>, production: SubmitOrder, } fn production_after() {}",
+    ] {
+        let tokens = production_tokens(source);
+        assert!(contains_sequence(
+            &tokens,
+            &["production", ":", "SubmitOrder"]
+        ));
+        assert!(contains_sequence(&tokens, &["fn", "production_after", "("]));
+    }
+}
+
+#[test]
+fn pinned_nt_batch_mutation_surface_is_censused() {
+    let lock = std::fs::read_to_string(repo_path("Cargo.lock"))
+        .expect("Cargo.lock should retain the audited NT revision");
+    assert!(lock.contains("d636f17604cdbddc28ad40e0e15720e2d19bf860"));
+    for method in ["modify_orders"] {
+        assert!(
+            NT_VENUE_MUTATION_METHOD_NAMES.contains(&method),
+            "pinned NT Strategy mutation method `{method}` must remain censused"
+        );
+    }
+    for command in ["ModifyOrders", "BatchModifyOrders", "BatchCancelOrders"] {
+        assert!(
+            NT_TRADING_COMMAND_SURFACE_NAMES.contains(&command),
+            "pinned NT TradingCommand surface `{command}` must remain censused"
+        );
+    }
 }
 
 #[test]

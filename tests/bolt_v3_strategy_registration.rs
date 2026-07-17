@@ -948,8 +948,9 @@ fn settlement_capable_binding_rejects_unknown_currency_without_unwinding_or_call
     assert_settlement_currency_binding_error(&error);
 }
 
-#[test]
-fn all_registration_contexts_are_validated_before_any_binding_callback() {
+fn assert_invalid_second_execution_client_fails_before_callbacks(
+    capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities,
+) {
     fn register_stub(
         node: &mut LiveNode,
         context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
@@ -975,14 +976,11 @@ fn all_registration_contexts_are_validated_before_any_binding_callback() {
         Ok(strategy_id)
     }
 
-    const TEST_BINDINGS: &[bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding] = &[
+    let bindings = [
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
             key: "binary_oracle_edge_taker",
             strategy_kind: "stub_runtime_strategy",
-            capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
-                realized_volatility: true,
-                settlement: true,
-            },
+            capabilities,
             register: register_stub,
         },
     ];
@@ -1031,7 +1029,7 @@ fn all_registration_contexts_are_validated_before_any_binding_callback() {
             &mut node,
             &loaded,
             &resolved,
-            TEST_BINDINGS,
+            &bindings,
             execution_controls,
             decision_evidence,
         )
@@ -1043,6 +1041,26 @@ fn all_registration_contexts_are_validated_before_any_binding_callback() {
     ));
     assert_eq!(REGISTRATION_CALLBACK_COUNT.load(Ordering::SeqCst), 0);
     assert!(node.kernel().trader().borrow().strategy_ids().is_empty());
+}
+
+#[test]
+fn all_settlement_registration_contexts_are_validated_before_any_binding_callback() {
+    assert_invalid_second_execution_client_fails_before_callbacks(
+        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: true,
+        },
+    );
+}
+
+#[test]
+fn non_settlement_registration_resolves_every_venue_before_any_binding_callback() {
+    assert_invalid_second_execution_client_fails_before_callbacks(
+        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+            realized_volatility: false,
+            settlement: false,
+        },
+    );
 }
 
 #[test]

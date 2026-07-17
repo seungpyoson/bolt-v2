@@ -142,7 +142,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     );
     assert_eq!(admission.admitted_order_count(), 0);
     assert_eq!(writer.records().len(), 1);
-    assert_eq!(writer.records()[0].strategy_id, "maker-strategy");
+    assert_eq!(writer.records()[0].strategy_id, "maker-strategy-001");
     assert_eq!(writer.admission_decisions().len(), 1);
     assert_eq!(
         writer.admission_decisions()[0].outcome,
@@ -219,9 +219,9 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
 
     let records = writer.records();
     assert_eq!(records.len(), 2);
-    assert_eq!(records[0].strategy_id, "maker-strategy");
+    assert_eq!(records[0].strategy_id, "maker-strategy-001");
     assert_eq!(records[0].instrument_id, "YES.RUNTIME");
-    assert_eq!(records[1].strategy_id, "maker-strategy");
+    assert_eq!(records[1].strategy_id, "maker-strategy-001");
     assert_eq!(records[1].instrument_id, "NO.RUNTIME");
     assert_eq!(writer.admission_decisions().len(), 2);
 }
@@ -268,7 +268,7 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
         "same blocked leg state must emit one throttle evidence record"
     );
     let throttle = &throttles[0];
-    assert_eq!(throttle.strategy_id, "maker-strategy");
+    assert_eq!(throttle.strategy_id, "maker-strategy-001");
     assert_eq!(throttle.family_key, static_binary_event::KEY);
     assert_eq!(throttle.leg, "no");
     assert_eq!(
@@ -798,7 +798,7 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
 
     let records = writer.records();
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].strategy_id, "maker-strategy");
+    assert_eq!(records[0].strategy_id, "maker-strategy-001");
     assert_eq!(records[0].instrument_id, "YES.RUNTIME");
     assert_eq!(records[0].client_order_id, "MAKER-YES-2");
     assert_eq!(writer.admission_decisions().len(), 1);

@@ -102,6 +102,7 @@ const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Token {
     text: String,
+    is_raw_identifier: bool,
 }
 
 fn repo_path(relative: &str) -> PathBuf {
@@ -156,6 +157,7 @@ fn tokenize(source: &str) -> Vec<Token> {
             }
             tokens.push(Token {
                 text: source[start..index].to_owned(),
+                is_raw_identifier: true,
             });
             continue;
         }
@@ -167,18 +169,21 @@ fn tokenize(source: &str) -> Vec<Token> {
             }
             tokens.push(Token {
                 text: source[start..index].to_owned(),
+                is_raw_identifier: false,
             });
             continue;
         }
         if bytes[index..].starts_with(b"::") {
             tokens.push(Token {
                 text: "::".to_owned(),
+                is_raw_identifier: false,
             });
             index += 2;
             continue;
         }
         tokens.push(Token {
             text: (bytes[index] as char).to_string(),
+            is_raw_identifier: false,
         });
         index += 1;
     }
@@ -276,6 +281,7 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
             token
                 if delimiters.is_empty()
                     && can_start_item_or_macro
+                    && !tokens[cursor].is_raw_identifier
                     && matches!(
                         token,
                         "fn" | "mod"
@@ -297,10 +303,37 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
                 }
                 saw_item_or_expression_body = true;
             }
-            "!" if delimiters.is_empty() && can_start_item_or_macro => {
+            "macro_rules"
+                if delimiters.is_empty()
+                    && can_start_item_or_macro
+                    && !tokens[cursor].is_raw_identifier =>
+            {
+                if saw_ambiguous_prefix {
+                    return None;
+                }
+            }
+            "!" if delimiters.is_empty()
+                && can_start_item_or_macro
+                && (tokens
+                    .get(cursor + 1)
+                    .is_some_and(|next| matches!(next.text.as_str(), "(" | "[" | "{"))
+                    || (cursor > 0
+                        && tokens[cursor - 1].text == "macro_rules"
+                        && !tokens[cursor - 1].is_raw_identifier
+                        && tokens.get(cursor + 1).is_some_and(|name| {
+                            name.text
+                                .as_bytes()
+                                .first()
+                                .is_some_and(|byte| ident_start(*byte))
+                        })
+                        && tokens.get(cursor + 2).is_some_and(|next| {
+                            matches!(next.text.as_str(), "(" | "[" | "{")
+                        }))) =>
+            {
                 saw_item_or_expression_body = true;
                 saw_ambiguous_prefix = false;
             }
+            "!" if delimiters.is_empty() && can_start_item_or_macro => return None,
             "=" if delimiters.is_empty()
                 && tokens
                     .get(cursor + 1)
@@ -351,10 +384,11 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
                         .as_bytes()
                         .first()
                         .is_some_and(|byte| ident_start(*byte))
-                    && !matches!(
-                        token,
-                        "pub" | "unsafe" | "async" | "const" | "default" | "auto" | "move"
-                    ) =>
+                    && (tokens[cursor].is_raw_identifier
+                        || !matches!(
+                            token,
+                            "pub" | "unsafe" | "async" | "const" | "default" | "auto" | "move"
+                        )) =>
             {
                 // An identifier may still become a macro path (`foo::bar!`), but it cannot be
                 // silently reinterpreted as a modifier for a later item keyword. If no `!`
@@ -831,6 +865,12 @@ fn production_tokenizer_excludes_inline_test_items_only() {
         fixture! { self.cancel_all_orders(); }
         fn after_cfg_macro() { production_after_cfg_macro(); }
         #[cfg(test)]
+        foo::bar![self.cancel_order(order_id);]
+        fn after_cfg_path_macro() { production_after_cfg_path_macro(); }
+        #[cfg(test)]
+        macro_rules! fixture_rule { () => { self.modify_order(order); } }
+        fn after_cfg_macro_rules() { production_after_cfg_macro_rules(); }
+        #[cfg(test)]
         if test_mode() { self.modify_order(order); }
         fn after_cfg_expression() { production_after_cfg_expression(); }
         passthrough! { #[cfg(test)] }
@@ -863,6 +903,14 @@ fn production_tokenizer_excludes_inline_test_items_only() {
     );
     assert_eq!(
         count_sequence(&tokens, &["production_after_cfg_macro", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(&tokens, &["production_after_cfg_path_macro", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(&tokens, &["production_after_cfg_macro_rules", "("]),
         1
     );
     assert_eq!(
@@ -1019,6 +1067,7 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
         "#[cfg(test)] unexpected_prefix struct Production { command: SubmitOrder } struct production_after;",
         "#[cfg(test)] unexpected_prefix mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
         "#[cfg(test)] unexpected_prefix if enabled { self.modify_order(order); } fn production_after() {}",
+        "#[cfg(test)] unexpected_prefix macro_rules! production { () => { self.modify_order(order); } } fn production_after() {}",
     ] {
         let tokens = production_tokens(source);
         assert!(
@@ -1033,6 +1082,34 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
             contains_sequence(&tokens, &["production_after"]),
             "an unknown cfg-gated prefix must not hide the production sibling"
         );
+    }
+    for modifier in ["pub", "unsafe", "async", "const", "default", "auto", "move"] {
+        let source = format!(
+            "#[cfg(test)] r#{modifier} fn production() {{ self.submit_order(order); }} fn production_after() {{}}"
+        );
+        let tokens = production_tokens(&source);
+        assert!(
+            contains_sequence(&tokens, &[modifier]),
+            "a raw modifier-like identifier must retain its lexical token"
+        );
+        assert!(
+            !named_strategy_mutation_surfaces(&tokens).is_empty(),
+            "a raw modifier-like identifier must not hide the fenced mutation token"
+        );
+        assert!(contains_sequence(&tokens, &["production_after"]));
+    }
+    for source in [
+        "#[cfg(test)] unexpected_prefix ! fn production() { self.submit_order(order); } fn production_after() {}",
+        "#[cfg(test)] unexpected_prefix ! struct Production { command: SubmitOrder } struct production_after;",
+        "#[cfg(test)] unexpected_prefix ! mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
+    ] {
+        let tokens = production_tokens(source);
+        assert!(contains_sequence(&tokens, &["unexpected_prefix", "!"]));
+        assert!(
+            !named_strategy_mutation_surfaces(&tokens).is_empty(),
+            "a bang without a macro delimiter must not hide the fenced mutation token"
+        );
+        assert!(contains_sequence(&tokens, &["production_after"]));
     }
 }
 

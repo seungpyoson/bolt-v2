@@ -430,6 +430,41 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "pinned NT accessors and lifecycle wrappers that can mutate must remain fenced",
         )
 
+    def test_detects_raw_and_nested_ufcs_mutation_references(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            self.r#submit_order(order, None, None, None);
+            Self::r#on_start(self)?;
+            <Wrapper<Foo> as Strategy>::stop(self);
+            let submit = Self::r#submit_order as fn(&mut Self, OrderAny);
+            let starts = [Self::r#on_start];
+            let stop_ref = &<Wrapper<Foo> as Strategy>::stop;
+            self.submit_order_intent(intent);
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            6,
+            "raw identifiers and nested UFCS receivers must not hide mutation references",
+        )
+
+    def test_transitive_lifecycle_names_are_strategy_only(self) -> None:
+        source = "handle.stop();"
+
+        self.assertEqual(
+            self.direct_nt_violations_for(
+                source, path="src/bolt_v3_book_sizing.rs"
+            ),
+            [],
+            "high-collision lifecycle names must not fence non-strategy components",
+        )
+        self.assertEqual(
+            len(self.direct_nt_violations_for(source)),
+            1,
+            "the same lifecycle reference must remain fenced in strategy code",
+        )
+
     def test_reserves_exact_nt_command_names_for_local_intent_enums(self) -> None:
         direct_violations = self.direct_nt_violations_for(
             """

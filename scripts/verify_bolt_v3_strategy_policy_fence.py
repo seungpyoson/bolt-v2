@@ -163,9 +163,7 @@ NT_TRADING_COMMAND_SURFACE_PATTERN = "|".join(
 DIRECT_NT_VENUE_MUTATION_RULE = Rule(
     "direct NT venue mutation call",
     re.compile(
-        r"(?:\.\s*|(?<![A-Za-z0-9_])"
-        r"(?:Self|[A-Za-z_][A-Za-z0-9_]*"
-        r"(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*::\s*|<[^>\n]+>\s*::\s*)"
+        r"(?:\.|::)\s*(?:r#)?"
         rf"(?:{NT_VENUE_MUTATION_METHOD_PATTERN})"
         r"(?![A-Za-z0-9_])"
     ),
@@ -174,9 +172,7 @@ DIRECT_NT_VENUE_MUTATION_RULE = Rule(
 TRANSITIVE_NT_VENUE_MUTATION_RULE = Rule(
     "direct NT venue mutation call",
     re.compile(
-        r"(?:\.\s*|(?<![A-Za-z0-9_])"
-        r"(?:Self|[A-Za-z_][A-Za-z0-9_]*"
-        r"(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*::\s*|<[^>\n]+>\s*::\s*)"
+        r"(?:\.|::)\s*(?:r#)?"
         rf"(?:{NT_TRANSITIVE_MUTATION_METHOD_PATTERN})"
         r"(?![A-Za-z0-9_])"
     ),
@@ -504,6 +500,10 @@ def find_violations_in_text(
     code_only = strip_rust_comments_and_literals(text)
     violations: list[Violation] = []
     for rule in rules:
+        if rule is TRANSITIVE_NT_VENUE_MUTATION_RULE and not path.startswith(
+            "src/strategies/"
+        ):
+            continue
         if (
             rule.label == "direct NT venue mutation call"
             and path in ALLOWED_DIRECT_NT_MUTATION_PATHS

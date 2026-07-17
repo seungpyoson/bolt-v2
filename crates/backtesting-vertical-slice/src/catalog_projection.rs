@@ -337,16 +337,8 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
     let min_quantity = Quantity::from_str(&spec.min_quantity).map_err(|error| {
         anyhow::anyhow!("invalid min_quantity {:?}: {error}", spec.min_quantity)
     })?;
-    let max_notional = Money::new_checked(
-        spec.max_notional.parse().context("max_notional")?,
-        quote_currency,
-    )
-    .map_err(|error| anyhow::anyhow!("invalid max_notional {:?}: {error}", spec.max_notional))?;
-    let min_notional = Money::new_checked(
-        spec.min_notional.parse().context("min_notional")?,
-        quote_currency,
-    )
-    .map_err(|error| anyhow::anyhow!("invalid min_notional {:?}: {error}", spec.min_notional))?;
+    let max_notional = parse_money(&spec.max_notional, quote_currency, "max_notional")?;
+    let min_notional = parse_money(&spec.min_notional, quote_currency, "min_notional")?;
 
     CurrencyPair::new_checked(
         instrument_id,
@@ -3248,6 +3240,16 @@ mod tests {
         let mut spec = spec();
         spec.max_notional = "1e40".to_string();
         assert!(build_currency_pair(&spec).is_err());
+    }
+
+    #[test]
+    fn build_currency_pair_rejects_notional_beyond_currency_precision() {
+        let mut spec = spec();
+        spec.quote_currency = "USD".to_string();
+        spec.max_notional = "100.005".to_string();
+        let error = build_currency_pair(&spec)
+            .expect_err("USD precision overflow must fail instead of rounding");
+        assert!(error.to_string().contains("exceeds USD precision 2"), "{error}");
     }
 
     #[test]

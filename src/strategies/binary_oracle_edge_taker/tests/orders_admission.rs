@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use rust_decimal::prelude::ToPrimitive;
 
 #[test]
 fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
@@ -10,7 +11,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         )),
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Zero fee leaves the notional unchanged; with no optional gate armed,
+    // The canonical quote leaves the reservation within the configured cap; with no optional gate armed,
     // production admission now allows the submit to reach NT.
     let mut strategy = test_strategy_with_economics_source_decision_evidence_and_submit_admission(
         RecordingEconomicsAdmissionSource::cold(),
@@ -63,6 +64,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
             intent,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            test_gross_expected_value(),
         )
         .expect("ungated admission should reach NT submit");
     assert_eq!(
@@ -137,6 +139,7 @@ fn shadow_policy_records_evidence_and_admission_without_nt_submit() {
             intent,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            test_gross_expected_value(),
         )
         .expect("shadow submission should still pass evidence and admission");
     assert_eq!(
@@ -170,7 +173,7 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
         Arc::new(RecordingDecisionEvidenceWriter),
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
+    // The canonical quote keeps the reservation under the configured cap so admission
     // succeeds; the test then proves the registered submit reaches NT.
     let mut strategy = test_strategy_with_economics_source_decision_evidence_and_submit_admission(
         RecordingEconomicsAdmissionSource::cold(),
@@ -223,6 +226,7 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
             intent,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            test_gross_expected_value(),
         )
         .expect("provider-limited admission should reach NT submit");
     assert_eq!(submit_admission.admitted_order_count(), 1);
@@ -235,8 +239,8 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
         Arc::new(RecordingDecisionEvidenceWriter),
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Zero fee leaves the 0.50 notional under the 1.0 cap; this test
-    // exercises submit-param routing, not the fee-inclusive cap.
+    // The canonical quote leaves the reservation under the configured cap; this test
+    // exercises submit-param routing, not economics aggregation.
     let mut strategy = test_strategy_with_economics_source_decision_evidence_and_submit_admission(
         RecordingEconomicsAdmissionSource::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
@@ -280,6 +284,7 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
                 None,
                 Some(params.clone()),
             ),
+            test_gross_expected_value(),
         )
         .expect("non-empty submit params should reach NT submit");
 
@@ -299,7 +304,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         Arc::new(RecordingDecisionEvidenceWriter),
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Zero fee isolates the assertion to "compiled order price drives the
+    // Canonical test economics isolates the assertion to "compiled order price drives the
     // notional": the compiled 2.0 notional still exceeds the 1.0 cap, while
     // the understated intent price (0.50) must NOT be what is checked.
     let mut strategy = test_strategy_with_economics_source_decision_evidence_and_submit_admission(
@@ -355,6 +360,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
             understated_intent,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            test_gross_expected_value(),
         )
         .expect_err("compiled order notional above cap must reject before NT submit");
 
@@ -368,6 +374,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
 #[test]
 fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -400,6 +407,7 @@ fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy()
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("quote-quantity admission should use NT effective notional");
 
@@ -412,6 +420,7 @@ fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy()
 #[test]
 fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -444,6 +453,7 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("quote-quantity sell limit admission should derive from compiled order context");
     let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim())
@@ -485,6 +495,7 @@ fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("missing quote should fall back to submitted quote quantity");
 
@@ -516,6 +527,7 @@ fn quote_quantity_sell_limit_missing_context_fails_closed() {
     assert!(order.is_quote_quantity());
 
     let mut strategy_without_instrument = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy_without_instrument);
     cache
         .borrow_mut()
         .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
@@ -530,6 +542,7 @@ fn quote_quantity_sell_limit_missing_context_fails_closed() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect_err("missing instrument context must fail closed");
 
@@ -542,6 +555,7 @@ fn quote_quantity_sell_limit_missing_context_fails_closed() {
 #[test]
 fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::StopLimit;
     strategy.config.entry_order.trigger_price = Some(0.52);
@@ -579,6 +593,7 @@ fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect(
             "quote-quantity sell stop-limit admission should derive from compiled order context",
@@ -627,6 +642,7 @@ fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() 
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("missing quote should fall back to submitted quote quantity");
 
@@ -663,6 +679,7 @@ fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
     assert!(matches!(order, OrderAny::StopLimit(_)));
 
     let mut strategy_without_instrument = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy_without_instrument);
     cache
         .borrow_mut()
         .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
@@ -677,6 +694,7 @@ fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect_err("missing instrument context must fail closed");
 
@@ -716,6 +734,7 @@ fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing(
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("quote-quantity admission should use NT no-quote fallback");
 
@@ -728,6 +747,7 @@ fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing(
 #[test]
 fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cached_quote() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
@@ -775,6 +795,7 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("quote-quantity market admission should use submitted quote quantity");
 
@@ -791,6 +812,7 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
     // such adjustment; this test pins the ceiling valuation for the
     // market-style shape that lacks a firm price.
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
@@ -820,6 +842,7 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("base-quantity market admission should value at the instrument price ceiling");
 
@@ -840,6 +863,7 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
 #[test]
 fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cached_trade() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
@@ -887,6 +911,7 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("quote-quantity market admission should use submitted quote quantity");
 
@@ -954,6 +979,7 @@ fn economics_debit_reservation_over_cap_rejects_before_nt_submit() {
             intent,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            test_gross_expected_value(),
         )
         .expect_err("economics-adjusted reservation must reject before NT submit");
 
@@ -995,7 +1021,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         .expect("first admission should consume the only slot")
         .commit_submitted();
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Zero fee keeps the 0.50 notional under the 1.0 cap so the rejection is
+    // Canonical test economics keeps the reservation under the cap so the rejection is
     // the count-exhausted check, not the notional cap.
     let mut strategy = test_strategy_with_economics_source_decision_evidence_and_submit_admission(
         RecordingEconomicsAdmissionSource::cold(),
@@ -1048,6 +1074,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
             intent,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            test_gross_expected_value(),
         )
         .expect_err("exhausted count cap must reject before NT submit");
 
@@ -1166,6 +1193,7 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("MarketIfTouched admission should derive from the instrument price ceiling");
 
@@ -1188,7 +1216,7 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
 }
 
 #[test]
-fn submit_admission_test_helper_uses_explicit_execution_client_id() {
+fn submit_admission_uses_configured_execution_client_id() {
     let mut strategy = ready_to_trade_strategy();
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
@@ -1210,20 +1238,14 @@ fn submit_admission_test_helper_uses_explicit_execution_client_id() {
         &order,
     );
 
-    let admission = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "hyperliquid_perps",
-            intent: &intent,
-            order: &order,
-            valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
-        },
-        |_| Ok(Decimal::ZERO),
-    )
-    .expect("entry intent should map into submit admission");
+    let admission = strategy
+        .submit_admission_request_from_order(&intent, &order, test_gross_expected_value())
+        .expect("entry intent should map into submit admission");
 
-    assert_eq!(admission.execution_client_id, "hyperliquid_perps");
+    assert_eq!(
+        admission.execution_client_id,
+        fixture_execution_venue().as_str()
+    );
 }
 
 #[test]
@@ -1638,6 +1660,7 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("StopMarket admission should derive from the instrument price ceiling");
 
@@ -1781,18 +1804,9 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
         price.to_string(),
         &order,
     );
-    let admission = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "polymarket_main",
-            intent: &intent,
-            order: &order,
-            valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
-        },
-        |_| Ok(Decimal::ZERO),
-    )
-    .expect("StopLimit admission should derive from the compiled NT order");
+    let admission = strategy
+        .submit_admission_request_from_order(&intent, &order, test_gross_expected_value())
+        .expect("StopLimit admission should derive from the compiled NT order");
 
     let OrderAny::StopLimit(order) = order else {
         panic!("StopLimit config should build an NT stop-limit order");
@@ -1874,18 +1888,9 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
         price.to_string(),
         &order,
     );
-    let admission = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "polymarket_main",
-            intent: &intent,
-            order: &order,
-            valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
-        },
-        |_| Ok(Decimal::ZERO),
-    )
-    .expect("LimitIfTouched admission should derive from the compiled NT order");
+    let admission = strategy
+        .submit_admission_request_from_order(&intent, &order, test_gross_expected_value())
+        .expect("LimitIfTouched admission should derive from the compiled NT order");
 
     let OrderAny::LimitIfTouched(order) = order else {
         panic!("LimitIfTouched config should build an NT limit-if-touched order");
@@ -1976,6 +1981,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
                 &order,
             ),
             &order,
+            test_gross_expected_value(),
         )
         .expect("TrailingStopMarket admission should derive from the instrument price ceiling");
 
@@ -2044,6 +2050,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
                 &exit_order,
             ),
             &exit_order,
+            test_gross_expected_value(),
         )
         .expect("market-style exit admission should derive from the instrument price ceiling");
 
@@ -2499,6 +2506,7 @@ fn task5_forced_flat_predicates_cover_current_strategy_visible_triggers() {
 #[test]
 fn quarantined_legacy_short_position_blocks_exit_submission() {
     let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
     let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
     tracked_book.last_observed_instrument_id = Some(instrument_id);
     tracked_book.best_bid = Some(0.520);

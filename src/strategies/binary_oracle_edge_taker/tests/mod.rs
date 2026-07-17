@@ -1,12 +1,8 @@
 #![cfg(test)]
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_common::{
     cache::Cache,
     clock::TestClock,

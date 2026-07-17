@@ -3498,7 +3498,7 @@ impl BinaryOracleEdgeTaker {
                 .map(Probability::value),
             uncertainty_band_live: evaluation.uncertainty_band_probability.is_some(),
             uncertainty_band_reason: if evaluation.uncertainty_band_probability.is_some() {
-                EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_TIME_AND_FEE
+                EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_AND_TIME
             } else {
                 EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE
             },
@@ -5148,7 +5148,7 @@ impl BinaryOracleEdgeTaker {
         // A15: build the (fallible) admission request BEFORE recording the
         // order-intent evidence line. The request build can fail (e.g. a
         // market-style order whose instrument declares no structural price
-        // ceiling, or an unresolvable fee bound), in which case the order never
+        // ceiling, or unavailable canonical economics), in which case the order never
         // fires —
         // recording the intent first would leave an orphan evidence line for an
         // order that was never submitted. Recording after the build keeps the
@@ -7576,8 +7576,8 @@ const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_po
 const ORDER_CONFIGURATION_PREFIX_ENTRY: &str = "entry";
 const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";
 const SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED: &str = "target_selection_blocked";
-const EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_TIME_AND_FEE: &str =
-    "derived_from_lead_gap_jitter_time_and_fee";
+const EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_AND_TIME: &str =
+    "derived_from_lead_gap_jitter_and_time";
 const EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE: &str = "uncertainty_band_unavailable";
 const EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS: &str =
     "no_fast_venue_cleared_lead_quality_thresholds";

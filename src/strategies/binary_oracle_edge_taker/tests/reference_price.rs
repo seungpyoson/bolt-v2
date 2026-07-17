@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use super::*;

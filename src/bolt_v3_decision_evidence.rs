@@ -655,7 +655,6 @@ pub enum BoltV3EntryBlockReason {
     BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
-    FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
     SpotSpikeCooldown,
@@ -673,7 +672,6 @@ pub enum BoltV3BinaryOutcomeEdgeBlockReason {
     UnsupportedOrderShape,
     EdgeBelowThreshold,
     SpreadOrSlippageWipedEdge,
-    FeeUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -687,7 +685,6 @@ pub enum BoltV3EntryPricingBlockReason {
     ThetaScalerUnavailable,
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
-    FeeUnavailable(BoltV3OutcomeSide),
     ExecutableEntryCostUnavailable(BoltV3OutcomeSide),
     ExecutableEdgeUnavailable(BoltV3OutcomeSide, BoltV3BinaryOutcomeEdgeBlockReason),
     SizedNotionalUnsupported(BoltV3OutcomeSide),
@@ -709,7 +706,6 @@ pub enum BoltV3EntrySkipReasonCategory {
     QuantityNotPositive,
     PositionContractInvalid,
     EntryPositionContractUnsupported,
-    HistoricalEntryFeeUnavailable,
     OnePositionInvariantViolation,
     Unclassified,
 }
@@ -4966,7 +4962,6 @@ mod tests {
             fast_venue_jitter_ms: Some(3),
             fast_venue_incoherent: false,
             lead_agreement_corr: Some("0.98".to_string()),
-            fee_rate_basis_points: "0".to_string(),
             selected_side: Some("up".to_string()),
             submission_instrument_id: "instrument-up".to_string(),
             submission_order_side: "Buy".to_string(),

@@ -3,6 +3,7 @@
 use super::shared_fixture::{unique_log_capture_strategy_id, with_captured_strategy_logs};
 use super::*;
 use crate::bolt_v3_binary_outcome_edge::BinaryOutcomeEdgeBlockReason;
+use crate::bolt_v3_numeric::UNIT_F64;
 
 const TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS: u64 = 100;
 const TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP: f64 = 2.0;
@@ -289,7 +290,7 @@ fn rv_clock_domain_amendment_resized_edge_uses_entry_receive_stamp_before_fixed_
         evaluation
             .sized_executable_edge
             .is_some_and(|edge| edge.trade_allowed),
-        "the resized fee re-gate must complete before the fixed-point guard: {evaluation:#?}"
+        "the resized economics re-gate must complete before the fixed-point guard: {evaluation:#?}"
     );
     assert!(
         evaluation
@@ -1838,14 +1839,12 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert!(fields.uncertainty_band_live);
     assert_eq!(
         fields.uncertainty_band_reason,
-        "derived_from_lead_gap_jitter_time_and_fee"
+        "derived_from_lead_gap_jitter_and_time"
     );
     assert!(fields.up_entry_limit_price.is_some());
     assert!(fields.down_entry_limit_price.is_some());
     assert!(fields.up_gross_cost_cents.is_some());
     assert!(fields.down_gross_cost_cents.is_some());
-    assert!(fields.up_fee_cost_cents.is_some());
-    assert!(fields.down_fee_cost_cents.is_some());
     assert!(fields.up_slippage_buffer_cents.is_some());
     assert!(fields.down_slippage_buffer_cents.is_some());
     assert!(fields.up_total_adjusted_cost_cents.is_some());
@@ -1890,7 +1889,6 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
             .is_some_and(|value| value > 0.0)
     );
     assert!(fields.sized_notional.is_some_and(|value| value > 0.0));
-    assert!(!fields.final_fee_amount_known);
 }
 
 #[test]

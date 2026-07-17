@@ -1106,6 +1106,10 @@ pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
     test_strategy_with_economics_source(RecordingEconomicsAdmissionSource::cold())
 }
 
+pub(super) const fn test_gross_expected_value() -> Decimal {
+    Decimal::ONE
+}
+
 pub(super) fn test_build_context_with_economics_source(
     economics_source: Arc<dyn crate::bolt_v3_economics_runtime::EconomicsAdmissionSource>,
 ) -> StrategyBuildContext {

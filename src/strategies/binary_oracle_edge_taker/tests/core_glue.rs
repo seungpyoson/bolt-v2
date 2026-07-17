@@ -34,8 +34,8 @@ fn submit_lifecycle_policy_is_derived_from_strategy_config() {
 #[test]
 fn decision_evidence_failure_rejects_before_nt_submit() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Seed a (zero) fee for the order's instrument so admission clears the
-    // fee-bound guard and the FailingDecisionEvidenceWriter is what rejects
+    // The canonical test economics quote leaves the base reservation admissible,
+    // so the FailingDecisionEvidenceWriter is what rejects
     // the order before NT submit — the behavior this test pins.
     let mut strategy = test_strategy_with_economics_source_and_decision_evidence(
         RecordingEconomicsAdmissionSource::cold(),
@@ -87,6 +87,7 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
             intent,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            test_gross_expected_value(),
         )
         .expect_err("evidence failure must reject before NT submit");
 

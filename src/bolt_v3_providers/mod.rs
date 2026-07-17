@@ -565,7 +565,7 @@ const IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS: ProviderMarketExitOrderConst
     };
 
 pub(crate) type NtReconnectBudgetLoader = fn(&toml::Value) -> Result<u64, toml::de::Error>;
-type ExecutionEconomicsLoader =
+pub(crate) type ExecutionEconomicsLoader =
     fn(
         &toml::Value,
     ) -> Result<crate::bolt_v3_economics_config::ExecutionEconomicsConfig, toml::de::Error>;
@@ -580,7 +580,7 @@ pub struct ProviderBinding {
     pub key: &'static str,
     pub(crate) nt_reconnect_budget: NtReconnectBudgetCapability,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
-    execution_economics: Option<ExecutionEconomicsLoader>,
+    pub(crate) execution_economics: Option<ExecutionEconomicsLoader>,
     pub supported_market_families: &'static [&'static str],
     pub market_exit_order_constraints: ProviderMarketExitOrderConstraints,
     pub metadata_refresh_interval_mins: Option<MetadataRefreshIntervalLoader>,
@@ -1315,11 +1315,8 @@ fn validate_required_secret_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        bolt_v3_config::LoadedBoltV3Config,
-        bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, resolve_bolt_v3_secrets_with},
-    };
-    use std::{collections::BTreeMap, path::PathBuf};
+    use crate::bolt_v3_config::LoadedBoltV3Config;
+    use std::path::PathBuf;
 
     fn client_from_toml(text: &str) -> ClientBlock {
         toml::from_str(text).expect("test client should parse")

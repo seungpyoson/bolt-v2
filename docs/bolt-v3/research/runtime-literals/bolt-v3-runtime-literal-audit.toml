@@ -7967,8 +7967,8 @@ reason = "This is a named SI time-unit conversion constant, not an operator runt
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"derived_from_lead_gap_jitter_time_and_fee"'''
-context = '''"derived_from_lead_gap_jitter_time_and_fee";'''
+literal = '''"derived_from_lead_gap_jitter_and_time"'''
+context = '''"derived_from_lead_gap_jitter_and_time";'''
 classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code describing computed uncertainty-band provenance, not an operator runtime value."
 

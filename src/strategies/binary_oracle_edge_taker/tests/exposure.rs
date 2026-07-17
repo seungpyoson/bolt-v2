@@ -3077,7 +3077,6 @@ fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
             EntryBlockReason::ActiveBookNotPriced,
             EntryBlockReason::IntervalOpenMissing,
             EntryBlockReason::WarmupIncomplete,
-            EntryBlockReason::FeesNotReady,
             EntryBlockReason::RecoveryMode,
             EntryBlockReason::MarketCoolingDown,
             EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze),
@@ -3366,6 +3365,7 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
 #[test]
 fn unknown_recovered_position_lifecycle_blocks_instead_of_liquidating_by_default() {
     let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
     let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
     tracked_book.last_observed_instrument_id = Some(instrument_id);
     tracked_book.best_bid = Some(0.520);

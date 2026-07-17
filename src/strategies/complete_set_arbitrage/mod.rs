@@ -237,6 +237,10 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(CompleteSetArbitrage,
     }
 });
 
+impl crate::strategies::registry::FillVoidGuardedStrategyBuilder for CompleteSetArbitrageBuilder {
+    type Strategy = CompleteSetArbitrage;
+}
+
 impl CompleteSetNtEventForwarder {
     fn new(strategy_id: impl Into<String>, execution_client_id: impl Into<String>) -> Self {
         Self {

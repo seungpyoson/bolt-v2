@@ -505,7 +505,7 @@ impl NtCatalogReadBackEvidence {
         );
         ensure!(
             self.write_trade_ticks_succeeded,
-            "capability evidence must prove NT write_to_parquet over S3"
+            "capability evidence must prove NT identity-grouped write_data_enum over S3"
         );
         ensure!(
             self.query_trade_ticks_succeeded,

@@ -627,29 +627,35 @@ pub fn build_nt_order(
             None,
             Some(inputs.client_order_id),
         )),
-        OrderType::TrailingStopMarket => Ok(order_factory.trailing_stop_market(
-            inputs.instrument_id,
-            inputs.order_side,
-            inputs.quantity,
-            template
-                .trailing_offset
-                .expect("validated TrailingStopMarket trailing offset"),
-            template.trailing_offset_type,
-            template.activation_price,
-            template.trigger_price,
-            template.trigger_type,
-            Some(template.time_in_force),
-            template.expire_time,
-            Some(template.is_reduce_only),
-            Some(template.is_quote_quantity),
-            None,
-            None,
-            template.trigger_instrument_id,
-            None,
-            None,
-            None,
-            Some(inputs.client_order_id),
-        )),
+        OrderType::TrailingStopMarket => {
+            // NT 0.60 seeded an activation-only trailing stop's initial trigger
+            // from its activation price. Bolt owns that single normalization at
+            // the construction boundary now that NT 0.61 accepts both fields.
+            let initial_trigger_price = template.trigger_price.or(template.activation_price);
+            Ok(order_factory.trailing_stop_market(
+                inputs.instrument_id,
+                inputs.order_side,
+                inputs.quantity,
+                template
+                    .trailing_offset
+                    .expect("validated TrailingStopMarket trailing offset"),
+                template.trailing_offset_type,
+                template.activation_price,
+                initial_trigger_price,
+                template.trigger_type,
+                Some(template.time_in_force),
+                template.expire_time,
+                Some(template.is_reduce_only),
+                Some(template.is_quote_quantity),
+                None,
+                None,
+                template.trigger_instrument_id,
+                None,
+                None,
+                None,
+                Some(inputs.client_order_id),
+            ))
+        }
         _ => Err(unsupported_nt_order_type_error(prefix, template.order_type)),
     }
 }

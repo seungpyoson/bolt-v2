@@ -1006,6 +1006,10 @@ impl DataActor for BinaryOracleMaker {
 
 crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleMaker, {});
 
+impl crate::strategies::registry::FillVoidGuardedStrategyBuilder for BinaryOracleMakerBuilder {
+    type Strategy = BinaryOracleMaker;
+}
+
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     fn kind() -> &'static str {
         KEY

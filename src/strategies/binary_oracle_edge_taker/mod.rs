@@ -7989,6 +7989,10 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
     }
 });
 
+impl crate::strategies::registry::FillVoidGuardedStrategyBuilder for BinaryOracleEdgeTakerBuilder {
+    type Strategy = BinaryOracleEdgeTaker;
+}
+
 pub const KEY: &str = stringify!(binary_oracle_edge_taker);
 
 impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {

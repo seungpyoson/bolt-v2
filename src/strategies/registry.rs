@@ -51,6 +51,10 @@ pub trait StrategyBuilder: Send + Sync + 'static {
     ) -> Result<StrategyId>;
 }
 
+pub(crate) trait FillVoidGuardedStrategyBuilder: StrategyBuilder {
+    type Strategy: super::FillVoidPolicyGuard;
+}
+
 #[derive(Clone, Copy)]
 pub struct StrategyRegistration {
     kind: &'static str,
@@ -103,7 +107,7 @@ impl StrategyRegistry {
         }
     }
 
-    pub fn register<B: StrategyBuilder>(&mut self) -> Result<()> {
+    fn register<B: StrategyBuilder>(&mut self) -> Result<()> {
         let registration = StrategyRegistration {
             kind: B::kind(),
             validate_config: B::validate_config,
@@ -120,6 +124,10 @@ impl StrategyRegistry {
 
         self.registrations.insert(registration.kind(), registration);
         Ok(())
+    }
+
+    pub(crate) fn register_guarded<B: FillVoidGuardedStrategyBuilder>(&mut self) -> Result<()> {
+        self.register::<B>()
     }
 
     pub fn get(&self, kind: &str) -> Option<&StrategyRegistration> {

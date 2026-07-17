@@ -1,4 +1,4 @@
-use std::{any::type_name, cell::RefMut, str::FromStr, sync::Arc};
+use std::{any::type_name, cell::RefMut, collections::BTreeMap, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
 use nautilus_common::{
@@ -62,11 +62,9 @@ pub struct BoltV3OrderRoutingHandle {
     source: Arc<dyn EconomicsAdmissionSource>,
     execution_client_id: EconomicsExecutionClientId,
     account_id: EconomicsAccountId,
-    product_surface_id: ProductSurfaceId,
+    product_surface_routes: BTreeMap<ProductSurfaceId, (EdgeBasisPolicyId, BoltV3CarryPlan)>,
     reporting_policy_id: ReportingPolicyId,
     reporting_unit: NativeUnitId,
-    edge_basis_policy_id: EdgeBasisPolicyId,
-    carry_plan: BoltV3CarryPlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,28 +99,75 @@ pub struct BoltV3OrderRoutingConfig<'a> {
     pub carry_plan: BoltV3CarryPlan,
 }
 
+pub struct BoltV3ProductSurfaceRoute<'a> {
+    pub product_surface_id: &'a str,
+    pub edge_basis_policy_id: &'a str,
+    pub carry_plan: BoltV3CarryPlan,
+}
+
+pub struct BoltV3MultiSurfaceOrderRoutingConfig<'a> {
+    pub execution_client_id: &'a str,
+    pub account_id: &'a str,
+    pub product_surface_routes: Vec<BoltV3ProductSurfaceRoute<'a>>,
+    pub reporting_policy_id: &'a str,
+    pub reporting_unit: &'a str,
+}
+
 impl BoltV3OrderRoutingHandle {
     pub fn new(
         source: Arc<dyn EconomicsAdmissionSource>,
         config: BoltV3OrderRoutingConfig<'_>,
     ) -> anyhow::Result<Self> {
-        if matches!(
-            config.carry_plan,
-            BoltV3CarryPlan::Required {
-                holding_horizon_ns: 0
+        Self::new_with_product_surfaces(
+            source,
+            BoltV3MultiSurfaceOrderRoutingConfig {
+                execution_client_id: config.execution_client_id,
+                account_id: config.account_id,
+                product_surface_routes: vec![BoltV3ProductSurfaceRoute {
+                    product_surface_id: config.product_surface_id,
+                    edge_basis_policy_id: config.edge_basis_policy_id,
+                    carry_plan: config.carry_plan,
+                }],
+                reporting_policy_id: config.reporting_policy_id,
+                reporting_unit: config.reporting_unit,
+            },
+        )
+    }
+
+    pub fn new_with_product_surfaces(
+        source: Arc<dyn EconomicsAdmissionSource>,
+        config: BoltV3MultiSurfaceOrderRoutingConfig<'_>,
+    ) -> anyhow::Result<Self> {
+        let mut product_surface_routes = BTreeMap::new();
+        for route in config.product_surface_routes {
+            if matches!(
+                route.carry_plan,
+                BoltV3CarryPlan::Required {
+                    holding_horizon_ns: 0
+                }
+            ) {
+                anyhow::bail!("economics carry holding horizon must be positive");
             }
-        ) {
-            anyhow::bail!("economics carry holding horizon must be positive");
+            let product_surface_id = ProductSurfaceId::new(route.product_surface_id)?;
+            let edge_basis_policy_id = EdgeBasisPolicyId::new(route.edge_basis_policy_id)?;
+            anyhow::ensure!(
+                product_surface_routes
+                    .insert(product_surface_id, (edge_basis_policy_id, route.carry_plan),)
+                    .is_none(),
+                "economics product surface route is duplicated"
+            );
         }
+        anyhow::ensure!(
+            !product_surface_routes.is_empty(),
+            "economics requires at least one product surface route"
+        );
         Ok(Self {
             source,
             execution_client_id: EconomicsExecutionClientId::new(config.execution_client_id)?,
             account_id: EconomicsAccountId::new(config.account_id)?,
-            product_surface_id: ProductSurfaceId::new(config.product_surface_id)?,
+            product_surface_routes,
             reporting_policy_id: ReportingPolicyId::new(config.reporting_policy_id)?,
             reporting_unit: NativeUnitId::new(config.reporting_unit)?,
-            edge_basis_policy_id: EdgeBasisPolicyId::new(config.edge_basis_policy_id)?,
-            carry_plan: config.carry_plan,
         })
     }
 
@@ -142,7 +187,23 @@ impl BoltV3OrderRoutingHandle {
         };
         let planned_fill_legs =
             normalize_planned_fill_legs(intent.request.order, facts, intent.planned_fill_legs)?;
-        let position = match self.carry_plan {
+        let instrument_id =
+            EconomicsInstrumentId::new(intent.request.order.instrument_id().to_string())?;
+        let candidate_surfaces = self
+            .product_surface_routes
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let product_surface_id = self.source.resolve_product_surface(
+            &self.execution_client_id,
+            &instrument_id,
+            &candidate_surfaces,
+        )?;
+        let (edge_basis_policy_id, carry_plan) = self
+            .product_surface_routes
+            .get(&product_surface_id)
+            .ok_or_else(|| anyhow::anyhow!("economics source selected an unconfigured surface"))?;
+        let position = match carry_plan {
             BoltV3CarryPlan::NoCarry => None,
             BoltV3CarryPlan::Required { holding_horizon_ns } => Some(PositionContext {
                 side: match order_side {
@@ -153,16 +214,14 @@ impl BoltV3OrderRoutingHandle {
                     .iter()
                     .try_fold(Decimal::ZERO, |total, leg| total.checked_add(leg.quantity))
                     .ok_or_else(|| anyhow::anyhow!("planned carry quantity overflow"))?,
-                holding_horizon_ns,
+                holding_horizon_ns: *holding_horizon_ns,
             }),
         };
         let request = EconomicQuoteRequest {
             execution_client_id: self.execution_client_id.clone(),
             account_id: self.account_id.clone(),
-            instrument_id: EconomicsInstrumentId::new(
-                intent.request.order.instrument_id().to_string(),
-            )?,
-            product_surface_id: self.product_surface_id.clone(),
+            instrument_id,
+            product_surface_id,
             order_side,
             liquidity_role: intent.liquidity_role,
             planned_fill_legs: planned_fill_legs
@@ -179,7 +238,7 @@ impl BoltV3OrderRoutingHandle {
             lifecycle_path: intent.lifecycle_path,
             reporting_policy_id: self.reporting_policy_id.clone(),
             reporting_unit: self.reporting_unit.clone(),
-            edge_basis_policy_id: self.edge_basis_policy_id.clone(),
+            edge_basis_policy_id: edge_basis_policy_id.clone(),
             requested_at_ns: intent.requested_at_ns,
             decision_correlation_id: DecisionCorrelationId::new(intent.decision_correlation_id)?,
         };

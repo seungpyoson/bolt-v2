@@ -164,20 +164,6 @@ fn build_order_routing_handle(
             format!("execution economics configuration is invalid: {error}"),
         )
     })?;
-    let mut surface_policies = economics.product_surface_policies.iter();
-    let (product_surface_id, edge_basis_policy_id) = surface_policies.next().ok_or_else(|| {
-        binding_message(
-            context,
-            "execution economics has no product surface".to_string(),
-        )
-    })?;
-    if surface_policies.next().is_some() {
-        return Err(binding_message(
-            context,
-            "strategy execution client must select exactly one economics product surface"
-                .to_string(),
-        ));
-    }
     let quote_validity_ns = economics
         .quote_validity_ms
         .checked_mul(NANOS_PER_MILLI_U64)
@@ -206,27 +192,45 @@ fn build_order_routing_handle(
                 "execution economics resting refresh margin overflows nanoseconds".to_string(),
             )
         })?;
-    let carry_plan = if economics.carry_surfaces.contains(product_surface_id) {
-        let carry = economics.carry.as_ref().ok_or_else(|| {
-            binding_message(
-                context,
-                "carry-bearing product surface has no carry policy".to_string(),
-            )
-        })?;
-        let holding_horizon_ns = carry
-            .holding_horizon_secs
-            .checked_mul(MILLIS_PER_SECOND_U64)
-            .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
-            .ok_or_else(|| {
-                binding_message(
-                    context,
-                    "carry holding horizon overflows nanoseconds".to_string(),
-                )
-            })?;
-        BoltV3CarryPlan::Required { holding_horizon_ns }
-    } else {
-        BoltV3CarryPlan::NoCarry
-    };
+    let carry_horizon_ns = economics
+        .carry
+        .as_ref()
+        .map(|carry| {
+            carry
+                .holding_horizon_secs
+                .checked_mul(MILLIS_PER_SECOND_U64)
+                .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
+                .ok_or_else(|| {
+                    binding_message(
+                        context,
+                        "carry holding horizon overflows nanoseconds".to_string(),
+                    )
+                })
+        })
+        .transpose()?;
+    let product_surface_routes = economics
+        .product_surface_policies
+        .iter()
+        .map(|(product_surface_id, edge_basis_policy_id)| {
+            let carry_plan = if economics.carry_surfaces.contains(product_surface_id) {
+                BoltV3CarryPlan::Required {
+                    holding_horizon_ns: carry_horizon_ns.ok_or_else(|| {
+                        binding_message(
+                            context,
+                            "carry-bearing product surface has no carry policy".to_string(),
+                        )
+                    })?,
+                }
+            } else {
+                BoltV3CarryPlan::NoCarry
+            };
+            Ok(crate::bolt_v3_order_execution::BoltV3ProductSurfaceRoute {
+                product_surface_id,
+                edge_basis_policy_id,
+                carry_plan,
+            })
+        })
+        .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
     let source = ConfiguredEconomicsAdmissionSource::new(
         client.venue.as_str(),
         context.economics_inputs.clone(),
@@ -244,12 +248,12 @@ fn build_order_routing_handle(
                 "execution economics requires a configured account_id".to_string(),
             )
         })?;
-    BoltV3OrderRoutingHandle::new(
+    BoltV3OrderRoutingHandle::new_with_product_surfaces(
         Arc::new(source),
-        crate::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
+        crate::bolt_v3_order_execution::BoltV3MultiSurfaceOrderRoutingConfig {
             execution_client_id,
             account_id,
-            product_surface_id,
+            product_surface_routes,
             reporting_policy_id: economics.reporting_policy.as_str(),
             reporting_unit: context
                 .loaded
@@ -258,8 +262,6 @@ fn build_order_routing_handle(
                 .reporting
                 .pnl_currency
                 .as_str(),
-            edge_basis_policy_id,
-            carry_plan,
         },
     )
     .map_err(|error| binding_message(context, format!("economics routing: {error:#}")))

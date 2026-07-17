@@ -30,6 +30,19 @@ pub struct EconomicsAdmissionQuoteIntent {
 }
 
 pub trait EconomicsAdmissionSource: Send + Sync {
+    fn resolve_product_surface(
+        &self,
+        _execution_client_id: &crate::economics::ExecutionClientId,
+        _instrument_id: &crate::economics::InstrumentId,
+        candidates: &[crate::economics::ProductSurfaceId],
+    ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
+        match candidates {
+            [candidate] => Ok(candidate.clone()),
+            [] => Err(EconomicsUnavailable::MissingQuoteAuthority),
+            _ => Err(EconomicsUnavailable::AmbiguousQuoteAuthority),
+        }
+    }
+
     fn quote_admission(
         &self,
         intent: EconomicsAdmissionQuoteIntent,
@@ -210,6 +223,35 @@ impl AuthoritativeEconomicsInputStore {
             .cloned()
             .ok_or(EconomicsUnavailable::MissingQuoteAuthority)
     }
+
+    fn resolve_product_surface(
+        &self,
+        execution_client_id: &crate::economics::ExecutionClientId,
+        instrument_id: &crate::economics::InstrumentId,
+        provider_key: &str,
+        candidates: &[crate::economics::ProductSurfaceId],
+    ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
+        let entries = self
+            .entries
+            .read()
+            .map_err(|_| EconomicsUnavailable::AmbiguousQuoteAuthority)?;
+        let mut matches = entries.iter().filter_map(|(key, dependencies)| {
+            (key.execution_client_id == execution_client_id.as_str()
+                && key.instrument_id == instrument_id.as_str()
+                && dependencies.provider_key == provider_key
+                && candidates
+                    .iter()
+                    .any(|candidate| candidate.as_str() == key.product_surface_id))
+            .then(|| crate::economics::ProductSurfaceId::new(key.product_surface_id.clone()))
+        });
+        let selected = matches
+            .next()
+            .ok_or(EconomicsUnavailable::MissingQuoteAuthority)??;
+        if matches.next().is_some() {
+            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+        }
+        Ok(selected)
+    }
 }
 
 pub struct ConfiguredEconomicsAdmissionSource {
@@ -248,6 +290,20 @@ impl ConfiguredEconomicsAdmissionSource {
 }
 
 impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
+    fn resolve_product_surface(
+        &self,
+        execution_client_id: &crate::economics::ExecutionClientId,
+        instrument_id: &crate::economics::InstrumentId,
+        candidates: &[crate::economics::ProductSurfaceId],
+    ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
+        self.inputs.resolve_product_surface(
+            execution_client_id,
+            instrument_id,
+            &self.provider_key,
+            candidates,
+        )
+    }
+
     fn quote_admission(
         &self,
         intent: EconomicsAdmissionQuoteIntent,

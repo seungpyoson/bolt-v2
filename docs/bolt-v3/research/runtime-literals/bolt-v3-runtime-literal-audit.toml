@@ -21243,6 +21243,14 @@ reason = "Fail-closed validation pattern rejecting a zero TOML-derived carry hor
 [[allowed]]
 path = "src/bolt_v3_order_execution.rs"
 kind = "string"
+literal = '''"economics product surface route is duplicated"'''
+context = '''"economics product surface route is duplicated"'''
+classification = "diagnostic_template"
+reason = "Stable fail-closed duplicate-route diagnostic; product-surface identities and selection remain config and authority owned."
+
+[[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
 literal = '''"economics planned fill notional overflow"'''
 context = '''.context("economics planned fill notional overflow")?'''
 classification = "diagnostic_template"
@@ -21279,14 +21287,6 @@ literal = '''"execution client has no economics registry binding"'''
 context = '''"execution client has no economics registry binding".to_string(),'''
 classification = "diagnostic_template"
 reason = "Stable missing-capability diagnostic; it does not select an economics implementation."
-
-[[allowed]]
-path = "src/bolt_v3_strategy_registration.rs"
-kind = "string"
-literal = '''"execution economics has no product surface"'''
-context = '''"execution economics has no product surface".to_string(),'''
-classification = "diagnostic_template"
-reason = "Stable missing-config diagnostic; product surfaces remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_strategy_registration.rs"

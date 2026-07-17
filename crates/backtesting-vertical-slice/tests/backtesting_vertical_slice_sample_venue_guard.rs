@@ -1823,10 +1823,12 @@ mod inline_scope {
             .any(|failure| failure.contains("child.rs") && failure.contains("bybit")),
         "included child must resolve from the included file parent: {failures:?}"
     );
-    assert!(!sources.contains_key(
-        &fs::canonicalize(crate_root.join("src/inline_scope/child.rs"))
-            .expect("canonical inline-context decoy")
-    ));
+    assert!(
+        !sources.contains_key(
+            &fs::canonicalize(crate_root.join("src/inline_scope/child.rs"))
+                .expect("canonical inline-context decoy")
+        )
+    );
 }
 
 #[test]

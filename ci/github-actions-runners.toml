@@ -217,6 +217,7 @@ artifact_name_template = "ra001a-durable-tracer-{run_id}-{run_attempt}"
 artifact_upload_if = "${{ needs.ci-policy.outputs.ra001a_durable_tracer_required == 'true' && steps.ra001a-durable-tracer.outcome == 'success' }}"
 max_registry_packs = 64
 max_total_selected_object_bytes = 1073741824
+max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
 

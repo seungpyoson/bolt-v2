@@ -27,16 +27,15 @@ use crate::{
     path_resolution::{resolve_output_dir, validate_portable_path_component},
     pinned_regular_file::read_exact_pinned_file,
     source_universe_batch_execution::{
-        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE, SourceUniverseBatchExecutionRecordProvenance,
-        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
-        PinnedWorkerExecutable, SourceUniverseSelectedControlPreflightInput, execution_record_digest,
-        preflight_selected_source_universe_controls,
+        PinnedWorkerExecutable, SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE,
+        SourceUniverseBatchExecutionRecordProvenance, SourceUniverseBatchExecutionReport,
+        SourceUniverseBatchExecutionReportStatus, SourceUniverseSelectedControlPreflightInput,
+        execution_record_digest, preflight_selected_source_universe_controls,
         validate_source_universe_batch_execution_report,
     },
     source_universe_batch_launch::{
         COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT, CommittedSourceUniverseExecutionPack,
-        SourceUniverseBatchLaunchSpec,
-        discover_committed_source_universe_execution_packs,
+        SourceUniverseBatchLaunchSpec, discover_committed_source_universe_execution_packs,
         discover_committed_source_universe_execution_packs_from_scope_names,
     },
     source_universe_execution_pack::{
@@ -46,7 +45,7 @@ use crate::{
 };
 
 pub const SOURCE_UNIVERSE_DURABLE_TRACER_RECEIPT_SET_SCHEMA_VERSION: &str =
-    "source-universe-durable-tracer-receipt-set.v2";
+    "source-universe-durable-tracer-receipt-set.v3";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceUniverseDurableTracerReportInput {
@@ -88,7 +87,9 @@ pub struct SourceUniverseDurableTracerReceiptSet {
     pub schema_version: String,
     pub source_revision: String,
     pub registry_tree_sha256: String,
-    pub worker_executable_sha256: String,
+    pub worker_executable: SourceUniverseDurableTracerArtifactPin,
+    pub applied_policy: SourceUniverseDurableTracerRunPolicy,
+    pub aggregate: SourceUniverseDurableTracerAggregateEnvelope,
     pub receipts: Vec<SourceUniverseDurableTracerReceipt>,
 }
 
@@ -99,7 +100,8 @@ pub struct SourceUniverseDurableTracerReceiptSetArtifact {
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceUniverseDurableTracerAggregateLimits {
     /// The complete-registry breadth ceiling. Because RA-001a requires exactly
     /// one selected record per pack, this is also the aggregate record ceiling.
@@ -107,11 +109,42 @@ pub struct SourceUniverseDurableTracerAggregateLimits {
     pub max_total_selected_object_bytes: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceUniverseDurableTracerAggregateEnvelope {
     pub registry_packs: u64,
     pub total_selected_records: u64,
     pub total_selected_object_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseDurableTracerRunPolicy {
+    pub aggregate_limits: SourceUniverseDurableTracerAggregateLimits,
+    pub max_worker_executable_bytes: u64,
+    pub trusted_policy_output_sha256: String,
+}
+
+impl SourceUniverseDurableTracerRunPolicy {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.aggregate_limits.max_registry_packs > 0,
+            "RA-001a registry pack ceiling must be positive"
+        );
+        ensure!(
+            self.aggregate_limits.max_total_selected_object_bytes > 0,
+            "RA-001a aggregate selected-object byte ceiling must be positive"
+        );
+        ensure!(
+            self.max_worker_executable_bytes > 0,
+            "RA-001a worker executable byte ceiling must be positive"
+        );
+        ensure!(
+            is_lowercase_sha256_hex(&self.trusted_policy_output_sha256),
+            "RA-001a trusted policy-output SHA-256 must be lowercase hex"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -125,6 +158,8 @@ pub struct SourceUniverseDurableTracerRegistryRun {
 struct CommittedRegistrySnapshot {
     source_revision: String,
     registry_tree_sha256: String,
+    applied_policy: SourceUniverseDurableTracerRunPolicy,
+    worker_executable: SourceUniverseDurableTracerArtifactPin,
     packs: Vec<CommittedSourceUniverseExecutionPack>,
 }
 
@@ -136,6 +171,9 @@ struct AdmittedRegistryRun {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceRevisionRegistryAuthority {
+    source_revision: String,
+    canonical_repo_root: PathBuf,
+    git_executable: PathBuf,
     registry_tree_sha256: String,
     scope_names: Vec<String>,
 }
@@ -428,6 +466,18 @@ fn validate_source_universe_durable_tracer_aggregate_limits(
     })
 }
 
+fn preflight_source_universe_durable_tracer_registry(
+    committed: &[CommittedSourceUniverseExecutionPack],
+    limits: SourceUniverseDurableTracerAggregateLimits,
+) -> Result<SourceUniverseDurableTracerAggregateEnvelope> {
+    let aggregate = validate_source_universe_durable_tracer_aggregate_limits(committed, limits)?;
+    for pack in committed {
+        revalidate_committed_control_artifacts(pack)?;
+    }
+    Ok(aggregate)
+}
+
+#[cfg(test)]
 fn run_admitted_source_universe_durable_tracer_registry<F>(
     committed: &[CommittedSourceUniverseExecutionPack],
     limits: SourceUniverseDurableTracerAggregateLimits,
@@ -441,11 +491,24 @@ where
     // This validation must finish for the complete discovered registry before
     // `launch` is invoked even once. The callback boundary is also the unit-test
     // seam proving rejected breadth, record selection, or bytes cannot fan out.
-    let aggregate = validate_source_universe_durable_tracer_aggregate_limits(committed, limits)?;
+    let aggregate = preflight_source_universe_durable_tracer_registry(committed, limits)?;
     launch_preflighted_source_universe_durable_tracer_registry(committed, aggregate, launch)
 }
 
-fn revalidate_committed_launch_artifact(pack: &CommittedSourceUniverseExecutionPack) -> Result<()> {
+fn revalidate_committed_control_artifacts(
+    pack: &CommittedSourceUniverseExecutionPack,
+) -> Result<()> {
+    let generator = read_pinned_artifact(
+        &pack.generator_spec_path,
+        "execution-pack generator spec",
+        pack.generator_bytes,
+    )?;
+    ensure!(
+        generator.pin.bytes == pack.generator_bytes
+            && generator.pin.sha256 == pack.generator_sha256,
+        "admitted execution-pack generator spec changed for {}",
+        pack.pack_id
+    );
     let pinned = SourceUniverseBatchLaunchSpec::from_sha256_pinned_toml_file(
         &pack.launch_path,
         pack.launch_bytes,
@@ -458,6 +521,17 @@ fn revalidate_committed_launch_artifact(pack: &CommittedSourceUniverseExecutionP
         pack.pack_id,
         pack.launch_path.display(),
         pinned.canonical_path.display()
+    );
+    let summary = read_pinned_artifact(
+        &pack.summary_path,
+        "execution-pack summary",
+        pack.launch_spec.execution_pack.bytes,
+    )?;
+    ensure!(
+        summary.pin.bytes == pack.launch_spec.execution_pack.bytes
+            && summary.pin.sha256 == pack.launch_spec.execution_pack.sha256,
+        "admitted execution-pack summary changed for {}",
+        pack.pack_id
     );
     Ok(())
 }
@@ -476,7 +550,7 @@ where
     // and before invoking the launcher even once. The child independently
     // checks the same pin, closing the remaining revalidation-to-open race.
     for pack in committed {
-        revalidate_committed_launch_artifact(pack)?;
+        revalidate_committed_control_artifacts(pack)?;
     }
     let mut report_inputs = Vec::with_capacity(committed.len());
     for pack in committed {
@@ -512,55 +586,55 @@ fn launch_admitted_source_universe_pack(
             .revalidate_identity()
             .context("revalidate sealed RA-001a worker before launch")?;
         let status = Command::new(worker_executable.exec_path())
-        .arg("--spec")
-        .arg(&pack.launch_path)
-        .arg("--spec-bytes")
-        .arg(pack.launch_bytes.to_string())
-        .arg("--spec-sha256")
-        .arg(&pack.launch_sha256)
-        .current_dir(repo_root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| {
+            .arg("--spec")
+            .arg(&pack.launch_path)
+            .arg("--spec-bytes")
+            .arg(pack.launch_bytes.to_string())
+            .arg("--spec-sha256")
+            .arg(&pack.launch_sha256)
+            .current_dir(repo_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .with_context(|| {
+                format!(
+                    "start source-universe batch process for committed pack {}",
+                    pack.pack_id
+                )
+            })?;
+        ensure!(
+            status.success(),
+            "source-universe batch process failed for committed pack {} with {status}",
+            pack.pack_id
+        );
+
+        let launch_parent = pack
+            .launch_path
+            .parent()
+            .context("committed launch path has no parent")?;
+        let declared_output = resolve_output_dir(launch_parent, &pack.launch_spec.output_dir);
+        let canonical_output = declared_output.canonicalize().with_context(|| {
             format!(
-                "start source-universe batch process for committed pack {}",
-                pack.pack_id
+                "canonicalize completed output for committed pack {} at {}",
+                pack.pack_id,
+                declared_output.display()
             )
         })?;
-    ensure!(
-        status.success(),
-        "source-universe batch process failed for committed pack {} with {status}",
-        pack.pack_id
-    );
-
-    let launch_parent = pack
-        .launch_path
-        .parent()
-        .context("committed launch path has no parent")?;
-    let declared_output = resolve_output_dir(launch_parent, &pack.launch_spec.output_dir);
-    let canonical_output = declared_output.canonicalize().with_context(|| {
-        format!(
-            "canonicalize completed output for committed pack {} at {}",
-            pack.pack_id,
-            declared_output.display()
-        )
-    })?;
-    let report_path = canonical_output.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
-    let report_metadata = fs::symlink_metadata(&report_path).with_context(|| {
-        format!(
-            "stat completed report for committed pack {} at {}",
+        let report_path = canonical_output.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
+        let report_metadata = fs::symlink_metadata(&report_path).with_context(|| {
+            format!(
+                "stat completed report for committed pack {} at {}",
+                pack.pack_id,
+                report_path.display()
+            )
+        })?;
+        ensure!(
+            report_metadata.is_file() && !report_metadata.file_type().is_symlink(),
+            "completed report for committed pack {} must be one non-symlink regular file at {}",
             pack.pack_id,
             report_path.display()
-        )
-    })?;
-    ensure!(
-        report_metadata.is_file() && !report_metadata.file_type().is_symlink(),
-        "completed report for committed pack {} must be one non-symlink regular file at {}",
-        pack.pack_id,
-        report_path.display()
-    );
+        );
         Ok(SourceUniverseDurableTracerReportInput {
             pack_id: pack.pack_id.clone(),
             report_path,
@@ -579,33 +653,40 @@ pub fn run_source_universe_durable_tracer_registry(
     repo_root: &Path,
     source_revision: &str,
     worker_executable: &Path,
-    expected_worker_executable_sha256: &str,
-    max_worker_executable_bytes: u64,
-    limits: SourceUniverseDurableTracerAggregateLimits,
+    expected_worker_executable: &SourceUniverseDurableTracerArtifactPin,
+    policy: SourceUniverseDurableTracerRunPolicy,
 ) -> Result<SourceUniverseDurableTracerRegistryRun> {
-    let authority = source_revision_registry_authority(
+    policy.validate()?;
+    expected_worker_executable.validate("expected worker executable")?;
+    ensure!(
+        expected_worker_executable.bytes <= policy.max_worker_executable_bytes,
+        "expected worker executable bytes exceed the applied ceiling"
+    );
+    let (authority, committed) = load_exact_source_revision_registry(
         repo_root,
         source_revision,
-        limits.max_registry_packs,
+        policy.aggregate_limits.max_registry_packs,
     )
-    .context("resolve exact source-revision RA-001a registry authority")?;
-    let committed = discover_committed_source_universe_execution_packs_from_scope_names(
-        repo_root,
-        &authority.scope_names,
-    )
-    .context("discover exact source-revision RA-001a execution-pack registry")?;
+    .context("load exact source-revision RA-001a registry")?;
+    let aggregate =
+        preflight_source_universe_durable_tracer_registry(&committed, policy.aggregate_limits)
+            .context("preflight complete exact-source RA-001a registry before worker capture")?;
     let worker_executable = PinnedWorkerExecutable::capture_external_sealed(
         worker_executable,
-        expected_worker_executable_sha256,
-        max_worker_executable_bytes,
+        &expected_worker_executable.sha256,
+        policy.max_worker_executable_bytes,
     )
     .context("capture exact reviewed RA-001a worker execution capability")?;
-    let admitted = run_admitted_source_universe_durable_tracer_registry(
+    let worker_executable_bytes = worker_executable.byte_len();
+    ensure!(
+        worker_executable_bytes == expected_worker_executable.bytes,
+        "sealed worker executable byte length mismatch: expected {}, got {worker_executable_bytes}",
+        expected_worker_executable.bytes
+    );
+    let admitted = launch_preflighted_source_universe_durable_tracer_registry(
         &committed,
-        limits,
-        |pack| {
-        launch_admitted_source_universe_pack(repo_root, &worker_executable, pack)
-        },
+        aggregate,
+        |pack| launch_admitted_source_universe_pack(repo_root, &worker_executable, pack),
     )?;
     Ok(SourceUniverseDurableTracerRegistryRun {
         aggregate: admitted.aggregate,
@@ -613,6 +694,8 @@ pub fn run_source_universe_durable_tracer_registry(
         registry: CommittedRegistrySnapshot {
             source_revision: source_revision.to_string(),
             registry_tree_sha256: authority.registry_tree_sha256,
+            applied_policy: policy,
+            worker_executable: expected_worker_executable.clone(),
             packs: committed,
         },
     })
@@ -733,6 +816,7 @@ fn git_checkout_command(git_executable: &Path, repo_root: &Path) -> Command {
         .env_remove("GIT_DISCOVERY_ACROSS_FILESYSTEM")
         .env_remove("GIT_CONFIG_COUNT")
         .env_remove("GIT_CONFIG_PARAMETERS")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_OPTIONAL_LOCKS", "0");
     command
 }
@@ -778,6 +862,81 @@ fn run_git_stdout_bounded(
     Ok(bytes)
 }
 
+fn resolve_exact_git_revision_checkout(
+    repo_root: &Path,
+    expected_source_revision: &str,
+) -> Result<(PathBuf, PathBuf)> {
+    validate_source_revision(expected_source_revision)?;
+    ensure!(
+        repo_root.is_absolute(),
+        "RA-001a repository root must be absolute"
+    );
+    let canonical_root = repo_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize RA-001a repository root {}",
+            repo_root.display()
+        )
+    })?;
+    ensure!(
+        canonical_root.is_dir(),
+        "RA-001a repository root must be one directory"
+    );
+    let canonical_root_text = canonical_root
+        .to_str()
+        .context("RA-001a repository root must be UTF-8")?;
+    let git_executable = resolve_git_executable()?;
+    let top_level = parse_single_git_line(
+        run_git_stdout_bounded(
+            &git_executable,
+            &canonical_root,
+            &["rev-parse", "--path-format=absolute", "--show-toplevel"],
+            canonical_root_text.len().saturating_add(2),
+            "repository-root resolution",
+        )?,
+        "repository-root resolution",
+    )?;
+    let resolved_top_level = Path::new(&top_level)
+        .canonicalize()
+        .with_context(|| format!("canonicalize Git top level {top_level}"))?;
+    ensure!(
+        resolved_top_level == canonical_root,
+        "RA-001a repository root {} is not the exact Git top level {}",
+        canonical_root.display(),
+        resolved_top_level.display()
+    );
+
+    let commitish = format!("{expected_source_revision}^{{commit}}");
+    let resolved_revision = parse_single_git_line(
+        run_git_stdout_bounded(
+            &git_executable,
+            &canonical_root,
+            &["rev-parse", "--verify", &commitish],
+            expected_source_revision.len().saturating_add(2),
+            "source-revision commit resolution",
+        )?,
+        "source-revision commit resolution",
+    )?;
+    ensure!(
+        resolved_revision == expected_source_revision,
+        "source revision {expected_source_revision} does not resolve to that exact commit object"
+    );
+    let head_revision = parse_single_git_line(
+        run_git_stdout_bounded(
+            &git_executable,
+            &canonical_root,
+            &["rev-parse", "--verify", "HEAD^{commit}"],
+            expected_source_revision.len().saturating_add(2),
+            "HEAD resolution",
+        )?,
+        "HEAD resolution",
+    )?;
+    ensure!(
+        head_revision == expected_source_revision,
+        "checkout HEAD {head_revision} does not match expected source revision {expected_source_revision}"
+    );
+    Ok((canonical_root, git_executable))
+}
+
 fn source_revision_registry_authority(
     repo_root: &Path,
     source_revision: &str,
@@ -788,15 +947,14 @@ fn source_revision_registry_authority(
         max_registry_packs > 0,
         "source-revision registry pack ceiling must be positive"
     );
-    let git_executable = resolve_git_executable()?;
-    let treeish = format!(
-        "{source_revision}:{COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT}"
-    );
-    let path_max = usize::try_from(libc::PATH_MAX)
-        .context("platform PATH_MAX does not fit usize")?;
+    let (canonical_repo_root, git_executable) =
+        resolve_exact_git_revision_checkout(repo_root, source_revision)?;
+    let treeish = format!("{source_revision}:{COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT}");
+    let path_max =
+        usize::try_from(libc::PATH_MAX).context("platform PATH_MAX does not fit usize")?;
     let tree_oid_bytes = run_git_stdout_bounded(
         &git_executable,
-        repo_root,
+        &canonical_repo_root,
         &["rev-parse", "--verify", &treeish],
         path_max,
         "registry tree resolution",
@@ -820,7 +978,7 @@ fn source_revision_registry_authority(
         .context("source-revision registry listing byte bound overflow")?;
     let listing = run_git_stdout_bounded(
         &git_executable,
-        repo_root,
+        &canonical_repo_root,
         &["ls-tree", "-z", &treeish],
         ls_tree_bound,
         "registry tree listing",
@@ -865,9 +1023,150 @@ fn source_revision_registry_authority(
         format!("source-revision-registry-tree\0{source_revision}\0{tree_oid}\0").as_bytes(),
     );
     Ok(SourceRevisionRegistryAuthority {
+        source_revision: source_revision.to_string(),
+        canonical_repo_root,
+        git_executable,
         registry_tree_sha256,
         scope_names,
     })
+}
+
+fn validate_source_revision_control_blob(
+    authority: &SourceRevisionRegistryAuthority,
+    path: &Path,
+    expected_bytes: u64,
+    expected_sha256: &str,
+    label: &str,
+) -> Result<()> {
+    ensure!(expected_bytes > 0, "{label} byte length must be positive");
+    ensure!(
+        is_lowercase_sha256_hex(expected_sha256),
+        "{label} SHA-256 must be lowercase hex"
+    );
+    let relative = path
+        .strip_prefix(&authority.canonical_repo_root)
+        .with_context(|| {
+            format!(
+                "{label} {} is outside exact Git top level {}",
+                path.display(),
+                authority.canonical_repo_root.display()
+            )
+        })?;
+    let relative = relative
+        .to_str()
+        .context("source-revision control path must be UTF-8")?;
+    ensure!(
+        !relative.is_empty() && !relative.starts_with('/'),
+        "source-revision control path must be repository-relative"
+    );
+    let listing_bound = relative.len().saturating_add(160);
+    let listing = run_git_stdout_bounded(
+        &authority.git_executable,
+        &authority.canonical_repo_root,
+        &["ls-tree", "-z", &authority.source_revision, "--", relative],
+        listing_bound,
+        label,
+    )?;
+    ensure!(
+        !listing.is_empty()
+            && listing.last() == Some(&0)
+            && !listing[..listing.len() - 1].contains(&0),
+        "{label} must resolve to exactly one source-revision tree entry"
+    );
+    let record = &listing[..listing.len() - 1];
+    let tab = record
+        .iter()
+        .position(|byte| *byte == b'\t')
+        .context("source-revision control tree entry is missing its path separator")?;
+    let header = std::str::from_utf8(&record[..tab])
+        .context("source-revision control tree header must be UTF-8")?;
+    let fields = header.split_ascii_whitespace().collect::<Vec<_>>();
+    ensure!(
+        fields.len() == 3
+            && fields[0] == "100644"
+            && fields[1] == "blob"
+            && fields[2].len() == authority.source_revision.len()
+            && fields[2]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && &record[tab + 1..] == relative.as_bytes(),
+        "{label} must be one exact 100644 Git blob at {relative}"
+    );
+    let blob_oid = fields[2];
+    let expected_len = usize::try_from(expected_bytes)
+        .with_context(|| format!("{label} byte length does not fit usize"))?;
+    let bytes = run_git_stdout_bounded(
+        &authority.git_executable,
+        &authority.canonical_repo_root,
+        &["cat-file", "blob", blob_oid],
+        expected_len,
+        label,
+    )?;
+    ensure!(
+        bytes.len() == expected_len && sha256_hex(&bytes) == expected_sha256,
+        "{label} does not match the exact source-revision Git blob at {relative}"
+    );
+    Ok(())
+}
+
+fn validate_committed_registry_against_source_revision(
+    authority: &SourceRevisionRegistryAuthority,
+    committed: &[CommittedSourceUniverseExecutionPack],
+) -> Result<()> {
+    ensure!(
+        committed.len() == authority.scope_names.len(),
+        "source-revision registry pack count disagrees with exact Git membership"
+    );
+    for (scope_name, pack) in authority.scope_names.iter().zip(committed) {
+        ensure!(
+            pack.scope_dir.file_name().and_then(|name| name.to_str()) == Some(scope_name),
+            "source-revision registry scope ordering disagrees with discovered pack {}",
+            pack.pack_id
+        );
+        validate_source_revision_control_blob(
+            authority,
+            &pack.generator_spec_path,
+            pack.generator_bytes,
+            &pack.generator_sha256,
+            "execution-pack generator spec",
+        )?;
+        validate_source_revision_control_blob(
+            authority,
+            &pack.launch_path,
+            pack.launch_bytes,
+            &pack.launch_sha256,
+            "batch launch spec",
+        )?;
+        validate_source_revision_control_blob(
+            authority,
+            &pack.summary_path,
+            pack.launch_spec.execution_pack.bytes,
+            &pack.launch_spec.execution_pack.sha256,
+            "execution-pack summary",
+        )?;
+    }
+    Ok(())
+}
+
+fn load_exact_source_revision_registry(
+    repo_root: &Path,
+    source_revision: &str,
+    max_registry_packs: u64,
+) -> Result<(
+    SourceRevisionRegistryAuthority,
+    Vec<CommittedSourceUniverseExecutionPack>,
+)> {
+    let authority =
+        source_revision_registry_authority(repo_root, source_revision, max_registry_packs)
+            .context("resolve exact source-revision RA-001a registry authority")?;
+    let committed = discover_committed_source_universe_execution_packs_from_scope_names(
+        repo_root,
+        &authority.scope_names,
+    )
+    .context("discover exact source-revision RA-001a execution-pack registry")?;
+    validate_committed_registry_against_source_revision(&authority, &committed)
+        .context("bind RA-001a control bytes to exact source-revision Git blobs")?;
+    Ok((authority, committed))
 }
 
 fn ensure_git_index_has_no_hidden_paths(git_executable: &Path, repo_root: &Path) -> Result<()> {
@@ -1104,72 +1403,14 @@ pub fn verify_source_universe_durable_tracer_checkout(
     expected_source_revision: &str,
     policy: &SourceUniverseDurableTracerCheckoutPolicy,
 ) -> Result<()> {
-    validate_source_revision(expected_source_revision)?;
     policy.validate()?;
-    ensure!(
-        repo_root.is_absolute(),
-        "RA-001a repository root must be absolute"
-    );
-    let canonical_root = repo_root.canonicalize().with_context(|| {
-        format!(
-            "canonicalize RA-001a repository root {}",
-            repo_root.display()
-        )
-    })?;
-    ensure!(
-        canonical_root.is_dir(),
-        "RA-001a repository root must be one directory"
-    );
-    let canonical_root_text = canonical_root
-        .to_str()
-        .context("RA-001a repository root must be UTF-8")?;
-    let git_executable = resolve_git_executable()?;
-    let top_level = parse_single_git_line(
-        run_git_stdout_bounded(
-            &git_executable,
-            &canonical_root,
-            &["rev-parse", "--path-format=absolute", "--show-toplevel"],
-            canonical_root_text.len().saturating_add(2),
-            "repository-root resolution",
-        )?,
-        "repository-root resolution",
-    )?;
-    let resolved_top_level = Path::new(&top_level)
-        .canonicalize()
-        .with_context(|| format!("canonicalize Git top level {top_level}"))?;
-    ensure!(
-        resolved_top_level == canonical_root,
-        "RA-001a repository root {} is not the exact Git top level {}",
-        canonical_root.display(),
-        resolved_top_level.display()
-    );
-
-    let read_head = || -> Result<String> {
-        parse_single_git_line(
-            run_git_stdout_bounded(
-                &git_executable,
-                &canonical_root,
-                &["rev-parse", "--verify", "HEAD^{commit}"],
-                65,
-                "HEAD resolution",
-            )?,
-            "HEAD resolution",
-        )
-    };
-    let head_before_status = read_head()?;
-    validate_source_revision(&head_before_status)?;
-    ensure!(
-        head_before_status == expected_source_revision,
-        "checkout HEAD {head_before_status} does not match expected source revision {expected_source_revision}"
-    );
+    let (canonical_root, git_executable) =
+        resolve_exact_git_revision_checkout(repo_root, expected_source_revision)?;
     ensure_git_index_has_no_hidden_paths(&git_executable, &canonical_root)?;
     ensure_git_checkout_has_no_changes(&git_executable, &canonical_root)?;
     ensure_git_ignored_entries_are_runtime_outputs(&git_executable, &canonical_root, policy)?;
-    let head_after_status = read_head()?;
-    ensure!(
-        head_after_status == expected_source_revision,
-        "checkout HEAD {head_after_status} does not match expected source revision {expected_source_revision} after cleanliness verification"
-    );
+    let _ = resolve_exact_git_revision_checkout(&canonical_root, expected_source_revision)
+        .context("revalidate exact Git checkout identity after cleanliness verification")?;
     Ok(())
 }
 
@@ -1177,14 +1418,11 @@ pub fn verify_source_universe_durable_tracer_checkout(
 pub fn build_source_universe_durable_tracer_receipt_set(
     repo_root: &Path,
     source_revision: &str,
-    expected_worker_executable_sha256: &str,
+    expected_worker_executable: &SourceUniverseDurableTracerArtifactPin,
     registry_run: &SourceUniverseDurableTracerRegistryRun,
 ) -> Result<SourceUniverseDurableTracerReceiptSet> {
     validate_source_revision(source_revision)?;
-    ensure!(
-        is_lowercase_sha256_hex(expected_worker_executable_sha256),
-        "expected worker executable SHA-256 must be lowercase hex"
-    );
+    expected_worker_executable.validate("expected worker executable")?;
     ensure!(
         registry_run.registry.source_revision == source_revision,
         "admitted registry snapshot source revision mismatch"
@@ -1193,7 +1431,28 @@ pub fn build_source_universe_durable_tracer_receipt_set(
         is_lowercase_sha256_hex(&registry_run.registry.registry_tree_sha256),
         "admitted registry tree SHA-256 must be lowercase hex"
     );
+    registry_run.registry.applied_policy.validate()?;
+    ensure!(
+        &registry_run.registry.worker_executable == expected_worker_executable,
+        "admitted worker executable pin mismatch"
+    );
+    ensure!(
+        expected_worker_executable.bytes
+            <= registry_run
+                .registry
+                .applied_policy
+                .max_worker_executable_bytes,
+        "admitted worker executable pin exceeds the applied ceiling"
+    );
     let committed = &registry_run.registry.packs;
+    let recomputed_aggregate = validate_source_universe_durable_tracer_aggregate_limits(
+        committed,
+        registry_run.registry.applied_policy.aggregate_limits,
+    )?;
+    ensure!(
+        recomputed_aggregate == registry_run.aggregate,
+        "admitted RA-001a aggregate envelope changed before receipt construction"
+    );
     let expected_ids = expected_pack_ids(&committed);
     let indexed_inputs = index_report_inputs(&registry_run.report_inputs)?;
     let actual_ids = indexed_inputs
@@ -1250,13 +1509,16 @@ pub fn build_source_universe_durable_tracer_receipt_set(
         schema_version: SOURCE_UNIVERSE_DURABLE_TRACER_RECEIPT_SET_SCHEMA_VERSION.to_string(),
         source_revision: source_revision.to_string(),
         registry_tree_sha256: registry_run.registry.registry_tree_sha256.clone(),
-        worker_executable_sha256: expected_worker_executable_sha256.to_string(),
+        worker_executable: expected_worker_executable.clone(),
+        applied_policy: registry_run.registry.applied_policy.clone(),
+        aggregate: registry_run.aggregate,
         receipts,
     };
     validate_source_universe_durable_tracer_receipt_set(
         repo_root,
         source_revision,
-        expected_worker_executable_sha256,
+        expected_worker_executable,
+        &registry_run.registry.applied_policy,
         &receipt_set,
     )?;
     Ok(receipt_set)
@@ -1351,18 +1613,16 @@ fn validate_report_record_exact_fields(
     Ok(())
 }
 
-/// Revalidate a portable receipt set against the current complete registry.
+/// Revalidate a portable receipt set against the exact source-revision registry.
 pub fn validate_source_universe_durable_tracer_receipt_set(
     repo_root: &Path,
     expected_source_revision: &str,
-    expected_worker_executable_sha256: &str,
+    expected_worker_executable: &SourceUniverseDurableTracerArtifactPin,
+    expected_policy: &SourceUniverseDurableTracerRunPolicy,
     receipt_set: &SourceUniverseDurableTracerReceiptSet,
 ) -> Result<()> {
     validate_source_revision(expected_source_revision)?;
-    ensure!(
-        is_lowercase_sha256_hex(expected_worker_executable_sha256),
-        "expected worker executable SHA-256 must be lowercase hex"
-    );
+    expected_worker_executable.validate("expected worker executable")?;
     ensure!(
         receipt_set.schema_version == SOURCE_UNIVERSE_DURABLE_TRACER_RECEIPT_SET_SCHEMA_VERSION,
         "durable tracer receipt-set schema_version mismatch"
@@ -1376,33 +1636,48 @@ pub fn validate_source_universe_durable_tracer_receipt_set(
         "durable tracer receipt-set registry tree SHA-256 must be lowercase hex"
     );
     ensure!(
-        receipt_set.worker_executable_sha256 == expected_worker_executable_sha256,
-        "durable tracer receipt-set worker executable SHA-256 mismatch"
+        &receipt_set.worker_executable == expected_worker_executable,
+        "durable tracer receipt-set worker executable pin mismatch"
+    );
+    expected_policy.validate()?;
+    ensure!(
+        &receipt_set.applied_policy == expected_policy,
+        "durable tracer receipt-set applied policy mismatch"
+    );
+    ensure!(
+        receipt_set.worker_executable.bytes
+            <= receipt_set.applied_policy.max_worker_executable_bytes,
+        "durable tracer receipt-set worker executable pin exceeds the applied ceiling"
     );
     ensure!(
         !receipt_set.receipts.is_empty()
             && receipt_set
-            .receipts
-            .windows(2)
-            .all(|pair| pair[0].pack_id < pair[1].pack_id),
+                .receipts
+                .windows(2)
+                .all(|pair| pair[0].pack_id < pair[1].pack_id),
         "durable tracer receipts must be non-empty with strict pack_id order without duplicates"
     );
 
-    let receipt_pack_ceiling = u64::try_from(receipt_set.receipts.len())
-        .context("durable tracer receipt count does not fit u64")?;
-    let authority = source_revision_registry_authority(
+    let (authority, committed) = load_exact_source_revision_registry(
         repo_root,
         expected_source_revision,
-        receipt_pack_ceiling,
+        receipt_set
+            .applied_policy
+            .aggregate_limits
+            .max_registry_packs,
     )?;
     ensure!(
         receipt_set.registry_tree_sha256 == authority.registry_tree_sha256,
         "durable tracer receipt-set registry tree SHA-256 mismatch"
     );
-    let committed = discover_committed_source_universe_execution_packs_from_scope_names(
-        repo_root,
-        &authority.scope_names,
+    let recomputed_aggregate = validate_source_universe_durable_tracer_aggregate_limits(
+        &committed,
+        receipt_set.applied_policy.aggregate_limits,
     )?;
+    ensure!(
+        receipt_set.aggregate == recomputed_aggregate,
+        "durable tracer receipt-set aggregate envelope mismatch"
+    );
     let expected_ids = expected_pack_ids(&committed);
     let actual_ids = receipt_set
         .receipts
@@ -1456,7 +1731,7 @@ pub fn validate_source_universe_durable_tracer_receipt_set(
 
         validate_source_universe_batch_execution_report(&receipt.batch_report)?;
         validate_report_against_pack(
-            expected_worker_executable_sha256,
+            &expected_worker_executable.sha256,
             &pack,
             &execution_pack,
             &receipt.batch_report,
@@ -1480,7 +1755,8 @@ pub fn validate_source_universe_durable_tracer_receipt_set(
 pub fn parse_and_validate_source_universe_durable_tracer_receipt_set(
     repo_root: &Path,
     expected_source_revision: &str,
-    expected_worker_executable_sha256: &str,
+    expected_worker_executable: &SourceUniverseDurableTracerArtifactPin,
+    expected_policy: &SourceUniverseDurableTracerRunPolicy,
     bytes: &[u8],
 ) -> Result<SourceUniverseDurableTracerReceiptSet> {
     let receipt_set: SourceUniverseDurableTracerReceiptSet =
@@ -1494,7 +1770,8 @@ pub fn parse_and_validate_source_universe_durable_tracer_receipt_set(
     validate_source_universe_durable_tracer_receipt_set(
         repo_root,
         expected_source_revision,
-        expected_worker_executable_sha256,
+        expected_worker_executable,
+        expected_policy,
         &receipt_set,
     )?;
     Ok(receipt_set)
@@ -1505,7 +1782,8 @@ pub fn write_source_universe_durable_tracer_receipt_set(
     path: &Path,
     repo_root: &Path,
     expected_source_revision: &str,
-    expected_worker_executable_sha256: &str,
+    expected_worker_executable: &SourceUniverseDurableTracerArtifactPin,
+    expected_policy: &SourceUniverseDurableTracerRunPolicy,
     receipt_set: &SourceUniverseDurableTracerReceiptSet,
     work_budget: &OperatorWorkBudgetGuard,
 ) -> Result<SourceUniverseDurableTracerReceiptSetArtifact> {
@@ -1517,7 +1795,8 @@ pub fn write_source_universe_durable_tracer_receipt_set(
     validate_source_universe_durable_tracer_receipt_set(
         repo_root,
         expected_source_revision,
-        expected_worker_executable_sha256,
+        expected_worker_executable,
+        expected_policy,
         receipt_set,
     )?;
     let bytes = crate::reference_artifact::canonical_json_bytes(receipt_set)
@@ -1550,7 +1829,8 @@ pub fn write_source_universe_durable_tracer_receipt_set(
 pub fn read_and_validate_source_universe_durable_tracer_receipt_set(
     repo_root: &Path,
     expected_source_revision: &str,
-    expected_worker_executable_sha256: &str,
+    expected_worker_executable: &SourceUniverseDurableTracerArtifactPin,
+    expected_policy: &SourceUniverseDurableTracerRunPolicy,
     artifact: &SourceUniverseDurableTracerReceiptSetArtifact,
 ) -> Result<SourceUniverseDurableTracerReceiptSet> {
     ensure!(
@@ -1571,14 +1851,19 @@ pub fn read_and_validate_source_universe_durable_tracer_receipt_set(
     parse_and_validate_source_universe_durable_tracer_receipt_set(
         repo_root,
         expected_source_revision,
-        expected_worker_executable_sha256,
+        expected_worker_executable,
+        expected_policy,
         &pinned.bytes,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, process::Command};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+    };
 
     use tempfile::TempDir;
 
@@ -1606,12 +1891,12 @@ mod tests {
     use super::{
         CommittedRegistrySnapshot, SourceUniverseDurableTracerAggregateLimits,
         SourceUniverseDurableTracerCheckoutPolicy, SourceUniverseDurableTracerRegistryRun,
-        SourceUniverseDurableTracerReportInput, build_source_universe_durable_tracer_receipt_set,
+        SourceUniverseDurableTracerReportInput, SourceUniverseDurableTracerRunPolicy,
+        build_source_universe_durable_tracer_receipt_set, load_exact_source_revision_registry,
         parse_and_validate_source_universe_durable_tracer_receipt_set,
         read_and_validate_source_universe_durable_tracer_receipt_set,
         run_admitted_source_universe_durable_tracer_registry,
-        run_source_universe_durable_tracer_registry,
-        source_revision_registry_authority,
+        run_source_universe_durable_tracer_registry, source_revision_registry_authority,
         validate_source_universe_durable_tracer_aggregate_limits,
         validate_source_universe_durable_tracer_receipt_set,
         verify_source_universe_durable_tracer_checkout,
@@ -1623,6 +1908,25 @@ mod tests {
     const CATALOG_SHA256: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const COMPLETION_SHA256: &str =
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const EXPECTED_POLICY_SHA256: &str =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    fn expected_worker_pin() -> super::SourceUniverseDurableTracerArtifactPin {
+        super::SourceUniverseDurableTracerArtifactPin {
+            bytes: 1,
+            sha256: EXPECTED_WORKER_SHA256.to_string(),
+        }
+    }
+
+    fn run_policy(
+        aggregate_limits: SourceUniverseDurableTracerAggregateLimits,
+    ) -> SourceUniverseDurableTracerRunPolicy {
+        SourceUniverseDurableTracerRunPolicy {
+            aggregate_limits,
+            max_worker_executable_bytes: 1024,
+            trusted_policy_output_sha256: EXPECTED_POLICY_SHA256.to_string(),
+        }
+    }
 
     fn expected_source_revision() -> &'static str {
         static SOURCE_REVISION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -1800,6 +2104,53 @@ mod tests {
         (temp, head)
     }
 
+    fn copy_directory_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("create copied directory");
+        for entry in fs::read_dir(source).expect("read copied directory source") {
+            let entry = entry.expect("read copied directory entry");
+            let file_type = entry.file_type().expect("read copied entry type");
+            let target = destination.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_directory_tree(&entry.path(), &target);
+            } else {
+                assert!(
+                    file_type.is_file(),
+                    "test registry contains only files and directories"
+                );
+                fs::copy(entry.path(), target).expect("copy registry file");
+            }
+        }
+    }
+
+    fn initialized_exact_registry_repo() -> (TempDir, String) {
+        let (temp, _) = initialized_git_repo();
+        let source = repo_root().join(COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT);
+        let destination = temp
+            .path()
+            .join(COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT);
+        copy_directory_tree(&source, &destination);
+        run_git(
+            temp.path(),
+            &["add", "--", COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT],
+        );
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "exact registry",
+            ],
+        );
+        let head = String::from_utf8(run_git(temp.path(), &["rev-parse", "HEAD"]).stdout)
+            .expect("exact registry HEAD is UTF-8")
+            .trim()
+            .to_string();
+        (temp, head)
+    }
+
     #[test]
     fn checkout_verifier_accepts_exact_clean_revision() {
         let (temp, head) = initialized_git_repo();
@@ -1845,8 +2196,7 @@ mod tests {
 
         let late_scope = registry.join("gamma-scope");
         fs::create_dir_all(&late_scope).expect("create late worktree scope");
-        fs::write(late_scope.join("marker"), b"gamma-scope")
-            .expect("write late worktree marker");
+        fs::write(late_scope.join("marker"), b"gamma-scope").expect("write late worktree marker");
         let authority_a_after_late_entry =
             source_revision_registry_authority(temp.path(), &revision_a, 2)
                 .expect("late worktree entry is inert for revision A");
@@ -1889,14 +2239,210 @@ mod tests {
         );
     }
 
+    #[test]
+    fn source_revision_registry_rejects_dirty_control_bytes_before_admission() {
+        let (temp, revision) = initialized_exact_registry_repo();
+        let (authority, packs) = load_exact_source_revision_registry(temp.path(), &revision, 64)
+            .expect("load clean exact-source registry");
+        assert_eq!(authority.scope_names.len(), packs.len());
+
+        let launch_path = packs[0].launch_path.clone();
+        let original_launch = fs::read(&launch_path).expect("read exact launch fixture");
+        let launch_text = String::from_utf8(original_launch.clone()).expect("launch is UTF-8");
+        let changed_launch = launch_text.replacen(
+            "fetch_timeout_seconds = 300",
+            "fetch_timeout_seconds = 301",
+            1,
+        );
+        assert_ne!(changed_launch.as_bytes(), original_launch.as_slice());
+        fs::write(&launch_path, changed_launch).expect("write dirty launch materialization");
+        let launch_error = load_exact_source_revision_registry(temp.path(), &revision, 64)
+            .expect_err("dirty launch must not claim exact source revision");
+        assert!(
+            format!("{launch_error:#}")
+                .contains("does not match the exact source-revision Git blob")
+        );
+
+        fs::write(&launch_path, &original_launch).expect("restore exact launch fixture");
+        let (_, restored) = load_exact_source_revision_registry(temp.path(), &revision, 64)
+            .expect("restored exact-source registry loads");
+        let summary_path = restored[0].summary_path.clone();
+        let mut changed_summary = fs::read(&summary_path).expect("read exact summary fixture");
+        changed_summary.push(b'\n');
+        fs::write(&summary_path, &changed_summary).expect("write dirty summary materialization");
+        let mut changed_launch: toml::Value =
+            toml::from_slice(&original_launch).expect("parse launch fixture");
+        changed_launch["execution_pack"]["bytes"] = toml::Value::Integer(
+            i64::try_from(changed_summary.len()).expect("summary bytes fit i64"),
+        );
+        changed_launch["execution_pack"]["sha256"] =
+            toml::Value::String(sha256_hex(&changed_summary));
+        fs::write(
+            &launch_path,
+            toml::to_string(&changed_launch).expect("serialize coherent dirty launch"),
+        )
+        .expect("write coherent dirty launch");
+        let coherent_error = load_exact_source_revision_registry(temp.path(), &revision, 64)
+            .expect_err("coherently changed launch and summary must not claim revision");
+        assert!(
+            format!("{coherent_error:#}")
+                .contains("does not match the exact source-revision Git blob")
+        );
+    }
+
+    #[test]
+    fn source_revision_registry_rejects_dirty_generator_and_non_regular_git_modes() {
+        let (temp, revision) = initialized_exact_registry_repo();
+        let (_, packs) = load_exact_source_revision_registry(temp.path(), &revision, 64)
+            .expect("load clean exact-source registry");
+        let generator_path = packs[0].generator_spec_path.clone();
+        let original_generator = fs::read(&generator_path).expect("read exact generator fixture");
+        let mut dirty_generator = original_generator.clone();
+        dirty_generator.push(b'\n');
+        fs::write(&generator_path, dirty_generator).expect("write dirty generator materialization");
+        let generator_error = load_exact_source_revision_registry(temp.path(), &revision, 64)
+            .expect_err("dirty generator must not claim exact source revision");
+        assert!(
+            format!("{generator_error:#}")
+                .contains("does not match the exact source-revision Git blob")
+        );
+
+        fs::write(&generator_path, original_generator).expect("restore exact generator fixture");
+        run_git(
+            temp.path(),
+            &[
+                "update-index",
+                "--chmod=+x",
+                "--",
+                generator_path
+                    .strip_prefix(temp.path())
+                    .expect("generator is below fixture root")
+                    .to_str()
+                    .expect("generator path is UTF-8"),
+            ],
+        );
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "make generator executable",
+            ],
+        );
+        let executable_revision =
+            String::from_utf8(run_git(temp.path(), &["rev-parse", "HEAD"]).stdout)
+                .expect("executable-mode revision is UTF-8")
+                .trim()
+                .to_string();
+        let mode_error = load_exact_source_revision_registry(temp.path(), &executable_revision, 64)
+            .expect_err("non-100644 control mode must fail exact-source admission");
+        assert!(format!("{mode_error:#}").contains("must be one exact 100644 Git blob"));
+    }
+
+    #[test]
+    fn source_revision_registry_rejects_a_nested_repository_path() {
+        let (temp, revision) = initialized_exact_registry_repo();
+        let nested = temp.path().join("nested");
+        fs::create_dir_all(&nested).expect("create nested repository path");
+        let error = load_exact_source_revision_registry(&nested, &revision, 64)
+            .expect_err("registry authority must bind the exact Git top level");
+        assert!(format!("{error:#}").contains("not the exact Git top level"));
+    }
+
+    #[test]
+    fn source_revision_registry_disables_replacements_and_rejects_non_commit_ids() {
+        let (temp, _) = initialized_git_repo();
+        let registry = temp
+            .path()
+            .join(COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT);
+        let alpha = registry.join("alpha-scope");
+        fs::create_dir_all(&alpha).expect("create alpha registry scope");
+        fs::write(alpha.join("marker"), b"alpha").expect("write alpha marker");
+        run_git(
+            temp.path(),
+            &["add", "--", COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT],
+        );
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "revision a",
+            ],
+        );
+        let revision_a = String::from_utf8(run_git(temp.path(), &["rev-parse", "HEAD"]).stdout)
+            .expect("revision A is UTF-8")
+            .trim()
+            .to_string();
+        fs::rename(&alpha, registry.join("beta-scope")).expect("replace registry scope");
+        run_git(
+            temp.path(),
+            &["add", "--", COMMITTED_SOURCE_UNIVERSE_EXECUTION_PACK_ROOT],
+        );
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "revision b",
+            ],
+        );
+        let revision_b = String::from_utf8(run_git(temp.path(), &["rev-parse", "HEAD"]).stdout)
+            .expect("revision B is UTF-8")
+            .trim()
+            .to_string();
+        run_git(temp.path(), &["replace", &revision_a, &revision_b]);
+        run_git(temp.path(), &["update-ref", "HEAD", &revision_a]);
+        let authority = source_revision_registry_authority(temp.path(), &revision_a, 1)
+            .expect("replacement object cannot redirect exact revision A");
+        assert_eq!(authority.scope_names, ["alpha-scope"]);
+
+        let tree_oid = String::from_utf8(
+            run_git(
+                temp.path(),
+                &["rev-parse", &format!("{revision_a}^{{tree}}")],
+            )
+            .stdout,
+        )
+        .expect("tree object ID is UTF-8")
+        .trim()
+        .to_string();
+        assert!(source_revision_registry_authority(temp.path(), &tree_oid, 1).is_err());
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "tag.gpgsign=false",
+                "tag",
+                "-a",
+                "revision-a-tag",
+                "-m",
+                "revision A",
+                &revision_a,
+            ],
+        );
+        let tag_oid =
+            String::from_utf8(run_git(temp.path(), &["rev-parse", "revision-a-tag"]).stdout)
+                .expect("tag object ID is UTF-8")
+                .trim()
+                .to_string();
+        assert!(source_revision_registry_authority(temp.path(), &tag_oid, 1).is_err());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn registry_runner_rejects_unreviewed_worker_before_any_pack_launch() {
         let worker = PathBuf::from("/usr/bin/true");
-        let worker_bytes = worker
-            .metadata()
-            .expect("stat worker fixture")
-            .len();
+        let worker_bytes = worker.metadata().expect("stat worker fixture").len();
         let pack_count = u64::try_from(
             discover_committed_source_universe_execution_packs(&repo_root())
                 .expect("discover committed registry fixture")
@@ -1907,11 +2453,17 @@ mod tests {
             &repo_root(),
             expected_source_revision(),
             &worker,
-            &sha256_hex(b"different reviewed executable"),
-            worker_bytes,
-            SourceUniverseDurableTracerAggregateLimits {
-                max_registry_packs: pack_count,
-                max_total_selected_object_bytes: u64::MAX,
+            &SourceUniverseDurableTracerArtifactPin {
+                bytes: worker_bytes,
+                sha256: sha256_hex(b"different reviewed executable"),
+            },
+            SourceUniverseDurableTracerRunPolicy {
+                aggregate_limits: SourceUniverseDurableTracerAggregateLimits {
+                    max_registry_packs: pack_count,
+                    max_total_selected_object_bytes: u64::MAX,
+                },
+                max_worker_executable_bytes: worker_bytes,
+                trusted_policy_output_sha256: EXPECTED_POLICY_SHA256.to_string(),
             },
         )
         .expect_err("unreviewed executable must fail before registry fanout");
@@ -2152,23 +2704,21 @@ mod tests {
                 .len(),
         )
         .expect("committed registry count fits u64");
-        let authority = source_revision_registry_authority(
-            &repo_root,
-            source_revision,
-            pack_ceiling,
-        )
-        .expect("resolve test source-revision registry authority");
+        let authority =
+            source_revision_registry_authority(&repo_root, source_revision, pack_ceiling)
+                .expect("resolve test source-revision registry authority");
         let packs = discover_committed_source_universe_execution_packs_from_scope_names(
             &repo_root,
             &authority.scope_names,
         )
         .expect("discover test source-revision registry snapshot");
+        let applied_policy = run_policy(SourceUniverseDurableTracerAggregateLimits {
+            max_registry_packs: pack_ceiling,
+            max_total_selected_object_bytes: u64::MAX,
+        });
         let aggregate = validate_source_universe_durable_tracer_aggregate_limits(
             &packs,
-            SourceUniverseDurableTracerAggregateLimits {
-                max_registry_packs: pack_ceiling,
-                max_total_selected_object_bytes: u64::MAX,
-            },
+            applied_policy.aggregate_limits,
         )
         .expect("preflight test source-revision registry snapshot");
         SourceUniverseDurableTracerRegistryRun {
@@ -2177,6 +2727,8 @@ mod tests {
             registry: CommittedRegistrySnapshot {
                 source_revision: source_revision.to_string(),
                 registry_tree_sha256: authority.registry_tree_sha256,
+                applied_policy,
+                worker_executable: expected_worker_pin(),
                 packs,
             },
         }
@@ -2497,21 +3049,22 @@ mod tests {
         let receipts = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect("build registry-complete durable tracer receipts");
         validate_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &receipts,
         )
         .expect("validate durable tracer receipts");
 
         assert_eq!(receipts.receipts.len(), inputs.len());
         assert_eq!(receipts.source_revision, expected_source_revision());
-        assert_eq!(receipts.worker_executable_sha256, EXPECTED_WORKER_SHA256);
+        assert_eq!(receipts.worker_executable, expected_worker_pin());
         assert!(
             receipts
                 .receipts
@@ -2534,7 +3087,7 @@ mod tests {
         let duplicate_error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(duplicate),
         )
         .expect_err("duplicate pack identity must fail");
@@ -2544,7 +3097,7 @@ mod tests {
         let missing_error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(missing.to_vec()),
         )
         .expect_err("missing pack identity must fail");
@@ -2558,7 +3111,7 @@ mod tests {
         let extra_error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(extra),
         )
         .expect_err("extra pack identity must fail");
@@ -2576,7 +3129,7 @@ mod tests {
         let digest_error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect_err("worker digest disagreement must fail");
@@ -2599,7 +3152,7 @@ mod tests {
         build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect("tracer validates but does not equate an immutable terminal publisher");
@@ -2609,7 +3162,7 @@ mod tests {
         let error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect_err("tampered terminal publisher must fail closed");
@@ -2626,7 +3179,7 @@ mod tests {
         let rows_error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect_err("zero canonical rows must fail");
@@ -2648,7 +3201,7 @@ mod tests {
         let locator_error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect_err("null version cannot identify immutable durable output");
@@ -2665,7 +3218,7 @@ mod tests {
         let hash_error = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect_err("malformed durable object hash must fail");
@@ -2679,7 +3232,7 @@ mod tests {
         let receipts = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect("build receipt set");
@@ -2702,7 +3255,8 @@ mod tests {
                 validate_source_universe_durable_tracer_receipt_set(
                     &repo_root(),
                     expected_source_revision(),
-                    EXPECTED_WORKER_SHA256,
+                    &expected_worker_pin(),
+                    &receipts.applied_policy,
                     &tampered,
                 )
                 .is_err()
@@ -2717,7 +3271,7 @@ mod tests {
         let receipts = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect("build receipt set");
@@ -2727,7 +3281,8 @@ mod tests {
             parse_and_validate_source_universe_durable_tracer_receipt_set(
                 &repo_root(),
                 expected_source_revision(),
-                EXPECTED_WORKER_SHA256,
+                &expected_worker_pin(),
+                &receipts.applied_policy,
                 &canonical,
             )
             .expect("parse canonical receipt set"),
@@ -2738,7 +3293,8 @@ mod tests {
         let canonical_error = parse_and_validate_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &compact,
         )
         .expect_err("noncanonical receipt bytes must fail");
@@ -2749,18 +3305,78 @@ mod tests {
         let registry_error = validate_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &wrong_registry,
         )
         .expect_err("receipt must bind the exact source-revision registry tree");
-        assert!(registry_error.to_string().contains("registry tree SHA-256 mismatch"));
+        assert!(
+            registry_error
+                .to_string()
+                .contains("registry tree SHA-256 mismatch")
+        );
+
+        let policy_mutations: [fn(&mut SourceUniverseDurableTracerRunPolicy); 4] = [
+            |policy| policy.aggregate_limits.max_registry_packs += 1,
+            |policy| policy.aggregate_limits.max_total_selected_object_bytes += 1,
+            |policy| policy.max_worker_executable_bytes -= 1,
+            |policy| policy.trusted_policy_output_sha256 = "e".repeat(64),
+        ];
+        for mutate in policy_mutations {
+            let mut changed = receipts.clone();
+            mutate(&mut changed.applied_policy);
+            assert!(
+                validate_source_universe_durable_tracer_receipt_set(
+                    &repo_root(),
+                    expected_source_revision(),
+                    &expected_worker_pin(),
+                    &receipts.applied_policy,
+                    &changed,
+                )
+                .is_err(),
+                "receipt mutation must not change the applied cost policy"
+            );
+        }
+        let aggregate_mutations: [fn(&mut super::SourceUniverseDurableTracerAggregateEnvelope); 3] = [
+            |aggregate| aggregate.registry_packs += 1,
+            |aggregate| aggregate.total_selected_records += 1,
+            |aggregate| aggregate.total_selected_object_bytes += 1,
+        ];
+        for mutate in aggregate_mutations {
+            let mut changed = receipts.clone();
+            mutate(&mut changed.aggregate);
+            assert!(
+                validate_source_universe_durable_tracer_receipt_set(
+                    &repo_root(),
+                    expected_source_revision(),
+                    &expected_worker_pin(),
+                    &receipts.applied_policy,
+                    &changed,
+                )
+                .is_err(),
+                "receipt mutation must not change the computed aggregate envelope"
+            );
+        }
+        let mut changed_worker_pin = receipts.clone();
+        changed_worker_pin.worker_executable.bytes += 1;
+        assert!(
+            validate_source_universe_durable_tracer_receipt_set(
+                &repo_root(),
+                expected_source_revision(),
+                &expected_worker_pin(),
+                &receipts.applied_policy,
+                &changed_worker_pin,
+            )
+            .is_err()
+        );
 
         let mut duplicate = receipts.clone();
         duplicate.receipts.push(receipts.receipts[0].clone());
         let duplicate_error = validate_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &duplicate,
         )
         .expect_err("duplicate receipt identity must fail");
@@ -2769,7 +3385,8 @@ mod tests {
         let revision_error = validate_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             "2222222222222222222222222222222222222222",
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &receipts,
         )
         .expect_err("receipt source revision mismatch must fail");
@@ -2788,7 +3405,7 @@ mod tests {
         let receipts = build_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
             &registry_run_with_inputs(inputs.clone()),
         )
         .expect("build receipt set");
@@ -2799,7 +3416,8 @@ mod tests {
             &output,
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &receipts,
             &guard,
         )
@@ -2808,7 +3426,8 @@ mod tests {
             &output,
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &receipts,
             &guard,
         )
@@ -2822,7 +3441,8 @@ mod tests {
             read_and_validate_source_universe_durable_tracer_receipt_set(
                 &repo_root(),
                 expected_source_revision(),
-                EXPECTED_WORKER_SHA256,
+                &expected_worker_pin(),
+                &receipts.applied_policy,
                 &first,
             )
             .expect("reopen exact pinned receipt set"),
@@ -2842,7 +3462,8 @@ mod tests {
             &output,
             &repo_root(),
             expected_source_revision(),
-            EXPECTED_WORKER_SHA256,
+            &expected_worker_pin(),
+            &receipts.applied_policy,
             &changed,
             &guard,
         )

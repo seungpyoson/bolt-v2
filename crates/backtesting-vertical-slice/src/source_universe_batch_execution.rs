@@ -1976,17 +1976,23 @@ impl PinnedWorkerExecutable {
         expected_sha256: &str,
         max_bytes: u64,
     ) -> Result<Self> {
-        ensure!(path.is_absolute(), "worker executable path must be absolute");
+        ensure!(
+            path.is_absolute(),
+            "worker executable path must be absolute"
+        );
         ensure!(
             crate::hashing::is_lowercase_sha256_hex(expected_sha256),
             "expected worker executable SHA-256 must be lowercase hex"
         );
-        ensure!(max_bytes > 0, "worker executable byte ceiling must be positive");
+        ensure!(
+            max_bytes > 0,
+            "worker executable byte ceiling must be positive"
+        );
 
         let mut source_options = fs::OpenOptions::new();
-        source_options.read(true).custom_flags(
-            libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-        );
+        source_options
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
         let mut source = source_options
             .open(path)
             .with_context(|| format!("open reviewed worker executable {}", path.display()))?;
@@ -2009,7 +2015,7 @@ impl PinnedWorkerExecutable {
         let raw_fd = unsafe {
             libc::memfd_create(
                 name.as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING | libc::MFD_EXEC,
             )
         };
         if raw_fd < 0 {
@@ -2044,31 +2050,55 @@ impl PinnedWorkerExecutable {
         sealed
             .set_permissions(fs::Permissions::from_mode(0o500))
             .context("make anonymous worker capability owner-executable")?;
-        let required_seals =
-            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        let required_seals = libc::F_SEAL_WRITE
+            | libc::F_SEAL_GROW
+            | libc::F_SEAL_SHRINK
+            | libc::F_SEAL_EXEC
+            | libc::F_SEAL_SEAL;
         // SAFETY: `sealed` is a live memfd created with MFD_ALLOW_SEALING.
         if unsafe { libc::fcntl(sealed.as_raw_fd(), libc::F_ADD_SEALS, required_seals) } != 0 {
             return Err(std::io::Error::last_os_error())
                 .context("seal anonymous worker execution capability");
         }
-        let metadata = sealed
+        let writable_metadata = sealed
             .metadata()
             .context("fstat sealed worker execution capability")?;
+        let proc_path = CString::new(format!("/proc/self/fd/{}", sealed.as_raw_fd()))
+            .context("construct sealed worker /proc descriptor path")?;
+        // SAFETY: `proc_path` names the still-live exact sealed memfd. The
+        // reopened descriptor is immediately transferred to `File` and bound
+        // back to the original inode before the writable-open descriptor is
+        // closed. Retaining only O_RDONLY prevents ETXTBSY at exec time.
+        let read_fd = unsafe { libc::open(proc_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        if read_fd < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("reopen sealed worker execution capability read-only");
+        }
+        // SAFETY: successful `open` returned one newly owned descriptor.
+        let read_only = unsafe { fs::File::from_raw_fd(read_fd) };
+        let read_only_metadata = read_only
+            .metadata()
+            .context("fstat read-only sealed worker execution capability")?;
+        ensure!(
+            read_only_metadata.dev() == writable_metadata.dev()
+                && read_only_metadata.ino() == writable_metadata.ino()
+                && read_only_metadata.len() == writable_metadata.len(),
+            "read-only sealed worker reopen changed inode identity"
+        );
+        drop(sealed);
         let executable = Self {
-            file: sealed,
-            byte_len: metadata.len(),
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            modified_seconds: metadata.mtime(),
-            modified_nanoseconds: metadata.mtime_nsec(),
-            changed_seconds: metadata.ctime(),
-            changed_nanoseconds: metadata.ctime_nsec(),
+            file: read_only,
+            byte_len: read_only_metadata.len(),
+            device: read_only_metadata.dev(),
+            inode: read_only_metadata.ino(),
+            modified_seconds: read_only_metadata.mtime(),
+            modified_nanoseconds: read_only_metadata.mtime_nsec(),
+            changed_seconds: read_only_metadata.ctime(),
+            changed_nanoseconds: read_only_metadata.ctime_nsec(),
             required_seals: Some(required_seals),
         };
-        let actual_sha256 = executable.hash_and_revalidate(
-            Some(expected_sha256),
-            &OperatorWorkBudgetGuard::unbounded(),
-        )?;
+        let actual_sha256 = executable
+            .hash_and_revalidate(Some(expected_sha256), &OperatorWorkBudgetGuard::unbounded())?;
         ensure!(
             actual_sha256 == expected_sha256,
             "sealed worker executable SHA-256 mismatch"
@@ -2096,7 +2126,23 @@ impl PinnedWorkerExecutable {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn byte_len(&self) -> u64 {
+        0
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn revalidate_identity(&self) -> Result<()> {
+        // SAFETY: `self.file` is a live descriptor and F_GETFL is read-only.
+        let descriptor_flags = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GETFL) };
+        ensure!(
+            descriptor_flags >= 0 && descriptor_flags & libc::O_ACCMODE == libc::O_RDONLY,
+            "worker executable capability must retain a read-only descriptor"
+        );
         let metadata = self
             .file
             .metadata()
@@ -7091,12 +7137,17 @@ mod tests {
         let reviewed_bytes = fs::read(&origin).expect("read reviewed executable");
         let reviewed_sha256 = crate::hashing::sha256_hex(&reviewed_bytes);
         let max_bytes = u64::try_from(reviewed_bytes.len()).expect("worker bytes fit u64");
-        let executable = PinnedWorkerExecutable::capture_external_sealed(
-            &origin,
-            &reviewed_sha256,
-            max_bytes,
-        )
-        .expect("capture sealed reviewed worker");
+        let executable =
+            PinnedWorkerExecutable::capture_external_sealed(&origin, &reviewed_sha256, max_bytes)
+                .expect("capture sealed reviewed worker");
+        // SAFETY: the executable owns a live descriptor and F_GETFL is
+        // read-only. Execution must never retain the memfd's original O_RDWR
+        // description because Linux may reject that with ETXTBSY.
+        let descriptor_flags = unsafe { libc::fcntl(executable.file.as_raw_fd(), libc::F_GETFL) };
+        assert!(
+            descriptor_flags >= 0 && descriptor_flags & libc::O_ACCMODE == libc::O_RDONLY,
+            "sealed worker executable must retain only a read-only descriptor"
+        );
 
         fs::rename(&origin, &displaced).expect("displace reviewed worker pathname");
         fs::copy("/usr/bin/false", &origin).expect("replace reviewed worker pathname");
@@ -7109,7 +7160,10 @@ mod tests {
                 .stderr(Stdio::null())
                 .status()
                 .expect("execute sealed reviewed worker");
-            assert!(status.success(), "replacement bytes executed instead of sealed bytes");
+            assert!(
+                status.success(),
+                "replacement bytes executed instead of sealed bytes"
+            );
         }
         executable
             .revalidate_identity()
@@ -7142,7 +7196,10 @@ mod tests {
             reviewed_len,
         )
         .expect_err("mismatched reviewed digest must fail before execution");
-        assert!(mismatch.to_string().contains("hash changed"), "{mismatch:#}");
+        assert!(
+            mismatch.to_string().contains("hash changed"),
+            "{mismatch:#}"
+        );
 
         let too_large = PinnedWorkerExecutable::capture_external_sealed(
             &origin,

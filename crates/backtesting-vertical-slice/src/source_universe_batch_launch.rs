@@ -304,7 +304,10 @@ fn pin_authoritative_registry_scopes(
             validate_portable_path_component("committed_execution_pack_scope", name)?;
             let path = registry.canonical_path.join(name);
             let metadata = fs::symlink_metadata(&path).with_context(|| {
-                format!("lstat source-revision execution-pack scope {}", path.display())
+                format!(
+                    "lstat source-revision execution-pack scope {}",
+                    path.display()
+                )
             })?;
             let identity = DirectoryIdentitySnapshot::capture(&path, &metadata)?;
             let canonical_path = path.canonicalize().with_context(|| {
@@ -333,6 +336,8 @@ fn pin_authoritative_registry_scopes(
 pub struct CommittedSourceUniverseExecutionPack {
     pub scope_dir: PathBuf,
     pub generator_spec_path: PathBuf,
+    pub generator_bytes: u64,
+    pub generator_sha256: String,
     pub launch_path: PathBuf,
     pub launch_bytes: u64,
     pub launch_sha256: String,
@@ -514,10 +519,7 @@ pub(crate) fn discover_committed_source_universe_execution_packs_from_scope_name
     repo_root: &Path,
     scope_names: &[String],
 ) -> Result<Vec<CommittedSourceUniverseExecutionPack>> {
-    discover_committed_source_universe_execution_packs_with_scopes(
-        repo_root,
-        Some(scope_names),
-    )
+    discover_committed_source_universe_execution_packs_with_scopes(repo_root, Some(scope_names))
 }
 
 fn discover_committed_source_universe_execution_packs_with_scopes(
@@ -600,6 +602,7 @@ fn discover_committed_source_universe_execution_packs_with_scopes(
             "execution-pack generator spec",
             (&canonical_scope_dir, &scope_lease.metadata),
         )?;
+        let generator_sha256 = sha256_hex(&generator_bytes);
         let generator_spec: SourceUniverseExecutionPackSpec = toml::from_slice(&generator_bytes)
             .with_context(|| {
                 format!(
@@ -723,6 +726,8 @@ fn discover_committed_source_universe_execution_packs_with_scopes(
         committed_packs.push(CommittedSourceUniverseExecutionPack {
             scope_dir: canonical_scope_dir,
             generator_spec_path: generator_spec_path.clone(),
+            generator_bytes: generator_identity.byte_len,
+            generator_sha256,
             launch_path: launch_path.clone(),
             launch_bytes: launch_identity.byte_len,
             launch_sha256,

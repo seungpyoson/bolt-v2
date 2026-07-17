@@ -1278,7 +1278,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "57d8d2fdf81d8946a807e2737ef91962b370de55015facb0d60de816493bbd14"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "f96f89d9c96da2f09df90f6dba0c4288c05d06a1a03a06ceb3daeda926801203"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -9004,6 +9004,7 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             "ra001a_max_registry_packs: ${{ steps.policy.outputs.ra001a_max_registry_packs }}",
             "ra001a_max_total_selected_object_bytes: ${{ steps.policy.outputs.ra001a_max_total_selected_object_bytes }}",
             "ra001a_max_worker_executable_bytes: ${{ steps.policy.outputs.ra001a_max_worker_executable_bytes }}",
+            "ra001a_trusted_policy_output_sha256: ${{ steps.policy.outputs.ra001a_trusted_policy_output_sha256 }}",
             "ra001a_max_wall_seconds: ${{ steps.policy.outputs.ra001a_max_wall_seconds }}",
             "ra001a_termination_grace_seconds: ${{ steps.policy.outputs.ra001a_termination_grace_seconds }}",
             "ra001a_allowed_ignored_runtime_roots: ${{ steps.policy.outputs.ra001a_allowed_ignored_runtime_roots }}",
@@ -9085,6 +9086,7 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             '[[ "$tracer_required" == "$RA001A_DURABLE_TRACER_REQUESTED" ]]',
             "trusted policy resolver tracer decision does not match the dispatch request",
             'cat "$policy_output" >> "$GITHUB_OUTPUT"',
+            "printf 'ra001a_trusted_policy_output_sha256=%s\\n' \"$policy_output_sha256\" >> \"$GITHUB_OUTPUT\"",
         )
         if any(required not in policy_text for required in timeout_validation_requirements):
             errors.append(
@@ -9230,6 +9232,10 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             'validation" >&2; exit 1; }'
         )
         publish_command = 'cat "$policy_output" >> "$GITHUB_OUTPUT"'
+        policy_digest_publish_command = (
+            "printf 'ra001a_trusted_policy_output_sha256=%s\\n' "
+            '"$policy_output_sha256" >> "$GITHUB_OUTPUT"'
+        )
         rehash_positions = [
             index
             for index, line in enumerate(policy_shell_commands)
@@ -9239,6 +9245,11 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             index
             for index, line in enumerate(policy_shell_commands)
             if line == publish_command
+        ]
+        policy_digest_publish_positions = [
+            index
+            for index, line in enumerate(policy_shell_commands)
+            if line == policy_digest_publish_command
         ]
         forbidden_output_mutation = any(
             re.match(r"^(?:command\s+)?(?:sed|rm|mv)\b", command)
@@ -9268,6 +9279,8 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             or len(rehash_positions) != 1
             or len(publish_positions) != 1
             or rehash_positions[0] + 1 != publish_positions[0]
+            or len(policy_digest_publish_positions) != 1
+            or publish_positions[0] + 1 != policy_digest_publish_positions[0]
             or forbidden_output_mutation
         ):
             errors.append(
@@ -9418,10 +9431,12 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
                     "env": {
                         "BOLT_RA001A_SOURCE_REVISION": "${{ github.sha }}",
                         "BOLT_RA001A_WORKER_SHA256": "${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}",
+                        "BOLT_RA001A_WORKER_BYTES": "${{ steps.ra001a-durable-tracer-inputs.outputs.worker_bytes }}",
                         "BOLT_RA001A_RECEIPT_PATH": "${{ steps.ra001a-durable-tracer-inputs.outputs.receipt_path }}",
                         "BOLT_RA001A_MAX_REGISTRY_PACKS": "${{ needs.ci-policy.outputs.ra001a_max_registry_packs }}",
                         "BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}",
                         "BOLT_RA001A_MAX_WORKER_EXECUTABLE_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_worker_executable_bytes }}",
+                        "BOLT_RA001A_TRUSTED_POLICY_OUTPUT_SHA256": "${{ needs.ci-policy.outputs.ra001a_trusted_policy_output_sha256 }}",
                         "BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS": "${{ needs.ci-policy.outputs.ra001a_allowed_ignored_runtime_roots }}",
                         "BOLT_RA001A_MAX_IGNORED_ENTRY_BYTES": "${{ needs.ci-policy.outputs.ra001a_max_ignored_entry_bytes }}",
                         "BOLT_RA001A_MAX_IGNORED_ENTRIES": "${{ needs.ci-policy.outputs.ra001a_max_ignored_entries }}",
@@ -9482,7 +9497,10 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             'test ! -e "$RECEIPT_PATH" || { echo "RA-001a receipt path already exists"; exit 1; }',
             'worker_sha256="$(sha256sum "$WORKER_EXECUTABLE" | cut -d \' \' -f 1)"',
             '[[ "$worker_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "RA-001a worker SHA-256 is invalid"; exit 1; }',
+            'worker_bytes="$(stat -c \'%s\' "$WORKER_EXECUTABLE")"',
+            '[[ "$worker_bytes" =~ ^[1-9][0-9]*$ ]] || { echo "RA-001a worker byte length is invalid"; exit 1; }',
             'echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"',
+            'echo "worker_bytes=$worker_bytes" >> "$GITHUB_OUTPUT"',
             'echo "receipt_path=$RECEIPT_PATH" >> "$GITHUB_OUTPUT"',
         )
         resolve_positions: list[int] = []

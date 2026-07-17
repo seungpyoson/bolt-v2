@@ -263,7 +263,10 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     tracer_byte_env = (
         "          BOLT_RA001A_MAX_TOTAL_SELECTED_OBJECT_BYTES: "
         "${{ needs.ci-policy.outputs.ra001a_max_total_selected_object_bytes }}\n"
+        "          BOLT_RA001A_MAX_WORKER_EXECUTABLE_BYTES: "
         "${{ needs.ci-policy.outputs.ra001a_max_worker_executable_bytes }}\n"
+        "          BOLT_RA001A_TRUSTED_POLICY_OUTPUT_SHA256: "
+        "${{ needs.ci-policy.outputs.ra001a_trusted_policy_output_sha256 }}\n"
     )
     tracer_checkout_policy_env = (
         "          BOLT_RA001A_ALLOWED_IGNORED_RUNTIME_ROOTS: "
@@ -338,10 +341,30 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
         ),
         (
+            "duplicated worker byte count",
+            '          worker_bytes="$(stat -c \'%s\' "$WORKER_EXECUTABLE")"\n',
+            '          worker_bytes="$(stat -c \'%s\' "$WORKER_EXECUTABLE")"\n'
+            '          worker_bytes="$(stat -c \'%s\' "$WORKER_EXECUTABLE")"\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "worker byte-count validation",
+            '          [[ "$worker_bytes" =~ ^[1-9][0-9]*$ ]] || { echo "RA-001a worker byte length is invalid"; exit 1; }\n',
+            '          true || [[ "$worker_bytes" =~ ^[1-9][0-9]*$ ]] || { echo "RA-001a worker byte length is invalid"; exit 1; }\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
             "duplicated worker digest output",
             '          echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"\n',
             '          echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"\n'
             '          echo "worker_sha256=$worker_sha256" >> "$GITHUB_OUTPUT"\n',
+            "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
+        ),
+        (
+            "duplicated worker byte-count output",
+            '          echo "worker_bytes=$worker_bytes" >> "$GITHUB_OUTPUT"\n',
+            '          echo "worker_bytes=$worker_bytes" >> "$GITHUB_OUTPUT"\n'
+            '          echo "worker_bytes=$worker_bytes" >> "$GITHUB_OUTPUT"\n',
             "RA-001a tracer inputs must execute the worker and receipt binding chain exactly once in order",
         ),
         (
@@ -360,6 +383,12 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         (
             "worker digest binding",
             "          BOLT_RA001A_WORKER_SHA256: ${{ steps.ra001a-durable-tracer-inputs.outputs.worker_sha256 }}\n",
+            "",
+            "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
+        ),
+        (
+            "worker byte-count binding",
+            "          BOLT_RA001A_WORKER_BYTES: ${{ steps.ra001a-durable-tracer-inputs.outputs.worker_bytes }}\n",
             "",
             "RA-001a tracer must bind exact-head evidence and require a non-empty receipt",
         ),
@@ -470,6 +499,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         "          }\n"
         "          [[ \"$(sha256sum \"$policy_output\" | cut -d ' ' -f 1)\" == \"$policy_output_sha256\" ]] || { echo \"trusted policy output changed after validation\" >&2; exit 1; }\n"
         "          cat \"$policy_output\" >> \"$GITHUB_OUTPUT\"\n"
+        "          printf 'ra001a_trusted_policy_output_sha256=%s\\n' \"$policy_output_sha256\" >> \"$GITHUB_OUTPUT\"\n"
     )
     for label, fragment in (
         ("partition-suite skip", tracer_test_skip),
@@ -552,6 +582,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     policy_rehash_chain = (
         '          [[ "$(sha256sum "$policy_output" | cut -d \' \' -f 1)" == "$policy_output_sha256" ]] || { echo "trusted policy output changed after validation" >&2; exit 1; }\n'
         '          cat "$policy_output" >> "$GITHUB_OUTPUT"\n'
+        "          printf 'ra001a_trusted_policy_output_sha256=%s\\n' \"$policy_output_sha256\" >> \"$GITHUB_OUTPUT\"\n"
     )
     if policy_capture_chain not in backtester_workflow or policy_rehash_chain not in backtester_workflow:
         raise AssertionError("trusted policy output seal is missing from the real workflow")

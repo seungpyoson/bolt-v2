@@ -68,7 +68,8 @@ use bolt_v2::{
     },
     bolt_v3_strategy_registration::{
         BoltV3IvQueryHandleRegistry, BoltV3StrategyExecutionControls,
-        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeCapabilities,
+        BoltV3StrategyRegistrationError, StrategyRegistrationContext,
+        StrategyRegistrationRuntimeResources, StrategyRuntimeCapabilities,
         assemble_strategy_build_context,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
@@ -197,17 +198,19 @@ fn try_assembly_context<'a>(
         "test_strategy",
         capabilities,
         resolved,
-        decision_evidence,
-        Arc::new(BoltV3IvQueryHandleRegistry::empty()),
-        realized_volatility_runtime,
-        BoltV3StrategyExecutionControls {
-            submit_admission,
-            order_execution_policy:
-                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-            settlement_runtime_sink: None,
-            settlement_recovery: None,
-            settlement_health_transition_emitter: None,
-        },
+        StrategyRegistrationRuntimeResources::new(
+            decision_evidence,
+            Arc::new(BoltV3IvQueryHandleRegistry::empty()),
+            realized_volatility_runtime,
+            BoltV3StrategyExecutionControls {
+                submit_admission,
+                order_execution_policy:
+                    bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+                settlement_runtime_sink: None,
+                settlement_recovery: None,
+                settlement_health_transition_emitter: None,
+            },
+        ),
     )
 }
 
@@ -434,6 +437,30 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         );
     }
 
+    let constructor = source
+        .split_once("impl<'a> StrategyRegistrationContext<'a> {")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\nfn resolve_execution_client"))
+        .map(|(body, _)| body)
+        .expect("strategy registration constructor should remain inspectable");
+    let settlement_position = constructor
+        .find("let settlement = capabilities")
+        .expect("constructor must prepare declared settlement identity");
+    let fee_provider_position = constructor
+        .find("let fee_provider = resolve_fee_provider(")
+        .expect("constructor must prepare the execution fee provider");
+    assert!(
+        settlement_position < fee_provider_position,
+        "settlement identity must fail closed before fee-provider construction"
+    );
+    assert!(
+        !source.contains("#[expect(clippy::too_many_arguments)]"),
+        "strategy registration must group runtime resources instead of suppressing Clippy"
+    );
+    assert!(
+        !source.contains("fn binding_message("),
+        "strategy registration must not retain an unused context error wrapper"
+    );
+
     let assembly = source
         .split_once("pub fn assemble_strategy_build_context(")
         .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
@@ -465,17 +492,23 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     }
 
     assert_eq!(
-        source.matches("resolve_execution_client(").count(),
-        2,
-        "execution client and venue resolution must have one definition and one constructor call"
+        source.matches("fn resolve_execution_client").count(),
+        1,
+        "execution client and venue resolution must have one definition"
+    );
+    assert_eq!(
+        constructor.matches("resolve_execution_client(").count(),
+        1,
+        "registration preflight must resolve the execution client exactly once"
     );
     assert!(
         !source.contains("fn execution_venue_for_context("),
         "strategy assembly must not retain a late venue lookup path"
     );
+    let compact_source = source.split_whitespace().collect::<String>();
     assert!(
-        source.contains(
-            "fn settlement_resources_for_context<'a>(\n    context: &'a StrategyRegistrationContext<'_>,\n) -> Option<&'a StrategyRegistrationSettlementResources>"
+        compact_source.contains(
+            "fnsettlement_resources_for_context<'a>(context:&'aStrategyRegistrationContext<'_>,)->Option<&'aStrategyRegistrationSettlementResources>"
         ),
         "settlement-resource output must borrow from the outer context reference"
     );

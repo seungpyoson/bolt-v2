@@ -60,6 +60,30 @@ pub struct BoltV3StrategyExecutionControls {
 }
 
 #[derive(Clone)]
+pub struct StrategyRegistrationRuntimeResources {
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+    realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+    execution_controls: BoltV3StrategyExecutionControls,
+}
+
+impl StrategyRegistrationRuntimeResources {
+    pub fn new(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+        realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+        execution_controls: BoltV3StrategyExecutionControls,
+    ) -> Self {
+        Self {
+            decision_evidence,
+            iv_query_handles,
+            realized_volatility_runtime,
+            execution_controls,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct StrategyRegistrationContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
@@ -108,18 +132,20 @@ impl StrategyRegistrationSettlementIdentityError {
 }
 
 impl<'a> StrategyRegistrationContext<'a> {
-    #[expect(clippy::too_many_arguments)]
     pub fn new(
         loaded: &'a LoadedBoltV3Config,
         strategy: &'a LoadedStrategy,
         strategy_kind: &'static str,
         capabilities: StrategyRuntimeCapabilities,
         resolved: &'a ResolvedBoltV3Secrets,
-        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
-        iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
-        realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
-        execution_controls: BoltV3StrategyExecutionControls,
+        runtime_resources: StrategyRegistrationRuntimeResources,
     ) -> Result<Self, BoltV3StrategyRegistrationError> {
+        let StrategyRegistrationRuntimeResources {
+            decision_evidence,
+            iv_query_handles,
+            realized_volatility_runtime,
+            execution_controls,
+        } = runtime_resources;
         let BoltV3StrategyExecutionControls {
             submit_admission,
             order_execution_policy,
@@ -132,13 +158,6 @@ impl<'a> StrategyRegistrationContext<'a> {
             .then_some(realized_volatility_runtime);
         let execution_client_id = strategy.config.execution_client_id.as_str();
         let (execution_client, execution_venue) = resolve_execution_client(loaded, strategy)?;
-        let fee_provider = resolve_fee_provider(
-            execution_client_id,
-            execution_client,
-            execution_venue,
-            resolved,
-        )
-        .map_err(|error| binding_error(strategy, error.to_string()))?;
         let settlement = capabilities
             .settlement
             .then(|| {
@@ -154,6 +173,13 @@ impl<'a> StrategyRegistrationContext<'a> {
             })
             .transpose()
             .map_err(|error| binding_error(strategy, error.message()))?;
+        let fee_provider = resolve_fee_provider(
+            execution_client_id,
+            execution_client,
+            execution_venue,
+            resolved,
+        )
+        .map_err(|error| binding_error(strategy, error.to_string()))?;
 
         Ok(Self {
             loaded,
@@ -305,13 +331,6 @@ pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Option<C
     } else {
         configured.parse().ok()
     }
-}
-
-fn binding_message(
-    context: &StrategyRegistrationContext<'_>,
-    message: String,
-) -> BoltV3StrategyRegistrationError {
-    binding_error(context.strategy, message)
 }
 
 fn binding_error(strategy: &LoadedStrategy, message: String) -> BoltV3StrategyRegistrationError {
@@ -651,6 +670,12 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
             BoltV3StrategyRegistrationError::RealizedVolatilityRuntime { message: error }
         })?,
     ));
+    let runtime_resources = StrategyRegistrationRuntimeResources::new(
+        decision_evidence,
+        iv_query_handles,
+        realized_volatility_runtime,
+        execution_controls,
+    );
 
     let prepared = loaded
         .strategies
@@ -668,10 +693,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 binding.strategy_kind,
                 binding.capabilities,
                 resolved,
-                decision_evidence.clone(),
-                iv_query_handles.clone(),
-                realized_volatility_runtime.clone(),
-                execution_controls.clone(),
+                runtime_resources.clone(),
             )?;
             Ok((binding, context))
         })

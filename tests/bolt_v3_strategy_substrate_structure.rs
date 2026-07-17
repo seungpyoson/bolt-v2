@@ -276,7 +276,40 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
     let mut saw_match_arrow = false;
     let mut can_start_item_or_macro = true;
     let mut saw_ambiguous_prefix = false;
+    let mut ambiguous_prefix_is_macro_path = true;
+    let mut macro_requires_terminator = false;
     while cursor < tokens.len() {
+        let macro_body_delimiter = if tokens[cursor].text == "!" {
+            let ordinary_macro_delimiter = (cursor > 0
+                && saw_ambiguous_prefix
+                && ambiguous_prefix_is_macro_path
+                && tokens[cursor - 1]
+                    .text
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| ident_start(*byte)))
+            .then(|| tokens.get(cursor + 1))
+            .flatten()
+            .filter(|next| matches!(next.text.as_str(), "(" | "[" | "{"));
+            ordinary_macro_delimiter
+                .or_else(|| {
+                    (cursor > 0
+                        && tokens[cursor - 1].text == "macro_rules"
+                        && !tokens[cursor - 1].is_raw_identifier
+                        && tokens.get(cursor + 1).is_some_and(|name| {
+                            name.text
+                                .as_bytes()
+                                .first()
+                                .is_some_and(|byte| ident_start(*byte))
+                        }))
+                    .then(|| tokens.get(cursor + 2))
+                    .flatten()
+                    .filter(|next| matches!(next.text.as_str(), "(" | "[" | "{"))
+                })
+                .map(|token| token.text.as_str())
+        } else {
+            None
+        };
         match tokens[cursor].text.as_str() {
             token
                 if delimiters.is_empty()
@@ -314,24 +347,12 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
             }
             "!" if delimiters.is_empty()
                 && can_start_item_or_macro
-                && (tokens
-                    .get(cursor + 1)
-                    .is_some_and(|next| matches!(next.text.as_str(), "(" | "[" | "{"))
-                    || (cursor > 0
-                        && tokens[cursor - 1].text == "macro_rules"
-                        && !tokens[cursor - 1].is_raw_identifier
-                        && tokens.get(cursor + 1).is_some_and(|name| {
-                            name.text
-                                .as_bytes()
-                                .first()
-                                .is_some_and(|byte| ident_start(*byte))
-                        })
-                        && tokens.get(cursor + 2).is_some_and(|next| {
-                            matches!(next.text.as_str(), "(" | "[" | "{")
-                        }))) =>
+                && macro_body_delimiter.is_some() =>
             {
                 saw_item_or_expression_body = true;
                 saw_ambiguous_prefix = false;
+                ambiguous_prefix_is_macro_path = true;
+                macro_requires_terminator = matches!(macro_body_delimiter, Some("(") | Some("["));
             }
             "!" if delimiters.is_empty() && can_start_item_or_macro => return None,
             "=" if delimiters.is_empty()
@@ -359,6 +380,16 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
                 };
                 if expected != tokens[cursor].text {
                     return None;
+                }
+                if delimiters.is_empty()
+                    && macro_requires_terminator
+                    && matches!(tokens[cursor].text.as_str(), ")" | "]")
+                {
+                    return match tokens.get(cursor + 1).map(|next| next.text.as_str()) {
+                        Some(";" | ",") => Some(cursor + 2),
+                        Some("}") | None => Some(cursor + 1),
+                        _ => None,
+                    };
                 }
                 if delimiters.is_empty() && tokens[cursor].text == "}" && brace_terminates_construct
                 {
@@ -394,6 +425,13 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> Option<usize> {
                 // silently reinterpreted as a modifier for a later item keyword. If no `!`
                 // resolves the path before `fn`/`struct`/`mod`/an expression body, retain the
                 // entire ambiguous cfg-gated region.
+                if saw_ambiguous_prefix
+                    && !tokens
+                        .get(cursor.wrapping_sub(1))
+                        .is_some_and(|previous| previous.text == "::")
+                {
+                    ambiguous_prefix_is_macro_path = false;
+                }
                 saw_ambiguous_prefix = true;
             }
             _ => {}
@@ -865,7 +903,7 @@ fn production_tokenizer_excludes_inline_test_items_only() {
         fixture! { self.cancel_all_orders(); }
         fn after_cfg_macro() { production_after_cfg_macro(); }
         #[cfg(test)]
-        foo::bar![self.cancel_order(order_id);]
+        foo::bar![self.cancel_order(order_id);];
         fn after_cfg_path_macro() { production_after_cfg_path_macro(); }
         #[cfg(test)]
         macro_rules! fixture_rule { () => { self.modify_order(order); } }
@@ -1068,6 +1106,7 @@ fn production_tokenizer_retains_malformed_cfg_gated_regions() {
         "#[cfg(test)] unexpected_prefix mod production { fn bypass() { self.cancel_order(id); } } mod production_after {}",
         "#[cfg(test)] unexpected_prefix if enabled { self.modify_order(order); } fn production_after() {}",
         "#[cfg(test)] unexpected_prefix macro_rules! production { () => { self.modify_order(order); } } fn production_after() {}",
+        "#[cfg(test)] foo::bar![self.cancel_order(order_id)] fn production_after() {}",
     ] {
         let tokens = production_tokens(source);
         assert!(

@@ -429,6 +429,10 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         context_fields.contains("fee_provider: Arc<dyn FeeProvider>"),
         "strategy registration context must cache the preflight-built fee provider"
     );
+    assert!(
+        context_fields.contains("client_routes: StrategyRegistrationClientRoutes"),
+        "strategy registration context must retain the preflight-resolved client routes"
+    );
     let settlement_resources = source
         .split_once("struct StrategyRegistrationSettlementResources {")
         .and_then(|(_, tail)| tail.split_once("\n}"))
@@ -443,7 +447,7 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
 
     let constructor = source
         .split_once("impl<'a> StrategyRegistrationContext<'a> {")
-        .and_then(|(_, tail)| tail.split_once("\n}\n\nfn resolve_execution_client"))
+        .and_then(|(_, tail)| tail.split_once("\n}\n\nfn resolve_strategy_client_routes"))
         .map(|(body, _)| body)
         .expect("strategy registration constructor should remain inspectable");
     let settlement_position = constructor
@@ -496,14 +500,34 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     }
 
     assert_eq!(
-        source.matches("fn resolve_execution_client").count(),
+        source.matches("fn resolve_strategy_client_routes").count(),
         1,
-        "execution client and venue resolution must have one definition"
+        "configured client-route resolution must have one definition"
     );
     assert_eq!(
-        constructor.matches("resolve_execution_client(").count(),
+        constructor
+            .matches("resolve_strategy_client_routes(")
+            .count(),
         1,
-        "registration preflight must resolve the execution client exactly once"
+        "registration preflight must resolve every configured client route exactly once"
+    );
+    assert!(
+        !constructor.contains("root.clients"),
+        "the context constructor must delegate all root client-map ownership to the route resolver"
+    );
+    let client_route_resolver = source
+        .split_once("fn resolve_strategy_client_routes")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("client-route resolver should remain inspectable");
+    let compact_client_route_resolver =
+        client_route_resolver.split_whitespace().collect::<String>();
+    assert_eq!(
+        compact_client_route_resolver
+            .matches("loaded.root.clients.get(")
+            .count(),
+        1,
+        "the owning resolver must perform one root-map operation for each deduplicated client identity"
     );
     assert!(
         !source.contains("fn execution_venue_for_context("),
@@ -560,6 +584,16 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
             "raw taker config must consume prepared client routes, not `{forbidden_client_lookup}`"
         );
     }
+    let resolution_binding = taker
+        .split_once("fn validate_resolution_data_binding(")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("resolution-data validation should remain inspectable");
+    assert!(
+        !resolution_binding.contains("venue_for_client(")
+            && !resolution_binding.contains("root.clients"),
+        "resolution-data validation must consume its preflight-resolved venue"
+    );
 
     let complete = support::repo_text("src/strategies/complete_set_arbitrage/archetype.rs");
     let raw_complete = complete

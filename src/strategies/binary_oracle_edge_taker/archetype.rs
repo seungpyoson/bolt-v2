@@ -39,7 +39,7 @@ use toml::{Value, map::Map};
 
 use nautilus_model::{
     enums::{OrderSide, OrderType, PositionSide, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::{InstrumentId, StrategyId},
+    identifiers::{ClientId, InstrumentId, StrategyId, Venue},
 };
 
 use crate::{
@@ -441,8 +441,10 @@ pub fn register_runtime_strategy(
     node: &mut nautilus_live::node::LiveNode,
     context: StrategyRegistrationContext<'_>,
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
-    let raw = raw_taker_config(context.strategy, context.loaded)
-        .map_err(|error| binding_error(&context, error))?;
+    let raw = raw_taker_config(context.strategy, context.loaded, |client_id| {
+        context.prepared_client_venue(client_id)
+    })
+    .map_err(|error| binding_error(&context, error))?;
     let build_context = assemble_strategy_build_context(&context)?;
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
@@ -563,6 +565,7 @@ mod tests {
 pub fn raw_taker_config(
     strategy: &LoadedStrategy,
     loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+    prepared_client_venue: impl Fn(&ClientId) -> Option<Venue>,
 ) -> Result<Value, BinaryOracleEdgeTakerRuntimeConfigError> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(BinaryOracleEdgeTakerRuntimeConfigError::WrongArchetype {
@@ -625,30 +628,32 @@ pub fn raw_taker_config(
         })?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
-    venue_for_client(&loaded.root, signal_data.data_client_id.as_str()).ok_or_else(|| {
+    prepared_client_venue(&signal_data.data_client_id).ok_or_else(|| {
         BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
-                "signal_data data_client_id `{}` is not present in loaded clients",
+                "signal_data data_client_id `{}` is absent from prepared client routes",
                 signal_data.data_client_id
             ),
         }
     })?;
     let resolution_data = configured_resolution_data(strategy);
     if let Some(resolution_data) = resolution_data {
-        venue_for_client(&loaded.root, resolution_data.data_client_id.as_str()).ok_or_else(
-            || BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
-                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-                message: format!(
-                    "resolution_data data_client_id `{}` is not present in loaded clients",
-                    resolution_data.data_client_id
-                ),
-            },
-        )?;
+        let resolution_venue =
+            prepared_client_venue(&resolution_data.data_client_id).ok_or_else(|| {
+                BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
+                    strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                    message: format!(
+                        "resolution_data data_client_id `{}` is absent from prepared client routes",
+                        resolution_data.data_client_id
+                    ),
+                }
+            })?;
         validate_resolution_data_binding(
             strategy,
             resolution_data,
             &loaded.root,
+            resolution_venue,
             &target.underlying_asset,
         )?;
     }
@@ -1541,6 +1546,7 @@ fn validate_resolution_data_binding(
     strategy: &LoadedStrategy,
     resolution_data: &crate::bolt_v3_config::DataInstrumentBlock,
     root: &BoltV3RootConfig,
+    resolution_venue: Venue,
     underlying_asset: &str,
 ) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
     let reject = |message: String| BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
@@ -1548,14 +1554,7 @@ fn validate_resolution_data_binding(
         message,
     };
 
-    // (a) venue must be the resolution-oracle (Chainlink Data Streams) strike provider.
-    let resolution_venue = venue_for_client(root, resolution_data.data_client_id.as_str())
-        .ok_or_else(|| {
-            reject(format!(
-                "resolution_data data_client_id `{}` is not present in loaded clients",
-                resolution_data.data_client_id
-            ))
-        })?;
+    // (a) the preflight-resolved venue must be the resolution-oracle strike provider.
     if resolution_venue.as_str() != crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY {
         return Err(reject(format!(
             "data_client_id `{}` has venue `{}`, but the strike feed must be served by a `{}` client",

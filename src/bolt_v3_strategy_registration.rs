@@ -94,9 +94,21 @@ pub struct StrategyRegistrationContext<'a> {
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
+    client_routes: StrategyRegistrationClientRoutes,
     execution_venue: Venue,
     fee_provider: Arc<dyn FeeProvider>,
     settlement: Option<StrategyRegistrationSettlementResources>,
+}
+
+#[derive(Clone)]
+struct StrategyRegistrationClientRoutes {
+    venues_by_client_id: BTreeMap<ClientId, Venue>,
+}
+
+impl StrategyRegistrationClientRoutes {
+    fn venue(&self, client_id: &ClientId) -> Option<Venue> {
+        self.venues_by_client_id.get(client_id).copied()
+    }
 }
 
 #[derive(Clone)]
@@ -157,7 +169,15 @@ impl<'a> StrategyRegistrationContext<'a> {
             .realized_volatility
             .then_some(realized_volatility_runtime);
         let execution_client_id = strategy.config.execution_client_id.as_str();
-        let (execution_client, execution_venue) = resolve_execution_client(loaded, strategy)?;
+        let (client_routes, execution_client) = resolve_strategy_client_routes(loaded, strategy)?;
+        let execution_venue = client_routes
+            .venue(&strategy.config.execution_client_id)
+            .ok_or_else(|| {
+                binding_error(
+                    strategy,
+                    "prepared client routes did not retain the configured execution client",
+                )
+            })?;
         let settlement = capabilities
             .settlement
             .then(|| {
@@ -191,31 +211,71 @@ impl<'a> StrategyRegistrationContext<'a> {
             iv_query_handles,
             order_execution_policy,
             realized_volatility_runtime,
+            client_routes,
             execution_venue,
             fee_provider,
             settlement,
         })
     }
+
+    pub(crate) fn prepared_client_venue(&self, client_id: &ClientId) -> Option<Venue> {
+        self.client_routes.venue(client_id)
+    }
 }
 
-fn resolve_execution_client<'a>(
+fn resolve_strategy_client_routes<'a>(
     loaded: &'a LoadedBoltV3Config,
     strategy: &LoadedStrategy,
-) -> Result<(&'a ClientBlock, Venue), BoltV3StrategyRegistrationError> {
-    let execution_client_id = strategy.config.execution_client_id.as_str();
-    let client = loaded
-        .root
-        .clients
-        .get(execution_client_id)
-        .ok_or_else(|| {
+) -> Result<(StrategyRegistrationClientRoutes, &'a ClientBlock), BoltV3StrategyRegistrationError> {
+    let mut roles_by_client_id = BTreeMap::<ClientId, BTreeSet<String>>::new();
+    roles_by_client_id
+        .entry(strategy.config.execution_client_id)
+        .or_default()
+        .insert("execution_client_id".to_string());
+    for (role, signal_data) in &strategy.config.signal_data {
+        roles_by_client_id
+            .entry(signal_data.data_client_id)
+            .or_default()
+            .insert(format!("signal_data.{role}.data_client_id"));
+    }
+    if let Some(resolution_data) = strategy.config.resolution_data.as_ref() {
+        roles_by_client_id
+            .entry(resolution_data.data_client_id)
+            .or_default()
+            .insert("resolution_data.data_client_id".to_string());
+    }
+
+    let mut clients_by_id = BTreeMap::<ClientId, &'a ClientBlock>::new();
+    let mut venues_by_client_id = BTreeMap::new();
+    for (client_id, roles) in roles_by_client_id {
+        let client = loaded.root.clients.get(client_id.as_str()).ok_or_else(|| {
             binding_error(
                 strategy,
                 format!(
-                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+                    "configured client `{client_id}` for {} is not present in loaded clients",
+                    roles.into_iter().collect::<Vec<_>>().join(", ")
                 ),
             )
         })?;
-    Ok((client, client.venue))
+        clients_by_id.insert(client_id, client);
+        venues_by_client_id.insert(client_id, client.venue);
+    }
+
+    let execution_client = clients_by_id
+        .get(&strategy.config.execution_client_id)
+        .copied()
+        .ok_or_else(|| {
+            binding_error(
+                strategy,
+                "prepared client routes did not retain the configured execution client",
+            )
+        })?;
+    Ok((
+        StrategyRegistrationClientRoutes {
+            venues_by_client_id,
+        },
+        execution_client,
+    ))
 }
 
 fn resolve_settlement_capability(

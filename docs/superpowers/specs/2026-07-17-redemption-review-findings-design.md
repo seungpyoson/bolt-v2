@@ -8,13 +8,13 @@ Address the three internal adversarial-review findings on the disabled Polymarke
 
 ### Zeroizing signer-key decode
 
-Replace `PrivateKeySigner::from_str` with an explicit decode into `Zeroizing<[u8; 32]>`. Use `alloy_primitives::hex::decode_to_slice` so the accepted optional `0x` prefix remains unchanged, then construct the signer with `PrivateKeySigner::from_slice`. Map both decoding and signer-construction failures to the existing redacted `InvalidSigningKey` error. Add a static fence that rejects restoration of the `FromStr` path.
+Replace `PrivateKeySigner::from_str` with an explicit decode into `Zeroizing<[u8; 32]>`. Use `alloy_primitives::hex::decode_to_slice` so the accepted optional `0x` prefix remains unchanged, then construct the signer with `PrivateKeySigner::from_slice`. Map both decoding and signer-construction failures to the existing redacted `InvalidSigningKey` error. The static fence positively requires the ordered decode-to-zeroizing-buffer and `from_slice` structure in `prepare_redemption_request`, and also rejects equivalent `FromStr` and `.parse::<PrivateKeySigner>` paths.
 
 ### Complete production-caller inspection
 
-Discover Rust production sources from every repository `Cargo.toml` containing a package. Inspect each package's `src` tree plus explicit library and binary target paths, while excluding test-only source paths. Inspect only the pre-`#[cfg(test)]` portion of mixed production/test modules.
+Conservatively inspect Rust code in every repository `.rs` file outside source-control worktrees and build-output directories. Do not infer test-only status from a `tests` path, and do not exempt generated or dormant source. Lexically ignore comments and string/character literals so embedded compile-fail fixtures are not mistaken for callers.
 
-The redemption owner remains a special case: its one declaration is allowed, but any additional production reference to `prepare_redemption_request` is rejected. All other discovered production sources reject any reference to that symbol. This covers the root package, nested packages such as the Backtester vertical slice, and future packages without hardcoding their paths.
+The redemption owner remains the sole exception: its production prefix may contain the one declaration. Its single `#[cfg(test)] mod tests` item must be structurally valid and final, with no later production items. All other Rust code rejects any reference to `prepare_redemption_request`, covering nested packages, custom target layouts, `src/**/tests/`, and generated source without path-specific caller exemptions.
 
 ### Secret-output sinks
 
@@ -24,7 +24,7 @@ Extend the existing forbidden-observability surface with `dbg!`, `print!`, and `
 
 Use the existing Python mutation-test harness for test-first evidence:
 
-1. Add regressions for `PrivateKeySigner::from_str`, an owner-module caller, a nested-package caller, and each missing output macro.
+1. Add regressions for unsafe signer-parser spellings and missing positive decode structure; owner, nested-package, test-named-directory, post-test, custom-target-descendant, and generated callers; and each missing output macro.
 2. Run the focused tests before implementation and confirm they fail for the missing fences.
 3. Implement the smallest verifier and signer-decode changes that make those regressions pass.
 4. Run the full redemption verifier tests, the verifier against the repository, formatting, and permitted static/source-fence gates.

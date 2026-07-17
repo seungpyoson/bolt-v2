@@ -4,7 +4,7 @@
 
 **Goal:** Close the three internal adversarial-review findings without activating or otherwise expanding the disabled Polymarket redemption-preparation slice.
 
-**Architecture:** Strengthen the existing Python source fence so it discovers production Rust sources from package manifests, treats the redemption owner as a declaration-only exception, and rejects unsafe signer parsing and direct output macros. Replace the signer parser with an optional-prefix-compatible decode into a zeroizing fixed-size buffer before constructing the signer.
+**Architecture:** Strengthen the existing Python source fence so it conservatively scans code in every repository Rust source, validates the owner's final cfg(test) boundary, and rejects unsafe signer parsing and direct output macros. Replace the signer parser with an optional-prefix-compatible decode into a zeroizing fixed-size buffer, and positively require that decode structure in the preparation function.
 
 **Tech Stack:** Python 3.11 `unittest`/`tomllib`, Rust, `alloy_primitives::hex`, `alloy_signer_local::PrivateKeySigner`, `zeroize::Zeroizing`, repository `just` verification recipes.
 
@@ -125,6 +125,30 @@ Expected: all tests pass.
 git add scripts/verify_polymarket_redemption_preparation.py scripts/test_verify_polymarket_redemption_preparation.py
 git commit -m "fix: close redemption caller fence"
 ```
+
+- [ ] **Step 6: Adversarially mutate path, cfg, target, and generated boundaries**
+
+Add mutations for a caller in `src/tests/active.rs`, after the owner's test module, after a non-owner cfg(test) item, in a custom `[lib] path` module descendant, and in generated Rust. Run the five focused tests and observe five failures from the manifest/path implementation.
+
+- [ ] **Step 7: Replace path inference with conservative Rust-code inspection**
+
+Enumerate every repository Rust source without a `tests` or generated-source exemption:
+
+```python
+def _repository_rust_sources(root: pathlib.Path) -> list[pathlib.Path]:
+    ignored = {".git", ".worktrees", "target"}
+    return sorted(
+        path
+        for path in root.rglob("*.rs")
+        if not ignored.intersection(path.relative_to(root).parts)
+    )
+```
+
+Use lexical scanning that skips nested comments, raw/quoted strings, and character literals before matching `prepare_redemption_request`. Require the owner's one exact `#[cfg(test)] mod tests` item to have a balanced lexical brace span and only whitespace after its closing brace; inspect the prefix for the one declaration.
+
+- [ ] **Step 8: Verify the adversarial caller mutations and repository are GREEN**
+
+Run the five focused tests, the full verifier test module, and `python3 verify_polymarket_redemption_preparation.py ..`. Expected: all pass.
 
 ---
 
@@ -247,6 +271,18 @@ Expected: both commands pass.
 git add src/bolt_v3_polymarket_redemption.rs scripts/verify_polymarket_redemption_preparation.py scripts/test_verify_polymarket_redemption_preparation.py
 git commit -m "fix: zeroize redemption signer decode"
 ```
+
+- [ ] **Step 8: Add positive signer-decode mutations after adversarial review**
+
+Replace `from_slice` with `.parse::<PrivateKeySigner>()`, replace it with an aliased `FromStr::from_str`, and remove `Zeroizing::new` from the decode buffer. Observe all three focused subtests fail before strengthening the verifier.
+
+- [ ] **Step 9: Require the secure decode shape in the preparation function**
+
+Extract the full `prepare_redemption_request` function with the lexical brace scanner. Require exactly one occurrence of each marker, in this order: the `Zeroizing::new(B256::ZERO.into_array())` buffer, `hex::decode_to_slice`, the credential bytes input, the mutable zeroizing buffer, and `PrivateKeySigner::from_slice` over that buffer. Reject direct `from_str`, `.parse::<PrivateKeySigner>`, and aliased `FromStr` spellings.
+
+- [ ] **Step 10: Verify the signer mutations and repository are GREEN**
+
+Run the focused signer tests, the full verifier test module, and `python3 verify_polymarket_redemption_preparation.py ..`. Expected: all pass.
 
 ---
 

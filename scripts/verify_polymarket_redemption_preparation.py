@@ -55,9 +55,172 @@ def _read(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _production_owner(text: str) -> str:
+def _raw_string_end(text: str, start: int) -> int | None:
+    cursor = start
+    if text.startswith(("br", "cr"), cursor):
+        cursor += 2
+    elif text.startswith("r", cursor):
+        cursor += 1
+    else:
+        return None
+    hashes = 0
+    while cursor < len(text) and text[cursor] == "#":
+        hashes += 1
+        cursor += 1
+    if cursor >= len(text) or text[cursor] != '"':
+        return None
+    delimiter = '"' + "#" * hashes
+    end = text.find(delimiter, cursor + 1)
+    return None if end < 0 else end + len(delimiter)
+
+
+def _quoted_end(text: str, start: int, quote: str) -> int | None:
+    cursor = start + 1
+    while cursor < len(text):
+        if text[cursor] == "\\":
+            cursor += 2
+            continue
+        if text[cursor] == quote:
+            return cursor + 1
+        cursor += 1
+    return None
+
+
+def _char_literal_end(text: str, start: int) -> int | None:
+    if start + 1 >= len(text):
+        return None
+    if text[start + 1] == "\\":
+        return _quoted_end(text, start, "'")
+    if start + 2 < len(text) and text[start + 2] == "'":
+        return start + 3
+    return None
+
+
+def _block_comment_end(text: str, start: int) -> int | None:
+    depth = 1
+    cursor = start + 2
+    while cursor < len(text) and depth:
+        if text.startswith("/*", cursor):
+            depth += 1
+            cursor += 2
+        elif text.startswith("*/", cursor):
+            depth -= 1
+            cursor += 2
+        else:
+            cursor += 1
+    return cursor if depth == 0 else None
+
+
+def _rust_brace_end(text: str, opening: int) -> int | None:
+    if opening >= len(text) or text[opening] != "{":
+        return None
+    depth = 0
+    cursor = opening
+    while cursor < len(text):
+        if text.startswith("//", cursor):
+            newline = text.find("\n", cursor + 2)
+            cursor = len(text) if newline < 0 else newline + 1
+            continue
+        if text.startswith("/*", cursor):
+            comment_end = _block_comment_end(text, cursor)
+            if comment_end is None:
+                return None
+            cursor = comment_end
+            continue
+        raw_end = _raw_string_end(text, cursor)
+        if raw_end is not None:
+            cursor = raw_end
+            continue
+        if text[cursor] == '"':
+            quoted_end = _quoted_end(text, cursor, '"')
+            if quoted_end is None:
+                return None
+            cursor = quoted_end
+            continue
+        if text[cursor] == "'":
+            char_end = _char_literal_end(text, cursor)
+            if char_end is not None:
+                cursor = char_end
+                continue
+        if text[cursor] == "{":
+            depth += 1
+        elif text[cursor] == "}":
+            depth -= 1
+            if depth == 0:
+                return cursor + 1
+        cursor += 1
+    return None
+
+
+def _rust_code_projection(text: str) -> str:
+    projected = list(text)
+
+    def blank(start: int, end: int) -> None:
+        projected[start:end] = " " * (end - start)
+
+    cursor = 0
+    while cursor < len(text):
+        if text.startswith("//", cursor):
+            newline = text.find("\n", cursor + 2)
+            end = len(text) if newline < 0 else newline
+            blank(cursor, end)
+            cursor = end
+            continue
+        if text.startswith("/*", cursor):
+            comment_end = _block_comment_end(text, cursor)
+            if comment_end is None:
+                raise ValueError("unterminated Rust block comment")
+            blank(cursor, comment_end)
+            cursor = comment_end
+            continue
+        raw = re.match(r'(?:br|cr|r)(?P<hashes>#+)?"', text[cursor:])
+        if raw is not None:
+            delimiter = '"' + (raw.group("hashes") or "")
+            closing = text.find(delimiter, cursor + raw.end())
+            if closing < 0:
+                raise ValueError("unterminated Rust raw string")
+            raw_end = closing + len(delimiter)
+            blank(cursor, raw_end)
+            cursor = raw_end
+            continue
+        if text[cursor] == '"':
+            quoted_end = _quoted_end(text, cursor, '"')
+            if quoted_end is None:
+                raise ValueError("unterminated Rust string")
+            blank(cursor, quoted_end)
+            cursor = quoted_end
+            continue
+        if text[cursor] == "'":
+            char_end = _char_literal_end(text, cursor)
+            if char_end is not None:
+                blank(cursor, char_end)
+                cursor = char_end
+                continue
+        cursor += 1
+    return "".join(projected)
+
+
+def _rust_code_contains(text: str, needle: str) -> bool:
+    return needle in _rust_code_projection(text)
+
+
+def _production_owner(text: str) -> tuple[str, str | None]:
     marker = "#[cfg(test)]"
-    return text.split(marker, 1)[0]
+    try:
+        code = _rust_code_projection(text)
+    except ValueError as error:
+        return text, f"cannot lex owner test boundary: {error}"
+    if code.count(marker) != 1:
+        return text, "owner must contain one final cfg(test) module for active production caller proof"
+    start = code.index(marker)
+    module = re.match(r"#\[cfg\(test\)\]\s*mod\s+tests\s*\{", code[start:])
+    if module is None:
+        return text, "owner cfg(test) item must be the final tests module for active production caller proof"
+    opening = start + module.end() - 1
+    end = _rust_brace_end(text, opening)
+    if end is None or text[end:].strip():
+        return text[:start], "owner tests module must be the final item for active production caller proof"
+    return text[:start], None
 
 
 def _toml(path: pathlib.Path) -> dict[str, object]:
@@ -73,61 +236,13 @@ def _repository_toml(root: pathlib.Path) -> list[pathlib.Path]:
     )
 
 
-def _production_rust_sources(
-    root: pathlib.Path,
-) -> tuple[list[pathlib.Path], list[str]]:
-    sources: set[pathlib.Path] = set()
-    errors: list[str] = []
-    manifests = (path for path in _repository_toml(root) if path.name == "Cargo.toml")
-    for manifest in manifests:
-        try:
-            cargo = _toml(manifest)
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-            errors.append(f"cannot inspect Cargo package {manifest.relative_to(root)}: {error}")
-            continue
-        package = cargo.get("package")
-        if package is None:
-            continue
-        if not isinstance(package, dict):
-            errors.append(f"Cargo package table must be a table: {manifest.relative_to(root)}")
-            continue
-        package_root = manifest.parent
-        source_root = package_root / "src"
-        if source_root.is_dir():
-            sources.update(
-                path
-                for path in source_root.rglob("*.rs")
-                if "tests" not in path.relative_to(package_root).parts
-            )
-
-        explicit_targets: list[tuple[str, object]] = []
-        if "lib" in cargo:
-            explicit_targets.append(("lib", cargo["lib"]))
-        bins = cargo.get("bin", [])
-        if not isinstance(bins, list):
-            errors.append(f"Cargo bin targets must be an array: {manifest.relative_to(root)}")
-            continue
-        explicit_targets.extend((f"bin[{index}]", target) for index, target in enumerate(bins))
-        for label, target in explicit_targets:
-            if not isinstance(target, dict):
-                errors.append(
-                    f"Cargo {label} target must be a table: {manifest.relative_to(root)}"
-                )
-                continue
-            target_path = target.get("path")
-            if target_path is None:
-                continue
-            if not isinstance(target_path, str):
-                errors.append(
-                    f"Cargo {label} target path must be a string: {manifest.relative_to(root)}"
-                )
-                continue
-            candidate = package_root / target_path
-            if not candidate.is_file():
-                errors.append(f"cannot inspect Cargo {label} target {candidate.relative_to(root)}")
-                continue
-            sources.add(candidate)
-    return sorted(sources), errors
+def _repository_rust_sources(root: pathlib.Path) -> list[pathlib.Path]:
+    ignored = {".git", ".worktrees", "target"}
+    return sorted(
+        path
+        for path in root.rglob("*.rs")
+        if not ignored.intersection(path.relative_to(root).parts)
+    )
 
 
 def _prepare_signature(text: str) -> str:
@@ -136,6 +251,17 @@ def _prepare_signature(text: str) -> str:
         return ""
     body = text.find("{", start)
     return text[start:body] if body >= 0 else text[start:]
+
+
+def _prepare_function(text: str) -> str:
+    start = text.find("pub fn prepare_redemption_request(")
+    if start < 0:
+        return ""
+    opening = text.find("{", start)
+    if opening < 0:
+        return text[start:]
+    end = _rust_brace_end(text, opening)
+    return text[start:] if end is None else text[start:end]
 
 
 def _deployment_fact_sha256(
@@ -194,8 +320,18 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         return [f"cannot inspect redemption preparation artifacts: {error}"]
 
-    production = _production_owner(owner_text)
+    production, owner_structure_error = _production_owner(owner_text)
+    if owner_structure_error is not None:
+        errors.append(owner_structure_error)
     signature = _prepare_signature(production)
+    prepare_function = _prepare_function(production)
+    try:
+        production_code = _rust_code_projection(production)
+        prepare_code = _rust_code_projection(prepare_function)
+    except ValueError as error:
+        errors.append(f"cannot lex production owner: {error}")
+        production_code = ""
+        prepare_code = ""
 
     authorities: dict[str, list[pathlib.Path]] = {key: [] for key in RUNTIME_AUTHORITY_KEYS}
     for path in _repository_toml(root):
@@ -389,8 +525,28 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         production,
     ):
         errors.append("production owner must not expose an injectable secret resolver")
-    if "PrivateKeySigner::from_str" in production:
+    forbidden_signer_parsers = (
+        "PrivateKeySigner::from_str",
+        ".parse::<PrivateKeySigner",
+        "FromStr>::from_str",
+        "FromStr::from_str",
+    )
+    if any(token in production_code for token in forbidden_signer_parsers):
         errors.append("production owner must use a zeroizing signer-key decode buffer")
+    signer_decode_markers = (
+        "let mut signer_private_key = Zeroizing::new(B256::ZERO.into_array());",
+        "hex::decode_to_slice(",
+        "credentials.signer_private_key.as_bytes(),",
+        "signer_private_key.as_mut(),",
+        "PrivateKeySigner::from_slice(signer_private_key.as_ref())",
+    )
+    signer_decode_positions = [prepare_code.find(marker) for marker in signer_decode_markers]
+    if (
+        any(position < 0 for position in signer_decode_positions)
+        or signer_decode_positions != sorted(signer_decode_positions)
+        or any(prepare_code.count(marker) != 1 for marker in signer_decode_markers)
+    ):
+        errors.append("production owner must preserve the zeroizing signer-key decode path")
 
     forbidden_observability = (
         "dbg!",
@@ -435,21 +591,26 @@ def boundary_errors(root: pathlib.Path) -> list[str]:
         if marker not in compile_fail_text:
             errors.append(f"compile-fail proof is missing marker {marker}")
 
-    if production.count("prepare_redemption_request") > 1:
+    if production_code.count("prepare_redemption_request") > 1:
         errors.append("active production caller found inside disabled module")
 
-    production_sources, source_errors = _production_rust_sources(root)
-    errors.extend(source_errors)
-    for path in production_sources:
+    for path in _repository_rust_sources(root):
         relative = path.relative_to(root)
-        if relative in {OWNER, GENERATED}:
+        if relative == OWNER:
             continue
         try:
             text = _read(path)
         except (OSError, UnicodeDecodeError) as error:
             errors.append(f"cannot inspect production caller surface {relative}: {error}")
             continue
-        if "prepare_redemption_request" in _production_owner(text):
+        if "prepare_redemption_request" not in text:
+            continue
+        try:
+            has_caller = _rust_code_contains(text, "prepare_redemption_request")
+        except ValueError as error:
+            errors.append(f"cannot lex production caller surface {relative}: {error}")
+            continue
+        if has_caller:
             errors.append(f"active production caller found outside disabled module: {relative}")
 
     return errors

@@ -38,6 +38,12 @@ pub fn prepare_redemption_request(
     attempt: AttemptKind,
     use_prepared: impl for<'request> FnOnce(PreparedRequest<'request>),
 ) {
+    let mut signer_private_key = Zeroizing::new(B256::ZERO.into_array());
+    hex::decode_to_slice(
+        credentials.signer_private_key.as_bytes(),
+        signer_private_key.as_mut(),
+    ).unwrap();
+    let _signer = PrivateKeySigner::from_slice(signer_private_key.as_ref()).unwrap();
     let _ = (config, credentials, input, attempt);
     lease.with_workspace_mut(|workspace| {
         let prepared = PreparedRequest { bytes: workspace };
@@ -378,6 +384,74 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
             any("active production caller" in error for error in verifier.boundary_errors(root))
         )
 
+    def test_active_caller_in_test_named_source_dir_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        source = root / "src/tests/active.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "fn active() { let prepare = prepare_redemption_request; }\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any("active production caller" in error for error in verifier.boundary_errors(root))
+        )
+
+    def test_active_caller_after_owner_test_module_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        owner = root / "src/bolt_v3_polymarket_redemption.rs"
+        owner.write_text(
+            OWNER + "\nfn active() { let prepare = prepare_redemption_request; }\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any("active production caller" in error for error in verifier.boundary_errors(root))
+        )
+
+    def test_active_caller_after_non_owner_test_item_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        (root / "src/late.rs").write_text(
+            "#[cfg(test)]\nmod tests {}\n"
+            "fn active() { let prepare = prepare_redemption_request; }\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any("active production caller" in error for error in verifier.boundary_errors(root))
+        )
+
+    def test_active_caller_in_explicit_target_descendant_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        package = root / "crates/custom-target"
+        (package / "code").mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            '[package]\nname = "custom-target"\nversion = "0.0.0"\nedition = "2024"\n'
+            '[lib]\npath = "code/lib.rs"\n',
+            encoding="utf-8",
+        )
+        (package / "code/lib.rs").write_text("mod caller;\n", encoding="utf-8")
+        (package / "code/caller.rs").write_text(
+            "fn active() { let prepare = prepare_redemption_request; }\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any("active production caller" in error for error in verifier.boundary_errors(root))
+        )
+
+    def test_active_caller_in_generated_source_is_rejected(self) -> None:
+        temporary, root = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        generated = root / "src/bolt_v3_polymarket_redemption/generated.rs"
+        generated.write_text(
+            GENERATED + "\nfn active() { let prepare = prepare_redemption_request; }\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            any("active production caller" in error for error in verifier.boundary_errors(root))
+        )
+
     def test_direct_secret_output_macros_are_rejected(self) -> None:
         temporary, root = self.fixture()
         self.addCleanup(temporary.cleanup)
@@ -424,6 +498,44 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
                 for error in verifier.boundary_errors(root)
             )
         )
+
+    def test_zeroizing_signer_decode_shape_is_required(self) -> None:
+        mutations = (
+            (
+                "PrivateKeySigner::from_slice(signer_private_key.as_ref())",
+                "credentials.signer_private_key.parse::<PrivateKeySigner>()",
+            ),
+            (
+                "PrivateKeySigner::from_slice(signer_private_key.as_ref())",
+                "<PrivateKeySigner as std::str::FromStr>::from_str("
+                "credentials.signer_private_key.as_str())",
+            ),
+            (
+                "PrivateKeySigner::from_slice(signer_private_key.as_ref())",
+                "{ type Signer = PrivateKeySigner; "
+                "credentials.signer_private_key.parse::<Signer>() }\n"
+                "    // PrivateKeySigner::from_slice(signer_private_key.as_ref())\n    ",
+            ),
+            (
+                "Zeroizing::new(B256::ZERO.into_array())",
+                "B256::ZERO.into_array()",
+            ),
+        )
+        for expected, replacement in mutations:
+            with self.subTest(replacement=replacement):
+                temporary, root = self.fixture()
+                self.addCleanup(temporary.cleanup)
+                owner = root / "src/bolt_v3_polymarket_redemption.rs"
+                owner.write_text(
+                    owner.read_text(encoding="utf-8").replace(expected, replacement, 1),
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    any(
+                        "zeroizing signer-key decode" in error
+                        for error in verifier.boundary_errors(root)
+                    )
+                )
 
     def test_public_injectable_secret_resolver_is_rejected(self) -> None:
         temporary, root = self.fixture()

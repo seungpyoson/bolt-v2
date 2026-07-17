@@ -21,6 +21,7 @@ use crate::{
         ArtifactStoreConfig, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
         CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
     },
+    catalog_projection::write_trade_ticks_homogeneous,
     run_manifest::MarketStructureFixture,
 };
 
@@ -346,7 +347,7 @@ pub fn run_nt_catalog_s3_conformance_probe(
     let mut catalog =
         ParquetDataCatalog::from_uri(&catalog_uri, Some(storage_options), None, None, None)?;
     catalog.write_instruments(instruments)?;
-    catalog.write_to_parquet(&trade_ticks, None, None, None)?;
+    write_trade_ticks_homogeneous(&catalog, &trade_ticks)?;
     let files = catalog.query_files(
         TradeTick::path_prefix(),
         Some(instrument_ids.clone()),

@@ -32,7 +32,10 @@ use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use crate::run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri};
+use crate::{
+    catalog_projection::write_trade_ticks_homogeneous,
+    run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri},
+};
 
 pub const NT_CATALOG_PROOF_SCHEMA_VERSION: &str = "nt-catalog-proof.v1";
 pub const NT_CATALOG_PROOF_REPORT_FILE: &str = "nt-catalog-proof-report.json";
@@ -151,8 +154,7 @@ where
                 .collect(),
         )
         .context("write configured instruments through NT catalog")?;
-    catalog
-        .write_to_parquet(&ticks, None, None, None)
+    write_trade_ticks_homogeneous(&catalog, &ticks)
         .context("write configured TradeTick data through NT catalog")?;
 
     let loaded_instruments = catalog

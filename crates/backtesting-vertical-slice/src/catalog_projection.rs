@@ -14,7 +14,7 @@
 //! the projection represents the accepted data exactly.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
     str::FromStr,
@@ -76,6 +76,48 @@ pub const NT_DATA_TYPE_INDEX_PRICE_UPDATE: &str = "IndexPriceUpdate";
 /// `mark_prices` via NT's own `impl_catalog_path_prefix!(MarkPriceUpdate,
 /// "mark_prices")` — never redefined here.
 pub const NT_DATA_TYPE_MARK_PRICE_UPDATE: &str = "MarkPriceUpdate";
+
+/// Write trade ticks in deterministic batches carrying one complete NT catalog identity.
+///
+/// The official catalog derives the output path and Arrow metadata from the first
+/// row, then rejects any later row whose instrument or precision differs. Grouping
+/// here keeps multi-instrument proof and capability writers on that same contract.
+pub(crate) fn write_trade_ticks_homogeneous(
+    catalog: &ParquetDataCatalog,
+    ticks: &[TradeTick],
+) -> Result<()> {
+    let mut batches: BTreeMap<(InstrumentId, u8, u8), Vec<TradeTick>> = BTreeMap::new();
+    for tick in ticks {
+        batches
+            .entry((
+                tick.instrument_id,
+                tick.price.precision,
+                tick.size.precision,
+            ))
+            .or_default()
+            .push(*tick);
+    }
+
+    for ((instrument_id, price_precision, size_precision), batch) in batches {
+        ensure!(
+            batch.iter().all(|tick| {
+                tick.instrument_id == instrument_id
+                    && tick.price.precision == price_precision
+                    && tick.size.precision == size_precision
+            }),
+            "trade-tick catalog batch identity changed while grouping {instrument_id}"
+        );
+        catalog
+            .write_to_parquet(&batch, None, None, None)
+            .with_context(|| {
+                format!(
+                    "write homogeneous TradeTick batch for {instrument_id} at price precision \
+                     {price_precision} and size precision {size_precision}"
+                )
+            })?;
+    }
+    Ok(())
+}
 
 /// NautilusTrader data type written for the funding-rate projection.
 ///
@@ -1207,8 +1249,8 @@ pub(crate) fn normalize_clear_order_precision(
     if delta.action == BookAction::Clear {
         delta.order = BookOrder::new(
             OrderSide::NoOrderSide,
-            Price::new(0.0, price_precision),
-            Quantity::new(0.0, size_precision),
+            Price::zero(price_precision),
+            Quantity::zero(size_precision),
             0,
         );
     }
@@ -5190,32 +5232,37 @@ max_notional = "200000"
             .expect("binary option"),
         );
         let instrument_id = instrument.id();
-        let deltas = vec![
-            {
-                let mut clear = OrderBookDelta::clear(
-                    instrument_id,
-                    0,
-                    UnixNanos::from(1_772_323_201_665_000_000u64),
-                    ts_init,
-                );
-                normalize_clear_order_precision(&mut clear, 2, 6);
-                clear
-            },
-            OrderBookDelta::new_checked(
+        let mut clear = OrderBookDelta::clear(
+            instrument_id,
+            0,
+            UnixNanos::from(1_772_323_201_665_000_000u64),
+            ts_init,
+        );
+        normalize_clear_order_precision(&mut clear, 2, 6);
+        assert_eq!(clear.order.price.precision, 2);
+        assert_eq!(clear.order.size.precision, 6);
+        let add = OrderBookDelta::new_checked(
                 instrument_id,
                 BookAction::Add,
-                BookOrder::new(OrderSide::Buy, Price::from("0.49"), Quantity::from("10"), 0),
+                BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from("0.49"),
+                    Quantity::new(10.0, 6),
+                    0,
+                ),
                 RecordFlag::F_LAST as u8,
                 0,
                 UnixNanos::from(1_772_323_201_665_000_000u64),
                 ts_init,
             )
-            .expect("bid delta"),
-        ];
+            .expect("bid delta");
+        assert_eq!(add.order.price.precision, 2);
+        assert_eq!(add.order.size.precision, 6);
+        let deltas = vec![clear, add];
         let tick = TradeTick::new(
             instrument_id,
             Price::from("0.51"),
-            Quantity::from("2"),
+            Quantity::new(2.0, 6),
             AggressorSide::Buyer,
             TradeId::new_checked("pmxt-trade-1").unwrap(),
             UnixNanos::from(1_772_323_201_665_000_000u64),

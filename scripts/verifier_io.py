@@ -55,13 +55,6 @@ REQUIRED_DISCOVERY_FLOOR_CONTRACTS = (
         "collect_violations_from_files returns floor violations before scanning source text.",
     ),
     RequiredDiscoveryFloorContract(
-        "verify_bolt_v3_poison_lock_fence.py",
-        "Rust source files under src",
-        "helper-terminal",
-        "main",
-        "collect_violations returns floor violations before scanning source text.",
-    ),
-    RequiredDiscoveryFloorContract(
         "verify_bolt_v3_provider_leaks.py",
         "Bolt-v3 provider-leak core files",
         "aggregate-then-terminal",

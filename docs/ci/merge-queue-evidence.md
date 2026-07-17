@@ -4,11 +4,11 @@ Issue: #929
 
 ## Scope
 
-This note records the live evidence required before enabling ready-PR iteration deferral. It does not change `ready_pr` or `ready_for_review` policy values.
+This note records the live evidence required before enabling metadata-only ready-PR iteration routing. It does not change `ready_pr` or `ready_for_review` policy values.
 
 Issue #929's active rollout path is Mergify's external queue for a private repository. Mergify does not emit GitHub's native `merge_group` event for that path; native `merge_group` support remains future-use evidence for a GitHub-native merge queue.
 
-Before ready-PR deferral, the active queue proof must show that Mergify tests the prospective merge with full CI and publishes both required gates before the original PR merges. Native `merge_group` evidence is acceptable only if the repository is moved to GitHub's native merge queue.
+Before enabling metadata-only ready-PR iteration routing, the active queue proof must show that Mergify tests the prospective merge with full CI and publishes both required gates before the original PR merges. Native `merge_group` evidence is acceptable only if the repository is moved to GitHub's native merge queue.
 
 ## Native GitHub Merge Queue Evidence
 

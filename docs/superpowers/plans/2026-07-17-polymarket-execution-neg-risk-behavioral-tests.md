@@ -175,6 +175,6 @@ git commit -m "test: pin neg-risk execution regressions"
 just sandbox-safe-push
 ```
 
-- [ ] **Step 6: Verify exact-head remote evidence**
+- [x] **Step 6: Verify exact-head remote evidence**
 
 Run `just verify-remote`. Required root and Backtester gates must complete successfully at the exact pushed SHA. Record the SHA and workflow run IDs; do not merge or claim native approval.

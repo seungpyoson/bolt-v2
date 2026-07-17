@@ -5,6 +5,22 @@
 # runtime literal to be recorded here with a classification and rationale.
 
 [[allowed]]
+path = "src/economics/types.rs"
+kind = "number"
+literal = '''4'''
+context = '''const BASIS_POINT_DECIMAL_SCALE: u32 = 4;'''
+classification = "economics_basis_point_unit_scale"
+reason = "Basis points are a shared decimal unit definition, so four decimal places is a mathematical unit conversion rather than venue policy; provider contract fixtures fence each wire use."
+
+[[allowed]]
+path = "src/economics/types.rs"
+kind = "number"
+literal = '''1'''
+context = '''basis_points * Decimal::new(1, BASIS_POINT_DECIMAL_SCALE)'''
+classification = "economics_basis_point_unit_coefficient"
+reason = "The unit coefficient constructs one basis point at the fixture-fenced protocol decimal scale; it is a mathematical unit identity, not a configurable venue rate."
+
+[[allowed]]
 path = "src/bin/stream_to_lake.rs"
 kind = "string"
 literal = '''"Contract validation: {} ({} venue, {} classes)"'''

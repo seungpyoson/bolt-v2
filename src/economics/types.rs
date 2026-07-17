@@ -2,6 +2,12 @@ use std::{error::Error, fmt};
 
 use rust_decimal::Decimal;
 
+const BASIS_POINT_DECIMAL_SCALE: u32 = 4;
+
+pub fn basis_points_to_fraction(basis_points: Decimal) -> Decimal {
+    basis_points * Decimal::new(1, BASIS_POINT_DECIMAL_SCALE)
+}
+
 macro_rules! domain_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -47,6 +53,7 @@ domain_id!(ValuationRouteId);
 domain_id!(CanonicalEconomicEventId);
 domain_id!(ComponentDiscriminator);
 domain_id!(AuthorityEventId);
+domain_id!(RoutingAttachmentId);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InventoryApplication {
@@ -208,6 +215,9 @@ pub enum EconomicKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EconomicScope {
+    Decision {
+        decision_correlation_id: DecisionCorrelationId,
+    },
     Fill {
         order_id: OrderId,
         fill_id: FillId,
@@ -321,7 +331,12 @@ pub struct PlannedFillLeg {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RoutingContext {
-    pub attached_charge: Option<SignedNativeEffect>,
+    pub attached_charge: Option<RoutingAttachment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoutingAttachment {
+    pub attachment_id: RoutingAttachmentId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -547,6 +562,9 @@ pub enum EconomicsUnavailable {
         valid_until_ns: u64,
     },
     ActualAccountingUnavailable,
+    ProviderQuoteUnavailable {
+        source_id: SourceId,
+    },
 }
 
 impl fmt::Display for EconomicsUnavailable {

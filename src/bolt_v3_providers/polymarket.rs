@@ -27,6 +27,7 @@
 mod adapter_signing_source;
 mod balance_allowance_cache;
 mod collateral_accounting_source;
+pub mod economics;
 mod fee_behavior_source;
 mod fees;
 mod venue_account_state_source;

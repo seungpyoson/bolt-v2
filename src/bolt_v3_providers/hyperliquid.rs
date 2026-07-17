@@ -1776,3 +1776,4 @@ mod tests {
         assert!(FORBIDDEN_ENV_VARS.contains(&"HYPERLIQUID_ACCOUNT_ADDRESS"));
     }
 }
+pub mod economics;

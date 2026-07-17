@@ -18,8 +18,9 @@ pub use types::{
     ExecutionKind, FillId, FormulaId, IncentiveKind, InstrumentId, InventoryApplication,
     LifecycleKind, LifecyclePath, LiquidityRoleAssumption, MarketId, NativeUnitId, NetEdgeQuote,
     OrderId, OrderSide, PlannedFillLeg, PositionContext, PositionId, PositionSide,
-    ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingContext, SignedNativeEffect,
-    SnapshotId, SourceId, SourceValidity, TransferKind, ValuationEvidence, ValuationLegEvidence,
-    ValuationRequest, ValuationRoute, ValuationRouteId,
+    ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingAttachment,
+    RoutingAttachmentId, RoutingContext, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+    TransferKind, ValuationEvidence, ValuationLegEvidence, ValuationRequest, ValuationRoute,
+    ValuationRouteId, basis_points_to_fraction,
 };
 pub use valuation::value_with_route;

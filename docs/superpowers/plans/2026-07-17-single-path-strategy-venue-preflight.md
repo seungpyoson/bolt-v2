@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax as an execution checklist; commits and exact-head evidence, not this durable plan, record completion.
 
-**Goal:** Remove raw client/config reachability and direct commit methods from strategy callbacks while making one atomic prepared-batch coordinator the only registration path for Live and the Backtester production-registry branches changed by this PR.
+**Goal:** Remove raw client/config reachability and direct commit methods from strategy preparation while making one atomic prepared-batch coordinator the only registration path for Live and the Backtester production-registry branches changed by this PR.
 
 **Architecture:** Shared preflight resolves each configured client identity once, retains only safe client-to-venue routes, and copies the non-client root values needed by raw mapping into an immutable snapshot. `StrategyRegistry` is the only producer of opaque prepared production-registry strategies; one public batch coordinator performs NT identity preparation, batch conflict checks, and final commits for Live and the affected Backtester branches.
 
@@ -87,7 +87,7 @@ git commit -m "fix: clear strategy registration compile debris"
 
 ---
 
-### Task 2: Seal callback inputs behind prepared routes and a safe config snapshot
+### Task 2: Seal preparation inputs behind prepared routes and a safe config snapshot
 
 **Files:**
 - Modify: `src/bolt_v3_strategy_registration.rs:118-350`
@@ -243,7 +243,7 @@ pub fn has_chainlink_feed_binding(&self, instrument_id: &str) -> bool;
 The realized-volatility query must distinguish an absent root section from an
 unknown ID in a present section; do not collapse those states into one `None`.
 
-- [ ] **Step 4: Remove loaded config from the callback context**
+- [ ] **Step 4: Remove loaded config from the preparation context**
 
 Construct one `Arc<StrategyPreparationConfig>` beside `StrategyRegistrationRuntimeResources` and clone it into each context. Change the context fields to:
 
@@ -310,7 +310,7 @@ Change resolution binding validation to query `has_chainlink_feed_binding` rathe
 
 - [ ] **Step 6: Update Live and Backtester raw-mapping callers**
 
-Live callback:
+Live preparation:
 
 ```rust
 let raw = raw_taker_config(
@@ -448,7 +448,7 @@ Every error records its batch index. Do not accept separate prepare and commit t
 
 - [ ] **Step 4: Route Live registration through the coordinator**
 
-After all binding callbacks return, retain a metadata vector in the same order as the prepared values. Call:
+After all pure binding preparations return, retain a metadata vector in the same order as the prepared values. Call:
 
 ```rust
 let registered_strategy_ids = register_prepared_strategy_batch(
@@ -482,7 +482,7 @@ pub(crate) fn prepare_stub_runtime_strategy(
 }
 ```
 
-Replace every integration-test call to `PreparedStrategyRegistration::from_strategy` with this registry-backed helper after assembling the callback's `StrategyBuildContext`. Tests must not require public access to the opaque constructor.
+Replace every integration-test call to `PreparedStrategyRegistration::from_strategy` with this registry-backed helper after assembling the preparation's `StrategyBuildContext`. Tests must not require public access to the opaque constructor.
 
 - [ ] **Step 6: Migrate both Backtester registration call sites**
 
@@ -652,7 +652,7 @@ Expected: every command exits 0. If sandbox policy blocks the deny cache or CI-l
 Verify directly:
 
 ```text
-1. No callback can name or obtain LoadedBoltV3Config, BoltV3RootConfig, ClientBlock, or resolved secrets.
+1. No binding preparation can name or obtain LoadedBoltV3Config, BoltV3RootConfig, ClientBlock, or resolved secrets.
 2. Alias execution/signal/resolution roles use one resolver and one venue value per ClientId.
 3. PreparedStrategyRegistration has no public construction, prepare, getter, or commit method.
 4. Live and the affected Backtester production-registry branches call the same register_prepared_strategy_batch function.

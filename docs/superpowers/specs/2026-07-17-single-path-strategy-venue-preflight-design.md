@@ -139,6 +139,14 @@ missing resolution client, malformed raw strategy config, unsupported registry
 entry, duplicate strategy ID, or concrete strategy-construction error in any
 configured strategy therefore leaves the trader unchanged.
 
+Here, a binding's `prepare` function is part of deterministic preflight, not a
+registration callback or commit. A context-stage failure such as a missing
+client prevents every binding preparation from running. A failure discovered
+inside a later pure preparation may follow earlier pure preparations, but it
+still precedes every NT identity mutation and registration commit. The batch
+atomicity contract is zero trader mutation and zero new registration, not zero
+invocation of the pure functions needed to discover binding-specific errors.
+
 ## Error Handling
 
 All preparation failures map to the existing strategy-specific `Binding`
@@ -155,16 +163,16 @@ than deferred configuration validation.
 
 | Risk | Structural control | Required evidence |
 | --- | --- | --- |
-| A later invalid strategy leaves earlier registrations behind | Collect all concrete prepared strategies before commit | A valid first edge strategy plus a second strategy with a missing signal client produces zero callbacks and zero registrations |
-| A client role reopens the root client map | One shared identity-deduplicating client resolver; prepared route reads thereafter | Alias execution and signal client IDs and prove one root-map read and correct preparation |
-| A binding launders a late lookup through `context.loaded` or a helper | Context contains no loaded/root/client-block reference; raw mapping receives only routes and a non-client snapshot | Compile/API checks and source fences reject loaded/root/client types and client lookup provenance in preparation callbacks |
+| A later invalid strategy leaves earlier registrations behind | Collect all concrete prepared strategies before commit | Missing-client failures run zero binding preparations; malformed raw config and ID/tag conflicts produce zero new registrations |
+| A client role reopens the root client map | One shared identity-deduplicating client resolver; prepared route reads thereafter | Alias execution and signal client IDs, pin the public wrapper to direct delegation, and prove one loaded-root traversal owner |
+| A binding launders a late lookup through `context.loaded` or a helper | Context contains no loaded/root/client-block reference; raw mapping receives only routes and a non-client snapshot | Compile/API checks and source fences reject loaded/root/client types and client lookup provenance in preparation functions |
 | A binding defers parsing or construction until mutation | `StrategyRuntimeBinding` exposes prepare, not register; prepared commit owns a built strategy | Structural test rejects raw mapping, registry selection, or strategy building in the commit loop |
 | Builder validation and registration diverge | One concrete `StrategyBuilder` construction method | Registry tests prove prepare constructs once and commit does not reconstruct |
-| External code bypasses the batch checks | Prepared values expose no public constructor/prepare/commit method; one shared coordinator is the sole consumer | API/compile tests prove direct prepare/commit is unavailable and Live plus the affected Backtester production-registry branches use the coordinator |
-| A Backtester production-registry branch retains the deleted registration route | Those branches use shared route/snapshot preparation, registry preparation, and the common batch coordinator | Backtester Clippy/archive compile and structural checks reject `register_strategy` and direct `add_strategy` in those branches |
+| External code bypasses the batch checks | Prepared values expose no public constructor/prepare/commit method; one shared coordinator is the sole consumer | Exact field/API checks and a production-wide caller graph restrict the constructor and coordinator to sanctioned owners |
+| A Backtester production-registry branch retains the deleted registration route | Those branches use shared route/snapshot preparation, registry preparation, and the common batch coordinator | Backtester Clippy/archive plus a production-wide primitive scan reject wrappers, qualified calls, `register_strategy`, and every direct `add_strategy` outside the two named non-registry exclusions |
 | A duplicate or existing NT strategy ID/order tag is discovered during commit | Prepared IDs/tags and existing trader IDs/tags are checked before mutation | Duplicate-batch and existing-tag regressions assert zero new registrations |
 | Settlement identity uses another route | Settlement consumes the prepared execution client and venue before fee-provider construction | Account/currency failures return typed errors and execute no commit |
-| Secrets or capability handles leak to bindings | Resolved credentials are constructor-only; prepared route and capability fields stay private | Structural tests reject any stored `ResolvedBoltV3Secrets` and undeclared resource access |
+| Secrets or capability handles leak to bindings | Resolved credentials are constructor-only; prepared route and capability fields stay private | Structural tests pin every transitive stored field type and reject aliases or added secret-bearing fields |
 | Missing configuration is silently replaced | Every absent client/account/currency is an error; realized-volatility surface lookup preserves absent-section, unknown-ID, and resolved states | Fail-closed tests cover each missing identity and all three surface states with no fallback or unwind |
 | Documentation reintroduces the retired ordering | Design and implementation plan show settlement before fee provider and no `binding_message` wrapper | Targeted text checks and internal adversarial review |
 

@@ -99,7 +99,7 @@ fn strategy_registration_test_runtime(
 
 const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
 const RV_DATA_CLIENT_VENUE: &str = "OKX";
-static PREPARATION_CALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PREPARATION_FUNCTION_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn set_fixture_strategy_settlement_currency(
     loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
@@ -906,7 +906,7 @@ fn settlement_registration_error_after_config_mutation(
         )
     }));
     result
-        .expect("invalid settlement identity must not unwind or invoke the binding callback")
+        .expect("invalid settlement identity must not unwind or invoke binding preparation")
         .expect_err("invalid settlement identity must fail before binding registration")
 }
 
@@ -940,7 +940,7 @@ fn settlement_capable_binding_is_not_invoked_without_settlement_currency() {
 }
 
 #[test]
-fn settlement_capable_binding_rejects_unknown_currency_without_unwinding_or_callback() {
+fn settlement_capable_binding_rejects_unknown_currency_without_unwinding_or_preparation() {
     let error = settlement_registration_error_after_config_mutation(|loaded| {
         set_fixture_strategy_settlement_currency(loaded, "BOLT_UNKNOWN_SETTLEMENT_CURRENCY");
     });
@@ -948,9 +948,11 @@ fn settlement_capable_binding_rejects_unknown_currency_without_unwinding_or_call
     assert_settlement_currency_binding_error(&error);
 }
 
-fn assert_invalid_second_execution_route_fails_before_callbacks(
+fn assert_invalid_second_execution_route_fails_before_binding_preparation(
     capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities,
     invalid_execution_client_id: &str,
+    configure_loaded_after_runtime_build: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedBoltV3Config),
+    expected_error: &str,
 ) {
     fn prepare_stub(
         _context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
@@ -958,12 +960,12 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
         bolt_v2::bolt_v3_strategy_registration::PreparedStrategyRegistration,
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
     > {
-        PREPARATION_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
+        PREPARATION_FUNCTION_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         let build_context =
             bolt_v2::bolt_v3_strategy_registration::assemble_strategy_build_context(&_context)?;
         Ok(
             support::stub_runtime_strategy::prepare_stub_runtime_strategy(
-                "BOLT-V3-PREFLIGHT-CALLBACK",
+                "BOLT-V3-PREFLIGHT-PREPARATION",
                 &build_context,
             )
             .expect("stub runtime strategy should prepare through the registry"),
@@ -979,7 +981,7 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
         },
     ];
 
-    PREPARATION_CALLBACK_COUNT.store(0, Ordering::SeqCst);
+    PREPARATION_FUNCTION_CALL_COUNT.store(0, Ordering::SeqCst);
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let valid = loaded
@@ -1016,6 +1018,7 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
     let mut node = builder
         .build()
         .expect("v3 LiveNode should build before strategy registration");
+    configure_loaded_after_runtime_build(&mut loaded);
     loaded.strategies = vec![valid, invalid];
 
     let error =
@@ -1033,40 +1036,59 @@ fn assert_invalid_second_execution_route_fails_before_callbacks(
         error,
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding { .. }
     ));
-    assert_eq!(PREPARATION_CALLBACK_COUNT.load(Ordering::SeqCst), 0);
+    assert!(
+        error.to_string().contains(expected_error),
+        "registration must fail at the intended preflight boundary `{expected_error}`: {error}"
+    );
+    assert_eq!(PREPARATION_FUNCTION_CALL_COUNT.load(Ordering::SeqCst), 0);
     assert!(node.kernel().trader().borrow().strategy_ids().is_empty());
 }
 
 #[test]
-fn all_settlement_registration_contexts_are_validated_before_any_binding_callback() {
-    assert_invalid_second_execution_route_fails_before_callbacks(
+fn all_settlement_registration_contexts_are_validated_before_any_binding_preparation() {
+    assert_invalid_second_execution_route_fails_before_binding_preparation(
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
             realized_volatility: true,
             settlement: true,
         },
         "missing_execution_client",
+        |_| {},
+        "not present in loaded clients",
     );
 }
 
 #[test]
-fn non_settlement_registration_resolves_every_venue_before_any_binding_callback() {
-    assert_invalid_second_execution_route_fails_before_callbacks(
+fn non_settlement_registration_resolves_every_venue_before_any_binding_preparation() {
+    assert_invalid_second_execution_route_fails_before_binding_preparation(
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
             realized_volatility: false,
             settlement: false,
         },
         "missing_execution_client",
+        |_| {},
+        "not present in loaded clients",
     );
 }
 
 #[test]
-fn fee_provider_preflight_failure_for_second_strategy_runs_no_binding_callback() {
-    assert_invalid_second_execution_route_fails_before_callbacks(
+fn fee_provider_preflight_failure_for_second_strategy_runs_no_binding_preparation() {
+    assert_invalid_second_execution_route_fails_before_binding_preparation(
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
             realized_volatility: false,
             settlement: false,
         },
         "binance_reference",
+        |loaded| {
+            let client: ClientBlock = toml::from_str(include_str!(
+                "fixtures/bolt_v3/binance_reference_client.toml"
+            ))
+            .expect("configured Binance reference client fixture should parse");
+            loaded
+                .root
+                .clients
+                .insert("binance_reference".to_string(), client);
+        },
+        "has no registered fee-provider binding",
     );
 }
 

@@ -31,11 +31,15 @@ use crate::support;
 #[path = "support/rust_source_tokens.rs"]
 mod rust_source_tokens;
 
-use rust_source_tokens::{count_sequence, item_body_tokens, item_header, texts, tokenize};
+use rust_source_tokens::{
+    count_sequence, impl_body_tokens, inherent_impl_body_tokens, item_body_tokens, item_header,
+    texts, tokenize,
+};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicI64, Ordering},
@@ -119,6 +123,101 @@ fn function_has_visibility(tokens: &[rust_source_tokens::Token], function: &str)
                 .map_or(0, |delimiter| delimiter + 1);
             actual[declaration_start..function_index].contains(&"pub")
         })
+}
+
+fn field_type_texts<'a>(
+    tokens: &'a [rust_source_tokens::Token],
+    field: &str,
+) -> Option<Vec<&'a str>> {
+    let actual = texts(tokens);
+    let mut matches = actual
+        .windows(2)
+        .enumerate()
+        .filter_map(|(index, window)| (window == [field, ":"]).then_some(index));
+    let field_index = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+
+    let mut angle_depth = 0usize;
+    let mut grouping_depth = 0usize;
+    let mut end = field_index + 2;
+    while end < actual.len() {
+        match actual[end] {
+            "<" => angle_depth += 1,
+            ">" => angle_depth = angle_depth.checked_sub(1)?,
+            "(" | "[" | "{" => grouping_depth += 1,
+            ")" | "]" | "}" => grouping_depth = grouping_depth.checked_sub(1)?,
+            "," if angle_depth == 0 && grouping_depth == 0 => break,
+            _ => {}
+        }
+        end += 1;
+    }
+    Some(actual[field_index + 2..end].to_vec())
+}
+
+fn assert_field_type(tokens: &[rust_source_tokens::Token], field: &str, expected: &[&str]) {
+    assert_eq!(
+        field_type_texts(tokens, field).as_deref(),
+        Some(expected),
+        "field `{field}` must retain its reviewed narrow type"
+    );
+}
+
+fn collect_rust_files(path: &Path, files: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == std::ffi::OsStr::new("rs"))
+        {
+            files.push(path.to_path_buf());
+        }
+        return;
+    }
+    let mut entries = fs::read_dir(path)
+        .unwrap_or_else(|error| {
+            panic!(
+                "Rust source directory `{}` should read: {error}",
+                path.display()
+            )
+        })
+        .map(|entry| {
+            entry
+                .expect("Rust source directory entry should read")
+                .path()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    for entry in entries {
+        collect_rust_files(&entry, files);
+    }
+}
+
+fn rust_sources_under(relative: &str) -> Vec<(String, String)> {
+    let repo_root = support::repo_path("");
+    let mut files = Vec::new();
+    collect_rust_files(&support::repo_path(relative), &mut files);
+    files
+        .into_iter()
+        .map(|path| {
+            let relative_path = path
+                .strip_prefix(&repo_root)
+                .expect("collected Rust source should remain under the repository")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let source = fs::read_to_string(&path).unwrap_or_else(|error| {
+                panic!("Rust source `{relative_path}` should read: {error}")
+            });
+            (relative_path, source)
+        })
+        .collect()
+}
+
+fn count_identifier(tokens: &[rust_source_tokens::Token], identifier: &str) -> usize {
+    tokens
+        .iter()
+        .filter(|token| token.text == identifier)
+        .count()
 }
 use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
@@ -470,6 +569,75 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     for field in expected_fields {
         assert_eq!(count_sequence(context_tokens, &[field, ":"]), 1);
     }
+    assert_field_type(context_tokens, "strategy", &["&", "LoadedStrategy"]);
+    assert_field_type(context_tokens, "strategy_kind", &["&", "str"]);
+    assert_field_type(
+        context_tokens,
+        "capabilities",
+        &["StrategyRuntimeCapabilities"],
+    );
+    assert_field_type(
+        context_tokens,
+        "decision_evidence",
+        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "submit_admission",
+        &["Arc", "<", "BoltV3SubmitAdmissionState", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "iv_query_handles",
+        &["Arc", "<", "BoltV3IvQueryHandleRegistry", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "order_execution_policy",
+        &["BoltV3OrderExecutionPolicy"],
+    );
+    assert_field_type(
+        context_tokens,
+        "preparation_config",
+        &["Arc", "<", "StrategyPreparationConfig", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "realized_volatility_runtime",
+        &[
+            "Option",
+            "<",
+            "Arc",
+            "<",
+            "Mutex",
+            "<",
+            "RealizedVolSurfaceRuntime",
+            ">",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        context_tokens,
+        "client_routes",
+        &["PreparedStrategyClientRoutes"],
+    );
+    assert_field_type(context_tokens, "execution_venue", &["Venue"]);
+    assert_field_type(
+        context_tokens,
+        "fee_provider",
+        &["Arc", "<", "dyn", "FeeProvider", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "settlement",
+        &[
+            "Option",
+            "<",
+            "StrategyRegistrationSettlementResources",
+            ">",
+        ],
+    );
     for protected_field in [
         "preparation_config",
         "client_routes",
@@ -497,6 +665,90 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
             "registration context retained raw capability `{forbidden_capability}`"
         );
     }
+
+    let runtime_resources = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "StrategyRegistrationRuntimeResources"],
+    )
+    .expect("registration runtime resources should remain inspectable");
+    assert_eq!(
+        runtime_resources
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        4
+    );
+    assert_field_type(
+        runtime_resources,
+        "decision_evidence",
+        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+    );
+    assert_field_type(
+        runtime_resources,
+        "iv_query_handles",
+        &["Arc", "<", "BoltV3IvQueryHandleRegistry", ">"],
+    );
+    assert_field_type(
+        runtime_resources,
+        "realized_volatility_runtime",
+        &[
+            "Arc",
+            "<",
+            "Mutex",
+            "<",
+            "RealizedVolSurfaceRuntime",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        runtime_resources,
+        "execution_controls",
+        &["BoltV3StrategyExecutionControls"],
+    );
+
+    let execution_controls = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "BoltV3StrategyExecutionControls"],
+    )
+    .expect("registration execution controls should remain inspectable");
+    assert_eq!(
+        execution_controls
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        5
+    );
+    assert_field_type(
+        execution_controls,
+        "submit_admission",
+        &["Arc", "<", "BoltV3SubmitAdmissionState", ">"],
+    );
+    assert_field_type(
+        execution_controls,
+        "order_execution_policy",
+        &["BoltV3OrderExecutionPolicy"],
+    );
+    assert_field_type(
+        execution_controls,
+        "settlement_runtime_sink",
+        &["Option", "<", "BoltV3SettlementRuntimeSinkHandle", ">"],
+    );
+    assert_field_type(
+        execution_controls,
+        "settlement_recovery",
+        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+    );
+    assert_field_type(
+        execution_controls,
+        "settlement_health_transition_emitter",
+        &[
+            "Option",
+            "<",
+            "BoltV3SettlementHealthTransitionEmitter",
+            ">",
+        ],
+    );
 }
 
 #[test]
@@ -527,12 +779,98 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
             "settlement resources must cache `{cached_proof_field}`"
         );
     }
+    assert_field_type(
+        settlement_resource_tokens,
+        "settlement_account_id",
+        &["String"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "settlement_currency",
+        &["Currency"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "runtime_sink",
+        &["Option", "<", "BoltV3SettlementRuntimeSinkHandle", ">"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "recovery",
+        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "health_transition_emitter",
+        &[
+            "Option",
+            "<",
+            "BoltV3SettlementHealthTransitionEmitter",
+            ">",
+        ],
+    );
 
-    let constructor_tokens = item_body_tokens(
+    let client_routes_tokens = item_body_tokens(
         &source_tokens,
-        &["impl", "<", ">", "StrategyRegistrationContext"],
+        &["pub", "struct", "PreparedStrategyClientRoutes"],
     )
-    .expect("strategy registration constructor should remain inspectable");
+    .expect("prepared client routes should remain inspectable");
+    assert_eq!(
+        client_routes_tokens
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        1
+    );
+    assert_field_type(
+        client_routes_tokens,
+        "venues_by_client_id",
+        &["BTreeMap", "<", "ClientId", ",", "Venue", ">"],
+    );
+
+    let preparation_config_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "StrategyPreparationConfig"],
+    )
+    .expect("strategy preparation snapshot should remain inspectable");
+    assert_eq!(
+        preparation_config_tokens
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        3
+    );
+    assert_field_type(
+        preparation_config_tokens,
+        "realized_volatility_max_source_age_ms",
+        &[
+            "Option", "<", "BTreeMap", "<", "String", ",", "u64", ">", ">",
+        ],
+    );
+    assert_field_type(
+        preparation_config_tokens,
+        "gate_provider_max_age_ms",
+        &["BTreeMap", "<", "String", ",", "u64", ">"],
+    );
+    assert_field_type(
+        preparation_config_tokens,
+        "chainlink_feed_instrument_ids",
+        &["BTreeSet", "<", "String", ">"],
+    );
+
+    let all_context_impls = impl_body_tokens(&source_tokens, "StrategyRegistrationContext");
+    assert_eq!(
+        all_context_impls.len(),
+        1,
+        "StrategyRegistrationContext must not acquire a trait or qualified alternate impl surface"
+    );
+    let context_impls = inherent_impl_body_tokens(&source_tokens, "StrategyRegistrationContext");
+    assert_eq!(
+        context_impls.len(),
+        1,
+        "all inherent StrategyRegistrationContext impl spellings must remain under one reviewed surface"
+    );
+    let constructor_tokens = context_impls[0];
     assert_eq!(count_sequence(constructor_tokens, &["fn"]), 3);
     assert!(function_has_visibility(constructor_tokens, "new"));
     for safe_getter in ["preparation_config", "prepared_client_routes"] {
@@ -552,26 +890,11 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         settlement_position < fee_provider_position,
         "settlement identity must fail closed before fee-provider construction"
     );
-    for suppression in ["expect", "allow"] {
-        assert_eq!(
-            count_sequence(
-                &source_tokens,
-                &[
-                    "#",
-                    "[",
-                    suppression,
-                    "(",
-                    "clippy",
-                    "::",
-                    "too_many_arguments",
-                    ")",
-                    "]",
-                ],
-            ),
-            0,
-            "strategy registration must group runtime resources instead of suppressing Clippy"
-        );
-    }
+    assert_eq!(
+        count_identifier(&source_tokens, "too_many_arguments"),
+        0,
+        "strategy registration must not suppress too-many-arguments under any attribute spelling"
+    );
     assert_eq!(
         count_sequence(&source_tokens, &["fn", "binding_message", "("]),
         0,
@@ -626,6 +949,39 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         0,
         "the context constructor must delegate all root client-map ownership to the route resolver"
     );
+    let public_route_wrapper = item_body_tokens(
+        &source_tokens,
+        &["pub", "fn", "prepare_strategy_client_routes"],
+    )
+    .expect("the Backtester route wrapper should remain inspectable");
+    assert_eq!(
+        texts(public_route_wrapper),
+        vec![
+            "Ok",
+            "(",
+            "resolve_strategy_client_routes",
+            "(",
+            "loaded",
+            ",",
+            "strategy",
+            ")",
+            "?",
+            ".",
+            "prepared",
+            ")",
+        ],
+        "the public route wrapper must delegate directly to the single owning resolver"
+    );
+    assert_eq!(
+        count_sequence(&source_tokens, &["loaded", ".", "root", ".", "clients"],),
+        1,
+        "registration must have one loaded-root client-table traversal owner across the full module"
+    );
+    assert_eq!(
+        count_identifier(&source_tokens, "clients"),
+        3,
+        "registration must retain exactly the route resolver and two neutral validation accessors as client-table owners"
+    );
     let client_route_resolver_tokens =
         item_body_tokens(&source_tokens, &["fn", "resolve_strategy_client_routes"])
             .expect("client-route resolver should remain inspectable");
@@ -636,6 +992,58 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         ),
         1,
         "the owning resolver must perform one root-map operation for each deduplicated client identity"
+    );
+    let venue_accessor_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "(", "crate", ")", "fn", "venue_for_client"],
+    )
+    .expect("neutral venue accessor should remain inspectable");
+    assert_eq!(
+        texts(venue_accessor_tokens),
+        vec![
+            "root",
+            ".",
+            "clients",
+            ".",
+            "get",
+            "(",
+            "client_id",
+            ")",
+            ".",
+            "map",
+            "(",
+            "|",
+            "client",
+            "|",
+            "client",
+            ".",
+            "venue",
+            ")",
+        ],
+        "neutral venue access must remain a direct read of the sanctioned root client table"
+    );
+    let account_accessor_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "(", "crate", ")", "fn", "execution_account_id"],
+    )
+    .expect("neutral execution-account accessor should remain inspectable");
+    assert_eq!(
+        texts(account_accessor_tokens),
+        vec![
+            "execution_account_id_from_client",
+            "(",
+            "root",
+            ".",
+            "clients",
+            ".",
+            "get",
+            "(",
+            "execution_client_id",
+            ")",
+            "?",
+            ")",
+        ],
+        "neutral execution-account access must remain a direct read of the sanctioned root client table"
     );
     assert_eq!(
         count_sequence(&source_tokens, &["fn", "execution_venue_for_context"]),
@@ -740,11 +1148,38 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
 fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
     let registration = support::repo_text("src/bolt_v3_strategy_registration.rs");
     let registration_tokens = tokenize(&registration);
+    let prepared_struct_tokens = item_body_tokens(
+        &registration_tokens,
+        &["pub", "struct", "PreparedStrategyRegistration"],
+    )
+    .expect("prepared strategy value should remain inspectable");
+    assert_eq!(
+        prepared_struct_tokens
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        2
+    );
+    assert_field_type(
+        prepared_struct_tokens,
+        "strategy_id",
+        &["Option", "<", "StrategyId", ">"],
+    );
+    assert_field_type(
+        prepared_struct_tokens,
+        "strategy",
+        &["Box", "<", "dyn", "PreparedStrategyCommit", ">"],
+    );
     let prepared_impl_tokens = item_body_tokens(
         &registration_tokens,
         &["impl", "PreparedStrategyRegistration"],
     )
     .expect("prepared strategy implementation should remain inspectable");
+    assert_eq!(
+        impl_body_tokens(&registration_tokens, "PreparedStrategyRegistration").len(),
+        1,
+        "the opaque prepared value must have one inherent impl and no trait-based escape surface"
+    );
     assert_eq!(count_sequence(prepared_impl_tokens, &["fn"]), 3);
     for expected_method in ["from_strategy", "prepare_registration", "commit"] {
         assert_eq!(
@@ -752,14 +1187,37 @@ fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
             1
         );
     }
-    assert!(function_has_visibility(
-        prepared_impl_tokens,
-        "from_strategy"
-    ));
+    assert_eq!(
+        count_sequence(
+            prepared_impl_tokens,
+            &["pub", "(", "crate", ")", "fn", "from_strategy"],
+        ),
+        1,
+        "the registry-only constructor must remain crate-private rather than public"
+    );
     for forbidden_visible_method in ["prepare_registration", "strategy_id", "commit"] {
         assert!(
             !function_has_visibility(prepared_impl_tokens, forbidden_visible_method),
             "prepared strategies must expose no direct `{forbidden_visible_method}` method"
+        );
+    }
+    assert_eq!(
+        count_sequence(
+            &registration_tokens,
+            &["for", "PreparedStrategyRegistration"],
+        ),
+        0,
+        "a trait impl must not expose an alternate operation on the opaque prepared value"
+    );
+    for (primitive, expected_count) in [
+        ("add_strategy", 1),
+        ("prepare_registration", 5),
+        ("commit", 5),
+    ] {
+        assert_eq!(
+            count_identifier(&registration_tokens, primitive),
+            expected_count,
+            "registration primitive `{primitive}` must remain confined to its sealed trait, implementation, value, and coordinator call sites"
         );
     }
     assert_eq!(
@@ -839,6 +1297,35 @@ fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
         ],
     )
     .expect("final commit loop should remain inspectable");
+    assert_eq!(
+        texts(commit_loop_tokens),
+        vec![
+            "prepared_registration",
+            ".",
+            "commit",
+            "(",
+            "trader",
+            ")",
+            ".",
+            "map_err",
+            "(",
+            "|",
+            "error",
+            "|",
+            "PreparedStrategyBatchError",
+            "::",
+            "new",
+            "(",
+            "index",
+            ",",
+            "error",
+            ")",
+            ")",
+            "?",
+            ";",
+        ],
+        "the final commit loop must contain only the sealed one-use commit operation"
+    );
     for forbidden_deferred_work in [
         vec!["StrategyRegistrationContext", "::", "new", "("],
         vec!["root", ".", "clients"],
@@ -860,17 +1347,11 @@ fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
         count_sequence(&registry_tokens, &["pub", "fn", "prepare_strategy"]),
         1
     );
-    for retired_dual_path in [
-        vec!["pub", "type", "BoxedStrategy"],
-        vec!["pub", "trait", "RuntimeStrategy"],
-        vec!["pub", "fn", "register_strategy"],
-        vec!["pub", "fn", "build"],
-        vec!["fn", "register", "("],
-    ] {
+    for retired_identifier in ["BoxedStrategy", "RuntimeStrategy", "register_strategy"] {
         assert_eq!(
-            count_sequence(&registry_tokens, &retired_dual_path),
+            count_identifier(&registry_tokens, retired_identifier),
             0,
-            "strategy registry must not retain a retired dual path"
+            "strategy registry must not retain retired identifier `{retired_identifier}` under any visibility, generic, or re-export spelling"
         );
     }
 }
@@ -922,6 +1403,19 @@ fn backtester_production_registry_paths_use_the_shared_batch_coordinator() {
         1
     );
 
+    let hurst_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_HURST_VPIN_DIRECTIONAL", "=", ">"],
+    )
+    .expect("Backtester Hurst branch should remain inspectable as an explicit exclusion");
+    let mechanical_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE", "=", ">"],
+    )
+    .expect("Backtester mechanical branch should remain inspectable as an explicit exclusion");
+    assert_eq!(count_identifier(hurst_tokens, "add_strategy"), 1);
+    assert_eq!(count_identifier(mechanical_tokens, "add_strategy"), 1);
+
     for production_registry_path in [helper_tokens, edge_tokens, maker_tokens] {
         for forbidden_alternate_path in [
             vec![".", "add_strategy", "("],
@@ -933,6 +1427,89 @@ fn backtester_production_registry_paths_use_the_shared_batch_coordinator() {
                 count_sequence(production_registry_path, &forbidden_alternate_path),
                 0,
                 "Backtester production-registry branches must not retain an alternate registration path"
+            );
+        }
+    }
+}
+
+#[test]
+fn strategy_registration_ownership_fences_cover_all_production_callers() {
+    for (relative, source) in rust_sources_under("src") {
+        let tokens = tokenize(&source);
+        let expected_from_strategy = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" | "src/strategies/registry.rs" => 1,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "from_strategy"),
+            expected_from_strategy,
+            "`from_strategy` must remain owned by the registration type and sole strategy registry producer: {relative}"
+        );
+
+        let expected_coordinator = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "register_prepared_strategy_batch"),
+            expected_coordinator,
+            "the shared batch coordinator acquired an unsanctioned production caller: {relative}"
+        );
+        let expected_add_strategy = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" => 1,
+            _ => 0,
+        };
+        let expected_prepare_registration = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" => 5,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "add_strategy"),
+            expected_add_strategy,
+            "direct NT strategy mutation acquired an unsanctioned production owner: {relative}"
+        );
+        assert_eq!(
+            count_identifier(&tokens, "prepare_registration"),
+            expected_prepare_registration,
+            "NT identity preparation acquired an unsanctioned production owner: {relative}"
+        );
+        assert_eq!(
+            count_identifier(&tokens, "register_strategy"),
+            0,
+            "retired direct registration identifier returned in production source: {relative}"
+        );
+    }
+
+    for (relative, source) in rust_sources_under("crates/backtesting-vertical-slice/src") {
+        let tokens = tokenize(&source);
+        assert_eq!(
+            count_identifier(&tokens, "from_strategy"),
+            0,
+            "Backtester source must obtain opaque prepared values only through the registry: {relative}"
+        );
+        let expected_coordinator = match relative.as_str() {
+            "crates/backtesting-vertical-slice/src/runner.rs" => 3,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "register_prepared_strategy_batch"),
+            expected_coordinator,
+            "the shared batch coordinator acquired an unsanctioned Backtester caller: {relative}"
+        );
+        let expected_add_strategy = match relative.as_str() {
+            "crates/backtesting-vertical-slice/src/runner.rs" => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "add_strategy"),
+            expected_add_strategy,
+            "Backtester direct registration must remain limited to the two explicitly excluded non-registry branches: {relative}"
+        );
+        for retired_identifier in ["register_strategy", "prepare_registration"] {
+            assert_eq!(
+                count_identifier(&tokens, retired_identifier),
+                0,
+                "Backtester production source retained registration primitive `{retired_identifier}` in {relative}"
             );
         }
     }
@@ -1009,6 +1586,39 @@ fn strategy_registration_fences_ignore_comment_and_string_decoys() {
         item_body_tokens(&declaration, &["fn", "declaration"]).is_none(),
         "a body-less declaration must not consume a later item's body"
     );
+
+    let impl_variants = tokenize(
+        r#"
+        impl<'a> StrategyRegistrationContext<'a> { fn first() {} }
+        impl StrategyRegistrationContext<'_> { fn second() {} }
+        impl SomeTrait for StrategyRegistrationContext<'_> { fn trait_method() {} }
+        "#,
+    );
+    assert_eq!(
+        inherent_impl_body_tokens(&impl_variants, "StrategyRegistrationContext").len(),
+        2,
+        "all inherent lifetime/generic spellings must be collected while trait impls stay separate"
+    );
+    assert_eq!(
+        impl_body_tokens(&impl_variants, "StrategyRegistrationContext").len(),
+        3,
+        "trait and inherent impl spellings must all remain visible to the complete impl fence"
+    );
+
+    for evasion in [
+        "pub(crate) fn register_strategy<T>() {}",
+        "pub use alternate::register_strategy;",
+        "#[cfg_attr(test, allow(clippy::too_many_arguments))] fn mapped() {}",
+        "BacktestNode::add_strategy(&mut engine, strategy);",
+    ] {
+        let tokens = tokenize(evasion);
+        assert!(
+            ["register_strategy", "too_many_arguments", "add_strategy"]
+                .into_iter()
+                .any(|identifier| count_identifier(&tokens, identifier) == 1),
+            "identifier-level ownership fences must see `{evasion}`"
+        );
+    }
 }
 
 #[test]

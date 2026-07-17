@@ -1315,27 +1315,9 @@ fn validate_required_secret_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_config::LoadedBoltV3Config;
-    use std::path::PathBuf;
 
     fn client_from_toml(text: &str) -> ClientBlock {
         toml::from_str(text).expect("test client should parse")
-    }
-
-    fn fixture_loaded_config() -> LoadedBoltV3Config {
-        LoadedBoltV3Config {
-            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
-            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
-            root: toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
-                .expect("fixture root should parse"),
-            strategies: Vec::new(),
-        }
-    }
-
-    fn binance_reference_client() -> ClientBlock {
-        client_from_toml(include_str!(
-            "../../tests/fixtures/bolt_v3/binance_reference_client.toml"
-        ))
     }
 
     fn decimal(value: &str) -> Decimal {

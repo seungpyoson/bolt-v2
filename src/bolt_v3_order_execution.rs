@@ -34,11 +34,10 @@ use crate::{
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
         dispatch_maker_order_command,
     },
-    bolt_v3_order_intent::{NtOrderBuildInputs, build_nt_order},
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
-        BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy,
         build_submit_admission_request_from_order, order_economics_facts,
     },
     economics::{
@@ -48,6 +47,12 @@ use crate::{
         NativeUnitId, OrderSide as EconomicsOrderSide, PlannedFillLeg, ProductSurfaceId,
         ReportingPolicyId, RoutingContext,
     },
+};
+
+#[cfg(test)]
+use crate::{
+    bolt_v3_order_intent::{NtOrderBuildInputs, build_nt_order},
+    bolt_v3_submit_admission::BoltV3SubmitIntentKind,
 };
 
 #[derive(Clone)]
@@ -804,15 +809,8 @@ pub(crate) trait BoltV3NtVenueMutationSink {
         params: Option<Params>,
     ) -> Result<()>;
 
-    // The venue's in-place modify capability. Option A (#835) fail-closes the only
-    // routing path (`route_modify_with_sink` refuses live modifies and the maker FSM
-    // never emits a Modify while `supports_modify=false`), so this method is
-    // intentionally uncalled today. The wiring is retained for #835 (admission-gated
-    // in-place modify) and to keep the fail-closed differential tests load-bearing
-    // (reverting the fail-close to a venue call must still flip `modify_calls` 0->1).
-    // `expect` (not `allow`) is self-cleaning: when #835 wires a real caller the
-    // expectation goes unfulfilled and clippy forces this attribute removed.
-    #[expect(dead_code)]
+    // Venue-native in-place modify capability retained behind the fail-closed
+    // shared routing policy.
     fn modify_order_via_nt(
         &mut self,
         client_order_id: ClientOrderId,

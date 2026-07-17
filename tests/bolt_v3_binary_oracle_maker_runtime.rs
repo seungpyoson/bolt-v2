@@ -59,7 +59,6 @@ use nautilus_model::{
 };
 use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_trading::StrategyNative;
-use rust_decimal::Decimal;
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -124,7 +123,6 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
         .route_maker_order_command(
             &command,
             "maker_submit",
-            Decimal::ZERO,
             BoltV3SubmitLifecyclePolicy::new(true),
         )
         .expect("maker submit should route through shared execution context");

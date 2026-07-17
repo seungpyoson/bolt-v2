@@ -675,7 +675,6 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     EntrySkip(crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence),
     ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
-    LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
     OrderLifecycle(crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
     /// Production settlement evidence (Lane 3, #1179) must map into this

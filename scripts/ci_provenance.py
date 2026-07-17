@@ -161,6 +161,30 @@ class RequiredCheckConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class Ra001aDurableTracerPackLimitsConfig:
+    max_fetch_timeout_seconds: int
+    max_worker_virtual_memory_bytes: int
+    min_worker_reserved_overhead_bytes: int
+    max_decoded_bytes: int
+    max_source_rows: int
+    max_projected_row_groups: int
+    max_operator_wall_seconds: int
+    max_terminal_commit_timeout_seconds: int
+    max_launch_artifact_bytes: int
+    max_control_artifact_bytes: int
+    max_retained_control_input_bytes: int
+    max_final_object_bytes: int
+    max_workspace_bytes: int
+    max_cache_bytes: int
+    min_free_space_reserve_bytes: int
+    min_one_record_worst_case_bytes: int
+    cache_retention_age_seconds: int
+    candidate_retention_age_seconds: int
+    max_lifecycle_cleanup_entries: int
+    max_lifecycle_cleanup_depth: int
+
+
+@dataclasses.dataclass(frozen=True)
 class BacktesterTestArchiveTimeoutConfig:
     ordinary_max_job_minutes: int
     ra001a_durable_tracer_max_job_minutes: int
@@ -169,6 +193,7 @@ class BacktesterTestArchiveTimeoutConfig:
     ra001a_durable_tracer_max_worker_executable_bytes: int
     ra001a_durable_tracer_max_wall_seconds: int
     ra001a_durable_tracer_termination_grace_seconds: int
+    ra001a_pack_limits: Ra001aDurableTracerPackLimitsConfig
     ra001a_allowed_ignored_runtime_roots: tuple[str, ...]
     ra001a_max_ignored_entry_bytes: int
     ra001a_max_ignored_entries: int
@@ -229,6 +254,26 @@ class CiPolicyResult:
     ra001a_max_registry_packs: int
     ra001a_max_total_selected_object_bytes: int
     ra001a_max_worker_executable_bytes: int
+    ra001a_max_fetch_timeout_seconds: int
+    ra001a_max_worker_virtual_memory_bytes: int
+    ra001a_min_worker_reserved_overhead_bytes: int
+    ra001a_max_decoded_bytes: int
+    ra001a_max_source_rows: int
+    ra001a_max_projected_row_groups: int
+    ra001a_max_operator_wall_seconds: int
+    ra001a_max_terminal_commit_timeout_seconds: int
+    ra001a_max_launch_artifact_bytes: int
+    ra001a_max_control_artifact_bytes: int
+    ra001a_max_retained_control_input_bytes: int
+    ra001a_max_final_object_bytes: int
+    ra001a_max_workspace_bytes: int
+    ra001a_max_cache_bytes: int
+    ra001a_min_free_space_reserve_bytes: int
+    ra001a_min_one_record_worst_case_bytes: int
+    ra001a_cache_retention_age_seconds: int
+    ra001a_candidate_retention_age_seconds: int
+    ra001a_max_lifecycle_cleanup_entries: int
+    ra001a_max_lifecycle_cleanup_depth: int
     ra001a_max_wall_seconds: int
     ra001a_termination_grace_seconds: int
     ra001a_allowed_ignored_runtime_roots: str
@@ -348,6 +393,178 @@ def load_backtester_test_archive_timeout_config(
         "termination_grace_seconds",
         tracer_prefix,
     )
+    pack_limits_prefix = f"{tracer_prefix}.pack_limits"
+    pack_limits_table = require_table(tracer, "pack_limits", tracer_prefix)
+    expected_pack_limit_keys = {
+        field.name for field in dataclasses.fields(Ra001aDurableTracerPackLimitsConfig)
+    }
+    unexpected_pack_limit_keys = sorted(set(pack_limits_table) - expected_pack_limit_keys)
+    if unexpected_pack_limit_keys:
+        raise ProvenanceError(
+            f"{pack_limits_prefix} has unexpected keys: {unexpected_pack_limit_keys}"
+        )
+    pack_limits = Ra001aDurableTracerPackLimitsConfig(
+        max_fetch_timeout_seconds=require_positive_int(
+            pack_limits_table,
+            "max_fetch_timeout_seconds",
+            pack_limits_prefix,
+        ),
+        max_worker_virtual_memory_bytes=require_positive_int(
+            pack_limits_table,
+            "max_worker_virtual_memory_bytes",
+            pack_limits_prefix,
+        ),
+        min_worker_reserved_overhead_bytes=require_positive_int(
+            pack_limits_table,
+            "min_worker_reserved_overhead_bytes",
+            pack_limits_prefix,
+        ),
+        max_decoded_bytes=require_positive_int(
+            pack_limits_table,
+            "max_decoded_bytes",
+            pack_limits_prefix,
+        ),
+        max_source_rows=require_positive_int(
+            pack_limits_table,
+            "max_source_rows",
+            pack_limits_prefix,
+        ),
+        max_projected_row_groups=require_positive_int(
+            pack_limits_table,
+            "max_projected_row_groups",
+            pack_limits_prefix,
+        ),
+        max_operator_wall_seconds=require_positive_int(
+            pack_limits_table,
+            "max_operator_wall_seconds",
+            pack_limits_prefix,
+        ),
+        max_terminal_commit_timeout_seconds=require_positive_int(
+            pack_limits_table,
+            "max_terminal_commit_timeout_seconds",
+            pack_limits_prefix,
+        ),
+        max_launch_artifact_bytes=require_positive_int(
+            pack_limits_table,
+            "max_launch_artifact_bytes",
+            pack_limits_prefix,
+        ),
+        max_control_artifact_bytes=require_positive_int(
+            pack_limits_table,
+            "max_control_artifact_bytes",
+            pack_limits_prefix,
+        ),
+        max_retained_control_input_bytes=require_positive_int(
+            pack_limits_table,
+            "max_retained_control_input_bytes",
+            pack_limits_prefix,
+        ),
+        max_final_object_bytes=require_positive_int(
+            pack_limits_table,
+            "max_final_object_bytes",
+            pack_limits_prefix,
+        ),
+        max_workspace_bytes=require_positive_int(
+            pack_limits_table,
+            "max_workspace_bytes",
+            pack_limits_prefix,
+        ),
+        max_cache_bytes=require_positive_int(
+            pack_limits_table,
+            "max_cache_bytes",
+            pack_limits_prefix,
+        ),
+        min_free_space_reserve_bytes=require_positive_int(
+            pack_limits_table,
+            "min_free_space_reserve_bytes",
+            pack_limits_prefix,
+        ),
+        min_one_record_worst_case_bytes=require_positive_int(
+            pack_limits_table,
+            "min_one_record_worst_case_bytes",
+            pack_limits_prefix,
+        ),
+        cache_retention_age_seconds=require_positive_int(
+            pack_limits_table,
+            "cache_retention_age_seconds",
+            pack_limits_prefix,
+        ),
+        candidate_retention_age_seconds=require_positive_int(
+            pack_limits_table,
+            "candidate_retention_age_seconds",
+            pack_limits_prefix,
+        ),
+        max_lifecycle_cleanup_entries=require_positive_int(
+            pack_limits_table,
+            "max_lifecycle_cleanup_entries",
+            pack_limits_prefix,
+        ),
+        max_lifecycle_cleanup_depth=require_positive_int(
+            pack_limits_table,
+            "max_lifecycle_cleanup_depth",
+            pack_limits_prefix,
+        ),
+    )
+    finite_rust_u64_max = (1 << 64) - 2
+    for field in dataclasses.fields(pack_limits):
+        value = getattr(pack_limits, field.name)
+        if value > finite_rust_u64_max:
+            raise ProvenanceError(
+                f"{pack_limits_prefix}.{field.name} must fit a finite Rust u64"
+            )
+    if pack_limits.min_worker_reserved_overhead_bytes >= pack_limits.max_worker_virtual_memory_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.min_worker_reserved_overhead_bytes must be below "
+            "max_worker_virtual_memory_bytes"
+        )
+    if pack_limits.max_decoded_bytes >= pack_limits.max_worker_virtual_memory_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_decoded_bytes must be below "
+            "max_worker_virtual_memory_bytes"
+        )
+    if pack_limits.max_projected_row_groups > pack_limits.max_source_rows:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_projected_row_groups must not exceed max_source_rows"
+        )
+    if pack_limits.max_fetch_timeout_seconds > pack_limits.max_operator_wall_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_fetch_timeout_seconds must not exceed "
+            "max_operator_wall_seconds"
+        )
+    if pack_limits.max_terminal_commit_timeout_seconds > pack_limits.max_operator_wall_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_terminal_commit_timeout_seconds must not exceed "
+            "max_operator_wall_seconds"
+        )
+    if pack_limits.max_operator_wall_seconds > max_wall_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_operator_wall_seconds must not exceed "
+            f"{tracer_prefix}.max_wall_seconds"
+        )
+    if pack_limits.max_control_artifact_bytes > pack_limits.max_retained_control_input_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_control_artifact_bytes must not exceed "
+            "max_retained_control_input_bytes"
+        )
+    if pack_limits.max_cache_bytes > pack_limits.max_workspace_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_cache_bytes must not exceed max_workspace_bytes"
+        )
+    if pack_limits.min_one_record_worst_case_bytes > pack_limits.max_cache_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.min_one_record_worst_case_bytes must not exceed "
+            "max_cache_bytes"
+        )
+    if pack_limits.candidate_retention_age_seconds > pack_limits.cache_retention_age_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.candidate_retention_age_seconds must not exceed "
+            "cache_retention_age_seconds"
+        )
+    if pack_limits.max_lifecycle_cleanup_depth > pack_limits.max_lifecycle_cleanup_entries:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_lifecycle_cleanup_depth must not exceed "
+            "max_lifecycle_cleanup_entries"
+        )
     checkout_prefix = f"{tracer_prefix}.checkout"
     checkout = require_table(tracer, "checkout", tracer_prefix)
     allowed_ignored_runtime_roots = require_string_list(
@@ -409,6 +626,7 @@ def load_backtester_test_archive_timeout_config(
         ra001a_durable_tracer_max_worker_executable_bytes=max_worker_executable_bytes,
         ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
         ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
+        ra001a_pack_limits=pack_limits,
         ra001a_allowed_ignored_runtime_roots=allowed_ignored_runtime_roots,
         ra001a_max_ignored_entry_bytes=max_ignored_entry_bytes,
         ra001a_max_ignored_entries=max_ignored_entries,
@@ -1562,6 +1780,56 @@ def evaluate_ci_policy(
         ),
         ra001a_max_worker_executable_bytes=(
             timeout.ra001a_durable_tracer_max_worker_executable_bytes
+        ),
+        ra001a_max_fetch_timeout_seconds=(
+            timeout.ra001a_pack_limits.max_fetch_timeout_seconds
+        ),
+        ra001a_max_worker_virtual_memory_bytes=(
+            timeout.ra001a_pack_limits.max_worker_virtual_memory_bytes
+        ),
+        ra001a_min_worker_reserved_overhead_bytes=(
+            timeout.ra001a_pack_limits.min_worker_reserved_overhead_bytes
+        ),
+        ra001a_max_decoded_bytes=timeout.ra001a_pack_limits.max_decoded_bytes,
+        ra001a_max_source_rows=timeout.ra001a_pack_limits.max_source_rows,
+        ra001a_max_projected_row_groups=(
+            timeout.ra001a_pack_limits.max_projected_row_groups
+        ),
+        ra001a_max_operator_wall_seconds=(
+            timeout.ra001a_pack_limits.max_operator_wall_seconds
+        ),
+        ra001a_max_terminal_commit_timeout_seconds=(
+            timeout.ra001a_pack_limits.max_terminal_commit_timeout_seconds
+        ),
+        ra001a_max_launch_artifact_bytes=(
+            timeout.ra001a_pack_limits.max_launch_artifact_bytes
+        ),
+        ra001a_max_control_artifact_bytes=(
+            timeout.ra001a_pack_limits.max_control_artifact_bytes
+        ),
+        ra001a_max_retained_control_input_bytes=(
+            timeout.ra001a_pack_limits.max_retained_control_input_bytes
+        ),
+        ra001a_max_final_object_bytes=timeout.ra001a_pack_limits.max_final_object_bytes,
+        ra001a_max_workspace_bytes=timeout.ra001a_pack_limits.max_workspace_bytes,
+        ra001a_max_cache_bytes=timeout.ra001a_pack_limits.max_cache_bytes,
+        ra001a_min_free_space_reserve_bytes=(
+            timeout.ra001a_pack_limits.min_free_space_reserve_bytes
+        ),
+        ra001a_min_one_record_worst_case_bytes=(
+            timeout.ra001a_pack_limits.min_one_record_worst_case_bytes
+        ),
+        ra001a_cache_retention_age_seconds=(
+            timeout.ra001a_pack_limits.cache_retention_age_seconds
+        ),
+        ra001a_candidate_retention_age_seconds=(
+            timeout.ra001a_pack_limits.candidate_retention_age_seconds
+        ),
+        ra001a_max_lifecycle_cleanup_entries=(
+            timeout.ra001a_pack_limits.max_lifecycle_cleanup_entries
+        ),
+        ra001a_max_lifecycle_cleanup_depth=(
+            timeout.ra001a_pack_limits.max_lifecycle_cleanup_depth
         ),
         ra001a_max_wall_seconds=timeout.ra001a_durable_tracer_max_wall_seconds,
         ra001a_termination_grace_seconds=(
@@ -3405,6 +3673,74 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "ra001a_max_worker_executable_bytes="
                 f"{result.ra001a_max_worker_executable_bytes}"
+            )
+            print(
+                "ra001a_max_fetch_timeout_seconds="
+                f"{result.ra001a_max_fetch_timeout_seconds}"
+            )
+            print(
+                "ra001a_max_worker_virtual_memory_bytes="
+                f"{result.ra001a_max_worker_virtual_memory_bytes}"
+            )
+            print(
+                "ra001a_min_worker_reserved_overhead_bytes="
+                f"{result.ra001a_min_worker_reserved_overhead_bytes}"
+            )
+            print(f"ra001a_max_decoded_bytes={result.ra001a_max_decoded_bytes}")
+            print(f"ra001a_max_source_rows={result.ra001a_max_source_rows}")
+            print(
+                "ra001a_max_projected_row_groups="
+                f"{result.ra001a_max_projected_row_groups}"
+            )
+            print(
+                "ra001a_max_operator_wall_seconds="
+                f"{result.ra001a_max_operator_wall_seconds}"
+            )
+            print(
+                "ra001a_max_terminal_commit_timeout_seconds="
+                f"{result.ra001a_max_terminal_commit_timeout_seconds}"
+            )
+            print(
+                "ra001a_max_launch_artifact_bytes="
+                f"{result.ra001a_max_launch_artifact_bytes}"
+            )
+            print(
+                "ra001a_max_control_artifact_bytes="
+                f"{result.ra001a_max_control_artifact_bytes}"
+            )
+            print(
+                "ra001a_max_retained_control_input_bytes="
+                f"{result.ra001a_max_retained_control_input_bytes}"
+            )
+            print(
+                "ra001a_max_final_object_bytes="
+                f"{result.ra001a_max_final_object_bytes}"
+            )
+            print(f"ra001a_max_workspace_bytes={result.ra001a_max_workspace_bytes}")
+            print(f"ra001a_max_cache_bytes={result.ra001a_max_cache_bytes}")
+            print(
+                "ra001a_min_free_space_reserve_bytes="
+                f"{result.ra001a_min_free_space_reserve_bytes}"
+            )
+            print(
+                "ra001a_min_one_record_worst_case_bytes="
+                f"{result.ra001a_min_one_record_worst_case_bytes}"
+            )
+            print(
+                "ra001a_cache_retention_age_seconds="
+                f"{result.ra001a_cache_retention_age_seconds}"
+            )
+            print(
+                "ra001a_candidate_retention_age_seconds="
+                f"{result.ra001a_candidate_retention_age_seconds}"
+            )
+            print(
+                "ra001a_max_lifecycle_cleanup_entries="
+                f"{result.ra001a_max_lifecycle_cleanup_entries}"
+            )
+            print(
+                "ra001a_max_lifecycle_cleanup_depth="
+                f"{result.ra001a_max_lifecycle_cleanup_depth}"
             )
             print(f"ra001a_max_wall_seconds={result.ra001a_max_wall_seconds}")
             print(

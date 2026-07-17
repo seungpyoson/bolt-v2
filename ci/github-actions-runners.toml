@@ -221,6 +221,31 @@ max_worker_executable_bytes = 1073741824
 max_wall_seconds = 3600
 termination_grace_seconds = 30
 
+# Trusted-default-branch bounds checked against every committed pack before
+# worker capture. `max_*` values are ceilings; `min_*` values are safety floors;
+# unprefixed retention ages are exact because either direction changes cost.
+[backtester.ra001a_durable_tracer.pack_limits]
+max_fetch_timeout_seconds = 300
+max_worker_virtual_memory_bytes = 2147483648
+min_worker_reserved_overhead_bytes = 536870912
+max_decoded_bytes = 1073741824
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_operator_wall_seconds = 1800
+max_terminal_commit_timeout_seconds = 60
+max_launch_artifact_bytes = 65536
+max_control_artifact_bytes = 65536
+max_retained_control_input_bytes = 262144
+max_final_object_bytes = 4194304
+max_workspace_bytes = 34359738368
+max_cache_bytes = 17179869184
+min_free_space_reserve_bytes = 10737418240
+min_one_record_worst_case_bytes = 4294967296
+cache_retention_age_seconds = 2592000
+candidate_retention_age_seconds = 86400
+max_lifecycle_cleanup_entries = 1000000
+max_lifecycle_cleanup_depth = 64
+
 [backtester.ra001a_durable_tracer.checkout]
 allowed_ignored_runtime_roots = [
   ".nextest-archive/",

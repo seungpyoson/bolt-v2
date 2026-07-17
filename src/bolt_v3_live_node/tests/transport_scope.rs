@@ -441,7 +441,7 @@ fn trade_transport_subscribed_retains_enabled_rv_sources_from_unreferenced_surfa
     loaded
         .root
         .clients
-        .insert("rv_only_data".to_string(), test_data_client("OKX"));
+        .insert("rv_only_data".to_string(), test_okx_data_client());
     insert_test_rv_surface(
         &mut loaded,
         "orphan_rv_surface",
@@ -472,11 +472,11 @@ fn trade_transport_subscribed_retains_union_of_enabled_rv_sources_across_surface
     loaded
         .root
         .clients
-        .insert("rv_union_a".to_string(), test_data_client("OKX"));
+        .insert("rv_union_a".to_string(), test_okx_data_client());
     loaded
         .root
         .clients
-        .insert("rv_union_b".to_string(), test_data_client("OKX"));
+        .insert("rv_union_b".to_string(), test_okx_data_client());
     insert_test_rv_surface(
         &mut loaded,
         "union_rv_surface_a",
@@ -515,7 +515,7 @@ fn trade_transport_subscribed_dedupes_duplicate_rv_source_clients() {
     loaded
         .root
         .clients
-        .insert("shared_rv_data".to_string(), test_data_client("OKX"));
+        .insert("shared_rv_data".to_string(), test_okx_data_client());
     insert_test_rv_surface(
         &mut loaded,
         "shared_rv_surface_a",
@@ -558,7 +558,7 @@ fn trade_transport_subscribed_retains_enabled_unsupported_kind_rv_sources() {
     loaded
         .root
         .clients
-        .insert("mark_rv_data".to_string(), test_data_client("OKX"));
+        .insert("mark_rv_data".to_string(), test_okx_data_client());
     let mut mark_source = test_rv_source(
         "mark_midpoint",
         "mark_rv_data",
@@ -590,7 +590,7 @@ fn trade_transport_subscribed_excludes_disabled_rv_sources() {
     loaded
         .root
         .clients
-        .insert("disabled_rv_data".to_string(), test_data_client("OKX"));
+        .insert("disabled_rv_data".to_string(), test_okx_data_client());
     insert_test_rv_surface(
         &mut loaded,
         "disabled_rv_surface",

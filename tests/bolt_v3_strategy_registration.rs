@@ -145,16 +145,29 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
     }
 }
 
+fn placeholder_realized_volatility_client() -> ClientBlock {
+    let data = toml::from_str(
+        r#"
+book_stale_check_interval_secs = 0
+book_stale_threshold_secs = 0
+book_snapshot_timeout_secs = 3
+"#,
+    )
+    .expect("placeholder OKX data config should parse");
+
+    ClientBlock {
+        venue: Venue::from(RV_DATA_CLIENT_VENUE),
+        data: Some(data),
+        execution: None,
+        secrets: None,
+        readiness_probe: None,
+    }
+}
+
 fn insert_placeholder_realized_volatility_client(root: &mut BoltV3RootConfig) {
     root.clients.insert(
         RV_DATA_CLIENT_ID.to_string(),
-        ClientBlock {
-            venue: Venue::from(RV_DATA_CLIENT_VENUE),
-            data: Some(toml::Value::Table(toml::map::Map::new())),
-            execution: None,
-            secrets: None,
-            readiness_probe: None,
-        },
+        placeholder_realized_volatility_client(),
     );
 }
 
@@ -432,13 +445,7 @@ fn realized_volatility_validation_rejects_same_instrument_distinct_data_clients(
             surface.sources.push(second_source);
             loaded.root.clients.insert(
                 "<DATA_CLIENT_ID_B>".to_string(),
-                ClientBlock {
-                    venue: Venue::from(RV_DATA_CLIENT_VENUE),
-                    data: Some(toml::Value::Table(toml::map::Map::new())),
-                    execution: None,
-                    secrets: None,
-                    readiness_probe: None,
-                },
+                placeholder_realized_volatility_client(),
             );
             insert_realized_volatility_surface(&mut loaded.root, surface);
             loaded.strategies[0].config.realized_volatility_surface_id =

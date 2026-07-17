@@ -386,14 +386,18 @@ configured_data_param = "configured-value"
     );
 }
 
-pub(super) fn test_data_client(venue: &str) -> ClientBlock {
-    ClientBlock {
-        venue: Venue::from(venue),
-        data: Some(toml::Value::Table(toml::map::Map::new())),
-        execution: None,
-        secrets: None,
-        readiness_probe: None,
-    }
+pub(super) fn test_okx_data_client() -> ClientBlock {
+    toml::from_str(
+        r#"
+venue = "OKX"
+
+[data]
+book_stale_check_interval_secs = 0
+book_stale_threshold_secs = 0
+book_snapshot_timeout_secs = 3
+"#,
+    )
+    .expect("test OKX data client should parse")
 }
 
 pub(super) fn test_execution_client(venue: &str) -> ClientBlock {
@@ -470,7 +474,7 @@ pub(super) fn loaded_config_with_rv_only_source() -> LoadedBoltV3Config {
     loaded
         .root
         .clients
-        .insert("rv_only_data".to_string(), test_data_client("OKX"));
+        .insert("rv_only_data".to_string(), test_okx_data_client());
     insert_test_rv_surface(
         &mut loaded,
         "rv_only_surface",

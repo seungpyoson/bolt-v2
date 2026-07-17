@@ -16,7 +16,7 @@ from rust_source_scanner import (
     raw_string_end,
     strip_rust_comments_and_literals,
 )
-from verify_bolt_v3_provider_leaks import production_text
+from verify_bolt_v3_provider_leaks import cfg_truth_without_test, production_text
 
 
 SOURCE = pathlib.Path("config/risk-closure-workspaces.toml")
@@ -322,6 +322,30 @@ def _source_loader_targets(text: str) -> list[str]:
     return found
 
 
+def _production_cfg_attr_payloads(attributes: str) -> list[str]:
+    payloads: list[str] = []
+    code = strip_rust_comments_and_literals(attributes)
+    for match in re.finditer(r"#\s*\[\s*cfg_attr\b", code):
+        opening = code.find("(", match.end())
+        if opening == -1:
+            continue
+        closing = _matching_delimiter_end(code, opening)
+        if closing is None:
+            continue
+        segments = _top_level_segments(code, opening + 1, closing)
+        if len(segments) < 2:
+            continue
+        condition_start, condition_end = segments[0]
+        can_be_true, _ = cfg_truth_without_test(
+            attributes[condition_start:condition_end]
+        )
+        if can_be_true:
+            payloads.extend(
+                attributes[start:end].strip() for start, end in segments[1:]
+            )
+    return payloads
+
+
 def _protected_type_names(text: str, type_name: str) -> set[str]:
     names = {type_name}
     changed = True
@@ -528,6 +552,7 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         errors.append(f"cannot inspect private workspace authority surface: {error}")
         return errors
     owner_code = strip_rust_comments_and_literals(owner_text)
+    owner_production_code = strip_rust_comments_and_literals(production_text(owner_text))
     generated_code = strip_rust_comments_and_literals(generated_text)
     ledger_code = strip_rust_comments_and_literals(ledger_text)
     lib_code = strip_rust_comments_and_literals(lib_text)
@@ -537,18 +562,39 @@ def authority_errors(root: pathlib.Path) -> list[str]:
         errors.append(f"generated workspace configuration must remain private to {OWNER}")
     if "const RISK_CLOSURE_WORKSPACE_CONFIG" not in generated_code:
         errors.append(f"generated workspace configuration is missing from {GENERATED}")
-    if not re.search(
-        r"\bpub\(super\)\s+struct\s+RiskClosureWorkspaceAuthority\b", owner_code
+    raw_definitions = list(
+        re.finditer(
+            r"(?P<attributes>(?:#\[[^\]]+\]\s*)*)"
+            r"(?P<visibility>pub(?:\([^)]*\))?)?\s*struct\s+"
+            r"(?:r#)?RiskClosureWorkspaceAuthority\b",
+            owner_production_code,
+        )
+    )
+    if (
+        len(raw_definitions) != 1
+        or raw_definitions[0].group("visibility") != "pub(super)"
     ):
         errors.append(f"raw workspace authority must remain ledger-private in {OWNER}")
     raw_authority_names = _protected_type_names(
-        owner_code, "RiskClosureWorkspaceAuthority"
+        owner_production_code, "RiskClosureWorkspaceAuthority"
     )
-    if re.search(
-        r"#\[derive\([^\]]*\bClone\b[^\]]*\)\]\s*"
-        r"pub\(super\)\s+struct\s+RiskClosureWorkspaceAuthority\b",
-        owner_code,
-    ) or _has_protected_trait_impl(owner_code, raw_authority_names, "Clone"):
+    raw_definition_attributes = (
+        raw_definitions[0].group("attributes") if len(raw_definitions) == 1 else ""
+    )
+    direct_clone = bool(
+        re.search(r"#\[derive\([^\]]*\bClone\b[^\]]*\)\]", raw_definition_attributes)
+    )
+    conditional_clone = any(
+        re.search(r"\bderive\s*\([^)]*\bClone\b", payload)
+        for payload in _production_cfg_attr_payloads(raw_definition_attributes)
+    )
+    if (
+        direct_clone
+        or conditional_clone
+        or _has_protected_trait_impl(
+            owner_production_code, raw_authority_names, "Clone"
+        )
+    ):
         errors.append("raw workspace authority must not implement Clone")
     authority_constructors = _constructor_definitions(
         owner_code, "RiskClosureWorkspaceAuthority"

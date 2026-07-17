@@ -156,6 +156,53 @@ impl RecoveryWorkspaceHandle {
 
         self.assertTrue(any("raw workspace authority must not implement Clone" in error for error in errors))
 
+    def test_rejects_production_public_raw_authority_hidden_by_test_definition(self) -> None:
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
+        owner.write_text(
+            owner.read_text(encoding="utf-8").replace(
+                "pub(super) struct RiskClosureWorkspaceAuthority;",
+                "#[cfg(test)]\npub(super) struct RiskClosureWorkspaceAuthority;\n"
+                "#[cfg(not(test))]\npub struct RiskClosureWorkspaceAuthority;",
+            ),
+            encoding="utf-8",
+        )
+        ledger = self.root / "src" / "bolt_v3_application_resource_ledger.rs"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8") + "\npub use risk_closure_workspace::*;\n",
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(
+            any("raw workspace authority must remain ledger-private" in error for error in errors)
+        )
+
+    def test_rejects_production_only_cloneable_raw_workspace_authority(self) -> None:
+        owner = (
+            self.root
+            / "src"
+            / "bolt_v3_application_resource_ledger"
+            / "risk_closure_workspace.rs"
+        )
+        owner.write_text(
+            owner.read_text(encoding="utf-8").replace(
+                "pub(super) struct RiskClosureWorkspaceAuthority",
+                "#[cfg_attr(not(test), derive(Clone))]\n"
+                "pub(super) struct RiskClosureWorkspaceAuthority",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = verifier.authority_errors(self.root)
+
+        self.assertTrue(any("raw workspace authority must not implement Clone" in error for error in errors))
+
     def test_rejects_second_raw_authority_constructor_definition(self) -> None:
         owner = (
             self.root

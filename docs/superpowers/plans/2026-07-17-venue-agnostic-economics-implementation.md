@@ -151,6 +151,7 @@ These contracts are planning output only. They cannot be executed on #1445 and d
 - Modify: `src/lib.rs`
 - Test: `tests/economics_core_contract.rs`
 - Test support: `tests/economics_support/mod.rs`
+- Test harness: `tests/wiring_registration.rs` (`mod economics_core_contract;`; root `autotests = false`)
 
 **Interfaces:**
 - Produces: `NativeUnitId`, `SignedNativeEffect`, `EconomicScope`, `AdmissionTreatment`, `EstimatedEconomicComponent`, `ActualEconomicEntry`, `EconomicQuoteRequest`, `EconomicQuote`, `NetEdgeQuote`, `EdgeBasisEvidence`, `ValuationEvidence`, `EconomicsUnavailable`.
@@ -247,7 +248,7 @@ Expected: PASS and a positive-control fixture proving `use nautilus_model::...` 
 - [ ] **Step 5: Commit the shared vocabulary**
 
 ```bash
-git add src/economics src/lib.rs tests/economics_core_contract.rs scripts/verify_economics_dependency_direction.py scripts/test_verify_economics_dependency_direction.py scripts/run_fences.py
+git add src/economics src/lib.rs tests/economics_core_contract.rs tests/economics_support/mod.rs tests/wiring_registration.rs scripts/verify_economics_dependency_direction.py scripts/test_verify_economics_dependency_direction.py scripts/run_fences.py
 git commit -m "feat(#1445): add canonical economics domain contracts"
 ```
 

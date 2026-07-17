@@ -873,12 +873,12 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "ra001a_durable_tracer_max_job_minutes = 0",
             1,
         ),
-        "backtester.test_archive_timeout.ordinary_max_job_minutes must not exceed GitHub Actions' 360-minute maximum": CONFIG_TOML.replace(
+        "backtester.test_archive_timeout.ordinary_max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
             "ordinary_max_job_minutes = 360",
             "ordinary_max_job_minutes = 361",
             1,
         ),
-        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must not exceed GitHub Actions' 360-minute maximum": CONFIG_TOML.replace(
+        "backtester.test_archive_timeout.ra001a_durable_tracer_max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
             "ra001a_durable_tracer_max_job_minutes = 120",
             "ra001a_durable_tracer_max_job_minutes = 361",
             1,
@@ -968,7 +968,7 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             ),
         ),
         (
-            "backtester.issue_789.max_job_minutes must not exceed GitHub Actions' 360-minute maximum",
+            "backtester.issue_789.max_job_minutes must not exceed the backtester policy maximum of 360 minutes",
             CONFIG_TOML.replace(
                 "[backtester.issue_789]\nmax_job_minutes = 120",
                 "[backtester.issue_789]\nmax_job_minutes = 361",
@@ -1083,7 +1083,9 @@ def assert_backtester_timeout_configs_load_limits() -> None:
             )
         )
     if issue_789_boundary.backtester_issue_789_timeout_minutes != 360:
-        raise AssertionError("the GitHub Actions 360-minute maximum must remain a valid issue #789 bound")
+        raise AssertionError(
+            "the backtester policy maximum of 360 minutes must remain a valid issue #789 bound"
+        )
 
 
 def assert_ra001a_ci_policy_selects_trusted_limits() -> None:

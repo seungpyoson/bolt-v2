@@ -153,9 +153,9 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
 
     assert_eq!(admission.quote().valid_until_ns(), 105);
     assert_eq!(admission.reservation_notional(), decimal("5.25"));
-    assert_eq!(admission.net_edge().basis.normalized_amount, decimal("5"));
+    assert_eq!(admission.net_edge().basis().normalized_amount, decimal("5"));
     assert_eq!(
-        admission.net_edge().basis.scope,
+        admission.net_edge().basis().scope,
         EconomicScope::Decision {
             decision_correlation_id: admission.quote().decision_correlation_id().clone(),
         }

@@ -4787,6 +4787,48 @@ mod tests {
         }
     }
 
+    fn replay_economics_snapshot(
+        execution_client_id: &str,
+        reporting_unit: &str,
+    ) -> crate::economics::HistoricalEconomicsSnapshot {
+        crate::economics::HistoricalEconomicsSnapshot {
+            execution_client_id: execution_client_id.to_string(),
+            account_id: "test-replay-account".to_string(),
+            product_surface_id: "test-binary-surface".to_string(),
+            reporting_policy_id: "test-reporting-policy".to_string(),
+            reporting_unit: reporting_unit.to_string(),
+            snapshot_id: "test-replay-quote-snapshot".to_string(),
+            source_id: "test-replay-source".to_string(),
+            source_at_ns: 0,
+            fetched_at_ns: 0,
+            valid_until_ns: u64::MAX,
+            edge_basis: crate::economics::HistoricalEdgeBasisEvidence {
+                policy_id: "test-edge-policy".to_string(),
+                policy_version: 1,
+                normalized_amount: "1".to_string(),
+                source_snapshot_ids: vec!["test-edge-snapshot".to_string()],
+                valid_until_ns: u64::MAX,
+            },
+            components: vec![crate::economics::HistoricalEconomicComponent {
+                component_id: "test-protocol-charge".to_string(),
+                order_id: "test-replay-order".to_string(),
+                class: crate::economics::HistoricalEconomicClass::Charge,
+                treatment:
+                    crate::economics::HistoricalAdmissionTreatment::GuaranteedConditionalOnAction,
+                native_amount: "-0.01".to_string(),
+                native_unit: reporting_unit.to_string(),
+                debit_risk_bound: None,
+                formula_id: "test-replay-formula".to_string(),
+                source_id: "test-component-source".to_string(),
+                snapshot_id: "test-component-snapshot".to_string(),
+                source_at_ns: 0,
+                fetched_at_ns: 0,
+                valid_until_ns: u64::MAX,
+                valuation: None,
+            }],
+        }
+    }
+
     fn binary_oracle_overlay_manifest() -> BacktestingRunManifest {
         let mut manifest = valid_manifest();
         manifest.strategy.registry_key = STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string();
@@ -4795,6 +4837,8 @@ mod tests {
             "shadow".to_string(),
         )]);
         manifest.strategy.config_overlay = Some(binary_oracle_config_overlay());
+        manifest.economics_snapshots =
+            vec![replay_economics_snapshot("polymarket_main", "pUSD")];
         manifest.strategy_config_hash =
             "2222222222222222222222222222222222222222222222222222222222222222".to_string();
         manifest
@@ -4845,6 +4889,10 @@ mod tests {
                 "shadow".to_string(),
             ),
         ]);
+        manifest.economics_snapshots = vec![replay_economics_snapshot(
+            "maker_execution_client",
+            "pUSD",
+        )];
         manifest.strategy_config_hash =
             "3333333333333333333333333333333333333333333333333333333333333333".to_string();
         manifest

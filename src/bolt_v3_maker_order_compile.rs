@@ -143,6 +143,7 @@ fn compile_submit(
         return blocked(MakerOrderCompileBlockReason::InvalidSubmitQuantity);
     }
 
+    let gross_expected_value = gross_edge_per_unit * quantity;
     let price = Price::new(price, input.price_precision);
     let quantity = Quantity::new(quantity, input.quantity_precision);
     compiled(MakerCompiledOrderCommand::Submit {
@@ -156,7 +157,7 @@ fn compile_submit(
             client_order_id: nt_client_order_id(order_identity),
         },
         fallback_price: price,
-        gross_expected_value: gross_edge_per_unit * quantity,
+        gross_expected_value,
     })
 }
 

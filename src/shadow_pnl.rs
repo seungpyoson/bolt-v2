@@ -188,7 +188,7 @@ pub fn build_shadow_pnl_report(
         let realized_edge = if notional.is_zero() {
             Decimal::ZERO
         } else {
-            gross / notional * Decimal::from(SHADOW_PNL_BASIS_POINTS_DENOMINATOR)
+            gross / notional * Decimal::from(crate::bolt_v3_numeric::BPS_DENOMINATOR as u64)
         };
         // winning_side is operator-prepared free text. Validate it names a legal
         // binary outcome side BEFORE deriving won, so a malformed/typo'd value

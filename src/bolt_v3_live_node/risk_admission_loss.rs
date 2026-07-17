@@ -3,10 +3,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use nautilus_common::{
-    factories::OrderFactory,
-    messages::execution::{SubmitOrder, TradingCommand},
-};
 use nautilus_model::events::OrderEventAny;
 use tokio::sync::Notify;
 
@@ -24,14 +20,9 @@ use crate::{
         BoltV3KillSwitchFlattenRouteProof, BoltV3KillSwitchFlattenSnapshot,
         BoltV3KillSwitchFlattenSupervisor,
     },
-    bolt_v3_order_execution::{
-        BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink, BoltV3OrderExecutionPolicy,
-        route_kill_switch_flatten_command_with_sink,
-    },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_submit_admission::{
         BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-        BoltV3SubmitLifecyclePolicy,
     },
 };
 

@@ -662,7 +662,7 @@ pub enum BoltV3ModifyRoutingOutcome {
     SkippedByPolicy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub strategy_id: &'a str,
     pub execution_client_id: &'a str,
@@ -670,7 +670,7 @@ pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
     pub execution_client_id: &'a str,
     pub fallback_price: &'a str,

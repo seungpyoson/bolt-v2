@@ -54,7 +54,7 @@ use nautilus_core::string::secret::REDACTED;
 use nautilus_model::{identifiers::AccountId, types::Currency};
 use nautilus_polymarket::{
     common::consts::{HTTP_RATE_LIMIT, LOT_SIZE_SCALE},
-    common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
+    common::credential::EvmPrivateKey,
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{
         PolymarketDataClientConfig, PolymarketExecClientConfig, PolymarketInstrumentProviderConfig,

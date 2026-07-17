@@ -46,7 +46,7 @@ pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
-use nautilus_model::{enums::TimeInForce, identifiers::Venue, instruments::Instrument};
+use nautilus_model::{enums::TimeInForce, identifiers::Venue};
 use rust_decimal::Decimal;
 use serde::Serialize;
 

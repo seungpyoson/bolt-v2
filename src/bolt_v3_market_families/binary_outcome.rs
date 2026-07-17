@@ -2,7 +2,7 @@
 
 use crate::{
     bolt_v3_binary_settlement::BinarySettlementPayout,
-    bolt_v3_numeric::{UNIT_F64, ZERO_F64, sanitize_probability},
+    bolt_v3_numeric::ZERO_F64,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{
         FamilyQuoteInputs, QuoteSide, QuoteTargetLeg, QuoteTargets, compose_binary_legs,

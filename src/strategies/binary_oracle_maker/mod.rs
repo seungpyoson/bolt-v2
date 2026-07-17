@@ -25,7 +25,6 @@ use nautilus_model::{
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
-use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
@@ -644,12 +643,6 @@ fn requote_throttle_block(
                 BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
             )
         });
-    }
-    if decision.blocked_by == Some(QuoteSetBlockReason::ReservationRejected) {
-        return Some((
-            BoltV3RequoteActionCostClass::FreshSubmit,
-            BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
-        ));
     }
     None
 }

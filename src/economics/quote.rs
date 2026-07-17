@@ -24,7 +24,7 @@ pub fn validate_and_aggregate_quote(
     validate_authority_timeline(request, &estimate)?;
 
     let mut component_ids = HashSet::new();
-    let mut accepted = Vec::with_capacity(components.len());
+    let mut accepted = Vec::with_capacity(estimate.components.len());
     let mut normalizations = Vec::new();
     let mut core_total = Decimal::ZERO;
     let mut forecast_total = Decimal::ZERO;

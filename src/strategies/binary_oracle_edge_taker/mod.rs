@@ -20,10 +20,7 @@ use nautilus_model::{
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, StrategyNative, nautilus_strategy};
-use rust_decimal::{
-    Decimal,
-    prelude::{FromPrimitive, ToPrimitive},
-};
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
@@ -61,8 +58,7 @@ use crate::{
     bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, Probability,
-        SECONDS_PER_YEAR_F64, UNIT_F64, is_non_negative_finite, is_positive_finite,
-        notional_float_tolerance,
+        SECONDS_PER_YEAR_F64, is_positive_finite, notional_float_tolerance,
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
@@ -3912,7 +3908,7 @@ impl BinaryOracleEdgeTaker {
 
     fn executable_entry_probe_for_side(
         &self,
-        side: OutcomeSide,
+        _side: OutcomeSide,
         order_side: OrderSide,
         edge_pricing_notional: f64,
     ) -> Result<ExecutableEntryProbe, BinaryOutcomeEdgeBlockReason> {

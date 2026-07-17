@@ -176,11 +176,11 @@ fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
     Arc::new(move || now_unix_secs)
 }
 
-fn assembly_context<'a>(
+fn try_assembly_context<'a>(
     loaded: &'a bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     resolved: &'a ResolvedBoltV3Secrets,
     capabilities: StrategyRuntimeCapabilities,
-) -> StrategyRegistrationContext<'a> {
+) -> Result<StrategyRegistrationContext<'a>, BoltV3StrategyRegistrationError> {
     let decision_evidence: Arc<
         dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
@@ -209,6 +209,15 @@ fn assembly_context<'a>(
             settlement_health_transition_emitter: None,
         },
     )
+}
+
+fn assembly_context<'a>(
+    loaded: &'a bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    resolved: &'a ResolvedBoltV3Secrets,
+    capabilities: StrategyRuntimeCapabilities,
+) -> StrategyRegistrationContext<'a> {
+    try_assembly_context(loaded, resolved, capabilities)
+        .expect("configured strategy registration context should resolve")
 }
 
 #[test]
@@ -307,18 +316,16 @@ fn shared_strategy_assembly_fails_closed_without_settlement_account_id() {
         .expect("fixture execution client should have a table")
         .remove("account_id");
     let resolved = fixture_resolved_secrets();
-    let context = assembly_context(
+    let error = try_assembly_context(
         &loaded,
         &resolved,
         StrategyRuntimeCapabilities {
             realized_volatility: true,
             settlement: true,
         },
-    );
-
-    let error = assemble_strategy_build_context(&context)
-        .err()
-        .expect("settlement assembly without an account id must fail closed");
+    )
+    .err()
+    .expect("settlement preflight without an account id must fail closed");
     let BoltV3StrategyRegistrationError::Binding { message, .. } = error else {
         panic!("missing settlement account id must return a binding error");
     };
@@ -353,18 +360,16 @@ fn shared_strategy_assembly_fails_closed_without_settlement_currency() {
         .expect("fixture capital pools should exist")
         .retain(|pool| pool.account_id.to_string() != settlement_account_id);
     let resolved = fixture_resolved_secrets();
-    let context = assembly_context(
+    let error = try_assembly_context(
         &loaded,
         &resolved,
         StrategyRuntimeCapabilities {
             realized_volatility: true,
             settlement: true,
         },
-    );
-
-    let error = assemble_strategy_build_context(&context)
-        .err()
-        .expect("settlement assembly without a currency must fail closed");
+    )
+    .err()
+    .expect("settlement preflight without a currency must fail closed");
     let BoltV3StrategyRegistrationError::Binding { message, .. } = error else {
         panic!("missing settlement currency must return a binding error");
     };
@@ -390,6 +395,9 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
         "pub settlement_runtime_sink:",
         "pub settlement_recovery:",
         "pub settlement_health_transition_emitter:",
+        "pub execution_venue:",
+        "pub fee_provider:",
+        "pub resolved:",
     ] {
         assert!(
             !context_fields.contains(forbidden_public_field),
@@ -401,16 +409,25 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
 #[test]
 fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cached_proof() {
     let source = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let context_fields = source
+        .split_once("pub struct StrategyRegistrationContext<'a> {")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(fields, _)| fields)
+        .expect("strategy registration context should remain inspectable");
+    assert!(
+        context_fields.contains("execution_venue: Venue"),
+        "strategy registration context must cache the configured execution venue"
+    );
+    assert!(
+        context_fields.contains("fee_provider: Arc<dyn FeeProvider>"),
+        "strategy registration context must cache the preflight-built fee provider"
+    );
     let settlement_resources = source
         .split_once("struct StrategyRegistrationSettlementResources {")
         .and_then(|(_, tail)| tail.split_once("\n}"))
         .map(|(fields, _)| fields)
         .expect("settlement registration resources should remain inspectable");
-    for cached_proof_field in [
-        "execution_venue:",
-        "settlement_account_id:",
-        "settlement_currency:",
-    ] {
+    for cached_proof_field in ["settlement_account_id:", "settlement_currency:"] {
         assert!(
             settlement_resources.contains(cached_proof_field),
             "settlement resources must cache `{cached_proof_field}`"
@@ -423,13 +440,23 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         .map(|(body, _)| body)
         .expect("strategy assembly should remain inspectable");
     assert!(
-        assembly.contains("settlement_resources_for_context(context)?"),
+        assembly.contains("let execution_venue = context.execution_venue;"),
+        "strategy assembly must consume the cached execution venue"
+    );
+    assert!(
+        assembly.contains("let fee_provider = context.fee_provider.clone();"),
+        "strategy assembly must consume the cached fee provider"
+    );
+    assert!(
+        assembly.contains("settlement_resources_for_context(context)"),
         "strategy assembly must consume the cached settlement proof"
     );
     for forbidden_resolution in [
         "resolve_settlement_capability(",
         "execution_account_id(",
         "settlement_currency_for_execution_account(",
+        "venue_for_client(",
+        "resolve_fee_provider(",
     ] {
         assert!(
             !assembly.contains(forbidden_resolution),
@@ -438,9 +465,68 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     }
 
     assert_eq!(
+        source.matches("resolve_execution_client(").count(),
+        2,
+        "execution client and venue resolution must have one definition and one constructor call"
+    );
+    assert!(
+        !source.contains("fn execution_venue_for_context("),
+        "strategy assembly must not retain a late venue lookup path"
+    );
+    assert_eq!(
         source.matches("resolve_settlement_capability(").count(),
         2,
         "settlement capability resolution must have one definition and one constructor call"
+    );
+    let settlement_resolution = source
+        .split_once("fn resolve_settlement_capability(")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("settlement resolution should remain inspectable");
+    assert!(
+        settlement_resolution.contains("execution_account_id_from_client(execution_client)"),
+        "settlement resolution must consume the preflight-resolved execution client"
+    );
+    assert!(
+        !settlement_resolution.contains("root.clients")
+            && !settlement_resolution.contains("execution_account_id(&loaded.root"),
+        "settlement resolution must not repeat the execution-client lookup"
+    );
+
+    let providers = support::repo_text("src/bolt_v3_providers/mod.rs");
+    let fee_provider_resolution = providers
+        .split_once("pub fn resolve_fee_provider(")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("fee-provider resolution should remain inspectable");
+    assert!(
+        !fee_provider_resolution.contains("root.clients")
+            && !fee_provider_resolution.contains("client.venue"),
+        "fee-provider resolution must consume the preflight-resolved client and venue"
+    );
+
+    let taker = support::repo_text("src/strategies/binary_oracle_edge_taker/archetype.rs");
+    let raw_taker = taker
+        .split_once("pub fn raw_taker_config(")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("raw taker config should remain inspectable");
+    assert!(
+        !raw_taker.contains(
+            "venue_for_client(&loaded.root, strategy.config.execution_client_id.as_str())"
+        ),
+        "raw taker config must not repeat execution-client venue resolution"
+    );
+
+    let complete = support::repo_text("src/strategies/complete_set_arbitrage/archetype.rs");
+    let raw_complete = complete
+        .split_once("pub fn raw_complete_set_config(")
+        .and_then(|(_, tail)| tail.split_once("\n}\n\n"))
+        .map(|(body, _)| body)
+        .expect("raw complete-set config should remain inspectable");
+    assert!(
+        !raw_complete.contains("venue_for_client("),
+        "raw complete-set config must not repeat execution-client venue resolution"
     );
 }
 
@@ -450,18 +536,16 @@ fn shared_strategy_assembly_fails_closed_when_execution_client_is_missing() {
         .expect("bolt-v3 fixture should load");
     loaded.strategies[0].config.execution_client_id = "missing_execution".into();
     let resolved = fixture_resolved_secrets();
-    let context = assembly_context(
+    let error = try_assembly_context(
         &loaded,
         &resolved,
         StrategyRuntimeCapabilities {
             realized_volatility: true,
             settlement: false,
         },
-    );
-
-    let error = assemble_strategy_build_context(&context)
-        .err()
-        .expect("missing execution client must fail closed during shared assembly");
+    )
+    .err()
+    .expect("missing execution client must fail closed during registration preflight");
     assert!(
         error.to_string().contains(
             "execution_client_id `missing_execution` is not present in loaded clients for execution-venue resolution"

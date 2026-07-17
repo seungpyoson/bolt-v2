@@ -5,7 +5,7 @@
 //! stay outside this core boundary.
 
 use crate::bolt_v3_config::{
-    BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
+    BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_iv::{
@@ -16,7 +16,7 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
-use crate::bolt_v3_providers::resolve_fee_provider;
+use crate::bolt_v3_providers::{FeeProvider, resolve_fee_provider};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::{
     BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
@@ -65,24 +65,18 @@ pub struct StrategyRegistrationContext<'a> {
     pub strategy: &'a LoadedStrategy,
     pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
-    pub resolved: &'a ResolvedBoltV3Secrets,
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
-    settlement: Option<StrategyRegistrationSettlementCapability>,
-}
-
-#[derive(Clone)]
-enum StrategyRegistrationSettlementCapability {
-    Resolved(StrategyRegistrationSettlementResources),
-    Invalid(StrategyRegistrationSettlementIdentityError),
+    execution_venue: Venue,
+    fee_provider: Arc<dyn FeeProvider>,
+    settlement: Option<StrategyRegistrationSettlementResources>,
 }
 
 #[derive(Clone)]
 struct StrategyRegistrationSettlementResources {
-    execution_venue: Venue,
     settlement_account_id: String,
     settlement_currency: Currency,
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
@@ -92,7 +86,6 @@ struct StrategyRegistrationSettlementResources {
 
 #[derive(Clone)]
 enum StrategyRegistrationSettlementIdentityError {
-    ExecutionVenue { execution_client_id: String },
     AccountId { execution_client_id: String },
     Currency { settlement_account_id: String },
 }
@@ -100,11 +93,6 @@ enum StrategyRegistrationSettlementIdentityError {
 impl StrategyRegistrationSettlementIdentityError {
     fn message(&self) -> String {
         match self {
-            Self::ExecutionVenue {
-                execution_client_id,
-            } => format!(
-                "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-            ),
             Self::AccountId {
                 execution_client_id,
             } => format!(
@@ -131,7 +119,7 @@ impl<'a> StrategyRegistrationContext<'a> {
         iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
         realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
         execution_controls: BoltV3StrategyExecutionControls,
-    ) -> Self {
+    ) -> Result<Self, BoltV3StrategyRegistrationError> {
         let BoltV3StrategyExecutionControls {
             submit_admission,
             order_execution_policy,
@@ -142,68 +130,93 @@ impl<'a> StrategyRegistrationContext<'a> {
         let realized_volatility_runtime = capabilities
             .realized_volatility
             .then_some(realized_volatility_runtime);
-        let settlement = capabilities.settlement.then(|| {
-            resolve_settlement_capability(
-                loaded,
-                strategy,
-                settlement_runtime_sink,
-                settlement_recovery,
-                settlement_health_transition_emitter,
-            )
-        });
+        let execution_client_id = strategy.config.execution_client_id.as_str();
+        let (execution_client, execution_venue) = resolve_execution_client(loaded, strategy)?;
+        let fee_provider = resolve_fee_provider(
+            execution_client_id,
+            execution_client,
+            execution_venue,
+            resolved,
+        )
+        .map_err(|error| binding_error(strategy, error.to_string()))?;
+        let settlement = capabilities
+            .settlement
+            .then(|| {
+                resolve_settlement_capability(
+                    loaded,
+                    strategy,
+                    execution_client,
+                    execution_venue,
+                    settlement_runtime_sink,
+                    settlement_recovery,
+                    settlement_health_transition_emitter,
+                )
+            })
+            .transpose()
+            .map_err(|error| binding_error(strategy, error.message()))?;
 
-        Self {
+        Ok(Self {
             loaded,
             strategy,
             strategy_kind,
             capabilities,
-            resolved,
             decision_evidence,
             submit_admission,
             iv_query_handles,
             order_execution_policy,
             realized_volatility_runtime,
+            execution_venue,
+            fee_provider,
             settlement,
-        }
+        })
     }
+}
+
+fn resolve_execution_client<'a>(
+    loaded: &'a LoadedBoltV3Config,
+    strategy: &LoadedStrategy,
+) -> Result<(&'a ClientBlock, Venue), BoltV3StrategyRegistrationError> {
+    let execution_client_id = strategy.config.execution_client_id.as_str();
+    let client = loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .ok_or_else(|| {
+            binding_error(
+                strategy,
+                format!(
+                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+                ),
+            )
+        })?;
+    Ok((client, client.venue))
 }
 
 fn resolve_settlement_capability(
     loaded: &LoadedBoltV3Config,
     strategy: &LoadedStrategy,
+    execution_client: &ClientBlock,
+    execution_venue: Venue,
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     recovery: Option<BoltV3SettlementRecoveryConfig>,
     health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
-) -> StrategyRegistrationSettlementCapability {
+) -> Result<StrategyRegistrationSettlementResources, StrategyRegistrationSettlementIdentityError> {
     let execution_client_id = strategy.config.execution_client_id.as_str();
-    let Some(execution_venue) = venue_for_client(&loaded.root, execution_client_id) else {
-        return StrategyRegistrationSettlementCapability::Invalid(
-            StrategyRegistrationSettlementIdentityError::ExecutionVenue {
-                execution_client_id: execution_client_id.to_string(),
-            },
-        );
-    };
-    let Some(settlement_account_id) = execution_account_id(&loaded.root, execution_client_id)
-    else {
-        return StrategyRegistrationSettlementCapability::Invalid(
+    let settlement_account_id =
+        execution_account_id_from_client(execution_client).ok_or_else(|| {
             StrategyRegistrationSettlementIdentityError::AccountId {
                 execution_client_id: execution_client_id.to_string(),
-            },
-        );
-    };
-    let Some(settlement_currency) = settlement_currency_for_execution_account(
+            }
+        })?;
+    let settlement_currency = settlement_currency_for_execution_account(
         &loaded.root,
         execution_venue,
         settlement_account_id,
-    ) else {
-        return StrategyRegistrationSettlementCapability::Invalid(
-            StrategyRegistrationSettlementIdentityError::Currency {
-                settlement_account_id: settlement_account_id.to_string(),
-            },
-        );
-    };
-    StrategyRegistrationSettlementCapability::Resolved(StrategyRegistrationSettlementResources {
-        execution_venue,
+    )
+    .ok_or_else(|| StrategyRegistrationSettlementIdentityError::Currency {
+        settlement_account_id: settlement_account_id.to_string(),
+    })?;
+    Ok(StrategyRegistrationSettlementResources {
         settlement_account_id: settlement_account_id.to_string(),
         settlement_currency,
         runtime_sink,
@@ -215,14 +228,9 @@ fn resolve_settlement_capability(
 pub fn assemble_strategy_build_context(
     context: &StrategyRegistrationContext<'_>,
 ) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
-    let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    let settlement = settlement_resources_for_context(context)?;
-    let execution_venue = match settlement {
-        Some(settlement) => settlement.execution_venue,
-        None => execution_venue_for_context(context)?,
-    };
-    let fee_provider = resolve_fee_provider(context.loaded, execution_client_id, context.resolved)
-        .map_err(|error| binding_message(context, error.to_string()))?;
+    let execution_venue = context.execution_venue;
+    let settlement = settlement_resources_for_context(context);
+    let fee_provider = context.fee_provider.clone();
     let mut build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
@@ -247,30 +255,10 @@ pub fn assemble_strategy_build_context(
     Ok(build_context)
 }
 
-fn execution_venue_for_context(
+fn settlement_resources_for_context(
     context: &StrategyRegistrationContext<'_>,
-) -> Result<Venue, BoltV3StrategyRegistrationError> {
-    let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    venue_for_client(&context.loaded.root, execution_client_id).ok_or_else(|| {
-        binding_message(
-            context,
-            format!(
-                "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-            ),
-        )
-    })
-}
-
-fn settlement_resources_for_context<'a>(
-    context: &'a StrategyRegistrationContext<'_>,
-) -> Result<Option<&'a StrategyRegistrationSettlementResources>, BoltV3StrategyRegistrationError> {
-    match &context.settlement {
-        None => Ok(None),
-        Some(StrategyRegistrationSettlementCapability::Resolved(resources)) => Ok(Some(resources)),
-        Some(StrategyRegistrationSettlementCapability::Invalid(error)) => {
-            Err(binding_message(context, error.message()))
-        }
-    }
+) -> Option<&StrategyRegistrationSettlementResources> {
+    context.settlement.as_ref()
 }
 
 /// Neutral client-table venue lookup for execution and data client ids alike, so
@@ -283,8 +271,11 @@ pub(crate) fn execution_account_id<'a>(
     root: &'a BoltV3RootConfig,
     execution_client_id: &str,
 ) -> Option<&'a str> {
-    root.clients
-        .get(execution_client_id)?
+    execution_account_id_from_client(root.clients.get(execution_client_id)?)
+}
+
+fn execution_account_id_from_client(client: &ClientBlock) -> Option<&str> {
+    client
         .execution
         .as_ref()?
         .as_table()?
@@ -320,14 +311,13 @@ fn binding_message(
     context: &StrategyRegistrationContext<'_>,
     message: String,
 ) -> BoltV3StrategyRegistrationError {
+    binding_error(context.strategy, message)
+}
+
+fn binding_error(strategy: &LoadedStrategy, message: String) -> BoltV3StrategyRegistrationError {
     BoltV3StrategyRegistrationError::Binding {
-        strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-        strategy_archetype: context
-            .strategy
-            .config
-            .strategy_archetype
-            .as_str()
-            .to_string(),
+        strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+        strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
         message,
     }
 }
@@ -682,8 +672,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 iv_query_handles.clone(),
                 realized_volatility_runtime.clone(),
                 execution_controls.clone(),
-            );
-            settlement_resources_for_context(&context)?;
+            )?;
             Ok((binding, context))
         })
         .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;

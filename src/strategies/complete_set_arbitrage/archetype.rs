@@ -19,7 +19,7 @@ use crate::{
     bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
-        StrategyRuntimeCapabilities, assemble_strategy_build_context, venue_for_client,
+        StrategyRuntimeCapabilities, assemble_strategy_build_context,
     },
     strategies::{
         complete_set_arbitrage::CompleteSetArbitrageBuilder, production_strategy_registry,
@@ -202,10 +202,6 @@ pub enum CompleteSetArbitrageRuntimeConfigError {
         strategy_instance_id: String,
         message: String,
     },
-    Client {
-        strategy_instance_id: String,
-        message: String,
-    },
     Numeric {
         strategy_instance_id: String,
         field: &'static str,
@@ -233,13 +229,6 @@ impl std::fmt::Display for CompleteSetArbitrageRuntimeConfigError {
             } => write!(
                 f,
                 "strategies.{strategy_instance_id} parameters are invalid: {message}"
-            ),
-            Self::Client {
-                strategy_instance_id,
-                message,
-            } => write!(
-                f,
-                "strategies.{strategy_instance_id} client binding is invalid: {message}"
             ),
             Self::Numeric {
                 strategy_instance_id,
@@ -273,16 +262,6 @@ pub fn raw_complete_set_config(
             actual: strategy.config.strategy_archetype.as_str().to_string(),
         });
     }
-
-    venue_for_client(&loaded.root, strategy.config.execution_client_id.as_str()).ok_or_else(
-        || CompleteSetArbitrageRuntimeConfigError::Client {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "execution_client_id `{}` is not present in loaded clients",
-                strategy.config.execution_client_id
-            ),
-        },
-    )?;
 
     let parameters = parse_parameters(&strategy.config.parameters).map_err(|message| {
         CompleteSetArbitrageRuntimeConfigError::Parameters {

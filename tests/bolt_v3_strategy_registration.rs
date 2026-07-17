@@ -948,8 +948,9 @@ fn settlement_capable_binding_rejects_unknown_currency_without_unwinding_or_call
     assert_settlement_currency_binding_error(&error);
 }
 
-fn assert_invalid_second_execution_client_fails_before_callbacks(
+fn assert_invalid_second_execution_route_fails_before_callbacks(
     capabilities: bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities,
+    invalid_execution_client_id: &str,
 ) {
     fn register_stub(
         node: &mut LiveNode,
@@ -996,7 +997,7 @@ fn assert_invalid_second_execution_client_fails_before_callbacks(
         .clone();
     let mut invalid = valid.clone();
     invalid.config.strategy_instance_id = "invalid-second-strategy".to_string();
-    invalid.config.execution_client_id = ClientId::from("missing_execution_client");
+    invalid.config.execution_client_id = ClientId::from(invalid_execution_client_id);
     let mut empty_loaded = loaded.clone();
     empty_loaded.strategies.clear();
     let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
@@ -1045,21 +1046,34 @@ fn assert_invalid_second_execution_client_fails_before_callbacks(
 
 #[test]
 fn all_settlement_registration_contexts_are_validated_before_any_binding_callback() {
-    assert_invalid_second_execution_client_fails_before_callbacks(
+    assert_invalid_second_execution_route_fails_before_callbacks(
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
             realized_volatility: true,
             settlement: true,
         },
+        "missing_execution_client",
     );
 }
 
 #[test]
 fn non_settlement_registration_resolves_every_venue_before_any_binding_callback() {
-    assert_invalid_second_execution_client_fails_before_callbacks(
+    assert_invalid_second_execution_route_fails_before_callbacks(
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
             realized_volatility: false,
             settlement: false,
         },
+        "missing_execution_client",
+    );
+}
+
+#[test]
+fn fee_provider_preflight_failure_for_second_strategy_runs_no_binding_callback() {
+    assert_invalid_second_execution_route_fails_before_callbacks(
+        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+            realized_volatility: false,
+            settlement: false,
+        },
+        "binance_reference",
     );
 }
 

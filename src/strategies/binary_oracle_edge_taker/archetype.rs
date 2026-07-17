@@ -358,10 +358,6 @@ pub enum BinaryOracleEdgeTakerRuntimeConfigError {
         strategy_instance_id: String,
         message: String,
     },
-    Client {
-        strategy_instance_id: String,
-        message: String,
-    },
     SignalData {
         strategy_instance_id: String,
         message: String,
@@ -404,13 +400,6 @@ impl std::fmt::Display for BinaryOracleEdgeTakerRuntimeConfigError {
             } => write!(
                 f,
                 "strategies.{strategy_instance_id} target is invalid: {message}"
-            ),
-            Self::Client {
-                strategy_instance_id,
-                message,
-            } => write!(
-                f,
-                "strategies.{strategy_instance_id} client config is invalid: {message}"
             ),
             Self::SignalData {
                 strategy_instance_id,
@@ -589,15 +578,6 @@ pub fn raw_taker_config(
                 strategy_instance_id: strategy.config.strategy_instance_id.clone(),
                 message: error.to_string(),
             })?;
-    venue_for_client(&loaded.root, strategy.config.execution_client_id.as_str()).ok_or_else(
-        || BinaryOracleEdgeTakerRuntimeConfigError::Client {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "execution_client_id `{}` is not present in loaded clients",
-                strategy.config.execution_client_id
-            ),
-        },
-    )?;
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let realized_volatility_surface_id = strategy
         .config

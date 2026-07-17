@@ -1,0 +1,8 @@
+# Immutable source facts for the exact official NautilusTrader dependency.
+# build.rs binds this revision to dependencies.nautilus-binance and generates
+# the Rust registry. This is governed build evidence, not operator config.
+revision = "d81be0bcc7a473c45d2dc8a8885638336073a218"
+
+[binance_spot]
+sbe_schema_3_5 = true
+adapter_receive_timestamps = true

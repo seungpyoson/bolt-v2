@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env,
     ffi::OsStr,
     fs,
@@ -9,6 +10,8 @@ use std::{
 /// Repo-root manifest that is the single owner of the gated source-root list,
 /// shared with `scripts/bolt_v3_source_roots.py`.
 const GATED_SOURCE_ROOTS_MANIFEST: &str = "gated_source_roots.manifest";
+const NAUTILUS_SOURCE_CAPABILITIES_MANIFEST: &str = "ci/nautilus-source-capabilities.toml";
+const OFFICIAL_NAUTILUS_REPOSITORY: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -19,6 +22,7 @@ fn main() {
     let manifest_dir = build_script_manifest_dir();
     emit_git_head_rerun_paths(&manifest_dir);
     emit_gated_source_roots(&manifest_dir);
+    emit_nautilus_source_capabilities(&manifest_dir);
 
     match Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -41,6 +45,176 @@ fn main() {
             println!("cargo:warning=failed to run git rev-parse HEAD: {error}");
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NautilusSourceCapabilities {
+    revision: String,
+    binance_spot_sbe_schema_3_5: bool,
+    binance_adapter_receive_timestamps: bool,
+}
+
+/// Generate immutable Nautilus source-capability facts from the governed CI
+/// manifest. The manifest is code-review policy, not runtime/operator config.
+/// This source slice has one direct Binance path, so either required fact being
+/// false fails the build until an issue-bound admission-blocking implementation
+/// replaces that direct path.
+fn emit_nautilus_source_capabilities(manifest_dir: &Path) {
+    let capability_path = manifest_dir.join(NAUTILUS_SOURCE_CAPABILITIES_MANIFEST);
+    let cargo_path = manifest_dir.join("Cargo.toml");
+    println!("cargo:rerun-if-changed={}", capability_path.display());
+    println!("cargo:rerun-if-changed={}", cargo_path.display());
+
+    let capability_text = fs::read_to_string(&capability_path).unwrap_or_else(|error| {
+        panic!(
+            "reading {} should succeed: {error}",
+            capability_path.display()
+        )
+    });
+    let capabilities = parse_nautilus_source_capabilities(&capability_text, &capability_path);
+    validate_nautilus_manifest_binding(&capabilities, &cargo_path);
+    assert!(
+        capabilities.binance_spot_sbe_schema_3_5,
+        "{}: the direct Binance runtime path requires official schema 3:5 support; a false fact requires an explicit affected-new-risk admission blocker",
+        capability_path.display()
+    );
+    assert!(
+        capabilities.binance_adapter_receive_timestamps,
+        "{}: the direct Binance runtime path requires adapter receive timestamps; a false fact requires an explicit affected-new-risk admission blocker",
+        capability_path.display()
+    );
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
+    let out_path = out_dir.join("nautilus_source_capabilities.rs");
+    fs::write(
+        &out_path,
+        render_nautilus_source_capabilities(&capabilities),
+    )
+    .unwrap_or_else(|error| panic!("writing {} should succeed: {error}", out_path.display()));
+}
+
+fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSourceCapabilities {
+    let document = toml::from_str::<toml::Table>(text)
+        .unwrap_or_else(|error| panic!("parsing {} should succeed: {error}", path.display()));
+    assert_exact_keys(&document, &["revision", "binance_spot"], path, "root");
+
+    let revision = required_toml_string(&document, "revision", path, "root");
+    assert!(
+        is_git_head_sha(&revision),
+        "{}: revision must be one immutable lowercase 40-character commit",
+        path.display()
+    );
+    let binance_spot = document
+        .get("binance_spot")
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| panic!("{}: binance_spot must be a TOML table", path.display()));
+    assert_exact_keys(
+        binance_spot,
+        &["sbe_schema_3_5", "adapter_receive_timestamps"],
+        path,
+        "binance_spot",
+    );
+
+    NautilusSourceCapabilities {
+        revision,
+        binance_spot_sbe_schema_3_5: required_toml_bool(
+            binance_spot,
+            "sbe_schema_3_5",
+            path,
+            "binance_spot",
+        ),
+        binance_adapter_receive_timestamps: required_toml_bool(
+            binance_spot,
+            "adapter_receive_timestamps",
+            path,
+            "binance_spot",
+        ),
+    }
+}
+
+fn validate_nautilus_manifest_binding(
+    capabilities: &NautilusSourceCapabilities,
+    cargo_path: &Path,
+) {
+    let cargo_text = fs::read_to_string(cargo_path)
+        .unwrap_or_else(|error| panic!("reading {} should succeed: {error}", cargo_path.display()));
+    let cargo = toml::from_str::<toml::Table>(&cargo_text)
+        .unwrap_or_else(|error| panic!("parsing {} should succeed: {error}", cargo_path.display()));
+    let dependencies = cargo
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: dependencies must be a TOML table",
+                cargo_path.display()
+            )
+        });
+    let binance = dependencies
+        .get("nautilus-binance")
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: dependencies.nautilus-binance must be a TOML table",
+                cargo_path.display()
+            )
+        });
+    let git = required_toml_string(binance, "git", cargo_path, "dependencies.nautilus-binance");
+    let revision =
+        required_toml_string(binance, "rev", cargo_path, "dependencies.nautilus-binance");
+    assert_eq!(
+        git,
+        OFFICIAL_NAUTILUS_REPOSITORY,
+        "{}: dependencies.nautilus-binance must use the official repository",
+        cargo_path.display()
+    );
+    assert_eq!(
+        revision,
+        capabilities.revision,
+        "{}: revision must equal dependencies.nautilus-binance.rev in {}",
+        NAUTILUS_SOURCE_CAPABILITIES_MANIFEST,
+        cargo_path.display()
+    );
+}
+
+fn assert_exact_keys(table: &toml::Table, expected: &[&str], path: &Path, owner: &str) {
+    let actual = table.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual,
+        expected,
+        "{}: {owner} must contain exactly {expected:?}",
+        path.display()
+    );
+}
+
+fn required_toml_string(table: &toml::Table, key: &str, path: &Path, owner: &str) -> String {
+    table
+        .get(key)
+        .and_then(toml::Value::as_str)
+        .unwrap_or_else(|| panic!("{}: {owner}.{key} must be a string", path.display()))
+        .to_string()
+}
+
+fn required_toml_bool(table: &toml::Table, key: &str, path: &Path, owner: &str) -> bool {
+    table
+        .get(key)
+        .and_then(toml::Value::as_bool)
+        .unwrap_or_else(|| panic!("{}: {owner}.{key} must be a boolean", path.display()))
+}
+
+fn render_nautilus_source_capabilities(capabilities: &NautilusSourceCapabilities) -> String {
+    format!(
+        "// @generated by build.rs from ci/nautilus-source-capabilities.toml — do not edit.\n\
+pub const NAUTILUS_SOURCE_CAPABILITIES: NautilusSourceCapabilityRegistry =\n\
+    NautilusSourceCapabilityRegistry {{\n\
+        revision: {:?},\n\
+        binance_spot_sbe_schema_3_5: {},\n\
+        binance_adapter_receive_timestamps: {},\n\
+    }};\n",
+        capabilities.revision,
+        capabilities.binance_spot_sbe_schema_3_5,
+        capabilities.binance_adapter_receive_timestamps,
+    )
 }
 
 /// Generate the `GATED_SOURCE_ROOTS` constant from the repo-root manifest into

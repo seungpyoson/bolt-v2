@@ -50,6 +50,7 @@ REQUIRED_PIN_SURFACES = (
     "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
     "tests/fixtures/nt_polymarket_query_post_order_params_d81be0bc.txt",
+    "ci/nautilus-source-capabilities.toml",
 )
 
 
@@ -111,6 +112,8 @@ def clean_files(root: Path) -> None:
         f"  - current value: `{EXPECTED_NT_REV}`\n"
         "### 11.5 NautilusTrader pin governance\n"
         f"The live Binance Spot SBE quote boundary is owned by NautilusTrader revision `{EXPECTED_NT_REV}`.\n"
+        "`NautilusSourceCapabilityRegistry`\n"
+        "`NAUTILUS_SOURCE_CAPABILITIES`\n"
         "`BinanceSpotDataClient::handle_ws_message`\n"
         "`handle_ws_message_uses_clock_timestamp_for_sbe_bbo_ts_init`\n"
         "`decode_market_data`\n"
@@ -152,6 +155,29 @@ def clean_files(root: Path) -> None:
         "Source: NautilusTrader\n"
         f"Revision: {EXPECTED_NT_REV}\n"
         "Path: crates/adapters/polymarket/src/http/query.rs\n",
+    )
+    write(
+        root,
+        "ci/nautilus-source-capabilities.toml",
+        f'revision = "{EXPECTED_NT_REV}"\n\n'
+        "[binance_spot]\n"
+        "sbe_schema_3_5 = true\n"
+        "adapter_receive_timestamps = true\n",
+    )
+    write(
+        root,
+        "build.rs",
+        "fn main() { emit_nautilus_source_capabilities(&manifest_dir); }\n"
+        "fn emit_nautilus_source_capabilities(manifest_dir: &Path) {\n"
+        "    validate_nautilus_manifest_binding(&capabilities, &cargo_path);\n"
+        '    let _ = out_dir.join("nautilus_source_capabilities.rs");\n'
+        "}\n",
+    )
+    write(
+        root,
+        "src/nautilus_source_capabilities.rs",
+        "pub struct NautilusSourceCapabilityRegistry;\n"
+        'include!(concat!(env!("OUT_DIR"), "/nautilus_source_capabilities.rs"));\n',
     )
     write(
         root,
@@ -452,6 +478,72 @@ def test_pin_census_rejects_non_commit_root_revision() -> None:
         scan_temp(mutate),
         "Cargo.toml: NautilusTrader pin census canonical root manifest must declare "
         "exactly one shared immutable",
+    )
+
+
+def test_capability_manifest_rejects_false_selected_source_facts() -> None:
+    for capability in ("sbe_schema_3_5", "adapter_receive_timestamps"):
+        def mutate(root: Path, capability: str = capability) -> None:
+            path = root / "ci/nautilus-source-capabilities.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    f"{capability} = true", f"{capability} = false"
+                ),
+                encoding="utf-8",
+            )
+
+        assert_finding(
+            scan_temp(mutate),
+            f"ci/nautilus-source-capabilities.toml: NautilusTrader pin census "
+            f"selected official pin must record binance_spot.{capability} = true",
+        )
+
+
+def test_capability_manifest_rejects_unregistered_facts() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "ci/nautilus-source-capabilities.toml"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "fallback_provider = true\n",
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "ci/nautilus-source-capabilities.toml: NautilusTrader pin census "
+        "binance_spot must contain exactly",
+    )
+
+
+def test_capability_registry_rejects_disconnected_build_generation() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "build.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "emit_nautilus_source_capabilities(&manifest_dir);", ""
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "build.rs: NautilusTrader capability-registry build generation wiring missing",
+    )
+
+
+def test_capability_registry_rejects_disconnected_rust_include() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/nautilus_source_capabilities.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                '"/nautilus_source_capabilities.rs"', '"/stale_capabilities.rs"'
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "src/nautilus_source_capabilities.rs: NautilusTrader "
+        "capability-registry Rust wiring missing",
     )
 
 

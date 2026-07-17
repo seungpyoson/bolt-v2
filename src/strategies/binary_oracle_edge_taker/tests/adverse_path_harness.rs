@@ -407,7 +407,9 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
         .active
         .interval_end_ms
         .expect("fixture should configure market close");
-    strategy.check_resolution_feed_outage_at_market_end(close_ms);
+    strategy
+        .check_resolution_feed_outage_at_market_end(close_ms)
+        .expect("feed outage check should dispatch the first close fetch");
 
     let events = evidence.events();
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);

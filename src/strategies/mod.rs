@@ -72,11 +72,12 @@ mod tests {
         );
 
         for (kind, macro_marker, source) in cases {
-            let hooks = source
-                .split(macro_marker)
-                .nth(1)
-                .and_then(|source| source.split("});").next())
-                .unwrap_or_else(|| panic!("registered strategy {kind} must use a hook macro"));
+            let (_, hook_source) = source
+                .split_once(macro_marker)
+                .expect("registered strategy must use its declared hook macro");
+            let (hooks, _) = hook_source
+                .split_once("});")
+                .expect("registered strategy hook macro must terminate");
             assert!(
                 hooks.contains("fn on_order_fill_voided"),
                 "registered strategy {kind} must override NT's fill-voided no-op"

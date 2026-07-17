@@ -1,6 +1,6 @@
 # Sealed Strategy Preparation And Shared Batch Registration Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax as an execution checklist; commits and exact-head evidence, not this durable plan, record completion.
 
 **Goal:** Remove raw client/config reachability and direct commit methods from strategy callbacks while making one atomic prepared-batch coordinator the only registration path for Live and the Backtester production-registry branches changed by this PR.
 
@@ -181,9 +181,15 @@ Add this public, data-only type in `src/bolt_v3_strategy_registration.rs`:
 ```rust
 #[derive(Clone, Debug, Default)]
 pub struct StrategyPreparationConfig {
-    realized_volatility_max_source_age_ms: BTreeMap<String, u64>,
+    realized_volatility_max_source_age_ms: Option<BTreeMap<String, u64>>,
     gate_provider_max_age_ms: BTreeMap<String, u64>,
     chainlink_feed_instrument_ids: BTreeSet<String>,
+}
+
+pub enum PreparedRealizedVolatilitySurface {
+    SurfacesAbsent,
+    SurfaceUnknown,
+    Resolved { max_source_age_ms: u64 },
 }
 ```
 
@@ -191,13 +197,13 @@ Implement `from_root` by copying only:
 
 ```rust
 pub fn from_root(root: &BoltV3RootConfig) -> Self {
-    let realized_volatility_max_source_age_ms = root
-        .realized_volatility_surfaces
-        .as_ref()
-        .into_iter()
-        .flat_map(|surfaces| surfaces.iter())
-        .map(|(id, surface)| (id.clone(), surface.policy.max_source_age_ms))
-        .collect();
+    let realized_volatility_max_source_age_ms =
+        root.realized_volatility_surfaces.as_ref().map(|surfaces| {
+            surfaces
+                .iter()
+                .map(|(id, surface)| (id.clone(), surface.policy.max_source_age_ms))
+                .collect()
+        });
     let gate_provider_max_age_ms = root
         .gate_providers
         .as_ref()
@@ -228,10 +234,14 @@ pub fn from_root(root: &BoltV3RootConfig) -> Self {
 Expose only narrow queries:
 
 ```rust
-pub fn realized_volatility_max_source_age_ms(&self, id: &str) -> Option<u64>;
+pub fn realized_volatility_surface(&self, id: &str)
+    -> PreparedRealizedVolatilitySurface;
 pub fn gate_provider_max_age_ms(&self, id: &str) -> Option<u64>;
 pub fn has_chainlink_feed_binding(&self, instrument_id: &str) -> bool;
 ```
+
+The realized-volatility query must distinguish an absent root section from an
+unknown ID in a present section; do not collapse those states into one `None`.
 
 - [ ] **Step 4: Remove loaded config from the callback context**
 
@@ -272,9 +282,19 @@ pub fn raw_taker_config(
 Replace all three full-config reads:
 
 ```rust
-let realized_volatility_max_source_age_ms = preparation_config
-    .realized_volatility_max_source_age_ms(realized_volatility_surface_id)
-    .ok_or_else(/* preserve the current typed error */)?;
+let realized_volatility_max_source_age_ms = match preparation_config
+    .realized_volatility_surface(realized_volatility_surface_id)
+{
+    PreparedRealizedVolatilitySurface::SurfacesAbsent => {
+        return Err(/* preserve the absent-section typed error */);
+    }
+    PreparedRealizedVolatilitySurface::SurfaceUnknown => {
+        return Err(/* preserve the unknown-ID typed error */);
+    }
+    PreparedRealizedVolatilitySurface::Resolved { max_source_age_ms } => {
+        max_source_age_ms
+    }
+};
 
 let resolution_venue = client_routes
     .venue(&resolution_data.data_client_id)

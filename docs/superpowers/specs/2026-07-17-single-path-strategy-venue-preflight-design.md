@@ -74,6 +74,11 @@ those non-secret, non-client values into an immutable preparation snapshot.
 The snapshot contains no root config, client table, client block, credentials,
 account identity, or alternate routing information.
 
+The snapshot preserves whether the realized-volatility surfaces section was
+absent, present without the requested ID, or present with the resolved policy.
+Those states remain distinct fail-closed diagnostics; none is a fallback for
+another.
+
 Runtime bindings and Backtester raw mapping consume this snapshot plus prepared
 routes. Adding another raw-mapping dependency requires extending the explicit
 snapshot rather than restoring access to the full loaded configuration.
@@ -160,7 +165,7 @@ than deferred configuration validation.
 | A duplicate or existing NT strategy ID/order tag is discovered during commit | Prepared IDs/tags and existing trader IDs/tags are checked before mutation | Duplicate-batch and existing-tag regressions assert zero new registrations |
 | Settlement identity uses another route | Settlement consumes the prepared execution client and venue before fee-provider construction | Account/currency failures return typed errors and execute no commit |
 | Secrets or capability handles leak to bindings | Resolved credentials are constructor-only; prepared route and capability fields stay private | Structural tests reject any stored `ResolvedBoltV3Secrets` and undeclared resource access |
-| Missing configuration is silently replaced | Every absent client/account/currency is an error | Fail-closed tests cover each missing identity with no fallback or unwind |
+| Missing configuration is silently replaced | Every absent client/account/currency is an error; realized-volatility surface lookup preserves absent-section, unknown-ID, and resolved states | Fail-closed tests cover each missing identity and all three surface states with no fallback or unwind |
 | Documentation reintroduces the retired ordering | Design and implementation plan show settlement before fee provider and no `binding_message` wrapper | Targeted text checks and internal adversarial review |
 
 ## Verification

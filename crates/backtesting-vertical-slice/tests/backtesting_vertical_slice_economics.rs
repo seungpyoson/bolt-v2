@@ -97,3 +97,12 @@ fn historical_snapshot_rejects_class_sign_disagreement() {
     let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("timeline is valid");
     assert!(adapter.quote(&request(100)).is_err());
 }
+
+#[test]
+fn historical_fee_free_snapshot_is_valid() {
+    let mut fixture = snapshot();
+    fixture.components.clear();
+    let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("fee-free snapshot");
+
+    assert!(adapter.quote(&request(100)).unwrap().components.is_empty());
+}

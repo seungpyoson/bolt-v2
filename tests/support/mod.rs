@@ -145,6 +145,20 @@ pub fn sample_economics_admission(
         rust_decimal::Decimal::ONE,
         "test-core-credit",
         "test-credit-formula",
+        u64::MAX,
+    )
+}
+
+pub fn sample_expired_economics_admission(
+    base_reservation_notional: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    sample_economics_admission_with_component(
+        base_reservation_notional,
+        bolt_v2::economics::EconomicClass::Credit,
+        rust_decimal::Decimal::ONE,
+        "test-core-credit",
+        "test-credit-formula",
+        2,
     )
 }
 
@@ -154,10 +168,11 @@ pub fn sample_economics_admission_with_debit(
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     sample_economics_admission_with_component(
         base_reservation_notional,
-        bolt_v2::economics::EconomicClass::Debit,
+        bolt_v2::economics::EconomicClass::Charge,
         -debit,
         "test-core-debit",
         "test-debit-formula",
+        u64::MAX,
     )
 }
 
@@ -167,12 +182,12 @@ fn sample_economics_admission_with_component(
     point_effect: rust_decimal::Decimal,
     component_id: &str,
     formula_id: &str,
+    valid_until_ns: u64,
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     use bolt_v2::economics::*;
     use rust_decimal::Decimal;
 
     let requested_at_ns = 1;
-    let valid_until_ns = 2;
     let reporting_unit = NativeUnitId::new("test-reporting-unit").expect("valid test unit");
     let decision_correlation_id =
         DecisionCorrelationId::new("test-decision").expect("valid test decision id");

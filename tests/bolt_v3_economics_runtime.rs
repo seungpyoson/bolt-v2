@@ -58,6 +58,35 @@ fn quote_admission_reserves_authoritative_debits_once() {
     let admission = runtime.quote_admission(intent(request)).unwrap();
     assert_eq!(admission.reservation_notional(), decimal("5.25"));
     assert_eq!(admission.net_edge().core_net_edge(), decimal("1.75"));
+    assert!(
+        admission
+            .source_snapshot_ids()
+            .contains(&SnapshotId::new("basis-snapshot").unwrap())
+    );
+}
+
+#[test]
+fn non_positive_core_net_edge_cannot_create_admission() {
+    let request = canonical_fixture_request();
+    let component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    let authority = component.source.clone();
+    let runtime =
+        BoltV3EconomicsRuntime::from_offline_adapter(Arc::new(FixedVenue(VenueQuoteEstimate {
+            authority,
+            components: vec![component],
+        })));
+    let mut admission_intent = intent(request);
+    admission_intent.gross_expected_value = decimal("0.25");
+
+    assert_eq!(
+        runtime.quote_admission(admission_intent),
+        Err(EconomicsUnavailable::NonPositiveNetEdge)
+    );
 }
 
 #[test]

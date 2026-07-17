@@ -115,3 +115,57 @@ legs = []
             .any(|error| matches!(error, EconomicsConfigError::InactiveDataClient { .. }))
     );
 }
+
+#[test]
+fn non_identity_valuation_route_requires_connected_legs() {
+    let route = r#"
+[valuation.routes.usdc]
+from_unit = "USDC"
+to_currency = "pUSD"
+valuation_policy = "configured-market"
+client_id = "fx-data"
+instrument_id = "USDC-pUSD"
+orientation = "base_to_quote"
+max_age_ms = 1000
+legs = []
+"#;
+    let source = valid_config().replace("[valuation]\nroutes = {}", route);
+    let config = parse(&source).unwrap();
+    let errors = config.validate(&reporting(), &BTreeSet::from(["fx-data".to_string()]));
+
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        EconomicsConfigError::DisconnectedValuationRoute { .. }
+    )));
+}
+
+#[test]
+fn every_valuation_leg_requires_an_active_configured_source() {
+    let route = r#"
+[valuation.routes.token]
+from_unit = "TOKEN"
+to_currency = "pUSD"
+valuation_policy = "configured-market"
+client_id = "fx-data"
+instrument_id = "TOKEN-pUSD"
+orientation = "base_to_quote"
+max_age_ms = 1000
+legs = [
+  { from_unit = "TOKEN", to_unit = "pUSD", client_id = "inactive-leg", instrument_id = "", orientation = "base_to_quote", max_age_ms = 1000 }
+]
+"#;
+    let source = valid_config().replace("[valuation]\nroutes = {}", route);
+    let config = parse(&source).unwrap();
+    let errors = config.validate(&reporting(), &BTreeSet::from(["fx-data".to_string()]));
+
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        EconomicsConfigError::InactiveDataClient { client_id, .. } if client_id == "inactive-leg"
+    )));
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        EconomicsConfigError::InvalidText {
+            field: bolt_v2::bolt_v3_economics_config::EconomicsConfigField::ValuationInstrument
+        }
+    )));
+}

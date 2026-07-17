@@ -1568,6 +1568,7 @@ pub enum BoltV3AdmissionOutcome {
     RejectedKillSwitchLatched,
     RejectedSubmitLifecycleDisallowed,
     RejectedLossGovernorHalted,
+    RejectedEconomicsQuoteExpired,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedInvalidRiskReducingExitProof,

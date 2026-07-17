@@ -195,6 +195,7 @@ impl PolymarketEconomicsAdapter {
                 if !amount.is_zero() {
                     components.push(self.component(
                         request,
+                        ExecutionKind::ProtocolTrading,
                         self.config.platform_component_id.clone(),
                         self.config.platform_formula_id.clone(),
                         self.config.platform_rate_factor_id.clone(),
@@ -230,6 +231,7 @@ impl PolymarketEconomicsAdapter {
                 if !amount.is_zero() {
                     components.push(self.component(
                         request,
+                        ExecutionKind::AttachedRouting,
                         self.config.builder_component_id.clone(),
                         self.config.builder_formula_id.clone(),
                         self.config.builder_rate_factor_id.clone(),
@@ -304,6 +306,7 @@ impl PolymarketEconomicsAdapter {
     fn component(
         &self,
         request: &EconomicQuoteRequest,
+        execution_kind: ExecutionKind,
         component_id: crate::economics::EconomicComponentId,
         formula_id: FormulaId,
         factor_id: FormulaId,
@@ -318,7 +321,7 @@ impl PolymarketEconomicsAdapter {
         Ok(EstimatedEconomicComponent {
             component_id,
             class: EconomicClass::Charge,
-            kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
+            kind: EconomicKind::Execution(execution_kind),
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },

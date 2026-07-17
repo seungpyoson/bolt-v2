@@ -38,6 +38,15 @@ pub fn validate_and_aggregate_quote(
             });
         }
         validate_source_timeline(request, &component)?;
+        if !matches!(
+            (
+                component.class,
+                component.point_effect.amount().is_sign_negative()
+            ),
+            (super::EconomicClass::Charge, true) | (super::EconomicClass::Credit, false)
+        ) {
+            return Err(EconomicsUnavailable::EconomicClassSignMismatch);
+        }
         if component.source.valid_until_ns < request.requested_at_ns {
             if component.admission_treatment == AdmissionTreatment::ForecastOnly {
                 forecast_complete = false;
@@ -54,6 +63,7 @@ pub fn validate_and_aggregate_quote(
             valuations,
             request,
         )?;
+        let point_valid_until_ns = point_valuation.valid_until_ns;
         forecast_total += point_valuation.normalized_amount;
         component.normalized = Some(point_valuation.clone());
         normalizations.push(point_valuation);
@@ -69,6 +79,9 @@ pub fn validate_and_aggregate_quote(
                     &mut required_valid_until_ns,
                     component.source.valid_until_ns,
                 );
+                if let Some(valid_until_ns) = point_valid_until_ns {
+                    required_valid_until_ns = required_valid_until_ns.min(valid_until_ns);
+                }
             }
             AdmissionTreatment::RiskBound { .. } => {
                 let bound = component.debit_risk_bound.as_ref().ok_or_else(|| {

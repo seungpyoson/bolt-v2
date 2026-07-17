@@ -86,6 +86,9 @@ impl BoltV3EconomicsRuntime {
         let quote =
             validate_and_aggregate_quote(&intent.request, estimate, intent.valuations.as_slice())?;
         let net_edge = fold_net_edge(intent.gross_expected_value, &quote, intent.edge_basis)?;
+        if net_edge.core_net_edge() <= Decimal::ZERO {
+            return Err(EconomicsUnavailable::NonPositiveNetEdge);
+        }
         let debit_reservation = (-quote.core_total()).max(Decimal::ZERO);
         let reservation_notional = intent.base_reservation_notional + debit_reservation;
         let mut source_snapshot_ids = vec![authority_snapshot_id];
@@ -95,6 +98,13 @@ impl BoltV3EconomicsRuntime {
                 .iter()
                 .map(|component| component.source.snapshot_id.clone()),
         );
+        source_snapshot_ids.extend(
+            quote
+                .normalizations()
+                .iter()
+                .flat_map(|normalization| normalization.source_snapshot_ids.iter().cloned()),
+        );
+        source_snapshot_ids.extend(net_edge.basis().source_snapshot_ids.iter().cloned());
         source_snapshot_ids.sort();
         source_snapshot_ids.dedup();
         Ok(EconomicsAdmission {
@@ -132,7 +142,7 @@ pub(crate) fn test_economics_admission(base_reservation_notional: Decimal) -> Ec
     }
 
     let requested_at_ns = 1;
-    let valid_until_ns = 2;
+    let valid_until_ns = u64::MAX;
     let reporting_unit = NativeUnitId::new("test-reporting-unit").expect("valid test unit");
     let decision_correlation_id =
         DecisionCorrelationId::new("test-decision").expect("valid test decision id");

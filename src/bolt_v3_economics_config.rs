@@ -310,7 +310,11 @@ impl ValuationConfig {
                     route_id: route_id.clone(),
                 });
             }
-            errors.extend(validate_valuation_legs(route_id, route));
+            errors.extend(validate_valuation_legs(
+                route_id,
+                route,
+                active_data_clients,
+            ));
         }
         errors
     }
@@ -319,14 +323,35 @@ impl ValuationConfig {
 fn validate_valuation_legs(
     route_id: &str,
     route: &ValuationRouteConfig,
+    active_data_clients: &BTreeSet<String>,
 ) -> Vec<EconomicsConfigError> {
     let mut errors = Vec::new();
     if route.legs.is_empty() {
+        if route.from_unit != route.to_currency {
+            errors.push(EconomicsConfigError::DisconnectedValuationRoute {
+                route_id: route_id.to_string(),
+            });
+        }
         return errors;
     }
     let mut current = route.from_unit.as_str();
     let mut visited = BTreeSet::from([current]);
     for leg in &route.legs {
+        for (value, field) in [
+            (&leg.client_id, EconomicsConfigField::ValuationClient),
+            (
+                &leg.instrument_id,
+                EconomicsConfigField::ValuationInstrument,
+            ),
+        ] {
+            require_text(value, field, &mut errors);
+        }
+        if !active_data_clients.contains(&leg.client_id) {
+            errors.push(EconomicsConfigError::InactiveDataClient {
+                route_id: route_id.to_string(),
+                client_id: leg.client_id.clone(),
+            });
+        }
         if leg.from_unit != current {
             errors.push(EconomicsConfigError::DisconnectedValuationRoute {
                 route_id: route_id.to_string(),

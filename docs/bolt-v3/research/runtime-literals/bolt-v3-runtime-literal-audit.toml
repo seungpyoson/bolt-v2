@@ -19661,6 +19661,14 @@ reason = "Stable evidence key label for a notional-cap submit-admission rejectio
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
+literal = '''"rejected_economics_quote_expired"'''
+context = '''BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => "rejected_economics_quote_expired",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key for a submit rejected because its sealed economics quote expired; the quote validity timestamp is authoritative and this label cannot configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
 literal = '''"rejected_invalid_risk_reducing_exit_proof"'''
 context = '''"rejected_invalid_risk_reducing_exit_proof"'''
 classification = "submit_admission_order_reject_outcome_key"

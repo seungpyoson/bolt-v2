@@ -1,6 +1,7 @@
 use bolt_v2::economics::{
-    AdmissionTreatment, EconomicsCapabilityHealth, EconomicsUnavailable, EdgeBasisEvidence,
-    RiskBoundAuthority, fold_net_edge,
+    AdmissionTreatment, EconomicClass, EconomicsCapabilityHealth, EconomicsUnavailable,
+    EdgeBasisEvidence, RiskBoundAuthority, SignedNativeEffect, SnapshotId, ValuationEvidence,
+    ValuationRouteId, fold_net_edge,
 };
 
 use super::economics_support::{
@@ -123,4 +124,33 @@ fn distinct_native_units_require_explicit_valuation() {
         quote_fixture([component]),
         Err(EconomicsUnavailable::MissingValuation { .. })
     ));
+}
+
+#[test]
+fn component_class_must_match_its_signed_effect() {
+    let mut component = guaranteed(decimal("-1.00"));
+    component.class = EconomicClass::Credit;
+
+    assert_eq!(
+        quote_fixture([component]),
+        Err(EconomicsUnavailable::EconomicClassSignMismatch)
+    );
+}
+
+#[test]
+fn required_valuation_expiry_limits_quote_validity() {
+    let mut component = guaranteed(decimal("-1.00"));
+    component.point_effect =
+        SignedNativeEffect::currency(decimal("-1.00"), native_unit("USDC")).unwrap();
+    component.normalized = Some(ValuationEvidence {
+        native_effect: component.point_effect.clone(),
+        normalized_amount: decimal("-1.00"),
+        reporting_unit: native_unit("pUSD"),
+        route_id: Some(ValuationRouteId::new("configured-route").unwrap()),
+        source_snapshot_ids: vec![SnapshotId::new("valuation-snapshot").unwrap()],
+        valued_at_ns: 100,
+        valid_until_ns: Some(105),
+    });
+
+    assert_eq!(quote_fixture([component]).unwrap().valid_until_ns(), 105);
 }

@@ -244,8 +244,7 @@ impl VenueEconomicsAdapter for ReplayEconomicsAdapter {
 }
 
 fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), EconomicsUnavailable> {
-    if snapshot.components.is_empty()
-        || snapshot.source_at_ns > snapshot.fetched_at_ns
+    if snapshot.source_at_ns > snapshot.fetched_at_ns
         || snapshot.fetched_at_ns > snapshot.valid_until_ns
         || snapshot.edge_basis.valid_until_ns < snapshot.source_at_ns
         || decimal(&snapshot.edge_basis.normalized_amount)? <= Decimal::ZERO

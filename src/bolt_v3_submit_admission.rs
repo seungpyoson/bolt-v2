@@ -128,6 +128,7 @@ fn admission_outcome_key(outcome: &BoltV3AdmissionOutcome) -> &'static str {
             "rejected_submit_lifecycle_disallowed"
         }
         BoltV3AdmissionOutcome::RejectedLossGovernorHalted => "rejected_loss_governor_halted",
+        BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => "rejected_economics_quote_expired",
         BoltV3AdmissionOutcome::RejectedNonPositiveNotional => "rejected_non_positive_notional",
         BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => "rejected_notional_cap_exceeded",
         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
@@ -1667,6 +1668,9 @@ impl BoltV3SubmitAdmissionState {
                     reasons: evaluation.loss_halt_reasons,
                 })
             }
+            BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => {
+                Err(BoltV3SubmitAdmissionError::EconomicsQuoteExpired)
+            }
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                 Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
             }
@@ -2044,6 +2048,9 @@ impl BoltV3SubmitAdmissionState {
                     reasons: evaluation.loss_halt_reasons.clone(),
                 })
             }
+            BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => {
+                Err(BoltV3SubmitAdmissionError::EconomicsQuoteExpired)
+            }
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                 Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
             }
@@ -2290,6 +2297,12 @@ impl BoltV3SubmitAdmissionState {
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> BoltV3SubmitAdmissionEvaluation {
+        if now_ns > request.economics_admission.quote().valid_until_ns() {
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired,
+                now_ns,
+            );
+        }
         if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 Self::evaluate_kill_switch_forced_reduction(inner, request),
@@ -2501,6 +2514,7 @@ fn basket_outcome_from_submit_outcome(
         BoltV3AdmissionOutcome::RejectedKillSwitchLatched
         | BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed
         | BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+        | BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired
         | BoltV3AdmissionOutcome::RejectedNonPositiveNotional
         | BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
         | BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof
@@ -2558,6 +2572,9 @@ fn submit_admission_error_from_outcome(
             BoltV3SubmitAdmissionError::LossGovernorHalted {
                 reasons: Vec::new(),
             }
+        }
+        BoltV3AdmissionOutcome::RejectedEconomicsQuoteExpired => {
+            BoltV3SubmitAdmissionError::EconomicsQuoteExpired
         }
         BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
             BoltV3SubmitAdmissionError::NonPositiveNotional
@@ -3117,6 +3134,7 @@ pub struct BoltV3SubmitAdmissionRequestInput<'a> {
 pub struct BoltV3OrderEconomicsFacts {
     pub price: Decimal,
     pub quantity: Decimal,
+    pub planned_fill_quantity: Decimal,
     pub base_reservation_notional: Decimal,
 }
 
@@ -3180,9 +3198,29 @@ pub fn order_economics_facts(
     } else {
         base_quantity_admission_notional(price, quantity)
     };
+    let planned_fill_quantity = if input.order.is_quote_quantity() {
+        let instrument = input
+            .valuation
+            .instrument
+            .expect("quote-quantity instrument context was required above");
+        anyhow::ensure!(
+            !instrument.is_inverse(),
+            "bolt-v3 economics invalid inverse quote-quantity mapping (client_order_id={})",
+            client_order_id
+        );
+        quantity.checked_div(price).with_context(|| {
+            format!(
+                "bolt-v3 economics failed to derive planned fill quantity for client_order_id={}",
+                client_order_id
+            )
+        })?
+    } else {
+        quantity
+    };
     Ok(BoltV3OrderEconomicsFacts {
         price,
         quantity,
+        planned_fill_quantity,
         base_reservation_notional,
     })
 }
@@ -3215,7 +3253,10 @@ pub fn build_submit_admission_request_from_order(
     );
     anyhow::ensure!(
         quote_request.planned_fill_legs.as_slice()
-            == [crate::economics::PlannedFillLeg { price, quantity }],
+            == [crate::economics::PlannedFillLeg {
+                price,
+                quantity: facts.planned_fill_quantity,
+            }],
         "bolt-v3 economics admission planned fill does not match final order"
     );
     anyhow::ensure!(
@@ -3506,6 +3547,7 @@ pub enum BoltV3SubmitAdmissionError {
     LossGovernorHalted {
         reasons: Vec<LossHaltReason>,
     },
+    EconomicsQuoteExpired,
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
@@ -3554,6 +3596,9 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                     f,
                     "bolt-v3 submit admission loss governor halted: {reasons}"
                 )
+            }
+            Self::EconomicsQuoteExpired => {
+                write!(f, "bolt-v3 submit admission economics quote is expired")
             }
             Self::CountCapExhausted => {
                 write!(f, "bolt-v3 submit admission order count cap is exhausted")

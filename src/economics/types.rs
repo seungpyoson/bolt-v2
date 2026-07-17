@@ -566,6 +566,7 @@ pub enum EconomicsUnavailable {
     },
     ValuationEvidenceMismatch,
     InvalidEdgeBasis,
+    NonPositiveNetEdge,
     StaleEdgeBasis {
         valid_until_ns: u64,
     },

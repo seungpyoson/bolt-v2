@@ -28,6 +28,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
     OrderValuationContext, build_submit_admission_request_from_order,
     conservative_quote_quantity_admission_notional, market_style_admission_ceiling_notional,
+    order_economics_facts,
 };
 use nautilus_model::data::QuoteTick;
 use nautilus_model::enums::{AssetClass, OrderSide, PositionSide, TimeInForce};
@@ -270,6 +271,65 @@ fn order_valuation_context_selects_quote_quantity_prices_by_order_shape() {
 }
 
 #[test]
+fn quote_quantity_order_maps_quote_amount_to_canonical_fill_quantity() {
+    let instrument_id = InstrumentId::from("INSTRUMENT.SOURCE");
+    let instrument = binary_option_with_max_price(instrument_id);
+    let price = Price::new(0.50, 2);
+    let order = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            instrument_id,
+            ClientOrderId::from("O-19700101-000000-001-A9-40"),
+            OrderSide::Buy,
+            Quantity::new(25.0, 2),
+            price,
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("quote-quantity limit order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        price.to_string(),
+        &order,
+    );
+    let input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: "configured-execution-client",
+        intent: &intent,
+        order: &order,
+        valuation: OrderValuationContext {
+            last_quote: None,
+            last_trade: None,
+            instrument: Some(&instrument),
+        },
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        risk_reducing_exit_position: None,
+    };
+
+    let facts = order_economics_facts(&input).expect("canonical economics facts");
+
+    assert_eq!(facts.planned_fill_quantity, Decimal::from(50));
+}
+
+#[test]
 fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
     let instrument_id = InstrumentId::from("INSTRUMENT.HYPERLIQUID");
     let instrument = binary_option_with_max_price(instrument_id);
@@ -404,6 +464,22 @@ fn ungated_submit_admission_allows_production_submit() {
         .commit_submitted();
     assert!(nt_submit_called, "NT submit may be reached after admission");
     assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn expired_economics_quote_rejects_before_capacity_is_consumed() {
+    let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
+    let mut request = submit_request(Decimal::ONE);
+    request.economics_admission = support::sample_expired_economics_admission(Decimal::ONE);
+
+    let error = admission
+        .admit_at(&request, 3)
+        .expect_err("expired economics must fail closed");
+
+    assert_eq!(error, BoltV3SubmitAdmissionError::EconomicsQuoteExpired);
+    assert_eq!(admission.admitted_order_count(), 0);
 }
 
 #[test]

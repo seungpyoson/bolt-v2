@@ -5,8 +5,9 @@ use bolt_v2::{
         PolymarketMarketInfoSnapshot,
     },
     economics::{
-        EconomicComponentId, FormulaId, LiquidityRoleAssumption, RoutingAttachment,
-        RoutingAttachmentId, SourceId, VenueEconomicsAdapter, validate_and_aggregate_quote,
+        EconomicComponentId, EconomicKind, ExecutionKind, FormulaId, LiquidityRoleAssumption,
+        RoutingAttachment, RoutingAttachmentId, SourceId, VenueEconomicsAdapter,
+        validate_and_aggregate_quote,
     },
 };
 
@@ -69,6 +70,10 @@ fn taker_only_platform_fee_does_not_hide_attached_maker_builder_charge() {
     let components = adapter.quote_components(&request).unwrap();
     assert_eq!(components.len(), 1);
     assert_eq!(components[0].point_effect.amount(), decimal("-0.30"));
+    assert_eq!(
+        components[0].kind,
+        EconomicKind::Execution(ExecutionKind::AttachedRouting)
+    );
 }
 
 #[test]

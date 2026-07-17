@@ -148,6 +148,26 @@ fn builder_rate_above_account_approval_fails_closed() {
 }
 
 #[test]
+fn negative_hip3_deployer_scale_fails_closed() {
+    let product = HyperliquidProductEconomicsSnapshot::from_json(
+        r#"{
+            "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
+            "validUntilNs":110,"productKind":"perp","stablePair":false,
+            "alignedQuoteOrCollateral":false,"hip3":true,"deployerScale":-0.1,
+            "growthMode":false,"builderProfileId":"builder-profile",
+            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "spotDustAuthorityComplete":false
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        HyperliquidEconomicsAdapter::try_new(config(), user_fees("0"), product).err(),
+        Some(HyperliquidEconomicsError::InvalidFeeSurface)
+    );
+}
+
+#[test]
 fn user_fees_parser_requires_complete_account_surface() {
     let incomplete = r#"{
         "snapshotId":"user-fees-snapshot","accountId":"account",

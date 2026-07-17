@@ -151,6 +151,9 @@ impl HyperliquidEconomicsAdapter {
         product: HyperliquidProductEconomicsSnapshot,
     ) -> Result<Self, HyperliquidEconomicsError> {
         validate_authority_snapshots(&user_fees, &product)?;
+        if product.deployer_scale < Decimal::ZERO {
+            return Err(HyperliquidEconomicsError::InvalidFeeSurface);
+        }
         let base_rates = match product.product_kind {
             HyperliquidProductKind::Perp => ProtocolRatePlan {
                 maker: user_fees.perp_maker_base_rate,

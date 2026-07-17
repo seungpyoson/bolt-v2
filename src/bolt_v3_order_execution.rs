@@ -123,7 +123,7 @@ impl BoltV3OrderRoutingHandle {
             liquidity_role: intent.liquidity_role,
             planned_fill_legs: vec![PlannedFillLeg {
                 price: facts.price,
-                quantity: facts.quantity,
+                quantity: facts.planned_fill_quantity,
             }],
             routing: RoutingContext {
                 attached_charge: None,

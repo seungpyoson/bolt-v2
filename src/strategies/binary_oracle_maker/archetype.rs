@@ -47,7 +47,7 @@ use crate::bolt_v3_operator_artifacts::{
 };
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
-    StrategyRuntimeCapabilities, assemble_strategy_build_context, venue_for_client,
+    StrategyRuntimeCapabilities, assemble_strategy_build_context,
 };
 use crate::strategies::binary_oracle_maker::binding::MakerMarketDeclaration;
 use crate::strategies::binary_oracle_maker::{BinaryOracleMakerBuilder, KEY};
@@ -736,8 +736,6 @@ pub fn register_runtime_strategy(
     node: &mut nautilus_live::node::LiveNode,
     context: StrategyRegistrationContext<'_>,
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
-    validate_maker_execution_client_venue(context.strategy, &context.loaded.root)
-        .map_err(|message| binding_message(&context, message))?;
     let raw =
         raw_maker_config(context.strategy).map_err(|message| binding_message(&context, message))?;
     let build_context = assemble_strategy_build_context(&context)?;
@@ -751,20 +749,6 @@ pub fn register_runtime_strategy(
             node.kernel().trader(),
         )
         .map_err(|error| binding_message(&context, error.to_string()))
-}
-
-fn validate_maker_execution_client_venue(
-    strategy: &LoadedStrategy,
-    root: &BoltV3RootConfig,
-) -> Result<(), String> {
-    let execution_client_id = strategy.config.execution_client_id.as_str();
-    venue_for_client(root, execution_client_id)
-        .map(|_| ())
-        .ok_or_else(|| {
-            format!(
-                "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-            )
-        })
 }
 
 /// Build the flat raw config table the maker consumes. The NautilusTrader
@@ -2082,43 +2066,6 @@ mod tests {
             relative_path: "maker.toml".to_string(),
             config,
         }
-    }
-
-    #[test]
-    fn maker_execution_client_venue_validation_accepts_a_registered_client() {
-        let root_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bolt_v3/root.toml");
-        let loaded = crate::bolt_v3_config::load_bolt_v3_config(&root_path)
-            .expect("fixture root config should load");
-        let execution_client_id = loaded
-            .root
-            .clients
-            .keys()
-            .next()
-            .expect("fixture should register at least one client")
-            .clone();
-        let mut strategy = loaded_strategy_from(valid_strategy_config());
-        strategy.config.execution_client_id =
-            nautilus_model::identifiers::ClientId::from(execution_client_id.as_str());
-
-        assert!(validate_maker_execution_client_venue(&strategy, &loaded.root).is_ok());
-    }
-
-    #[test]
-    fn maker_execution_client_venue_validation_rejects_an_unregistered_client() {
-        let root_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bolt_v3/root.toml");
-        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(&root_path)
-            .expect("fixture root config should load");
-        loaded.root.clients.clear();
-        let strategy = loaded_strategy_from(valid_strategy_config());
-
-        let error = validate_maker_execution_client_venue(&strategy, &loaded.root)
-            .expect_err("an unregistered maker execution client must fail closed");
-        assert!(
-            error.contains(strategy.config.execution_client_id.as_str()),
-            "{error}"
-        );
     }
 
     #[test]

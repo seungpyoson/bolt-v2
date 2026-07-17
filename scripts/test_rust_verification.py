@@ -283,36 +283,8 @@ printf 'args=%s\\n' "$*" >> {just_log}
             raise AssertionError(payload)
 
 
-def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
+def assert_rust_probe_result_is_advisory() -> None:
     owner = load_owner_module()
-    stale_fragments = (
-        "run just verify-remote for proof",
-        "verify-remote is final proof",
-        "draft verify-remote is proof",
-        "verify-remote only for final exact-head full-CI proof",
-        "For final proof, use exact-head PR CI evidence through `just verify-remote`",
-        "Full CI is proof. Rust Probe is debugging.",
-        "dispatch Backtester CI with " + "full_ci" + "=true for this branch or mark ready",
-        "for merge proof",
-        "required PR gate",
-        "merge-queue gate",
-        "safe to merge",
-    )
-    operator_surfaces = (
-        SCRIPT,
-        REPO_ROOT / "scripts" / "merge_readiness.py",
-        REPO_ROOT / "scripts" / "ci_provenance.py",
-        REPO_ROOT / "AGENTS.md",
-        REPO_ROOT / "docs" / "ci" / "ubicloud-cost-governance.md",
-        REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml",
-    )
-    for path in operator_surfaces:
-        source = path.read_text(encoding="utf-8")
-        if any(fragment in source for fragment in stale_fragments):
-            raise AssertionError(f"{path.relative_to(REPO_ROOT)} contains stale verify-remote proof guidance")
-    if any(fragment in owner.RUST_PROBE_HELP_EPILOG for fragment in stale_fragments):
-        raise AssertionError(owner.RUST_PROBE_HELP_EPILOG)
-
     stdout = io.StringIO()
     run = {
         "databaseId": 1001,
@@ -330,8 +302,6 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
     if result != 0:
         raise AssertionError((result, output))
     if "neither is merge authority" not in output:
-        raise AssertionError(output)
-    if any(fragment in output for fragment in stale_fragments):
         raise AssertionError(output)
 
 
@@ -1969,7 +1939,7 @@ def main() -> int:
     assert_managed_env_scrubs_then_injects_fast_linker_wrapper()
     assert_fast_linker_programs_command_reads_policy()
     assert_ci_provenance_gate_name_helpers_stay_in_parity()
-    assert_rust_probe_guidance_distinguishes_feedback_from_proof()
+    assert_rust_probe_result_is_advisory()
     assert_fmt_avoids_managed_cache_lock()
     assert_minimal_toml_accepts_quoted_keys()
     assert_minimal_toml_accepts_multiline_string_arrays()

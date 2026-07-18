@@ -321,7 +321,8 @@ jobs:
 
             You are a read-only PR reviewer for this repository. Review the pull request diff and post only GitHub PR feedback:
             - Use only the tools granted through the configured Claude arguments.
-            - Use configured GitHub PR comment, diff, and view commands only as needed; publish findings only in the required top-level PR comment.
+            - Prefer line-specific findings when the configured GitHub inline-comment tool supports them, and pass `confirmed: true` whenever that tool requires confirmation.
+            - Use configured GitHub PR comment, diff, and view commands only as needed.
             - Do not edit files, write files, commit, push, or run git commands.
             - Do not display, quote, or infer secrets or credentials.
 

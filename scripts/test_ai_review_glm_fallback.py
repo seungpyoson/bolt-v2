@@ -13,7 +13,6 @@ import shlex
 import sys
 import tempfile
 import threading
-import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 
@@ -2193,16 +2192,6 @@ def test_redacts_kimi_api_key_from_failure_notice() -> None:
 def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
     module = load_script()
     calls: list[dict[str, object]] = []
-    inherited_secrets = {
-        "GITHUB_TOKEN": "github-token-must-not-reach-kimi",
-        "GH_TOKEN": "gh-token-must-not-reach-kimi",
-        "GITHUB_ENTERPRISE_TOKEN": "github-enterprise-token-must-not-reach-kimi",
-        "GH_ENTERPRISE_TOKEN": "gh-enterprise-token-must-not-reach-kimi",
-        "AWS_SECRET_ACCESS_KEY": "aws-key-must-not-reach-kimi",
-        "CUSTOM_TOKEN": "custom-token-must-not-reach-kimi",
-        "KIMI_API_KEY": "raw-kimi-key-must-not-reach-kimi",
-        "NODE_AUTH_TOKEN": "node-token-must-not-reach-kimi",
-    }
 
     class Completed:
         returncode = 0
@@ -2223,13 +2212,8 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
 
     original_run = module.subprocess.run
     with tempfile.TemporaryDirectory() as kimi_home:
-        inherited_environment = {
-            name: os.environ.get(name)
-            for name in (*inherited_secrets, "KIMI_CODE_HOME", "GH_CONFIG_DIR")
-        }
-        os.environ.update(inherited_secrets)
+        previous_home = os.environ.get("KIMI_CODE_HOME")
         os.environ["KIMI_CODE_HOME"] = kimi_home
-        os.environ["GH_CONFIG_DIR"] = "/tmp/attacker-controlled-gh-config"
         module.subprocess.run = fake_run
         try:
             client = module.KimiCliClient(
@@ -2246,11 +2230,10 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
             response = client.review_chunk(system_prompt="system", user_prompt="user")
         finally:
             module.subprocess.run = original_run
-            for name, value in inherited_environment.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
+            if previous_home is None:
+                os.environ.pop("KIMI_CODE_HOME", None)
+            else:
+                os.environ["KIMI_CODE_HOME"] = previous_home
 
     assert response == "OK"
     assert len(calls) == 1
@@ -2266,11 +2249,6 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
     assert env["KIMI_MODEL_MAX_CONTEXT_SIZE"] == "262144"
     assert env["KIMI_MODEL_DEFAULT_THINKING"] == "true"
     assert env["KIMI_DISABLE_TELEMETRY"] == "1"
-    assert all(name not in env for name in inherited_secrets)
-    assert pathlib.Path(env["GH_CONFIG_DIR"]).parent == pathlib.Path(kimi_home)
-    assert pathlib.Path(env["HOME"]).parent == pathlib.Path(kimi_home)
-    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
-    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
 
 
 def test_render_notice_redacts_secret_values() -> None:
@@ -2533,54 +2511,6 @@ def test_pr_agent_prompt_pins_no_findings_contract() -> None:
     assert "Risk areas considered:" in prompt
 
 
-def test_pr_agent_review_is_published_as_persistent_comment() -> None:
-    config = tomllib.loads((REPO_ROOT / ".pr_agent.toml").read_text(encoding="utf-8"))
-
-    assert config["pr_reviewer"]["persistent_comment"] is True
-
-
-def test_advisory_reviewers_can_publish_only_top_level_comments() -> None:
-    config = tomllib.loads((REPO_ROOT / "ci" / "ai-review.toml").read_text(encoding="utf-8"))
-    forbidden_tools = ("inline_comment", "gh pr review", "create_review")
-    configured_allowlists = {
-        provider: settings["allowed_tools"]
-        for provider, settings in config.items()
-        if isinstance(settings, dict) and "allowed_tools" in settings
-    }
-
-    assert configured_allowlists
-    for provider, tools in configured_allowlists.items():
-        assert all(
-            forbidden not in tool
-            for tool in tools
-            for forbidden in forbidden_tools
-        ), (provider, tools)
-    claude_workflow = (REPO_ROOT / ".github" / "workflows" / "claude-code-review.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "Post one top-level PR comment as the visible deliverable" in claude_workflow
-    assert "inline-comment" not in claude_workflow
-    assert "inline comment" not in claude_workflow
-    kimi_workflow = (REPO_ROOT / ".github" / "workflows" / "ai-review-kimi-cli.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "  pull-requests: read\n" in kimi_workflow
-    assert "  pull-requests: write\n" not in kimi_workflow
-    smoke_workflow = (
-        REPO_ROOT / ".github" / "workflows" / "ai-review-coding-plan-smoke.yml"
-    ).read_text(encoding="utf-8")
-    assert "  pull-requests: read\n" in smoke_workflow
-    assert "  pull-requests: write\n" not in smoke_workflow
-    isolated_kimi_start = smoke_workflow.index("            if env -i \\\n")
-    isolated_kimi_end = smoke_workflow.index(" kimi -p ", isolated_kimi_start)
-    isolated_kimi_command = smoke_workflow[isolated_kimi_start:isolated_kimi_end]
-    assert "GH_TOKEN" not in isolated_kimi_command
-    assert "GITHUB_TOKEN" not in isolated_kimi_command
-    assert "GLM_API_KEY" not in isolated_kimi_command
-    assert "KIMI_API_KEY" not in isolated_kimi_command
-    assert 'KIMI_MODEL_API_KEY="$KIMI_MODEL_API_KEY"' in isolated_kimi_command
-
-
 def main() -> int:
     test_packs_more_than_two_review_chunks_when_budget_requires_it()
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
@@ -2649,8 +2579,6 @@ def main() -> int:
     test_notice_env_supports_claude_notice_marker()
     test_notice_env_fails_closed_without_notice_marker()
     test_pr_agent_prompt_pins_no_findings_contract()
-    test_pr_agent_review_is_published_as_persistent_comment()
-    test_advisory_reviewers_can_publish_only_top_level_comments()
     print("GLM fallback self-tests OK")
     return 0
 

@@ -16,7 +16,7 @@ concurrency:
 permissions:
   contents: read
   issues: write # Fallback notices publish top-level PR conversation comments via the Issues API.
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   kimi-cli-review:

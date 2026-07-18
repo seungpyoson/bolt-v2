@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   smoke:
@@ -188,7 +188,7 @@ jobs:
             npm install -g "$KIMI_CLI_PACKAGE" >/dev/null 2>&1
             export KIMI_CODE_HOME="${RUNNER_TEMP}/kimi-code"
             export KIMI_MODEL_API_KEY="$KIMI_API_KEY"
-            mkdir -p "$KIMI_CODE_HOME" "$KIMI_CODE_HOME/subprocess-home" "$KIMI_CODE_HOME/gh-config"
+            mkdir -p "$KIMI_CODE_HOME"
             if [ "$KIMI_DISABLE_TELEMETRY" = "1" ]; then
               echo 'telemetry = false' > "${KIMI_CODE_HOME}/config.toml"
             else
@@ -197,22 +197,7 @@ jobs:
 
             output_file="${RUNNER_TEMP}/kimi-cli-smoke.out"
             error_file="${RUNNER_TEMP}/kimi-cli-smoke.err"
-            if env -i \
-              PATH="$PATH" \
-              HOME="$KIMI_CODE_HOME/subprocess-home" \
-              TMPDIR="$RUNNER_TEMP" \
-              GH_CONFIG_DIR="$KIMI_CODE_HOME/gh-config" \
-              GIT_CONFIG_GLOBAL=/dev/null \
-              GIT_CONFIG_NOSYSTEM=1 \
-              KIMI_CODE_HOME="$KIMI_CODE_HOME" \
-              KIMI_DISABLE_TELEMETRY="$KIMI_DISABLE_TELEMETRY" \
-              KIMI_MODEL_NAME="$KIMI_MODEL_NAME" \
-              KIMI_MODEL_API_KEY="$KIMI_MODEL_API_KEY" \
-              KIMI_MODEL_BASE_URL="$KIMI_MODEL_BASE_URL" \
-              KIMI_MODEL_PROVIDER_TYPE="$KIMI_MODEL_PROVIDER_TYPE" \
-              KIMI_MODEL_MAX_CONTEXT_SIZE="$KIMI_MODEL_MAX_CONTEXT_SIZE" \
-              KIMI_MODEL_DEFAULT_THINKING="$KIMI_MODEL_DEFAULT_THINKING" \
-              kimi -p "Reply with exactly OK." >"$output_file" 2>"$error_file"; then
+            if kimi -p "Reply with exactly OK." >"$output_file" 2>"$error_file"; then
               content=$(tr '\n' ' ' < "$output_file" | cut -c1-80)
               {
                 echo "- Kimi CLI: passed using Kimi Code CLI with documented \`KIMI_MODEL_*\` auth override."

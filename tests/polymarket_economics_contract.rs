@@ -198,10 +198,10 @@ fn market_info_rejects_base_fee_values_outside_the_governed_descriptor_shape() {
     }"#;
     let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(metadata(), contradictory).unwrap();
 
-    assert_eq!(
+    assert!(matches!(
         PolymarketEconomicsAdapter::try_new(config(), snapshot, None),
         Err(PolymarketEconomicsError::InvalidMarketInfo)
-    );
+    ));
 }
 
 #[test]

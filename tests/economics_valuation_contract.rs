@@ -99,6 +99,17 @@ fn configured_provider_resolves_provider_conversion_then_fresh_market_observatio
             SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
         ]
     );
+    assert!(matches!(
+        provider.value(
+            &SignedNativeEffect::currency(decimal("-2"), native_unit("pUSD")).unwrap(),
+            &ValuationRequest {
+                reporting_unit: native_unit("USD"),
+                reporting_policy_id: ReportingPolicyId::new("primary-pnl").unwrap(),
+                requested_at_ns: 1_000_101,
+            },
+        ),
+        Err(EconomicsUnavailable::StaleValuation { .. })
+    ));
 }
 
 #[test]

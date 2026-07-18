@@ -125,6 +125,40 @@ fn zero_or_contradictory_quote_windows_fail_closed() {
 }
 
 #[test]
+fn valuation_age_covers_refresh_cadence_and_quote_validity() {
+    let route = r#"
+[valuation.routes.usdc]
+from_unit = "USDC"
+to_currency = "pUSD"
+legs = [
+  { authority = "provider_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "usdc-pusd", max_age_ms = 8999 },
+]
+"#;
+    let source = valid_config().replace("[valuation]\nroutes = {}", route);
+    let too_short = parse(&source).unwrap();
+    assert!(
+        too_short
+            .validate(&reporting(), &BTreeSet::new())
+            .iter()
+            .any(|error| matches!(
+                error,
+                EconomicsConfigError::ValuationRefreshWindowTooShort {
+                    configured_max_age_ms: 8999,
+                    required_max_age_ms: 9000,
+                    ..
+                }
+            ))
+    );
+
+    let sufficient = parse(&source.replace("max_age_ms = 8999", "max_age_ms = 9000")).unwrap();
+    assert!(
+        sufficient
+            .validate(&reporting(), &BTreeSet::new())
+            .is_empty()
+    );
+}
+
+#[test]
 fn missing_edge_resolver_and_reporting_policy_mismatch_fail_closed() {
     let missing = parse(&valid_config().replace(
         "product_surface_policies = { perp = \"default\" }",

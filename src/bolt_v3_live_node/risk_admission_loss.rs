@@ -1636,7 +1636,7 @@ mod tests {
         bolt_v3_order_intent::NtOrderTemplate,
         bolt_v3_submit_admission::{
             BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-            BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitIntentKind,
+            BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
             BoltV3SubmitLifecyclePolicy,
         },
         bolt_v3_venue_truth::{
@@ -2065,7 +2065,7 @@ mod tests {
     }
 
     #[test]
-    fn triggered_halt_without_flatten_executor_has_zero_submits_but_wired_sink_submits_clamped() {
+    fn triggered_halt_records_clamp_but_rejects_submission_under_the_pre_clamp_quote() {
         let pre_wiring_writer = Arc::new(RecordingFlattenDecisionEvidenceWriter::default());
         let pre_wiring_executor = Rc::new(RoutingFlattenExecutor::new(
             pre_wiring_writer.clone(),
@@ -2098,10 +2098,7 @@ mod tests {
             .expect("wired sink should not degrade halt state when flatten routes");
 
         assert_eq!(wired_trading_state.enter_reducing_calls(), 1);
-        assert_eq!(
-            wired_executor.submitted_quantities(),
-            vec![Quantity::new(3.0, 2)]
-        );
+        assert_eq!(wired_executor.submitted_quantities(), Vec::new());
         let records = writer.records();
         assert_eq!(records.len(), 1);
         assert_eq!(
@@ -2111,11 +2108,7 @@ mod tests {
             })
         );
         let admission_decisions = writer.admission_decisions();
-        assert_eq!(admission_decisions.len(), 1);
-        assert_eq!(
-            admission_decisions[0].intent_kind,
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction
-        );
+        assert_eq!(admission_decisions, Vec::new());
     }
 
     #[test]

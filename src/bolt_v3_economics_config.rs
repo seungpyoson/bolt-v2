@@ -247,6 +247,11 @@ pub enum EconomicsConfigError {
     ZeroValuationAge {
         route_id: String,
     },
+    ValuationRefreshWindowTooShort {
+        route_id: String,
+        configured_max_age_ms: u64,
+        required_max_age_ms: u64,
+    },
     DisconnectedValuationRoute {
         route_id: String,
     },
@@ -314,6 +319,27 @@ impl ExecutionEconomicsConfig {
             || self.resting_order_refresh_margin_ms >= self.quote_validity_ms
         {
             errors.push(EconomicsConfigError::InvalidRefreshMargin);
+        }
+        let required_valuation_age_ms = self
+            .quote_refresh_secs
+            .checked_mul(MILLIS_PER_SECOND_U64)
+            .and_then(|refresh_ms| refresh_ms.checked_add(self.quote_validity_ms));
+        match required_valuation_age_ms {
+            Some(required_max_age_ms) => {
+                for (route_id, route) in &self.valuation.routes {
+                    for leg in &route.legs {
+                        let configured_max_age_ms = leg.max_age_ms();
+                        if configured_max_age_ms < required_max_age_ms {
+                            errors.push(EconomicsConfigError::ValuationRefreshWindowTooShort {
+                                route_id: route_id.clone(),
+                                configured_max_age_ms,
+                                required_max_age_ms,
+                            });
+                        }
+                    }
+                }
+            }
+            None => errors.push(EconomicsConfigError::InvalidQuoteWindow),
         }
         if self.edge_basis.is_empty() || self.product_surface_policies.is_empty() {
             errors.push(EconomicsConfigError::EmptyEdgeBasisMapping);

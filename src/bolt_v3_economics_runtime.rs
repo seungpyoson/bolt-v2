@@ -10,8 +10,8 @@ use rust_decimal::Decimal;
 
 use crate::economics::{
     EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence, NativeUnitId,
-    NetEdgeQuote, PointEstimate, SignedNativeEffect, SnapshotId, ValuationProvider,
-    ValuationRequest, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
+    NetEdgeQuote, SignedNativeEffect, SnapshotId, ValuationProvider, ValuationRequest,
+    ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
     validate_and_aggregate_quote, value_with_route,
 };
 
@@ -72,10 +72,66 @@ pub struct AuthoritativeEconomicsQuoteDependencies {
 }
 
 pub struct ProviderEconomicsAuthoritySnapshot {
+    pub refreshed_at_ns: u64,
     pub product_surface_id: String,
     pub adapter: Arc<dyn VenueEconomicsAdapter>,
     pub edge_basis: AuthoritativeEdgeBasis,
     pub valuation_observations: Vec<AuthoritativeValuationObservation>,
+}
+
+pub trait EconomicsReceiptClock: Send + Sync {
+    fn now_ns(&self) -> anyhow::Result<u64>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EconomicsSourceReceipt {
+    pub fetched_at_ns: u64,
+    pub valid_until_ns: u64,
+}
+
+pub fn capture_economics_source_receipt(
+    receipt_clock: &dyn EconomicsReceiptClock,
+    max_age_ns: u64,
+) -> anyhow::Result<EconomicsSourceReceipt> {
+    let fetched_at_ns = receipt_clock.now_ns()?;
+    let valid_until_ns = fetched_at_ns
+        .checked_add(max_age_ns)
+        .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+    Ok(EconomicsSourceReceipt {
+        fetched_at_ns,
+        valid_until_ns,
+    })
+}
+
+#[cfg(test)]
+mod source_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn delayed_response_is_available_only_at_its_receipt_time() {
+        let request_started_at_ns = 100;
+        let response_received_at_ns = 250;
+        let receipt = capture_economics_source_receipt(&|| Ok(response_received_at_ns), 25)
+            .expect("receipt timeline should build");
+
+        assert!(receipt.fetched_at_ns > request_started_at_ns);
+        assert_eq!(receipt.fetched_at_ns, response_received_at_ns);
+        assert_eq!(receipt.valid_until_ns, 275);
+    }
+
+    #[test]
+    fn receipt_validity_overflow_fails_closed() {
+        assert!(capture_economics_source_receipt(&|| Ok(u64::MAX), 1).is_err());
+    }
+}
+
+impl<F> EconomicsReceiptClock for F
+where
+    F: Fn() -> anyhow::Result<u64> + Send + Sync,
+{
+    fn now_ns(&self) -> anyhow::Result<u64> {
+        self()
+    }
 }
 
 #[async_trait(?Send)]
@@ -88,7 +144,7 @@ pub trait ProviderEconomicsAuthority: Send + Sync {
     async fn refresh(
         &self,
         instrument: InstrumentAny,
-        refreshed_at_ns: u64,
+        receipt_clock: &dyn EconomicsReceiptClock,
     ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot>;
 }
 
@@ -117,6 +173,15 @@ pub enum AuthoritativeValuationObservation {
         fetched_at_ns: u64,
         valid_until_ns: u64,
     },
+}
+
+impl AuthoritativeValuationObservation {
+    pub const fn fetched_at_ns(&self) -> u64 {
+        match self {
+            Self::MarketQuote { fetched_at_ns, .. }
+            | Self::ProviderConversion { fetched_at_ns, .. } => *fetched_at_ns,
+        }
+    }
 }
 
 impl ConfiguredValuationProvider {
@@ -759,8 +824,8 @@ pub(crate) fn test_economics_admission_with_binding(
         EconomicKind, EconomicQuoteRequest, EconomicScope, EdgeBasisPolicyId,
         EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId, InstrumentId,
         LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg,
-        ProductSurfaceId, ReportingPolicyId, RoutingContext, SignedNativeEffect, SourceId,
-        SourceValidity, VenueQuoteEstimate,
+        PointEstimate, ProductSurfaceId, ReportingPolicyId, RoutingContext, SignedNativeEffect,
+        SourceId, SourceValidity, VenueQuoteEstimate,
     };
 
     #[derive(Clone)]

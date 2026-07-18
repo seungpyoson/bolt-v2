@@ -1,7 +1,8 @@
 use crate::{
     bolt_v3_economics_runtime::{
-        AuthoritativeEdgeBasis, AuthoritativeValuationObservation, ProviderEconomicsAuthority,
-        ProviderEconomicsAuthoritySnapshot,
+        AuthoritativeEdgeBasis, AuthoritativeValuationObservation, EconomicsReceiptClock,
+        ProviderEconomicsAuthority, ProviderEconomicsAuthoritySnapshot,
+        capture_economics_source_receipt,
     },
     bolt_v3_numeric::NANOS_PER_SECOND_U64,
     economics::{
@@ -360,8 +361,8 @@ impl PolymarketEconomicsAuthority {
 
     async fn observe_collateral_redemption(
         &self,
-        fetched_at_ns: u64,
-        valid_until_ns: u64,
+        receipt_clock: &dyn EconomicsReceiptClock,
+        max_age_ns: u64,
     ) -> anyhow::Result<AuthoritativeValuationObservation> {
         let rpc = super::collateral_accounting_source::OnChainCollateralRpcClient::try_new(
             &self.on_chain_collateral,
@@ -507,6 +508,9 @@ impl PolymarketEconomicsAuthority {
             .timestamp_secs
             .checked_mul(NANOS_PER_SECOND_U64)
             .context("Polymarket collateral block timestamp overflows nanoseconds")?;
+        let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+        let fetched_at_ns = receipt.fetched_at_ns;
+        let valid_until_ns = receipt.valid_until_ns;
         anyhow::ensure!(
             observed_at_ns <= fetched_at_ns && fetched_at_ns <= valid_until_ns,
             "Polymarket collateral redemption timeline is invalid"
@@ -618,7 +622,7 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
     async fn refresh(
         &self,
         instrument: InstrumentAny,
-        refreshed_at_ns: u64,
+        receipt_clock: &dyn EconomicsReceiptClock,
     ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot> {
         let instrument_id = instrument.id();
         let response = self
@@ -646,14 +650,14 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
             .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
             .context("Polymarket economics maximum age overflows nanoseconds")?;
-        let valid_until_ns = refreshed_at_ns
-            .checked_add(max_age_ns)
-            .context("Polymarket economics validity deadline overflow")?;
+        let market_info_receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+        let market_info_fetched_at_ns = market_info_receipt.fetched_at_ns;
+        let valid_until_ns = market_info_receipt.valid_until_ns;
         let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(
             PolymarketSnapshotMetadata {
                 snapshot_id: snapshot_id.clone(),
-                source_at_ns: refreshed_at_ns,
-                fetched_at_ns: refreshed_at_ns,
+                source_at_ns: market_info_fetched_at_ns,
+                fetched_at_ns: market_info_fetched_at_ns,
                 valid_until_ns,
             },
             body,
@@ -670,10 +674,12 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             .get(&self.edge_basis_policy_id)
             .context("Polymarket economics edge-basis policy is missing")?;
         let valuation_observation = self
-            .observe_collateral_redemption(refreshed_at_ns, valid_until_ns)
+            .observe_collateral_redemption(receipt_clock, max_age_ns)
             .await
             .context("Polymarket collateral redemption authority is unavailable")?;
+        let refreshed_at_ns = market_info_fetched_at_ns.max(valuation_observation.fetched_at_ns());
         Ok(ProviderEconomicsAuthoritySnapshot {
+            refreshed_at_ns,
             product_surface_id: self.product_surface_id.clone(),
             adapter: Arc::new(adapter),
             edge_basis: AuthoritativeEdgeBasis {

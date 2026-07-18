@@ -1,6 +1,7 @@
 use crate::{
     bolt_v3_economics_runtime::{
-        AuthoritativeEdgeBasis, ProviderEconomicsAuthority, ProviderEconomicsAuthoritySnapshot,
+        AuthoritativeEdgeBasis, EconomicsReceiptClock, ProviderEconomicsAuthority,
+        ProviderEconomicsAuthoritySnapshot, capture_economics_source_receipt,
     },
     economics::{
         AdmissionTreatment, CalculationFactor, CarryKind, EconomicClass, EconomicKind,
@@ -742,34 +743,37 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
     async fn refresh(
         &self,
         instrument: InstrumentAny,
-        refreshed_at_ns: u64,
+        receipt_clock: &dyn EconomicsReceiptClock,
     ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot> {
-        let user_fees_body = self
-            .post_info(serde_json::json!({
-                "type": "userFees",
-                "user": self.account_address.as_str(),
-            }))
-            .await?;
-        let product_body = self
-            .post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))
-            .await?;
         let max_age_ns = self
             .economics
             .quote_max_age_secs
             .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
             .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
             .context("Hyperliquid economics maximum age overflows nanoseconds")?;
-        let valid_until_ns = refreshed_at_ns
-            .checked_add(max_age_ns)
-            .context("Hyperliquid economics validity deadline overflow")?;
+        let user_fees_body = self
+            .post_info(serde_json::json!({
+                "type": "userFees",
+                "user": self.account_address.as_str(),
+            }))
+            .await?;
+        let user_fees_receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+        let product_body = self
+            .post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))
+            .await?;
+        let product_receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+        let user_fees_fetched_at_ns = user_fees_receipt.fetched_at_ns;
+        let product_fetched_at_ns = product_receipt.fetched_at_ns;
+        let user_fees_valid_until_ns = user_fees_receipt.valid_until_ns;
+        let product_valid_until_ns = product_receipt.valid_until_ns;
         let user_snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&user_fees_body)));
         let product_snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&product_body)));
         let user_fees = HyperliquidUserFeesSnapshot::from_wire_json(
             HyperliquidSnapshotMetadata {
                 snapshot_id: user_snapshot_id.clone(),
-                source_at_ns: refreshed_at_ns,
-                fetched_at_ns: refreshed_at_ns,
-                valid_until_ns,
+                source_at_ns: user_fees_fetched_at_ns,
+                fetched_at_ns: user_fees_fetched_at_ns,
+                valid_until_ns: user_fees_valid_until_ns,
             },
             &self.account_id,
             std::str::from_utf8(&user_fees_body)
@@ -785,9 +789,9 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
         let product_snapshot = HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
             HyperliquidSnapshotMetadata {
                 snapshot_id: product_snapshot_id.clone(),
-                source_at_ns: refreshed_at_ns,
-                fetched_at_ns: refreshed_at_ns,
-                valid_until_ns,
+                source_at_ns: product_fetched_at_ns,
+                fetched_at_ns: product_fetched_at_ns,
+                valid_until_ns: product_valid_until_ns,
             },
             &product_body,
             raw_symbol.as_str(),
@@ -813,6 +817,7 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
             .get(edge_basis_policy_id)
             .context("Hyperliquid edge-basis policy is missing")?;
         Ok(ProviderEconomicsAuthoritySnapshot {
+            refreshed_at_ns: user_fees_fetched_at_ns.max(product_fetched_at_ns),
             product_surface_id: self.product_surface_id.clone(),
             adapter: Arc::new(adapter),
             edge_basis: AuthoritativeEdgeBasis {
@@ -822,7 +827,7 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
                 )?,
                 policy_version: edge_policy.policy_version,
                 source_snapshot_ids: vec![SnapshotId::new(product_snapshot_id)?],
-                valid_until_ns,
+                valid_until_ns: product_valid_until_ns,
             },
             valuation_observations: Vec::new(),
         })

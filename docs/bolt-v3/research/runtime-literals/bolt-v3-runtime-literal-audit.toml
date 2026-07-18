@@ -21579,14 +21579,6 @@ reason = "Stable checked-conversion diagnostic; maximum age remains TOML-owned."
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
 kind = "string"
-literal = '''"Hyperliquid economics validity deadline overflow"'''
-context = '''.context("Hyperliquid economics validity deadline overflow")?;'''
-classification = "diagnostic_template"
-reason = "Stable checked-time diagnostic; quote validity remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
 literal = '''"Hyperliquid perp surface has no carry policy"'''
 context = '''.context("Hyperliquid perp surface has no carry policy")?;'''
 classification = "diagnostic_template"
@@ -22031,14 +22023,6 @@ literal = '''"Polymarket economics maximum age overflows nanoseconds"'''
 context = '''.context("Polymarket economics maximum age overflows nanoseconds")?;'''
 classification = "diagnostic_template"
 reason = "Stable checked-conversion diagnostic; maximum age remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/economics.rs"
-kind = "string"
-literal = '''"Polymarket economics validity deadline overflow"'''
-context = '''.context("Polymarket economics validity deadline overflow")?;'''
-classification = "diagnostic_template"
-reason = "Stable checked-time diagnostic; quote validity remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"

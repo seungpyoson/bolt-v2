@@ -1273,17 +1273,7 @@ impl BoltV3LiveNodeRuntime {
                         .collect::<Vec<_>>();
                     for instrument in instruments {
                                 let instrument_id = instrument.id();
-                                let refreshed_at_ns = match current_unix_nanos() {
-                                    Ok(value) => value,
-                                    Err(error) => {
-                                        log::error!(
-                                            "economics authority clock failed: execution_client_id={} error={error}",
-                                            authority.execution_client_id()
-                                        );
-                                        continue;
-                                    }
-                                };
-                                match authority.refresh(instrument, refreshed_at_ns).await {
+                                match authority.refresh(instrument, &current_unix_nanos).await {
                                     Ok(snapshot) => {
                                         let valuation_provider = match economics_valuation_provider_from_cache(
                                             &authority.economics_config().valuation,
@@ -1317,7 +1307,7 @@ impl BoltV3LiveNodeRuntime {
                                             &snapshot.product_surface_id,
                                             crate::bolt_v3_economics_runtime::AuthoritativeEconomicsQuoteDependencies {
                                                 provider_key: authority.provider_key().to_string(),
-                                                refreshed_at_ns,
+                                                refreshed_at_ns: snapshot.refreshed_at_ns,
                                                 adapter: snapshot.adapter,
                                                 edge_basis: snapshot.edge_basis,
                                                 valuation_provider: valuation_provider.clone(),

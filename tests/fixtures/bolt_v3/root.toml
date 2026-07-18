@@ -334,7 +334,7 @@ from_unit = "pUSD"
 to_currency = "USD"
 legs = [
   { authority = "provider_conversion", from_unit = "pUSD", to_unit = "USDC", source_id = "collateral", max_age_ms = 300000 },
-  { authority = "market_quote", from_unit = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 1000 },
+  { authority = "market_quote", from_unit = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 
 [clients.polymarket_main.secrets]

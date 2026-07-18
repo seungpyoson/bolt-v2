@@ -278,13 +278,15 @@ mod tests {
     #[test]
     fn fixture_clients_register_strategy_data_exec_signal_and_probe_clients() {
         let adapters = fixture_adapters_with_binance_reference();
+        let expected_client_ids = adapters.clients.keys().cloned().collect::<Vec<_>>();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");
 
-        // polymarket_main + binance_reference + okx_data + chainlink_strike
-        // + chainlink_reference + polyresearch_reference.
-        assert_eq!(summary.clients.len(), 6);
+        assert_eq!(
+            summary.clients.keys().cloned().collect::<Vec<_>>(),
+            expected_client_ids
+        );
         let chainlink = summary
             .clients
             .get("chainlink_strike")

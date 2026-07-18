@@ -135,6 +135,7 @@ fn historical_fee_free_snapshot_is_valid() {
 fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
     let mut first = snapshot();
     first.valid_until_ns = 130;
+    first.source_snapshots[0].valid_until_ns = first.valid_until_ns;
     let mut second = first.clone();
     second.snapshot_id = "quote-snapshot-next".to_string();
     second.source_at_ns = 105;

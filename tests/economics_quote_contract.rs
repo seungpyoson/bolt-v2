@@ -73,6 +73,30 @@ fn proven_zero_point_requires_matching_zero_factor_and_charge_shape() {
 }
 
 #[test]
+fn proven_zero_point_rejects_conflicting_duplicate_proof_factors() {
+    let factor_id = FormulaId::new("zero-point-rate").unwrap();
+    let mut component = risk_bound(decimal("-0.25"), decimal("-0.75"));
+    component.point_estimate = PointEstimate::ProvenZero {
+        factor_id: factor_id.clone(),
+    };
+    component.calculation_factors.extend([
+        bolt_v2::economics::CalculationFactor {
+            factor_id: factor_id.clone(),
+            value: decimal("0"),
+        },
+        bolt_v2::economics::CalculationFactor {
+            factor_id,
+            value: decimal("0.001"),
+        },
+    ]);
+
+    assert!(matches!(
+        quote_fixture([component]),
+        Err(EconomicsUnavailable::DuplicateCalculationFactor { .. })
+    ));
+}
+
+#[test]
 fn missing_or_positive_risk_bound_rejects_core_quote() {
     assert!(matches!(
         quote_fixture([risk_bound_without_debit_bound()]),

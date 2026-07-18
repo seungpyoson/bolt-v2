@@ -570,6 +570,9 @@ pub enum EconomicsUnavailable {
     DuplicateComponent {
         component_id: EconomicComponentId,
     },
+    DuplicateCalculationFactor {
+        factor_id: FormulaId,
+    },
     MissingDebitRiskBound {
         component_id: EconomicComponentId,
     },

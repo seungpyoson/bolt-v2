@@ -425,6 +425,9 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
     for source in &snapshot.source_snapshots {
         if source.source_at_ns > source.fetched_at_ns
             || source.fetched_at_ns > source.valid_until_ns
+            || source.source_at_ns > snapshot.source_at_ns
+            || source.fetched_at_ns > snapshot.fetched_at_ns
+            || source.valid_until_ns < snapshot.valid_until_ns
             || !source_ids.insert(source.source_id.clone())
             || source.payload_json.trim().is_empty()
         {

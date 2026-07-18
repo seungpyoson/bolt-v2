@@ -17,7 +17,7 @@ pub use types::{
     EdgeBasisPolicyId, EstimatedEconomicComponent, EvidenceOrigin, ExecutionClientId,
     ExecutionKind, FillId, FormulaId, IncentiveKind, InstrumentId, InventoryApplication,
     LifecycleKind, LifecyclePath, LiquidityRoleAssumption, MarketId, NativeUnitId, NetEdgeQuote,
-    OrderId, OrderSide, PlannedFillLeg, PositionContext, PositionId, PositionSide,
+    OrderId, OrderSide, PlannedFillLeg, PointEstimate, PositionContext, PositionId, PositionSide,
     ProductSurfaceId, ReportingPolicyId, ResolvedEdgeBasis, RiskBoundAuthority, RoutingAttachment,
     RoutingAttachmentId, RoutingContext, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
     TransferKind, ValuationEvidence, ValuationLegEvidence, ValuationRequest, ValuationRoute,

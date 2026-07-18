@@ -42,6 +42,16 @@ pub fn validate_and_aggregate_quote(
                 component_id: component.component_id,
             });
         }
+        let mut factor_ids = HashSet::new();
+        if let Some(duplicate) = component
+            .calculation_factors
+            .iter()
+            .find(|factor| !factor_ids.insert(factor.factor_id.clone()))
+        {
+            return Err(EconomicsUnavailable::DuplicateCalculationFactor {
+                factor_id: duplicate.factor_id.clone(),
+            });
+        }
         validate_source_timeline(request, &component)?;
         match &component.point_estimate {
             PointEstimate::NonZero(point_effect) => {

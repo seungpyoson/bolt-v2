@@ -1590,6 +1590,7 @@ fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
 #[test]
 fn gtd_limit_order_objects_preserve_nt_expire_time() {
     let mut strategy = ready_to_trade_strategy();
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
@@ -1618,6 +1619,7 @@ fn gtd_limit_order_objects_preserve_nt_expire_time() {
 #[test]
 fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
     let mut strategy = ready_to_trade_strategy();
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;

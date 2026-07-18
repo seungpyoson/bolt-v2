@@ -89,7 +89,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     scope: EconomicScope::Decision {
                         decision_correlation_id: intent.request.decision_correlation_id.clone(),
                     },
-                    point_effect: Some(SignedNativeEffect::currency(
+                    point_estimate: PointEstimate::NonZero(SignedNativeEffect::currency(
                         Decimal::ONE,
                         intent.request.reporting_unit.clone(),
                     )?),
@@ -281,7 +281,7 @@ fn sample_economics_admission_with_component(
                 scope: EconomicScope::Decision {
                     decision_correlation_id: decision_correlation_id.clone(),
                 },
-                point_effect: Some(
+                point_estimate: PointEstimate::NonZero(
                     SignedNativeEffect::currency(point_effect, reporting_unit)
                         .expect("valid test effect"),
                 ),

@@ -10,8 +10,8 @@ use rust_decimal::Decimal;
 
 use crate::economics::{
     EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence, NativeUnitId,
-    NetEdgeQuote, SignedNativeEffect, SnapshotId, ValuationProvider, ValuationRequest,
-    ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
+    NetEdgeQuote, PointEstimate, SignedNativeEffect, SnapshotId, ValuationProvider,
+    ValuationRequest, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
     validate_and_aggregate_quote, value_with_route,
 };
 
@@ -605,7 +605,7 @@ impl BoltV3EconomicsRuntime {
         };
         let mut valuations = Vec::new();
         for component in &estimate.components {
-            if let Some(point_effect) = &component.point_effect {
+            if let Some(point_effect) = component.point_estimate.effect() {
                 push_valuation(
                     &mut valuations,
                     intent.valuation_provider.as_ref(),
@@ -779,7 +779,7 @@ pub(crate) fn test_economics_admission_with_binding(
             scope: EconomicScope::Decision {
                 decision_correlation_id: decision_correlation_id.clone(),
             },
-            point_effect: Some(
+            point_estimate: PointEstimate::NonZero(
                 SignedNativeEffect::currency(Decimal::ONE, reporting_unit)
                     .expect("valid test effect"),
             ),
@@ -893,7 +893,7 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
                 scope: EconomicScope::Decision {
                     decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
-                point_effect: Some(SignedNativeEffect::currency(
+                point_estimate: PointEstimate::NonZero(SignedNativeEffect::currency(
                     Decimal::ONE,
                     intent.request.reporting_unit.clone(),
                 )?),

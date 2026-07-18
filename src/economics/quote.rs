@@ -4,8 +4,8 @@ use rust_decimal::Decimal;
 
 use super::{
     AdmissionTreatment, EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable,
-    EstimatedEconomicComponent, SignedNativeEffect, ValuationEvidence, VenueQuoteEstimate,
-    value_with_route,
+    EstimatedEconomicComponent, PointEstimate, SignedNativeEffect, ValuationEvidence,
+    VenueQuoteEstimate, value_with_route,
 };
 
 pub fn validate_and_aggregate_quote(
@@ -43,20 +43,31 @@ pub fn validate_and_aggregate_quote(
             });
         }
         validate_source_timeline(request, &component)?;
-        if let Some(point_effect) = &component.point_effect {
-            if !matches!(
-                (component.class, point_effect.amount().is_sign_negative()),
-                (super::EconomicClass::Charge, true) | (super::EconomicClass::Credit, false)
-            ) {
-                return Err(EconomicsUnavailable::EconomicClassSignMismatch);
+        match &component.point_estimate {
+            PointEstimate::NonZero(point_effect) => {
+                if !matches!(
+                    (component.class, point_effect.amount().is_sign_negative()),
+                    (super::EconomicClass::Charge, true) | (super::EconomicClass::Credit, false)
+                ) {
+                    return Err(EconomicsUnavailable::EconomicClassSignMismatch);
+                }
             }
-        } else if !matches!(
-            component.admission_treatment,
-            AdmissionTreatment::RiskBound { .. }
-        ) {
-            return Err(EconomicsUnavailable::MissingPointEstimate {
-                component_id: component.component_id,
-            });
+            PointEstimate::ProvenZero { factor_id }
+                if !matches!(
+                    component.admission_treatment,
+                    AdmissionTreatment::RiskBound { .. }
+                ) || component.class != super::EconomicClass::Charge
+                    || component.normalized.is_some()
+                    || !component
+                        .calculation_factors
+                        .iter()
+                        .any(|factor| factor.factor_id == *factor_id && factor.value.is_zero()) =>
+            {
+                return Err(EconomicsUnavailable::InvalidProvenZeroPoint {
+                    component_id: component.component_id,
+                });
+            }
+            PointEstimate::ProvenZero { .. } => {}
         }
         if component.source.valid_until_ns < request.requested_at_ns {
             if component.admission_treatment == AdmissionTreatment::ForecastOnly {
@@ -68,7 +79,7 @@ pub fn validate_and_aggregate_quote(
             });
         }
 
-        let point_valid_until_ns = if let Some(point_effect) = &component.point_effect {
+        let point_valid_until_ns = if let Some(point_effect) = component.point_estimate.effect() {
             let point_valuation = match resolve_valuation(
                 point_effect,
                 component.normalized.as_ref(),

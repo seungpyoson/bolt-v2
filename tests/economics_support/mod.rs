@@ -5,8 +5,8 @@ use bolt_v2::economics::{
     EconomicKind, EconomicQuote, EconomicQuoteRequest, EconomicScope, EconomicsUnavailable,
     EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId,
     InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderId, OrderSide,
-    PlannedFillLeg, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingContext,
-    SignedNativeEffect, SnapshotId, SourceId, SourceValidity, VenueQuoteEstimate,
+    PlannedFillLeg, PointEstimate, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority,
+    RoutingContext, SignedNativeEffect, SnapshotId, SourceId, SourceValidity, VenueQuoteEstimate,
     validate_and_aggregate_quote,
 };
 use rust_decimal::Decimal;
@@ -61,7 +61,9 @@ pub fn estimated_component(
         scope: EconomicScope::Order {
             order_id: OrderId::new("order").unwrap(),
         },
-        point_effect: Some(SignedNativeEffect::currency(point, native_unit("pUSD")).unwrap()),
+        point_estimate: PointEstimate::NonZero(
+            SignedNativeEffect::currency(point, native_unit("pUSD")).unwrap(),
+        ),
         debit_risk_bound: debit_bound
             .map(|bound| SignedNativeEffect::currency(bound, native_unit("pUSD")).unwrap()),
         admission_treatment: treatment,

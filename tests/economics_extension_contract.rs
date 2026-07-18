@@ -1,7 +1,7 @@
 use bolt_v2::economics::{
     AdmissionTreatment, EconomicClass, EconomicComponentId, EconomicKind, EconomicQuoteRequest,
     EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
-    ResolvedEdgeBasis, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+    PointEstimate, ResolvedEdgeBasis, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
     VenueEconomicsAdapter, VenueQuoteEstimate, validate_and_aggregate_quote,
 };
 
@@ -46,7 +46,7 @@ impl VenueEconomicsAdapter for SyntheticVenue {
                 scope: EconomicScope::Decision {
                     decision_correlation_id: request.decision_correlation_id.clone(),
                 },
-                point_effect: Some(
+                point_estimate: PointEstimate::NonZero(
                     SignedNativeEffect::currency(decimal("-0.25"), native_unit("pUSD")).unwrap(),
                 ),
                 debit_risk_bound: None,

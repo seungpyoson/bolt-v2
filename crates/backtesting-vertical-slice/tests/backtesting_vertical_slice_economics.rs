@@ -31,7 +31,10 @@ fn snapshot() -> HistoricalEconomicsSnapshot {
         source_at_ns: 90,
         fetched_at_ns: 95,
         valid_until_ns: 110,
-        economics: root["clients"]["polymarket_main"]["execution"]["economics"].clone(),
+        economics_toml: toml::to_string(
+            &root["clients"]["polymarket_main"]["execution"]["economics"],
+        )
+        .unwrap(),
         edge_basis: HistoricalEdgeBasisEvidence {
             policy_id: "primary".to_string(),
             resolver_id: "product-metadata".to_string(),
@@ -130,12 +133,13 @@ fn historical_fee_free_snapshot_is_valid() {
 
 #[test]
 fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
-    let first = snapshot();
+    let mut first = snapshot();
+    first.valid_until_ns = 130;
     let mut second = first.clone();
     second.snapshot_id = "quote-snapshot-next".to_string();
-    second.source_at_ns = 111;
+    second.source_at_ns = 105;
     second.fetched_at_ns = 115;
-    second.valid_until_ns = 130;
+    second.valid_until_ns = 140;
     second.edge_basis.source_snapshot_ids = vec![second.snapshot_id.clone()];
     second.edge_basis.valid_until_ns = second.valid_until_ns;
     second.source_snapshots[0].snapshot_id = second.snapshot_id.clone();
@@ -155,4 +159,30 @@ fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
             .as_str(),
         "binary_outcome"
     );
+    assert_eq!(
+        source
+            .snapshot_for_request(&request(112))
+            .unwrap()
+            .snapshot_id,
+        "quote-snapshot"
+    );
+    assert_eq!(
+        source
+            .snapshot_for_request(&request(120))
+            .unwrap()
+            .snapshot_id,
+        "quote-snapshot-next"
+    );
+}
+
+#[test]
+fn replay_authority_rejects_mixed_provider_keys() {
+    let first = snapshot();
+    let mut second = first.clone();
+    second.provider_key = "HYPERLIQUID".to_string();
+
+    assert!(matches!(
+        ReplayEconomicsAdmissionSource::from_snapshots(vec![first, second]),
+        Err(bolt_v2::economics::EconomicsUnavailable::AmbiguousQuoteAuthority)
+    ));
 }

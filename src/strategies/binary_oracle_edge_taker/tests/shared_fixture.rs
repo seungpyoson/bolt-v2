@@ -267,7 +267,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     scope: EconomicScope::Decision {
                         decision_correlation_id: intent.request.decision_correlation_id.clone(),
                     },
-                    point_effect: Some(SignedNativeEffect::currency(
+                    point_estimate: PointEstimate::NonZero(SignedNativeEffect::currency(
                         effect,
                         intent.request.reporting_unit.clone(),
                     )?),

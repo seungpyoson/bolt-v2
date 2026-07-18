@@ -4809,7 +4809,10 @@ mod tests {
             source_at_ns: observed_at_ns,
             fetched_at_ns: observed_at_ns,
             valid_until_ns: u64::MAX,
-            economics: root["clients"]["polymarket_main"]["execution"]["economics"].clone(),
+            economics_toml: toml::to_string(
+                &root["clients"]["polymarket_main"]["execution"]["economics"],
+            )
+            .expect("economics TOML"),
             edge_basis: crate::economics::HistoricalEdgeBasisEvidence {
                 policy_id: "primary".to_string(),
                 resolver_id: "product-metadata".to_string(),

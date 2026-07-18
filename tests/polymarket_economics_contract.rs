@@ -47,11 +47,11 @@ fn nonlinear_fee_is_rounded_and_summed_per_planned_fill_level() {
     let components = adapter.quote_components(&request).unwrap();
 
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("-0.14000")
     );
     assert_ne!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("-0.14700")
     );
 }
@@ -89,11 +89,16 @@ fn taker_formula_matches_authoritative_price_shaped_example() {
     let components = adapter.quote_components(&request).unwrap();
     assert_eq!(components.len(), 1);
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("-1.75")
     );
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().unit().as_str(),
+        components[0]
+            .point_estimate
+            .effect()
+            .unwrap()
+            .unit()
+            .as_str(),
         "pUSD"
     );
 }
@@ -156,7 +161,7 @@ fn documented_exponent_two_descriptor_applies_the_exponent_to_the_price_shape() 
 
     let components = adapter.quote_components(&request).unwrap();
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("-0.43750")
     );
 }

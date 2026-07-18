@@ -176,11 +176,16 @@ fn spot_buy_fee_uses_base_unit_and_omits_builder_charge() {
 
     assert_eq!(components.len(), 1);
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("-0.0008")
     );
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().unit().as_str(),
+        components[0]
+            .point_estimate
+            .effect()
+            .unwrap()
+            .unit()
+            .as_str(),
         "BTC"
     );
 }
@@ -205,9 +210,13 @@ fn spot_sell_fee_and_builder_charge_use_quote_unit() {
 
     assert_eq!(components.len(), 2);
     assert!(
-        components
-            .iter()
-            .all(|component| component.point_effect.as_ref().unwrap().unit().as_str() == "USDC")
+        components.iter().all(|component| component
+            .point_estimate
+            .effect()
+            .unwrap()
+            .unit()
+            .as_str()
+            == "USDC")
     );
 }
 
@@ -229,11 +238,11 @@ fn complete_perp_surface_applies_account_rate_and_builder_approval() {
     let components = adapter.quote_components(&request).unwrap();
     assert_eq!(components.len(), 3);
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("-3.15")
     );
     assert_eq!(
-        components[1].point_effect.as_ref().unwrap().amount(),
+        components[1].point_estimate.effect().unwrap().amount(),
         decimal("-1.00")
     );
 }
@@ -253,7 +262,7 @@ fn official_user_fees_wire_shape_drives_effective_taker_rate_without_double_stak
     let components = adapter.quote_components(&request).unwrap();
 
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("-3.024")
     );
 }
@@ -286,7 +295,7 @@ fn negative_maker_rate_bypasses_referral_and_hip3_scaling() {
     let components = adapter.quote_components(&request).unwrap();
 
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("0.50")
     );
 }
@@ -331,7 +340,7 @@ fn negative_maker_rate_is_guaranteed_credit_not_forecast_reward() {
 
     let components = adapter.quote_components(&request).unwrap();
     assert_eq!(
-        components[0].point_effect.as_ref().unwrap().amount(),
+        components[0].point_estimate.effect().unwrap().amount(),
         decimal("0.50")
     );
     assert_eq!(components[0].class, EconomicClass::Credit);
@@ -407,7 +416,7 @@ fn funding_bound_counts_intersected_events_at_the_exact_boundary() {
         carry.debit_risk_bound.as_ref().unwrap().amount(),
         decimal("-30")
     );
-    assert!(carry.point_effect.is_some());
+    assert!(carry.point_estimate.effect().is_some());
 }
 
 #[test]
@@ -438,7 +447,7 @@ fn zero_point_funding_still_seals_the_venue_debit_bound() {
         carry.debit_risk_bound.as_ref().unwrap().amount(),
         decimal("-30")
     );
-    assert!(carry.point_effect.is_none());
+    assert!(carry.point_estimate.effect().is_none());
 }
 
 #[test]

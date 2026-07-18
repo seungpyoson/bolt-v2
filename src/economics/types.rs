@@ -292,12 +292,27 @@ pub struct ValuationRoute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PointEstimate {
+    NonZero(SignedNativeEffect),
+    ProvenZero { factor_id: FormulaId },
+}
+
+impl PointEstimate {
+    pub fn effect(&self) -> Option<&SignedNativeEffect> {
+        match self {
+            Self::NonZero(effect) => Some(effect),
+            Self::ProvenZero { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EstimatedEconomicComponent {
     pub component_id: EconomicComponentId,
     pub class: EconomicClass,
     pub kind: EconomicKind,
     pub scope: EconomicScope,
-    pub point_effect: Option<SignedNativeEffect>,
+    pub point_estimate: PointEstimate,
     pub debit_risk_bound: Option<SignedNativeEffect>,
     pub admission_treatment: AdmissionTreatment,
     pub calculation_factors: Vec<CalculationFactor>,
@@ -541,7 +556,7 @@ pub enum EconomicsUnavailable {
     InvalidQuoteValidityPolicy,
     InvalidDecimal,
     EconomicClassSignMismatch,
-    MissingPointEstimate {
+    InvalidProvenZeroPoint {
         component_id: EconomicComponentId,
     },
     MissingQuoteAuthority,

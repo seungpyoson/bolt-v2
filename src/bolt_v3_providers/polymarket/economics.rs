@@ -7,8 +7,8 @@ use crate::{
     economics::{
         AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
         EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
-        LiquidityRoleAssumption, NativeUnitId, SignedNativeEffect, SnapshotId, SourceId,
-        SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
+        LiquidityRoleAssumption, NativeUnitId, PointEstimate, SignedNativeEffect, SnapshotId,
+        SourceId, SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
     },
 };
 use alloy_primitives::keccak256;
@@ -860,7 +860,7 @@ impl PolymarketEconomicsAdapter {
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
-            point_effect: Some(point_effect),
+            point_estimate: PointEstimate::NonZero(point_effect),
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
             calculation_factors: vec![calculation_factor],

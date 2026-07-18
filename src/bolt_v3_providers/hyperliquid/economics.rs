@@ -5,8 +5,8 @@ use crate::{
     economics::{
         AdmissionTreatment, CalculationFactor, CarryKind, EconomicClass, EconomicKind,
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent,
-        ExecutionKind, FormulaId, LiquidityRoleAssumption, NativeUnitId, PositionSide,
-        RiskBoundAuthority, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+        ExecutionKind, FormulaId, LiquidityRoleAssumption, NativeUnitId, PointEstimate,
+        PositionSide, RiskBoundAuthority, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
         VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
     },
 };
@@ -1184,10 +1184,12 @@ impl HyperliquidEconomicsAdapter {
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
-            point_effect: if point_projection.is_zero() {
-                None
+            point_estimate: if point_projection.is_zero() {
+                PointEstimate::ProvenZero {
+                    factor_id: policy.point_rate_factor_id.clone(),
+                }
             } else {
-                Some(
+                PointEstimate::NonZero(
                     SignedNativeEffect::currency(
                         point_projection,
                         self.config.settlement_unit.clone(),
@@ -1267,7 +1269,7 @@ impl HyperliquidEconomicsAdapter {
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
-            point_effect: Some(point_effect),
+            point_estimate: PointEstimate::NonZero(point_effect),
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
             calculation_factors: vec![CalculationFactor {

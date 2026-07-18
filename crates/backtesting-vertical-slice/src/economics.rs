@@ -34,7 +34,7 @@ pub struct HistoricalEconomicsSnapshot {
     pub source_at_ns: u64,
     pub fetched_at_ns: u64,
     pub valid_until_ns: u64,
-    pub economics: toml::Value,
+    pub economics_toml: String,
     pub edge_basis: HistoricalEdgeBasisEvidence,
     pub source_snapshots: Vec<HistoricalSourceSnapshot>,
     pub valuation_observations: Vec<HistoricalValuationObservation>,
@@ -104,7 +104,8 @@ impl ReplayEconomicsAdmissionSource {
         }
         let authority = &snapshots[0];
         if snapshots.iter().any(|snapshot| {
-            snapshot.execution_client_id != authority.execution_client_id
+            snapshot.provider_key != authority.provider_key
+                || snapshot.execution_client_id != authority.execution_client_id
                 || snapshot.account_id != authority.account_id
                 || snapshot.reporting_policy_id != authority.reporting_policy_id
                 || snapshot.reporting_unit != authority.reporting_unit
@@ -112,6 +113,32 @@ impl ReplayEconomicsAdmissionSource {
             return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
         Ok(Self { snapshots })
+    }
+
+    pub fn snapshot_for_request(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<&HistoricalEconomicsSnapshot, EconomicsUnavailable> {
+        let eligible = self.snapshots.iter().filter(|snapshot| {
+            snapshot_matches_request(snapshot, request)
+                && snapshot.source_at_ns <= request.requested_at_ns
+                && snapshot.fetched_at_ns <= request.requested_at_ns
+                && request.requested_at_ns <= snapshot.valid_until_ns
+        });
+        let Some(latest_activation) = eligible
+            .clone()
+            .map(|snapshot| (snapshot.fetched_at_ns, snapshot.source_at_ns))
+            .max()
+        else {
+            return Err(EconomicsUnavailable::MissingQuoteAuthority);
+        };
+        let selected = eligible
+            .filter(|snapshot| (snapshot.fetched_at_ns, snapshot.source_at_ns) == latest_activation)
+            .collect::<Vec<_>>();
+        match selected.as_slice() {
+            [snapshot] => Ok(*snapshot),
+            _ => Err(EconomicsUnavailable::AmbiguousQuoteAuthority),
+        }
     }
 
     pub fn order_routing_handle(
@@ -207,20 +234,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         &self,
         intent: EconomicsAdmissionQuoteIntent,
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
-        let matching = self
-            .snapshots
-            .iter()
-            .filter(|snapshot| {
-                snapshot_matches_request(snapshot, &intent.request)
-                    && snapshot.source_at_ns <= intent.request.requested_at_ns
-                    && intent.request.requested_at_ns <= snapshot.valid_until_ns
-            })
-            .collect::<Vec<_>>();
-        let snapshot = match matching.as_slice() {
-            [] => return Err(EconomicsUnavailable::MissingQuoteAuthority),
-            [snapshot] => *snapshot,
-            _ => return Err(EconomicsUnavailable::AmbiguousQuoteAuthority),
-        };
+        let snapshot = self.snapshot_for_request(&intent.request)?;
         let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
         let edge_basis = adapter.edge_basis(&intent.request)?;
         let observations = canonical_valuation_observations(snapshot)?;
@@ -252,6 +266,8 @@ impl ReplayEconomicsAdapter {
         snapshot: HistoricalEconomicsSnapshot,
     ) -> Result<Self, EconomicsUnavailable> {
         validate_snapshot(&snapshot)?;
+        let economics = toml::from_str::<toml::Value>(&snapshot.economics_toml)
+            .map_err(|_| EconomicsUnavailable::MissingQuoteAuthority)?;
         let snapshots = snapshot
             .source_snapshots
             .iter()
@@ -270,7 +286,7 @@ impl ReplayEconomicsAdapter {
                 account_id: &snapshot.account_id,
                 instrument_id: &snapshot.instrument_id,
                 raw_symbol: &snapshot.raw_symbol,
-                economics: &snapshot.economics,
+                economics: &economics,
                 snapshots: &snapshots,
             },
         )
@@ -384,6 +400,7 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
         || snapshot.fetched_at_ns > snapshot.valid_until_ns
         || snapshot.edge_basis.valid_until_ns < snapshot.source_at_ns
         || snapshot.provider_key.trim().is_empty()
+        || snapshot.economics_toml.trim().is_empty()
         || snapshot.instrument_id.trim().is_empty()
         || snapshot.raw_symbol.trim().is_empty()
         || snapshot.source_snapshots.is_empty()

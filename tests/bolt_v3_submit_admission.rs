@@ -789,18 +789,18 @@ fn notional_equal_to_cap_is_admitted() {
 }
 
 #[test]
-fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
+fn post_quote_zero_notional_mutation_rejects_before_nt_submit_without_consuming_count() {
     let admission = limited_admission(1, Decimal::new(1, 0));
     let mut request = submit_request(Decimal::ONE);
     request.notional = Decimal::ZERO;
 
     let result = admission.admit(&request);
     let nt_submit_called = result.is_ok();
-    let error = result.expect_err("zero notional must reject");
+    let error = result.expect_err("post-quote zero-notional mutation must reject");
 
     assert!(matches!(
         error,
-        BoltV3SubmitAdmissionError::NonPositiveNotional
+        BoltV3SubmitAdmissionError::EconomicsOrderMismatch
     ));
     assert_eq!(admission.admitted_order_count(), 0);
     assert!(!nt_submit_called, "NT submit must not be reached");

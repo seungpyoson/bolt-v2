@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import dataclasses
 from collections.abc import Callable, Iterable, Mapping
 import difflib
 import hashlib
@@ -20,6 +21,8 @@ from typing import Any, NamedTuple, cast
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+
+import config_validators as _cv  # noqa: E402
 
 from workflow_expression_analysis import (
     ELSE_RE,
@@ -315,6 +318,7 @@ from ci_provenance import (
     POLICY_VALUES,
     REUSE_RELEVANT_WORKFLOW_ENV_KEYS,
     ProvenanceError,
+    CiPolicyResult as ProvenanceCiPolicyResult,
     check_lookback_le_retention,
     gate_name_collision_errors,
     github_actions_output_safe_check_name,
@@ -379,7 +383,6 @@ DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
 RUNNERS_CONFIG_LABEL = "ci/github-actions-runners.toml"
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
-CONFIG_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 ARTIFACT_RETENTION_WORKFLOW_SOURCE_RE = re.compile(r"\.github/workflows/[^/]+\.ya?ml")
 ARTIFACT_RETENTION_ACTION_SOURCE_RE = re.compile(
     r"\.github/actions/[^/]+(?:/[^/]+)*/action\.ya?ml"
@@ -468,15 +471,6 @@ YAML_FOLDED_RUN_LINE_RE = re.compile(
 
 class PolicyError(RuntimeError):
     pass
-
-
-class CiPolicyResult(NamedTuple):
-    ci_policy_path: str
-    full_ci_required: bool
-    gate_name: str
-    backtester_gate_name: str
-    expected_event_class: str
-    reason: str
 
 
 class ArtifactRetentionClass(NamedTuple):
@@ -2197,25 +2191,23 @@ def evaluate_ci_policy(
     event_sender_id: int = -1,
     pull_request_author_id: int = -1,
     ref: str,
-) -> CiPolicyResult:
+) -> ProvenanceCiPolicyResult:
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
-    # Queue-only rework (#981): the runtime resolver now reads
-    # config.mergify_temp_pr_actor_id and an event_sender_id to bind the mergify temp
-    # PR to its actor. This static mirror delegates to that same resolver, so it must
-    # supply the bound actor id (or a sentinel that never matches a real sender) and
-    # thread the sender id through, or it would crash on the missing attribute.
-    config = type(
-        "StaticPolicyConfig",
-        (),
-        {
-            "policy": {key: str(value) for key, value in policy.items() if key != "override"},
-            "gate_names": dict(gate_names),
-            "mergify_temp_pr_head_ref_prefix": mergify_temp_pr_head_ref_prefix,
-            "mergify_temp_pr_actor_id": mergify_temp_pr_actor_id,
-            "force_full_ci": force_full_ci,
-        },
-    )()
+    # Keep this static policy adapter on the complete, validated runtime config
+    # contract. Dataclass replacement preserves new required fields automatically,
+    # while the policy-specific fields remain explicit synthetic test inputs.
+    base_config = load_config(DEFAULT_RUNNERS_CONFIG)
+    config = dataclasses.replace(
+        base_config,
+        policy={key: str(value) for key, value in policy.items() if key != "override"},
+        gate_names=dict(gate_names),
+        # The defaults are deliberate never-match sentinels for synthetic policy
+        # rows. Tests that exercise Mergify identity must opt in explicitly.
+        mergify_temp_pr_head_ref_prefix=mergify_temp_pr_head_ref_prefix,
+        mergify_temp_pr_actor_id=mergify_temp_pr_actor_id,
+        force_full_ci=force_full_ci,
+    )
     try:
         result = provenance_evaluate_ci_policy(
             config,
@@ -2231,14 +2223,7 @@ def evaluate_ci_policy(
         )
     except ProvenanceError as exc:
         raise ValueError(str(exc)) from exc
-    return CiPolicyResult(
-        ci_policy_path=result.ci_policy_path,
-        full_ci_required=result.full_ci_required,
-        gate_name=result.gate_name,
-        backtester_gate_name=result.backtester_gate_name,
-        expected_event_class=result.expected_event_class,
-        reason=result.reason,
-    )
+    return result
 
 
 def policy_row_is_proof_affecting(semantics: PolicyRowSemantics) -> bool:
@@ -8954,11 +8939,16 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             "gate_name: ${{ steps.policy.outputs.gate_name }}",
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
-            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "trusted_revision: ${{ steps.policy_base.outputs.revision }}",
             "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-            'git check-ref-format "refs/heads/$base_branch"',
-            "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+            "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            '[[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]',
+            'git check-ref-format "refs/heads/$trusted_branch"',
+            'trusted_revision="$(git rev-parse --verify "${trusted_ref}^{commit}")"',
+            'git archive "$trusted_revision" scripts/ ci/github-actions-runners.toml',
+            'echo "revision=$trusted_revision"',
             "steps.policy_base.outputs.script",
+            "steps.policy_base.outputs.config",
             'python3 "$policy_script" ci-policy',
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
@@ -8966,16 +8956,54 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
             '--pull-request-head-ref "$PR_HEAD_REF"',
             "PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}",
-            "author_args=()",
-            'python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"',
-            'author_args=(--pull-request-author-id "$PR_AUTHOR_ID")',
-            '"${author_args[@]}"',
+            '--pull-request-author-id "$PR_AUTHOR_ID"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:
                 errors.append(f"backtester iteration policy ci-policy job must include {required}")
+        for forbidden in (
+            'if [[ -z "$policy_script" ]]',
+            'policy_script="scripts/ci_provenance.py"',
+            'if [[ -z "$policy_config" ]]',
+            'policy_config="ci/github-actions-runners.toml"',
+            "ci-policy --help",
+            "author_args=()",
+        ):
+            if forbidden in policy_text:
+                errors.append(
+                    "backtester iteration policy must not retain trusted-policy "
+                    f"fallbacks ({forbidden})"
+                )
+        policy_binding_lines = [
+            line.strip()
+            for line in policy_text.splitlines()
+            if re.match(r"^(?:readonly\s+)?policy_(?:script|config)=", line.strip())
+        ]
+        if policy_binding_lines != [
+            'readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+            'readonly policy_config="${{ steps.policy_base.outputs.config }}"',
+        ]:
+            errors.append(
+                "backtester iteration policy must bind each trusted policy capability "
+                "exactly once without fallback"
+            )
+        trusted_branch_assignment_lines = [
+            line.strip()
+            for line in policy_text.splitlines()
+            if line.strip().startswith("trusted_branch=")
+        ]
+        if trusted_branch_assignment_lines != [
+            'trusted_branch="$PR_BASE_REF"',
+            'trusted_branch="${merge_group_base#refs/heads/}"',
+            'trusted_branch="$merge_group_base"',
+            'trusted_branch="$REPOSITORY_DEFAULT_BRANCH"',
+        ]:
+            errors.append(
+                "backtester iteration policy must select one event-scoped trusted branch "
+                "without fallback"
+            )
         errors.extend(ci_policy_event_sender_command_errors(policy))
 
     for heavy_job in ("clippy", "test-archive"):
@@ -8998,17 +9026,40 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester iteration policy gate must need ci-policy")
         for required in (
-            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
-            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
-            'git check-ref-format "refs/heads/$base_branch"',
-            "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+            "TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}",
+            'git fetch --no-tags origin "+${TRUSTED_REVISION}:${trusted_ref}"',
+            'git archive "$TRUSTED_REVISION" scripts/ ci/github-actions-runners.toml',
             "steps.verdict_base.outputs.script",
+            "steps.verdict_base.outputs.config",
             'python3 "$verdict_script" check-backtester-gate',
+            '--config "$verdict_config"',
         ):
             if required not in gate_text:
                 errors.append(
                     f"backtester iteration policy gate must use trusted base-tree check-backtester-gate verdict ({required})"
                 )
+        for forbidden in (
+            'if [[ -z "$verdict_script" ]]',
+            'verdict_script="scripts/ci_provenance.py"',
+        ):
+            if forbidden in gate_text:
+                errors.append(
+                    "backtester iteration policy gate must not retain trusted-verdict "
+                    f"fallbacks ({forbidden})"
+                )
+        verdict_binding_lines = [
+            line.strip()
+            for line in gate_text.splitlines()
+            if re.match(r"^(?:readonly\s+)?verdict_(?:script|config)=", line.strip())
+        ]
+        if verdict_binding_lines != [
+            'readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+            'readonly verdict_config="${{ steps.verdict_base.outputs.config }}"',
+        ]:
+            errors.append(
+                "backtester iteration policy gate must bind each trusted verdict capability "
+                "exactly once without fallback"
+            )
         for required in (
             "--policy-path \"${{ needs.ci-policy.outputs.ci_policy_path }}\"",
             "--expected-event-class \"${{ needs.ci-policy.outputs.expected_event_class }}\"",
@@ -9595,19 +9646,12 @@ def resolve_config_string_map_ref(data: dict[str, object], ref: str, prefix: str
 
 
 def render_config_string_template(template: str, template_vars: dict[str, str], prefix: str) -> str:
-    placeholders = set(CONFIG_TEMPLATE_PLACEHOLDER_RE.findall(template))
-    if not placeholders:
-        raise ValueError(f"{prefix} must include at least one template placeholder")
-    missing_vars = sorted(placeholders - set(template_vars))
-    if missing_vars:
-        raise ValueError(f"{prefix} missing template vars: {missing_vars!r}")
-    unused_vars = sorted(set(template_vars) - placeholders)
-    if unused_vars:
-        raise ValueError(f"{prefix} has unused template vars: {unused_vars!r}")
-    rendered = template
-    for name in sorted(placeholders):
-        rendered = rendered.replace(f"{{{name}}}", template_vars[name])
-    return rendered
+    return _cv.render_config_string_template(
+        template,
+        template_vars,
+        prefix,
+        error_cls=ValueError,
+    )
 
 
 def artifact_retention_select_source_mode(

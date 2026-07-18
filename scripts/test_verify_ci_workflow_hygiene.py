@@ -8193,6 +8193,11 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
             "run_attempt = \"${{ github.run_attempt }}\"",
             "run_attempt = true",
         ),
+        "ci_provenance.artifact_name_template contains malformed template placeholder syntax": config_text.replace(
+            'artifact_name_template = "ci-provenance-attempt-{run_attempt}"',
+            'artifact_name_template = "ci-provenance-attempt-{{run_attempt}}"',
+            1,
+        ),
         "has partial artifact name source; missing ['artifact_name_config_file']": config_text.replace(
             'artifact_name_config_file = "ci/github-actions-runners.toml"\n'
             'artifact_name_config_ref = "ci_provenance.deploy.artifact_name"',

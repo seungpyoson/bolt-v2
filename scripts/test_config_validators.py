@@ -79,6 +79,40 @@ def assert_string_template_validation_is_exact_and_shared() -> None:
     if rendered != "artifact-${{ github.run_id }}-${{ github.run_attempt }}":
         raise AssertionError(f"template rendered unexpected value: {rendered!r}")
 
+    repeated = cv.render_config_string_template(
+        "artifact-{run_id}-{run_id}",
+        {"run_id": "${{ github.run_id }}"},
+        "config.template",
+        error_cls=CustomConfigError,
+        require_same_name_github_bindings=True,
+    )
+    if repeated != "artifact-${{ github.run_id }}-${{ github.run_id }}":
+        raise AssertionError(f"repeated placeholder rendered unexpected value: {repeated!r}")
+
+    malformed_templates = (
+        "artifact-{run_id}-{",
+        "artifact-{run_id}-}",
+        "artifact-{{run_id}}",
+        "artifact-{run-id}",
+        "artifact-{9run_id}",
+        "artifact-{}",
+        "artifact-{run_id}{run_attempt}}",
+    )
+    for template in malformed_templates:
+        expect_error(
+            CustomConfigError,
+            "config.template contains malformed template placeholder syntax",
+            lambda template=template: cv.render_config_string_template(
+                template,
+                {
+                    "run_id": "${{ github.run_id }}",
+                    "run_attempt": "${{ github.run_attempt }}",
+                },
+                "config.template",
+                error_cls=CustomConfigError,
+            ),
+        )
+
     expect_error(
         CustomConfigError,
         "config.vars values must be non-empty strings",

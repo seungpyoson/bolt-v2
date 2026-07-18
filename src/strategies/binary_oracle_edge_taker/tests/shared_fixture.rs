@@ -196,7 +196,7 @@ pub(super) struct RecordingEconomicsAdmissionSource {
 }
 
 const RECORDING_ECONOMICS_VALID_UNTIL_NS: u64 = u64::MAX;
-const RECORDING_ECONOMICS_REFRESH_MARGIN_NS: u64 = 1;
+const RECORDING_ECONOMICS_REFRESH_MARGIN_NS: u64 = 60_000_000_000;
 
 impl Default for RecordingEconomicsAdmissionSource {
     fn default() -> Self {

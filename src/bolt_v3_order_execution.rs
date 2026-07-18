@@ -304,7 +304,7 @@ impl BoltV3OrderRoutingHandle {
             crate::bolt_v3_economics_runtime::RestingOrderEconomicsRefresh::Refreshed(
                 admission,
             ) => {
-                record.admission = admission;
+                record.admission = *admission;
                 Ok(BoltV3RestingOrderEconomicsAction::None)
             }
             crate::bolt_v3_economics_runtime::RestingOrderEconomicsRefresh::CancelRequired(

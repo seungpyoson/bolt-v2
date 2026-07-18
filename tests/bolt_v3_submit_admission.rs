@@ -2968,8 +2968,10 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
         .admit(&submit_request(Decimal::new(1, 0)))
         .expect("first valid submit should admit")
         .commit_submitted();
+    let mut zero_notional_request = submit_request(Decimal::ONE);
+    zero_notional_request.notional = Decimal::ZERO;
     admission
-        .admit(&submit_request(Decimal::ZERO))
+        .admit(&zero_notional_request)
         .expect_err("zero notional must reject");
     admission
         .admit(&submit_request(Decimal::new(2, 0)))

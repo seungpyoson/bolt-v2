@@ -61,7 +61,7 @@ impl EconomicsOrderBinding {
 
     fn for_resting_remainder(&self, remaining_quantity: Decimal, requested_at_ns: u64) -> Self {
         let mut hasher = sha2::Sha256::new();
-        hasher.update(&self.sha256);
+        hasher.update(self.sha256);
         hasher.update(remaining_quantity.to_string().as_bytes());
         hasher.update(requested_at_ns.to_be_bytes());
         Self::from_sha256(hasher.finalize())
@@ -738,7 +738,7 @@ pub enum RestingOrderEconomicsCancelReason {
 pub enum RestingOrderEconomicsRefresh {
     NotDue,
     Complete,
-    Refreshed(EconomicsAdmission),
+    Refreshed(Box<EconomicsAdmission>),
     CancelRequired(RestingOrderEconomicsCancelReason),
 }
 
@@ -846,7 +846,7 @@ pub fn refresh_resting_order_economics(
             RestingOrderEconomicsCancelReason::TermsChanged,
         );
     }
-    RestingOrderEconomicsRefresh::Refreshed(refreshed)
+    RestingOrderEconomicsRefresh::Refreshed(Box::new(refreshed))
 }
 
 fn resting_economic_terms_match(
@@ -1166,8 +1166,8 @@ fn test_economics_admission_with_binding_and_purpose(
     purpose: EconomicsAdmissionPurpose,
 ) -> EconomicsAdmission {
     use crate::economics::{
-        AccountId, AdmissionTreatment, DecisionCorrelationId, EconomicClass, EconomicComponentId,
-        EconomicKind, EconomicQuoteRequest, EconomicScope, EdgeBasisPolicyId,
+        AccountId, AdmissionTreatment, CalculationFactor, DecisionCorrelationId, EconomicClass,
+        EconomicComponentId, EconomicKind, EconomicQuoteRequest, EconomicScope, EdgeBasisPolicyId,
         EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId, InstrumentId,
         LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg,
         PointEstimate, ProductSurfaceId, ReportingPolicyId, RoutingContext, SignedNativeEffect,
@@ -1256,7 +1256,11 @@ fn test_economics_admission_with_binding_and_purpose(
             ),
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
-            calculation_factors: Vec::new(),
+            calculation_factors: vec![CalculationFactor {
+                factor_id: FormulaId::new("test-schedule-factor")
+                    .expect("valid test schedule factor id"),
+                value: Decimal::ONE,
+            }],
             formula_id: FormulaId::new("test-credit-formula").expect("valid test formula id"),
             source: source.clone(),
             normalized: None,

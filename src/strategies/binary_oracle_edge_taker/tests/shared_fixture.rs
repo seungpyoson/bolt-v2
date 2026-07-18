@@ -193,6 +193,8 @@ pub(super) struct RecordingEconomicsAdmissionSource {
     core_effect: Mutex<Decimal>,
 }
 
+const RECORDING_ECONOMICS_VALID_UNTIL_NS: u64 = u64::MAX;
+
 impl Default for RecordingEconomicsAdmissionSource {
     fn default() -> Self {
         Self {
@@ -249,7 +251,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
             snapshot_id: SnapshotId::new("test-economics-snapshot")?,
             source_at_ns: intent.request.requested_at_ns,
             fetched_at_ns: intent.request.requested_at_ns,
-            valid_until_ns: intent.request.requested_at_ns.saturating_add(1),
+            valid_until_ns: RECORDING_ECONOMICS_VALID_UNTIL_NS,
         };
         let valid_until_ns = source.valid_until_ns;
         let adapter = RecordingEconomicsAdapterFixture {
@@ -297,7 +299,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
                 source_snapshot_ids: vec![SnapshotId::new("test-basis-snapshot")?],
-                valid_until_ns: intent.request.requested_at_ns.saturating_add(1),
+                valid_until_ns: RECORDING_ECONOMICS_VALID_UNTIL_NS,
             },
             request: intent.request,
             order_binding: intent.order_binding,

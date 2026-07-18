@@ -63,8 +63,7 @@ use crate::{
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3MakerOrderRoutingContext, cancel_tracked_resting_orders,
-        drive_resting_order_economics, resting_order_observation,
+        BoltV3MakerOrderRoutingContext,
         route_maker_order_command as route_maker_order_command_through_policy,
     },
     bolt_v3_order_intent::NtOrderTemplate,
@@ -312,29 +311,6 @@ impl BinaryOracleMaker {
                 command,
                 submit_order_prefix,
             },
-        )
-    }
-
-    fn refresh_resting_order_economics(&mut self, now_ns: u64) -> anyhow::Result<()> {
-        let order_routing = self.context.order_routing_handle()?;
-        let observations = order_routing
-            .resting_order_ids()?
-            .into_iter()
-            .map(|client_order_id| {
-                (
-                    client_order_id,
-                    resting_order_observation(self.cache().order(&client_order_id)),
-                )
-            })
-            .collect();
-        let execution_client_id = self.config.client_id.clone();
-        drive_resting_order_economics(
-            &order_routing,
-            self.context.order_execution_policy(),
-            self,
-            execution_client_id.as_str(),
-            observations,
-            now_ns,
         )
     }
 
@@ -859,16 +835,10 @@ impl BinaryOracleMaker {
             })?;
         self.context
             .order_routing_handle()?
-            .validate_resting_order_refresh_cadence(interval_nanoseconds)?;
-        self.clock()
-            .set_timer_ns(
-                &timer_name,
+            .register_execution_lifecycle_timer(
+                self.clock(),
+                timer_name.as_str(),
                 interval_nanoseconds,
-                None,
-                None,
-                None,
-                None,
-                None,
             )
             .map_err(|error| {
                 anyhow::anyhow!(
@@ -992,8 +962,7 @@ impl DataActor for BinaryOracleMaker {
         self.runtime.deactivate_all();
         let order_routing = self.context.order_routing_handle()?;
         let execution_client_id = self.config.client_id.clone();
-        cancel_tracked_resting_orders(
-            &order_routing,
+        order_routing.stop_execution_lifecycle(
             self.context.order_execution_policy(),
             self,
             execution_client_id.as_str(),
@@ -1008,11 +977,15 @@ impl DataActor for BinaryOracleMaker {
 
     fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
         if event.name.as_str() == self.quote_timer_name() {
-            let now_ns = self
-                .now_milliseconds()
-                .checked_mul(NANOS_PER_MILLI_U64)
-                .ok_or_else(|| anyhow::anyhow!("binary_oracle_maker clock overflow"))?;
-            self.refresh_resting_order_economics(now_ns)?;
+            let order_routing = self.context.order_routing_handle()?;
+            let execution_client_id = self.config.client_id.clone();
+            let now_ms = self.now_milliseconds();
+            order_routing.drive_execution_lifecycle_at_ms(
+                self.context.order_execution_policy(),
+                self,
+                execution_client_id.as_str(),
+                now_ms,
+            )?;
             self.refresh_active_markets();
         }
         Ok(())

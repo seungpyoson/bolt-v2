@@ -8,6 +8,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use nautilus_common::{
+    actor::DataActorNative,
+    clock::ClockApi,
     factories::OrderFactory,
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrderList,
@@ -175,7 +177,17 @@ pub struct BoltV3MultiSurfaceOrderRoutingConfig<'a> {
 }
 
 impl BoltV3OrderRoutingHandle {
-    pub fn validate_resting_order_refresh_cadence(&self, cadence_ns: u64) -> anyhow::Result<()> {
+    pub fn register_execution_lifecycle_timer(
+        &self,
+        clock: ClockApi<'_>,
+        timer_name: &str,
+        cadence_ns: u64,
+    ) -> anyhow::Result<()> {
+        self.validate_execution_lifecycle_cadence(cadence_ns)?;
+        clock.set_timer_ns(timer_name, cadence_ns, None, None, None, None, None)
+    }
+
+    fn validate_execution_lifecycle_cadence(&self, cadence_ns: u64) -> anyhow::Result<()> {
         let margin_ns = self.source.resting_order_refresh_margin_ns();
         if cadence_ns == 0 || cadence_ns >= margin_ns {
             anyhow::bail!(
@@ -183,6 +195,51 @@ impl BoltV3OrderRoutingHandle {
             );
         }
         Ok(())
+    }
+
+    pub fn drive_execution_lifecycle_at_ms<S>(
+        &self,
+        policy: BoltV3OrderExecutionPolicy,
+        strategy: &mut S,
+        execution_client_id: &str,
+        now_ms: u64,
+    ) -> Result<()>
+    where
+        S: Strategy + StrategyNative + DataActorNative + ?Sized,
+    {
+        let now_ns = now_ms
+            .checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+            .ok_or_else(|| anyhow::anyhow!("execution lifecycle clock overflow"))?;
+        let observations = self
+            .resting_order_ids()?
+            .into_iter()
+            .map(|client_order_id| {
+                let order = strategy.cache().order(&client_order_id);
+                (client_order_id, resting_order_observation(order.as_ref()))
+            })
+            .collect();
+        let mut sink = NtStrategyVenueMutationSink { strategy };
+        drive_resting_order_economics(
+            self,
+            policy,
+            &mut sink,
+            execution_client_id,
+            observations,
+            now_ns,
+        )
+    }
+
+    pub fn stop_execution_lifecycle<S>(
+        &self,
+        policy: BoltV3OrderExecutionPolicy,
+        strategy: &mut S,
+        execution_client_id: &str,
+    ) -> Result<()>
+    where
+        S: Strategy + StrategyNative + ?Sized,
+    {
+        let mut sink = NtStrategyVenueMutationSink { strategy };
+        cancel_tracked_resting_orders(self, policy, &mut sink, execution_client_id)
     }
 
     pub fn resting_order_ids(&self) -> anyhow::Result<Vec<ClientOrderId>> {
@@ -540,7 +597,7 @@ fn normalize_planned_fill_legs(
     Ok(normalized)
 }
 
-pub fn resting_order_observation(order: Option<&OrderAny>) -> BoltV3RestingOrderObservation {
+fn resting_order_observation(order: Option<&OrderAny>) -> BoltV3RestingOrderObservation {
     match order {
         Some(order) if order.is_closed() => BoltV3RestingOrderObservation::Closed,
         Some(order) => BoltV3RestingOrderObservation::Open {
@@ -551,7 +608,7 @@ pub fn resting_order_observation(order: Option<&OrderAny>) -> BoltV3RestingOrder
     }
 }
 
-pub(crate) fn drive_resting_order_economics<S>(
+fn drive_resting_order_economics<S>(
     order_routing: &BoltV3OrderRoutingHandle,
     policy: BoltV3OrderExecutionPolicy,
     sink: &mut S,
@@ -581,7 +638,7 @@ where
     Ok(())
 }
 
-pub(crate) fn cancel_tracked_resting_orders<S>(
+fn cancel_tracked_resting_orders<S>(
     order_routing: &BoltV3OrderRoutingHandle,
     policy: BoltV3OrderExecutionPolicy,
     sink: &mut S,
@@ -1744,10 +1801,10 @@ mod tests {
     fn refresh_cadence_must_be_strictly_shorter_than_margin() {
         let handle =
             crate::bolt_v3_economics_runtime::test_order_routing_handle("execution_client");
-        assert!(handle.validate_resting_order_refresh_cadence(1).is_ok());
+        assert!(handle.validate_execution_lifecycle_cadence(1).is_ok());
         assert!(
             handle
-                .validate_resting_order_refresh_cadence(5_000_000_000)
+                .validate_execution_lifecycle_cadence(5_000_000_000)
                 .is_err()
         );
     }

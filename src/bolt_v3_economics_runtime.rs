@@ -750,7 +750,12 @@ pub fn refresh_resting_order_economics(
     maker_guarantee_intact: bool,
     now_ns: u64,
 ) -> RestingOrderEconomicsRefresh {
-    if remaining_quantity <= Decimal::ZERO {
+    if remaining_quantity.is_sign_negative() {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    }
+    if remaining_quantity.is_zero() {
         return RestingOrderEconomicsRefresh::Complete;
     }
     if prior.request.liquidity_role != LiquidityRoleAssumption::GuaranteedMaker
@@ -1491,6 +1496,23 @@ mod resting_order_refresh_tests {
                 &TestEconomicsAdmissionSource,
                 &partial,
                 Decimal::new(15, 1),
+                Decimal::new(2, 0),
+                true,
+                u64::MAX - 1,
+            ),
+            RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::InvalidState
+            )
+        );
+    }
+
+    #[test]
+    fn negative_remaining_quantity_requires_cancellation() {
+        assert_eq!(
+            refresh_resting_order_economics(
+                &TestEconomicsAdmissionSource,
+                &maker_admission(),
+                Decimal::NEGATIVE_ONE,
                 Decimal::new(2, 0),
                 true,
                 u64::MAX - 1,

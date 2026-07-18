@@ -1266,9 +1266,13 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
     assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
     assert_eq!(
-        admission.notional,
+        admission.economics_admission.base_reservation_notional(),
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style MarketIfTouched entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional()
     );
 }
 
@@ -1742,9 +1746,13 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
     assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
     assert_eq!(
-        admission.notional,
+        admission.economics_admission.base_reservation_notional(),
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style StopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional()
     );
 }
 
@@ -1888,8 +1896,12 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
     assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
     assert_eq!(
-        admission.notional,
+        admission.economics_admission.base_reservation_notional(),
         Decimal::from_str("0.800").expect("expected decimal should parse")
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional()
     );
 
     let exit_price = Price::new(0.45, 2);
@@ -1974,8 +1986,12 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
     assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
     assert_eq!(
-        admission.notional,
+        admission.economics_admission.base_reservation_notional(),
         Decimal::from_str("0.800").expect("expected decimal should parse")
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional()
     );
 
     let exit_price = Price::new(0.45, 2);
@@ -2073,9 +2089,13 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
     assert_eq!(
-        admission.notional,
+        admission.economics_admission.base_reservation_notional(),
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style TrailingStopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional()
     );
 
     let managed_position = materialize_configured_position(
@@ -2136,15 +2156,23 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     // at the ceiling (0.999 * 2 = 1.998), strictly ABOVE the 0.48
     // activation-price estimate it replaces (0.96).
     assert_eq!(
-        exit_admission.notional,
+        exit_admission
+            .economics_admission
+            .base_reservation_notional(),
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style exit must be valued at qty * the instrument price ceiling (2 * 0.999)"
     );
     assert!(
-        exit_admission.notional
+        exit_admission
+            .economics_admission
+            .base_reservation_notional()
             > Decimal::from_str("0.48").expect("expected decimal should parse")
                 * Decimal::from_str(quantity.to_string().trim()).expect("quantity should parse"),
         "the ceiling valuation must bound strictly above the activation-price estimate it replaces"
+    );
+    assert_eq!(
+        exit_admission.notional,
+        exit_admission.economics_admission.reservation_notional()
     );
     assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
     assert_eq!(exit_order.trailing_offset(), Some(Decimal::new(3, 0)));

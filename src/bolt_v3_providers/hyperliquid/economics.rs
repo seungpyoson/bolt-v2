@@ -1,7 +1,8 @@
 use crate::{
     bolt_v3_economics_runtime::{
         AuthoritativeEdgeBasis, EconomicsReceiptClock, ProviderEconomicsAuthority,
-        ProviderEconomicsAuthoritySnapshot, capture_economics_source_receipt,
+        ProviderEconomicsAuthorityRefresh, ProviderEconomicsAuthoritySnapshot,
+        capture_economics_source_receipt,
     },
     economics::{
         AdmissionTreatment, CalculationFactor, CarryKind, EconomicClass, EconomicKind,
@@ -740,28 +741,39 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
         &self.economics
     }
 
-    async fn refresh(
+    async fn refresh_batch(
         &self,
-        instrument: InstrumentAny,
+        instruments: Vec<InstrumentAny>,
         receipt_clock: &dyn EconomicsReceiptClock,
-    ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot> {
+    ) -> anyhow::Result<Vec<ProviderEconomicsAuthorityRefresh>> {
+        if instruments.is_empty() {
+            return Ok(Vec::new());
+        }
         let max_age_ns = self
             .economics
             .quote_max_age_secs
             .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
             .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
             .context("Hyperliquid economics maximum age overflows nanoseconds")?;
-        let user_fees_body = self
-            .post_info(serde_json::json!({
-                "type": "userFees",
-                "user": self.account_address.as_str(),
-            }))
-            .await?;
-        let user_fees_receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
-        let product_body = self
-            .post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))
-            .await?;
-        let product_receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+        let user_fees = async {
+            let body = self
+                .post_info(serde_json::json!({
+                    "type": "userFees",
+                    "user": self.account_address.as_str(),
+                }))
+                .await?;
+            let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+            Ok::<_, anyhow::Error>((body, receipt))
+        };
+        let product_meta = async {
+            let body = self
+                .post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))
+                .await?;
+            let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+            Ok::<_, anyhow::Error>((body, receipt))
+        };
+        let ((user_fees_body, user_fees_receipt), (product_body, product_receipt)) =
+            tokio::try_join!(user_fees, product_meta)?;
         let user_fees_fetched_at_ns = user_fees_receipt.fetched_at_ns;
         let product_fetched_at_ns = product_receipt.fetched_at_ns;
         let user_fees_valid_until_ns = user_fees_receipt.valid_until_ns;
@@ -780,32 +792,11 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
                 .context("Hyperliquid userFees response was not UTF-8 JSON")?,
         )
         .map_err(|error| anyhow::anyhow!("invalid Hyperliquid userFees response: {error:?}"))?;
-        let raw_symbol = instrument.raw_symbol();
         let carry = self
             .adapter_config
             .carry
             .as_ref()
             .context("Hyperliquid perp surface has no carry policy")?;
-        let product_snapshot = HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
-            HyperliquidSnapshotMetadata {
-                snapshot_id: product_snapshot_id.clone(),
-                source_at_ns: product_fetched_at_ns,
-                fetched_at_ns: product_fetched_at_ns,
-                valid_until_ns: product_valid_until_ns,
-            },
-            &product_body,
-            raw_symbol.as_str(),
-            carry,
-        )
-        .map_err(|error| {
-            anyhow::anyhow!("invalid Hyperliquid metaAndAssetCtxs response: {error:?}")
-        })?;
-        let adapter = HyperliquidEconomicsAdapter::try_new(
-            self.adapter_config.clone(),
-            user_fees,
-            product_snapshot,
-        )
-        .map_err(|error| anyhow::anyhow!("invalid Hyperliquid economics adapter: {error:?}"))?;
         let edge_basis_policy_id = self
             .economics
             .product_surface_policies
@@ -816,21 +807,61 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
             .edge_basis
             .get(edge_basis_policy_id)
             .context("Hyperliquid edge-basis policy is missing")?;
-        Ok(ProviderEconomicsAuthoritySnapshot {
-            refreshed_at_ns: user_fees_fetched_at_ns.max(product_fetched_at_ns),
-            product_surface_id: self.product_surface_id.clone(),
-            adapter: Arc::new(adapter),
-            edge_basis: AuthoritativeEdgeBasis {
-                resolver_id: FormulaId::new(edge_policy.resolver_id.clone())?,
-                product_metadata_source: SourceId::new(
-                    edge_policy.product_metadata_source.clone(),
-                )?,
-                policy_version: edge_policy.policy_version,
-                source_snapshot_ids: vec![SnapshotId::new(product_snapshot_id)?],
-                valid_until_ns: product_valid_until_ns,
-            },
-            valuation_observations: Vec::new(),
-        })
+        let refreshed_at_ns = user_fees_fetched_at_ns.max(product_fetched_at_ns);
+        Ok(instruments
+            .into_iter()
+            .map(|instrument| {
+                let instrument_id = instrument.id();
+                let snapshot = (|| {
+                    let product_snapshot =
+                        HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
+                            HyperliquidSnapshotMetadata {
+                                snapshot_id: product_snapshot_id.clone(),
+                                source_at_ns: product_fetched_at_ns,
+                                fetched_at_ns: product_fetched_at_ns,
+                                valid_until_ns: product_valid_until_ns,
+                            },
+                            &product_body,
+                            instrument.raw_symbol().as_str(),
+                            carry,
+                        )
+                        .map_err(|error| {
+                            anyhow::anyhow!(
+                                "invalid Hyperliquid metaAndAssetCtxs response: {error:?}"
+                            )
+                        })?;
+                    let adapter = HyperliquidEconomicsAdapter::try_new(
+                        self.adapter_config.clone(),
+                        user_fees.clone(),
+                        product_snapshot,
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("invalid Hyperliquid economics adapter: {error:?}")
+                    })?;
+                    Ok(ProviderEconomicsAuthoritySnapshot {
+                        refreshed_at_ns,
+                        product_surface_id: self.product_surface_id.clone(),
+                        adapter: Arc::new(adapter),
+                        edge_basis: AuthoritativeEdgeBasis {
+                            resolver_id: FormulaId::new(edge_policy.resolver_id.clone())?,
+                            product_metadata_source: SourceId::new(
+                                edge_policy.product_metadata_source.clone(),
+                            )?,
+                            policy_version: edge_policy.policy_version,
+                            source_snapshot_ids: vec![SnapshotId::new(
+                                product_snapshot_id.clone(),
+                            )?],
+                            valid_until_ns: product_valid_until_ns,
+                        },
+                        valuation_observations: Vec::new(),
+                    })
+                })();
+                ProviderEconomicsAuthorityRefresh {
+                    instrument_id,
+                    snapshot,
+                }
+            })
+            .collect())
     }
 }
 

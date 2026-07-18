@@ -21788,7 +21788,7 @@ reason = "Content-addressed snapshot identifier prefix; the digest is derived fr
 path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
 literal = '''"Polymarket collateral redemption authority is unavailable"'''
-context = '''.context("Polymarket collateral redemption authority is unavailable")?;'''
+context = '''.context("Polymarket collateral redemption authority is unavailable")'''
 classification = "diagnostic_template"
 reason = "Fail-closed diagnostic when mandatory provider conversion evidence cannot be produced."
 

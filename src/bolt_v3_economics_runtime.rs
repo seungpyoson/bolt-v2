@@ -5,7 +5,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use nautilus_model::{identifiers::Venue, instruments::InstrumentAny};
+use nautilus_model::{
+    identifiers::{InstrumentId, Venue},
+    instruments::InstrumentAny,
+};
 use rust_decimal::Decimal;
 
 use crate::economics::{
@@ -79,6 +82,11 @@ pub struct ProviderEconomicsAuthoritySnapshot {
     pub valuation_observations: Vec<AuthoritativeValuationObservation>,
 }
 
+pub struct ProviderEconomicsAuthorityRefresh {
+    pub instrument_id: InstrumentId,
+    pub snapshot: anyhow::Result<ProviderEconomicsAuthoritySnapshot>,
+}
+
 pub trait EconomicsReceiptClock: Send + Sync {
     fn now_ns(&self) -> anyhow::Result<u64>;
 }
@@ -141,11 +149,11 @@ pub trait ProviderEconomicsAuthority: Send + Sync {
     fn venue(&self) -> Venue;
     fn economics_config(&self) -> &crate::bolt_v3_economics_config::ExecutionEconomicsConfig;
 
-    async fn refresh(
+    async fn refresh_batch(
         &self,
-        instrument: InstrumentAny,
+        instruments: Vec<InstrumentAny>,
         receipt_clock: &dyn EconomicsReceiptClock,
-    ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot>;
+    ) -> anyhow::Result<Vec<ProviderEconomicsAuthorityRefresh>>;
 }
 
 pub struct ConfiguredValuationProvider {

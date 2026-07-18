@@ -1,8 +1,8 @@
 use crate::{
     bolt_v3_economics_runtime::{
         AuthoritativeEdgeBasis, AuthoritativeValuationObservation, EconomicsReceiptClock,
-        ProviderEconomicsAuthority, ProviderEconomicsAuthoritySnapshot,
-        capture_economics_source_receipt,
+        ProviderEconomicsAuthority, ProviderEconomicsAuthorityRefresh,
+        ProviderEconomicsAuthoritySnapshot, capture_economics_source_receipt,
     },
     bolt_v3_numeric::NANOS_PER_SECOND_U64,
     economics::{
@@ -15,6 +15,7 @@ use crate::{
 use alloy_primitives::keccak256;
 use anyhow::Context;
 use async_trait::async_trait;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::{
     identifiers::{InstrumentId, Venue},
@@ -554,6 +555,63 @@ impl PolymarketEconomicsAuthority {
             valid_until_ns,
         })
     }
+
+    async fn refresh_market_info(
+        &self,
+        instrument: InstrumentAny,
+        receipt_clock: &dyn EconomicsReceiptClock,
+        max_age_ns: u64,
+    ) -> anyhow::Result<PolymarketMarketAuthorityPart> {
+        let instrument_id = instrument.id();
+        let response = self
+            .http_client
+            .get(
+                self.market_info_url(&instrument_id)?.to_string(),
+                None,
+                None,
+                Some(self.http_timeout_secs),
+                None,
+            )
+            .await
+            .context("Polymarket economics market-info fetch failed")?;
+        let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
+        anyhow::ensure!(
+            response.status.is_success(),
+            "Polymarket economics market-info returned HTTP status {}",
+            response.status.as_u16()
+        );
+        let body = std::str::from_utf8(&response.body)
+            .context("Polymarket economics market-info was not UTF-8 JSON")?;
+        let snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&response.body)));
+        let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(
+            PolymarketSnapshotMetadata {
+                snapshot_id: snapshot_id.clone(),
+                source_at_ns: receipt.fetched_at_ns,
+                fetched_at_ns: receipt.fetched_at_ns,
+                valid_until_ns: receipt.valid_until_ns,
+            },
+            body,
+        )
+        .map_err(|error| anyhow::anyhow!("invalid Polymarket market-info: {error:?}"))?;
+        let adapter =
+            PolymarketEconomicsAdapter::try_new(self.adapter_config.clone(), snapshot, None)
+                .map_err(|error| {
+                    anyhow::anyhow!("invalid Polymarket economics adapter: {error:?}")
+                })?;
+        Ok(PolymarketMarketAuthorityPart {
+            adapter,
+            snapshot_id,
+            fetched_at_ns: receipt.fetched_at_ns,
+            valid_until_ns: receipt.valid_until_ns,
+        })
+    }
+}
+
+struct PolymarketMarketAuthorityPart {
+    adapter: PolymarketEconomicsAdapter,
+    snapshot_id: String,
+    fetched_at_ns: u64,
+    valid_until_ns: u64,
 }
 
 #[derive(Serialize)]
@@ -619,80 +677,78 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
         &self.economics
     }
 
-    async fn refresh(
+    async fn refresh_batch(
         &self,
-        instrument: InstrumentAny,
+        instruments: Vec<InstrumentAny>,
         receipt_clock: &dyn EconomicsReceiptClock,
-    ) -> anyhow::Result<ProviderEconomicsAuthoritySnapshot> {
-        let instrument_id = instrument.id();
-        let response = self
-            .http_client
-            .get(
-                self.market_info_url(&instrument_id)?.to_string(),
-                None,
-                None,
-                Some(self.http_timeout_secs),
-                None,
-            )
-            .await
-            .context("Polymarket economics market-info fetch failed")?;
-        anyhow::ensure!(
-            response.status.is_success(),
-            "Polymarket economics market-info returned HTTP status {}",
-            response.status.as_u16()
-        );
-        let body = std::str::from_utf8(&response.body)
-            .context("Polymarket economics market-info was not UTF-8 JSON")?;
-        let snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&response.body)));
+    ) -> anyhow::Result<Vec<ProviderEconomicsAuthorityRefresh>> {
+        if instruments.is_empty() {
+            return Ok(Vec::new());
+        }
         let max_age_ns = self
             .economics
             .quote_max_age_secs
             .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
             .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
             .context("Polymarket economics maximum age overflows nanoseconds")?;
-        let market_info_receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
-        let market_info_fetched_at_ns = market_info_receipt.fetched_at_ns;
-        let valid_until_ns = market_info_receipt.valid_until_ns;
-        let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(
-            PolymarketSnapshotMetadata {
-                snapshot_id: snapshot_id.clone(),
-                source_at_ns: market_info_fetched_at_ns,
-                fetched_at_ns: market_info_fetched_at_ns,
-                valid_until_ns,
-            },
-            body,
-        )
-        .map_err(|error| anyhow::anyhow!("invalid Polymarket market-info: {error:?}"))?;
-        let adapter =
-            PolymarketEconomicsAdapter::try_new(self.adapter_config.clone(), snapshot, None)
-                .map_err(|error| {
-                    anyhow::anyhow!("invalid Polymarket economics adapter: {error:?}")
-                })?;
         let edge_policy = self
             .economics
             .edge_basis
             .get(&self.edge_basis_policy_id)
             .context("Polymarket economics edge-basis policy is missing")?;
-        let valuation_observation = self
-            .observe_collateral_redemption(receipt_clock, max_age_ns)
-            .await
-            .context("Polymarket collateral redemption authority is unavailable")?;
-        let refreshed_at_ns = market_info_fetched_at_ns.max(valuation_observation.fetched_at_ns());
-        Ok(ProviderEconomicsAuthoritySnapshot {
-            refreshed_at_ns,
-            product_surface_id: self.product_surface_id.clone(),
-            adapter: Arc::new(adapter),
-            edge_basis: AuthoritativeEdgeBasis {
-                resolver_id: FormulaId::new(edge_policy.resolver_id.clone())?,
-                product_metadata_source: SourceId::new(
-                    edge_policy.product_metadata_source.clone(),
-                )?,
-                policy_version: edge_policy.policy_version,
-                source_snapshot_ids: vec![SnapshotId::new(snapshot_id)?],
-                valid_until_ns,
-            },
-            valuation_observations: vec![valuation_observation],
-        })
+        let market_info = async {
+            let mut pending = FuturesUnordered::new();
+            for instrument in instruments {
+                let instrument_id = instrument.id();
+                pending.push(async move {
+                    (
+                        instrument_id,
+                        self.refresh_market_info(instrument, receipt_clock, max_age_ns)
+                            .await,
+                    )
+                });
+            }
+            let mut results = Vec::with_capacity(pending.len());
+            while let Some(result) = pending.next().await {
+                results.push(result);
+            }
+            results
+        };
+        let collateral = async {
+            self.observe_collateral_redemption(receipt_clock, max_age_ns)
+                .await
+                .context("Polymarket collateral redemption authority is unavailable")
+        };
+        let (market_results, valuation_observation) = tokio::join!(market_info, collateral);
+        let valuation_observation = valuation_observation?;
+        Ok(market_results
+            .into_iter()
+            .map(|(instrument_id, market_result)| {
+                let snapshot = market_result.and_then(|market| {
+                    Ok(ProviderEconomicsAuthoritySnapshot {
+                        refreshed_at_ns: market
+                            .fetched_at_ns
+                            .max(valuation_observation.fetched_at_ns()),
+                        product_surface_id: self.product_surface_id.clone(),
+                        adapter: Arc::new(market.adapter),
+                        edge_basis: AuthoritativeEdgeBasis {
+                            resolver_id: FormulaId::new(edge_policy.resolver_id.clone())?,
+                            product_metadata_source: SourceId::new(
+                                edge_policy.product_metadata_source.clone(),
+                            )?,
+                            policy_version: edge_policy.policy_version,
+                            source_snapshot_ids: vec![SnapshotId::new(market.snapshot_id)?],
+                            valid_until_ns: market.valid_until_ns,
+                        },
+                        valuation_observations: vec![valuation_observation.clone()],
+                    })
+                });
+                ProviderEconomicsAuthorityRefresh {
+                    instrument_id,
+                    snapshot,
+                }
+            })
+            .collect())
     }
 }
 

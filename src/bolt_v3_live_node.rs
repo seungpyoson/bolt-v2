@@ -1264,16 +1264,28 @@ impl BoltV3LiveNodeRuntime {
                 }
                 let refresh_interval =
                     Duration::from_secs(authority.economics_config().quote_refresh_secs);
+                let mut refresh_schedule = tokio::time::interval(refresh_interval);
+                refresh_schedule.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
+                    refresh_schedule.tick().await;
+                    match node_handle.state() {
+                        NodeState::ShuttingDown | NodeState::Stopped => return,
+                        NodeState::Idle | NodeState::Starting | NodeState::Running => {}
+                    }
                     let instruments = cache
                         .borrow()
                         .instruments(&authority.venue(), None)
                         .into_iter()
                         .cloned()
                         .collect::<Vec<_>>();
-                    for instrument in instruments {
-                                let instrument_id = instrument.id();
-                                match authority.refresh(instrument, &current_unix_nanos).await {
+                    match authority
+                        .refresh_batch(instruments, &current_unix_nanos)
+                        .await
+                    {
+                        Ok(refreshes) => {
+                            for refresh in refreshes {
+                                let instrument_id = refresh.instrument_id;
+                                match refresh.snapshot {
                                     Ok(snapshot) => {
                                         let valuation_provider = match economics_valuation_provider_from_cache(
                                             &authority.economics_config().valuation,
@@ -1326,12 +1338,12 @@ impl BoltV3LiveNodeRuntime {
                                         instrument_id
                                     ),
                                 }
-                    }
-                    match node_handle.state() {
-                        NodeState::ShuttingDown | NodeState::Stopped => return,
-                        NodeState::Idle | NodeState::Starting | NodeState::Running => {
-                            tokio::time::sleep(refresh_interval).await;
+                            }
                         }
+                        Err(error) => log::error!(
+                            "economics authority batch refresh failed: execution_client_id={} error={error:#}",
+                            authority.execution_client_id()
+                        ),
                     }
                 }
             }));

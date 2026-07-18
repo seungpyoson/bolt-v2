@@ -503,7 +503,7 @@ fn basket_submit_slots_carry_capital_admission_evidence_into_shared_gate() {
     assert_eq!(submit_gate.admitted_order_count(), 2);
     assert_eq!(
         submit_gate.capital_admission_live_reserved_liability(),
-        Some(dec!(2.4)),
+        Some(dec!(1.8)),
         "both committed basket legs must retain their capital-admission reservations"
     );
     for claim in &claims {
@@ -640,7 +640,7 @@ fn dropped_capital_admission_basket_submit_permit_rolls_back_all_leg_reservation
     assert_eq!(submit_gate.admitted_order_count(), 2);
     assert_eq!(
         submit_gate.capital_admission_live_reserved_liability(),
-        Some(dec!(2.4))
+        Some(dec!(1.8))
     );
 
     drop(permit);

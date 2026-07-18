@@ -119,7 +119,7 @@ use crate::{
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
     economics::{LifecyclePath, LiquidityRoleAssumption},
-    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
+    strategies::registry::{StrategyBuilder, ValidationError},
 };
 
 #[cfg(test)]

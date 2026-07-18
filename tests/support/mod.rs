@@ -34,6 +34,7 @@ use nautilus_model::{
 };
 
 const TEST_DELAY_POST_STOP_SECS: u64 = 0;
+const TEST_RESTING_ORDER_REFRESH_MARGIN_NS: u64 = 1;
 const TEST_TRADER_ID: &str = "TESTER-001";
 
 #[derive(Clone)]
@@ -58,6 +59,10 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
             [] => Err(bolt_v2::economics::EconomicsUnavailable::MissingQuoteAuthority),
             _ => Err(bolt_v2::economics::EconomicsUnavailable::AmbiguousQuoteAuthority),
         }
+    }
+
+    fn resting_order_refresh_margin_ns(&self) -> u64 {
+        TEST_RESTING_ORDER_REFRESH_MARGIN_NS
     }
 
     fn quote_admission(

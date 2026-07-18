@@ -5,7 +5,7 @@
 //! stay outside this core boundary.
 
 use crate::bolt_v3_config::{
-    BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
+    BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_iv::{
@@ -16,32 +16,170 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
-use crate::bolt_v3_providers::resolve_fee_provider;
+use crate::bolt_v3_providers::{FeeProvider, resolve_fee_provider};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::{
     BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
 };
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
+use nautilus_common::{actor::DataActorNative, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     identifiers::{ClientId, StrategyId, Venue},
     types::Currency,
 };
+use nautilus_system::trader::Trader;
+use nautilus_trading::{Strategy, StrategyNative};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime;
 
+trait PreparedStrategyCommit {
+    fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId>;
+    fn commit(self: Box<Self>, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<()>;
+}
+
+struct PreparedConcreteStrategy<T> {
+    strategy: T,
+}
+
+impl<T> PreparedStrategyCommit for PreparedConcreteStrategy<T>
+where
+    T: Strategy + StrategyNative + DataActorNative + Component + std::fmt::Debug + 'static,
+{
+    fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId> {
+        trader.prepare_strategy_for_registration(&mut self.strategy)
+    }
+
+    fn commit(self: Box<Self>, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<()> {
+        let Self { strategy } = *self;
+        trader.borrow_mut().add_strategy(strategy)
+    }
+}
+
+pub struct PreparedStrategyRegistration {
+    strategy_id: Option<StrategyId>,
+    strategy: Box<dyn PreparedStrategyCommit>,
+}
+
+impl PreparedStrategyRegistration {
+    pub(crate) fn from_strategy<T>(strategy: T) -> Self
+    where
+        T: Strategy + StrategyNative + DataActorNative + Component + std::fmt::Debug + 'static,
+    {
+        Self {
+            strategy_id: None,
+            strategy: Box::new(PreparedConcreteStrategy { strategy }),
+        }
+    }
+
+    fn prepare_registration(&mut self, trader: &Trader) -> anyhow::Result<StrategyId> {
+        let strategy_id = self.strategy.prepare_registration(trader)?;
+        self.strategy_id = Some(strategy_id);
+        Ok(strategy_id)
+    }
+
+    fn commit(self, trader: &Rc<RefCell<Trader>>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.strategy_id.is_some(),
+            stringify!(prepared_strategy_registration_has_no_preflighted_nt_strategy_id)
+        );
+        self.strategy.commit(trader)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct PreparedStrategyBatchError {
+    failed_index: usize,
+    source: anyhow::Error,
+}
+
+impl PreparedStrategyBatchError {
+    fn new(failed_index: usize, source: impl Into<anyhow::Error>) -> Self {
+        Self {
+            failed_index,
+            source: source.into(),
+        }
+    }
+
+    pub fn failed_index(&self) -> usize {
+        self.failed_index
+    }
+}
+
+impl std::fmt::Display for PreparedStrategyBatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "prepared strategy at batch index {} failed: {}",
+            self.failed_index, self.source
+        )
+    }
+}
+
+impl std::error::Error for PreparedStrategyBatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+pub fn register_prepared_strategy_batch(
+    trader: &Rc<RefCell<Trader>>,
+    mut prepared: Vec<PreparedStrategyRegistration>,
+) -> Result<Vec<StrategyId>, PreparedStrategyBatchError> {
+    let mut prepared_strategy_ids = BTreeSet::new();
+    let mut prepared_order_id_tags = BTreeSet::new();
+    let mut strategy_ids = Vec::with_capacity(prepared.len());
+    {
+        let trader = trader.borrow();
+        for (index, prepared_registration) in prepared.iter_mut().enumerate() {
+            let strategy_id = prepared_registration
+                .prepare_registration(&trader)
+                .map_err(|error| PreparedStrategyBatchError::new(index, error))?;
+            if !prepared_strategy_ids.insert(strategy_id) {
+                return Err(PreparedStrategyBatchError::new(
+                    index,
+                    anyhow::anyhow!(
+                        "prepared NT strategy ID `{strategy_id}` is duplicated in the batch"
+                    ),
+                ));
+            }
+            let order_id_tag = strategy_id.get_tag().to_string();
+            if !prepared_order_id_tags.insert(order_id_tag.clone()) {
+                return Err(PreparedStrategyBatchError::new(
+                    index,
+                    anyhow::anyhow!(
+                        "prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"
+                    ),
+                ));
+            }
+            strategy_ids.push(strategy_id);
+        }
+    }
+
+    for (index, prepared_registration) in prepared.into_iter().enumerate() {
+        prepared_registration
+            .commit(trader)
+            .map_err(|error| PreparedStrategyBatchError::new(index, error))?;
+    }
+    Ok(strategy_ids)
+}
+
 #[derive(Clone, Copy)]
 pub struct StrategyRuntimeBinding {
     pub key: &'static str,
-    pub strategy_kind: fn() -> &'static str,
+    pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
-    pub register: for<'a> fn(
-        &mut LiveNode,
-        StrategyRegistrationContext<'a>,
-    ) -> Result<StrategyId, BoltV3StrategyRegistrationError>,
+    pub prepare:
+        for<'a> fn(
+            StrategyRegistrationContext<'a>,
+        )
+            -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,37 +198,363 @@ pub struct BoltV3StrategyExecutionControls {
 }
 
 #[derive(Clone)]
+pub struct StrategyRegistrationRuntimeResources {
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+    realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+    execution_controls: BoltV3StrategyExecutionControls,
+}
+
+impl StrategyRegistrationRuntimeResources {
+    pub fn new(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+        realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+        execution_controls: BoltV3StrategyExecutionControls,
+    ) -> Self {
+        Self {
+            decision_evidence,
+            iv_query_handles,
+            realized_volatility_runtime,
+            execution_controls,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct StrategyRegistrationContext<'a> {
-    pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
     pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
-    pub resolved: &'a ResolvedBoltV3Secrets,
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
-    pub realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
-    pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
-    pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+    preparation_config: Arc<StrategyPreparationConfig>,
+    realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
+    client_routes: PreparedStrategyClientRoutes,
+    execution_venue: Venue,
+    fee_provider: Arc<dyn FeeProvider>,
+    settlement: Option<StrategyRegistrationSettlementResources>,
+}
+
+#[derive(Clone)]
+pub struct PreparedStrategyClientRoutes {
+    venues_by_client_id: BTreeMap<ClientId, Venue>,
+}
+
+impl PreparedStrategyClientRoutes {
+    pub fn venue(&self, client_id: &ClientId) -> Option<Venue> {
+        self.venues_by_client_id.get(client_id).copied()
+    }
+}
+
+struct ResolvedStrategyClientRoutes<'a> {
+    prepared: PreparedStrategyClientRoutes,
+    execution_client: &'a ClientBlock,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StrategyPreparationConfig {
+    realized_volatility_max_source_age_ms: Option<BTreeMap<String, u64>>,
+    gate_provider_max_age_ms: BTreeMap<String, u64>,
+    chainlink_feed_instrument_ids: BTreeSet<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparedRealizedVolatilitySurface {
+    SurfacesAbsent,
+    SurfaceUnknown,
+    Resolved { max_source_age_ms: u64 },
+}
+
+impl StrategyPreparationConfig {
+    pub fn from_root(root: &BoltV3RootConfig) -> Self {
+        let realized_volatility_max_source_age_ms =
+            root.realized_volatility_surfaces.as_ref().map(|surfaces| {
+                surfaces
+                    .iter()
+                    .map(|(id, surface)| (id.clone(), surface.policy.max_source_age_ms))
+                    .collect()
+            });
+        let gate_provider_max_age_ms = root
+            .gate_providers
+            .as_ref()
+            .into_iter()
+            .flat_map(|providers| providers.iter())
+            .filter_map(|(id, provider)| {
+                provider
+                    .freshness
+                    .as_ref()?
+                    .max_age_ms
+                    .map(|age| (id.clone(), age))
+            })
+            .collect();
+        let chainlink_feed_instrument_ids = root
+            .chainlink_data_streams
+            .as_ref()
+            .into_iter()
+            .flat_map(|catalog| catalog.feed_bindings.iter())
+            .filter_map(toml::Value::as_table)
+            .filter_map(|binding| binding.get(stringify!(instrument_id)))
+            .filter_map(toml::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        Self {
+            realized_volatility_max_source_age_ms,
+            gate_provider_max_age_ms,
+            chainlink_feed_instrument_ids,
+        }
+    }
+
+    pub fn realized_volatility_surface(&self, id: &str) -> PreparedRealizedVolatilitySurface {
+        let Some(surfaces) = self.realized_volatility_max_source_age_ms.as_ref() else {
+            return PreparedRealizedVolatilitySurface::SurfacesAbsent;
+        };
+        match surfaces.get(id).copied() {
+            Some(max_source_age_ms) => {
+                PreparedRealizedVolatilitySurface::Resolved { max_source_age_ms }
+            }
+            None => PreparedRealizedVolatilitySurface::SurfaceUnknown,
+        }
+    }
+
+    pub fn gate_provider_max_age_ms(&self, id: &str) -> Option<u64> {
+        self.gate_provider_max_age_ms.get(id).copied()
+    }
+
+    pub fn has_chainlink_feed_binding(&self, instrument_id: &str) -> bool {
+        self.chainlink_feed_instrument_ids.contains(instrument_id)
+    }
+}
+
+#[derive(Clone)]
+struct StrategyRegistrationSettlementResources {
+    settlement_account_id: String,
+    settlement_currency: Currency,
+    runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    recovery: Option<BoltV3SettlementRecoveryConfig>,
+    health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+}
+
+#[derive(Clone)]
+enum StrategyRegistrationSettlementIdentityError {
+    AccountId { execution_client_id: String },
+    Currency { settlement_account_id: String },
+}
+
+impl StrategyRegistrationSettlementIdentityError {
+    fn message(&self) -> String {
+        match self {
+            Self::AccountId {
+                execution_client_id,
+            } => format!(
+                "settlement capability requires execution account id for execution_client_id `{execution_client_id}`"
+            ),
+            Self::Currency {
+                settlement_account_id,
+            } => format!(
+                "settlement capability requires settlement currency for execution account `{settlement_account_id}`"
+            ),
+        }
+    }
+}
+
+impl<'a> StrategyRegistrationContext<'a> {
+    pub fn new(
+        loaded: &LoadedBoltV3Config,
+        strategy: &'a LoadedStrategy,
+        strategy_kind: &'static str,
+        capabilities: StrategyRuntimeCapabilities,
+        resolved: &ResolvedBoltV3Secrets,
+        preparation_config: Arc<StrategyPreparationConfig>,
+        runtime_resources: StrategyRegistrationRuntimeResources,
+    ) -> Result<Self, BoltV3StrategyRegistrationError> {
+        let StrategyRegistrationRuntimeResources {
+            decision_evidence,
+            iv_query_handles,
+            realized_volatility_runtime,
+            execution_controls,
+        } = runtime_resources;
+        let BoltV3StrategyExecutionControls {
+            submit_admission,
+            order_execution_policy,
+            settlement_runtime_sink,
+            settlement_recovery,
+            settlement_health_transition_emitter,
+        } = execution_controls;
+        let realized_volatility_runtime = capabilities
+            .realized_volatility
+            .then_some(realized_volatility_runtime);
+        let execution_client_id = strategy.config.execution_client_id.as_str();
+        let ResolvedStrategyClientRoutes {
+            prepared: client_routes,
+            execution_client,
+        } = resolve_strategy_client_routes(loaded, strategy)?;
+        let execution_venue = client_routes
+            .venue(&strategy.config.execution_client_id)
+            .ok_or_else(|| {
+                binding_error(
+                    strategy,
+                    "prepared client routes did not retain the configured execution client",
+                )
+            })?;
+        let settlement = capabilities
+            .settlement
+            .then(|| {
+                resolve_settlement_capability(
+                    loaded,
+                    strategy,
+                    execution_client,
+                    execution_venue,
+                    settlement_runtime_sink,
+                    settlement_recovery,
+                    settlement_health_transition_emitter,
+                )
+            })
+            .transpose()
+            .map_err(|error| binding_error(strategy, error.message()))?;
+        let fee_provider = resolve_fee_provider(
+            execution_client_id,
+            execution_client,
+            execution_venue,
+            resolved,
+        )
+        .map_err(|error| binding_error(strategy, error.to_string()))?;
+
+        Ok(Self {
+            strategy,
+            strategy_kind,
+            capabilities,
+            decision_evidence,
+            submit_admission,
+            iv_query_handles,
+            order_execution_policy,
+            preparation_config,
+            realized_volatility_runtime,
+            client_routes,
+            execution_venue,
+            fee_provider,
+            settlement,
+        })
+    }
+
+    pub(crate) fn preparation_config(&self) -> &StrategyPreparationConfig {
+        &self.preparation_config
+    }
+
+    pub(crate) fn prepared_client_routes(&self) -> &PreparedStrategyClientRoutes {
+        &self.client_routes
+    }
+}
+
+fn resolve_strategy_client_routes<'a>(
+    loaded: &'a LoadedBoltV3Config,
+    strategy: &LoadedStrategy,
+) -> Result<ResolvedStrategyClientRoutes<'a>, BoltV3StrategyRegistrationError> {
+    let mut roles_by_client_id = BTreeMap::<ClientId, BTreeSet<String>>::new();
+    roles_by_client_id
+        .entry(strategy.config.execution_client_id)
+        .or_default()
+        .insert(stringify!(execution_client_id).to_string());
+    for (role, signal_data) in &strategy.config.signal_data {
+        roles_by_client_id
+            .entry(signal_data.data_client_id)
+            .or_default()
+            .insert(format!("signal_data.{role}.data_client_id"));
+    }
+    if let Some(resolution_data) = strategy.config.resolution_data.as_ref() {
+        let mut resolution_role = stringify!(resolution_data).to_string();
+        resolution_role.push('.');
+        resolution_role.push_str(stringify!(data_client_id));
+        roles_by_client_id
+            .entry(resolution_data.data_client_id)
+            .or_default()
+            .insert(resolution_role);
+    }
+
+    let mut clients_by_id = BTreeMap::<ClientId, &'a ClientBlock>::new();
+    let mut venues_by_client_id = BTreeMap::new();
+    for (client_id, roles) in roles_by_client_id {
+        let client = loaded.root.clients.get(client_id.as_str()).ok_or_else(|| {
+            let message = if client_id == strategy.config.execution_client_id {
+                format!(
+                    "execution_client_id `{client_id}` is not present in loaded clients for execution-venue resolution"
+                )
+            } else {
+                format!(
+                    "configured client `{client_id}` for {roles:?} is not present in loaded clients"
+                )
+            };
+            binding_error(strategy, message)
+        })?;
+        clients_by_id.insert(client_id, client);
+        venues_by_client_id.insert(client_id, client.venue);
+    }
+
+    let execution_client = clients_by_id
+        .get(&strategy.config.execution_client_id)
+        .copied()
+        .ok_or_else(|| {
+            binding_error(
+                strategy,
+                "prepared client routes did not retain the configured execution client",
+            )
+        })?;
+    Ok(ResolvedStrategyClientRoutes {
+        prepared: PreparedStrategyClientRoutes {
+            venues_by_client_id,
+        },
+        execution_client,
+    })
+}
+
+pub fn prepare_strategy_client_routes(
+    loaded: &LoadedBoltV3Config,
+    strategy: &LoadedStrategy,
+) -> Result<PreparedStrategyClientRoutes, BoltV3StrategyRegistrationError> {
+    Ok(resolve_strategy_client_routes(loaded, strategy)?.prepared)
+}
+
+fn resolve_settlement_capability(
+    loaded: &LoadedBoltV3Config,
+    strategy: &LoadedStrategy,
+    execution_client: &ClientBlock,
+    execution_venue: Venue,
+    runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    recovery: Option<BoltV3SettlementRecoveryConfig>,
+    health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+) -> Result<StrategyRegistrationSettlementResources, StrategyRegistrationSettlementIdentityError> {
+    let execution_client_id = strategy.config.execution_client_id.as_str();
+    let settlement_account_id =
+        execution_account_id_from_client(execution_client).ok_or_else(|| {
+            StrategyRegistrationSettlementIdentityError::AccountId {
+                execution_client_id: execution_client_id.to_string(),
+            }
+        })?;
+    let settlement_currency = settlement_currency_for_execution_account(
+        &loaded.root,
+        execution_venue,
+        settlement_account_id,
+    )
+    .ok_or_else(|| StrategyRegistrationSettlementIdentityError::Currency {
+        settlement_account_id: settlement_account_id.to_string(),
+    })?;
+    Ok(StrategyRegistrationSettlementResources {
+        settlement_account_id: settlement_account_id.to_string(),
+        settlement_currency,
+        runtime_sink,
+        recovery,
+        health_transition_emitter,
+    })
 }
 
 pub fn assemble_strategy_build_context(
     context: &StrategyRegistrationContext<'_>,
 ) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
-    let execution_client_id = context.strategy.config.execution_client_id.as_str();
-    let execution_venue = venue_for_client(&context.loaded.root, execution_client_id)
-        .ok_or_else(|| {
-            binding_message(
-                context,
-                format!(
-                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
-                ),
-            )
-        })?;
-    let fee_provider = resolve_fee_provider(context.loaded, execution_client_id, context.resolved)
-        .map_err(|error| binding_message(context, error.to_string()))?;
+    let execution_venue = context.execution_venue;
+    let settlement = settlement_resources_for_context(context);
+    let fee_provider = context.fee_provider.clone();
     let mut build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
@@ -98,30 +562,27 @@ pub fn assemble_strategy_build_context(
         context.order_execution_policy,
         execution_venue,
     );
-    if context.capabilities.realized_volatility {
-        build_context = build_context
-            .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    if let Some(realized_volatility_runtime) = &context.realized_volatility_runtime {
+        build_context =
+            build_context.with_realized_volatility_runtime(realized_volatility_runtime.clone());
     }
-    if context.capabilities.settlement {
-        let settlement_account_id =
-            execution_account_id(&context.loaded.root, execution_client_id).map(str::to_string);
-        let settlement_currency = settlement_account_id.as_deref().and_then(|account_id| {
-            settlement_currency_for_execution_account(
-                &context.loaded.root,
-                execution_venue,
-                account_id,
-            )
-        });
+    if let Some(settlement) = settlement {
         build_context = build_context
-            .with_settlement_runtime_sink(context.settlement_runtime_sink.clone())
-            .with_settlement_recovery(context.settlement_recovery.clone())
-            .with_settlement_account_id(settlement_account_id)
-            .with_settlement_currency(settlement_currency)
+            .with_settlement_runtime_sink(settlement.runtime_sink.clone())
+            .with_settlement_recovery(settlement.recovery.clone())
+            .with_settlement_account_id(Some(settlement.settlement_account_id.clone()))
+            .with_settlement_currency(Some(settlement.settlement_currency))
             .with_settlement_health_transition_emitter(
-                context.settlement_health_transition_emitter.clone(),
+                settlement.health_transition_emitter.clone(),
             );
     }
     Ok(build_context)
+}
+
+fn settlement_resources_for_context<'a>(
+    context: &'a StrategyRegistrationContext<'_>,
+) -> Option<&'a StrategyRegistrationSettlementResources> {
+    context.settlement.as_ref()
 }
 
 /// Neutral client-table venue lookup for execution and data client ids alike, so
@@ -134,8 +595,11 @@ pub(crate) fn execution_account_id<'a>(
     root: &'a BoltV3RootConfig,
     execution_client_id: &str,
 ) -> Option<&'a str> {
-    root.clients
-        .get(execution_client_id)?
+    execution_account_id_from_client(root.clients.get(execution_client_id)?)
+}
+
+fn execution_account_id_from_client(client: &ClientBlock) -> Option<&str> {
+    client
         .execution
         .as_ref()?
         .as_table()?
@@ -155,31 +619,26 @@ pub(crate) fn settlement_currency_for_execution_account(
         .find(|pool| {
             pool.venue_id == execution_venue.as_str() && pool.account_id.to_string() == account_id
         })
-        .map(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
+        .and_then(|pool| settlement_currency_from_config_code(pool.collateral_currency.as_str()))
 }
 
-pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Currency {
+pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Option<Currency> {
     let pusd = Currency::pUSD();
     if configured.eq_ignore_ascii_case(pusd.code.as_str()) {
-        pusd
+        Some(pusd)
     } else {
-        Currency::from(configured)
+        configured.parse().ok()
     }
 }
 
-fn binding_message(
-    context: &StrategyRegistrationContext<'_>,
-    message: String,
+fn binding_error(
+    strategy: &LoadedStrategy,
+    message: impl Into<String>,
 ) -> BoltV3StrategyRegistrationError {
     BoltV3StrategyRegistrationError::Binding {
-        strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-        strategy_archetype: context
-            .strategy
-            .config
-            .strategy_archetype
-            .as_str()
-            .to_string(),
-        message,
+        strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+        strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
+        message: message.into(),
     }
 }
 
@@ -512,34 +971,55 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
             BoltV3StrategyRegistrationError::RealizedVolatilityRuntime { message: error }
         })?,
     ));
+    let runtime_resources = StrategyRegistrationRuntimeResources::new(
+        decision_evidence,
+        iv_query_handles,
+        realized_volatility_runtime,
+        execution_controls,
+    );
+    let preparation_config = Arc::new(StrategyPreparationConfig::from_root(&loaded.root));
 
-    for strategy in &loaded.strategies {
-        let binding = bindings
-            .iter()
-            .find(|binding| binding.key == strategy.config.strategy_archetype.as_str())
-            .ok_or_else(|| BoltV3StrategyRegistrationError::UnsupportedStrategy {
-                strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
-            })?;
-        let registered_strategy_id = (binding.register)(
-            node,
-            StrategyRegistrationContext {
+    let contexts = loaded
+        .strategies
+        .iter()
+        .map(|strategy| {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.key == strategy.config.strategy_archetype.as_str())
+                .ok_or_else(|| BoltV3StrategyRegistrationError::UnsupportedStrategy {
+                    strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
+                })?;
+            let context = StrategyRegistrationContext::new(
                 loaded,
                 strategy,
-                strategy_kind: (binding.strategy_kind)(),
-                capabilities: binding.capabilities,
+                binding.strategy_kind,
+                binding.capabilities,
                 resolved,
-                decision_evidence: decision_evidence.clone(),
-                submit_admission: execution_controls.submit_admission.clone(),
-                iv_query_handles: iv_query_handles.clone(),
-                order_execution_policy: execution_controls.order_execution_policy,
-                realized_volatility_runtime: realized_volatility_runtime.clone(),
-                settlement_runtime_sink: execution_controls.settlement_runtime_sink.clone(),
-                settlement_recovery: execution_controls.settlement_recovery.clone(),
-                settlement_health_transition_emitter: execution_controls
-                    .settlement_health_transition_emitter
-                    .clone(),
-            },
+                preparation_config.clone(),
+                runtime_resources.clone(),
+            )?;
+            Ok((binding, context))
+        })
+        .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
+
+    let prepared = contexts
+        .into_iter()
+        .map(|(binding, context)| {
+            let strategy = context.strategy;
+            let prepared = (binding.prepare)(context)?;
+            Ok((strategy, prepared))
+        })
+        .collect::<Result<Vec<_>, BoltV3StrategyRegistrationError>>()?;
+    let (prepared_metadata, prepared_registrations): (Vec<_>, Vec<_>) =
+        prepared.into_iter().unzip();
+    let registered_strategy_ids =
+        register_prepared_strategy_batch(node.kernel().trader(), prepared_registrations).map_err(
+            |error| binding_error(prepared_metadata[error.failed_index()], error.to_string()),
         )?;
+
+    for (strategy, registered_strategy_id) in
+        prepared_metadata.into_iter().zip(registered_strategy_ids)
+    {
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             strategy_archetype: strategy.config.strategy_archetype.clone(),

@@ -1,5 +1,10 @@
 use std::path::{Path, PathBuf};
 
+#[path = "support/rust_source_tokens.rs"]
+mod rust_source_tokens;
+
+use rust_source_tokens::{Token, count_sequence, item_body_tokens, item_header, texts, tokenize};
+
 const ARCHETYPES: &[&str] = &[
     "src/strategies/binary_oracle_edge_taker/archetype.rs",
     "src/strategies/binary_oracle_maker/archetype.rs",
@@ -94,11 +99,6 @@ const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
 // evidence preserves the originating rule rather than only its vocabulary.
 const NT_EXIT_MARKET_COMMAND_NAME: &str = "ExitMarket";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct Token {
-    text: String,
-}
-
 fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
@@ -107,77 +107,6 @@ fn source_tokens(relative: &str) -> Vec<Token> {
     let source = std::fs::read_to_string(repo_path(relative))
         .unwrap_or_else(|error| panic!("{relative} should be readable: {error}"));
     tokenize(&source)
-}
-
-fn tokenize(source: &str) -> Vec<Token> {
-    let bytes = source.as_bytes();
-    let mut tokens = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index].is_ascii_whitespace() {
-            index += 1;
-            continue;
-        }
-        if bytes[index..].starts_with(b"//") {
-            index += 2;
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if bytes[index..].starts_with(b"/*") {
-            index = scan_nested_block_comment(bytes, index);
-            continue;
-        }
-        if let Some(end) = scan_raw_string(bytes, index) {
-            index = end;
-            continue;
-        }
-        if let Some(end) = scan_quoted_literal(bytes, index) {
-            index = end;
-            continue;
-        }
-        if let Some(end) = scan_char_or_lifetime(bytes, index) {
-            index = end;
-            continue;
-        }
-        if bytes[index..].starts_with(b"r#")
-            && bytes.get(index + 2).is_some_and(|byte| ident_start(*byte))
-        {
-            let start = index + 2;
-            index = start + 1;
-            while index < bytes.len() && ident_continue(bytes[index]) {
-                index += 1;
-            }
-            tokens.push(Token {
-                text: source[start..index].to_owned(),
-            });
-            continue;
-        }
-        if ident_start(bytes[index]) {
-            let start = index;
-            index += 1;
-            while index < bytes.len() && ident_continue(bytes[index]) {
-                index += 1;
-            }
-            tokens.push(Token {
-                text: source[start..index].to_owned(),
-            });
-            continue;
-        }
-        if bytes[index..].starts_with(b"::") {
-            tokens.push(Token {
-                text: "::".to_owned(),
-            });
-            index += 2;
-            continue;
-        }
-        tokens.push(Token {
-            text: (bytes[index] as char).to_string(),
-        });
-        index += 1;
-    }
-    tokens
 }
 
 fn production_tokens(source: &str) -> Vec<Token> {
@@ -277,125 +206,6 @@ fn cfg_gated_item_end(tokens: &[Token], mut cursor: usize) -> usize {
         cursor += 1;
     }
     cursor
-}
-
-fn ident_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
-}
-
-fn ident_continue(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn scan_nested_block_comment(bytes: &[u8], mut index: usize) -> usize {
-    let mut depth = 0;
-    while index < bytes.len() {
-        if bytes[index..].starts_with(b"/*") {
-            depth += 1;
-            index += 2;
-        } else if bytes[index..].starts_with(b"*/") {
-            depth -= 1;
-            index += 2;
-            if depth == 0 {
-                return index;
-            }
-        } else {
-            index += 1;
-        }
-    }
-    index
-}
-
-fn scan_raw_string(bytes: &[u8], index: usize) -> Option<usize> {
-    let mut cursor = index;
-    if bytes.get(cursor) == Some(&b'b') {
-        cursor += 1;
-    }
-    if bytes.get(cursor) != Some(&b'r') {
-        return None;
-    }
-    cursor += 1;
-    let mut hashes = 0;
-    while bytes.get(cursor) == Some(&b'#') {
-        hashes += 1;
-        cursor += 1;
-    }
-    if bytes.get(cursor) != Some(&b'"') {
-        return None;
-    }
-    cursor += 1;
-    while cursor < bytes.len() {
-        if bytes[cursor] == b'"'
-            && (1..=hashes).all(|offset| bytes.get(cursor + offset) == Some(&b'#'))
-        {
-            return Some(cursor + hashes + 1);
-        }
-        cursor += 1;
-    }
-    Some(cursor)
-}
-
-fn scan_quoted_literal(bytes: &[u8], index: usize) -> Option<usize> {
-    let mut cursor = index;
-    if bytes.get(cursor) == Some(&b'b') {
-        cursor += 1;
-    }
-    if bytes.get(cursor) != Some(&b'"') {
-        return None;
-    }
-    cursor += 1;
-    while cursor < bytes.len() {
-        if bytes[cursor] == b'\\' {
-            cursor += 2;
-        } else if bytes[cursor] == b'"' {
-            return Some(cursor + 1);
-        } else {
-            cursor += 1;
-        }
-    }
-    Some(cursor)
-}
-
-fn scan_char_or_lifetime(bytes: &[u8], index: usize) -> Option<usize> {
-    let mut cursor = index;
-    if bytes.get(cursor) == Some(&b'b') && bytes.get(cursor + 1) == Some(&b'\'') {
-        cursor += 1;
-    }
-    if bytes.get(cursor) != Some(&b'\'') {
-        return None;
-    }
-    if bytes.get(cursor + 1).is_some_and(|byte| ident_start(*byte))
-        && bytes.get(cursor + 2) != Some(&b'\'')
-    {
-        cursor += 2;
-        while cursor < bytes.len() && ident_continue(bytes[cursor]) {
-            cursor += 1;
-        }
-        return Some(cursor);
-    }
-    cursor += 1;
-    while cursor < bytes.len() {
-        if bytes[cursor] == b'\\' {
-            cursor += 2;
-        } else if bytes[cursor] == b'\'' {
-            return Some(cursor + 1);
-        } else {
-            cursor += 1;
-        }
-    }
-    Some(cursor)
-}
-
-fn texts(tokens: &[Token]) -> Vec<&str> {
-    tokens.iter().map(|token| token.text.as_str()).collect()
-}
-
-fn count_sequence(tokens: &[Token], expected: &[&str]) -> usize {
-    let actual = texts(tokens);
-    actual
-        .windows(expected.len())
-        .filter(|window| *window == expected)
-        .count()
 }
 
 fn contains_sequence(tokens: &[Token], expected: &[&str]) -> bool {
@@ -680,16 +490,15 @@ fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
 
 #[test]
 fn tokenizer_ignores_comments_strings_raw_strings_chars_and_lifetimes() {
-    let controls = tokenize(
-        r###"
+    let source = r###"
         // crate::strategies::fake::KEY clients.get resolve_fee_provider
         /* nested /* crate::strategies::fake */ clients.get */
         const TEXT: &str = "crate::strategies::fake::KEY clients.get";
         const RAW: &str = r#"resolve_fee_provider crate::strategies"#;
         const CH: char = 'g';
         fn visible<'a>(value: &'a str) { assemble_strategy_build_context(value); }
-        "###,
-    );
+        "###;
+    let controls = tokenize(source);
     assert_eq!(count_sequence(&controls, &["crate", "::", "strategies"]), 0);
     assert_eq!(count_sequence(&controls, &["clients", ".", "get"]), 0);
     assert_eq!(count_sequence(&controls, &["resolve_fee_provider"]), 0);
@@ -697,6 +506,15 @@ fn tokenizer_ignores_comments_strings_raw_strings_chars_and_lifetimes() {
         count_sequence(&controls, &["assemble_strategy_build_context"]),
         1
     );
+    let visible_body = item_body_tokens(&controls, &["fn", "visible"])
+        .expect("the real function body should be located through tokens");
+    assert_eq!(
+        count_sequence(visible_body, &["assemble_strategy_build_context", "("]),
+        1
+    );
+    let visible_header = item_header(source, &controls, &["fn", "visible"])
+        .expect("the real function header should be located through tokens");
+    assert!(visible_header.contains("visible<'a>"));
 }
 
 #[test]
@@ -1098,7 +916,7 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
 }
 
 #[test]
-fn every_archetype_has_one_capability_declaration_and_registration_path() {
+fn every_archetype_has_one_capability_declaration_and_preparation_path() {
     for relative in ARCHETYPES {
         let tokens = source_tokens(relative);
         assert_eq!(
@@ -1110,19 +928,19 @@ fn every_archetype_has_one_capability_declaration_and_registration_path() {
             "{relative} must declare one capability set"
         );
         assert_eq!(
-            count_sequence(&tokens, &["register", ":", "register_runtime_strategy"]),
+            count_sequence(&tokens, &["prepare", ":", "prepare_runtime_strategy"]),
             1,
-            "{relative} must declare one registration callback"
+            "{relative} must declare one preparation callback"
         );
         assert_eq!(
-            count_sequence(&tokens, &["fn", "register_runtime_strategy", "("]),
+            count_sequence(&tokens, &["fn", "prepare_runtime_strategy", "("]),
             1,
-            "{relative} must define one registration entry point"
+            "{relative} must define one preparation entry point"
         );
         assert_eq!(
-            count_sequence(&tokens, &[".", "register_strategy", "("]),
+            count_sequence(&tokens, &[".", "prepare_strategy", "("]),
             1,
-            "{relative} must have one registry registration path"
+            "{relative} must have one registry preparation path"
         );
     }
 }

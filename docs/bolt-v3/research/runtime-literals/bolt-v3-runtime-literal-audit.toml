@@ -7551,14 +7551,6 @@ reason = "This is the standard zero padding byte for HMAC keys shorter than the 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
 kind = "string"
-literal = '''"instrument_id"'''
-context = '''.and_then(|binding| binding.get("instrument_id"))'''
-classification = "strategy_archetype_resolution_schema_field"
-reason = "Binary-oracle resolution-data binding schema/config field name read from the configured bolt-v3 TOML target, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/archetype.rs"
-kind = "string"
 literal = '''"resolution_client_id"'''
 context = '''"resolution_client_id",'''
 classification = "strategy_archetype_resolution_schema_field"
@@ -10335,6 +10327,22 @@ literal = '''"duplicate IV query handle for strategy {} profile {}"'''
 context = '''"duplicate IV query handle for strategy {} profile {}",'''
 classification = "iv_registration_diagnostic_literal"
 reason = "IV strategy registration uses tuple-field indices and diagnostic templates while wiring config-owned query handles; this is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"prepared NT strategy ID `{strategy_id}` is duplicated in the batch"'''
+context = '''"prepared NT strategy ID `{strategy_id}` is duplicated in the batch"'''
+classification = "strategy_registration_fail_closed_diagnostic"
+reason = "The shared batch coordinator reports a duplicate config-derived NT strategy identity before commit; this diagnostic does not select or default any runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"'''
+context = '''"prepared NT order ID tag `{order_id_tag}` is duplicated in the batch"'''
+classification = "strategy_registration_fail_closed_diagnostic"
+reason = "The shared batch coordinator reports a duplicate config-derived NT order-ID tag before commit; this diagnostic does not select or default any runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_strategy_registration.rs"

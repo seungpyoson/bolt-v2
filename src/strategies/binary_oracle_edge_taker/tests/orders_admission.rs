@@ -1845,7 +1845,8 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
 #[test]
 fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
     let mut strategy = ready_to_trade_strategy();
-    let _cache = register_test_strategy(&mut strategy);
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.order_type = OrderType::StopLimit;
     strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
@@ -1853,12 +1854,14 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
     strategy.config.entry_order.trigger_price = Some(0.52);
     strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
     strategy.config.entry_order.is_post_only = true;
+    strategy.config.entry_order.is_quote_quantity = false;
     strategy.config.exit_order.order_type = OrderType::StopLimit;
     strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
     strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
     strategy.config.exit_order.trigger_price = Some(0.48);
     strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
     strategy.config.exit_order.is_post_only = true;
+    strategy.config.exit_order.is_quote_quantity = false;
 
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(2.0, 2);
@@ -2056,8 +2059,9 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
         )
         .expect("TrailingStopMarket entry order with explicit trailing fields should build");
 
+    let ceiling_price = Decimal::from_str("0.999").expect("fixture ceiling should parse");
     let admission = strategy
-        .submit_admission_request_from_order(
+        .submit_admission_request_from_order_inner(
             &BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
                 BoltV3OrderIntentKind::Entry,
@@ -2066,6 +2070,10 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
             ),
             &order,
             test_gross_expected_value(),
+            StrategyPlannedFillInput::Exact(vec![BoltV3PlannedFillLeg {
+                price: ceiling_price,
+                quantity: Decimal::from(2_u32),
+            }]),
         )
         .expect("TrailingStopMarket admission should derive from the instrument price ceiling");
 

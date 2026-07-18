@@ -103,6 +103,7 @@ TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
 BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES = 360
 SECONDS_PER_MINUTE = 60
+FINITE_RUST_U64_MAX = (1 << 64) - 2
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 NEXTEST_FINGERPRINT_RE = re.compile(
@@ -139,6 +140,19 @@ require_positive_int = functools.partial(_cv.require_positive_int, error_cls=Pro
 as_text = _cv.as_text
 
 
+def require_finite_rust_u64_value(value: int, label: str) -> int:
+    if value > FINITE_RUST_U64_MAX:
+        raise ProvenanceError(f"{label} must fit a finite Rust u64")
+    return value
+
+
+def require_finite_rust_u64(table: dict[str, object], key: str, prefix: str) -> int:
+    return require_finite_rust_u64_value(
+        require_positive_int(table, key, prefix),
+        f"{prefix}.{key}",
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class JobConfig:
     logical_name: str
@@ -163,6 +177,7 @@ class RequiredCheckConfig:
 
 @dataclasses.dataclass(frozen=True)
 class Ra001aDurableTracerPackLimitsConfig:
+    max_concurrent_records: int
     max_fetch_timeout_seconds: int
     max_worker_termination_grace_seconds: int
     max_worker_virtual_memory_bytes: int
@@ -284,6 +299,7 @@ class Ra001aPolicyResult:
     ra001a_aws_region: str
     ra001a_receipt_artifact_name: str
     ra001a_receipt_retention_days: int
+    ra001a_max_concurrent_records: int
     ra001a_max_fetch_timeout_seconds: int
     ra001a_max_worker_termination_grace_seconds: int
     ra001a_max_worker_virtual_memory_bytes: int
@@ -429,13 +445,15 @@ def load_backtester_test_archive_timeout_config(
         "max_job_minutes",
         tracer_prefix,
     )
-    max_registry_packs = require_positive_int(tracer, "max_registry_packs", tracer_prefix)
-    max_total_selected_object_bytes = require_positive_int(
+    max_registry_packs = require_finite_rust_u64(
+        tracer, "max_registry_packs", tracer_prefix
+    )
+    max_total_selected_object_bytes = require_finite_rust_u64(
         tracer,
         "max_total_selected_object_bytes",
         tracer_prefix,
     )
-    max_worker_executable_bytes = require_positive_int(
+    max_worker_executable_bytes = require_finite_rust_u64(
         tracer,
         "max_worker_executable_bytes",
         tracer_prefix,
@@ -469,7 +487,7 @@ def load_backtester_test_archive_timeout_config(
         )
     git_executable = Ra001aDurableTracerGitExecutableConfig(
         path=git_executable_path,
-        max_bytes=require_positive_int(
+        max_bytes=require_finite_rust_u64(
             git_executable_table,
             "max_bytes",
             git_executable_prefix,
@@ -526,8 +544,10 @@ def load_backtester_test_archive_timeout_config(
             f"{tracer_prefix}.receipt_retention_days must not exceed "
             "artifact_retention.classes.transient.max_retention_days"
         )
-    max_wall_seconds = require_positive_int(tracer, "max_wall_seconds", tracer_prefix)
-    termination_grace_seconds = require_positive_int(
+    max_wall_seconds = require_finite_rust_u64(
+        tracer, "max_wall_seconds", tracer_prefix
+    )
+    termination_grace_seconds = require_finite_rust_u64(
         tracer,
         "termination_grace_seconds",
         tracer_prefix,
@@ -543,7 +563,12 @@ def load_backtester_test_archive_timeout_config(
             f"{pack_limits_prefix} has unexpected keys: {unexpected_pack_limit_keys}"
         )
     pack_limits = Ra001aDurableTracerPackLimitsConfig(
-        max_fetch_timeout_seconds=require_positive_int(
+        max_concurrent_records=require_finite_rust_u64(
+            pack_limits_table,
+            "max_concurrent_records",
+            pack_limits_prefix,
+        ),
+        max_fetch_timeout_seconds=require_finite_rust_u64(
             pack_limits_table,
             "max_fetch_timeout_seconds",
             pack_limits_prefix,
@@ -649,13 +674,16 @@ def load_backtester_test_archive_timeout_config(
             pack_limits_prefix,
         ),
     )
-    finite_rust_u64_max = (1 << 64) - 2
     for field in dataclasses.fields(pack_limits):
-        value = getattr(pack_limits, field.name)
-        if value > finite_rust_u64_max:
-            raise ProvenanceError(
-                f"{pack_limits_prefix}.{field.name} must fit a finite Rust u64"
-            )
+        require_finite_rust_u64_value(
+            getattr(pack_limits, field.name),
+            f"{pack_limits_prefix}.{field.name}",
+        )
+    if pack_limits.max_concurrent_records != 1:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_concurrent_records must equal 1 for the "
+            "bounded process-isolated tracer"
+        )
     if pack_limits.min_worker_reserved_overhead_bytes >= pack_limits.max_worker_virtual_memory_bytes:
         raise ProvenanceError(
             f"{pack_limits_prefix}.min_worker_reserved_overhead_bytes must be below "
@@ -711,6 +739,16 @@ def load_backtester_test_archive_timeout_config(
         )
     checkout_prefix = f"{tracer_prefix}.checkout"
     checkout = require_table(tracer, "checkout", tracer_prefix)
+    expected_checkout_keys = {
+        "allowed_ignored_runtime_roots",
+        "max_ignored_entry_bytes",
+        "max_ignored_entries",
+    }
+    unexpected_checkout_keys = sorted(set(checkout) - expected_checkout_keys)
+    if unexpected_checkout_keys:
+        raise ProvenanceError(
+            f"{checkout_prefix} has unexpected keys: {unexpected_checkout_keys}"
+        )
     allowed_ignored_runtime_roots = require_string_list(
         checkout,
         "allowed_ignored_runtime_roots",
@@ -738,12 +776,12 @@ def load_backtester_test_archive_timeout_config(
                 f"{checkout_prefix}.allowed_ignored_runtime_roots must contain normalized "
                 "repository-relative directories"
             )
-    max_ignored_entry_bytes = require_positive_int(
+    max_ignored_entry_bytes = require_finite_rust_u64(
         checkout,
         "max_ignored_entry_bytes",
         checkout_prefix,
     )
-    max_ignored_entries = require_positive_int(
+    max_ignored_entries = require_finite_rust_u64(
         checkout,
         "max_ignored_entries",
         checkout_prefix,
@@ -1943,6 +1981,7 @@ def evaluate_ra001a_policy(
         ra001a_aws_region=timeout.ra001a_aws.region,
         ra001a_receipt_artifact_name=timeout.ra001a_receipt_artifact_name,
         ra001a_receipt_retention_days=timeout.ra001a_receipt_retention_days,
+        ra001a_max_concurrent_records=pack_limits.max_concurrent_records,
         ra001a_max_fetch_timeout_seconds=pack_limits.max_fetch_timeout_seconds,
         ra001a_max_worker_termination_grace_seconds=(
             pack_limits.max_worker_termination_grace_seconds

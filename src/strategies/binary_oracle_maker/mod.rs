@@ -21,7 +21,7 @@ use nautilus_model::{
     identifiers::{ClientId, StrategyId},
     instruments::{Instrument, InstrumentAny},
 };
-use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
+use nautilus_trading::{StrategyConfig, StrategyCore};
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;

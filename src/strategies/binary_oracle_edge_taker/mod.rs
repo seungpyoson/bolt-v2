@@ -17,7 +17,7 @@ use nautilus_model::{
     orders::Order,
     types::{Currency, Price, Quantity},
 };
-use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, StrategyNative, nautilus_strategy};
+use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, StrategyNative};
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 use toml::Value;
 

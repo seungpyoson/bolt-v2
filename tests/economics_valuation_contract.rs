@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use bolt_v2::bolt_v3_economics_config::{
-    ValuationConfig, ValuationLegConfig, ValuationOrientation, ValuationRouteConfig,
+    ValuationConfig, ValuationLegConfig, ValuationOrientation, ValuationPolicy,
+    ValuationRouteConfig,
 };
 use bolt_v2::bolt_v3_economics_runtime::{
     AuthoritativeValuationObservation, ConfiguredValuationProvider,
@@ -25,39 +26,52 @@ fn leg(from: &str, to: &str, rate: &str) -> ValuationLegEvidence {
 }
 
 #[test]
-fn configured_provider_resolves_exact_toml_route_from_fresh_market_observation() {
+fn configured_provider_resolves_provider_conversion_then_fresh_market_observation() {
     let config = ValuationConfig {
         routes: BTreeMap::from([(
             "pusd-usd".to_string(),
             ValuationRouteConfig {
                 from_unit: "pUSD".to_string(),
                 to_currency: "USD".to_string(),
-                valuation_policy:
-                    bolt_v2::bolt_v3_economics_config::ValuationPolicy::TopOfBookMidpoint,
-                client_id: "coinbase-data".to_string(),
-                instrument_id: "USDC-USD.COINBASE".to_string(),
-                orientation: ValuationOrientation::BaseToQuote,
-                max_age_ms: 1,
-                legs: vec![ValuationLegConfig {
-                    from_unit: "pUSD".to_string(),
-                    to_unit: "USD".to_string(),
-                    client_id: "coinbase-data".to_string(),
-                    instrument_id: "USDC-USD.COINBASE".to_string(),
-                    orientation: ValuationOrientation::BaseToQuote,
-                    max_age_ms: 1,
-                }],
+                legs: vec![
+                    ValuationLegConfig::ProviderConversion {
+                        from_unit: "pUSD".to_string(),
+                        to_unit: "USDC".to_string(),
+                        source_id: "pusd-usdc-redemption".to_string(),
+                        max_age_ms: 1,
+                    },
+                    ValuationLegConfig::MarketQuote {
+                        from_unit: "USDC".to_string(),
+                        to_unit: "USD".to_string(),
+                        valuation_policy: ValuationPolicy::TopOfBookMidpoint,
+                        client_id: "coinbase-data".to_string(),
+                        instrument_id: "USDC-USD.COINBASE".to_string(),
+                        orientation: ValuationOrientation::BaseToQuote,
+                        max_age_ms: 1,
+                    },
+                ],
             },
         )]),
     };
     let provider = ConfiguredValuationProvider::from_config(
         &config,
-        &[AuthoritativeValuationObservation {
-            client_id: "coinbase-data".to_string(),
-            instrument_id: "USDC-USD.COINBASE".to_string(),
-            price: decimal("0.99"),
-            snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
-            observed_at_ns: 100,
-        }],
+        &[
+            AuthoritativeValuationObservation::ProviderConversion {
+                source_id: "pusd-usdc-redemption".to_string(),
+                from_unit: native_unit("pUSD"),
+                to_unit: native_unit("USDC"),
+                rate: decimal("1"),
+                snapshot_id: SnapshotId::new("pusd-usdc-contract-100").unwrap(),
+                observed_at_ns: 100,
+            },
+            AuthoritativeValuationObservation::MarketQuote {
+                client_id: "coinbase-data".to_string(),
+                instrument_id: "USDC-USD.COINBASE".to_string(),
+                price: decimal("0.99"),
+                snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
+                observed_at_ns: 100,
+            },
+        ],
     )
     .unwrap();
     let evidence = provider
@@ -74,7 +88,10 @@ fn configured_provider_resolves_exact_toml_route_from_fresh_market_observation()
     assert_eq!(evidence.normalized_amount, decimal("-1.98"));
     assert_eq!(
         evidence.source_snapshot_ids,
-        vec![SnapshotId::new("coinbase-usdc-usd-100").unwrap()]
+        vec![
+            SnapshotId::new("pusd-usdc-contract-100").unwrap(),
+            SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
+        ]
     );
 }
 
@@ -86,15 +103,10 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
             ValuationRouteConfig {
                 from_unit: "USDC".to_string(),
                 to_currency: "USD".to_string(),
-                valuation_policy:
-                    bolt_v2::bolt_v3_economics_config::ValuationPolicy::TopOfBookMidpoint,
-                client_id: "coinbase-data".to_string(),
-                instrument_id: "USDC-USD.COINBASE".to_string(),
-                orientation: ValuationOrientation::BaseToQuote,
-                max_age_ms: 1,
-                legs: vec![ValuationLegConfig {
+                legs: vec![ValuationLegConfig::MarketQuote {
                     from_unit: "USDC".to_string(),
                     to_unit: "USD".to_string(),
+                    valuation_policy: ValuationPolicy::TopOfBookMidpoint,
                     client_id: "coinbase-data".to_string(),
                     instrument_id: "USDC-USD.COINBASE".to_string(),
                     orientation: ValuationOrientation::BaseToQuote,
@@ -107,7 +119,7 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
         ConfiguredValuationProvider::from_config(&config, &[]),
         Err(EconomicsUnavailable::MissingQuoteAuthority)
     ));
-    let observation = AuthoritativeValuationObservation {
+    let observation = AuthoritativeValuationObservation::MarketQuote {
         client_id: "coinbase-data".to_string(),
         instrument_id: "USDC-USD.COINBASE".to_string(),
         price: decimal("1"),

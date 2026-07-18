@@ -788,6 +788,7 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
                 ],
                 valid_until_ns,
             },
+            valuation_observations: Vec::new(),
         })
     }
 }

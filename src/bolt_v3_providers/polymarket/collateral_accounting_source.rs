@@ -31,6 +31,8 @@ const CLOB_V2_COLLATERAL_BALANCE_UNIT: &str = "p_usd";
 const CLOB_V2_COLLATERAL_PUSD_MICRO_SCALE: u32 = 1_000_000;
 const ON_CHAIN_COLLATERAL_JSON_RPC_VERSION: &str = "2.0";
 const ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD: &str = "eth_call";
+const ON_CHAIN_COLLATERAL_JSON_RPC_CHAIN_ID_METHOD: &str = "eth_chainId";
+const ON_CHAIN_COLLATERAL_JSON_RPC_BLOCK_NUMBER_METHOD: &str = "eth_blockNumber";
 const ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK: &str = "latest";
 const ON_CHAIN_COLLATERAL_JSON_RPC_ID: u64 = 1;
 const ON_CHAIN_COLLATERAL_CONTENT_TYPE_HEADER: &str = "Content-Type";
@@ -239,41 +241,25 @@ async fn collect_on_chain_pusd_allowance(
     let ctf_exchange_spender = normalized_evm_address(&format!("{CTF_EXCHANGE:#x}"))?;
     let neg_risk_ctf_exchange_spender =
         normalized_evm_address(&format!("{NEG_RISK_CTF_EXCHANGE:#x}"))?;
-    let client = HttpClient::new(
-        HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())]),
-        Vec::new(),
-        Vec::new(),
-        None,
-        Some(context.cfg.http_timeout_secs),
-        None,
-    )
-    .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-        field: "on_chain_collateral.rpc_client",
-    })?;
-    let balance_raw = eth_call_u256_word(
-        &client,
-        on_chain,
-        &collateral_token_address,
-        &balance_of_calldata(&normalized_funder),
-        context.cfg.http_timeout_secs,
-    )
-    .await?;
-    let ctf_allowance_raw = eth_call_u256_word(
-        &client,
-        on_chain,
-        &collateral_token_address,
-        &allowance_calldata(&normalized_funder, &ctf_exchange_spender),
-        context.cfg.http_timeout_secs,
-    )
-    .await?;
-    let neg_risk_allowance_raw = eth_call_u256_word(
-        &client,
-        on_chain,
-        &collateral_token_address,
-        &allowance_calldata(&normalized_funder, &neg_risk_ctf_exchange_spender),
-        context.cfg.http_timeout_secs,
-    )
-    .await?;
+    let client = OnChainCollateralRpcClient::try_new(on_chain, context.cfg.http_timeout_secs)?;
+    let balance_raw = client
+        .eth_call_u256_word(
+            &collateral_token_address,
+            &balance_of_calldata(&normalized_funder),
+        )
+        .await?;
+    let ctf_allowance_raw = client
+        .eth_call_u256_word(
+            &collateral_token_address,
+            &allowance_calldata(&normalized_funder, &ctf_exchange_spender),
+        )
+        .await?;
+    let neg_risk_allowance_raw = client
+        .eth_call_u256_word(
+            &collateral_token_address,
+            &allowance_calldata(&normalized_funder, &neg_risk_ctf_exchange_spender),
+        )
+        .await?;
     let effective_allowance_raw = if ctf_allowance_raw <= neg_risk_allowance_raw {
         ctf_allowance_raw
     } else {
@@ -307,70 +293,148 @@ async fn collect_on_chain_pusd_allowance(
     })
 }
 
-async fn eth_call_u256_word(
-    client: &HttpClient,
-    on_chain: &super::PolymarketOnChainCollateralConfig,
-    collateral_token_address: &str,
-    calldata: &str,
+pub(super) struct OnChainCollateralRpcClient<'a> {
+    client: HttpClient,
+    on_chain: &'a super::PolymarketOnChainCollateralConfig,
     timeout_secs: u64,
-) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
-    let body = serde_json::to_vec(&serde_json::json!({
-        "jsonrpc": ON_CHAIN_COLLATERAL_JSON_RPC_VERSION,
-        "id": ON_CHAIN_COLLATERAL_JSON_RPC_ID,
-        "method": ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD,
-        "params": [
-            {
-                "to": format!("{ON_CHAIN_COLLATERAL_HEX_PREFIX}{collateral_token_address}"),
-                "data": calldata,
-            },
-            ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK,
-        ],
-    }))
-    .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-        field: "on_chain_collateral.rpc_request",
-    })?;
-    let response = client
-        .post(
-            on_chain.rpc_url.clone(),
+}
+
+impl<'a> OnChainCollateralRpcClient<'a> {
+    pub(super) fn try_new(
+        on_chain: &'a super::PolymarketOnChainCollateralConfig,
+        timeout_secs: u64,
+    ) -> Result<Self, BoltV3OperatorArtifactError> {
+        let client = HttpClient::new(
+            HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())]),
+            Vec::new(),
+            Vec::new(),
             None,
-            Some(HashMap::from([(
-                ON_CHAIN_COLLATERAL_CONTENT_TYPE_HEADER.to_string(),
-                ON_CHAIN_COLLATERAL_CONTENT_TYPE_JSON.to_string(),
-            )])),
-            Some(body),
             Some(timeout_secs),
             None,
         )
-        .await
         .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-            field: "on_chain_collateral.rpc_response",
+            field: "on_chain_collateral.rpc_client",
         })?;
-    if !response.status.is_success() {
-        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-            field: "on_chain_collateral.rpc_status",
-        });
+        Ok(Self {
+            client,
+            on_chain,
+            timeout_secs,
+        })
     }
-    let rpc_response: JsonRpcEthCallResponse =
-        serde_json::from_slice(&response.body).map_err(|_| {
-            BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+
+    pub(super) async fn chain_id(&self) -> Result<u64, BoltV3OperatorArtifactError> {
+        self.quantity(ON_CHAIN_COLLATERAL_JSON_RPC_CHAIN_ID_METHOD)
+            .await
+    }
+
+    pub(super) async fn block_number(&self) -> Result<u64, BoltV3OperatorArtifactError> {
+        self.quantity(ON_CHAIN_COLLATERAL_JSON_RPC_BLOCK_NUMBER_METHOD)
+            .await
+    }
+
+    pub(super) async fn eth_call_u256_word(
+        &self,
+        contract_address: &str,
+        calldata: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
+        let result = self
+            .request(
+                ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD,
+                serde_json::json!([
+                    {
+                        "to": format!("{ON_CHAIN_COLLATERAL_HEX_PREFIX}{contract_address}"),
+                        "data": calldata,
+                    },
+                    ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK,
+                ]),
+            )
+            .await?;
+        let result =
+            result
+                .as_str()
+                .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                    field: "on_chain_collateral.rpc_result",
+                })?;
+        parse_u256_word_hex(result)
+    }
+
+    async fn quantity(&self, method: &'static str) -> Result<u64, BoltV3OperatorArtifactError> {
+        let result = self.request(method, serde_json::json!([])).await?;
+        let encoded =
+            result
+                .as_str()
+                .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                    field: "on_chain_collateral.rpc_result",
+                })?;
+        u64::from_str_radix(
+            encoded.strip_prefix(ON_CHAIN_COLLATERAL_HEX_PREFIX).ok_or(
+                BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                    field: "on_chain_collateral.rpc_result",
+                },
+            )?,
+            16,
+        )
+        .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_result",
+        })
+    }
+
+    async fn request(
+        &self,
+        method: &'static str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, BoltV3OperatorArtifactError> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": ON_CHAIN_COLLATERAL_JSON_RPC_VERSION,
+            "id": ON_CHAIN_COLLATERAL_JSON_RPC_ID,
+            "method": method,
+            "params": params,
+        }))
+        .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_request",
+        })?;
+        let response = self
+            .client
+            .post(
+                self.on_chain.rpc_url.clone(),
+                None,
+                Some(HashMap::from([(
+                    ON_CHAIN_COLLATERAL_CONTENT_TYPE_HEADER.to_string(),
+                    ON_CHAIN_COLLATERAL_CONTENT_TYPE_JSON.to_string(),
+                )])),
+                Some(body),
+                Some(self.timeout_secs),
+                None,
+            )
+            .await
+            .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
                 field: "on_chain_collateral.rpc_response",
-            }
-        })?;
-    if rpc_response.error.is_some() {
-        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-            field: "on_chain_collateral.rpc_error",
-        });
-    }
-    let result =
+            })?;
+        if !response.status.is_success() {
+            return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                field: "on_chain_collateral.rpc_status",
+            });
+        }
+        let rpc_response: JsonRpcResponse =
+            serde_json::from_slice(&response.body).map_err(|_| {
+                BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                    field: "on_chain_collateral.rpc_response",
+                }
+            })?;
+        if rpc_response.error.is_some() {
+            return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                field: "on_chain_collateral.rpc_error",
+            });
+        }
         rpc_response
             .result
             .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
                 field: "on_chain_collateral.rpc_result",
-            })?;
-    parse_u256_word_hex(&result)
+            })
+    }
 }
 
-fn normalized_evm_address(value: &str) -> Result<String, BoltV3OperatorArtifactError> {
+pub(super) fn normalized_evm_address(value: &str) -> Result<String, BoltV3OperatorArtifactError> {
     let rest = value.strip_prefix(ON_CHAIN_COLLATERAL_HEX_PREFIX).ok_or(
         BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
             field: "on_chain_collateral.address",
@@ -509,8 +573,8 @@ struct ClobV2CollateralAccountingBalanceAllowanceProof<'a> {
 }
 
 #[derive(Deserialize)]
-struct JsonRpcEthCallResponse {
-    result: Option<String>,
+struct JsonRpcResponse {
+    result: Option<serde_json::Value>,
     error: Option<serde_json::Value>,
 }
 

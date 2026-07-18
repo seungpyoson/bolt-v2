@@ -1,6 +1,7 @@
 use crate::{
     bolt_v3_economics_runtime::{
-        AuthoritativeEdgeBasis, ProviderEconomicsAuthority, ProviderEconomicsAuthoritySnapshot,
+        AuthoritativeEdgeBasis, AuthoritativeValuationObservation, ProviderEconomicsAuthority,
+        ProviderEconomicsAuthoritySnapshot,
     },
     economics::{
         AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
@@ -9,6 +10,7 @@ use crate::{
         SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
     },
 };
+use alloy_primitives::keccak256;
 use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
@@ -20,11 +22,12 @@ use nautilus_network::http::{HttpClient, USER_AGENT, Url};
 use nautilus_polymarket::providers::extract_condition_id;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FeeRoundingMode {
@@ -285,6 +288,8 @@ pub struct PolymarketEconomicsAuthority {
     base_url: Url,
     http_timeout_secs: u64,
     http_client: HttpClient,
+    on_chain_collateral: super::PolymarketOnChainCollateralConfig,
+    collateral_source_id: String,
 }
 
 impl PolymarketEconomicsAuthority {
@@ -296,6 +301,17 @@ impl PolymarketEconomicsAuthority {
         let adapter_config =
             PolymarketEconomicsAdapterConfig::from_execution_config(&execution.economics)
                 .map_err(|error| anyhow::anyhow!("invalid economics adapter config: {error:?}"))?;
+        let on_chain_collateral = execution
+            .on_chain_collateral
+            .clone()
+            .context("Polymarket economics requires on-chain collateral authority")?;
+        let collateral_source_id = execution
+            .economics
+            .assets
+            .iter()
+            .find(|(_, asset)| asset.native_unit == adapter_config.collateral_unit.as_str())
+            .map(|(asset_id, _)| asset_id.clone())
+            .context("Polymarket economics collateral identity is missing")?;
         anyhow::ensure!(
             execution.economics.product_surface_policies.len() == 1,
             "Polymarket economics requires exactly one configured product surface"
@@ -329,6 +345,8 @@ impl PolymarketEconomicsAuthority {
             base_url,
             http_timeout_secs: execution.http_timeout_secs,
             http_client,
+            on_chain_collateral,
+            collateral_source_id,
         })
     }
 
@@ -339,6 +357,129 @@ impl PolymarketEconomicsAuthority {
             .join(&format!("clob-markets/{condition_id}"))
             .context("configured Polymarket market-info URL is invalid")
     }
+
+    async fn observe_collateral_redemption(
+        &self,
+    ) -> anyhow::Result<AuthoritativeValuationObservation> {
+        let rpc = super::collateral_accounting_source::OnChainCollateralRpcClient::try_new(
+            &self.on_chain_collateral,
+            self.http_timeout_secs,
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
+        let chain_id = rpc
+            .chain_id()
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        anyhow::ensure!(
+            chain_id == self.on_chain_collateral.chain_id,
+            "Polymarket collateral RPC returned chain {chain_id}, expected {}",
+            self.on_chain_collateral.chain_id
+        );
+        let block_number = rpc
+            .block_number()
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let collateral_token =
+            normalized_address(&self.on_chain_collateral.collateral_token_address)?;
+        let offramp = normalized_address(&self.on_chain_collateral.collateral_offramp_address)?;
+        let redemption_asset =
+            normalized_address(&self.on_chain_collateral.redemption_asset_address)?;
+        let configured_collateral = rpc
+            .eth_call_u256_word(&offramp, &function_calldata("COLLATERAL_TOKEN()", None))
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        anyhow::ensure!(
+            address_word(&configured_collateral) == collateral_token,
+            "Polymarket collateral offramp token does not match configured collateral"
+        );
+        let configured_redemption_asset = rpc
+            .eth_call_u256_word(&collateral_token, &function_calldata("USDC()", None))
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        anyhow::ensure!(
+            address_word(&configured_redemption_asset) == redemption_asset,
+            "Polymarket collateral redemption asset does not match configured asset"
+        );
+        let paused = rpc
+            .eth_call_u256_word(
+                &offramp,
+                &function_calldata("paused(address)", Some(&redemption_asset)),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        anyhow::ensure!(
+            paused.iter().all(|byte| *byte == 0),
+            "Polymarket collateral redemption is paused"
+        );
+        let collateral_decimals = rpc
+            .eth_call_u256_word(&collateral_token, &function_calldata("decimals()", None))
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let redemption_decimals = rpc
+            .eth_call_u256_word(&redemption_asset, &function_calldata("decimals()", None))
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        anyhow::ensure!(
+            collateral_decimals == redemption_decimals,
+            "Polymarket collateral and redemption asset decimals differ"
+        );
+        let observed_at_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock precedes Unix epoch")?
+            .as_nanos()
+            .try_into()
+            .context("system time does not fit nanoseconds")?;
+        let proof = CollateralRedemptionProof {
+            chain_id,
+            block_number,
+            collateral_token,
+            offramp,
+            redemption_asset,
+            collateral_decimals: hex::encode(collateral_decimals),
+        };
+        let encoded = serde_json::to_vec(&proof)
+            .context("could not encode Polymarket collateral redemption proof")?;
+        Ok(AuthoritativeValuationObservation::ProviderConversion {
+            source_id: self.collateral_source_id.clone(),
+            from_unit: self.adapter_config.collateral_unit.clone(),
+            to_unit: NativeUnitId::new(self.on_chain_collateral.redemption_asset_unit.clone())?,
+            rate: Decimal::ONE,
+            snapshot_id: SnapshotId::new(format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(encoded))
+            ))?,
+            observed_at_ns,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct CollateralRedemptionProof {
+    chain_id: u64,
+    block_number: u64,
+    collateral_token: String,
+    offramp: String,
+    redemption_asset: String,
+    collateral_decimals: String,
+}
+
+fn normalized_address(value: &str) -> anyhow::Result<String> {
+    super::collateral_accounting_source::normalized_evm_address(value)
+        .map_err(|error| anyhow::anyhow!(error))
+}
+
+fn function_calldata(signature: &str, address: Option<&str>) -> String {
+    let selector = keccak256(signature.as_bytes());
+    let mut calldata = hex::encode(&selector[..4]);
+    if let Some(address) = address {
+        calldata.push_str(&"0".repeat(24));
+        calldata.push_str(address);
+    }
+    format!("0x{calldata}")
+}
+
+fn address_word(word: &[u8; 32]) -> String {
+    hex::encode(&word[12..])
 }
 
 #[async_trait(?Send)]
@@ -413,6 +554,10 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             .edge_basis
             .get(&self.edge_basis_policy_id)
             .context("Polymarket economics edge-basis policy is missing")?;
+        let valuation_observation = self
+            .observe_collateral_redemption()
+            .await
+            .context("Polymarket collateral redemption authority is unavailable")?;
         Ok(ProviderEconomicsAuthoritySnapshot {
             product_surface_id: self.product_surface_id.clone(),
             adapter: Arc::new(adapter),
@@ -421,6 +566,7 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
                 source_snapshot_ids: vec![SnapshotId::new(snapshot_id)?],
                 valid_until_ns,
             },
+            valuation_observations: vec![valuation_observation],
         })
     }
 }

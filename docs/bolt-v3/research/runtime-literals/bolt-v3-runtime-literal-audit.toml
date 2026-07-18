@@ -4824,7 +4824,7 @@ reason = "This is the JSON-RPC request field name for the request id."
 path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
 kind = "string"
 literal = '''"method"'''
-context = '''"method": ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD,'''
+context = '''"method": method,'''
 classification = "json_rpc_protocol_field"
 reason = "This is the JSON-RPC request field name for the method."
 
@@ -4832,7 +4832,7 @@ reason = "This is the JSON-RPC request field name for the method."
 path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
 kind = "string"
 literal = '''"params"'''
-context = '''"params": ['''
+context = '''"params": params,'''
 classification = "json_rpc_protocol_field"
 reason = "This is the JSON-RPC request field name for method parameters."
 
@@ -21615,6 +21615,198 @@ literal = '''"builder"'''
 context = '''!= BTreeSet::from(["builder", "protocol"])'''
 classification = "hyperliquid_economics_component_schema_key"
 reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"eth_chainId"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_CHAIN_ID_METHOD: &str = "eth_chainId";'''
+classification = "ethereum_rpc_method"
+reason = "Canonical Ethereum JSON-RPC method used to bind the configured endpoint to the configured chain."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"eth_blockNumber"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_BLOCK_NUMBER_METHOD: &str = "eth_blockNumber";'''
+classification = "ethereum_rpc_method"
+reason = "Canonical Ethereum JSON-RPC method used to seal the observation block in valuation evidence."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = '''16'''
+context = '''16,'''
+classification = "hexadecimal_protocol_radix"
+reason = "Ethereum JSON-RPC quantities are hexadecimal protocol values."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"economics valuation instrument is unavailable"'''
+context = '''.context("economics valuation instrument is unavailable")?;'''
+classification = "diagnostic_template"
+reason = "Fail-closed diagnostic when the configured authoritative instrument is absent from the NT cache."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"economics valuation instrument has no base currency"'''
+context = '''.context("economics valuation instrument has no base currency")?'''
+classification = "diagnostic_template"
+reason = "Fail-closed diagnostic for an instrument incapable of proving configured route units."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"economics valuation route {} -> {} contradicts instrument {} units {} -> {}"'''
+context = '''"economics valuation route {} -> {} contradicts instrument {} units {} -> {}",'''
+classification = "diagnostic_template"
+reason = "Fail-closed contradiction diagnostic; all unit identities are config or provider metadata values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"COLLATERAL_TOKEN()"'''
+context = '''.eth_call_u256_word(&offramp, &function_calldata("COLLATERAL_TOKEN()", None))'''
+classification = "provider_contract_abi"
+reason = "Versioned Polymarket collateral-offramp ABI selector used to verify the configured collateral contract."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"USDC()"'''
+context = '''.eth_call_u256_word(&collateral_token, &function_calldata("USDC()", None))'''
+classification = "provider_contract_abi"
+reason = "Versioned pUSD contract ABI selector used to verify the configured redemption asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"paused(address)"'''
+context = '''&function_calldata("paused(address)", Some(&redemption_asset)),'''
+classification = "provider_contract_abi"
+reason = "Versioned Polymarket collateral-offramp ABI selector used to fail closed when redemption is paused."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"decimals()"'''
+context = '''.eth_call_u256_word(&collateral_token, &function_calldata("decimals()", None))'''
+classification = "erc20_contract_abi"
+reason = "Canonical ERC-20 ABI selector used to prove amount-preserving conversion precision."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"decimals()"'''
+context = '''.eth_call_u256_word(&redemption_asset, &function_calldata("decimals()", None))'''
+classification = "erc20_contract_abi"
+reason = "Canonical ERC-20 ABI selector used to prove amount-preserving conversion precision."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "number"
+literal = '''0'''
+context = '''paused.iter().all(|byte| *byte == 0),'''
+classification = "evm_abi_boolean_encoding"
+reason = "A zero EVM ABI word is the canonical false value required for the redemption pause check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "number"
+literal = '''4'''
+context = '''let mut calldata = hex::encode(&selector[..4]);'''
+classification = "evm_abi_selector_encoding"
+reason = "EVM function selectors are the first four bytes of the keccak256 ABI signature hash."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"0"'''
+context = '''calldata.push_str(&"0".repeat(24));'''
+classification = "evm_abi_address_encoding"
+reason = "Canonical zero padding aligns a 20-byte EVM address within one 32-byte ABI word."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "number"
+literal = '''24'''
+context = '''calldata.push_str(&"0".repeat(24));'''
+classification = "evm_abi_address_encoding"
+reason = "Twenty-four hex zero characters pad a 20-byte address to one 32-byte EVM ABI word."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "number"
+literal = '''32'''
+context = '''fn address_word(word: &[u8; 32]) -> String {'''
+classification = "evm_abi_word_encoding"
+reason = "EVM ABI return words have a fixed width of 32 bytes."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "number"
+literal = '''12'''
+context = '''hex::encode(&word[12..])'''
+classification = "evm_abi_address_encoding"
+reason = "An ABI address occupies the final 20 bytes of its left-padded 32-byte word."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"collateral_offramp_address"'''
+context = '''"collateral_offramp_address",'''
+classification = "configuration_schema_field"
+reason = "Stable TOML field name; the contract address value remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"redemption_asset_address"'''
+context = '''"redemption_asset_address",'''
+classification = "configuration_schema_field"
+reason = "Stable TOML field name; the asset address value remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket collateral redemption is paused"'''
+context = '''"Polymarket collateral redemption is paused"'''
+classification = "diagnostic_template"
+reason = "Fail-closed provider-state diagnostic; the observed pause value is authoritative."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket collateral and redemption asset decimals differ"'''
+context = '''"Polymarket collateral and redemption asset decimals differ"'''
+classification = "diagnostic_template"
+reason = "Fail-closed provider-state diagnostic preventing an unproved amount-preserving conversion."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"system clock precedes Unix epoch"'''
+context = '''.context("system clock precedes Unix epoch")?'''
+classification = "diagnostic_template"
+reason = "Fail-closed clock diagnostic used while timestamping fresh provider evidence."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"sha256:{}"'''
+context = '''"sha256:{}",'''
+classification = "evidence_identifier_format"
+reason = "Content-addressed snapshot identifier prefix; the digest is derived from exact observed evidence."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket collateral redemption authority is unavailable"'''
+context = '''.context("Polymarket collateral redemption authority is unavailable")?;'''
+classification = "diagnostic_template"
+reason = "Fail-closed diagnostic when mandatory provider conversion evidence cannot be produced."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"

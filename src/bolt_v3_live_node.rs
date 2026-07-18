@@ -919,21 +919,60 @@ struct EconomicsValuationSubscription {
 fn economics_valuation_provider_from_cache(
     config: &crate::bolt_v3_economics_config::ValuationConfig,
     cache: &Rc<RefCell<nautilus_common::cache::Cache>>,
+    provider_observations: Vec<crate::bolt_v3_economics_runtime::AuthoritativeValuationObservation>,
 ) -> anyhow::Result<Arc<dyn crate::economics::ValuationProvider>> {
     let cache = cache.borrow();
-    let mut observations = Vec::new();
+    let mut observations = provider_observations;
     let mut observed_sources = BTreeSet::new();
     for route in config.routes.values() {
         for leg in &route.legs {
-            if !observed_sources.insert((leg.client_id.as_str(), leg.instrument_id.as_str())) {
+            let crate::bolt_v3_economics_config::ValuationLegConfig::MarketQuote {
+                from_unit,
+                to_unit,
+                client_id,
+                instrument_id,
+                valuation_policy,
+                orientation,
+                ..
+            } = leg
+            else {
+                continue;
+            };
+            if !observed_sources.insert((client_id.as_str(), instrument_id.as_str())) {
                 continue;
             }
-            let instrument_id = InstrumentId::from_str(&leg.instrument_id)
+            let instrument_id = InstrumentId::from_str(instrument_id)
                 .context("economics valuation instrument identifier is invalid")?;
+            let instrument = cache
+                .instrument(&instrument_id)
+                .context("economics valuation instrument is unavailable")?;
+            let base_unit = instrument
+                .base_currency()
+                .context("economics valuation instrument has no base currency")?
+                .code
+                .to_string();
+            let quote_unit = instrument.quote_currency().code.to_string();
+            let (expected_from, expected_to) = match orientation {
+                crate::bolt_v3_economics_config::ValuationOrientation::BaseToQuote => {
+                    (base_unit.as_str(), quote_unit.as_str())
+                }
+                crate::bolt_v3_economics_config::ValuationOrientation::QuoteToBase => {
+                    (quote_unit.as_str(), base_unit.as_str())
+                }
+            };
+            anyhow::ensure!(
+                from_unit == expected_from && to_unit == expected_to,
+                "economics valuation route {} -> {} contradicts instrument {} units {} -> {}",
+                from_unit,
+                to_unit,
+                instrument_id,
+                expected_from,
+                expected_to
+            );
             let quote = cache
                 .quote(&instrument_id)
                 .context("economics valuation quote is unavailable")?;
-            let price = match route.valuation_policy {
+            let price = match valuation_policy {
                 crate::bolt_v3_economics_config::ValuationPolicy::TopOfBookMidpoint => quote
                     .bid_price
                     .as_decimal()
@@ -943,16 +982,16 @@ fn economics_valuation_provider_from_cache(
             };
             let snapshot_payload = format!(
                 "{}\0{}\0{}\0{}\0{}",
-                leg.client_id,
-                leg.instrument_id,
+                client_id,
+                instrument_id,
                 quote.bid_price,
                 quote.ask_price,
                 quote.ts_event.as_u64()
             );
             observations.push(
-                crate::bolt_v3_economics_runtime::AuthoritativeValuationObservation {
-                    client_id: leg.client_id.clone(),
-                    instrument_id: leg.instrument_id.clone(),
+                crate::bolt_v3_economics_runtime::AuthoritativeValuationObservation::MarketQuote {
+                    client_id: client_id.clone(),
+                    instrument_id: instrument_id.to_string(),
                     price,
                     snapshot_id: crate::economics::SnapshotId::new(format!(
                         "sha256:{}",
@@ -1210,19 +1249,13 @@ impl BoltV3LiveNodeRuntime {
                 let refresh_interval =
                     Duration::from_secs(authority.economics_config().quote_refresh_secs);
                 loop {
-                    let valuation_provider = economics_valuation_provider_from_cache(
-                        &authority.economics_config().valuation,
-                        &cache,
-                    );
                     let instruments = cache
                         .borrow()
                         .instruments(&authority.venue(), None)
                         .into_iter()
                         .cloned()
                         .collect::<Vec<_>>();
-                    match valuation_provider {
-                        Ok(valuation_provider) => {
-                            for instrument in instruments {
+                    for instrument in instruments {
                                 let instrument_id = instrument.id();
                                 let refreshed_at_ns = match current_unix_nanos() {
                                     Ok(value) => value,
@@ -1236,6 +1269,20 @@ impl BoltV3LiveNodeRuntime {
                                 };
                                 match authority.refresh(instrument, refreshed_at_ns).await {
                                     Ok(snapshot) => {
+                                        let valuation_provider = match economics_valuation_provider_from_cache(
+                                            &authority.economics_config().valuation,
+                                            &cache,
+                                            snapshot.valuation_observations,
+                                        ) {
+                                            Ok(provider) => provider,
+                                            Err(error) => {
+                                                log::error!(
+                                                    "economics valuation authority unavailable: execution_client_id={} error={error:#}",
+                                                    authority.execution_client_id()
+                                                );
+                                                continue;
+                                            }
+                                        };
                                         if !authority
                                             .economics_config()
                                             .product_surface_policies
@@ -1273,12 +1320,6 @@ impl BoltV3LiveNodeRuntime {
                                         instrument_id
                                     ),
                                 }
-                            }
-                        }
-                        Err(error) => log::error!(
-                            "economics valuation authority unavailable: execution_client_id={} error={error:#}",
-                            authority.execution_client_id()
-                        ),
                     }
                     match node_handle.state() {
                         NodeState::ShuttingDown | NodeState::Stopped => return,
@@ -3266,16 +3307,24 @@ fn build_economics_valuation_subscriptions(
     for authority in authorities {
         for route in authority.economics_config().valuation.routes.values() {
             for leg in &route.legs {
-                let instrument_id =
-                    InstrumentId::from_str(&leg.instrument_id).map_err(|error| {
+                let crate::bolt_v3_economics_config::ValuationLegConfig::MarketQuote {
+                    client_id,
+                    instrument_id,
+                    ..
+                } = leg
+                else {
+                    continue;
+                };
+                let parsed_instrument_id =
+                    InstrumentId::from_str(instrument_id).map_err(|error| {
                         BoltV3LiveNodeError::Build(anyhow::anyhow!(
                             "economics valuation instrument {} is invalid: {error}",
-                            leg.instrument_id
+                            instrument_id
                         ))
                     })?;
                 subscriptions.insert(EconomicsValuationSubscription {
-                    client_id: ClientId::new(leg.client_id.as_str()),
-                    instrument_id,
+                    client_id: ClientId::new(client_id.as_str()),
+                    instrument_id: parsed_instrument_id,
                 });
             }
         }

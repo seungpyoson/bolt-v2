@@ -100,6 +100,14 @@ ack_timeout_secs = 5
 venue_truth_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
+[client_execution.polymarket_main.on_chain_collateral]
+rpc_url = "https://polygon-bor-rpc.publicnode.com"
+chain_id = 137
+collateral_token_address = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+collateral_offramp_address = "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"
+redemption_asset_address = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+redemption_asset_unit = "USDC"
+
 [client_execution.polymarket_main.economics]
 economics_slice = "quote_only"
 reporting_policy = "primary-pnl"
@@ -143,11 +151,7 @@ binary_outcome = "primary"
 [client_execution.polymarket_main.economics.valuation.routes.pusd_usd]
 from_unit = "pUSD"
 to_currency = "USD"
-valuation_policy = "top_of_book_midpoint"
-client_id = "coinbase_data"
-instrument_id = "USDC-USD.COINBASE"
-orientation = "base_to_quote"
-max_age_ms = 1000
 legs = [
-  { from_unit = "pUSD", to_unit = "USD", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 1000 },
+  { authority = "provider_conversion", from_unit = "pUSD", to_unit = "USDC", source_id = "collateral", max_age_ms = 30000 },
+  { authority = "market_quote", from_unit = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 1000 },
 ]

@@ -15,7 +15,7 @@ use crate::economics::{
     validate_and_aggregate_quote, value_with_route,
 };
 
-use crate::bolt_v3_economics_config::{ValuationConfig, ValuationOrientation};
+use crate::bolt_v3_economics_config::{ValuationConfig, ValuationLegConfig, ValuationOrientation};
 
 pub struct EconomicsAdmissionIntent {
     pub request: EconomicQuoteRequest,
@@ -81,6 +81,7 @@ pub struct ProviderEconomicsAuthoritySnapshot {
     pub product_surface_id: String,
     pub adapter: Arc<dyn VenueEconomicsAdapter>,
     pub edge_basis: AuthoritativeEdgeBasis,
+    pub valuation_observations: Vec<AuthoritativeValuationObservation>,
 }
 
 #[async_trait(?Send)]
@@ -102,12 +103,22 @@ pub struct ConfiguredValuationProvider {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthoritativeValuationObservation {
-    pub client_id: String,
-    pub instrument_id: String,
-    pub price: Decimal,
-    pub snapshot_id: SnapshotId,
-    pub observed_at_ns: u64,
+pub enum AuthoritativeValuationObservation {
+    MarketQuote {
+        client_id: String,
+        instrument_id: String,
+        price: Decimal,
+        snapshot_id: SnapshotId,
+        observed_at_ns: u64,
+    },
+    ProviderConversion {
+        source_id: String,
+        from_unit: NativeUnitId,
+        to_unit: NativeUnitId,
+        rate: Decimal,
+        snapshot_id: SnapshotId,
+        observed_at_ns: u64,
+    },
 }
 
 impl ConfiguredValuationProvider {
@@ -131,36 +142,20 @@ impl ConfiguredValuationProvider {
             let mut legs = Vec::with_capacity(configured.legs.len());
             let mut route_valid_until_ns = u64::MAX;
             for configured_leg in &configured.legs {
-                let mut matching = observations.iter().filter(|observation| {
-                    observation.client_id == configured_leg.client_id
-                        && observation.instrument_id == configured_leg.instrument_id
-                });
-                let observation = matching
-                    .next()
-                    .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
-                if matching.next().is_some() || observation.price <= Decimal::ZERO {
-                    return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
-                }
-                let rate = match configured_leg.orientation {
-                    ValuationOrientation::BaseToQuote => observation.price,
-                    ValuationOrientation::QuoteToBase => Decimal::ONE
-                        .checked_div(observation.price)
-                        .ok_or(EconomicsUnavailable::InvalidDecimal)?,
-                };
-                let max_age_ns =
-                    u64::try_from(Duration::from_millis(configured_leg.max_age_ms).as_nanos())
-                        .map_err(|_| EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
-                let valid_until_ns = observation
-                    .observed_at_ns
+                let (from_unit, to_unit, rate, snapshot_id, observed_at_ns, max_age_ms) =
+                    resolve_valuation_leg(configured_leg, observations)?;
+                let max_age_ns = u64::try_from(Duration::from_millis(max_age_ms).as_nanos())
+                    .map_err(|_| EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+                let valid_until_ns = observed_at_ns
                     .checked_add(max_age_ns)
                     .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
                 route_valid_until_ns = route_valid_until_ns.min(valid_until_ns);
                 legs.push(crate::economics::ValuationLegEvidence {
-                    from_unit: NativeUnitId::new(configured_leg.from_unit.clone())?,
-                    to_unit: NativeUnitId::new(configured_leg.to_unit.clone())?,
+                    from_unit,
+                    to_unit,
                     rate,
-                    source_snapshot_id: observation.snapshot_id.clone(),
-                    observed_at_ns: observation.observed_at_ns,
+                    source_snapshot_id: snapshot_id,
+                    observed_at_ns,
                     valid_until_ns,
                 });
             }
@@ -174,6 +169,107 @@ impl ConfiguredValuationProvider {
         }
         Self::from_routes(routes)
     }
+}
+
+fn resolve_valuation_leg(
+    configured: &ValuationLegConfig,
+    observations: &[AuthoritativeValuationObservation],
+) -> Result<(NativeUnitId, NativeUnitId, Decimal, SnapshotId, u64, u64), EconomicsUnavailable> {
+    let (from_unit, to_unit, rate, snapshot_id, observed_at_ns, max_age_ms) = match configured {
+        ValuationLegConfig::MarketQuote {
+            from_unit,
+            to_unit,
+            client_id,
+            instrument_id,
+            orientation,
+            max_age_ms,
+            ..
+        } => {
+            let mut matching = observations
+                .iter()
+                .filter_map(|observation| match observation {
+                    AuthoritativeValuationObservation::MarketQuote {
+                        client_id: observed_client,
+                        instrument_id: observed_instrument,
+                        price,
+                        snapshot_id,
+                        observed_at_ns,
+                    } if observed_client == client_id && observed_instrument == instrument_id => {
+                        Some((*price, snapshot_id.clone(), *observed_at_ns))
+                    }
+                    _ => None,
+                });
+            let (price, snapshot_id, observed_at_ns) = matching
+                .next()
+                .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
+            if matching.next().is_some() || price <= Decimal::ZERO {
+                return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+            }
+            let rate = match orientation {
+                ValuationOrientation::BaseToQuote => price,
+                ValuationOrientation::QuoteToBase => Decimal::ONE
+                    .checked_div(price)
+                    .ok_or(EconomicsUnavailable::InvalidDecimal)?,
+            };
+            (
+                NativeUnitId::new(from_unit.clone())?,
+                NativeUnitId::new(to_unit.clone())?,
+                rate,
+                snapshot_id,
+                observed_at_ns,
+                *max_age_ms,
+            )
+        }
+        ValuationLegConfig::ProviderConversion {
+            from_unit,
+            to_unit,
+            source_id,
+            max_age_ms,
+        } => {
+            let expected_from = NativeUnitId::new(from_unit.clone())?;
+            let expected_to = NativeUnitId::new(to_unit.clone())?;
+            let mut matching = observations
+                .iter()
+                .filter_map(|observation| match observation {
+                    AuthoritativeValuationObservation::ProviderConversion {
+                        source_id: observed_source,
+                        from_unit,
+                        to_unit,
+                        rate,
+                        snapshot_id,
+                        observed_at_ns,
+                    } if observed_source == source_id
+                        && from_unit == &expected_from
+                        && to_unit == &expected_to =>
+                    {
+                        Some((*rate, snapshot_id.clone(), *observed_at_ns))
+                    }
+                    _ => None,
+                });
+            let (rate, snapshot_id, observed_at_ns) = matching
+                .next()
+                .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
+            if matching.next().is_some() || rate <= Decimal::ZERO {
+                return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+            }
+            (
+                expected_from,
+                expected_to,
+                rate,
+                snapshot_id,
+                observed_at_ns,
+                *max_age_ms,
+            )
+        }
+    };
+    Ok((
+        from_unit,
+        to_unit,
+        rate,
+        snapshot_id,
+        observed_at_ns,
+        max_age_ms,
+    ))
 }
 
 impl ValuationProvider for ConfiguredValuationProvider {

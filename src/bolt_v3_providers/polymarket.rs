@@ -273,6 +273,9 @@ pub struct PolymarketOnChainCollateralConfig {
     pub rpc_url: String,
     pub chain_id: u64,
     pub collateral_token_address: String,
+    pub collateral_offramp_address: String,
+    pub redemption_asset_address: String,
+    pub redemption_asset_unit: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -646,6 +649,27 @@ fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig
         errors.push(format!(
             "clients.{key}.execution.on_chain_collateral.collateral_token_address is not a valid EVM public address ({message}): `{}`",
             on_chain.collateral_token_address
+        ));
+    }
+    for (field, address) in [
+        (
+            "collateral_offramp_address",
+            &on_chain.collateral_offramp_address,
+        ),
+        (
+            "redemption_asset_address",
+            &on_chain.redemption_asset_address,
+        ),
+    ] {
+        if let Err(message) = check_evm_address_syntax(address) {
+            errors.push(format!(
+                "clients.{key}.execution.on_chain_collateral.{field} is not a valid EVM public address ({message}): `{address}`"
+            ));
+        }
+    }
+    if on_chain.redemption_asset_unit.trim().is_empty() {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.redemption_asset_unit must be non-empty"
         ));
     }
     errors

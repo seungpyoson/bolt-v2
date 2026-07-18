@@ -93,11 +93,6 @@ pub struct ValuationConfig {
 pub struct ValuationRouteConfig {
     pub from_unit: String,
     pub to_currency: String,
-    pub valuation_policy: ValuationPolicy,
-    pub client_id: String,
-    pub instrument_id: String,
-    pub orientation: ValuationOrientation,
-    pub max_age_ms: u64,
     pub legs: Vec<ValuationLegConfig>,
 }
 
@@ -108,14 +103,47 @@ pub enum ValuationPolicy {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ValuationLegConfig {
-    pub from_unit: String,
-    pub to_unit: String,
-    pub client_id: String,
-    pub instrument_id: String,
-    pub orientation: ValuationOrientation,
-    pub max_age_ms: u64,
+#[serde(tag = "authority", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ValuationLegConfig {
+    MarketQuote {
+        from_unit: String,
+        to_unit: String,
+        valuation_policy: ValuationPolicy,
+        client_id: String,
+        instrument_id: String,
+        orientation: ValuationOrientation,
+        max_age_ms: u64,
+    },
+    ProviderConversion {
+        from_unit: String,
+        to_unit: String,
+        source_id: String,
+        max_age_ms: u64,
+    },
+}
+
+impl ValuationLegConfig {
+    pub fn from_unit(&self) -> &str {
+        match self {
+            Self::MarketQuote { from_unit, .. } | Self::ProviderConversion { from_unit, .. } => {
+                from_unit
+            }
+        }
+    }
+
+    pub fn to_unit(&self) -> &str {
+        match self {
+            Self::MarketQuote { to_unit, .. } | Self::ProviderConversion { to_unit, .. } => to_unit,
+        }
+    }
+
+    pub const fn max_age_ms(&self) -> u64 {
+        match self {
+            Self::MarketQuote { max_age_ms, .. } | Self::ProviderConversion { max_age_ms, .. } => {
+                *max_age_ms
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -483,11 +511,6 @@ impl ValuationConfig {
                     &route.to_currency,
                     EconomicsConfigField::ValuationDestination,
                 ),
-                (&route.client_id, EconomicsConfigField::ValuationClient),
-                (
-                    &route.instrument_id,
-                    EconomicsConfigField::ValuationInstrument,
-                ),
             ] {
                 require_text(value, field, &mut errors);
             }
@@ -500,17 +523,6 @@ impl ValuationConfig {
                 errors.push(EconomicsConfigError::DuplicateValuationAuthority {
                     from: route.from_unit.clone(),
                     to: route.to_currency.clone(),
-                });
-            }
-            if !active_data_clients.contains(&route.client_id) {
-                errors.push(EconomicsConfigError::InactiveDataClient {
-                    route_id: route_id.clone(),
-                    client_id: route.client_id.clone(),
-                });
-            }
-            if is_zero(route.max_age_ms) {
-                errors.push(EconomicsConfigError::ZeroValuationAge {
-                    route_id: route_id.clone(),
                 });
             }
             errors.extend(validate_valuation_legs(
@@ -537,56 +549,54 @@ fn validate_valuation_legs(
         }
         return errors;
     }
-    let first = route
-        .legs
-        .first()
-        .expect("non-empty valuation legs were checked above");
-    if route.client_id != first.client_id
-        || route.instrument_id != first.instrument_id
-        || route.orientation != first.orientation
-        || route.max_age_ms != first.max_age_ms
-    {
-        errors.push(EconomicsConfigError::DisconnectedValuationRoute {
-            route_id: route_id.to_string(),
-        });
-        return errors;
-    }
     let mut current = route.from_unit.as_str();
     let mut visited = BTreeSet::from([current]);
     for leg in &route.legs {
-        for (value, field) in [
-            (&leg.client_id, EconomicsConfigField::ValuationClient),
-            (
-                &leg.instrument_id,
-                EconomicsConfigField::ValuationInstrument,
-            ),
-        ] {
-            require_text(value, field, &mut errors);
+        match leg {
+            ValuationLegConfig::MarketQuote {
+                client_id,
+                instrument_id,
+                ..
+            } => {
+                require_text(
+                    client_id,
+                    EconomicsConfigField::ValuationClient,
+                    &mut errors,
+                );
+                require_text(
+                    instrument_id,
+                    EconomicsConfigField::ValuationInstrument,
+                    &mut errors,
+                );
+                if !active_data_clients.contains(client_id) {
+                    errors.push(EconomicsConfigError::InactiveDataClient {
+                        route_id: route_id.to_string(),
+                        client_id: client_id.clone(),
+                    });
+                }
+            }
+            ValuationLegConfig::ProviderConversion { source_id, .. } => {
+                require_text(source_id, EconomicsConfigField::SourcePolicy, &mut errors)
+            }
         }
-        if !active_data_clients.contains(&leg.client_id) {
-            errors.push(EconomicsConfigError::InactiveDataClient {
-                route_id: route_id.to_string(),
-                client_id: leg.client_id.clone(),
-            });
-        }
-        if leg.from_unit != current {
+        if leg.from_unit() != current {
             errors.push(EconomicsConfigError::DisconnectedValuationRoute {
                 route_id: route_id.to_string(),
             });
             return errors;
         }
-        if !visited.insert(leg.to_unit.as_str()) {
+        if !visited.insert(leg.to_unit()) {
             errors.push(EconomicsConfigError::CyclicValuationRoute {
                 route_id: route_id.to_string(),
             });
             return errors;
         }
-        if is_zero(leg.max_age_ms) {
+        if is_zero(leg.max_age_ms()) {
             errors.push(EconomicsConfigError::ZeroValuationAge {
                 route_id: route_id.to_string(),
             });
         }
-        current = leg.to_unit.as_str();
+        current = leg.to_unit();
     }
     if current != route.to_currency {
         errors.push(EconomicsConfigError::DisconnectedValuationRoute {

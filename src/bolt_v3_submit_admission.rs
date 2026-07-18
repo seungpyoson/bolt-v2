@@ -3054,6 +3054,11 @@ impl OrderValuationContext<'_> {
         }
     }
 
+    /// Preserves the historical valuation contract for quote-present unsided
+    /// market-style orders: without a Buy or Sell side, no quote price is
+    /// usable and this helper must not substitute the last trade. Submit
+    /// admission separately rejects every unsided quote-quantity market-style
+    /// order before valuation.
     pub fn prices_for_order(&self, order: &OrderAny) -> (Option<Price>, Option<Price>) {
         let uses_submitted_notional = order.is_quote_quantity()
             && matches!(order, OrderAny::Market(_))
@@ -3069,7 +3074,11 @@ impl OrderValuationContext<'_> {
         });
         let last_price = match order {
             OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
-                quote_side_price.or_else(|| self.last_trade.map(|trade| trade.price))
+                if self.last_quote.is_some() && quote_side_price.is_none() {
+                    None
+                } else {
+                    quote_side_price.or_else(|| self.last_trade.map(|trade| trade.price))
+                }
             }
             OrderAny::StopMarket(_) | OrderAny::MarketIfTouched(_) => order.trigger_price(),
             OrderAny::TrailingStopMarket(_) | OrderAny::TrailingStopLimit(_) => {
@@ -3099,6 +3108,17 @@ where
     F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
 {
     let client_order_id = input.order.client_order_id().to_string();
+    let unsided_quote_quantity_market_style = input.order.is_quote_quantity()
+        && matches!(
+            input.order,
+            OrderAny::Market(_) | OrderAny::MarketToLimit(_)
+        )
+        && !matches!(input.order.order_side(), OrderSide::Buy | OrderSide::Sell);
+    anyhow::ensure!(
+        !unsided_quote_quantity_market_style,
+        "bolt-v3 submit admission requires an explicit buy or sell side for quote-quantity market-style client_order_id={}",
+        client_order_id
+    );
     let quantity_source = input.order.quantity().to_string();
     let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
         format!(

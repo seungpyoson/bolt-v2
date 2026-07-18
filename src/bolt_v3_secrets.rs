@@ -16,7 +16,8 @@
 
 use std::collections::BTreeMap;
 
-use zeroize::Zeroizing;
+use alloy_signer_local::PrivateKeySigner;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
@@ -121,6 +122,24 @@ where
 }
 
 pub type ResolvedBoltV3ClientSecrets = ResolvedClientSecrets;
+
+pub(crate) const EVM_SIGNING_KEY_BYTES: usize = 32;
+
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct ResolvedEvmSigningKey {
+    bytes: Zeroizing<[u8; EVM_SIGNING_KEY_BYTES]>,
+}
+
+impl ResolvedEvmSigningKey {
+    pub(crate) fn new(bytes: Zeroizing<[u8; EVM_SIGNING_KEY_BYTES]>) -> Result<Self, String> {
+        PrivateKeySigner::from_slice(bytes.as_ref()).map_err(|source| source.to_string())?;
+        Ok(Self { bytes })
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8; EVM_SIGNING_KEY_BYTES] {
+        &self.bytes
+    }
+}
 
 #[derive(Clone)]
 pub struct ResolvedBoltV3Secrets {
@@ -377,6 +396,12 @@ mod tests {
 
     const SYNTHETIC_POLYMARKET_PRIVATE_KEY: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
+
+    #[test]
+    fn resolved_evm_signing_key_rejects_invalid_scalar() {
+        let invalid = zeroize::Zeroizing::new([u8::default(); EVM_SIGNING_KEY_BYTES]);
+        assert!(ResolvedEvmSigningKey::new(invalid).is_err());
+    }
 
     fn minimal_root_toml() -> &'static str {
         include_str!("../tests/fixtures/bolt_v3/root.toml")

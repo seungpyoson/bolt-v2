@@ -68,6 +68,18 @@ impl RiskClosureWorkspaceAuthority {
     }
 
     #[cfg(test)]
+    pub(super) fn for_test_workspace(
+        workspace_bytes: usize,
+    ) -> Result<Self, RiskClosureWorkspaceError> {
+        Self::with_config(RiskClosureWorkspaceConfig {
+            arena_bytes: workspace_bytes,
+            slot_bytes: workspace_bytes,
+            capacity: usize::from(true),
+            production_activation_enabled: false,
+        })
+    }
+
+    #[cfg(test)]
     fn with_config(config: RiskClosureWorkspaceConfig) -> Result<Self, RiskClosureWorkspaceError> {
         Ok(Self {
             inner: Arc::new(Mutex::new(WorkspaceState::allocate(config)?)),

@@ -29,7 +29,12 @@ if str(SCRIPT_DIR) not in sys.path:
 import config_validators as _cv  # noqa: E402
 from ci_provenance import MERGIFY_CONFIG_EXPECTATIONS  # noqa: E402
 from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG  # noqa: E402
-from git_remote_utils import fetchable_origin_argument, fetchable_remote_url  # noqa: E402
+from git_remote_utils import (  # noqa: E402
+    github_https_remote_url as _github_https_remote_url,
+    isolated_git_transport_environment,
+    redact_remote_urls,
+    require_remote_name as _require_remote_name,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -604,6 +609,7 @@ CHECK_STATE_ISSUE_MESSAGES = {
     "required_check_stale": "required check is stale: {name}",
 }
 VERIFIER_STREAMS = ("stdout", "stderr")
+VERIFIER_PASSTHROUGH_ENV = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ")
 FENCES_ONLY_FLAG = "--fences-only"
 SHELL_COMMAND_EXECUTABLES = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 PREFLIGHT_MODE_FINDINGS = {
@@ -623,6 +629,10 @@ PREFLIGHT_MODE_FINDINGS = {
 
 class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
+
+
+require_remote_name = functools.partial(_require_remote_name, error_cls=PreflightError)
+github_https_remote_url = functools.partial(_github_https_remote_url, error_cls=PreflightError)
 
 
 require_table = functools.partial(_cv.require_table, error_cls=PreflightError)
@@ -1933,10 +1943,11 @@ class PrivateFetchRefs:
         temp_dir = tempfile.TemporaryDirectory(prefix="merge-queue-preflight-git-")
         git_repo = pathlib.Path(temp_dir.name) / "repo.git"
         try:
-            run_command(
-                ["git", "init", "--bare", str(git_repo)],
-                cwd=pathlib.Path(temp_dir.name),
-                check=True,
+            git(
+                pathlib.Path(temp_dir.name),
+                "init",
+                "--bare",
+                str(git_repo),
                 timeout_seconds=input_timeout_seconds,
             )
             for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
@@ -1971,6 +1982,7 @@ class PrivateFetchRefs:
         )
 
     def fetch_origin(self, origin: str) -> str:
+        require_remote_name(origin)
         cached = self.remotes.get(origin)
         if cached is not None:
             return cached
@@ -1978,18 +1990,17 @@ class PrivateFetchRefs:
             raise PreflightError(f"source repository directory {self.source_repo} does not exist")
         result = git(
             self.source_repo,
-            "remote",
-            "get-url",
-            origin,
+            "config",
+            "--local",
+            "--get-all",
+            f"remote.{origin}.url",
             check=False,
             timeout_seconds=self.input_timeout_seconds,
         )
-        remote_url = result.stdout.strip()
-        if result.returncode != 0 or not remote_url:
-            remote_url = fetchable_origin_argument(origin, self.source_repo)
-            self.remotes[origin] = remote_url
-            return remote_url
-        remote_url = fetchable_remote_url(remote_url, self.source_repo)
+        remote_urls = result.stdout.splitlines()
+        if result.returncode != 0 or len(remote_urls) != 1 or not remote_urls[0]:
+            raise PreflightError("configured Git remote did not resolve to a URL")
+        remote_url = remote_urls[0]
         self.remotes[origin] = remote_url
         return remote_url
 
@@ -1997,14 +2008,16 @@ class PrivateFetchRefs:
         if not self.git_repo.is_dir():
             raise PreflightError(f"private Git repository directory {self.git_repo} does not exist")
         ref = f"{self.namespace}/{name}"
+        remote_url = self.fetch_origin(origin)
         git(
             self.git_repo,
             "fetch",
             "--quiet",
             "--no-write-fetch-head",
             "--no-tags",
-            self.fetch_origin(origin),
+            remote_url,
             f"{source}:{ref}",
+            redact_values=(remote_url,),
             timeout_seconds=self.input_timeout_seconds,
         )
         self.refs.append(ref)
@@ -2176,6 +2189,7 @@ class Batch:
 class PreflightConfig:
     origin: str
     base: str
+    repository: str
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
     source_fence_full_profile_pathspecs: tuple[str, ...]
@@ -2246,6 +2260,7 @@ def run_command(
     input_text: str | None = None,
     timeout_seconds: int | None = None,
     process_group: bool = False,
+    redact_values: Sequence[str] = (),
 ) -> CommandResult:
     command_args = list(args)
     stdin = subprocess.PIPE if input_text is not None else subprocess.DEVNULL
@@ -2307,9 +2322,16 @@ def run_command(
         failure_type=failure_type,
     )
     if check and result.returncode != 0:
-        rendered = " ".join(shlex.quote(part) for part in result.args)
+        rendered = " ".join(
+            shlex.quote(redact_remote_urls(part, redact_values)) for part in result.args
+        )
         raise PreflightError(
-            f"command failed ({result.returncode}): {rendered}\n{result.stderr}{result.stdout}"
+            "command failed ({returncode}): {rendered}\n{stderr}{stdout}".format(
+                returncode=result.returncode,
+                rendered=rendered,
+                stderr=redact_remote_urls(result.stderr, redact_values),
+                stdout=redact_remote_urls(result.stdout, redact_values),
+            )
         )
     return result
 
@@ -2318,18 +2340,48 @@ def git(
     repo: pathlib.Path,
     *args: str,
     check: bool = True,
-    env: dict[str, str] | None = None,
     input_text: str | None = None,
     timeout_seconds: int | None = None,
+    redact_values: Sequence[str] = (),
 ) -> CommandResult:
     return run_command(
         ["git", *args],
         cwd=repo,
         check=check,
-        env=env,
+        env=isolated_git_transport_environment(os.environ),
         input_text=input_text,
         timeout_seconds=timeout_seconds,
+        redact_values=redact_values,
     )
+
+
+def isolated_verifier_environment(
+    environ: Mapping[str, str],
+    runtime_root: pathlib.Path,
+    alternate_object_dir: str | None,
+) -> dict[str, str]:
+    home = runtime_root / "home"
+    temp = runtime_root / "tmp"
+    home.mkdir(parents=True)
+    temp.mkdir()
+    environment = {
+        key: environ[key]
+        for key in VERIFIER_PASSTHROUGH_ENV
+        if key in environ
+    }
+    environment.update(
+        {
+            "HOME": str(home),
+            "TMPDIR": str(temp),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    if alternate_object_dir:
+        environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = alternate_object_dir
+    return environment
 
 
 def load_toml(path: pathlib.Path) -> dict[str, object]:
@@ -2536,9 +2588,12 @@ def validate_verifier_profile_commands(
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
+    operator = require_table(settings, "operator", "config.merge_queue_preflight")
     cheap_gate_labels = cheap_local_gate_labels(root)
     origin = require_string(settings, "origin", "config.merge_queue_preflight")
     base = require_string(settings, "base", "config.merge_queue_preflight")
+    repository = require_string(operator, "repository", "config.merge_queue_preflight.operator")
+    github_https_remote_url(repository)
     default_profile = require_string(
         settings, "default_verifier_profile", "config.merge_queue_preflight"
     )
@@ -2618,6 +2673,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     return PreflightConfig(
         origin=origin,
         base=base,
+        repository=repository,
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
         source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
@@ -2689,7 +2745,7 @@ def unique_preserving_order(values: Sequence[int]) -> tuple[int, ...]:
 
 
 def fetch_base(fetch_refs: PrivateFetchRefs, origin: str, base: str) -> str:
-    sha = fetch_refs.fetch_sha(origin, base, "base")
+    sha = fetch_refs.fetch_sha(origin, f"refs/heads/{base}", f"base-{base}")
     if SHA_RE.fullmatch(sha) is None:
         raise PreflightError(f"base {base!r} did not resolve to a commit SHA")
     return sha
@@ -2763,19 +2819,20 @@ def commit_tree(
     message: str,
     input_timeout_seconds: int,
 ) -> str:
-    args = ["commit-tree", tree]
+    args = [
+        "-c",
+        "user.name=merge-queue-preflight",
+        "-c",
+        "user.email=merge-queue-preflight@example.invalid",
+        "commit-tree",
+        tree,
+    ]
     for parent in parents:
         args.extend(["-p", parent])
-    env = os.environ.copy()
-    env.setdefault("GIT_AUTHOR_NAME", "merge-queue-preflight")
-    env.setdefault("GIT_AUTHOR_EMAIL", "merge-queue-preflight@example.invalid")
-    env.setdefault("GIT_COMMITTER_NAME", "merge-queue-preflight")
-    env.setdefault("GIT_COMMITTER_EMAIL", "merge-queue-preflight@example.invalid")
     completed = git(
         repo,
         *args,
         check=False,
-        env=env,
         input_text=message,
         timeout_seconds=input_timeout_seconds,
     )
@@ -2808,12 +2865,34 @@ def synthesize_merge(
     return SyntheticCommit(commit=commit, prs=tuple(prs))
 
 
+def configure_verifier_worktree_origin(
+    worktree: pathlib.Path,
+    origin_url: str,
+    input_timeout_seconds: int,
+) -> None:
+    completed = git(
+        worktree,
+        "config",
+        "--worktree",
+        "remote.origin.url",
+        origin_url,
+        check=False,
+        redact_values=(origin_url,),
+        timeout_seconds=input_timeout_seconds,
+    )
+    if completed.returncode != 0:
+        details = redact_remote_urls(f"{completed.stderr}{completed.stdout}".strip(), (origin_url,))
+        suffix = f": {details}" if details else ""
+        raise PreflightError(f"failed to configure verifier origin{suffix}")
+
+
 def run_verifier_commands(
     repo: pathlib.Path,
     commit: str,
     commands: Sequence[str],
     timeout_seconds: int,
     input_timeout_seconds: int,
+    origin_url: str,
     alternate_object_dir: str | None = None,
 ) -> tuple[VerifierResult, ...]:
     if not commands:
@@ -2821,6 +2900,18 @@ def run_verifier_commands(
     results: list[VerifierResult] = []
     with tempfile.TemporaryDirectory(prefix="merge-queue-preflight-") as tmp:
         worktree = pathlib.Path(tmp) / "worktree"
+        verifier_env = isolated_verifier_environment(
+            os.environ,
+            pathlib.Path(tmp) / "runtime",
+            alternate_object_dir,
+        )
+        git(
+            repo,
+            "config",
+            "extensions.worktreeConfig",
+            "true",
+            timeout_seconds=input_timeout_seconds,
+        )
         git(
             repo,
             "worktree",
@@ -2832,21 +2923,18 @@ def run_verifier_commands(
             timeout_seconds=input_timeout_seconds,
         )
         try:
+            configure_verifier_worktree_origin(
+                worktree,
+                origin_url,
+                input_timeout_seconds,
+            )
             for command in commands:
                 parts = shlex.split(command)
                 if not parts:
                     raise PreflightError("verifier command must not be empty")
-                env = None
-                if alternate_object_dir:
-                    env = os.environ.copy()
-                    existing_alternates = env.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-                    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = (
-                        alternate_object_dir
-                        if not existing_alternates
-                        else f"{alternate_object_dir}{os.pathsep}{existing_alternates}"
-                    )
+                public_command = redact_remote_urls(command, (origin_url,))
                 print(
-                    f"merge_queue_preflight: verifier running: {command}",
+                    f"merge_queue_preflight: verifier running: {public_command}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -2854,22 +2942,22 @@ def run_verifier_commands(
                     parts,
                     cwd=worktree,
                     check=False,
-                    env=env,
+                    env=verifier_env,
                     timeout_seconds=timeout_seconds,
                     process_group=True,
                 )
                 verifier_result = VerifierResult(
-                    command=command,
+                    command=public_command,
                     returncode=completed.returncode,
-                    stdout=completed.stdout,
-                    stderr=completed.stderr,
+                    stdout=redact_remote_urls(completed.stdout, (origin_url,)),
+                    stderr=redact_remote_urls(completed.stderr, (origin_url,)),
                     classification=verifier_failure_classification(completed.failure_type),
                 )
                 results.append(verifier_result)
                 status = "passed" if verifier_result.returncode == 0 else "failed"
                 print(
                     "merge_queue_preflight: verifier "
-                    f"{status}: {command} (exit {verifier_result.returncode})",
+                    f"{status}: {public_command} (exit {verifier_result.returncode})",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -3096,6 +3184,7 @@ def verified_fallback_batches(
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
     alternate_object_dir: str | None,
+    origin_url: str,
     start_index: int,
 ) -> VerifiedBatchFallback:
     """Recover from a failed optimistic batch by verifying each PR, then rebuilding batches."""
@@ -3118,6 +3207,7 @@ def verified_fallback_batches(
             ),
             verifier_timeout_seconds,
             input_timeout_seconds,
+            origin_url,
             alternate_object_dir,
         )
         failed = first_failed_verifier(verifier_results)
@@ -3196,6 +3286,7 @@ def verified_fallback_batches(
             ),
             verifier_timeout_seconds,
             input_timeout_seconds,
+            origin_url,
             alternate_object_dir,
         )
         failed = first_failed_verifier(candidate_verifiers)
@@ -3253,6 +3344,7 @@ def verify_final_batches_with_fallback(
     input_timeout_seconds: int,
     output_policy: OutputPolicy,
     alternate_object_dir: str | None,
+    origin_url: str,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[Batch], set[int]]:
     """Verify optimistic batches, falling back over the remaining suffix after the first failure."""
     blocked_prs: list[dict[str, object]] = []
@@ -3275,6 +3367,7 @@ def verify_final_batches_with_fallback(
             ),
             verifier_timeout_seconds,
             input_timeout_seconds,
+            origin_url,
             alternate_object_dir,
         )
         failed = first_failed_verifier(verifier_results)
@@ -3305,6 +3398,7 @@ def verify_final_batches_with_fallback(
             input_timeout_seconds=input_timeout_seconds,
             output_policy=output_policy,
             alternate_object_dir=alternate_object_dir,
+            origin_url=origin_url,
             start_index=batch_index,
         )
         blocked_prs.extend(fallback.blocked_prs)
@@ -3714,6 +3808,7 @@ def preflight(
     repo: pathlib.Path,
     origin: str,
     base: str,
+    expected_origin_url: str,
     expected_base_sha: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
@@ -3732,6 +3827,7 @@ def preflight(
         return preflight_with_fetch_refs(
             origin=origin,
             base=base,
+            expected_origin_url=expected_origin_url,
             expected_base_sha=expected_base_sha,
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
@@ -3754,6 +3850,7 @@ def preflight_with_fetch_refs(
     *,
     origin: str,
     base: str,
+    expected_origin_url: str,
     expected_base_sha: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
@@ -3772,6 +3869,9 @@ def preflight_with_fetch_refs(
     expected_heads = expected_head_map(expected_head_inputs, requested)
     git_repo = fetch_refs.git_repo
     try:
+        origin_url = fetch_refs.fetch_origin(origin)
+        if origin_url != expected_origin_url:
+            raise PreflightError("checkout Git remote does not match configured repository")
         actual_base_sha = fetch_base(fetch_refs, origin, base)
     except PreflightError as exc:
         return unavailable_base_payload(
@@ -3863,6 +3963,7 @@ def preflight_with_fetch_refs(
         input_timeout_seconds=input_timeout_seconds,
         output_policy=output_policy,
         alternate_object_dir=fetch_refs.source_objects,
+        origin_url=origin_url,
     )
     conflicts = [
         conflict
@@ -4034,10 +4135,8 @@ def plain_text(payload: dict[str, object]) -> str:
 def parser() -> argparse.ArgumentParser:
     root = PreflightArgumentParser(prog="merge_queue_preflight.py")
     root.add_argument("prs", nargs="+", type=positive_pr_number)
-    root.add_argument("--base")
     root.add_argument("--expected-base-sha", required=True, type=commit_sha)
     root.add_argument("--expected-head-sha", action="append", required=True, type=expected_head_sha)
-    root.add_argument("--origin")
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     root.add_argument("--verifier-profile")
     root.add_argument("--run-verifier", action="append", default=[])
@@ -4062,10 +4161,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         config = load_config(args.config)
+        os.environ["GH_HOST"] = config.repository.split("/", 1)[0]
+        os.environ["GH_REPO"] = config.repository
         payload, exit_code = preflight(
             repo=pathlib.Path.cwd(),
-            origin=args.origin or config.origin,
-            base=args.base or config.base,
+            origin=config.origin,
+            base=config.base,
+            expected_origin_url=github_https_remote_url(config.repository),
             expected_base_sha=args.expected_base_sha,
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,

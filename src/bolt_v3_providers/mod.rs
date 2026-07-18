@@ -1269,9 +1269,6 @@ pub fn validate_client_block(key: &str, client: &ClientBlock) -> Vec<String> {
 
 #[derive(Debug)]
 pub enum FeeProviderResolutionError {
-    MissingExecutionClient {
-        execution_client_id: String,
-    },
     UnsupportedProvider {
         client_key: String,
         provider_key: String,
@@ -1290,12 +1287,6 @@ pub enum FeeProviderResolutionError {
 impl std::fmt::Display for FeeProviderResolutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingExecutionClient {
-                execution_client_id,
-            } => write!(
-                f,
-                "strategy execution_client_id `{execution_client_id}` is not present in loaded clients",
-            ),
             Self::UnsupportedProvider {
                 client_key,
                 provider_key,
@@ -1332,18 +1323,12 @@ impl std::error::Error for FeeProviderResolutionError {
 }
 
 pub fn resolve_fee_provider(
-    loaded: &LoadedBoltV3Config,
     execution_client_id: &str,
+    client: &ClientBlock,
+    execution_venue: Venue,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<Arc<dyn FeeProvider>, FeeProviderResolutionError> {
-    let client = loaded
-        .root
-        .clients
-        .get(execution_client_id)
-        .ok_or_else(|| FeeProviderResolutionError::MissingExecutionClient {
-            execution_client_id: execution_client_id.to_string(),
-        })?;
-    let provider_key = client.venue.as_str();
+    let provider_key = execution_venue.as_str();
     let binding = binding_for_provider_key(provider_key).ok_or_else(|| {
         FeeProviderResolutionError::UnsupportedProvider {
             client_key: execution_client_id.to_string(),
@@ -1561,6 +1546,19 @@ mod tests {
         }
     }
 
+    fn resolve_configured_fee_provider(
+        loaded: &LoadedBoltV3Config,
+        execution_client_id: &str,
+        resolved: &ResolvedBoltV3Secrets,
+    ) -> Result<Arc<dyn FeeProvider>, FeeProviderResolutionError> {
+        let client = loaded
+            .root
+            .clients
+            .get(execution_client_id)
+            .expect("test execution client should be configured");
+        resolve_fee_provider(execution_client_id, client, client.venue, resolved)
+    }
+
     #[derive(Debug)]
     struct SentinelSecrets {
         value: String,
@@ -1642,7 +1640,7 @@ mod tests {
         let loaded = fixture_loaded_config();
         let resolved = resolved_polymarket_secrets();
 
-        let provider = resolve_fee_provider(&loaded, "polymarket_main", &resolved)
+        let provider = resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved)
             .expect("polymarket fee provider should resolve through provider binding");
 
         assert!(
@@ -1657,25 +1655,6 @@ mod tests {
                 .fee_bps("condition-token.POLYMARKET".into())
                 .is_none()
         );
-    }
-
-    #[test]
-    fn fee_provider_resolution_rejects_missing_execution_client_id() {
-        let loaded = fixture_loaded_config();
-        let resolved = ResolvedBoltV3Secrets {
-            clients: BTreeMap::new(),
-        };
-
-        let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "missing_execution_client", &resolved),
-            "missing execution client id must fail at resolver boundary",
-        );
-
-        assert!(matches!(
-            error,
-            FeeProviderResolutionError::MissingExecutionClient { .. }
-        ));
-        assert!(error.to_string().contains("missing_execution_client"));
     }
 
     #[test]
@@ -1694,7 +1673,7 @@ mod tests {
         };
 
         let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "fake_execution", &resolved),
+            resolve_configured_fee_provider(&loaded, "fake_execution", &resolved),
             "unsupported provider key must fail at resolver boundary",
         );
 
@@ -1717,7 +1696,7 @@ mod tests {
         };
 
         let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "binance_reference", &resolved),
+            resolve_configured_fee_provider(&loaded, "binance_reference", &resolved),
             "provider without fee binding must fail at resolver boundary",
         );
 
@@ -1739,7 +1718,7 @@ mod tests {
         let resolved = resolved_polymarket_secrets();
 
         let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
             "provider config parse failure must surface through resolver",
         );
 
@@ -1761,7 +1740,7 @@ mod tests {
         };
 
         let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
             "missing resolved secret binding must fail at resolver boundary",
         );
 
@@ -1785,7 +1764,7 @@ mod tests {
         let resolved = resolved_polymarket_secrets();
 
         let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
             "provider client construction failure must surface through resolver",
         );
 
@@ -1817,7 +1796,7 @@ mod tests {
         let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
             "sentinel secret provider mismatch must fail without leaking secret value",
         );
         let display = error.to_string();
@@ -1844,7 +1823,7 @@ mod tests {
         let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = expect_resolution_error(
-            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
             "provider build failure must not leak malformed resolved secret values",
         );
         let display = error.to_string();

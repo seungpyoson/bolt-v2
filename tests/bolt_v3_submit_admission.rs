@@ -194,6 +194,67 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
 }
 
 #[test]
+fn build_submit_admission_request_rejects_economics_purpose_mismatch() {
+    let price = Price::new(0.50, 2);
+    let order = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("INSTRUMENT.SOURCE"),
+            ClientOrderId::from("O-19700101-000000-001-A9-PURPOSE"),
+            OrderSide::Buy,
+            Quantity::new(2.0, 2),
+            price,
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("limit order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        price.to_string(),
+        &order,
+    );
+    let input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: "hyperliquid_perps",
+        intent: &intent,
+        order: &order,
+        valuation: OrderValuationContext::empty(),
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        risk_reducing_exit_position: None,
+    };
+
+    let error = build_submit_admission_request_from_order(
+        input,
+        support::sample_risk_reduction_economics_admission(Decimal::ONE),
+    )
+    .expect_err("entry evidence must reject a risk-reduction economics admission");
+
+    assert!(
+        error
+            .to_string()
+            .contains("economics admission purpose does not match final order intent")
+    );
+}
+
+#[test]
 fn order_valuation_context_selects_quote_quantity_prices_by_order_shape() {
     let instrument_id = InstrumentId::from("INSTRUMENT.SOURCE");
     let quantity = Quantity::new(2.0, 2);
@@ -505,6 +566,25 @@ fn expired_economics_quote_rejects_before_capacity_is_consumed() {
         .expect_err("expired economics must fail closed");
 
     assert_eq!(error, BoltV3SubmitAdmissionError::EconomicsQuoteExpired);
+    assert_eq!(admission.admitted_order_count(), 0);
+}
+
+#[test]
+fn final_admission_rejects_post_quote_intent_purpose_mutation() {
+    let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
+    let mut request = submit_request(Decimal::ONE);
+    request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
+    request.order_side = OrderSide::Sell;
+    request.order_quantity = Decimal::new(264, 2);
+    request.risk_reducing_exit_proof = Some(valid_risk_reducing_exit_proof());
+
+    let error = admission
+        .admit(&request)
+        .expect_err("post-quote intent mutation must fail closed");
+
+    assert_eq!(error, BoltV3SubmitAdmissionError::EconomicsOrderMismatch);
     assert_eq!(admission.admitted_order_count(), 0);
 }
 

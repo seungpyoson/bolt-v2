@@ -66,9 +66,15 @@ path = "tests/bolt_v3_risk_reservation_epoch_manager.rs"
 name = "bolt_v3_polymarket_venue_truth"
 path = "tests/bolt_v3_polymarket_venue_truth.rs"
 
+[[test]]
+name = "polymarket_redemption_preparation"
+path = "tests/polymarket_redemption_preparation.rs"
+
 [dependencies]
 ahash = "0.8.12"
 alloy-primitives = "=1.6.0"
+alloy-signer = "=2.1.0"
+alloy-signer-local = "=2.1.0"
 anyhow = "1"
 arc-swap = "1"
 arrow = "58.3.0"

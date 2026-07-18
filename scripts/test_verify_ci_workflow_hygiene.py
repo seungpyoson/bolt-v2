@@ -11026,6 +11026,16 @@ def assert_ra001a_durable_tracer_is_one_linear_workflow() -> None:
             "      - name: Run the sole registry-complete RA-001a tracer\n        if: ${{ inputs.enabled }}\n",
             1,
         ),
+        "conditional pre-credential admission": workflow.replace(
+            "      - name: Preflight the exact registry before AWS credentials\n",
+            "      - name: Preflight the exact registry before AWS credentials\n        if: ${{ always() }}\n",
+            1,
+        ),
+        "missing pre-credential admission": workflow.replace(
+            "registry_complete_ra001a_preflight_runs_before_aws_credentials",
+            "registry_complete_ra001a_live_tracer_runs_every_committed_pack",
+            1,
+        ),
         "cache restore": workflow.replace(
             "      - name: Install cargo-nextest\n",
             "      - uses: actions/cache/restore@deadbeef\n      - name: Install cargo-nextest\n",

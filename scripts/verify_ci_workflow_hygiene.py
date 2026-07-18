@@ -11874,6 +11874,9 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
             ),
             "BOLT_RA001A_AWS_ROLE_ARN": consumed_policy_output("ra001a_aws_role_arn"),
             "BOLT_RA001A_AWS_REGION": consumed_policy_output("ra001a_aws_region"),
+            "BOLT_RA001A_MAX_CONCURRENT_RECORDS": consumed_policy_output(
+                "ra001a_max_concurrent_records"
+            ),
             "BOLT_RA001A_MAX_FETCH_TIMEOUT_SECONDS": consumed_policy_output(
                 "ra001a_max_fetch_timeout_seconds"
             ),
@@ -11950,11 +11953,51 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
                 "ra001a_termination_grace_seconds"
             ),
         }
+        preflight_step = named_step_block(
+            execute_job, "Preflight the exact registry before AWS credentials"
+        )
+        if (
+            preflight_step is None
+            or block_nested_mapping_items(preflight_step, "env") != expected_tracer_env
+        ):
+            errors.append(
+                f"{path} pre-credential registry admission must consume the exact tracer policy mapping"
+            )
+        preflight_items = (
+            None if preflight_step is None else block_top_level_items(preflight_step)
+        )
+        if preflight_items is None or set(preflight_items) != {
+            "name",
+            "shell",
+            "env",
+            "run",
+        }:
+            errors.append(
+                f"{path} pre-credential registry admission must be unconditional and contain only name/shell/env/run"
+            )
         if (
             tracer_step is None
             or block_nested_mapping_items(tracer_step, "env") != expected_tracer_env
         ):
             errors.append(f"{path} tracer env must match the exact RA-001a policy mapping")
+        tracer_items = None if tracer_step is None else block_top_level_items(tracer_step)
+        if tracer_items is None or set(tracer_items) != {"name", "id", "shell", "env", "run"}:
+            errors.append(
+                f"{path} tracer must be unconditional and contain only name/id/shell/env/run"
+            )
+
+        execute_text = uncommented_text(execute_job)
+        preflight_position = execute_text.find(
+            "- name: Preflight the exact registry before AWS credentials"
+        )
+        aws_position = execute_text.find("- name: Configure RA-001a AWS credentials")
+        tracer_position = execute_text.find(
+            "- name: Run the sole registry-complete RA-001a tracer"
+        )
+        if not 0 <= preflight_position < aws_position < tracer_position:
+            errors.append(
+                f"{path} exact registry admission must complete before AWS credentials and tracer execution"
+            )
 
         upload_step = named_step_block(execute_job, "Upload RA-001a durable tracer receipt")
         expected_upload_inputs = {
@@ -11990,6 +12033,7 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
         expected_consumed_values = [
             expected_timeout,
             *expected_build_env.values(),
+            *expected_tracer_env.values(),
             *expected_aws_inputs.values(),
             *expected_tracer_env.values(),
             *expected_upload_inputs.values(),
@@ -12032,6 +12076,7 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
         "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
         "just bte-test-archive-run",
         "registry_complete_ra001a_live_tracer_runs_every_committed_pack",
+        "registry_complete_ra001a_preflight_runs_before_aws_credentials",
         "test ! -L \"$BOLT_RA001A_RECEIPT_PATH\"",
         "id: upload-ra001a-durable-tracer-receipt",
         "if-no-files-found: error",
@@ -12043,7 +12088,6 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
     exact_once = (
         "python3 scripts/ci_provenance.py ra001a-policy",
         "just bte-test-archive \"$BVS_NEXTEST_ARCHIVE_PATH\"",
-        "just bte-test-archive-run",
         "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
         "id: upload-ra001a-durable-tracer-receipt",
     )
@@ -12051,6 +12095,11 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
         count = workflow.count(fragment)
         if count != 1:
             errors.append(f"{path} must contain {fragment!r} exactly once; found {count}")
+    archive_run_count = workflow.count("just bte-test-archive-run")
+    if archive_run_count != 2:
+        errors.append(
+            f"{path} must contain exactly one pre-credential and one live archive run; found {archive_run_count}"
+        )
 
     forbidden_fragments = (
         "    inputs:\n",
@@ -12073,14 +12122,15 @@ def verify_ra001a_durable_tracer_workflow(workflows: Mapping[str, str]) -> list[
     ordered_fragments = (
         "python3 scripts/ci_provenance.py ra001a-policy",
         "just bte-test-archive \"$BVS_NEXTEST_ARCHIVE_PATH\"",
+        "registry_complete_ra001a_preflight_runs_before_aws_credentials",
         "uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b",
-        "just bte-test-archive-run",
+        "registry_complete_ra001a_live_tracer_runs_every_committed_pack",
         "id: upload-ra001a-durable-tracer-receipt",
     )
     positions = [workflow.find(fragment) for fragment in ordered_fragments]
     if all(position >= 0 for position in positions) and positions != sorted(positions):
         errors.append(
-            f"{path} must remain policy -> build -> AWS -> tracer -> receipt-upload"
+            f"{path} must remain policy -> build -> preflight -> AWS -> tracer -> receipt-upload"
         )
 
     exclusive_markers = (

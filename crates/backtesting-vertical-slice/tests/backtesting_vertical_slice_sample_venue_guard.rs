@@ -75,7 +75,18 @@ fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
 fn sample_venue_violations(crate_root: &Path, sources: &BTreeMap<PathBuf, String>) -> Vec<String> {
     let mut failures = Vec::new();
     for (path, content) in sources {
-        let lower = production_source(content).to_ascii_lowercase();
+        let production = production_source(content);
+        let semantic_strings = match decoded_production_string_values(&production) {
+            Ok(values) => values,
+            Err(error) => {
+                failures.push(format!(
+                    "{} production strings could not be audited: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let lower = format!("{production}\n{semantic_strings}").to_ascii_lowercase();
         for needle in SAMPLE_VENUE_NEEDLES {
             if lower.contains(needle)
                 && !needle_allowed_in_production_path(needle, path, crate_root)
@@ -85,6 +96,54 @@ fn sample_venue_violations(crate_root: &Path, sources: &BTreeMap<PathBuf, String
         }
     }
     failures
+}
+
+fn decoded_production_string_values(content: &str) -> Result<String, syn::Error> {
+    let file = syn::parse_file(content)?;
+    let mut collector = SemanticStringCollector::default();
+    collector.visit_file(&file);
+    Ok(collector.values.join("\n"))
+}
+
+#[derive(Default)]
+struct SemanticStringCollector {
+    values: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for SemanticStringCollector {
+    fn visit_lit_str(&mut self, literal: &'ast syn::LitStr) {
+        self.values.push(literal.value());
+    }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if node
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "concat")
+            && let Ok(arguments) = Punctuated::<syn::Expr, Token![,]>::parse_terminated
+                .parse2(node.tokens.clone())
+            && let Some(value) = concatenate_literal_strings(&arguments)
+        {
+            self.values.push(value);
+        }
+        visit::visit_macro(self, node);
+    }
+}
+
+fn concatenate_literal_strings(arguments: &Punctuated<syn::Expr, Token![,]>) -> Option<String> {
+    let mut value = String::new();
+    for argument in arguments {
+        let syn::Expr::Lit(expression) = argument else {
+            return None;
+        };
+        match &expression.lit {
+            syn::Lit::Str(literal) => value.push_str(&literal.value()),
+            syn::Lit::Char(literal) => value.push(literal.value()),
+            _ => return None,
+        }
+    }
+    Some(value)
 }
 
 #[test]
@@ -1204,7 +1263,9 @@ fn register_use_tree(macros: &mut MacroAuthorities, mut prefix: Vec<String>, tre
             }
         }
         syn::UseTree::Rename(rename) => {
-            prefix.push(rename.ident.to_string());
+            if rename.ident != "self" {
+                prefix.push(rename.ident.to_string());
+            }
             macros
                 .renamed_path_prefixes
                 .entry(rename.rename.to_string())
@@ -2022,6 +2083,22 @@ std::include!("../tests/fixtures/std.rs");
         &crate_root,
         "src/lib.rs",
         r#"
+use std::{self as hidden};
+hidden::include!("../tests/fixtures/std.rs");
+"#,
+    );
+    let (sources, errors) = production_source_graph(&crate_root, &synthetic_manifest());
+    assert!(errors.is_empty(), "self-alias include errors: {errors:?}");
+    let failures = sample_venue_violations(&crate_root, &sources);
+    assert!(
+        failures.iter().any(|failure| failure.contains("std.rs")),
+        "self as alias must resolve to the enclosing std path: {failures:?}"
+    );
+
+    write_synthetic_source(
+        &crate_root,
+        "src/lib.rs",
+        r#"
 macro_rules! inject_source { () => { include!("../tests/fixtures/core.rs"); } }
 inject_source!();
 "#,
@@ -2095,6 +2172,20 @@ ensure!("../tests/fixtures/core.rs");
 fn checked_control() {
     use std::assert as checked;
     checked!(true);
+}
+
+#[test]
+fn decoded_and_concatenated_sample_venue_literals_fail_closed() {
+    let decoded = decoded_production_string_values(
+        r#"
+const ESCAPED: &str = "\x62ybit";
+const CONCATENATED: &str = concat!("bi", "nance");
+"#,
+    )
+    .expect("decode production string semantics")
+    .to_ascii_lowercase();
+    assert!(decoded.contains("bybit"));
+    assert!(decoded.contains("binance"));
 }
 "#,
     );

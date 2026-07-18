@@ -8,6 +8,7 @@ use backtesting_vertical_slice::source_universe_durable_tracer::{
         SourceUniverseDurableTracerCheckoutPolicy, SourceUniverseDurableTracerPackLimits,
         SourceUniverseDurableTracerGitExecutable, SourceUniverseDurableTracerRunPolicy,
         build_source_universe_durable_tracer_receipt_set,
+        preflight_source_universe_durable_tracer_registry,
         read_and_validate_source_universe_durable_tracer_receipt_set,
         run_source_universe_durable_tracer_registry,
         verify_source_universe_durable_tracer_checkout,
@@ -28,6 +29,7 @@ const MAX_TOTAL_SELECTED_OBJECT_BYTES_ENV: &str = "BOLT_RA001A_MAX_TOTAL_SELECTE
 const MAX_WORKER_EXECUTABLE_BYTES_ENV: &str = "BOLT_RA001A_MAX_WORKER_EXECUTABLE_BYTES";
 const MAX_GIT_EXECUTABLE_BYTES_ENV: &str = "BOLT_RA001A_MAX_GIT_EXECUTABLE_BYTES";
 const MAX_FETCH_TIMEOUT_SECONDS_ENV: &str = "BOLT_RA001A_MAX_FETCH_TIMEOUT_SECONDS";
+const MAX_CONCURRENT_RECORDS_ENV: &str = "BOLT_RA001A_MAX_CONCURRENT_RECORDS";
 const MAX_WORKER_VIRTUAL_MEMORY_BYTES_ENV: &str = "BOLT_RA001A_MAX_WORKER_VIRTUAL_MEMORY_BYTES";
 const MIN_WORKER_RESERVED_OVERHEAD_BYTES_ENV: &str =
     "BOLT_RA001A_MIN_WORKER_RESERVED_OVERHEAD_BYTES";
@@ -115,6 +117,7 @@ fn required_checkout_policy() -> SourceUniverseDurableTracerCheckoutPolicy {
 
 fn required_pack_limits() -> SourceUniverseDurableTracerPackLimits {
     SourceUniverseDurableTracerPackLimits {
+        max_concurrent_records: required_positive_u64_env(MAX_CONCURRENT_RECORDS_ENV),
         max_worker_virtual_memory_bytes: required_positive_u64_env(
             MAX_WORKER_VIRTUAL_MEMORY_BYTES_ENV,
         ),
@@ -153,6 +156,49 @@ fn required_pack_limits() -> SourceUniverseDurableTracerPackLimits {
     }
 }
 
+fn required_run_policy(max_git_executable_bytes: u64) -> SourceUniverseDurableTracerRunPolicy {
+    SourceUniverseDurableTracerRunPolicy {
+        aggregate_limits: SourceUniverseDurableTracerAggregateLimits {
+            max_registry_packs: required_positive_u64_env(MAX_REGISTRY_PACKS_ENV),
+            max_total_selected_object_bytes: required_positive_u64_env(
+                MAX_TOTAL_SELECTED_OBJECT_BYTES_ENV,
+            ),
+        },
+        pack_limits: required_pack_limits(),
+        aws_role_arn: required_utf8_env(AWS_ROLE_ARN_ENV),
+        aws_region: required_utf8_env(AWS_REGION_ENV),
+        max_git_executable_bytes,
+        max_worker_executable_bytes: required_positive_u64_env(MAX_WORKER_EXECUTABLE_BYTES_ENV),
+        trusted_policy_output_sha256: required_utf8_env(TRUSTED_POLICY_OUTPUT_SHA256_ENV),
+    }
+}
+
+#[test]
+#[ignore = "workflow-only exact-commit admission before AWS credential configuration"]
+fn registry_complete_ra001a_preflight_runs_before_aws_credentials() {
+    let source_revision = required_utf8_env(SOURCE_REVISION_ENV);
+    let expected_git = SourceUniverseDurableTracerArtifactPin {
+        bytes: required_positive_u64_env(GIT_BYTES_ENV),
+        sha256: required_utf8_env(GIT_SHA256_ENV),
+    };
+    let max_git_executable_bytes = required_positive_u64_env(MAX_GIT_EXECUTABLE_BYTES_ENV);
+    let git_executable = SourceUniverseDurableTracerGitExecutable::capture(
+        &required_absolute_path_env(GIT_EXECUTABLE_ENV),
+        &expected_git,
+        max_git_executable_bytes,
+    )
+    .expect("capture the reviewed Git capability for pre-credential admission");
+    let aggregate = preflight_source_universe_durable_tracer_registry(
+        &repo_root(),
+        &source_revision,
+        &git_executable,
+        &required_run_policy(max_git_executable_bytes),
+    )
+    .expect("complete exact-commit admission before AWS credential configuration");
+    assert!(aggregate.registry_packs > 0);
+    assert_eq!(aggregate.registry_packs, aggregate.total_selected_records);
+}
+
 #[test]
 #[ignore = "requires the protected RA-001a AWS role and creates exact-version durable objects"]
 fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
@@ -183,20 +229,7 @@ fn registry_complete_ra001a_live_tracer_runs_every_committed_pack() {
     )
     .expect("bind RA-001a proof to exact clean checkout before pack execution");
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_source_universe_batch_execution"));
-    let run_policy = SourceUniverseDurableTracerRunPolicy {
-        aggregate_limits: SourceUniverseDurableTracerAggregateLimits {
-            max_registry_packs: required_positive_u64_env(MAX_REGISTRY_PACKS_ENV),
-            max_total_selected_object_bytes: required_positive_u64_env(
-                MAX_TOTAL_SELECTED_OBJECT_BYTES_ENV,
-            ),
-        },
-        pack_limits: required_pack_limits(),
-        aws_role_arn: required_utf8_env(AWS_ROLE_ARN_ENV),
-        aws_region: required_utf8_env(AWS_REGION_ENV),
-        max_git_executable_bytes,
-        max_worker_executable_bytes: required_positive_u64_env(MAX_WORKER_EXECUTABLE_BYTES_ENV),
-        trusted_policy_output_sha256: required_utf8_env(TRUSTED_POLICY_OUTPUT_SHA256_ENV),
-    };
+    let run_policy = required_run_policy(max_git_executable_bytes);
 
     let registry_run = run_source_universe_durable_tracer_registry(
         &repo_root,

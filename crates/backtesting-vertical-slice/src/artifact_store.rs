@@ -997,6 +997,7 @@ pub struct PersistedCatalogProjection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogProjectionPublicationReceiptLocator {
     pub receipt_uri: String,
+    pub receipt_byte_len: u64,
     pub receipt_sha256: String,
     pub receipt_version_id: String,
     pub receipt_e_tag: String,
@@ -1007,6 +1008,7 @@ impl PersistedCatalogProjection {
     pub fn receipt_locator(&self) -> CatalogProjectionPublicationReceiptLocator {
         CatalogProjectionPublicationReceiptLocator {
             receipt_uri: self.receipt_uri.clone(),
+            receipt_byte_len: self.receipt_byte_len,
             receipt_sha256: self.receipt_sha256.clone(),
             receipt_version_id: self.receipt_version_id.clone(),
             receipt_e_tag: self.receipt_e_tag.clone(),
@@ -2232,6 +2234,16 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
         !locator.receipt_e_tag.trim().is_empty(),
         "catalog publication receipt locator ETag must not be empty"
     );
+    ensure!(
+        locator.receipt_byte_len > 0,
+        "catalog publication receipt locator byte length must be positive"
+    );
+    enforce_final_object_byte_cap(
+        "catalog publication receipt hydration payload",
+        locator.receipt_byte_len,
+        artifact_root.max_final_object_bytes,
+    )?;
+    work_budget.verify_decoded_bytes(locator.receipt_byte_len, stage)?;
     expected_physical_manifest
         .validate_guarded(work_budget, stage)
         .map_err(anyhow::Error::from)
@@ -2251,28 +2263,17 @@ pub async fn hydrate_catalog_projection_from_receipt_guarded(
         "catalog publication receipt",
     )
     .await?;
-    let receipt_byte_len = receipt_get.meta.size;
-    ensure!(
-        receipt_byte_len > 0,
-        "catalog publication receipt returned an empty payload"
-    );
-    enforce_final_object_byte_cap(
-        "catalog publication receipt hydration payload",
-        receipt_byte_len,
-        artifact_root.max_final_object_bytes,
-    )?;
-    work_budget.verify_decoded_bytes(receipt_byte_len, stage)?;
     validate_versioned_get_metadata(
         &receipt_get,
         &receipt_path,
-        receipt_byte_len,
+        locator.receipt_byte_len,
         &locator.receipt_version_id,
         &locator.receipt_e_tag,
         "catalog publication receipt",
     )?;
     let receipt_bytes = collect_exact_get_result_guarded(
         receipt_get,
-        receipt_byte_len,
+        locator.receipt_byte_len,
         work_budget,
         stage,
         "catalog publication receipt",

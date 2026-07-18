@@ -48,7 +48,7 @@ use crate::{
 };
 
 pub const SOURCE_UNIVERSE_DURABLE_TRACER_RECEIPT_SET_SCHEMA_VERSION: &str =
-    "source-universe-durable-tracer-receipt-set.v6";
+    "source-universe-durable-tracer-receipt-set.v7";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceUniverseDurableTracerReportInput {
@@ -199,6 +199,7 @@ pub struct SourceUniverseDurableTracerAggregateEnvelope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceUniverseDurableTracerPackLimits {
+    pub max_concurrent_records: u64,
     pub max_worker_virtual_memory_bytes: u64,
     pub min_worker_reserved_overhead_bytes: u64,
     pub max_fetch_timeout_seconds: u64,
@@ -237,12 +238,14 @@ pub struct SourceUniverseDurableTracerRunPolicy {
 impl SourceUniverseDurableTracerRunPolicy {
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.aggregate_limits.max_registry_packs > 0,
-            "RA-001a registry pack ceiling must be positive"
+            self.aggregate_limits.max_registry_packs > 0
+                && self.aggregate_limits.max_registry_packs != u64::MAX,
+            "RA-001a registry pack ceiling must be positive and finite"
         );
         ensure!(
-            self.aggregate_limits.max_total_selected_object_bytes > 0,
-            "RA-001a aggregate selected-object byte ceiling must be positive"
+            self.aggregate_limits.max_total_selected_object_bytes > 0
+                && self.aggregate_limits.max_total_selected_object_bytes != u64::MAX,
+            "RA-001a aggregate selected-object byte ceiling must be positive and finite"
         );
         ensure!(
             self.max_git_executable_bytes > 0 && self.max_git_executable_bytes != u64::MAX,
@@ -372,6 +375,7 @@ fn validate_ra001a_aws_region(region: &str) -> Result<()> {
 impl SourceUniverseDurableTracerPackLimits {
     fn validate(self) -> Result<()> {
         for (field, value) in [
+            ("max_concurrent_records", self.max_concurrent_records),
             (
                 "max_worker_virtual_memory_bytes",
                 self.max_worker_virtual_memory_bytes,
@@ -436,6 +440,10 @@ impl SourceUniverseDurableTracerPackLimits {
                 "RA-001a pack policy {field} must be finite"
             );
         }
+        ensure!(
+            self.max_concurrent_records == 1,
+            "RA-001a trusted max_concurrent_records must equal 1"
+        );
         ensure!(
             self.min_worker_reserved_overhead_bytes < self.max_worker_virtual_memory_bytes,
             "RA-001a pack policy worker overhead floor must be below the worker virtual-memory ceiling"
@@ -686,6 +694,7 @@ fn preflight_committed_ra001a_selected_controls(
     pack: &SourceUniverseExecutionPack,
     selected: &SourceUniverseExecutionPackRecord,
     limits: SourceUniverseDurableTracerPackLimits,
+    trusted_aws_region: &str,
 ) -> Result<()> {
     let pack_base_dir = committed
         .summary_path
@@ -746,7 +755,14 @@ fn preflight_committed_ra001a_selected_controls(
         pack.pack_id,
         selected.sequence
     );
-    validate_committed_ra001a_pack_limits(committed, selected, run_spec, execution_plan, limits)?;
+    validate_committed_ra001a_pack_limits(
+        committed,
+        selected,
+        run_spec,
+        execution_plan,
+        limits,
+        trusted_aws_region,
+    )?;
     Ok(())
 }
 
@@ -756,9 +772,15 @@ fn validate_committed_ra001a_pack_limits(
     run_spec: &crate::operator::RunSpec,
     execution_plan: &crate::backfill_execution_plan::BackfillExecutionPlan,
     limits: SourceUniverseDurableTracerPackLimits,
+    trusted_aws_region: &str,
 ) -> Result<()> {
     limits.validate()?;
     let launch = &committed.launch_spec;
+    ensure!(
+        launch.max_concurrent_records == Some(limits.max_concurrent_records),
+        "RA-001a pack {} concurrency must equal the trusted process-isolation policy",
+        committed.pack_id
+    );
     ensure!(
         committed.launch_bytes <= limits.max_launch_artifact_bytes
             && launch.bootstrap_limits.max_launch_artifact_bytes
@@ -871,6 +893,12 @@ fn validate_committed_ra001a_pack_limits(
         committed.pack_id
     );
     let artifact_store = run_spec.required_artifact_store()?;
+    run_spec.validate_artifact_store_publish_config(artifact_store)?;
+    ensure!(
+        artifact_store.s3.region == trusted_aws_region,
+        "RA-001a pack {} artifact-store and SSM region must equal the trusted AWS region",
+        committed.pack_id
+    );
     ensure!(
         artifact_store.max_final_object_bytes <= limits.max_final_object_bytes,
         "RA-001a pack {} final-object ceiling exceeds trusted policy",
@@ -926,6 +954,7 @@ fn validate_source_universe_durable_tracer_aggregate_limits(
     committed: &[CommittedSourceUniverseExecutionPack],
     limits: SourceUniverseDurableTracerAggregateLimits,
     pack_limits: SourceUniverseDurableTracerPackLimits,
+    trusted_aws_region: &str,
 ) -> Result<SourceUniverseDurableTracerAggregateEnvelope> {
     ensure!(
         limits.max_registry_packs > 0,
@@ -953,7 +982,13 @@ fn validate_source_universe_durable_tracer_aggregate_limits(
         )?;
         let parsed = parse_execution_pack(pack, &execution_pack)?;
         let selected = launch_selected_record(pack, &parsed)?;
-        preflight_committed_ra001a_selected_controls(pack, &parsed, selected, pack_limits)?;
+        preflight_committed_ra001a_selected_controls(
+            pack,
+            &parsed,
+            selected,
+            pack_limits,
+            trusted_aws_region,
+        )?;
         total_selected_records = total_selected_records
             .checked_add(
                 pack.launch_spec
@@ -987,7 +1022,7 @@ fn validate_source_universe_durable_tracer_aggregate_limits(
     })
 }
 
-fn preflight_source_universe_durable_tracer_registry(
+fn preflight_committed_source_universe_durable_tracer_registry(
     committed: &[CommittedSourceUniverseExecutionPack],
     policy: &SourceUniverseDurableTracerRunPolicy,
 ) -> Result<SourceUniverseDurableTracerAggregateEnvelope> {
@@ -996,6 +1031,7 @@ fn preflight_source_universe_durable_tracer_registry(
         committed,
         policy.aggregate_limits,
         policy.pack_limits,
+        &policy.aws_region,
     )?;
     for pack in committed {
         revalidate_committed_control_artifacts(pack)?;
@@ -1020,7 +1056,8 @@ where
     // the worker is captured or `launch` is invoked even once. Production and
     // tests share this composition boundary, so ordering cannot drift behind a
     // test-only parallel implementation.
-    let aggregate = preflight_source_universe_durable_tracer_registry(committed, policy)?;
+    let aggregate =
+        preflight_committed_source_universe_durable_tracer_registry(committed, policy)?;
     let worker = capture_worker()?;
     launch_preflighted_source_universe_durable_tracer_registry(committed, aggregate, |pack| {
         launch(&worker, pack)
@@ -1243,6 +1280,38 @@ pub fn run_source_universe_durable_tracer_registry(
             packs: committed,
         },
     })
+}
+
+/// Validate the exact committed registry and trusted cost envelope without
+/// constructing an AWS client or starting a source worker.
+///
+/// This is the workflow's mandatory pre-credential admission gate. The live
+/// run repeats the same exact-commit admission after credentials are installed;
+/// neither call has an alternate or fallback success path.
+pub fn preflight_source_universe_durable_tracer_registry(
+    repo_root: &Path,
+    source_revision: &str,
+    git_executable: &SourceUniverseDurableTracerGitExecutable,
+    policy: &SourceUniverseDurableTracerRunPolicy,
+) -> Result<SourceUniverseDurableTracerAggregateEnvelope> {
+    policy.validate()?;
+    git_executable
+        .artifact()
+        .validate("expected Git executable")?;
+    ensure!(
+        git_executable.artifact().bytes <= policy.max_git_executable_bytes,
+        "expected Git executable bytes exceed the applied ceiling"
+    );
+    let (_, committed) = load_exact_source_revision_registry(
+        repo_root,
+        source_revision,
+        policy.aggregate_limits.max_registry_packs,
+        policy.pack_limits,
+        git_executable,
+    )
+    .context("load exact source-revision RA-001a registry for pre-credential admission")?;
+    preflight_committed_source_universe_durable_tracer_registry(&committed, policy)
+        .context("preflight complete exact-source RA-001a registry before AWS credentials")
 }
 
 fn expected_pack_ids(committed: &[CommittedSourceUniverseExecutionPack]) -> BTreeSet<String> {
@@ -1970,6 +2039,7 @@ pub fn build_source_universe_durable_tracer_receipt_set(
         committed,
         registry_run.registry.applied_policy.aggregate_limits,
         registry_run.registry.applied_policy.pack_limits,
+        &registry_run.registry.applied_policy.aws_region,
     )?;
     ensure!(
         recomputed_aggregate == registry_run.aggregate,
@@ -2054,6 +2124,7 @@ fn validate_report_against_pack(
     pack: &SourceUniverseExecutionPack,
     report: &SourceUniverseBatchExecutionReport,
     pack_limits: SourceUniverseDurableTracerPackLimits,
+    trusted_aws_region: &str,
 ) -> Result<()> {
     ensure!(
         report.status == SourceUniverseBatchExecutionReportStatus::Completed
@@ -2074,7 +2145,13 @@ fn validate_report_against_pack(
         pack.pack_id
     );
     let expected = launch_selected_record(committed, pack)?;
-    preflight_committed_ra001a_selected_controls(committed, pack, expected, pack_limits)?;
+    preflight_committed_ra001a_selected_controls(
+        committed,
+        pack,
+        expected,
+        pack_limits,
+        trusted_aws_region,
+    )?;
     let actual = &report.records[0];
     validate_report_record_exact_fields(expected, actual)?;
     ensure!(
@@ -2091,6 +2168,12 @@ fn validate_report_against_pack(
         actual.completion_provenance
             == SourceUniverseBatchExecutionRecordProvenance::ExecutedProcessIsolated,
         "RA-001a report for {} must have executed_process_isolated completion provenance",
+        pack.pack_id
+    );
+    ensure!(
+        actual.completion_resolution
+            == crate::source_universe_batch_execution::SourceUniverseBatchExecutionCompletionResolution::Published,
+        "RA-001a report for {} must contain a fresh Published terminal",
         pack.pack_id
     );
     ensure!(
@@ -2216,6 +2299,7 @@ pub fn validate_source_universe_durable_tracer_receipt_set(
         &committed,
         receipt_set.applied_policy.aggregate_limits,
         receipt_set.applied_policy.pack_limits,
+        &receipt_set.applied_policy.aws_region,
     )?;
     ensure!(
         receipt_set.aggregate == recomputed_aggregate,
@@ -2279,6 +2363,7 @@ pub fn validate_source_universe_durable_tracer_receipt_set(
             &execution_pack,
             &receipt.batch_report,
             expected_policy.pack_limits,
+            &expected_policy.aws_region,
         )?;
         let canonical_report =
             crate::reference_artifact::canonical_json_bytes(&receipt.batch_report)
@@ -2476,7 +2561,7 @@ mod tests {
     const EXPECTED_POLICY_SHA256: &str =
         "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const EXPECTED_AWS_ROLE_ARN: &str = "arn:aws:iam::123456789012:role/ra001a-tracer";
-    const EXPECTED_AWS_REGION: &str = "eu-west-2";
+    const EXPECTED_AWS_REGION: &str = "us-east-1";
     const TEST_REGISTRY_PACK_CEILING: usize = 64;
 
     fn expected_worker_pin() -> super::SourceUniverseDurableTracerArtifactPin {
@@ -2532,6 +2617,7 @@ mod tests {
 
     fn pack_limits() -> super::SourceUniverseDurableTracerPackLimits {
         super::SourceUniverseDurableTracerPackLimits {
+            max_concurrent_records: 1,
             max_worker_virtual_memory_bytes: 2_147_483_648,
             min_worker_reserved_overhead_bytes: 536_870_912,
             max_fetch_timeout_seconds: 300,
@@ -3609,6 +3695,7 @@ mod tests {
             &packs,
             applied_policy.aggregate_limits,
             applied_policy.pack_limits,
+            EXPECTED_AWS_REGION,
         )
         .expect("preflight test source-revision registry snapshot");
         SourceUniverseDurableTracerRegistryRun {
@@ -3635,6 +3722,7 @@ mod tests {
             &committed,
             exact_limits,
             pack_limits(),
+            EXPECTED_AWS_REGION,
         )
         .expect("accept exact aggregate limits");
         assert_eq!(envelope.registry_packs, exact_limits.max_registry_packs);
@@ -3648,6 +3736,7 @@ mod tests {
                 ..exact_limits
             },
             pack_limits(),
+            EXPECTED_AWS_REGION,
         )
         .expect_err("reject aggregate registry count above configured cap");
         assert!(count_error.to_string().contains("max_registry_packs"));
@@ -3659,6 +3748,7 @@ mod tests {
                 ..exact_limits
             },
             pack_limits(),
+            EXPECTED_AWS_REGION,
         )
         .expect_err("reject aggregate selected bytes above configured cap");
         assert!(
@@ -3683,6 +3773,11 @@ mod tests {
                 cases.push(($expected, limit));
             }};
         }
+        case!(
+            max_concurrent_records,
+            2,
+            "trusted max_concurrent_records must equal 1"
+        );
         case!(
             max_fetch_timeout_seconds,
             baseline.max_fetch_timeout_seconds - 1,
@@ -3813,6 +3908,46 @@ mod tests {
             assert_eq!(captures, 0, "{expected}");
             assert_eq!(launches, 0, "{expected}");
         }
+    }
+
+    #[test]
+    fn head_controlled_concurrency_and_region_reject_before_worker_capture() {
+        let committed = discover_test_execution_packs(&repo_root())
+            .expect("discover committed execution packs");
+        let (aggregate_limits, _) = exact_aggregate_limits(&committed);
+
+        let mut concurrent = discover_test_execution_packs(&repo_root())
+            .expect("rediscover committed execution packs for concurrency mutation");
+        concurrent[0].launch_spec.max_concurrent_records = Some(2);
+        let policy = run_policy(aggregate_limits);
+        let mut captures = 0_u64;
+        let error = run_admitted_source_universe_durable_tracer_registry(
+            &concurrent,
+            &policy,
+            || {
+                captures += 1;
+                Ok(())
+            },
+            |_, _| unreachable!("concurrency rejection must precede launch"),
+        )
+        .expect_err("head-controlled concurrency must reject");
+        assert!(format!("{error:#}").contains("concurrency must equal"));
+        assert_eq!(captures, 0);
+
+        let mut wrong_region_policy = policy;
+        wrong_region_policy.aws_region = "eu-west-2".to_string();
+        let error = run_admitted_source_universe_durable_tracer_registry(
+            &committed,
+            &wrong_region_policy,
+            || {
+                captures += 1;
+                Ok(())
+            },
+            |_, _| unreachable!("region rejection must precede launch"),
+        )
+        .expect_err("head-controlled AWS region must reject");
+        assert!(format!("{error:#}").contains("must equal the trusted AWS region"));
+        assert_eq!(captures, 0);
     }
 
     #[test]
@@ -4042,6 +4177,7 @@ mod tests {
             &committed,
             limits,
             pack_limits(),
+            EXPECTED_AWS_REGION,
         )
         .expect("complete-registry cost/control admission succeeds before mutation");
         let pack = committed
@@ -4595,7 +4731,7 @@ mod tests {
             assert!(error.to_string().contains(missing_field), "{error:#}");
         }
         let mut legacy_schema = receipts.clone();
-        legacy_schema.schema_version = "source-universe-durable-tracer-receipt-set.v5".to_string();
+        legacy_schema.schema_version = "source-universe-durable-tracer-receipt-set.v6".to_string();
         let legacy_error = validate_source_universe_durable_tracer_receipt_set(
             &repo_root(),
             expected_source_revision(),

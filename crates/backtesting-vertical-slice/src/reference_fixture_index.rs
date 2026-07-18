@@ -50,7 +50,9 @@ const TIER1_PMXT_CONVERSION_QUEUE_PREFIX: &str = "specs/023-nt-research-analytic
 const TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/";
 pub const TIER1_PMXT_CONVERSION_QUEUE_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json";
 pub const TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json";
-const TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/";
+const TIER1_SOURCE_UNIVERSES_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/";
+const TIER1_DECLARED_SOURCE_UNIVERSE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/";
 const TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/";
 const TIER1_PMXT_SOURCE_PROOFS_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/";
@@ -65,7 +67,7 @@ pub const TIER1_EVICTED_SUBTREE_PREFIXES: &[&str] = &[
     TIER1_BATCH_EXECUTION_REPORTS_PREFIX,
     TIER1_PMXT_CONVERSION_QUEUE_PREFIX,
     TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX,
-    TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX,
+    TIER1_DECLARED_SOURCE_UNIVERSE_PREFIX,
     TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX,
     TIER1_PMXT_SOURCE_PROOFS_PREFIX,
 ];
@@ -297,14 +299,21 @@ pub fn is_tier1_evicted_reference_fixture_path(path: &str) -> bool {
         || is_json_below(path, TIER1_BATCH_EXECUTION_REPORTS_PREFIX)
         || is_direct_json_below(path, TIER1_PMXT_CONVERSION_QUEUE_PREFIX)
         || is_direct_json_below(path, TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX)
-        || is_binance_source_universe_json(path)
+        || is_declared_source_universe_json(path)
         || is_venue_scale_acceptance_ledger_json(path)
         || is_direct_json_below(path, TIER1_PMXT_SOURCE_PROOFS_PREFIX)
 }
 
-fn is_binance_source_universe_json(path: &str) -> bool {
-    path.strip_prefix(TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX)
-        .is_some_and(|file| is_direct_json_file(file) && file.ends_with("-source-universe.json"))
+fn is_declared_source_universe_json(path: &str) -> bool {
+    TIER1_EVICTED_SUBTREE_PREFIXES
+        .iter()
+        .copied()
+        .filter(|prefix| prefix.starts_with(TIER1_SOURCE_UNIVERSES_PREFIX))
+        .any(|prefix| {
+            path.strip_prefix(prefix).is_some_and(|file| {
+                is_direct_json_file(file) && file.ends_with("-source-universe.json")
+            })
+        })
 }
 
 fn is_conversion_work_order_json(path: &str) -> bool {

@@ -2752,6 +2752,35 @@ async fn hydration_requires_receipt_etag_and_exact_response_match() {
     .expect_err("blank receipt locator ETag must fail before exact GET");
     assert!(format!("{error:#}").contains("ETag"), "{error:#}");
     assert_eq!(store.exact_version_get_attempts().len(), exact_gets_before);
+
+    let mut zero_length_locator = persisted.receipt_locator();
+    zero_length_locator.receipt_byte_len = 0;
+    let error = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &zero_length_locator,
+        &physical_manifest,
+        &blank_hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("zero receipt locator length must fail before exact GET");
+    assert!(format!("{error:#}").contains("byte length"), "{error:#}");
+    assert_eq!(store.exact_version_get_attempts().len(), exact_gets_before);
+
+    let mut wrong_length_locator = persisted.receipt_locator();
+    wrong_length_locator.receipt_byte_len += 1;
+    let error = hydrate_catalog_projection_from_receipt_guarded(
+        &store,
+        &root,
+        &wrong_length_locator,
+        &physical_manifest,
+        &blank_hydration_root,
+        &OperatorWorkBudgetGuard::unbounded(),
+    )
+    .await
+    .expect_err("receipt response length must match the pinned locator before collection");
+    assert!(format!("{error:#}").contains("size"), "{error:#}");
 }
 
 #[tokio::test]

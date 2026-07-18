@@ -106,7 +106,8 @@ fn trade_run_spec_artifacts_are_byte_stable_and_never_write_tables_index() {
 
     // Same-directory reruns are not an alternate success path.
     run_operator_from_run_spec(&spec, &gz, dir_a.path())
-        .expect_err("fresh trade rerun must reject occupied output");
+        .err()
+        .expect("fresh trade rerun must reject occupied output");
     assert_eq!(
         read_artifact_bytes(dir_a.path(), CONVERSION_MANIFEST_FILE),
         manifest_a,

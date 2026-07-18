@@ -598,7 +598,8 @@ fn parquet_event_stream_run_spec_end_to_end_dual_emission() {
     // A fresh second run must reject the occupied output without changing it.
     let contract_bytes = fs::read(&artifacts.contract_path).expect("read contract");
     run_operator_from_run_spec(&spec, &object_bytes, &output_dir)
-        .expect_err("fresh rerun must reject occupied output");
+        .err()
+        .expect("fresh rerun must reject occupied output");
     assert_eq!(
         fs::read(&artifacts.contract_path).expect("read preserved contract"),
         contract_bytes,

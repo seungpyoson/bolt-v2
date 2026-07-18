@@ -8,8 +8,8 @@ use backtesting_vertical_slice::source_universe_batch_execution::{
     HttpSourceUniverseObjectFetcher, SOURCE_UNIVERSE_OPERATOR_WORKER_MODE,
     SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT, SourceUniverseBatchArtifactPin,
     SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReportStatus,
-    SourceUniverseBatchLaunchArtifacts, SourceUniverseBatchResourceLimits,
-    SourceUniverseObjectFetcher, SourceUniverseProcessIsolatedBatchInputs, VerifiedSourceObject,
+    SourceUniverseBatchLaunchArtifacts, SourceUniverseObjectFetcher,
+    SourceUniverseProcessIsolatedBatchInputs, VerifiedSourceObject,
     WriteThroughSourceUniverseObjectFetcher, execute_source_universe_batch_process_isolated,
     execute_source_universe_operator_worker, validate_process_isolated_batch_selection,
 };

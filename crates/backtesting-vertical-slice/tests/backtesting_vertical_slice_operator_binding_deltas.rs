@@ -466,7 +466,8 @@ fn assert_fresh_rerun_rejected(spec: &RunSpec, object_bytes: &[u8], dir: &std::p
         .then(|| read_artifact_bytes(dir, CONVERSION_TABLES_FILE));
 
     run_operator_from_run_spec(spec, object_bytes, dir)
-        .expect_err("fresh rerun must reject occupied output");
+        .err()
+        .expect("fresh rerun must reject occupied output");
     for (name, bytes) in before {
         assert_eq!(
             read_artifact_bytes(dir, name),

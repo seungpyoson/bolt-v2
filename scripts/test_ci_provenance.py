@@ -59,9 +59,10 @@ max_bytes = 67108864
 
 [backtester.ra001a_durable_tracer.aws]
 role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
-region = "eu-west-2"
+region = "us-east-1"
 
 [backtester.ra001a_durable_tracer.pack_limits]
+max_concurrent_records = 1
 max_fetch_timeout_seconds = 300
 max_worker_termination_grace_seconds = 30
 max_worker_virtual_memory_bytes = 2147483648
@@ -315,12 +316,13 @@ max_bytes = 67108864
 path = "/usr/bin/git"
 
 [backtester.ra001a_durable_tracer.aws]
-region = "eu-west-2"
+region = "us-east-1"
 role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
 
 [backtester.ra001a_durable_tracer.pack_limits]
 candidate_retention_age_seconds = 86400
 cache_retention_age_seconds = 2592000
+max_concurrent_records = 1
 max_worker_termination_grace_seconds = 30
 max_workspace_bytes = 34359738368
 max_worker_virtual_memory_bytes = 2147483648
@@ -663,6 +665,7 @@ EXPECTED_RA001A_OUTPUT_KEYS = {
     "ra001a_aws_region",
     "ra001a_receipt_artifact_name",
     "ra001a_receipt_retention_days",
+    "ra001a_max_concurrent_records",
     "ra001a_max_fetch_timeout_seconds",
     "ra001a_max_worker_termination_grace_seconds",
     "ra001a_max_worker_virtual_memory_bytes",
@@ -1058,7 +1061,7 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             1,
         ),
         "backtester.ra001a_durable_tracer.aws.region must be one canonical AWS region": CONFIG_TOML.replace(
-            'region = "eu-west-2"',
+                'region = "us-east-1"',
             'region = "EU_WEST_2"',
             1,
         ),
@@ -1156,6 +1159,7 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
         ),
     ]
     pack_limit_values = {
+        "max_concurrent_records": "1",
         "max_fetch_timeout_seconds": "300",
         "max_worker_termination_grace_seconds": "30",
         "max_worker_virtual_memory_bytes": "2147483648",
@@ -1194,6 +1198,14 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
         )
     pack_limit_cases.extend(
         [
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_concurrent_records must equal 1 for the bounded process-isolated tracer",
+                CONFIG_TOML.replace(
+                    "max_concurrent_records = 1",
+                    "max_concurrent_records = 2",
+                    1,
+                ),
+            ),
             (
                 "backtester.ra001a_durable_tracer.pack_limits has unexpected keys: ['rogue_limit']",
                 CONFIG_TOML.replace(
@@ -1314,6 +1326,14 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
     )
     root_cases = [
         (
+            "backtester.ra001a_durable_tracer.checkout has unexpected keys: ['rogue_limit']",
+            CONFIG_TOML.replace(
+                "max_ignored_entries = 128",
+                "max_ignored_entries = 128\nrogue_limit = 999",
+                1,
+            ),
+        ),
+        (
             normalized_root_error,
             CONFIG_TOML.replace('".nextest-archive/"', '".nextest-archive/,evil/"', 1),
         ),
@@ -1364,6 +1384,47 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "/usr/bin/git/"', 1),
         ),
     ]
+    finite_u64_cases = [
+        (
+            f"backtester.ra001a_durable_tracer.{key} must fit a finite Rust u64",
+            CONFIG_TOML.replace(f"{key} = {value}", f"{key} = 18446744073709551615", 1),
+        )
+        for key, value in {
+            "max_registry_packs": "64",
+            "max_total_selected_object_bytes": "1073741824",
+            "max_worker_executable_bytes": "1073741824",
+            "max_wall_seconds": "3600",
+            "termination_grace_seconds": "30",
+        }.items()
+    ]
+    finite_u64_cases.extend(
+        [
+            (
+                "backtester.ra001a_durable_tracer.git_executable.max_bytes must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_bytes = 67108864",
+                    "max_bytes = 18446744073709551615",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.checkout.max_ignored_entry_bytes must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_ignored_entry_bytes = 4096",
+                    "max_ignored_entry_bytes = 18446744073709551615",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.checkout.max_ignored_entries must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_ignored_entries = 128",
+                    "max_ignored_entries = 18446744073709551615",
+                    1,
+                ),
+            ),
+        ]
+    )
     with tempfile.TemporaryDirectory() as tmp:
         for expected, text in cases.items():
             config = write_config(pathlib.Path(tmp), text)
@@ -1378,6 +1439,9 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
         for expected, text in git_path_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in finite_u64_cases:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
 
@@ -1416,11 +1480,12 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         ),
         module.Ra001aDurableTracerAwsConfig(
             role_arn="arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
-            region="eu-west-2",
+            region="us-east-1",
         ),
         "ra001a-durable-tracer-receipt",
         7,
         module.Ra001aDurableTracerPackLimitsConfig(
+            max_concurrent_records=1,
             max_fetch_timeout_seconds=300,
             max_worker_termination_grace_seconds=30,
             max_worker_virtual_memory_bytes=2147483648,
@@ -1524,9 +1589,10 @@ def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
             "/usr/bin/git",
             67108864,
             "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
-            "eu-west-2",
+            "us-east-1",
             "ra001a-durable-tracer-receipt",
             7,
+            1,
             300,
             30,
             2147483648,
@@ -1565,6 +1631,7 @@ def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
             result.ra001a_aws_region,
             result.ra001a_receipt_artifact_name,
             result.ra001a_receipt_retention_days,
+            result.ra001a_max_concurrent_records,
             result.ra001a_max_fetch_timeout_seconds,
             result.ra001a_max_worker_termination_grace_seconds,
             result.ra001a_max_worker_virtual_memory_bytes,
@@ -1617,7 +1684,7 @@ def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
             "ra001a_git_executable_path": "/usr/bin/git",
             "ra001a_max_git_executable_bytes": "67108864",
             "ra001a_aws_role_arn": "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
-            "ra001a_aws_region": "eu-west-2",
+            "ra001a_aws_region": "us-east-1",
             "ra001a_receipt_artifact_name": "ra001a-durable-tracer-receipt",
             "ra001a_receipt_retention_days": "7",
             "ra001a_max_fetch_timeout_seconds": "300",

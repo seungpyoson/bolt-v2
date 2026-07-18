@@ -235,12 +235,13 @@ max_bytes = 67108864
 
 [backtester.ra001a_durable_tracer.aws]
 role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
-region = "eu-west-2"
+region = "us-east-1"
 
 # Trusted-default-branch bounds checked against every committed pack before
 # worker capture. `max_*` values are ceilings; `min_*` values are safety floors;
 # unprefixed retention ages are exact because either direction changes cost.
 [backtester.ra001a_durable_tracer.pack_limits]
+max_concurrent_records = 1
 max_fetch_timeout_seconds = 300
 max_worker_termination_grace_seconds = 30
 max_worker_virtual_memory_bytes = 2147483648

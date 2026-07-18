@@ -172,6 +172,8 @@ pub struct CarryQuotePolicyConfig {
     pub bound_rate_factor_id: String,
     pub risk_policy_id: String,
     pub stress_fixture_id: String,
+    pub oracle_price_factor_id: String,
+    pub next_funding_at_factor_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,6 +187,8 @@ pub enum EconomicsConfigField {
     EdgeBasisMetadataSource,
     CarryRiskPolicyId,
     CarryStressFixtureId,
+    CarryOraclePriceFactorId,
+    CarryNextFundingAtFactorId,
     CarryComponentId,
     CarryFormulaId,
     CarryPointRateFactorId,
@@ -467,6 +471,16 @@ impl ExecutionEconomicsConfig {
             require_text(
                 &carry.stress_fixture_id,
                 EconomicsConfigField::CarryStressFixtureId,
+                &mut errors,
+            );
+            require_text(
+                &carry.oracle_price_factor_id,
+                EconomicsConfigField::CarryOraclePriceFactorId,
+                &mut errors,
+            );
+            require_text(
+                &carry.next_funding_at_factor_id,
+                EconomicsConfigField::CarryNextFundingAtFactorId,
                 &mut errors,
             );
         }

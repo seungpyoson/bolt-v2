@@ -2358,45 +2358,69 @@ mod tests {
     fn replay_economics_snapshot(
         execution_client_id: &str,
         reporting_unit: &str,
+        instrument_id: &str,
+        observed_at_ns: u64,
     ) -> crate::economics::HistoricalEconomicsSnapshot {
+        let root: toml::Value =
+            toml::from_str(include_str!("../../../config/root.toml")).expect("root config");
         crate::economics::HistoricalEconomicsSnapshot {
+            provider_key: "POLYMARKET".to_string(),
             execution_client_id: execution_client_id.to_string(),
             account_id: "test-replay-account".to_string(),
-            product_surface_id: "test-binary-surface".to_string(),
-            reporting_policy_id: "test-reporting-policy".to_string(),
+            instrument_id: instrument_id.to_string(),
+            raw_symbol: instrument_id.to_string(),
+            product_surface_id: "binary_outcome".to_string(),
+            reporting_policy_id: "primary-pnl".to_string(),
             reporting_unit: reporting_unit.to_string(),
             snapshot_id: "test-replay-quote-snapshot".to_string(),
             source_id: "test-replay-source".to_string(),
-            source_at_ns: 0,
-            fetched_at_ns: 0,
+            source_at_ns: observed_at_ns,
+            fetched_at_ns: observed_at_ns,
             valid_until_ns: u64::MAX,
+            economics: root["clients"]["polymarket_main"]["execution"]["economics"].clone(),
             edge_basis: crate::economics::HistoricalEdgeBasisEvidence {
-                policy_id: "test-edge-policy".to_string(),
-                resolver_id: "test-edge-resolver".to_string(),
-                product_metadata_source: "test-product-metadata".to_string(),
+                policy_id: "primary".to_string(),
+                resolver_id: "product-metadata".to_string(),
+                product_metadata_source: "polymarket-market-info".to_string(),
                 policy_version: 1,
-                normalized_amount: "1".to_string(),
-                source_snapshot_ids: vec!["test-edge-snapshot".to_string()],
+                source_snapshot_ids: vec!["test-replay-quote-snapshot".to_string()],
                 valid_until_ns: u64::MAX,
             },
-            components: vec![crate::economics::HistoricalEconomicComponent {
-                component_id: "test-protocol-charge".to_string(),
-                order_id: "test-replay-order".to_string(),
-                class: crate::economics::HistoricalEconomicClass::Charge,
-                treatment:
-                    crate::economics::HistoricalAdmissionTreatment::GuaranteedConditionalOnAction,
-                native_amount: "-0.01".to_string(),
-                native_unit: reporting_unit.to_string(),
-                debit_risk_bound: None,
-                formula_id: "test-replay-formula".to_string(),
-                source_id: "test-component-source".to_string(),
-                snapshot_id: "test-component-snapshot".to_string(),
-                source_at_ns: 0,
-                fetched_at_ns: 0,
+            source_snapshots: vec![crate::economics::HistoricalSourceSnapshot {
+                source_id: "clob_market_info".to_string(),
+                snapshot_id: "test-replay-quote-snapshot".to_string(),
+                source_at_ns: observed_at_ns,
+                fetched_at_ns: observed_at_ns,
                 valid_until_ns: u64::MAX,
-                valuation: None,
+                payload_json: include_str!(
+                    "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-market-info-fee-bearing.json"
+                )
+                .to_string(),
             }],
+            valuation_observations: replay_valuation_observations(observed_at_ns),
         }
+    }
+
+    fn replay_valuation_observations(
+        observed_at_ns: u64,
+    ) -> Vec<crate::economics::HistoricalValuationObservation> {
+        vec![
+            crate::economics::HistoricalValuationObservation::ProviderConversion {
+                source_id: "collateral".to_string(),
+                from_unit: "pUSD".to_string(),
+                to_unit: "USDC".to_string(),
+                rate: "1".to_string(),
+                snapshot_id: "test-pusd-usdc".to_string(),
+                observed_at_ns,
+            },
+            crate::economics::HistoricalValuationObservation::MarketQuote {
+                client_id: "coinbase_data".to_string(),
+                instrument_id: "USDC-USD.COINBASE".to_string(),
+                price: "1".to_string(),
+                snapshot_id: "test-usdc-usd".to_string(),
+                observed_at_ns,
+            },
+        ]
     }
     const MAKER_SMOKE_MARKET_SLUG: &str = "will-sample-event-resolve-yes";
     const MAKER_SMOKE_CONDITION_ID: &str = "condition-sample-event";
@@ -2979,7 +3003,20 @@ mod tests {
                 experiment_result_hash: None,
                 config_overlay: None,
             },
-            economics_snapshots: vec![replay_economics_snapshot("maker_execution_client", "pUSD")],
+            economics_snapshots: vec![
+                replay_economics_snapshot(
+                    "maker_execution_client",
+                    "USD",
+                    MAKER_SMOKE_YES_INSTRUMENT,
+                    MAKER_SMOKE_TS_NS,
+                ),
+                replay_economics_snapshot(
+                    "maker_execution_client",
+                    "USD",
+                    MAKER_SMOKE_NO_INSTRUMENT,
+                    MAKER_SMOKE_TS_NS,
+                ),
+            ],
             strategy_config_hash: sha256_hex(maker_smoke_config_toml().as_bytes()),
             venue: maker_smoke_venue(),
             additional_venues: Vec::new(),
@@ -4281,7 +4318,20 @@ mod tests {
                     },
                 }),
             },
-            economics_snapshots: vec![replay_economics_snapshot("polymarket_main", "pUSD")],
+            economics_snapshots: vec![
+                replay_economics_snapshot(
+                    "polymarket_main",
+                    "USD",
+                    &catalogs.up_instrument_id,
+                    ISSUE_789_START_NS as u64,
+                ),
+                replay_economics_snapshot(
+                    "polymarket_main",
+                    "USD",
+                    &catalogs.down_instrument_id,
+                    ISSUE_789_START_NS as u64,
+                ),
+            ],
             strategy_config_hash: "0".repeat(64),
             // POLYMARKET must be funded in the binary's settlement currency
             // (pUSD — the NT Polymarket adapter's collateral currency), not

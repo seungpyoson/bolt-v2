@@ -39,6 +39,8 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
             bound_rate_factor_id: FormulaId::new("funding-bound-rate").unwrap(),
             risk_policy_id: FormulaId::new("funding-risk-policy").unwrap(),
             stress_fixture_id: FormulaId::new("funding-stress-fixture").unwrap(),
+            oracle_price_factor_id: FormulaId::new("funding-oracle-price").unwrap(),
+            next_funding_at_factor_id: FormulaId::new("funding-next-event-at").unwrap(),
             funding_interval_ns: 3_600_000_000_000,
             venue_rate_cap_fraction: decimal("0.04"),
             standard_price_stress_multiplier: decimal("1.5"),
@@ -135,8 +137,9 @@ fn product(
             "builderRateBps":{builder_rate_bps},"builderApprovedMaxBps":{builder_max_bps},
             "spotDustAuthorityComplete":{dust_complete},
             "carryOraclePrice":100,
-            "carryPointRatePerNs":0.000000001,
-            "carryDebitRateBoundPerNs":0.000000002
+            "carryPointRatePerInterval":0.001,
+            "carryDebitRateBoundPerInterval":0.002,
+            "carryNextFundingAtNs":500
         }}"#
     ))
     .unwrap()
@@ -250,8 +253,9 @@ fn negative_maker_rate_bypasses_referral_and_hip3_scaling() {
             "builderRateBps":0,"builderApprovedMaxBps":0,
             "spotDustAuthorityComplete":false,
             "carryOraclePrice":100,
-            "carryPointRatePerNs":0.000000001,
-            "carryDebitRateBoundPerNs":0.000000002
+            "carryPointRatePerInterval":0.001,
+            "carryDebitRateBoundPerInterval":0.002,
+            "carryNextFundingAtNs":500
         }"#,
     )
     .unwrap();
@@ -344,7 +348,8 @@ fn perp_without_horizon_or_debit_bound_fails_closed() {
             "builderApprovedMaxBps": 0,
             "spotDustAuthorityComplete": false,
             "carryOraclePrice": 100,
-            "carryPointRatePerNs": 0.000000001
+            "carryPointRatePerInterval": 0.001,
+            "carryNextFundingAtNs": 500
         }))
         .unwrap(),
     )
@@ -354,6 +359,61 @@ fn perp_without_horizon_or_debit_bound_fails_closed() {
     assert_eq!(
         adapter.quote_components(&perp_request()),
         Err(HyperliquidEconomicsError::MissingCarryPolicy)
+    );
+}
+
+#[test]
+fn funding_bound_counts_intersected_events_at_the_exact_boundary() {
+    let adapter = HyperliquidEconomicsAdapter::try_new(
+        config(),
+        user_fees("0"),
+        product("perp", false, false, "0", "0"),
+    )
+    .unwrap();
+    let mut before = perp_request();
+    before.position.as_mut().unwrap().holding_horizon_ns = 399;
+    assert_eq!(adapter.quote_components(&before).unwrap().len(), 1);
+
+    let mut at = perp_request();
+    at.position.as_mut().unwrap().holding_horizon_ns = 400;
+    let components = adapter.quote_components(&at).unwrap();
+    let carry = components
+        .iter()
+        .find(|component| component.component_id.as_str() == "funding-carry")
+        .unwrap();
+    assert_eq!(
+        carry.debit_risk_bound.as_ref().unwrap().amount(),
+        decimal("-30")
+    );
+}
+
+#[test]
+fn zero_point_funding_still_seals_the_venue_debit_bound() {
+    let product = HyperliquidProductEconomicsSnapshot::from_json(
+        r#"{
+            "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
+            "validUntilNs":110,"productKind":"perp","stablePair":false,
+            "baseUnit":"BTC","quoteUnit":"USDC","alignedQuoteOrCollateral":false,
+            "hip3":false,"deployerScale":0,"growthMode":false,
+            "builderProfileId":"builder-profile","builderRateBps":0,
+            "builderApprovedMaxBps":0,"spotDustAuthorityComplete":false,
+            "carryOraclePrice":100,"carryPointRatePerInterval":0,
+            "carryDebitRateBoundPerInterval":0.002,"carryNextFundingAtNs":500
+        }"#,
+    )
+    .unwrap();
+    let adapter = HyperliquidEconomicsAdapter::try_new(config(), user_fees("0"), product).unwrap();
+    let mut request = perp_request();
+    request.position.as_mut().unwrap().holding_horizon_ns = 400;
+
+    let components = adapter.quote_components(&request).unwrap();
+    let carry = components
+        .iter()
+        .find(|component| component.component_id.as_str() == "funding-carry")
+        .unwrap();
+    assert_eq!(
+        carry.debit_risk_bound.as_ref().unwrap().amount(),
+        decimal("-30")
     );
 }
 

@@ -129,6 +129,19 @@ fn distinct_native_units_require_explicit_valuation() {
 }
 
 #[test]
+fn missing_forecast_valuation_degrades_forecast_without_blocking_core() {
+    let mut supplemental = forecast(decimal("2.00"));
+    supplemental.point_effect =
+        SignedNativeEffect::currency(decimal("2.00"), native_unit("USDC")).unwrap();
+
+    let quote = quote_fixture([guaranteed(decimal("-1.00")), supplemental]).unwrap();
+
+    assert_eq!(quote.core_total(), decimal("-1.00"));
+    assert_eq!(quote.forecast_total(), decimal("-1.00"));
+    assert!(!quote.forecast_complete());
+}
+
+#[test]
 fn component_class_must_match_its_signed_effect() {
     let mut component = guaranteed(decimal("-1.00"));
     component.class = EconomicClass::Credit;

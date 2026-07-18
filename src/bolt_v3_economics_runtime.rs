@@ -51,16 +51,10 @@ impl EconomicsOrderBinding {
 pub trait EconomicsAdmissionSource: Send + Sync {
     fn resolve_product_surface(
         &self,
-        _execution_client_id: &crate::economics::ExecutionClientId,
-        _instrument_id: &crate::economics::InstrumentId,
+        execution_client_id: &crate::economics::ExecutionClientId,
+        instrument_id: &crate::economics::InstrumentId,
         candidates: &[crate::economics::ProductSurfaceId],
-    ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
-        match candidates {
-            [candidate] => Ok(candidate.clone()),
-            [] => Err(EconomicsUnavailable::MissingQuoteAuthority),
-            _ => Err(EconomicsUnavailable::AmbiguousQuoteAuthority),
-        }
-    }
+    ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable>;
 
     fn quote_admission(
         &self,
@@ -827,6 +821,19 @@ struct TestEconomicsAdmissionSource;
 
 #[cfg(test)]
 impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
+    fn resolve_product_surface(
+        &self,
+        _execution_client_id: &crate::economics::ExecutionClientId,
+        _instrument_id: &crate::economics::InstrumentId,
+        candidates: &[crate::economics::ProductSurfaceId],
+    ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
+        match candidates {
+            [candidate] => Ok(candidate.clone()),
+            [] => Err(EconomicsUnavailable::MissingQuoteAuthority),
+            _ => Err(EconomicsUnavailable::AmbiguousQuoteAuthority),
+        }
+    }
+
     fn quote_admission(
         &self,
         intent: EconomicsAdmissionQuoteIntent,

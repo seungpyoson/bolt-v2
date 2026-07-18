@@ -582,6 +582,33 @@ pub(crate) type EconomicsAuthorityBuilder = for<'a> fn(
     String,
 >;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineEconomicsSnapshotInput {
+    pub source_id: String,
+    pub snapshot_id: String,
+    pub source_at_ns: u64,
+    pub fetched_at_ns: u64,
+    pub valid_until_ns: u64,
+    pub payload: Vec<u8>,
+}
+
+pub struct OfflineEconomicsAdapterBuildContext<'a> {
+    pub account_id: &'a str,
+    pub instrument_id: &'a str,
+    pub raw_symbol: &'a str,
+    pub economics: &'a toml::Value,
+    pub snapshots: &'a [OfflineEconomicsSnapshotInput],
+}
+
+pub struct OfflineEconomicsAdapterBinding {
+    pub adapter: Arc<dyn crate::economics::VenueEconomicsAdapter>,
+    pub economics: crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+}
+
+type OfflineEconomicsAdapterBuilder = for<'a> fn(
+    OfflineEconomicsAdapterBuildContext<'a>,
+) -> Result<OfflineEconomicsAdapterBinding, String>;
+
 #[derive(Clone, Copy)]
 pub(crate) enum NtReconnectBudgetCapability {
     NotApplicable,
@@ -594,6 +621,7 @@ pub struct ProviderBinding {
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub(crate) execution_economics: Option<ExecutionEconomicsLoader>,
     pub(crate) build_economics_authority: Option<EconomicsAuthorityBuilder>,
+    build_offline_economics_adapter: Option<OfflineEconomicsAdapterBuilder>,
     pub supported_market_families: &'static [&'static str],
     pub market_exit_order_constraints: ProviderMarketExitOrderConstraints,
     pub metadata_refresh_interval_mins: Option<MetadataRefreshIntervalLoader>,
@@ -766,6 +794,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: polymarket::validate_client,
         execution_economics: Some(polymarket::execution_economics_config),
         build_economics_authority: Some(polymarket::build_economics_authority),
+        build_offline_economics_adapter: Some(polymarket::build_offline_economics_adapter),
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(polymarket::metadata_refresh_interval_mins),
@@ -788,6 +817,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: binance::validate_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -810,6 +840,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: hyperliquid::validate_client,
         execution_economics: Some(hyperliquid::execution_economics_config),
         build_economics_authority: Some(hyperliquid::build_economics_authority),
+        build_offline_economics_adapter: Some(hyperliquid::build_offline_economics_adapter),
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(hyperliquid::metadata_refresh_interval_mins),
@@ -834,6 +865,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: market_data::validate_bitmex_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -856,6 +888,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: market_data::validate_bybit_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -878,6 +911,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: market_data::validate_coinbase_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -900,6 +934,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: market_data::validate_deribit_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -922,6 +957,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: market_data::validate_okx_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -944,6 +980,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: market_data::validate_kraken_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -966,6 +1003,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: chainlink::validate_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -990,6 +1028,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: chainlink_reference::validate_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: chainlink_reference::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -1014,6 +1053,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_client: polyresearch::validate_client,
         execution_economics: None,
         build_economics_authority: None,
+        build_offline_economics_adapter: None,
         supported_market_families: polyresearch::SUPPORTED_MARKET_FAMILIES,
         market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
@@ -1040,6 +1080,17 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
     provider_bindings()
         .iter()
         .find(|binding| binding.key == key)
+}
+
+pub fn build_offline_economics_adapter(
+    provider_key: &str,
+    context: OfflineEconomicsAdapterBuildContext<'_>,
+) -> Result<OfflineEconomicsAdapterBinding, String> {
+    binding_for_provider_key(provider_key)
+        .and_then(|binding| binding.build_offline_economics_adapter)
+        .ok_or_else(|| {
+            format!("provider `{provider_key}` has no registered offline economics adapter")
+        })?(context)
 }
 
 pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64>, String> {

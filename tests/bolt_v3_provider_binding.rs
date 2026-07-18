@@ -478,6 +478,8 @@ point_rate_factor_id = "funding-point-rate"
 bound_rate_factor_id = "funding-bound-rate"
 risk_policy_id = "funding-risk-policy"
 stress_fixture_id = "funding-standard-stress"
+oracle_price_factor_id = "funding-oracle-price"
+next_funding_at_factor_id = "funding-next-event-at"
 
 [execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"

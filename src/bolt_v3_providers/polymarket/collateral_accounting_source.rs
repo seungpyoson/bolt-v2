@@ -33,6 +33,9 @@ const ON_CHAIN_COLLATERAL_JSON_RPC_VERSION: &str = "2.0";
 const ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD: &str = "eth_call";
 const ON_CHAIN_COLLATERAL_JSON_RPC_CHAIN_ID_METHOD: &str = "eth_chainId";
 const ON_CHAIN_COLLATERAL_JSON_RPC_BLOCK_NUMBER_METHOD: &str = "eth_blockNumber";
+const ON_CHAIN_COLLATERAL_JSON_RPC_GET_BLOCK_METHOD: &str = "eth_getBlockByNumber";
+const ON_CHAIN_COLLATERAL_JSON_RPC_GET_CODE_METHOD: &str = "eth_getCode";
+const ON_CHAIN_COLLATERAL_JSON_RPC_GET_STORAGE_METHOD: &str = "eth_getStorageAt";
 const ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK: &str = "latest";
 const ON_CHAIN_COLLATERAL_JSON_RPC_ID: u64 = 1;
 const ON_CHAIN_COLLATERAL_CONTENT_TYPE_HEADER: &str = "Content-Type";
@@ -337,6 +340,20 @@ impl<'a> OnChainCollateralRpcClient<'a> {
         contract_address: &str,
         calldata: &str,
     ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
+        self.eth_call_u256_word_at(
+            contract_address,
+            calldata,
+            ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK,
+        )
+        .await
+    }
+
+    pub(super) async fn eth_call_u256_word_at(
+        &self,
+        contract_address: &str,
+        calldata: &str,
+        block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
         let result = self
             .request(
                 ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD,
@@ -345,7 +362,7 @@ impl<'a> OnChainCollateralRpcClient<'a> {
                         "to": format!("{ON_CHAIN_COLLATERAL_HEX_PREFIX}{contract_address}"),
                         "data": calldata,
                     },
-                    ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK,
+                    block_tag,
                 ]),
             )
             .await?;
@@ -356,6 +373,71 @@ impl<'a> OnChainCollateralRpcClient<'a> {
                     field: "on_chain_collateral.rpc_result",
                 })?;
         parse_u256_word_hex(result)
+    }
+
+    pub(super) async fn code_at(
+        &self,
+        contract_address: &str,
+        block_tag: &str,
+    ) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
+        let result = self
+            .request(
+                ON_CHAIN_COLLATERAL_JSON_RPC_GET_CODE_METHOD,
+                serde_json::json!([
+                    format!("{ON_CHAIN_COLLATERAL_HEX_PREFIX}{contract_address}"),
+                    block_tag,
+                ]),
+            )
+            .await?;
+        parse_hex_bytes(&result)
+    }
+
+    pub(super) async fn storage_word_at(
+        &self,
+        contract_address: &str,
+        slot: &str,
+        block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
+        let result = self
+            .request(
+                ON_CHAIN_COLLATERAL_JSON_RPC_GET_STORAGE_METHOD,
+                serde_json::json!([
+                    format!("{ON_CHAIN_COLLATERAL_HEX_PREFIX}{contract_address}"),
+                    slot,
+                    block_tag,
+                ]),
+            )
+            .await?;
+        let encoded =
+            result
+                .as_str()
+                .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                    field: "on_chain_collateral.rpc_result",
+                })?;
+        parse_u256_word_hex(encoded)
+    }
+
+    pub(super) async fn block_header(
+        &self,
+        block_number: u64,
+    ) -> Result<OnChainBlockHeader, BoltV3OperatorArtifactError> {
+        let block_tag = format!("{ON_CHAIN_COLLATERAL_HEX_PREFIX}{block_number:x}");
+        let result = self
+            .request(
+                ON_CHAIN_COLLATERAL_JSON_RPC_GET_BLOCK_METHOD,
+                serde_json::json!([block_tag, false]),
+            )
+            .await?;
+        let wire: OnChainBlockHeaderWire = serde_json::from_value(result).map_err(|_| {
+            BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                field: "on_chain_collateral.rpc_result",
+            }
+        })?;
+        Ok(OnChainBlockHeader {
+            number: quantity_from_hex(&wire.number)?,
+            hash: wire.hash,
+            timestamp_secs: quantity_from_hex(&wire.timestamp)?,
+        })
     }
 
     async fn quantity(&self, method: &'static str) -> Result<u64, BoltV3OperatorArtifactError> {
@@ -432,6 +514,55 @@ impl<'a> OnChainCollateralRpcClient<'a> {
                 field: "on_chain_collateral.rpc_result",
             })
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct OnChainBlockHeader {
+    pub(super) number: u64,
+    pub(super) hash: String,
+    pub(super) timestamp_secs: u64,
+}
+
+#[derive(Deserialize)]
+struct OnChainBlockHeaderWire {
+    number: String,
+    hash: String,
+    timestamp: String,
+}
+
+fn quantity_from_hex(value: &str) -> Result<u64, BoltV3OperatorArtifactError> {
+    u64::from_str_radix(
+        value.strip_prefix(ON_CHAIN_COLLATERAL_HEX_PREFIX).ok_or(
+            BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                field: "on_chain_collateral.rpc_result",
+            },
+        )?,
+        16,
+    )
+    .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+        field: "on_chain_collateral.rpc_result",
+    })
+}
+
+fn parse_hex_bytes(value: &serde_json::Value) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
+    let encoded = value
+        .as_str()
+        .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_result",
+        })?;
+    let encoded = encoded.strip_prefix(ON_CHAIN_COLLATERAL_HEX_PREFIX).ok_or(
+        BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_result",
+        },
+    )?;
+    if encoded.is_empty() {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_result",
+        });
+    }
+    hex::decode(encoded).map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+        field: "on_chain_collateral.rpc_result",
+    })
 }
 
 pub(super) fn normalized_evm_address(value: &str) -> Result<String, BoltV3OperatorArtifactError> {

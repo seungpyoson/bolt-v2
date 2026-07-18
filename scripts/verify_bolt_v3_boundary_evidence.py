@@ -308,6 +308,11 @@ REQUIRED_NON_WS_REGISTRY_ENTRIES = {
     ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
     ("polymarket::KEY", "HttpResponseBody", "PolymarketVenueTruthRuntime"),
     ("polymarket::KEY", "HttpResponseBody", "EconomicsQuoteAuthority"),
+    (
+        "POLYMARKET_COLLATERAL_RPC_ADAPTER_ID",
+        "JsonRpcResponse",
+        "EconomicsValuationAuthority",
+    ),
     ("hyperliquid::KEY", "HttpResponseBody", "EconomicsQuoteAuthority"),
 }
 REQUIRED_NON_WS_EXEMPTIONS = {
@@ -323,6 +328,17 @@ ECONOMICS_CAPTURE_MANIFESTS = {
     Path("tests/fixtures/bolt_v3/boundary_evidence/hyperliquid-economics-captures.toml"): {
         "adapter_id": "HYPERLIQUID",
         "required_kinds": {"user_fees", "perp_meta_and_asset_contexts"},
+    },
+    Path("tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-rpc-captures.toml"): {
+        "adapter_id": "OnChainCollateralRpcClient",
+        "class": "JsonRpcResponse",
+        "feeder": "EconomicsValuationAuthority",
+        "required_kinds": {
+            "finalized_block",
+            "proxy_implementation",
+            "contract_code_hashes",
+            "redemption_semantics",
+        },
     },
 }
 RUST_VISIBILITY_PREFIX = r"(?:pub(?:\s+|\s*\([^)]*\)\s*)?)?"
@@ -659,8 +675,8 @@ def scan_economics_capture_evidence(
             findings.append(f"{manifest_path}: schema_version must be 1")
         for key, expected in {
             "adapter_id": contract["adapter_id"],
-            "class": "HttpResponseBody",
-            "feeder": "EconomicsQuoteAuthority",
+            "class": contract.get("class", "HttpResponseBody"),
+            "feeder": contract.get("feeder", "EconomicsQuoteAuthority"),
         }.items():
             if manifest.get(key) != expected:
                 findings.append(f"{manifest_path}: {key} must equal {expected!r}")

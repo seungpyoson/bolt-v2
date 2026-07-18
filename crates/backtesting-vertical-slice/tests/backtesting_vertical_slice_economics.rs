@@ -1,7 +1,6 @@
 use backtesting_vertical_slice::economics::{
-    HistoricalAdmissionTreatment, HistoricalEconomicClass, HistoricalEconomicComponent,
-    HistoricalEconomicsSnapshot, HistoricalEdgeBasisEvidence, ReplayEconomicsAdapter,
-    ReplayQuoteIntent, canonical_quote_request_from_replay,
+    HistoricalEconomicsSnapshot, HistoricalEdgeBasisEvidence, HistoricalSourceSnapshot,
+    ReplayEconomicsAdapter, ReplayQuoteIntent, canonical_quote_request_from_replay,
 };
 use bolt_v2::economics::{
     LiquidityRoleAssumption, OrderSide, PlannedFillLeg, VenueEconomicsAdapter,
@@ -14,42 +13,53 @@ fn dec(value: &str) -> Decimal {
 }
 
 fn snapshot() -> HistoricalEconomicsSnapshot {
+    let root: toml::Value = toml::from_str(include_str!("../../../config/root.toml")).unwrap();
     HistoricalEconomicsSnapshot {
+        provider_key: "POLYMARKET".to_string(),
         execution_client_id: "execution-client".to_string(),
         account_id: "account".to_string(),
-        product_surface_id: "surface".to_string(),
-        reporting_policy_id: "reporting-policy".to_string(),
-        reporting_unit: "pUSD".to_string(),
+        instrument_id: "instrument".to_string(),
+        raw_symbol: "instrument".to_string(),
+        product_surface_id: "binary_outcome".to_string(),
+        reporting_policy_id: "primary-pnl".to_string(),
+        reporting_unit: "USD".to_string(),
         snapshot_id: "quote-snapshot".to_string(),
         source_id: "historical-source".to_string(),
         source_at_ns: 90,
         fetched_at_ns: 95,
         valid_until_ns: 110,
+        economics: root["clients"]["polymarket_main"]["execution"]["economics"].clone(),
         edge_basis: HistoricalEdgeBasisEvidence {
-            policy_id: "edge-policy".to_string(),
-            resolver_id: "edge-resolver".to_string(),
-            product_metadata_source: "product-metadata".to_string(),
+            policy_id: "primary".to_string(),
+            resolver_id: "product-metadata".to_string(),
+            product_metadata_source: "polymarket-market-info".to_string(),
             policy_version: 1,
-            normalized_amount: "5".to_string(),
-            source_snapshot_ids: vec!["basis-snapshot".to_string()],
+            source_snapshot_ids: vec!["quote-snapshot".to_string()],
             valid_until_ns: 110,
         },
-        components: vec![HistoricalEconomicComponent {
-            component_id: "protocol-charge".to_string(),
-            order_id: "order".to_string(),
-            class: HistoricalEconomicClass::Charge,
-            treatment: HistoricalAdmissionTreatment::GuaranteedConditionalOnAction,
-            native_amount: "-0.05".to_string(),
-            native_unit: "pUSD".to_string(),
-            debit_risk_bound: None,
-            formula_id: "historical-formula".to_string(),
-            source_id: "component-source".to_string(),
-            snapshot_id: "component-snapshot".to_string(),
+        source_snapshots: vec![HistoricalSourceSnapshot {
+            source_id: "clob_market_info".to_string(),
+            snapshot_id: "quote-snapshot".to_string(),
             source_at_ns: 90,
             fetched_at_ns: 95,
             valid_until_ns: 110,
-            valuation: None,
+            payload_json: include_str!(
+                "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-market-info-fee-bearing.json"
+            )
+            .to_string(),
         }],
+        valuation_observations: vec![
+            backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderConversion {
+                source_id: "collateral".to_string(), from_unit: "pUSD".to_string(),
+                to_unit: "USDC".to_string(), rate: "1".to_string(),
+                snapshot_id: "pusd-usdc".to_string(), observed_at_ns: 90,
+            },
+            backtesting_vertical_slice::economics::HistoricalValuationObservation::MarketQuote {
+                client_id: "coinbase_data".to_string(),
+                instrument_id: "USDC-USD.COINBASE".to_string(), price: "1".to_string(),
+                snapshot_id: "usdc-usd".to_string(), observed_at_ns: 90,
+            },
+        ],
     }
 }
 
@@ -58,18 +68,21 @@ fn request(requested_at_ns: u64) -> bolt_v2::economics::EconomicQuoteRequest {
         execution_client_id: "execution-client",
         account_id: "account",
         instrument_id: "instrument",
-        product_surface_id: "surface",
+        product_surface_id: "binary_outcome",
         order_side: OrderSide::Buy,
         liquidity_role: LiquidityRoleAssumption::Taker,
         planned_fill_legs: vec![PlannedFillLeg {
             price: dec("0.50"),
             quantity: dec("10"),
         }],
-        reporting_policy_id: "reporting-policy",
-        reporting_unit: "pUSD",
+        routing_attachment_id: None,
+        position: None,
+        lifecycle_path: bolt_v2::economics::LifecyclePath::PlannedExit,
+        reporting_policy_id: "primary-pnl",
+        reporting_unit: "USD",
         requested_at_ns,
         decision_correlation_id: "decision",
-        edge_basis_policy_id: "edge-policy",
+        edge_basis_policy_id: "primary",
     })
     .expect("canonical replay request")
 }
@@ -95,7 +108,7 @@ fn historical_snapshot_fails_closed_outside_its_validity_window() {
 #[test]
 fn historical_snapshot_rejects_class_sign_disagreement() {
     let mut fixture = snapshot();
-    fixture.components[0].class = HistoricalEconomicClass::Credit;
+    fixture.instrument_id = "other-instrument".to_string();
     let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("timeline is valid");
     assert!(adapter.quote(&request(100)).is_err());
 }
@@ -103,7 +116,10 @@ fn historical_snapshot_rejects_class_sign_disagreement() {
 #[test]
 fn historical_fee_free_snapshot_is_valid() {
     let mut fixture = snapshot();
-    fixture.components.clear();
+    fixture.source_snapshots[0].payload_json = include_str!(
+        "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-market-info-fee-free.json"
+    )
+    .to_string();
     let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("fee-free snapshot");
 
     assert!(adapter.quote(&request(100)).unwrap().components.is_empty());

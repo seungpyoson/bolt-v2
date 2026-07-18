@@ -191,6 +191,82 @@ pub(crate) fn build_economics_authority(
     .map_err(|error| error.to_string())
 }
 
+pub(crate) fn build_offline_economics_adapter(
+    context: super::OfflineEconomicsAdapterBuildContext<'_>,
+) -> Result<super::OfflineEconomicsAdapterBinding, String> {
+    let economics = context
+        .economics
+        .clone()
+        .try_into::<crate::bolt_v3_economics_config::ExecutionEconomicsConfig>()
+        .map_err(|error| format!("invalid offline Hyperliquid economics config: {error}"))?;
+    let account_source = economics
+        .sources
+        .get("account_fees")
+        .ok_or_else(|| "offline Hyperliquid account-fees source is missing".to_string())?;
+    let edge_policy_id = economics
+        .product_surface_policies
+        .values()
+        .next()
+        .ok_or_else(|| "offline Hyperliquid product surface is missing".to_string())?;
+    let product_source = &economics
+        .edge_basis
+        .get(edge_policy_id)
+        .ok_or_else(|| "offline Hyperliquid edge-basis policy is missing".to_string())?
+        .product_metadata_source;
+    let unique = |source_id: &str| {
+        let matching = context
+            .snapshots
+            .iter()
+            .filter(|snapshot| snapshot.source_id == source_id)
+            .collect::<Vec<_>>();
+        match matching.as_slice() {
+            [snapshot] => Ok(*snapshot),
+            _ => Err(format!(
+                "offline Hyperliquid source `{source_id}` must have one authority"
+            )),
+        }
+    };
+    let account = unique(account_source)?;
+    let product = unique(product_source)?;
+    let account_payload = std::str::from_utf8(&account.payload)
+        .map_err(|_| "offline Hyperliquid userFees payload is not UTF-8".to_string())?;
+    let carry = economics::HyperliquidEconomicsAdapterConfig::from_execution_config(&economics)
+        .map_err(|error| format!("invalid offline Hyperliquid policy: {error:?}"))?;
+    let user_fees = economics::HyperliquidUserFeesSnapshot::from_wire_json(
+        economics::HyperliquidSnapshotMetadata {
+            snapshot_id: account.snapshot_id.clone(),
+            source_at_ns: account.source_at_ns,
+            fetched_at_ns: account.fetched_at_ns,
+            valid_until_ns: account.valid_until_ns,
+        },
+        context.account_id,
+        account_payload,
+    )
+    .map_err(|error| format!("invalid offline Hyperliquid userFees: {error:?}"))?;
+    let product_snapshot = economics::HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
+        economics::HyperliquidSnapshotMetadata {
+            snapshot_id: product.snapshot_id.clone(),
+            source_at_ns: product.source_at_ns,
+            fetched_at_ns: product.fetched_at_ns,
+            valid_until_ns: product.valid_until_ns,
+        },
+        &product.payload,
+        context.raw_symbol,
+        carry
+            .carry
+            .as_ref()
+            .ok_or_else(|| "offline Hyperliquid carry policy is missing".to_string())?,
+    )
+    .map_err(|error| format!("invalid offline Hyperliquid product metadata: {error:?}"))?;
+    let adapter =
+        economics::HyperliquidEconomicsAdapter::try_new(carry, user_fees, product_snapshot)
+            .map_err(|error| format!("invalid offline Hyperliquid adapter: {error:?}"))?;
+    Ok(super::OfflineEconomicsAdapterBinding {
+        adapter: Arc::new(adapter),
+        economics,
+    })
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidLiveSubmitConfig {

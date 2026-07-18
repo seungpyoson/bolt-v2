@@ -21644,7 +21644,7 @@ reason = "Fail-closed contradiction diagnostic; all unit identities are config o
 path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
 literal = '''"COLLATERAL_TOKEN()"'''
-context = '''.eth_call_u256_word(&offramp, &function_calldata("COLLATERAL_TOKEN()", None))'''
+context = '''&function_calldata("COLLATERAL_TOKEN()", None),'''
 classification = "provider_contract_abi"
 reason = "Versioned Polymarket collateral-offramp ABI selector used to verify the configured collateral contract."
 
@@ -21652,7 +21652,7 @@ reason = "Versioned Polymarket collateral-offramp ABI selector used to verify th
 path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
 literal = '''"USDC()"'''
-context = '''.eth_call_u256_word(&collateral_token, &function_calldata("USDC()", None))'''
+context = '''&function_calldata("USDC()", None),'''
 classification = "provider_contract_abi"
 reason = "Versioned pUSD contract ABI selector used to verify the configured redemption asset."
 
@@ -21668,7 +21668,7 @@ reason = "Versioned Polymarket collateral-offramp ABI selector used to fail clos
 path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
 literal = '''"decimals()"'''
-context = '''.eth_call_u256_word(&collateral_token, &function_calldata("decimals()", None))'''
+context = '''&function_calldata("decimals()", None),'''
 classification = "erc20_contract_abi"
 reason = "Canonical ERC-20 ABI selector used to prove amount-preserving conversion precision."
 
@@ -21676,7 +21676,7 @@ reason = "Canonical ERC-20 ABI selector used to prove amount-preserving conversi
 path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
 literal = '''"decimals()"'''
-context = '''.eth_call_u256_word(&redemption_asset, &function_calldata("decimals()", None))'''
+context = '''&function_calldata("decimals()", None),'''
 classification = "erc20_contract_abi"
 reason = "Canonical ERC-20 ABI selector used to prove amount-preserving conversion precision."
 
@@ -21763,10 +21763,10 @@ reason = "Fail-closed provider-state diagnostic preventing an unproved amount-pr
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
-literal = '''"system clock precedes Unix epoch"'''
-context = '''.context("system clock precedes Unix epoch")?'''
+literal = '''"Polymarket collateral block timestamp overflows nanoseconds"'''
+context = '''.context("Polymarket collateral block timestamp overflows nanoseconds")?;'''
 classification = "diagnostic_template"
-reason = "Fail-closed clock diagnostic used while timestamping fresh provider evidence."
+reason = "Fail-closed diagnostic when finalized block time cannot be represented by the economics clock."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/economics.rs"
@@ -21783,6 +21783,110 @@ literal = '''"Polymarket collateral redemption authority is unavailable"'''
 context = '''.context("Polymarket collateral redemption authority is unavailable")?;'''
 classification = "diagnostic_template"
 reason = "Fail-closed diagnostic when mandatory provider conversion evidence cannot be produced."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "number"
+literal = '''1'''
+context = '''.and_then(|events_after_first| events_after_first.checked_add(1))'''
+classification = "funding_interval_arithmetic"
+reason = "A horizon reaching the next funding event intersects that first event before counting later configured intervals."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"account_fees"'''
+context = '''.get("account_fees")'''
+classification = "configuration_schema_field"
+reason = "Stable economics source-role key; the provider source identity remains mandatory TOML configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"eth_getBlockByNumber"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_GET_BLOCK_METHOD: &str = "eth_getBlockByNumber";'''
+classification = "json_rpc_protocol_method"
+reason = "Canonical Ethereum JSON-RPC method used to seal finalized block hash and timestamp evidence."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"eth_getCode"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_GET_CODE_METHOD: &str = "eth_getCode";'''
+classification = "json_rpc_protocol_method"
+reason = "Canonical Ethereum JSON-RPC method used to verify governed contract bytecode."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"eth_getStorageAt"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_GET_STORAGE_METHOD: &str = "eth_getStorageAt";'''
+classification = "json_rpc_protocol_method"
+reason = "Canonical Ethereum JSON-RPC method used to bind the upgradeable collateral proxy implementation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket collateral RPC has insufficient finalized history"'''
+context = '''.context("Polymarket collateral RPC has insufficient finalized history")?;'''
+classification = "diagnostic_template"
+reason = "Fail-closed diagnostic when the configured finality depth cannot be satisfied."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"Polymarket collateral block mismatch"'''
+context = '''"Polymarket collateral block mismatch"'''
+classification = "diagnostic_template"
+reason = "Fail-closed diagnostic when the requested finalized block and returned block differ."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/economics.rs"
+kind = "string"
+literal = '''"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"'''
+context = '''"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",'''
+classification = "evm_proxy_protocol_slot"
+reason = "Canonical EIP-1967 implementation storage slot used to bind proxy semantics at the sealed block."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"schedule"'''
+context = '''.get("schedule")'''
+classification = "configuration_schema_field"
+reason = "Stable provider source-role key; the live schedule source identity is supplied by TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"collateral_token_implementation_address"'''
+context = '''"collateral_token_implementation_address",'''
+classification = "configuration_schema_field"
+reason = "Stable TOML field name for the mandatory governed proxy implementation address."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"collateral_token_proxy_code_sha256"'''
+context = '''"collateral_token_proxy_code_sha256",'''
+classification = "configuration_schema_field"
+reason = "Stable TOML field name for the mandatory collateral proxy bytecode digest."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"collateral_token_implementation_code_sha256"'''
+context = '''"collateral_token_implementation_code_sha256",'''
+classification = "configuration_schema_field"
+reason = "Stable TOML field name for the mandatory collateral implementation bytecode digest."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"collateral_offramp_code_sha256"'''
+context = '''"collateral_offramp_code_sha256",'''
+classification = "configuration_schema_field"
+reason = "Stable TOML field name for the mandatory collateral offramp bytecode digest."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"

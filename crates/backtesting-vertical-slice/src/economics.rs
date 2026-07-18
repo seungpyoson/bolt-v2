@@ -1,17 +1,19 @@
 use std::{str::FromStr, sync::Arc};
 
 use bolt_v2::bolt_v3_economics_runtime::{
-    BoltV3EconomicsRuntime, EconomicsAdmission, EconomicsAdmissionIntent,
+    AuthoritativeValuationObservation, BoltV3EconomicsRuntime,
+    ConfiguredValuationProvider, EconomicsAdmission, EconomicsAdmissionIntent,
     EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
 };
 use bolt_v2::economics::{
-    AccountId, AdmissionTreatment, DecisionCorrelationId, EconomicClass, EconomicComponentId,
-    EconomicKind, EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence,
-    EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId,
-    InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderId, OrderSide,
-    PlannedFillLeg, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingContext,
-    SignedNativeEffect, SnapshotId, SourceId, SourceValidity, ValuationEvidence, ValuationProvider,
-    ValuationRequest, VenueEconomicsAdapter, VenueQuoteEstimate, value_with_route,
+    AccountId, DecisionCorrelationId, EconomicQuoteRequest, EconomicScope, EconomicsUnavailable,
+    EdgeBasisEvidence, EdgeBasisPolicyId, ExecutionClientId, FormulaId, InstrumentId,
+    LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg,
+    PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingContext, SnapshotId, SourceId,
+};
+use bolt_v2::bolt_v3_providers::{
+    OfflineEconomicsAdapterBuildContext, OfflineEconomicsSnapshotInput,
+    build_offline_economics_adapter,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -19,8 +21,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistoricalEconomicsSnapshot {
+    pub provider_key: String,
     pub execution_client_id: String,
     pub account_id: String,
+    pub instrument_id: String,
+    pub raw_symbol: String,
     pub product_surface_id: String,
     pub reporting_policy_id: String,
     pub reporting_unit: String,
@@ -29,8 +34,10 @@ pub struct HistoricalEconomicsSnapshot {
     pub source_at_ns: u64,
     pub fetched_at_ns: u64,
     pub valid_until_ns: u64,
+    pub economics: toml::Value,
     pub edge_basis: HistoricalEdgeBasisEvidence,
-    pub components: Vec<HistoricalEconomicComponent>,
+    pub source_snapshots: Vec<HistoricalSourceSnapshot>,
+    pub valuation_observations: Vec<HistoricalValuationObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,125 +47,51 @@ pub struct HistoricalEdgeBasisEvidence {
     pub resolver_id: String,
     pub product_metadata_source: String,
     pub policy_version: u64,
-    pub normalized_amount: String,
     pub source_snapshot_ids: Vec<String>,
     pub valid_until_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HistoricalEconomicComponent {
-    pub component_id: String,
-    pub order_id: String,
-    pub class: HistoricalEconomicClass,
-    pub treatment: HistoricalAdmissionTreatment,
-    pub native_amount: String,
-    pub native_unit: String,
-    pub debit_risk_bound: Option<String>,
-    pub formula_id: String,
+pub struct HistoricalSourceSnapshot {
     pub source_id: String,
     pub snapshot_id: String,
     pub source_at_ns: u64,
     pub fetched_at_ns: u64,
     pub valid_until_ns: u64,
-    pub valuation: Option<HistoricalValuationEvidence>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HistoricalEconomicClass {
-    Charge,
-    Credit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HistoricalAdmissionTreatment {
-    GuaranteedConditionalOnAction,
-    VenueRiskBound,
-    OperatorRiskBound,
-    ForecastOnly,
+    pub payload_json: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HistoricalValuationEvidence {
-    pub normalized_amount: String,
-    pub reporting_unit: String,
-    pub route_id: Option<String>,
-    pub source_snapshot_ids: Vec<String>,
-    pub valued_at_ns: u64,
-    pub valid_until_ns: Option<u64>,
+#[serde(tag = "authority", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HistoricalValuationObservation {
+    MarketQuote {
+        client_id: String,
+        instrument_id: String,
+        price: String,
+        snapshot_id: String,
+        observed_at_ns: u64,
+    },
+    ProviderConversion {
+        source_id: String,
+        from_unit: String,
+        to_unit: String,
+        rate: String,
+        snapshot_id: String,
+        observed_at_ns: u64,
+    },
 }
 
 pub struct ReplayEconomicsAdapter {
     snapshot: HistoricalEconomicsSnapshot,
+    adapter: Arc<dyn bolt_v2::economics::VenueEconomicsAdapter>,
+    economics: bolt_v2::bolt_v3_economics_config::ExecutionEconomicsConfig,
 }
 
 pub struct ReplayEconomicsAdmissionSource {
     snapshots: Vec<HistoricalEconomicsSnapshot>,
 }
 
-struct ReplayValuationProvider {
-    evidence: Vec<ValuationEvidence>,
-}
-
-impl ReplayValuationProvider {
-    fn from_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<Self, EconomicsUnavailable> {
-        let evidence = snapshot
-            .components
-            .iter()
-            .filter_map(|component| {
-                component.valuation.as_ref().map(|valuation| {
-                    let effect = SignedNativeEffect::currency(
-                        decimal(&component.native_amount)?,
-                        NativeUnitId::new(component.native_unit.clone())?,
-                    )?;
-                    canonical_valuation(&effect, valuation)
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { evidence })
-    }
-}
-
-impl ValuationProvider for ReplayValuationProvider {
-    fn value(
-        &self,
-        effect: &SignedNativeEffect,
-        request: &ValuationRequest,
-    ) -> Result<ValuationEvidence, EconomicsUnavailable> {
-        if effect.unit() == &request.reporting_unit {
-            return value_with_route(
-                effect,
-                &request.reporting_unit,
-                None,
-                request.requested_at_ns,
-            );
-        }
-        let mut candidates = self.evidence.iter().filter(|evidence| {
-            evidence.native_effect == *effect
-                && evidence.reporting_unit == request.reporting_unit
-                && evidence.valued_at_ns <= request.requested_at_ns
-                && evidence
-                    .valid_until_ns
-                    .is_none_or(|valid_until_ns| valid_until_ns >= request.requested_at_ns)
-        });
-        let evidence =
-            candidates
-                .next()
-                .cloned()
-                .ok_or_else(|| EconomicsUnavailable::MissingValuation {
-                    unit: effect.unit().clone(),
-                })?;
-        if candidates.next().is_some() {
-            return Err(EconomicsUnavailable::AmbiguousValuation {
-                unit: effect.unit().clone(),
-            });
-        }
-        Ok(evidence)
-    }
-}
 
 impl ReplayEconomicsAdmissionSource {
     pub fn from_snapshots(
@@ -174,10 +107,8 @@ impl ReplayEconomicsAdmissionSource {
         if snapshots.iter().any(|snapshot| {
             snapshot.execution_client_id != authority.execution_client_id
                 || snapshot.account_id != authority.account_id
-                || snapshot.product_surface_id != authority.product_surface_id
                 || snapshot.reporting_policy_id != authority.reporting_policy_id
                 || snapshot.reporting_unit != authority.reporting_unit
-                || snapshot.edge_basis.policy_id != authority.edge_basis.policy_id
         }) {
             return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
@@ -189,16 +120,43 @@ impl ReplayEconomicsAdmissionSource {
     ) -> Result<bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle, EconomicsUnavailable>
     {
         let authority = self.snapshots[0].clone();
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
+        let mut route_configs = std::collections::BTreeMap::new();
+        for snapshot in &self.snapshots {
+            let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
+            let carry_plan = if adapter
+                    .economics
+                    .carry_surfaces
+                    .contains(&snapshot.product_surface_id)
+                {
+                    bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::Required
+                } else {
+                    bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry
+                };
+            let route = (snapshot.edge_basis.policy_id.clone(), carry_plan);
+            if let Some(existing) = route_configs.insert(snapshot.product_surface_id.clone(), route.clone())
+                && existing != route
+            {
+                return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+            }
+        }
+        let routes = route_configs
+            .iter()
+            .map(|(surface, (policy, carry_plan))| {
+                bolt_v2::bolt_v3_order_execution::BoltV3ProductSurfaceRoute {
+                    product_surface_id: surface,
+                    edge_basis_policy_id: policy,
+                    carry_plan: *carry_plan,
+                }
+            })
+            .collect();
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new_with_product_surfaces(
             std::sync::Arc::new(self),
-            bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
+            bolt_v2::bolt_v3_order_execution::BoltV3MultiSurfaceOrderRoutingConfig {
                 execution_client_id: &authority.execution_client_id,
                 account_id: &authority.account_id,
-                product_surface_id: &authority.product_surface_id,
+                product_surface_routes: routes,
                 reporting_policy_id: &authority.reporting_policy_id,
                 reporting_unit: &authority.reporting_unit,
-                edge_basis_policy_id: &authority.edge_basis.policy_id,
-                carry_plan: bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
                 routing_attachment_policy:
                     bolt_v2::bolt_v3_economics_config::EconomicsRoutingAttachmentPolicy::Forbidden,
             },
@@ -210,6 +168,28 @@ impl ReplayEconomicsAdmissionSource {
 }
 
 impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
+    fn resolve_product_surface(
+        &self,
+        execution_client_id: &ExecutionClientId,
+        instrument_id: &InstrumentId,
+        candidates: &[ProductSurfaceId],
+    ) -> Result<ProductSurfaceId, EconomicsUnavailable> {
+        let mut matching = self.snapshots.iter().filter(|snapshot| {
+            snapshot.execution_client_id == execution_client_id.as_str()
+                && snapshot.instrument_id == instrument_id.as_str()
+                && candidates
+                    .iter()
+                    .any(|candidate| candidate.as_str() == snapshot.product_surface_id)
+        });
+        let selected = matching
+            .next()
+            .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
+        if matching.next().is_some() {
+            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+        }
+        ProductSurfaceId::new(selected.product_surface_id.clone())
+    }
+
     fn quote_admission(
         &self,
         intent: EconomicsAdmissionQuoteIntent,
@@ -218,7 +198,8 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
             .snapshots
             .iter()
             .filter(|snapshot| {
-                snapshot.source_at_ns <= intent.request.requested_at_ns
+                snapshot_matches_request(snapshot, &intent.request)
+                    && snapshot.source_at_ns <= intent.request.requested_at_ns
                     && intent.request.requested_at_ns <= snapshot.valid_until_ns
             })
             .collect::<Vec<_>>();
@@ -229,7 +210,11 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         };
         let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
         let edge_basis = adapter.edge_basis(&intent.request)?;
-        let valuation_provider = Arc::new(ReplayValuationProvider::from_snapshot(snapshot)?);
+        let observations = canonical_valuation_observations(snapshot)?;
+        let valuation_provider = Arc::new(ConfiguredValuationProvider::from_config(
+            &adapter.economics.valuation,
+            &observations,
+        )?);
         let quote_validity_ns = snapshot
             .valid_until_ns
             .checked_sub(intent.request.requested_at_ns)
@@ -254,7 +239,57 @@ impl ReplayEconomicsAdapter {
         snapshot: HistoricalEconomicsSnapshot,
     ) -> Result<Self, EconomicsUnavailable> {
         validate_snapshot(&snapshot)?;
-        Ok(Self { snapshot })
+        let snapshots = snapshot
+            .source_snapshots
+            .iter()
+            .map(|source| OfflineEconomicsSnapshotInput {
+                source_id: source.source_id.clone(),
+                snapshot_id: source.snapshot_id.clone(),
+                source_at_ns: source.source_at_ns,
+                fetched_at_ns: source.fetched_at_ns,
+                valid_until_ns: source.valid_until_ns,
+                payload: source.payload_json.as_bytes().to_vec(),
+            })
+            .collect::<Vec<_>>();
+        let binding = build_offline_economics_adapter(
+            &snapshot.provider_key,
+            OfflineEconomicsAdapterBuildContext {
+                account_id: &snapshot.account_id,
+                instrument_id: &snapshot.instrument_id,
+                raw_symbol: &snapshot.raw_symbol,
+                economics: &snapshot.economics,
+                snapshots: &snapshots,
+            },
+        )
+        .map_err(|_| EconomicsUnavailable::MissingQuoteAuthority)?;
+        let configured_edge_basis = binding
+            .economics
+            .edge_basis
+            .get(&snapshot.edge_basis.policy_id)
+            .ok_or(EconomicsUnavailable::EdgeBasisPolicyMismatch)?;
+        if configured_edge_basis.resolver_id != snapshot.edge_basis.resolver_id
+            || configured_edge_basis.product_metadata_source
+                != snapshot.edge_basis.product_metadata_source
+            || configured_edge_basis.policy_version != snapshot.edge_basis.policy_version
+        {
+            return Err(EconomicsUnavailable::InvalidEdgeBasis);
+        }
+        if binding.economics.reporting_policy != snapshot.reporting_policy_id {
+            return Err(EconomicsUnavailable::MissingQuoteAuthority);
+        }
+        if binding
+            .economics
+            .product_surface_policies
+            .get(&snapshot.product_surface_id)
+            != Some(&snapshot.edge_basis.policy_id)
+        {
+            return Err(EconomicsUnavailable::EdgeBasisPolicyMismatch);
+        }
+        Ok(Self {
+            snapshot,
+            adapter: binding.adapter,
+            economics: binding.economics,
+        })
     }
 
     pub fn edge_basis(
@@ -269,6 +304,18 @@ impl ReplayEconomicsAdapter {
                 valid_until_ns: self.snapshot.edge_basis.valid_until_ns,
             });
         }
+        let resolved = self.adapter.resolve_edge_basis(request)?;
+        if resolved.source_snapshot_ids
+            != self
+                .snapshot
+                .edge_basis
+                .source_snapshot_ids
+                .iter()
+                .map(|value| SnapshotId::new(value.clone()))
+                .collect::<Result<Vec<_>, _>>()?
+        {
+            return Err(EconomicsUnavailable::InvalidEdgeBasis);
+        }
         Ok(EdgeBasisEvidence {
             policy_id: EdgeBasisPolicyId::new(self.snapshot.edge_basis.policy_id.clone())?,
             resolver_id: FormulaId::new(self.snapshot.edge_basis.resolver_id.clone())?,
@@ -276,7 +323,7 @@ impl ReplayEconomicsAdapter {
                 self.snapshot.edge_basis.product_metadata_source.clone(),
             )?,
             policy_version: self.snapshot.edge_basis.policy_version,
-            normalized_amount: decimal(&self.snapshot.edge_basis.normalized_amount)?,
+            normalized_amount: resolved.normalized_amount,
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
@@ -287,28 +334,27 @@ impl ReplayEconomicsAdapter {
                 .iter()
                 .map(|value| SnapshotId::new(value.clone()))
                 .collect::<Result<Vec<_>, _>>()?,
-            valid_until_ns: self.snapshot.edge_basis.valid_until_ns,
+            valid_until_ns: resolved
+                .valid_until_ns
+                .min(self.snapshot.edge_basis.valid_until_ns),
         })
     }
 }
 
-impl VenueEconomicsAdapter for ReplayEconomicsAdapter {
+impl bolt_v2::economics::VenueEconomicsAdapter for ReplayEconomicsAdapter {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
     ) -> Result<bolt_v2::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
-        let evidence = self.edge_basis(request)?;
-        Ok(bolt_v2::economics::ResolvedEdgeBasis {
-            normalized_amount: evidence.normalized_amount,
-            source_snapshot_ids: evidence.source_snapshot_ids,
-            valid_until_ns: evidence.valid_until_ns,
-        })
+        validate_request_binding(&self.snapshot, request)?;
+        self.adapter.resolve_edge_basis(request)
     }
 
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
-    ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
+    ) -> Result<bolt_v2::economics::VenueQuoteEstimate, EconomicsUnavailable> {
+        validate_request_binding(&self.snapshot, request)?;
         if request.requested_at_ns < self.snapshot.source_at_ns
             || request.requested_at_ns > self.snapshot.valid_until_ns
         {
@@ -316,23 +362,7 @@ impl VenueEconomicsAdapter for ReplayEconomicsAdapter {
                 source_id: SourceId::new(self.snapshot.source_id.clone())?,
             });
         }
-        let components = self
-            .snapshot
-            .components
-            .iter()
-            .map(canonical_component)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(VenueQuoteEstimate {
-            authority: source_validity(
-                &self.snapshot.source_id,
-                &self.snapshot.snapshot_id,
-                self.snapshot.source_at_ns,
-                self.snapshot.fetched_at_ns,
-                self.snapshot.valid_until_ns,
-            )?,
-            dependency_sources: Vec::new(),
-            components,
-        })
+        self.adapter.quote(request)
     }
 }
 
@@ -340,7 +370,10 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
     if snapshot.source_at_ns > snapshot.fetched_at_ns
         || snapshot.fetched_at_ns > snapshot.valid_until_ns
         || snapshot.edge_basis.valid_until_ns < snapshot.source_at_ns
-        || decimal(&snapshot.edge_basis.normalized_amount)? <= Decimal::ZERO
+        || snapshot.provider_key.trim().is_empty()
+        || snapshot.instrument_id.trim().is_empty()
+        || snapshot.raw_symbol.trim().is_empty()
+        || snapshot.source_snapshots.is_empty()
     {
         return Err(EconomicsUnavailable::InvalidSourceTimeline {
             source_id: SourceId::new(snapshot.source_id.clone())?,
@@ -349,6 +382,7 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
     SourceId::new(snapshot.source_id.clone())?;
     ExecutionClientId::new(snapshot.execution_client_id.clone())?;
     AccountId::new(snapshot.account_id.clone())?;
+    InstrumentId::new(snapshot.instrument_id.clone())?;
     ProductSurfaceId::new(snapshot.product_surface_id.clone())?;
     ReportingPolicyId::new(snapshot.reporting_policy_id.clone())?;
     NativeUnitId::new(snapshot.reporting_unit.clone())?;
@@ -357,106 +391,84 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
     for snapshot_id in &snapshot.edge_basis.source_snapshot_ids {
         SnapshotId::new(snapshot_id.clone())?;
     }
+    let mut source_ids = std::collections::BTreeSet::new();
+    for source in &snapshot.source_snapshots {
+        if source.source_at_ns > source.fetched_at_ns
+            || source.fetched_at_ns > source.valid_until_ns
+            || !source_ids.insert(source.source_id.clone())
+            || source.payload_json.trim().is_empty()
+        {
+            return Err(EconomicsUnavailable::InvalidSourceTimeline {
+                source_id: SourceId::new(source.source_id.clone())?,
+            });
+        }
+        SourceId::new(source.source_id.clone())?;
+        SnapshotId::new(source.snapshot_id.clone())?;
+    }
     Ok(())
 }
 
-fn canonical_component(
-    component: &HistoricalEconomicComponent,
-) -> Result<EstimatedEconomicComponent, EconomicsUnavailable> {
-    let native_unit = NativeUnitId::new(component.native_unit.clone())?;
-    let native_amount = decimal(&component.native_amount)?;
-    let point_effect = SignedNativeEffect::currency(native_amount, native_unit.clone())?;
-    let class = match component.class {
-        HistoricalEconomicClass::Charge => EconomicClass::Charge,
-        HistoricalEconomicClass::Credit => EconomicClass::Credit,
-    };
-    if (class == EconomicClass::Charge) != native_amount.is_sign_negative() {
-        return Err(EconomicsUnavailable::EconomicClassSignMismatch);
-    }
-    let admission_treatment = match component.treatment {
-        HistoricalAdmissionTreatment::GuaranteedConditionalOnAction => {
-            AdmissionTreatment::GuaranteedConditionalOnAction
-        }
-        HistoricalAdmissionTreatment::VenueRiskBound => AdmissionTreatment::RiskBound {
-            authority: RiskBoundAuthority::VenueMaximum,
-        },
-        HistoricalAdmissionTreatment::OperatorRiskBound => AdmissionTreatment::RiskBound {
-            authority: RiskBoundAuthority::OperatorRiskLimit,
-        },
-        HistoricalAdmissionTreatment::ForecastOnly => AdmissionTreatment::ForecastOnly,
-    };
-    let debit_risk_bound = component
-        .debit_risk_bound
-        .as_deref()
-        .map(decimal)
-        .transpose()?
-        .map(|amount| SignedNativeEffect::currency(amount, native_unit.clone()))
-        .transpose()?;
-    Ok(EstimatedEconomicComponent {
-        component_id: EconomicComponentId::new(component.component_id.clone())?,
-        class,
-        kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
-        scope: EconomicScope::Order {
-            order_id: OrderId::new(component.order_id.clone())?,
-        },
-        point_effect,
-        debit_risk_bound,
-        admission_treatment,
-        calculation_factors: Vec::new(),
-        formula_id: FormulaId::new(component.formula_id.clone())?,
-        source: source_validity(
-            &component.source_id,
-            &component.snapshot_id,
-            component.source_at_ns,
-            component.fetched_at_ns,
-            component.valid_until_ns,
-        )?,
-        normalized: None,
-    })
+fn snapshot_matches_request(
+    snapshot: &HistoricalEconomicsSnapshot,
+    request: &EconomicQuoteRequest,
+) -> bool {
+    snapshot.execution_client_id == request.execution_client_id.as_str()
+        && snapshot.account_id == request.account_id.as_str()
+        && snapshot.instrument_id == request.instrument_id.as_str()
+        && snapshot.product_surface_id == request.product_surface_id.as_str()
+        && snapshot.reporting_policy_id == request.reporting_policy_id.as_str()
+        && snapshot.reporting_unit == request.reporting_unit.as_str()
+        && snapshot.edge_basis.policy_id == request.edge_basis_policy_id.as_str()
 }
 
-fn canonical_valuation(
-    native_effect: &SignedNativeEffect,
-    valuation: &HistoricalValuationEvidence,
-) -> Result<ValuationEvidence, EconomicsUnavailable> {
-    Ok(ValuationEvidence {
-        native_effect: native_effect.clone(),
-        normalized_amount: decimal(&valuation.normalized_amount)?,
-        reporting_unit: NativeUnitId::new(valuation.reporting_unit.clone())?,
-        route_id: valuation
-            .route_id
-            .as_ref()
-            .map(|value| bolt_v2::economics::ValuationRouteId::new(value.clone()))
-            .transpose()?,
-        source_snapshot_ids: valuation
-            .source_snapshot_ids
-            .iter()
-            .map(|value| SnapshotId::new(value.clone()))
-            .collect::<Result<Vec<_>, _>>()?,
-        valued_at_ns: valuation.valued_at_ns,
-        valid_until_ns: valuation.valid_until_ns,
-    })
+fn validate_request_binding(
+    snapshot: &HistoricalEconomicsSnapshot,
+    request: &EconomicQuoteRequest,
+) -> Result<(), EconomicsUnavailable> {
+    if snapshot_matches_request(snapshot, request) {
+        Ok(())
+    } else {
+        Err(EconomicsUnavailable::MissingQuoteAuthority)
+    }
 }
 
-fn source_validity(
-    source_id: &str,
-    snapshot_id: &str,
-    source_at_ns: u64,
-    fetched_at_ns: u64,
-    valid_until_ns: u64,
-) -> Result<SourceValidity, EconomicsUnavailable> {
-    if source_at_ns > fetched_at_ns || fetched_at_ns > valid_until_ns {
-        return Err(EconomicsUnavailable::InvalidSourceTimeline {
-            source_id: SourceId::new(source_id)?,
-        });
-    }
-    Ok(SourceValidity {
-        source_id: SourceId::new(source_id)?,
-        snapshot_id: SnapshotId::new(snapshot_id)?,
-        source_at_ns,
-        fetched_at_ns,
-        valid_until_ns,
-    })
+fn canonical_valuation_observations(
+    snapshot: &HistoricalEconomicsSnapshot,
+) -> Result<Vec<AuthoritativeValuationObservation>, EconomicsUnavailable> {
+    snapshot
+        .valuation_observations
+        .iter()
+        .map(|observation| match observation {
+            HistoricalValuationObservation::MarketQuote {
+                client_id,
+                instrument_id,
+                price,
+                snapshot_id,
+                observed_at_ns,
+            } => Ok(AuthoritativeValuationObservation::MarketQuote {
+                client_id: client_id.clone(),
+                instrument_id: instrument_id.clone(),
+                price: decimal(price)?,
+                snapshot_id: SnapshotId::new(snapshot_id.clone())?,
+                observed_at_ns: *observed_at_ns,
+            }),
+            HistoricalValuationObservation::ProviderConversion {
+                source_id,
+                from_unit,
+                to_unit,
+                rate,
+                snapshot_id,
+                observed_at_ns,
+            } => Ok(AuthoritativeValuationObservation::ProviderConversion {
+                source_id: source_id.clone(),
+                from_unit: NativeUnitId::new(from_unit.clone())?,
+                to_unit: NativeUnitId::new(to_unit.clone())?,
+                rate: decimal(rate)?,
+                snapshot_id: SnapshotId::new(snapshot_id.clone())?,
+                observed_at_ns: *observed_at_ns,
+            }),
+        })
+        .collect()
 }
 
 fn decimal(value: &str) -> Result<Decimal, EconomicsUnavailable> {
@@ -471,6 +483,9 @@ pub struct ReplayQuoteIntent<'a> {
     pub order_side: OrderSide,
     pub liquidity_role: LiquidityRoleAssumption,
     pub planned_fill_legs: Vec<PlannedFillLeg>,
+    pub routing_attachment_id: Option<&'a str>,
+    pub position: Option<PositionContext>,
+    pub lifecycle_path: LifecyclePath,
     pub reporting_policy_id: &'a str,
     pub reporting_unit: &'a str,
     pub requested_at_ns: u64,
@@ -498,10 +513,19 @@ pub fn canonical_quote_request_from_replay(
         liquidity_role: intent.liquidity_role,
         planned_fill_legs: intent.planned_fill_legs,
         routing: RoutingContext {
-            attached_charge: None,
+            attached_charge: intent
+                .routing_attachment_id
+                .map(|attachment_id| {
+                    Ok(bolt_v2::economics::RoutingAttachment {
+                        attachment_id: bolt_v2::economics::RoutingAttachmentId::new(
+                            attachment_id,
+                        )?,
+                    })
+                })
+                .transpose()?,
         },
-        position: None,
-        lifecycle_path: LifecyclePath::PlannedExit,
+        position: intent.position,
+        lifecycle_path: intent.lifecycle_path,
         reporting_policy_id: ReportingPolicyId::new(intent.reporting_policy_id)?,
         reporting_unit: NativeUnitId::new(intent.reporting_unit)?,
         edge_basis_policy_id: EdgeBasisPolicyId::new(intent.edge_basis_policy_id)?,

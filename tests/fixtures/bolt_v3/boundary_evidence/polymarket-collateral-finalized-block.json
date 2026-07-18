@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"eth_getBlockByNumber","captured_at":"2026-07-18","chain_id":137,"latest_block":"0x563bb6a","finality_confirmations":64,"selection":"latest-minus-confirmations","required_response_fields":["number","hash","timestamp"]}

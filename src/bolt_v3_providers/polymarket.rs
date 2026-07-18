@@ -267,6 +267,51 @@ pub(crate) fn build_economics_authority(
     .map_err(|error| error.to_string())
 }
 
+pub(crate) fn build_offline_economics_adapter(
+    context: super::OfflineEconomicsAdapterBuildContext<'_>,
+) -> Result<super::OfflineEconomicsAdapterBinding, String> {
+    let economics = context
+        .economics
+        .clone()
+        .try_into::<crate::bolt_v3_economics_config::ExecutionEconomicsConfig>()
+        .map_err(|error| format!("invalid offline Polymarket economics config: {error}"))?;
+    let source_id = economics
+        .sources
+        .get("schedule")
+        .ok_or_else(|| "offline Polymarket schedule source is missing".to_string())?;
+    let matching = context
+        .snapshots
+        .iter()
+        .filter(|snapshot| &snapshot.source_id == source_id)
+        .collect::<Vec<_>>();
+    let [snapshot] = matching.as_slice() else {
+        return Err("offline Polymarket schedule authority must be unique".to_string());
+    };
+    let payload = std::str::from_utf8(&snapshot.payload)
+        .map_err(|_| "offline Polymarket market-info payload is not UTF-8".to_string())?;
+    let market_info = economics::PolymarketMarketInfoSnapshot::from_wire_json(
+        economics::PolymarketSnapshotMetadata {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            source_at_ns: snapshot.source_at_ns,
+            fetched_at_ns: snapshot.fetched_at_ns,
+            valid_until_ns: snapshot.valid_until_ns,
+        },
+        payload,
+    )
+    .map_err(|error| format!("invalid offline Polymarket market-info: {error:?}"))?;
+    let adapter = economics::PolymarketEconomicsAdapter::try_new(
+        economics::PolymarketEconomicsAdapterConfig::from_execution_config(&economics)
+            .map_err(|error| format!("invalid offline Polymarket policy: {error:?}"))?,
+        market_info,
+        None,
+    )
+    .map_err(|error| format!("invalid offline Polymarket adapter: {error:?}"))?;
+    Ok(super::OfflineEconomicsAdapterBinding {
+        adapter: Arc::new(adapter),
+        economics,
+    })
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PolymarketOnChainCollateralConfig {
@@ -276,6 +321,13 @@ pub struct PolymarketOnChainCollateralConfig {
     pub collateral_offramp_address: String,
     pub redemption_asset_address: String,
     pub redemption_asset_unit: String,
+    pub finality_confirmations: u64,
+    pub collateral_token_proxy_code_sha256: String,
+    pub collateral_token_implementation_address: String,
+    pub collateral_token_implementation_code_sha256: String,
+    pub collateral_offramp_code_sha256: String,
+    pub redemption_semantics_source_commit: String,
+    pub redemption_rate: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -645,6 +697,11 @@ fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig
             "clients.{key}.execution.on_chain_collateral.chain_id must be a positive integer"
         ));
     }
+    if on_chain.finality_confirmations == 0 {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.finality_confirmations must be positive"
+        ));
+    }
     if let Err(message) = check_evm_address_syntax(&on_chain.collateral_token_address) {
         errors.push(format!(
             "clients.{key}.execution.on_chain_collateral.collateral_token_address is not a valid EVM public address ({message}): `{}`",
@@ -660,6 +717,10 @@ fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig
             "redemption_asset_address",
             &on_chain.redemption_asset_address,
         ),
+        (
+            "collateral_token_implementation_address",
+            &on_chain.collateral_token_implementation_address,
+        ),
     ] {
         if let Err(message) = check_evm_address_syntax(address) {
             errors.push(format!(
@@ -670,6 +731,42 @@ fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig
     if on_chain.redemption_asset_unit.trim().is_empty() {
         errors.push(format!(
             "clients.{key}.execution.on_chain_collateral.redemption_asset_unit must be non-empty"
+        ));
+    }
+    for (field, hash) in [
+        (
+            "collateral_token_proxy_code_sha256",
+            &on_chain.collateral_token_proxy_code_sha256,
+        ),
+        (
+            "collateral_token_implementation_code_sha256",
+            &on_chain.collateral_token_implementation_code_sha256,
+        ),
+        (
+            "collateral_offramp_code_sha256",
+            &on_chain.collateral_offramp_code_sha256,
+        ),
+    ] {
+        if !crate::bolt_v3_numeric::is_sha256_hex_digest(hash) {
+            errors.push(format!(
+                "clients.{key}.execution.on_chain_collateral.{field} must be a SHA-256 hex digest"
+            ));
+        }
+    }
+    if !crate::bolt_v3_operator_artifacts::is_lowercase_git_sha(
+        &on_chain.redemption_semantics_source_commit,
+    ) {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.redemption_semantics_source_commit must be a full Git commit"
+        ));
+    }
+    if on_chain
+        .redemption_rate
+        .parse::<Decimal>()
+        .is_err_or(|rate| rate <= Decimal::ZERO)
+    {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.redemption_rate must be positive"
         ));
     }
     errors

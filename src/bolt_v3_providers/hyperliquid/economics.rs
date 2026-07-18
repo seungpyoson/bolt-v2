@@ -91,6 +91,12 @@ impl HyperliquidEconomicsAdapterConfig {
                         .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
                     stress_fixture_id: FormulaId::new(carry.stress_fixture_id.clone())
                         .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    oracle_price_factor_id: FormulaId::new(carry.oracle_price_factor_id.clone())
+                        .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    next_funding_at_factor_id: FormulaId::new(
+                        carry.next_funding_at_factor_id.clone(),
+                    )
+                    .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
                     funding_interval_ns: carry
                         .funding_interval_secs
                         .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
@@ -159,6 +165,8 @@ pub struct HyperliquidCarryPolicy {
     pub bound_rate_factor_id: FormulaId,
     pub risk_policy_id: FormulaId,
     pub stress_fixture_id: FormulaId,
+    pub oracle_price_factor_id: FormulaId,
+    pub next_funding_at_factor_id: FormulaId,
     pub funding_interval_ns: u64,
     pub venue_rate_cap_fraction: Decimal,
     pub standard_price_stress_multiplier: Decimal,
@@ -485,8 +493,9 @@ pub struct HyperliquidProductEconomicsSnapshot {
     builder_approved_max_bps: Option<Decimal>,
     spot_dust_authority_complete: bool,
     carry_oracle_price: Option<Decimal>,
-    carry_point_rate_per_ns: Option<Decimal>,
-    carry_debit_rate_bound_per_ns: Option<Decimal>,
+    carry_point_rate_per_interval: Option<Decimal>,
+    carry_debit_rate_bound_per_interval: Option<Decimal>,
+    carry_next_funding_at_ns: Option<u64>,
 }
 
 impl HyperliquidProductEconomicsSnapshot {
@@ -533,13 +542,10 @@ impl HyperliquidProductEconomicsSnapshot {
         {
             return Err(HyperliquidEconomicsError::InvalidProductMetadata);
         }
-        let point_rate = context
-            .funding
-            .checked_div(Decimal::from(carry.funding_interval_ns))
-            .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
-        let bound_rate = carry
-            .venue_rate_cap_fraction
-            .checked_div(Decimal::from(carry.funding_interval_ns))
+        let remainder = metadata.source_at_ns % carry.funding_interval_ns;
+        let next_funding_at_ns = metadata
+            .source_at_ns
+            .checked_add(carry.funding_interval_ns - remainder)
             .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
         Ok(Self {
             snapshot_id: metadata.snapshot_id,
@@ -559,8 +565,9 @@ impl HyperliquidProductEconomicsSnapshot {
             builder_approved_max_bps: None,
             spot_dust_authority_complete: false,
             carry_oracle_price: Some(context.oracle_px),
-            carry_point_rate_per_ns: Some(point_rate),
-            carry_debit_rate_bound_per_ns: Some(bound_rate),
+            carry_point_rate_per_interval: Some(context.funding),
+            carry_debit_rate_bound_per_interval: Some(carry.venue_rate_cap_fraction),
+            carry_next_funding_at_ns: Some(next_funding_at_ns),
         })
     }
 }
@@ -1007,8 +1014,10 @@ impl HyperliquidEconomicsAdapter {
                 }
             }
         }
-        if self.product.product_kind == HyperliquidProductKind::Perp {
-            components.push(self.carry_component(request)?);
+        if self.product.product_kind == HyperliquidProductKind::Perp
+            && let Some(carry) = self.carry_component(request)?
+        {
+            components.push(carry);
         }
         Ok(components)
     }
@@ -1062,7 +1071,7 @@ impl HyperliquidEconomicsAdapter {
     fn carry_component(
         &self,
         request: &EconomicQuoteRequest,
-    ) -> Result<EstimatedEconomicComponent, HyperliquidEconomicsError> {
+    ) -> Result<Option<EstimatedEconomicComponent>, HyperliquidEconomicsError> {
         let policy = self
             .config
             .carry
@@ -1077,13 +1086,17 @@ impl HyperliquidEconomicsAdapter {
         }
         let point_rate = self
             .product
-            .carry_point_rate_per_ns
+            .carry_point_rate_per_interval
             .ok_or(HyperliquidEconomicsError::MissingCarryPolicy)?;
         let bound_rate = self
             .product
-            .carry_debit_rate_bound_per_ns
+            .carry_debit_rate_bound_per_interval
             .ok_or(HyperliquidEconomicsError::MissingCarryPolicy)?;
-        if bound_rate <= Decimal::ZERO || point_rate.is_zero() {
+        let next_funding_at_ns = self
+            .product
+            .carry_next_funding_at_ns
+            .ok_or(HyperliquidEconomicsError::MissingCarryPolicy)?;
+        if bound_rate <= Decimal::ZERO || next_funding_at_ns < request.requested_at_ns {
             return Err(HyperliquidEconomicsError::InvalidCarryBound);
         }
         let oracle_price = self
@@ -1093,7 +1106,19 @@ impl HyperliquidEconomicsAdapter {
         if oracle_price <= Decimal::ZERO {
             return Err(HyperliquidEconomicsError::InvalidCarryBound);
         }
-        let horizon = Decimal::from(position.holding_horizon_ns);
+        let holding_until_ns = request
+            .requested_at_ns
+            .checked_add(position.holding_horizon_ns)
+            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        if holding_until_ns < next_funding_at_ns {
+            return Ok(None);
+        }
+        let funding_event_count = holding_until_ns
+            .checked_sub(next_funding_at_ns)
+            .and_then(|elapsed| elapsed.checked_div(policy.funding_interval_ns))
+            .and_then(|events_after_first| events_after_first.checked_add(1))
+            .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
+        let event_count = Decimal::from(funding_event_count);
         let position_notional = position
             .quantity
             .checked_mul(oracle_price)
@@ -1105,22 +1130,27 @@ impl HyperliquidEconomicsAdapter {
             PositionSide::Long => -point_rate,
             PositionSide::Short => point_rate,
         };
-        let point_amount = position_notional
+        let point_projection = position_notional
             .checked_mul(directional_point_rate)
-            .and_then(|amount| amount.checked_mul(horizon))
+            .and_then(|amount| amount.checked_mul(event_count))
             .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
         let debit_bound = stressed_position_notional
             .checked_mul(-bound_rate)
-            .and_then(|amount| amount.checked_mul(horizon))
+            .and_then(|amount| amount.checked_mul(event_count))
             .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
         if debit_bound >= Decimal::ZERO {
             return Err(HyperliquidEconomicsError::InvalidCarryBound);
         }
-        let current_adverse_projection = point_amount.min(Decimal::ZERO).abs();
+        let current_adverse_projection = point_projection.min(Decimal::ZERO).abs();
         if current_adverse_projection > debit_bound.abs() {
             return Err(HyperliquidEconomicsError::InvalidCarryBound);
         }
-        Ok(EstimatedEconomicComponent {
+        let point_amount = if point_projection.is_zero() {
+            debit_bound
+        } else {
+            point_projection
+        };
+        Ok(Some(EstimatedEconomicComponent {
             component_id: policy.component_id.clone(),
             class: if point_amount.is_sign_negative() {
                 EconomicClass::Charge
@@ -1154,11 +1184,19 @@ impl HyperliquidEconomicsAdapter {
                 },
                 CalculationFactor {
                     factor_id: policy.risk_policy_id.clone(),
-                    value: horizon,
+                    value: event_count,
                 },
                 CalculationFactor {
                     factor_id: policy.stress_fixture_id.clone(),
+                    value: policy.standard_price_stress_multiplier,
+                },
+                CalculationFactor {
+                    factor_id: policy.oracle_price_factor_id.clone(),
                     value: oracle_price,
+                },
+                CalculationFactor {
+                    factor_id: policy.next_funding_at_factor_id.clone(),
+                    value: Decimal::from(next_funding_at_ns),
                 },
             ],
             formula_id: policy.formula_id.clone(),
@@ -1171,7 +1209,7 @@ impl HyperliquidEconomicsAdapter {
                 valid_until_ns: self.product.valid_until_ns,
             },
             normalized: None,
-        })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]

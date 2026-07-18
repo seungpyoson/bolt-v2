@@ -5,6 +5,7 @@ use super::{chainlink_reference, hyperliquid, polymarket, polyresearch};
 pub const AWS_SSM_SECRET_SOURCE_ADAPTER_ID: &str = stringify!(AwsSsmSecretSource);
 pub const IMDS_METADATA_ADAPTER_ID: &str = stringify!(Imdsv2HostFactsSource);
 pub const BINANCE_SPOT_SBE_ADAPTER_ID: &str = stringify!(BinanceSpotDataClient);
+pub const POLYMARKET_COLLATERAL_RPC_ADAPTER_ID: &str = stringify!(OnChainCollateralRpcClient);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundaryEvidenceClass {
@@ -12,6 +13,7 @@ pub enum BoundaryEvidenceClass {
     ImdsMetadata,
     AwsSdkResponse,
     HttpResponseBody,
+    JsonRpcResponse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,7 @@ pub enum BoundaryFeeder {
     SecretResolution,
     PolymarketVenueTruthRuntime,
     EconomicsQuoteAuthority,
+    EconomicsValuationAuthority,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +86,11 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
         adapter_id: polymarket::KEY,
         class: BoundaryEvidenceClass::HttpResponseBody,
         feeder: BoundaryFeeder::EconomicsQuoteAuthority,
+    },
+    BoundaryRegistryEntry {
+        adapter_id: POLYMARKET_COLLATERAL_RPC_ADAPTER_ID,
+        class: BoundaryEvidenceClass::JsonRpcResponse,
+        feeder: BoundaryFeeder::EconomicsValuationAuthority,
     },
     BoundaryRegistryEntry {
         adapter_id: hyperliquid::KEY,

@@ -241,11 +241,13 @@ def clean_files(root: Path) -> None:
         """
 pub const AWS_SSM_SECRET_SOURCE_ADAPTER_ID: &str = stringify!(AwsSsmSecretSource);
 pub const IMDS_METADATA_ADAPTER_ID: &str = stringify!(Imdsv2HostFactsSource);
+pub const POLYMARKET_COLLATERAL_RPC_ADAPTER_ID: &str = stringify!(OnChainCollateralRpcClient);
 pub enum BoundaryEvidenceClass {
     WebSocketFrame,
     ImdsMetadata,
     AwsSdkResponse,
     HttpResponseBody,
+    JsonRpcResponse,
 }
 pub enum BoundaryFeeder {
     ReferenceCurrentPriceHealth,
@@ -256,6 +258,7 @@ pub enum BoundaryFeeder {
     SecretResolution,
     PolymarketVenueTruthRuntime,
     EconomicsQuoteAuthority,
+    EconomicsValuationAuthority,
 }
 pub struct BoundaryRegistryEntry {
     pub adapter_id: &'static str,
@@ -273,6 +276,7 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry { adapter_id: AWS_SSM_SECRET_SOURCE_ADAPTER_ID, class: BoundaryEvidenceClass::AwsSdkResponse, feeder: BoundaryFeeder::SecretResolution },
     BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::PolymarketVenueTruthRuntime },
     BoundaryRegistryEntry { adapter_id: polymarket::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::EconomicsQuoteAuthority },
+    BoundaryRegistryEntry { adapter_id: POLYMARKET_COLLATERAL_RPC_ADAPTER_ID, class: BoundaryEvidenceClass::JsonRpcResponse, feeder: BoundaryFeeder::EconomicsValuationAuthority },
     BoundaryRegistryEntry { adapter_id: hyperliquid::KEY, class: BoundaryEvidenceClass::HttpResponseBody, feeder: BoundaryFeeder::EconomicsQuoteAuthority },
 ];
 """,
@@ -412,6 +416,10 @@ jobs:
         "polymarket-fee-free.json",
         "hyperliquid-user-fees.json",
         "hyperliquid-meta.json",
+        "polymarket-collateral-finalized-block.json",
+        "polymarket-collateral-proxy-implementation.json",
+        "polymarket-collateral-contract-code-hashes.json",
+        "polymarket-collateral-redemption-semantics.json",
     ):
         write(root, f"{fixture_root}/{fixture}", "{}")
     fixture_sha = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
@@ -448,6 +456,32 @@ fixture_sha256 = "{fixture_sha}"
 [[captures]]
 kind = "perp_meta_and_asset_contexts"
 fixture = "hyperliquid-meta.json"
+fixture_sha256 = "{fixture_sha}"
+''',
+    )
+    write(
+        root,
+        f"{fixture_root}/polymarket-collateral-rpc-captures.toml",
+        f'''schema_version = 1
+adapter_id = "OnChainCollateralRpcClient"
+class = "JsonRpcResponse"
+feeder = "EconomicsValuationAuthority"
+captured_at = "2026-06-25"
+[[captures]]
+kind = "finalized_block"
+fixture = "polymarket-collateral-finalized-block.json"
+fixture_sha256 = "{fixture_sha}"
+[[captures]]
+kind = "proxy_implementation"
+fixture = "polymarket-collateral-proxy-implementation.json"
+fixture_sha256 = "{fixture_sha}"
+[[captures]]
+kind = "contract_code_hashes"
+fixture = "polymarket-collateral-contract-code-hashes.json"
+fixture_sha256 = "{fixture_sha}"
+[[captures]]
+kind = "redemption_semantics"
+fixture = "polymarket-collateral-redemption-semantics.json"
 fixture_sha256 = "{fixture_sha}"
 ''',
     )

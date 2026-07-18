@@ -62,12 +62,24 @@ pub fn validate_and_aggregate_quote(
             });
         }
 
-        let point_valuation = resolve_valuation(
+        let point_valuation = match resolve_valuation(
             &component.point_effect,
             component.normalized.as_ref(),
             valuations,
             request,
-        )?;
+        ) {
+            Ok(valuation) => valuation,
+            Err(
+                EconomicsUnavailable::MissingValuation { .. }
+                | EconomicsUnavailable::MissingValuationRoute { .. }
+                | EconomicsUnavailable::StaleValuation { .. },
+            ) if component.admission_treatment == AdmissionTreatment::ForecastOnly => {
+                forecast_complete = false;
+                accepted.push(component);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let point_valid_until_ns = point_valuation.valid_until_ns;
         forecast_total += point_valuation.normalized_amount;
         component.normalized = Some(point_valuation.clone());

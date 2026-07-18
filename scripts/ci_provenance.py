@@ -863,6 +863,25 @@ def load_backtester_issue_789_timeout_minutes(
         raise ProvenanceError(
             f"backtester.issue_789 has unexpected keys: {unexpected_keys}"
         )
+    artifact_name_template = _cv.require_string(
+        issue_789,
+        "artifact_name_template",
+        "backtester.issue_789",
+        error_cls=ProvenanceError,
+    )
+    artifact_name_template_vars = _cv.require_string_map(
+        issue_789,
+        "artifact_name_template_vars",
+        "backtester.issue_789",
+        error_cls=ProvenanceError,
+    )
+    _cv.render_config_string_template(
+        artifact_name_template,
+        artifact_name_template_vars,
+        "backtester.issue_789.artifact_name_template",
+        error_cls=ProvenanceError,
+        require_same_name_github_bindings=True,
+    )
     max_job_minutes = require_positive_int(
         issue_789,
         "max_job_minutes",

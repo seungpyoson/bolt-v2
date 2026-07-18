@@ -91,7 +91,12 @@ max_ignored_entry_bytes = 4096
 max_ignored_entries = 128
 
 [backtester.issue_789]
+artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
 max_job_minutes = 120
+
+[backtester.issue_789.artifact_name_template_vars]
+run_id = "${{ github.run_id }}"
+run_attempt = "${{ github.run_attempt }}"
 
 [artifact_retention.classes.transient]
 max_retention_days = 7
@@ -352,7 +357,12 @@ allowed_ignored_runtime_roots = [".nextest-archive/", ".rust-verification/", "sc
 ordinary_max_job_minutes = 360
 
 [backtester.issue_789]
+artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
 max_job_minutes = 120
+
+[backtester.issue_789.artifact_name_template_vars]
+run_id = "${{ github.run_id }}"
+run_attempt = "${{ github.run_attempt }}"
 
 [artifact_retention.classes.transient]
 max_retention_days = 7
@@ -1138,50 +1148,98 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
     }
     issue_789_cases = [
         (
-            "backtester.issue_789.max_job_minutes must be a positive integer",
+            "backtester.issue_789.artifact_name_template must be a non-empty string",
             CONFIG_TOML.replace(
-                "[backtester.issue_789]\nmax_job_minutes = 120",
-                "[backtester.issue_789]",
+                'artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"\n',
+                "",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template_vars must be a non-empty string table",
+            CONFIG_TOML.replace(
+                '[backtester.issue_789.artifact_name_template_vars]\nrun_id = "${{ github.run_id }}"\nrun_attempt = "${{ github.run_attempt }}"\n',
+                "",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template missing template vars: ['run_attempt']",
+            CONFIG_TOML.replace(
+                'run_attempt = "${{ github.run_attempt }}"\n\n[artifact_retention.classes.transient]',
+                "\n[artifact_retention.classes.transient]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template has unused template vars: ['rogue']",
+            CONFIG_TOML.replace(
+                'run_attempt = "${{ github.run_attempt }}"\n\n[artifact_retention.classes.transient]',
+                'run_attempt = "${{ github.run_attempt }}"\nrogue = "${{ github.rogue }}"\n\n[artifact_retention.classes.transient]',
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template_vars values must be non-empty strings",
+            CONFIG_TOML.replace(
+                'run_id = "${{ github.run_id }}"',
+                "run_id = 7",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template must bind run_id to ${{ github.run_id }}",
+            CONFIG_TOML.replace(
+                'run_id = "${{ github.run_id }}"',
+                'run_id = "${{ github.sha }}"',
                 1,
             ),
         ),
         (
             "backtester.issue_789.max_job_minutes must be a positive integer",
             CONFIG_TOML.replace(
-                "[backtester.issue_789]\nmax_job_minutes = 120",
-                "[backtester.issue_789]\nmax_job_minutes = true",
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "[backtester.issue_789.artifact_name_template_vars]",
                 1,
             ),
         ),
         (
             "backtester.issue_789.max_job_minutes must be a positive integer",
             CONFIG_TOML.replace(
-                "[backtester.issue_789]\nmax_job_minutes = 120",
-                '[backtester.issue_789]\nmax_job_minutes = "120"',
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = true\n\n[backtester.issue_789.artifact_name_template_vars]",
                 1,
             ),
         ),
         (
             "backtester.issue_789.max_job_minutes must be a positive integer",
             CONFIG_TOML.replace(
-                "[backtester.issue_789]\nmax_job_minutes = 120",
-                "[backtester.issue_789]\nmax_job_minutes = 0",
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                'max_job_minutes = "120"\n\n[backtester.issue_789.artifact_name_template_vars]',
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = 0\n\n[backtester.issue_789.artifact_name_template_vars]",
                 1,
             ),
         ),
         (
             "backtester.issue_789.max_job_minutes must not exceed the backtester policy maximum of 360 minutes",
             CONFIG_TOML.replace(
-                "[backtester.issue_789]\nmax_job_minutes = 120",
-                "[backtester.issue_789]\nmax_job_minutes = 361",
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = 361\n\n[backtester.issue_789.artifact_name_template_vars]",
                 1,
             ),
         ),
         (
             "backtester.issue_789 has unexpected keys: ['rogue_limit']",
             CONFIG_TOML.replace(
-                "[backtester.issue_789]\nmax_job_minutes = 120",
-                "[backtester.issue_789]\nmax_job_minutes = 120\nrogue_limit = 999",
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = 120\nrogue_limit = 999\n\n[backtester.issue_789.artifact_name_template_vars]",
                 1,
             ),
         ),
@@ -1452,6 +1510,24 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
         for expected, text in issue_789_cases:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
+            code, stdout, stderr = run_cli(
+                [
+                    "ra001a-policy",
+                    "--config",
+                    str(config),
+                    "--event-name",
+                    "workflow_dispatch",
+                    "--ref",
+                    "refs/heads/main",
+                    "--repository-default-branch",
+                    "main",
+                ]
+            )
+            if code == 0 or stdout or expected not in stderr:
+                raise AssertionError(
+                    "invalid issue-789 policy must fail atomically: "
+                    f"expected={expected!r}, code={code}, stdout={stdout!r}, stderr={stderr!r}"
+                )
         for expected, text in pack_limit_cases:
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
@@ -1560,8 +1636,8 @@ def assert_backtester_timeout_configs_load_limits() -> None:
             write_config(
                 pathlib.Path(tmp),
                 CONFIG_TOML.replace(
-                    "[backtester.issue_789]\nmax_job_minutes = 120",
-                    "[backtester.issue_789]\nmax_job_minutes = 360",
+                    "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                    "max_job_minutes = 360\n\n[backtester.issue_789.artifact_name_template_vars]",
                     1,
                 ),
             )

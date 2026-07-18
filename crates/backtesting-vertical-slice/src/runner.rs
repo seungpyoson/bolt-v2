@@ -3269,7 +3269,7 @@ fn capture_order_terminal_guarded(
                     work_budget,
                     OperatorWorkBudgetStage::Backtest,
                 )?;
-                fills.push(*fill);
+                fills.push(fill.clone());
             }
             _ => {}
         }

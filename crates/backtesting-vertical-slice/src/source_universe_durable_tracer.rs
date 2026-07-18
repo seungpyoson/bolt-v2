@@ -2512,7 +2512,6 @@ mod tests {
             DURABLE_COMPLETION_MANIFEST_FILE, DurableCompletionLocator,
             DurableObjectVersionIdentity,
         },
-        operator_work_budget::OperatorWorkBudgetGuard,
         source_universe_batch_execution::{
             SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
             SourceUniverseBatchExecutionCompletionResolution, SourceUniverseBatchExecutionRecord,

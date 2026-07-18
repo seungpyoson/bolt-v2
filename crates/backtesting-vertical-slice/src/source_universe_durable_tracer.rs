@@ -1310,9 +1310,9 @@ fn expected_pack_ids(committed: &[CommittedSourceUniverseExecutionPack]) -> BTre
     committed.iter().map(|pack| pack.pack_id.clone()).collect()
 }
 
-fn index_report_inputs<'a>(
-    inputs: &'a [SourceUniverseDurableTracerReportInput],
-) -> Result<BTreeMap<&'a str, &'a Path>> {
+fn index_report_inputs(
+    inputs: &[SourceUniverseDurableTracerReportInput],
+) -> Result<BTreeMap<&str, &Path>> {
     let mut indexed = BTreeMap::new();
     for input in inputs {
         ensure!(
@@ -2037,7 +2037,7 @@ pub fn build_source_universe_durable_tracer_receipt_set(
         recomputed_aggregate == registry_run.aggregate,
         "admitted RA-001a aggregate envelope changed before receipt construction"
     );
-    let expected_ids = expected_pack_ids(&committed);
+    let expected_ids = expected_pack_ids(committed);
     let indexed_inputs = index_report_inputs(&registry_run.report_inputs)?;
     let actual_ids = indexed_inputs
         .keys()
@@ -2057,7 +2057,7 @@ pub fn build_source_universe_durable_tracer_receipt_set(
             "execution pack",
             pack.launch_spec.execution_pack.bytes,
         )?;
-        parse_execution_pack(&pack, &execution_pack)?;
+        parse_execution_pack(pack, &execution_pack)?;
         let launch = read_pinned_artifact(
             &pack.launch_path,
             "batch launch spec",
@@ -4698,8 +4698,9 @@ mod tests {
                 .as_object_mut()
                 .expect("applied policy object")
                 .remove(missing_field);
-            let error = serde_json::from_value::<SourceUniverseDurableTracerReceiptSet>(missing)
-                .expect_err("AWS target policy fields are mandatory");
+            let error =
+                serde_json::from_value::<super::SourceUniverseDurableTracerReceiptSet>(missing)
+                    .expect_err("AWS target policy fields are mandatory");
             assert!(error.to_string().contains(missing_field), "{error:#}");
         }
         let mut legacy_schema = receipts.clone();

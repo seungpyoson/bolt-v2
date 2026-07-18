@@ -416,14 +416,14 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/debug-test.yml": "debug_test",
     "rust-probe.yml": "rust_probe",
     ".github/workflows/rust-probe.yml": "rust_probe",
+    "root-artifact.yml": "root_artifact",
+    ".github/workflows/root-artifact.yml": "root_artifact",
     "actionlint.yml": "actionlint",
     ".github/workflows/actionlint.yml": "actionlint",
     "ai-review-glm-pr-agent.yml": "ai_review_glm_pr_agent",
     ".github/workflows/ai-review-glm-pr-agent.yml": "ai_review_glm_pr_agent",
     "ai-review-kimi-cli.yml": "ai_review_kimi_cli",
     ".github/workflows/ai-review-kimi-cli.yml": "ai_review_kimi_cli",
-    "ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
-    ".github/workflows/ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
     "claude-code-review.yml": "claude_code_review",
     ".github/workflows/claude-code-review.yml": "claude_code_review",
     "advisory.yml": "advisory",
@@ -658,7 +658,7 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "nt_runtime_capture",
     "venue_contract",
 )
-EXPECTED_HARNESS_COUNT = 15
+EXPECTED_HARNESS_COUNT = 16
 DECLARED_TOP_LEVEL_TEST_HELPERS = {"bolt_v3_iv_support"}
 RUST_TEST_ATTR_RE = re.compile(r"#\s*\[\s*(?:tokio::)?test(?:\s*\([^]]*\))?\s*\]")
 RUST_INNER_ATTR_RE = re.compile(r"#!\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)")
@@ -8050,11 +8050,15 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
         "SCCACHE_ACTIVE: ${{ inputs.active }}",
         "READ_ROLE_ARN: ${{ inputs.role-arn }}",
         "WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}",
+        "RUNNER_ARCH: ${{ runner.arch }}",
         "CONFIG_PATH: ${{ inputs.config-path }}",
         "python3.12 scripts/sccache_eligibility.py",
     ):
         if fragment not in eligibility_text:
-            errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
+            if fragment == "RUNNER_ARCH: ${{ runner.arch }}":
+                errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must pass runner.arch to the sccache eligibility owner")
+            else:
+                errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
     for fragment in (
         'event_name == "push"',
         'event_name == "workflow_dispatch"',
@@ -8072,13 +8076,21 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned aws credentials action")
     if "uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696" not in install_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install pinned sccache action")
-    if 'version: "v0.10.0"' not in install_text:
-        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must pin sccache v0.10.0")
+    if "version: ${{ steps.eligibility.outputs.version }}" not in install_text:
+        errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must install the TOML-governed sccache version")
     if 'disable_annotations: "true"' not in install_text:
         errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must disable vendor sccache stats annotations")
     for fragment in ('"$SCCACHE_PATH" --start-server', '"$SCCACHE_PATH" --zero-stats || true'):
         if fragment not in enable_text:
             errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must include {fragment!r}")
+    for fragment in (
+        "EXPECTED_VERSION: ${{ steps.eligibility.outputs.version }}",
+        "EXPECTED_SHA256: ${{ steps.eligibility.outputs.executable_sha256 }}",
+        "python3.12 scripts/sccache_eligibility.py verify-executable",
+        '"$SCCACHE_PATH" "$EXPECTED_VERSION" "$EXPECTED_SHA256"',
+    ):
+        if fragment not in enable_text:
+            errors.append(f"{SCCACHE_SETUP_ACTION_FILE} must verify installed sccache bytes before server startup")
     if not step_block_has_field(enable_block, "if", "always()"):
         errors.append("Resolve sccache enablement must run under always()")
     if (
@@ -8109,6 +8121,24 @@ def sccache_setup_action_contract_errors(action_text: str, config_text: str) -> 
     key_prefix = location.get("key_prefix")
     if not isinstance(key_prefix, str) or not key_prefix or not key_prefix.endswith("/"):
         errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} must set location.key_prefix must be a non-empty string ending in '/'")
+    version = location.get("version")
+    if not isinstance(version, str) or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+        errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} location.version must be a v-prefixed semantic version")
+    executable_sha256 = location.get("executable_sha256")
+    if not isinstance(executable_sha256, dict):
+        errors.append(f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256 must be an architecture table")
+    else:
+        expected_arches = {"ARM64", "X64"}
+        if set(executable_sha256) != expected_arches:
+            errors.append(
+                f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256 must define exactly ARM64 and X64"
+            )
+        for arch in sorted(expected_arches):
+            digest = executable_sha256.get(arch)
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                errors.append(
+                    f"{SCCACHE_LOCATION_CONFIG_PATH} location.executable_sha256.{arch} must be a lowercase SHA-256 digest"
+                )
     return errors
 
 
@@ -8129,6 +8159,8 @@ def sccache_eligibility_script_contract_errors(script_text: str) -> list[str]:
         'SCCACHE_S3_KEY_PREFIX={eligibility.key_prefix}',
         "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
         "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
+        'runner_arch=os.environ.get("RUNNER_ARCH", "")',
+        "def _architecture_digest(",
     ):
         if fragment not in script_text:
             errors.append(f"{SCCACHE_ELIGIBILITY_SCRIPT_FILE} must include {fragment!r}")

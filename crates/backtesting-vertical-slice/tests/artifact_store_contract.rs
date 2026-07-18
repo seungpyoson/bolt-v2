@@ -3861,7 +3861,8 @@ async fn operator_artifact_store_path_rejects_legacy_storage_options_before_loca
         &work_budget,
     )
     .await
-    .expect_err("legacy storage_options must not remain an alternate durable config authority");
+    .err()
+    .expect("legacy storage_options must not remain an alternate durable config authority");
 
     assert!(
         error.to_string().contains("storage_options is retired"),
@@ -4302,7 +4303,8 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("operator execution must reject an occupied durable catalog");
+    .err()
+    .expect("operator execution must reject an occupied durable catalog");
     assert!(format!("{error:#}").contains("occupied"), "{error:#}");
     assert_eq!(
         fs::read(&candidate_path).expect("reread first attempt candidate"),
@@ -4361,7 +4363,8 @@ async fn operator_completion_lost_ack_is_indeterminate_without_recovery() {
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("lost completion acknowledgement must stop as indeterminate");
+    .err()
+    .expect("lost completion acknowledgement must stop as indeterminate");
 
     assert!(is_terminal_create_indeterminate(&error), "{error:#}");
     assert!(
@@ -4479,7 +4482,8 @@ async fn conversion_generations_publish_and_discover_independent_terminal_keys()
         &OperatorWorkBudgetGuard::unbounded(),
     )
     .await
-    .expect_err("wrong conversion generation suffix must fail before artifact I/O");
+    .err()
+    .expect("wrong conversion generation suffix must fail before artifact I/O");
     assert!(format!("{error:#}").contains("conversion generation suffix"));
     assert_eq!(store.put_attempts().len(), puts_before);
     assert!(

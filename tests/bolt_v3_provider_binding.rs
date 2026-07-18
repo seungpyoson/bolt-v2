@@ -28,9 +28,18 @@
 
 use crate::support;
 
+#[path = "support/rust_source_tokens.rs"]
+mod rust_source_tokens;
+
+use rust_source_tokens::{
+    count_sequence, impl_body_tokens, inherent_impl_body_tokens, item_body_tokens, item_header,
+    texts, tokenize,
+};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicI64, Ordering},
@@ -67,11 +76,149 @@ use bolt_v2::{
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with,
     },
     bolt_v3_strategy_registration::{
-        BoltV3IvQueryHandleRegistry, StrategyRegistrationContext, StrategyRuntimeCapabilities,
+        BoltV3IvQueryHandleRegistry, BoltV3StrategyExecutionControls,
+        BoltV3StrategyRegistrationError, StrategyRegistrationContext,
+        StrategyRegistrationRuntimeResources, StrategyRuntimeCapabilities,
         assemble_strategy_build_context,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
+
+fn token_sequence_position(
+    tokens: &[rust_source_tokens::Token],
+    expected: &[&str],
+) -> Option<usize> {
+    texts(tokens)
+        .windows(expected.len())
+        .position(|window| window == expected)
+}
+
+fn field_has_visibility(tokens: &[rust_source_tokens::Token], field: &str) -> bool {
+    let actual = texts(tokens);
+    for (index, token) in actual.iter().enumerate() {
+        if *token != field || actual.get(index + 1).copied() != Some(":") {
+            continue;
+        }
+        let field_start = actual[..index]
+            .iter()
+            .rposition(|token| matches!(*token, "," | "{"))
+            .map_or(0, |delimiter| delimiter + 1);
+        if actual[field_start..index].contains(&"pub") {
+            return true;
+        }
+    }
+    false
+}
+
+fn function_has_visibility(tokens: &[rust_source_tokens::Token], function: &str) -> bool {
+    let actual = texts(tokens);
+    actual
+        .windows(2)
+        .enumerate()
+        .filter_map(|(index, window)| (window == ["fn", function]).then_some(index))
+        .any(|function_index| {
+            let declaration_start = actual[..function_index]
+                .iter()
+                .rposition(|token| matches!(*token, ";" | "{" | "}"))
+                .map_or(0, |delimiter| delimiter + 1);
+            actual[declaration_start..function_index].contains(&"pub")
+        })
+}
+
+fn field_type_texts<'a>(
+    tokens: &'a [rust_source_tokens::Token],
+    field: &str,
+) -> Option<Vec<&'a str>> {
+    let actual = texts(tokens);
+    let mut matches = actual
+        .windows(2)
+        .enumerate()
+        .filter_map(|(index, window)| (window == [field, ":"]).then_some(index));
+    let field_index = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+
+    let mut angle_depth = 0usize;
+    let mut grouping_depth = 0usize;
+    let mut end = field_index + 2;
+    while end < actual.len() {
+        match actual[end] {
+            "<" => angle_depth += 1,
+            ">" => angle_depth = angle_depth.checked_sub(1)?,
+            "(" | "[" | "{" => grouping_depth += 1,
+            ")" | "]" | "}" => grouping_depth = grouping_depth.checked_sub(1)?,
+            "," if angle_depth == 0 && grouping_depth == 0 => break,
+            _ => {}
+        }
+        end += 1;
+    }
+    Some(actual[field_index + 2..end].to_vec())
+}
+
+fn assert_field_type(tokens: &[rust_source_tokens::Token], field: &str, expected: &[&str]) {
+    assert_eq!(
+        field_type_texts(tokens, field).as_deref(),
+        Some(expected),
+        "field `{field}` must retain its reviewed narrow type"
+    );
+}
+
+fn collect_rust_files(path: &Path, files: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == std::ffi::OsStr::new("rs"))
+        {
+            files.push(path.to_path_buf());
+        }
+        return;
+    }
+    let mut entries = fs::read_dir(path)
+        .unwrap_or_else(|error| {
+            panic!(
+                "Rust source directory `{}` should read: {error}",
+                path.display()
+            )
+        })
+        .map(|entry| {
+            entry
+                .expect("Rust source directory entry should read")
+                .path()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    for entry in entries {
+        collect_rust_files(&entry, files);
+    }
+}
+
+fn rust_sources_under(relative: &str) -> Vec<(String, String)> {
+    let repo_root = support::repo_path("");
+    let mut files = Vec::new();
+    collect_rust_files(&support::repo_path(relative), &mut files);
+    files
+        .into_iter()
+        .map(|path| {
+            let relative_path = path
+                .strip_prefix(&repo_root)
+                .expect("collected Rust source should remain under the repository")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let source = fs::read_to_string(&path).unwrap_or_else(|error| {
+                panic!("Rust source `{relative_path}` should read: {error}")
+            });
+            (relative_path, source)
+        })
+        .collect()
+}
+
+fn count_identifier(tokens: &[rust_source_tokens::Token], identifier: &str) -> usize {
+    tokens
+        .iter()
+        .filter(|token| token.text == identifier)
+        .count()
+}
 use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 use rust_decimal::Decimal;
@@ -175,35 +322,55 @@ fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
     Arc::new(move || now_unix_secs)
 }
 
+fn try_assembly_context<'a>(
+    loaded: &'a bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    resolved: &'a ResolvedBoltV3Secrets,
+    capabilities: StrategyRuntimeCapabilities,
+) -> Result<StrategyRegistrationContext<'a>, BoltV3StrategyRegistrationError> {
+    let decision_evidence: Arc<
+        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+    let realized_volatility_runtime = Arc::new(Mutex::new(
+        bolt_v2::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
+            loaded,
+        )
+        .expect("test realized-volatility runtime should assemble"),
+    ));
+    StrategyRegistrationContext::new(
+        loaded,
+        &loaded.strategies[0],
+        "test_strategy",
+        capabilities,
+        resolved,
+        Arc::new(
+            bolt_v2::bolt_v3_strategy_registration::StrategyPreparationConfig::from_root(
+                &loaded.root,
+            ),
+        ),
+        StrategyRegistrationRuntimeResources::new(
+            decision_evidence,
+            Arc::new(BoltV3IvQueryHandleRegistry::empty()),
+            realized_volatility_runtime,
+            BoltV3StrategyExecutionControls {
+                submit_admission,
+                order_execution_policy:
+                    bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+                settlement_runtime_sink: None,
+                settlement_recovery: None,
+                settlement_health_transition_emitter: None,
+            },
+        ),
+    )
+}
+
 fn assembly_context<'a>(
     loaded: &'a bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     resolved: &'a ResolvedBoltV3Secrets,
     capabilities: StrategyRuntimeCapabilities,
 ) -> StrategyRegistrationContext<'a> {
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    StrategyRegistrationContext {
-        loaded,
-        strategy: &loaded.strategies[0],
-        strategy_kind: "test_strategy",
-        capabilities,
-        resolved,
-        decision_evidence: decision_evidence.clone(),
-        submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence)),
-        iv_query_handles: Arc::new(BoltV3IvQueryHandleRegistry::empty()),
-        order_execution_policy:
-            bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        realized_volatility_runtime: Arc::new(Mutex::new(
-            bolt_v2::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
-                loaded,
-            )
-            .expect("test realized-volatility runtime should assemble"),
-        )),
-        settlement_runtime_sink: None,
-        settlement_recovery: None,
-        settlement_health_transition_emitter: None,
-    }
+    try_assembly_context(loaded, resolved, capabilities)
+        .expect("configured strategy registration context should resolve")
 }
 
 #[test]
@@ -266,23 +433,1210 @@ fn shared_strategy_assembly_supports_inline_hyperliquid_without_settlement_capab
 }
 
 #[test]
+fn shared_strategy_assembly_omits_resources_for_undeclared_capabilities() {
+    let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let resolved = fixture_resolved_secrets();
+    let context = assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: false,
+            settlement: false,
+        },
+    );
+
+    let assembled = assemble_strategy_build_context(&context)
+        .expect("undeclared optional capabilities should leave shared assembly untouched");
+
+    assert!(assembled.realized_volatility_capability().is_none());
+    assert!(assembled.settlement_capability().is_none());
+}
+
+#[test]
+fn shared_strategy_assembly_fails_closed_without_settlement_account_id() {
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let execution_client_id = loaded.strategies[0].config.execution_client_id.to_string();
+    loaded
+        .root
+        .clients
+        .get_mut(execution_client_id.as_str())
+        .expect("fixture execution client should exist")
+        .execution
+        .as_mut()
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture execution client should have a table")
+        .remove("account_id");
+    let resolved = fixture_resolved_secrets();
+    let error = try_assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: true,
+        },
+    )
+    .err()
+    .expect("settlement preflight without an account id must fail closed");
+    let BoltV3StrategyRegistrationError::Binding { message, .. } = error else {
+        panic!("missing settlement account id must return a binding error");
+    };
+    assert_eq!(
+        message,
+        format!(
+            "settlement capability requires execution account id for execution_client_id `{execution_client_id}`"
+        )
+    );
+}
+
+#[test]
+fn shared_strategy_assembly_fails_closed_without_settlement_currency() {
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let execution_client_id = loaded.strategies[0].config.execution_client_id.to_string();
+    let settlement_account_id = loaded
+        .root
+        .clients
+        .get(execution_client_id.as_str())
+        .and_then(|client| client.execution.as_ref())
+        .and_then(toml::Value::as_table)
+        .and_then(|execution| execution.get("account_id"))
+        .and_then(toml::Value::as_str)
+        .expect("fixture settlement account id should exist")
+        .to_string();
+    loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture capital pools should exist")
+        .retain(|pool| pool.account_id.to_string() != settlement_account_id);
+    let resolved = fixture_resolved_secrets();
+    let error = try_assembly_context(
+        &loaded,
+        &resolved,
+        StrategyRuntimeCapabilities {
+            realized_volatility: true,
+            settlement: true,
+        },
+    )
+    .err()
+    .expect("settlement preflight without a currency must fail closed");
+    let BoltV3StrategyRegistrationError::Binding { message, .. } = error else {
+        panic!("missing settlement currency must return a binding error");
+    };
+    assert_eq!(
+        message,
+        format!(
+            "settlement capability requires settlement currency for execution account `{settlement_account_id}`"
+        )
+    );
+}
+
+#[test]
+fn strategy_registration_context_does_not_expose_unconditional_capability_resources() {
+    let source = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let source_tokens = tokenize(&source);
+    let context_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "StrategyRegistrationContext"],
+    )
+    .expect("strategy registration context declaration should remain inspectable");
+    let expected_fields = [
+        "strategy",
+        "strategy_kind",
+        "capabilities",
+        "decision_evidence",
+        "submit_admission",
+        "iv_query_handles",
+        "order_execution_policy",
+        "preparation_config",
+        "realized_volatility_runtime",
+        "client_routes",
+        "execution_venue",
+        "fee_provider",
+        "settlement",
+    ];
+    assert_eq!(
+        context_tokens
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        expected_fields.len(),
+        "registration context must not acquire an unreviewed field"
+    );
+    for field in expected_fields {
+        assert_eq!(count_sequence(context_tokens, &[field, ":"]), 1);
+    }
+    assert_field_type(context_tokens, "strategy", &["&", "LoadedStrategy"]);
+    assert_field_type(context_tokens, "strategy_kind", &["&", "str"]);
+    assert_field_type(
+        context_tokens,
+        "capabilities",
+        &["StrategyRuntimeCapabilities"],
+    );
+    assert_field_type(
+        context_tokens,
+        "decision_evidence",
+        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "submit_admission",
+        &["Arc", "<", "BoltV3SubmitAdmissionState", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "iv_query_handles",
+        &["Arc", "<", "BoltV3IvQueryHandleRegistry", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "order_execution_policy",
+        &["BoltV3OrderExecutionPolicy"],
+    );
+    assert_field_type(
+        context_tokens,
+        "preparation_config",
+        &["Arc", "<", "StrategyPreparationConfig", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "realized_volatility_runtime",
+        &[
+            "Option",
+            "<",
+            "Arc",
+            "<",
+            "Mutex",
+            "<",
+            "RealizedVolSurfaceRuntime",
+            ">",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        context_tokens,
+        "client_routes",
+        &["PreparedStrategyClientRoutes"],
+    );
+    assert_field_type(context_tokens, "execution_venue", &["Venue"]);
+    assert_field_type(
+        context_tokens,
+        "fee_provider",
+        &["Arc", "<", "dyn", "FeeProvider", ">"],
+    );
+    assert_field_type(
+        context_tokens,
+        "settlement",
+        &[
+            "Option",
+            "<",
+            "StrategyRegistrationSettlementResources",
+            ">",
+        ],
+    );
+    for protected_field in [
+        "preparation_config",
+        "client_routes",
+        "realized_volatility_runtime",
+        "execution_venue",
+        "fee_provider",
+        "settlement",
+    ] {
+        assert!(
+            !field_has_visibility(&context_tokens, protected_field),
+            "registration bindings must not directly access `{protected_field}`"
+        );
+    }
+    let context_texts = texts(&context_tokens);
+    for forbidden_capability in [
+        "LoadedBoltV3Config",
+        "BoltV3RootConfig",
+        "ClientBlock",
+        "ResolvedBoltV3Secrets",
+        "loaded",
+        "resolved",
+    ] {
+        assert!(
+            !context_texts.contains(&forbidden_capability),
+            "registration context retained raw capability `{forbidden_capability}`"
+        );
+    }
+
+    let runtime_resources = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "StrategyRegistrationRuntimeResources"],
+    )
+    .expect("registration runtime resources should remain inspectable");
+    assert_eq!(
+        runtime_resources
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        4
+    );
+    assert_field_type(
+        runtime_resources,
+        "decision_evidence",
+        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+    );
+    assert_field_type(
+        runtime_resources,
+        "iv_query_handles",
+        &["Arc", "<", "BoltV3IvQueryHandleRegistry", ">"],
+    );
+    assert_field_type(
+        runtime_resources,
+        "realized_volatility_runtime",
+        &[
+            "Arc",
+            "<",
+            "Mutex",
+            "<",
+            "RealizedVolSurfaceRuntime",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        runtime_resources,
+        "execution_controls",
+        &["BoltV3StrategyExecutionControls"],
+    );
+
+    let execution_controls = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "BoltV3StrategyExecutionControls"],
+    )
+    .expect("registration execution controls should remain inspectable");
+    assert_eq!(
+        execution_controls
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        5
+    );
+    assert_field_type(
+        execution_controls,
+        "submit_admission",
+        &["Arc", "<", "BoltV3SubmitAdmissionState", ">"],
+    );
+    assert_field_type(
+        execution_controls,
+        "order_execution_policy",
+        &["BoltV3OrderExecutionPolicy"],
+    );
+    assert_field_type(
+        execution_controls,
+        "settlement_runtime_sink",
+        &["Option", "<", "BoltV3SettlementRuntimeSinkHandle", ">"],
+    );
+    assert_field_type(
+        execution_controls,
+        "settlement_recovery",
+        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+    );
+    assert_field_type(
+        execution_controls,
+        "settlement_health_transition_emitter",
+        &[
+            "Option",
+            "<",
+            "BoltV3SettlementHealthTransitionEmitter",
+            ">",
+        ],
+    );
+}
+
+#[test]
+fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cached_proof() {
+    let source = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let source_tokens = tokenize(&source);
+    let context_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "StrategyRegistrationContext"],
+    )
+    .expect("strategy registration context should remain inspectable");
+    for cached_field in [
+        vec!["execution_venue", ":", "Venue"],
+        vec!["fee_provider", ":", "Arc", "<", "dyn", "FeeProvider", ">"],
+        vec!["client_routes", ":", "PreparedStrategyClientRoutes"],
+    ] {
+        assert_eq!(count_sequence(&context_tokens, &cached_field), 1);
+    }
+    let settlement_resource_tokens = item_body_tokens(
+        &source_tokens,
+        &["struct", "StrategyRegistrationSettlementResources"],
+    )
+    .expect("settlement registration resources should remain inspectable");
+    for cached_proof_field in ["settlement_account_id", "settlement_currency"] {
+        assert_eq!(
+            count_sequence(&settlement_resource_tokens, &[cached_proof_field, ":"]),
+            1,
+            "settlement resources must cache `{cached_proof_field}`"
+        );
+    }
+    assert_field_type(
+        settlement_resource_tokens,
+        "settlement_account_id",
+        &["String"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "settlement_currency",
+        &["Currency"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "runtime_sink",
+        &["Option", "<", "BoltV3SettlementRuntimeSinkHandle", ">"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "recovery",
+        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "health_transition_emitter",
+        &[
+            "Option",
+            "<",
+            "BoltV3SettlementHealthTransitionEmitter",
+            ">",
+        ],
+    );
+
+    let client_routes_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "PreparedStrategyClientRoutes"],
+    )
+    .expect("prepared client routes should remain inspectable");
+    assert_eq!(
+        client_routes_tokens
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        1
+    );
+    assert_field_type(
+        client_routes_tokens,
+        "venues_by_client_id",
+        &["BTreeMap", "<", "ClientId", ",", "Venue", ">"],
+    );
+
+    let preparation_config_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "struct", "StrategyPreparationConfig"],
+    )
+    .expect("strategy preparation snapshot should remain inspectable");
+    assert_eq!(
+        preparation_config_tokens
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        3
+    );
+    assert_field_type(
+        preparation_config_tokens,
+        "realized_volatility_max_source_age_ms",
+        &[
+            "Option", "<", "BTreeMap", "<", "String", ",", "u64", ">", ">",
+        ],
+    );
+    assert_field_type(
+        preparation_config_tokens,
+        "gate_provider_max_age_ms",
+        &["BTreeMap", "<", "String", ",", "u64", ">"],
+    );
+    assert_field_type(
+        preparation_config_tokens,
+        "chainlink_feed_instrument_ids",
+        &["BTreeSet", "<", "String", ">"],
+    );
+
+    let all_context_impls = impl_body_tokens(&source_tokens, "StrategyRegistrationContext");
+    assert_eq!(
+        all_context_impls.len(),
+        1,
+        "StrategyRegistrationContext must not acquire a trait or qualified alternate impl surface"
+    );
+    let context_impls = inherent_impl_body_tokens(&source_tokens, "StrategyRegistrationContext");
+    assert_eq!(
+        context_impls.len(),
+        1,
+        "all inherent StrategyRegistrationContext impl spellings must remain under one reviewed surface"
+    );
+    let constructor_tokens = context_impls[0];
+    assert_eq!(count_sequence(constructor_tokens, &["fn"]), 3);
+    assert!(function_has_visibility(constructor_tokens, "new"));
+    for safe_getter in ["preparation_config", "prepared_client_routes"] {
+        assert!(function_has_visibility(constructor_tokens, safe_getter));
+    }
+    let settlement_position = token_sequence_position(
+        &constructor_tokens,
+        &["let", "settlement", "=", "capabilities"],
+    )
+    .expect("constructor must prepare declared settlement identity");
+    let fee_provider_position = token_sequence_position(
+        &constructor_tokens,
+        &["let", "fee_provider", "=", "resolve_fee_provider", "("],
+    )
+    .expect("constructor must prepare the execution fee provider");
+    assert!(
+        settlement_position < fee_provider_position,
+        "settlement identity must fail closed before fee-provider construction"
+    );
+    assert_eq!(
+        count_identifier(&source_tokens, "too_many_arguments"),
+        0,
+        "strategy registration must not suppress too-many-arguments under any attribute spelling"
+    );
+    assert_eq!(
+        count_sequence(&source_tokens, &["fn", "binding_message", "("]),
+        0,
+        "strategy registration must not retain an unused context error wrapper"
+    );
+
+    let assembly_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "fn", "assemble_strategy_build_context"],
+    )
+    .expect("strategy assembly should remain inspectable");
+    for required_consumption in [
+        vec!["context", ".", "execution_venue"],
+        vec!["context", ".", "fee_provider", ".", "clone", "("],
+        vec!["settlement_resources_for_context", "(", "context", ")"],
+    ] {
+        assert_eq!(
+            count_sequence(&assembly_tokens, &required_consumption),
+            1,
+            "strategy assembly must consume each cached resource exactly once"
+        );
+    }
+    for forbidden_resolution in [
+        "resolve_settlement_capability",
+        "execution_account_id",
+        "settlement_currency_for_execution_account",
+        "venue_for_client",
+        "resolve_fee_provider",
+    ] {
+        assert_eq!(
+            count_sequence(&assembly_tokens, &[forbidden_resolution, "("]),
+            0,
+            "strategy assembly must not repeat `{forbidden_resolution}`"
+        );
+    }
+
+    assert_eq!(
+        count_sequence(&source_tokens, &["fn", "resolve_strategy_client_routes"]),
+        1,
+        "configured client-route resolution must have one definition"
+    );
+    assert_eq!(
+        count_sequence(
+            &constructor_tokens,
+            &["resolve_strategy_client_routes", "("],
+        ),
+        1,
+        "registration preflight must resolve every configured client route exactly once"
+    );
+    assert_eq!(
+        count_sequence(&constructor_tokens, &["root", ".", "clients"]),
+        0,
+        "the context constructor must delegate all root client-map ownership to the route resolver"
+    );
+    let public_route_wrapper = item_body_tokens(
+        &source_tokens,
+        &["pub", "fn", "prepare_strategy_client_routes"],
+    )
+    .expect("the Backtester route wrapper should remain inspectable");
+    assert_eq!(
+        texts(public_route_wrapper),
+        vec![
+            "Ok",
+            "(",
+            "resolve_strategy_client_routes",
+            "(",
+            "loaded",
+            ",",
+            "strategy",
+            ")",
+            "?",
+            ".",
+            "prepared",
+            ")",
+        ],
+        "the public route wrapper must delegate directly to the single owning resolver"
+    );
+    assert_eq!(
+        count_sequence(&source_tokens, &["loaded", ".", "root", ".", "clients"],),
+        1,
+        "registration must have one loaded-root client-table traversal owner across the full module"
+    );
+    assert_eq!(
+        count_identifier(&source_tokens, "clients"),
+        3,
+        "registration must retain exactly the route resolver and two neutral validation accessors as client-table owners"
+    );
+    let client_route_resolver_tokens =
+        item_body_tokens(&source_tokens, &["fn", "resolve_strategy_client_routes"])
+            .expect("client-route resolver should remain inspectable");
+    assert_eq!(
+        count_sequence(
+            &client_route_resolver_tokens,
+            &["loaded", ".", "root", ".", "clients", ".", "get", "("],
+        ),
+        1,
+        "the owning resolver must perform one root-map operation for each deduplicated client identity"
+    );
+    let venue_accessor_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "(", "crate", ")", "fn", "venue_for_client"],
+    )
+    .expect("neutral venue accessor should remain inspectable");
+    assert_eq!(
+        texts(venue_accessor_tokens),
+        vec![
+            "root",
+            ".",
+            "clients",
+            ".",
+            "get",
+            "(",
+            "client_id",
+            ")",
+            ".",
+            "map",
+            "(",
+            "|",
+            "client",
+            "|",
+            "client",
+            ".",
+            "venue",
+            ")",
+        ],
+        "neutral venue access must remain a direct read of the sanctioned root client table"
+    );
+    let account_accessor_tokens = item_body_tokens(
+        &source_tokens,
+        &["pub", "(", "crate", ")", "fn", "execution_account_id"],
+    )
+    .expect("neutral execution-account accessor should remain inspectable");
+    assert_eq!(
+        texts(account_accessor_tokens),
+        vec![
+            "execution_account_id_from_client",
+            "(",
+            "root",
+            ".",
+            "clients",
+            ".",
+            "get",
+            "(",
+            "execution_client_id",
+            ")",
+            "?",
+            ")",
+        ],
+        "neutral execution-account access must remain a direct read of the sanctioned root client table"
+    );
+    assert_eq!(
+        count_sequence(&source_tokens, &["fn", "execution_venue_for_context"]),
+        0,
+        "strategy assembly must not retain a late venue lookup path"
+    );
+    let settlement_resource_header = item_header(
+        &source,
+        &source_tokens,
+        &["fn", "settlement_resources_for_context"],
+    )
+    .expect("settlement-resource signature should remain inspectable");
+    let compact_source = settlement_resource_header
+        .split_whitespace()
+        .collect::<String>();
+    assert!(
+        compact_source.contains(
+            "fnsettlement_resources_for_context<'a>(context:&'aStrategyRegistrationContext<'_>,)->Option<&'aStrategyRegistrationSettlementResources>"
+        ),
+        "settlement-resource output must borrow from the outer context reference"
+    );
+    assert_eq!(
+        count_sequence(&source_tokens, &["resolve_settlement_capability", "("]),
+        2,
+        "settlement capability resolution must have one definition and one constructor call"
+    );
+    let settlement_resolution_tokens =
+        item_body_tokens(&source_tokens, &["fn", "resolve_settlement_capability"])
+            .expect("settlement resolution should remain inspectable");
+    assert_eq!(
+        count_sequence(
+            &settlement_resolution_tokens,
+            &[
+                "execution_account_id_from_client",
+                "(",
+                "execution_client",
+                ")"
+            ],
+        ),
+        1,
+        "settlement resolution must consume the preflight-resolved execution client"
+    );
+    assert_eq!(
+        count_sequence(&settlement_resolution_tokens, &["root", ".", "clients"]),
+        0,
+        "settlement resolution must not repeat the execution-client lookup"
+    );
+
+    let providers = support::repo_text("src/bolt_v3_providers/mod.rs");
+    let provider_tokens = tokenize(&providers);
+    let fee_provider_tokens =
+        item_body_tokens(&provider_tokens, &["pub", "fn", "resolve_fee_provider"])
+            .expect("fee-provider resolution should remain inspectable");
+    assert_eq!(
+        count_sequence(&fee_provider_tokens, &["root", ".", "clients"]),
+        0
+    );
+    assert_eq!(
+        count_sequence(&fee_provider_tokens, &["client", ".", "venue"]),
+        0
+    );
+
+    let taker = support::repo_text("src/strategies/binary_oracle_edge_taker/archetype.rs");
+    let taker_tokens = tokenize(&taker);
+    let raw_taker_tokens = item_body_tokens(&taker_tokens, &["pub", "fn", "raw_taker_config"])
+        .expect("raw taker config should remain inspectable");
+    for forbidden_client_lookup in [vec!["venue_for_client", "("], vec!["root", ".", "clients"]] {
+        assert_eq!(
+            count_sequence(&raw_taker_tokens, &forbidden_client_lookup),
+            0,
+            "raw taker config must consume prepared client routes"
+        );
+    }
+    let resolution_binding_tokens =
+        item_body_tokens(&taker_tokens, &["fn", "validate_resolution_data_binding"])
+            .expect("resolution-data validation should remain inspectable");
+    assert_eq!(
+        count_sequence(&resolution_binding_tokens, &["venue_for_client", "("]),
+        0
+    );
+    assert_eq!(
+        count_sequence(&resolution_binding_tokens, &["root", ".", "clients"]),
+        0
+    );
+
+    let complete = support::repo_text("src/strategies/complete_set_arbitrage/archetype.rs");
+    let complete_tokens = tokenize(&complete);
+    let raw_complete_tokens =
+        item_body_tokens(&complete_tokens, &["pub", "fn", "raw_complete_set_config"])
+            .expect("raw complete-set config should remain inspectable");
+    assert_eq!(
+        count_sequence(&raw_complete_tokens, &["venue_for_client", "("]),
+        0
+    );
+    assert_eq!(
+        count_sequence(&raw_complete_tokens, &["LoadedBoltV3Config"]),
+        0
+    );
+}
+
+#[test]
+fn strategy_registration_prepares_every_strategy_before_the_nt_commit_loop() {
+    let registration = support::repo_text("src/bolt_v3_strategy_registration.rs");
+    let registration_tokens = tokenize(&registration);
+    let prepared_struct_tokens = item_body_tokens(
+        &registration_tokens,
+        &["pub", "struct", "PreparedStrategyRegistration"],
+    )
+    .expect("prepared strategy value should remain inspectable");
+    assert_eq!(
+        prepared_struct_tokens
+            .iter()
+            .filter(|token| token.text == ":")
+            .count(),
+        2
+    );
+    assert_field_type(
+        prepared_struct_tokens,
+        "strategy_id",
+        &["Option", "<", "StrategyId", ">"],
+    );
+    assert_field_type(
+        prepared_struct_tokens,
+        "strategy",
+        &["Box", "<", "dyn", "PreparedStrategyCommit", ">"],
+    );
+    let prepared_impl_tokens = item_body_tokens(
+        &registration_tokens,
+        &["impl", "PreparedStrategyRegistration"],
+    )
+    .expect("prepared strategy implementation should remain inspectable");
+    assert_eq!(
+        impl_body_tokens(&registration_tokens, "PreparedStrategyRegistration").len(),
+        1,
+        "the opaque prepared value must have one inherent impl and no trait-based escape surface"
+    );
+    assert_eq!(count_sequence(prepared_impl_tokens, &["fn"]), 3);
+    for expected_method in ["from_strategy", "prepare_registration", "commit"] {
+        assert_eq!(
+            count_sequence(prepared_impl_tokens, &["fn", expected_method]),
+            1
+        );
+    }
+    assert_eq!(
+        count_sequence(
+            prepared_impl_tokens,
+            &["pub", "(", "crate", ")", "fn", "from_strategy"],
+        ),
+        1,
+        "the registry-only constructor must remain crate-private rather than public"
+    );
+    for forbidden_visible_method in ["prepare_registration", "strategy_id", "commit"] {
+        assert!(
+            !function_has_visibility(prepared_impl_tokens, forbidden_visible_method),
+            "prepared strategies must expose no direct `{forbidden_visible_method}` method"
+        );
+    }
+    assert_eq!(
+        count_sequence(
+            &registration_tokens,
+            &["for", "PreparedStrategyRegistration"],
+        ),
+        0,
+        "a trait impl must not expose an alternate operation on the opaque prepared value"
+    );
+    for (primitive, expected_count) in [
+        ("add_strategy", 1),
+        ("prepare_registration", 5),
+        ("commit", 5),
+    ] {
+        assert_eq!(
+            count_identifier(&registration_tokens, primitive),
+            expected_count,
+            "registration primitive `{primitive}` must remain confined to its sealed trait, implementation, value, and coordinator call sites"
+        );
+    }
+    assert_eq!(
+        count_sequence(
+            &registration_tokens,
+            &["pub", "fn", "register_prepared_strategy_batch", "("],
+        ),
+        1
+    );
+    let binding_tokens = item_body_tokens(
+        &registration_tokens,
+        &["pub", "struct", "StrategyRuntimeBinding"],
+    )
+    .expect("runtime binding declaration should remain inspectable");
+    assert_eq!(count_sequence(&binding_tokens, &["pub", "prepare", ":"]), 1);
+    assert_eq!(
+        count_sequence(&binding_tokens, &["pub", "register", ":"]),
+        0
+    );
+    assert_eq!(count_sequence(&binding_tokens, &["LiveNode"]), 0);
+
+    let dispatcher_tokens = item_body_tokens(
+        &registration_tokens,
+        &[
+            "fn",
+            "register_bolt_v3_strategies_on_node_with_handle_registry",
+        ],
+    )
+    .expect("shared strategy dispatcher should remain inspectable");
+    let contexts_position =
+        token_sequence_position(&dispatcher_tokens, &["let", "contexts", "=", "loaded"])
+            .expect("all shared contexts must be collected first");
+    let prepared_position =
+        token_sequence_position(&dispatcher_tokens, &["let", "prepared", "=", "contexts"])
+            .expect("all concrete strategies must be prepared second");
+    let coordinator_position = token_sequence_position(
+        &dispatcher_tokens,
+        &["register_prepared_strategy_batch", "("],
+    )
+    .expect("the dispatcher must delegate to the sole batch coordinator");
+    assert!(contexts_position < prepared_position && prepared_position < coordinator_position);
+
+    let coordinator_tokens = item_body_tokens(
+        &registration_tokens,
+        &["pub", "fn", "register_prepared_strategy_batch"],
+    )
+    .expect("prepared batch coordinator should remain inspectable");
+    let identity_position = token_sequence_position(
+        &coordinator_tokens,
+        &[".", "prepare_registration", "(", "&", "trader", ")"],
+    )
+    .expect("all NT identities must be prepared before commit");
+    let commit_position =
+        token_sequence_position(&coordinator_tokens, &[".", "commit", "(", "trader", ")"])
+            .expect("the coordinator must have one final commit path");
+    assert!(identity_position < commit_position);
+
+    let commit_loop_tokens = item_body_tokens(
+        coordinator_tokens,
+        &[
+            "for",
+            "(",
+            "index",
+            ",",
+            "prepared_registration",
+            ")",
+            "in",
+            "prepared",
+            ".",
+            "into_iter",
+            "(",
+            ")",
+            ".",
+            "enumerate",
+            "(",
+            ")",
+        ],
+    )
+    .expect("final commit loop should remain inspectable");
+    assert_eq!(
+        texts(commit_loop_tokens),
+        vec![
+            "prepared_registration",
+            ".",
+            "commit",
+            "(",
+            "trader",
+            ")",
+            ".",
+            "map_err",
+            "(",
+            "|",
+            "error",
+            "|",
+            "PreparedStrategyBatchError",
+            "::",
+            "new",
+            "(",
+            "index",
+            ",",
+            "error",
+            ")",
+            ")",
+            "?",
+            ";",
+        ],
+        "the final commit loop must contain only the sealed one-use commit operation"
+    );
+    for forbidden_deferred_work in [
+        vec!["StrategyRegistrationContext", "::", "new", "("],
+        vec!["root", ".", "clients"],
+        vec!["raw_taker_config", "("],
+        vec!["production_strategy_registry", "("],
+        vec!["prepare_strategy", "("],
+        vec!["prepare_registration", "("],
+    ] {
+        assert_eq!(
+            count_sequence(&commit_loop_tokens, &forbidden_deferred_work),
+            0,
+            "NT commit loop must not defer repository preparation"
+        );
+    }
+
+    let registry = support::repo_text("src/strategies/registry.rs");
+    let registry_tokens = tokenize(&registry);
+    assert_eq!(
+        count_sequence(&registry_tokens, &["pub", "fn", "prepare_strategy"]),
+        1
+    );
+    for retired_identifier in ["BoxedStrategy", "RuntimeStrategy", "register_strategy"] {
+        assert_eq!(
+            count_identifier(&registry_tokens, retired_identifier),
+            0,
+            "strategy registry must not retain retired identifier `{retired_identifier}` under any visibility, generic, or re-export spelling"
+        );
+    }
+}
+
+#[test]
+fn backtester_production_registry_paths_use_the_shared_batch_coordinator() {
+    let runner = support::repo_text("crates/backtesting-vertical-slice/src/runner.rs");
+    let runner_tokens = tokenize(&runner);
+    let helper_tokens = item_body_tokens(
+        &runner_tokens,
+        &["fn", "register_manifest_binary_oracle_strategy"],
+    )
+    .expect("Backtester production-registry helper should remain inspectable");
+    assert_eq!(
+        count_sequence(helper_tokens, &[".", "prepare_strategy", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(helper_tokens, &["register_prepared_strategy_batch", "("]),
+        1
+    );
+
+    let dispatcher_tokens = item_body_tokens(&runner_tokens, &["fn", "add_manifest_strategy"])
+        .expect("Backtester strategy dispatcher should remain inspectable");
+    let edge_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_BINARY_ORACLE_EDGE_TAKER", "=", ">"],
+    )
+    .expect("Backtester edge-taker production-registry branch should remain inspectable");
+    assert_eq!(
+        count_sequence(edge_tokens, &[".", "prepare_strategy", "("]),
+        1
+    );
+    assert_eq!(
+        count_sequence(edge_tokens, &["register_prepared_strategy_batch", "("]),
+        1
+    );
+
+    let maker_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_BINARY_ORACLE_MAKER", "=", ">"],
+    )
+    .expect("Backtester maker production-registry branch should remain inspectable");
+    assert_eq!(
+        count_sequence(
+            maker_tokens,
+            &["register_manifest_binary_oracle_strategy", "("],
+        ),
+        1
+    );
+
+    let hurst_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_HURST_VPIN_DIRECTIONAL", "=", ">"],
+    )
+    .expect("Backtester Hurst branch should remain inspectable as an explicit exclusion");
+    let mechanical_tokens = item_body_tokens(
+        dispatcher_tokens,
+        &["STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE", "=", ">"],
+    )
+    .expect("Backtester mechanical branch should remain inspectable as an explicit exclusion");
+    assert_eq!(count_identifier(hurst_tokens, "add_strategy"), 1);
+    assert_eq!(count_identifier(mechanical_tokens, "add_strategy"), 1);
+
+    for production_registry_path in [helper_tokens, edge_tokens, maker_tokens] {
+        for forbidden_alternate_path in [
+            vec![".", "add_strategy", "("],
+            vec!["register_strategy", "("],
+            vec!["prepare_registration", "("],
+            vec![".", "commit", "("],
+        ] {
+            assert_eq!(
+                count_sequence(production_registry_path, &forbidden_alternate_path),
+                0,
+                "Backtester production-registry branches must not retain an alternate registration path"
+            );
+        }
+    }
+}
+
+#[test]
+fn strategy_registration_ownership_fences_cover_all_production_callers() {
+    for (relative, source) in rust_sources_under("src") {
+        let tokens = tokenize(&source);
+        let expected_from_strategy = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" | "src/strategies/registry.rs" => 1,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "from_strategy"),
+            expected_from_strategy,
+            "`from_strategy` must remain owned by the registration type and sole strategy registry producer: {relative}"
+        );
+
+        let expected_coordinator = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "register_prepared_strategy_batch"),
+            expected_coordinator,
+            "the shared batch coordinator acquired an unsanctioned production caller: {relative}"
+        );
+        let expected_add_strategy = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" => 1,
+            _ => 0,
+        };
+        let expected_prepare_registration = match relative.as_str() {
+            "src/bolt_v3_strategy_registration.rs" => 5,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "add_strategy"),
+            expected_add_strategy,
+            "direct NT strategy mutation acquired an unsanctioned production owner: {relative}"
+        );
+        assert_eq!(
+            count_identifier(&tokens, "prepare_registration"),
+            expected_prepare_registration,
+            "NT identity preparation acquired an unsanctioned production owner: {relative}"
+        );
+        assert_eq!(
+            count_identifier(&tokens, "register_strategy"),
+            0,
+            "retired direct registration identifier returned in production source: {relative}"
+        );
+    }
+
+    for (relative, source) in rust_sources_under("crates/backtesting-vertical-slice/src") {
+        let tokens = tokenize(&source);
+        assert_eq!(
+            count_identifier(&tokens, "from_strategy"),
+            0,
+            "Backtester source must obtain opaque prepared values only through the registry: {relative}"
+        );
+        let expected_coordinator = match relative.as_str() {
+            "crates/backtesting-vertical-slice/src/runner.rs" => 3,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "register_prepared_strategy_batch"),
+            expected_coordinator,
+            "the shared batch coordinator acquired an unsanctioned Backtester caller: {relative}"
+        );
+        let expected_add_strategy = match relative.as_str() {
+            "crates/backtesting-vertical-slice/src/runner.rs" => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            count_identifier(&tokens, "add_strategy"),
+            expected_add_strategy,
+            "Backtester direct registration must remain limited to the two explicitly excluded non-registry branches: {relative}"
+        );
+        for retired_identifier in ["register_strategy", "prepare_registration"] {
+            assert_eq!(
+                count_identifier(&tokens, retired_identifier),
+                0,
+                "Backtester production source retained registration primitive `{retired_identifier}` in {relative}"
+            );
+        }
+    }
+}
+
+#[test]
+fn strategy_registration_fences_ignore_comment_and_string_decoys() {
+    let tokens = tokenize(
+        r#"
+        // pub fn register_strategy( prepare_registration( commit(
+        const DECOY: &str = "pub fn register_strategy prepare_registration commit";
+        fn visible() { register_prepared_strategy_batch(); }
+        "#,
+    );
+    assert_eq!(
+        count_sequence(&tokens, &["pub", "fn", "register_strategy"]),
+        0
+    );
+    assert_eq!(count_sequence(&tokens, &["prepare_registration", "("]), 0);
+    assert_eq!(count_sequence(&tokens, &["commit", "("]), 0);
+    assert_eq!(
+        count_sequence(&tokens, &["register_prepared_strategy_batch", "("]),
+        1
+    );
+
+    for visible_field in [
+        "pub execution_venue: Venue",
+        "pub(crate) execution_venue: Venue",
+        "pub(super) execution_venue: Venue",
+        "pub(in crate::strategy_bindings) execution_venue: Venue",
+    ] {
+        assert!(field_has_visibility(
+            &tokenize(visible_field),
+            "execution_venue"
+        ));
+    }
+    assert!(!field_has_visibility(
+        &tokenize("execution_venue: Venue"),
+        "execution_venue"
+    ));
+
+    let source = r#"
+        // pub fn watched() { forbidden_comment_path(); }
+        const DECOY: &str = "pub fn watched() { forbidden_string_path(); }";
+        pub fn watched() {
+            if ready() { nested_path(); }
+            visible_path();
+        }
+        fn after() { outside_path(); }
+    "#;
+    let tokens = tokenize(source);
+    let body = item_body_tokens(&tokens, &["pub", "fn", "watched"])
+        .expect("token body extraction must find the real function");
+    assert_eq!(count_sequence(body, &["visible_path", "("]), 1);
+    assert_eq!(count_sequence(body, &["nested_path", "("]), 1);
+    for excluded in [
+        "forbidden_comment_path",
+        "forbidden_string_path",
+        "outside_path",
+    ] {
+        assert_eq!(count_sequence(body, &[excluded, "("]), 0);
+    }
+    let header = item_header(source, &tokens, &["pub", "fn", "watched"])
+        .expect("token header extraction must find the real function");
+    assert!(header.trim_start().starts_with("pub fn watched()"));
+
+    let duplicate = tokenize("fn repeated() {} fn repeated() {}");
+    assert!(
+        item_body_tokens(&duplicate, &["fn", "repeated"]).is_none(),
+        "a duplicate real signature must fail closed instead of selecting a decoy"
+    );
+    let declaration = tokenize("fn declaration(); fn later() {}");
+    assert!(
+        item_body_tokens(&declaration, &["fn", "declaration"]).is_none(),
+        "a body-less declaration must not consume a later item's body"
+    );
+
+    let impl_variants = tokenize(
+        r#"
+        impl<'a> StrategyRegistrationContext<'a> { fn first() {} }
+        impl StrategyRegistrationContext<'_> { fn second() {} }
+        impl SomeTrait for StrategyRegistrationContext<'_> { fn trait_method() {} }
+        "#,
+    );
+    assert_eq!(
+        inherent_impl_body_tokens(&impl_variants, "StrategyRegistrationContext").len(),
+        2,
+        "all inherent lifetime/generic spellings must be collected while trait impls stay separate"
+    );
+    assert_eq!(
+        impl_body_tokens(&impl_variants, "StrategyRegistrationContext").len(),
+        3,
+        "trait and inherent impl spellings must all remain visible to the complete impl fence"
+    );
+
+    for evasion in [
+        "pub(crate) fn register_strategy<T>() {}",
+        "pub use alternate::register_strategy;",
+        "#[cfg_attr(test, allow(clippy::too_many_arguments))] fn mapped() {}",
+        "BacktestNode::add_strategy(&mut engine, strategy);",
+    ] {
+        let tokens = tokenize(evasion);
+        assert!(
+            ["register_strategy", "too_many_arguments", "add_strategy"]
+                .into_iter()
+                .any(|identifier| count_identifier(&tokens, identifier) == 1),
+            "identifier-level ownership fences must see `{evasion}`"
+        );
+    }
+}
+
+#[test]
 fn shared_strategy_assembly_fails_closed_when_execution_client_is_missing() {
     let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("bolt-v3 fixture should load");
     loaded.strategies[0].config.execution_client_id = "missing_execution".into();
     let resolved = fixture_resolved_secrets();
-    let context = assembly_context(
+    let error = try_assembly_context(
         &loaded,
         &resolved,
         StrategyRuntimeCapabilities {
             realized_volatility: true,
             settlement: false,
         },
-    );
-
-    let error = assemble_strategy_build_context(&context)
-        .err()
-        .expect("missing execution client must fail closed during shared assembly");
+    )
+    .err()
+    .expect("missing execution client must fail closed during registration preflight");
     assert!(
         error.to_string().contains(
             "execution_client_id `missing_execution` is not present in loaded clients for execution-venue resolution"

@@ -26,6 +26,14 @@ impl ApplicationResourceLedger {
             ),
         })
     }
+
+    fn for_test_workspace(workspace_bytes: usize) -> Result<Self, RiskClosureWorkspaceError> {
+        Ok(Self {
+            risk_closure_authority: Arc::new(RiskClosureWorkspaceAuthority::for_test_workspace(
+                workspace_bytes,
+            )?),
+        })
+    }
 }
 
 impl ApplicationResourceLedger {
@@ -69,6 +77,26 @@ impl RecoveryWorkspaceHandle {
     ) -> Result<RiskClosureWorkspaceLease, RiskClosureWorkspaceError> {
         self.authority.checkout_recovery(closure_identity)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_retained_recovery_lease(
+    workspace_bytes: usize,
+    identity: &str,
+) -> RiskClosureWorkspaceLease {
+    let ledger = ApplicationResourceLedger::for_test_workspace(workspace_bytes)
+        .expect("test application resource ledger must allocate");
+    let closure_identity = ClosureIdentity::new(identity).expect("test identity must be valid");
+    ledger
+        .new_risk_workspace_handle()
+        .reserve_new_risk_workspace()
+        .expect("test workspace must reserve")
+        .commit(closure_identity.clone())
+        .expect("test workspace must retain");
+    ledger
+        .recovery_workspace_handle()
+        .checkout_retained_recovery_workspace(&closure_identity)
+        .expect("test workspace must check out for recovery")
 }
 
 #[cfg(test)]

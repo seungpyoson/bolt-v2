@@ -140,9 +140,3 @@ review_paths = [
 job_timeout_minutes = 35
 primary_timeout_minutes = 20
 max_turns = 10
-
-[smoke]
-max_tokens = 16
-
-[smoke.workflow]
-job_timeout_minutes = 10

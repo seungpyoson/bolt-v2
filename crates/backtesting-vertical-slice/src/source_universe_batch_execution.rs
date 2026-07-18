@@ -637,7 +637,7 @@ fn validate_worker_durable_receipt(
                 == expected_worker_executable_sha256,
         "source-universe worker durable receipt execution attestation disagrees with the sealed process-isolated worker"
     );
-    Ok(receipt)
+    Ok(*receipt)
 }
 
 fn validate_worker_completion_absence(bytes: &[u8]) -> Result<()> {
@@ -1442,7 +1442,7 @@ enum SourceUniverseOperatorWorkerRequest {
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum SourceUniverseOperatorWorkerResponse {
     NoCurrentCompletion,
-    Completed { receipt: DurableRunReceipt },
+    Completed { receipt: Box<DurableRunReceipt> },
 }
 
 #[cfg(target_os = "linux")]
@@ -3581,7 +3581,9 @@ fn execute_source_universe_operator_worker_from_archive(
                 &work_budget,
             ))?;
             let receipt = outcome.into_receipt();
-            SourceUniverseOperatorWorkerResponse::Completed { receipt }
+            SourceUniverseOperatorWorkerResponse::Completed {
+                receipt: Box::new(receipt),
+            }
         }
         SourceUniverseOperatorWorkerRequestKind::AssertAbsent => {
             runtime.block_on(dispatcher.assert_current_completion_absent_guarded(
@@ -4030,22 +4032,35 @@ where
 /// Sole production batch entry: selected records execute in a pinned
 /// same-binary child and can complete only with an exact durable locator.
 /// Generic runner injection remains module-private for unit tests.
+pub struct SourceUniverseProcessIsolatedBatchInputs<'a> {
+    pub config: SourceUniverseBatchExecutionConfig,
+    pub request_root: PathBuf,
+    pub worker_termination_grace_seconds: u64,
+    pub resource_limits: SourceUniverseBatchResourceLimits,
+    pub local_storage_policy: &'a SourceUniverseLocalStoragePolicy,
+    pub local_storage_lease: &'a SourceUniverseLocalStorageLease,
+    pub lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+}
+
 pub fn execute_source_universe_batch_process_isolated<F>(
     batch_id: &str,
     launch_artifacts: &SourceUniverseBatchLaunchArtifacts,
     output_dir: &Path,
-    config: SourceUniverseBatchExecutionConfig,
     fetcher_factory: impl Fn() -> Result<F> + Sync,
-    request_root: PathBuf,
-    worker_termination_grace_seconds: u64,
-    resource_limits: SourceUniverseBatchResourceLimits,
-    local_storage_policy: &SourceUniverseLocalStoragePolicy,
-    local_storage_lease: &SourceUniverseLocalStorageLease,
-    lifecycle_cleanup_limits: SourceUniverseLifecycleCleanupLimits,
+    inputs: SourceUniverseProcessIsolatedBatchInputs<'_>,
 ) -> Result<SourceUniversePublishedBatchExecution>
 where
     F: SourceUniverseObjectFetcher,
 {
+    let SourceUniverseProcessIsolatedBatchInputs {
+        config,
+        request_root,
+        worker_termination_grace_seconds,
+        resource_limits,
+        local_storage_policy,
+        local_storage_lease,
+        lifecycle_cleanup_limits,
+    } = inputs;
     validate_process_isolated_batch_selection(config.record_limit, config.max_concurrent_records)?;
     let max_concurrent_records = config
         .max_concurrent_records
@@ -4796,7 +4811,7 @@ pub(crate) fn preflight_selected_source_universe_controls(
         );
         let preflight = (|| {
             let prospective_output_dir = resolve_selected_control_preflight_output_component(
-                &preflight_output_root,
+                preflight_output_root,
                 &record.operator_run_id,
             )?;
             verify_pack_control_artifacts(PackControlVerificationInput {

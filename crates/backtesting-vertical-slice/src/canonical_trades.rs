@@ -5452,16 +5452,18 @@ seller_side_values = ["Sell"]
                 > individual_limit,
             "fixture must fit each allocation separately but not their combined peak"
         );
-        let guard = OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(
-            BackfillExecutionWorkBudget {
-                max_source_rows: u64::MAX,
-                max_decoded_bytes: u64::try_from(individual_limit)
-                    .expect("individual limit fits u64"),
-                max_projected_row_groups: u64::MAX,
-                max_wall_seconds: 60,
-                require_object_selection_metadata: false,
-            },
-        ))
+        let guard = OperatorWorkBudgetGuard::new(
+            crate::operator_work_budget::OperatorWorkBudget::Backfill(
+                crate::backfill_execution_plan::BackfillExecutionWorkBudget {
+                    max_source_rows: u64::MAX,
+                    max_decoded_bytes: u64::try_from(individual_limit)
+                        .expect("individual limit fits u64"),
+                    max_projected_row_groups: u64::MAX,
+                    max_wall_seconds: 60,
+                    require_object_selection_metadata: false,
+                },
+            ),
+        )
         .expect("guard");
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("trades.parquet");

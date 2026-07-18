@@ -514,11 +514,11 @@ mod tests {
     #[test]
     fn tier1_binance_source_universe_scope_matches_gitignore_glob() {
         let accepted = format!(
-            "{TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX}binance-data-vision-trades-source-universe.json"
+            "{TIER1_DECLARED_SOURCE_UNIVERSE_PREFIX}binance-data-vision-trades-source-universe.json"
         );
-        let rejected_direct_json = format!("{TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX}metadata.json");
+        let rejected_direct_json = format!("{TIER1_DECLARED_SOURCE_UNIVERSE_PREFIX}metadata.json");
         let rejected_nested = format!(
-            "{TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX}nested/binance-data-vision-trades-source-universe.json"
+            "{TIER1_DECLARED_SOURCE_UNIVERSE_PREFIX}nested/binance-data-vision-trades-source-universe.json"
         );
 
         assert!(is_tier1_evicted_reference_fixture_path(&accepted));

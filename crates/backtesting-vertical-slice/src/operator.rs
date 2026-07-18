@@ -24,9 +24,8 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
-use futures_util::StreamExt;
 use nautilus_backtest::result::BacktestResult;
-use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3};
+use object_store::{ObjectStore, aws::AmazonS3};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -90,11 +89,10 @@ use crate::{
     hashing::is_lowercase_sha256_hex,
     nt_catalog_capability::{NtCatalogSsmCredentialResolver, NtCatalogSsmParameterRefs},
     operator_work_budget::{
-        CooperativeDeadlineReader, CooperativeDeadlineWriter, ExactSizedObjectBuffer,
-        OperatorWorkBudgetGuard, OperatorWorkBudgetStage, cooperative_stable_sort_by,
-        deserialize_json_with_budget, guarded_async_operation_outcome,
-        guarded_blocking_join_outcome, guarded_operation_outcome, read_file_with_budget,
-        serialize_json_to_vec_guarded, sha256_exact_sized_open_file_guarded,
+        CooperativeDeadlineReader, CooperativeDeadlineWriter, OperatorWorkBudgetGuard,
+        OperatorWorkBudgetStage, cooperative_stable_sort_by, deserialize_json_with_budget,
+        guarded_async_operation_outcome, guarded_blocking_join_outcome, guarded_operation_outcome,
+        read_file_with_budget, serialize_json_to_vec_guarded, sha256_exact_sized_open_file_guarded,
         sha256_hex_with_budget,
     },
     result_contract::{
@@ -2936,94 +2934,6 @@ async fn persist_durable_contract_artifacts(
     })
 }
 
-async fn read_pinned_durable_object_guarded(
-    store: &dyn ObjectStore,
-    path: &object_store::path::Path,
-    byte_len: u64,
-    version_id: &str,
-    e_tag: &str,
-    label: &str,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<Vec<u8>> {
-    let options = object_store::GetOptions {
-        version: Some(version_id.to_string()),
-        if_match: Some(e_tag.to_string()),
-        ..object_store::GetOptions::default()
-    };
-    let result = guarded_async_operation_outcome(
-        work_budget,
-        OperatorWorkBudgetStage::ObjectVerification,
-        store.get_opts(path, options),
-    )
-    .await?
-    .with_context(|| format!("get exact version {} of {label} at {}", version_id, path))?;
-    ensure!(
-        result.meta.location == *path
-            && result.meta.size == byte_len
-            && result.range.start == 0
-            && result.range.end == byte_len
-            && result.meta.version.as_deref() == Some(version_id),
-        "{label} exact-version response metadata mismatch"
-    );
-    ensure!(
-        result.meta.e_tag.as_deref() == Some(e_tag),
-        "{label} exact-version ETag mismatch"
-    );
-    let mut output = ExactSizedObjectBuffer::new(byte_len)?;
-    let mut stream = result.into_stream();
-    loop {
-        let chunk = guarded_async_operation_outcome(
-            work_budget,
-            OperatorWorkBudgetStage::ObjectVerification,
-            async { stream.next().await.transpose() },
-        )
-        .await?
-        .with_context(|| format!("stream exact-version {label}"))?;
-        let Some(chunk) = chunk else { break };
-        output.push(
-            &chunk,
-            work_budget,
-            OperatorWorkBudgetStage::ObjectVerification,
-        )?;
-    }
-    output.finish(work_budget, OperatorWorkBudgetStage::ObjectVerification)
-}
-
-async fn read_exact_durable_object_guarded(
-    store: &dyn ObjectStore,
-    artifact_root: &ResolvedArtifactRoot,
-    identity: &DurableObjectVersionIdentity,
-    label: &str,
-    work_budget: &OperatorWorkBudgetGuard,
-) -> Result<Vec<u8>> {
-    identity.validate(label)?;
-    ensure!(
-        identity.byte_len <= artifact_root.max_final_object_bytes(),
-        "{label} exceeds artifact_store.max_final_object_bytes"
-    );
-    let path = artifact_root.object_path_for_uri(&identity.uri)?;
-    let bytes = read_pinned_durable_object_guarded(
-        store,
-        &path,
-        identity.byte_len,
-        &identity.version_id,
-        &identity.e_tag,
-        label,
-        work_budget,
-    )
-    .await?;
-    let actual_sha256 = sha256_hex_with_budget(
-        &bytes,
-        work_budget,
-        OperatorWorkBudgetStage::ObjectVerification,
-    )?;
-    ensure!(
-        actual_sha256 == identity.sha256,
-        "{label} exact-version SHA-256 mismatch"
-    );
-    Ok(bytes)
-}
-
 /// Require the deterministic completion key to be absent before execution.
 /// A genuine object-store `NotFound` is the sole success result. Any present
 /// object or other HEAD outcome fails closed without reading terminal bytes.
@@ -3678,14 +3588,6 @@ fn read_json_artifact_guarded<T: DeserializeOwned>(
         .with_context(|| format!("parse {}", path.display()))
 }
 
-fn run_budgeted_stage<T>(
-    work_budget: &OperatorWorkBudgetGuard,
-    stage: OperatorWorkBudgetStage,
-    operation: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    crate::operator_work_budget::guarded_operation_outcome(work_budget, stage, operation)?
-}
-
 /// Run the vertical slice from a parsed [`RunSpec`] and the raw bytes
 /// of the accepted object, writing artifacts under `output_dir`.
 ///
@@ -4221,11 +4123,13 @@ impl DurableRunDispatcher {
             spec,
             object_bytes,
             output_dir,
-            &self.store,
-            &self.versioning_enabled,
-            registry,
-            execution_attestation,
-            work_budget,
+            DurableRunExecutionContext {
+                store: &self.store,
+                versioning_enabled: &self.versioning_enabled,
+                registry,
+                execution_attestation,
+                work_budget,
+            },
         )
         .await
     }
@@ -4283,13 +4187,23 @@ pub(crate) async fn run_from_run_spec_with_artifact_store_guarded(
         spec,
         object_bytes,
         output_dir,
-        store,
-        versioning_enabled,
-        &registry,
-        execution_attestation,
-        work_budget,
+        DurableRunExecutionContext {
+            store,
+            versioning_enabled,
+            registry: &registry,
+            execution_attestation,
+            work_budget,
+        },
     )
     .await
+}
+
+struct DurableRunExecutionContext<'a> {
+    store: &'a dyn ObjectStore,
+    versioning_enabled: &'a BucketVersioningEnabled,
+    registry: &'a VerifiedSourceBindingRegistry,
+    execution_attestation: DurableExecutionAttestation,
+    work_budget: &'a OperatorWorkBudgetGuard,
 }
 
 /// Guarded durable-catalog execution using a registry already pinned by the
@@ -4299,12 +4213,15 @@ async fn run_from_run_spec_with_verified_registry_guarded(
     spec: &RunSpec,
     object_bytes: Vec<u8>,
     output_dir: &Path,
-    store: &dyn ObjectStore,
-    versioning_enabled: &BucketVersioningEnabled,
-    registry: &VerifiedSourceBindingRegistry,
-    execution_attestation: DurableExecutionAttestation,
-    work_budget: &OperatorWorkBudgetGuard,
+    context: DurableRunExecutionContext<'_>,
 ) -> Result<DurableRunOutcome> {
+    let DurableRunExecutionContext {
+        store,
+        versioning_enabled,
+        registry,
+        execution_attestation,
+        work_budget,
+    } = context;
     execution_attestation
         .validate()
         .context("validate durable execution attestation before operator work")?;

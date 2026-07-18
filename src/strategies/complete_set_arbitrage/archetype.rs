@@ -5,7 +5,6 @@
 
 use std::collections::BTreeSet;
 
-use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
 use rust_decimal::Decimal;
 use toml::{Value, map::Map};
@@ -16,15 +15,12 @@ use crate::{
         COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock, CompleteSetSubmitMode,
         submit_mode_contract,
     },
-    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
-        StrategyRuntimeCapabilities, assemble_strategy_build_context, venue_for_client,
+        BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyRegistrationContext,
+        StrategyRuntimeBinding, StrategyRuntimeCapabilities, assemble_strategy_build_context,
     },
-    strategies::{
-        complete_set_arbitrage::CompleteSetArbitrageBuilder, production_strategy_registry,
-        registry::StrategyBuilder,
-    },
+    strategies::production_strategy_registry,
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
@@ -32,12 +28,12 @@ pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
 /// Complete-set runtime binding assembled by the strategy-layer archetype module.
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
-    strategy_kind: CompleteSetArbitrageBuilder::kind,
+    strategy_kind: KEY,
     capabilities: StrategyRuntimeCapabilities {
         realized_volatility: true,
         settlement: false,
     },
-    register: register_runtime_strategy,
+    prepare: prepare_runtime_strategy,
 };
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
@@ -202,10 +198,6 @@ pub enum CompleteSetArbitrageRuntimeConfigError {
         strategy_instance_id: String,
         message: String,
     },
-    Client {
-        strategy_instance_id: String,
-        message: String,
-    },
     Numeric {
         strategy_instance_id: String,
         field: &'static str,
@@ -234,13 +226,6 @@ impl std::fmt::Display for CompleteSetArbitrageRuntimeConfigError {
                 f,
                 "strategies.{strategy_instance_id} parameters are invalid: {message}"
             ),
-            Self::Client {
-                strategy_instance_id,
-                message,
-            } => write!(
-                f,
-                "strategies.{strategy_instance_id} client binding is invalid: {message}"
-            ),
             Self::Numeric {
                 strategy_instance_id,
                 field,
@@ -265,7 +250,6 @@ impl std::error::Error for CompleteSetArbitrageRuntimeConfigError {}
 
 pub fn raw_complete_set_config(
     strategy: &LoadedStrategy,
-    loaded: &LoadedBoltV3Config,
 ) -> Result<Value, CompleteSetArbitrageRuntimeConfigError> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(CompleteSetArbitrageRuntimeConfigError::WrongArchetype {
@@ -273,16 +257,6 @@ pub fn raw_complete_set_config(
             actual: strategy.config.strategy_archetype.as_str().to_string(),
         });
     }
-
-    venue_for_client(&loaded.root, strategy.config.execution_client_id.as_str()).ok_or_else(
-        || CompleteSetArbitrageRuntimeConfigError::Client {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "execution_client_id `{}` is not present in loaded clients",
-                strategy.config.execution_client_id
-            ),
-        },
-    )?;
 
     let parameters = parse_parameters(&strategy.config.parameters).map_err(|message| {
         CompleteSetArbitrageRuntimeConfigError::Parameters {
@@ -399,22 +373,16 @@ pub fn raw_complete_set_config(
     Ok(Value::Table(table))
 }
 
-pub fn register_runtime_strategy(
-    node: &mut LiveNode,
+pub fn prepare_runtime_strategy(
     context: StrategyRegistrationContext<'_>,
-) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
-    let raw = raw_complete_set_config(context.strategy, context.loaded)
+) -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError> {
+    let raw = raw_complete_set_config(context.strategy)
         .map_err(|error| binding_message(&context, error.to_string()))?;
     let build_context = assemble_strategy_build_context(&context)?;
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
-        .register_strategy(
-            context.strategy_kind,
-            &raw,
-            &build_context,
-            node.kernel().trader(),
-        )
+        .prepare_strategy(context.strategy_kind, &raw, &build_context)
         .map_err(|error| binding_message(&context, error.to_string()))
 }
 

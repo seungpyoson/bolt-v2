@@ -654,6 +654,22 @@ fn stat_kind(stat: &libc::stat) -> libc::mode_t {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn integer_to_u64<T>(value: T, label: &str) -> Result<u64>
+where
+    u64: TryFrom<T>,
+{
+    u64::try_from(value).map_err(|_| anyhow::anyhow!("{label} does not fit u64"))
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn integer_to_u32<T>(value: T, label: &str) -> Result<u32>
+where
+    u32: TryFrom<T>,
+{
+    u32::try_from(value).map_err(|_| anyhow::anyhow!("{label} does not fit u32"))
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 fn allocated_bytes(stat: &libc::stat) -> Result<u64> {
     let blocks = u64::try_from(stat.st_blocks).context("allocated block count is negative")?;
     blocks
@@ -684,12 +700,14 @@ fn ensure_handle_identity(stat: &libc::stat, file: &File, role: &str) -> Result<
     let metadata = file
         .metadata()
         .with_context(|| format!("stat opened {role}"))?;
-    let expected_device = u64::try_from(stat.st_dev).context("entry device is negative")?;
-    let expected_inode = u64::try_from(stat.st_ino).context("entry inode is negative")?;
+    let expected_device = integer_to_u64(stat.st_dev, "entry device")?;
+    let expected_inode = integer_to_u64(stat.st_ino, "entry inode")?;
+    let file_type_mask = integer_to_u32(libc::S_IFMT, "file-type mask")?;
+    let expected_kind = integer_to_u32(stat_kind(stat), "entry file type")?;
     ensure!(
         metadata.dev() == expected_device
             && metadata.ino() == expected_inode
-            && metadata.mode() & u32::from(libc::S_IFMT) == u32::from(stat_kind(stat)),
+            && metadata.mode() & file_type_mask == expected_kind,
         "{role} identity changed while open"
     );
     Ok(())
@@ -706,8 +724,8 @@ fn scan_allocated_bytes(
     let metadata = directory
         .metadata()
         .with_context(|| format!("stat scanned directory {}", display_path.display()))?;
-    let mut total = u64::try_from(metadata.blocks())
-        .context("directory allocated block count is negative")?
+    let mut total = metadata
+        .blocks()
         .checked_mul(512)
         .context("directory allocated byte count overflow")?;
     for_each_directory_component(directory, |name| {
@@ -726,7 +744,9 @@ fn scan_allocated_bytes(
                 ensure_handle_identity(&stat, &child, "local-storage scan directory")?;
                 let child_total =
                     scan_allocated_bytes(&child, &display_path.join(name), entry_depth, progress)?;
-                let child_root_bytes = u64::try_from(child.metadata()?.blocks())?
+                let child_root_bytes = child
+                    .metadata()?
+                    .blocks()
                     .checked_mul(512)
                     .context("child directory allocated byte count overflow")?;
                 total = total
@@ -1589,8 +1609,8 @@ fn available_filesystem_bytes(path: &Path) -> Result<u64> {
     }
     // SAFETY: statvfs initialized the structure on success.
     let stat = unsafe { stat.assume_init() };
-    u64::from(stat.f_bavail)
-        .checked_mul(u64::from(stat.f_frsize))
+    integer_to_u64(stat.f_bavail, "available filesystem blocks")?
+        .checked_mul(integer_to_u64(stat.f_frsize, "filesystem fragment size")?)
         .context("local-storage available byte count overflow")
 }
 

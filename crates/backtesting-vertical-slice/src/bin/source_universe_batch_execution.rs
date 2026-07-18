@@ -9,9 +9,9 @@ use backtesting_vertical_slice::source_universe_batch_execution::{
     SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT, SourceUniverseBatchArtifactPin,
     SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReportStatus,
     SourceUniverseBatchLaunchArtifacts, SourceUniverseBatchResourceLimits,
-    SourceUniverseObjectFetcher, VerifiedSourceObject, WriteThroughSourceUniverseObjectFetcher,
-    execute_source_universe_batch_process_isolated, execute_source_universe_operator_worker,
-    validate_process_isolated_batch_selection,
+    SourceUniverseObjectFetcher, SourceUniverseProcessIsolatedBatchInputs, VerifiedSourceObject,
+    WriteThroughSourceUniverseObjectFetcher, execute_source_universe_batch_process_isolated,
+    execute_source_universe_operator_worker, validate_process_isolated_batch_selection,
 };
 use backtesting_vertical_slice::source_universe_batch_launch::{
     SourceUniverseBatchLaunchSpec, SourceUniverseBatchTransportSpec,
@@ -204,19 +204,21 @@ fn run_batch(spec_path: &Path, spec: SourceUniverseBatchLaunchSpec) -> Result<()
         &batch_id,
         &launch_artifacts,
         &output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence,
-            record_limit,
-            continue_on_error,
-            max_concurrent_records: Some(max_concurrent_records),
-        },
         fetcher_factory,
-        request_root,
-        worker_termination_grace_seconds,
-        resource_limits,
-        &local_storage,
-        &local_storage_lease,
-        local_storage.lifecycle_cleanup_limits(),
+        SourceUniverseProcessIsolatedBatchInputs {
+            config: SourceUniverseBatchExecutionConfig {
+                start_sequence,
+                record_limit,
+                continue_on_error,
+                max_concurrent_records: Some(max_concurrent_records),
+            },
+            request_root,
+            worker_termination_grace_seconds,
+            resource_limits,
+            local_storage_policy: &local_storage,
+            local_storage_lease: &local_storage_lease,
+            lifecycle_cleanup_limits: local_storage.lifecycle_cleanup_limits(),
+        },
     )?;
     let report = published.report;
     let artifact = published.artifact;

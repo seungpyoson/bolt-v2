@@ -89,8 +89,8 @@ fn user_fees_with_discounts(
                     "tiers":{{
                         "vip":[],
                         "mm":[
-                            {{"makerFractionCutoff":"0.005","add":"-0.00001"}},
-                            {{"makerFractionCutoff":"0.01","add":"0"}}
+                            {{"makerFractionCutoff":"0.005","add":"0"}},
+                            {{"makerFractionCutoff":"0.01","add":"-0.00001"}}
                         ]
                     }},
                     "referralDiscount":"0.04",

@@ -403,34 +403,69 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
     let schedule = &wire.fee_schedule;
     let unit_interval = |value: Decimal| (Decimal::ZERO..=Decimal::ONE).contains(&value);
     let staking_scale = Decimal::ONE - wire.active_staking_discount.discount;
+    let Some((user_volume, user_maker_volume, exchange_volume)) =
+        wire.daily_user_vlm.iter().try_fold(
+            (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO),
+            |(user_total, maker_total, exchange_total), volume| {
+                Some((
+                    user_total
+                        .checked_add(volume.user_cross)?
+                        .checked_add(volume.user_add)?,
+                    maker_total.checked_add(volume.user_add)?,
+                    exchange_total.checked_add(volume.exchange)?,
+                ))
+            },
+        )
+    else {
+        return false;
+    };
+    let eligible_vip = schedule
+        .tiers
+        .vip
+        .iter()
+        .filter(|tier| tier.ntl_cutoff <= user_volume)
+        .max_by_key(|tier| tier.ntl_cutoff);
+    let selected_perp_taker = eligible_vip.map_or(schedule.cross, |tier| tier.cross);
+    let selected_perp_maker = eligible_vip.map_or(schedule.add, |tier| tier.add);
+    let selected_spot_taker = eligible_vip.map_or(schedule.spot_cross, |tier| tier.spot_cross);
+    let selected_spot_maker = eligible_vip.map_or(schedule.spot_add, |tier| tier.spot_add);
+    let maker_fraction = if exchange_volume.is_zero() {
+        None
+    } else {
+        user_maker_volume.checked_div(exchange_volume)
+    };
+    let eligible_maker_rebate = maker_fraction.and_then(|fraction| {
+        schedule
+            .tiers
+            .mm
+            .iter()
+            .filter(|tier| tier.maker_fraction_cutoff <= fraction)
+            .max_by_key(|tier| tier.maker_fraction_cutoff)
+    });
     let nonnegative_rates = schedule.cross >= Decimal::ZERO
         && schedule.add >= Decimal::ZERO
         && schedule.spot_cross >= Decimal::ZERO
         && schedule.spot_add >= Decimal::ZERO
         && wire.user_cross_rate >= Decimal::ZERO
         && wire.user_spot_cross_rate >= Decimal::ZERO;
-    let perp_taker_rates =
-        std::iter::once(schedule.cross).chain(schedule.tiers.vip.iter().map(|tier| tier.cross));
-    let perp_maker_rates = std::iter::once(schedule.add)
-        .chain(schedule.tiers.vip.iter().map(|tier| tier.add))
-        .chain(schedule.tiers.mm.iter().map(|tier| tier.add));
-    let spot_taker_rates = std::iter::once(schedule.spot_cross)
-        .chain(schedule.tiers.vip.iter().map(|tier| tier.spot_cross));
-    let spot_maker_rates = std::iter::once(schedule.spot_add)
-        .chain(schedule.tiers.vip.iter().map(|tier| tier.spot_add));
-    let effective_rates_consistent =
-        effective_rate_matches_schedule(wire.user_cross_rate, perp_taker_rates, staking_scale)
-            && effective_rate_matches_schedule(wire.user_add_rate, perp_maker_rates, staking_scale)
-            && effective_rate_matches_schedule(
-                wire.user_spot_cross_rate,
-                spot_taker_rates,
-                staking_scale,
-            )
-            && effective_rate_matches_schedule(
-                wire.user_spot_add_rate,
-                spot_maker_rates,
-                staking_scale,
-            );
+    let effective_rates_consistent = effective_rate_matches_schedule(
+        wire.user_cross_rate,
+        std::iter::once(selected_perp_taker),
+        staking_scale,
+    ) && effective_rate_matches_schedule(
+        wire.user_add_rate,
+        std::iter::once(selected_perp_maker)
+            .chain(eligible_maker_rebate.into_iter().map(|tier| tier.add)),
+        staking_scale,
+    ) && effective_rate_matches_schedule(
+        wire.user_spot_cross_rate,
+        std::iter::once(selected_spot_taker),
+        staking_scale,
+    ) && effective_rate_matches_schedule(
+        wire.user_spot_add_rate,
+        std::iter::once(selected_spot_maker),
+        staking_scale,
+    );
     let tier_rates_valid = schedule.tiers.vip.iter().all(|tier| {
         tier.ntl_cutoff >= Decimal::ZERO
             && tier.cross >= Decimal::ZERO

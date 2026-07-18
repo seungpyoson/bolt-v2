@@ -777,6 +777,11 @@ impl PolymarketEconomicsAdapter {
             snapshot.taker_base_fee,
         ) {
             (None, None, None) => PlatformQuotePlan::FeeFree,
+            (Some(_), Some(maker_base_fee), Some(taker_base_fee))
+                if maker_base_fee != taker_base_fee =>
+            {
+                return Err(PolymarketEconomicsError::InvalidMarketInfo);
+            }
             (Some(descriptor), Some(_), Some(_)) if !matches!(descriptor.e, 1 | 2) => {
                 return Err(PolymarketEconomicsError::UnsupportedExponent);
             }

@@ -821,6 +821,10 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
         admission.economics_admission.reservation_notional(),
         "submit admission must reserve the sealed base notional plus economics debits"
     );
+    assert!(
+        admission.notional > raw_quote_quantity,
+        "the fixture must prove the sealed economics debit is added to the base reservation"
+    );
 }
 
 #[test]
@@ -951,6 +955,10 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
         admission.notional,
         admission.economics_admission.reservation_notional(),
         "submit admission must reserve the sealed base notional plus economics debits"
+    );
+    assert!(
+        admission.notional > raw_quote_quantity,
+        "the fixture must prove the sealed economics debit is added to the base reservation"
     );
 }
 

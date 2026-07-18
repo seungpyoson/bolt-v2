@@ -105,6 +105,55 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = {outcome_settlement_poll_secs}
 
+[execution.economics]
+economics_slice = "quote_only"
+routing_attachment_policy = "forbidden"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+refresh_max_concurrency = 8
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+carry_surfaces = []
+
+[execution.economics.sources]
+account_fees = "user_fees"
+builder_approval = "max_builder_fee"
+funding = "user_funding_stream_and_history"
+
+[execution.economics.formula]
+stable_pair_scale = "0.2"
+growth_mode_scale = "0.1"
+hip3_scale_threshold = "1"
+hip3_below_threshold_base = "1"
+hip3_at_or_above_threshold_multiplier = "2"
+hip3_at_or_above_deployer_share = "0.5"
+
+[execution.economics.quote_components.protocol]
+component_id = "hyperliquid-protocol-execution"
+formula_id = "hyperliquid-effective-account-rate"
+rate_factor_id = "hyperliquid-live-effective-rate"
+
+[execution.economics.quote_components.builder]
+component_id = "hyperliquid-builder-execution"
+formula_id = "hyperliquid-builder-notional-fee"
+rate_factor_id = "hyperliquid-live-builder-rate"
+
+[execution.economics.assets.settlement]
+native_unit = "USD"
+identity_kind = "currency"
+evidence_fixture_id = "hyperliquid-settlement-fixture"
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+product_metadata_source = "hyperliquid-meta"
+policy_version = 1
+
+[execution.economics.product_surface_policies]
+{surface} = "primary"
+
+[execution.economics.valuation.routes]
+
 [execution.live_submit.{surface}]
 approval_id = "hl-unproven-surface-approval"
 approval_artifact_path = "operator/hyperliquid-live-submit-approval.json"

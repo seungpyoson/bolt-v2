@@ -185,22 +185,16 @@ fn duplicate_disconnected_or_inactive_valuation_authority_fails_closed() {
 [valuation.routes.usdc]
 from_unit = "USDC"
 to_currency = "pUSD"
-valuation_policy = "top_of_book_midpoint"
-client_id = "fx-data"
-instrument_id = "USDC-pUSD"
-orientation = "base_to_quote"
-max_age_ms = 1000
-legs = []
+legs = [
+  { authority = "market_quote", from_unit = "USDC", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD", orientation = "base_to_quote", max_age_ms = 9000 },
+]
 
 [valuation.routes.usdc-duplicate]
 from_unit = "USDC"
 to_currency = "pUSD"
-valuation_policy = "top_of_book_midpoint"
-client_id = "fx-data"
-instrument_id = "USDC-pUSD-2"
-orientation = "base_to_quote"
-max_age_ms = 1000
-legs = []
+legs = [
+  { authority = "market_quote", from_unit = "USDC", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD-2", orientation = "base_to_quote", max_age_ms = 9000 },
+]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", routes);
     let config = parse(&source).unwrap();
@@ -222,11 +216,6 @@ fn non_identity_valuation_route_requires_connected_legs() {
 [valuation.routes.usdc]
 from_unit = "USDC"
 to_currency = "pUSD"
-valuation_policy = "top_of_book_midpoint"
-client_id = "fx-data"
-instrument_id = "USDC-pUSD"
-orientation = "base_to_quote"
-max_age_ms = 1000
 legs = []
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", route);
@@ -245,13 +234,8 @@ fn every_valuation_leg_requires_an_active_configured_source() {
 [valuation.routes.token]
 from_unit = "TOKEN"
 to_currency = "pUSD"
-valuation_policy = "top_of_book_midpoint"
-client_id = "fx-data"
-instrument_id = "TOKEN-pUSD"
-orientation = "base_to_quote"
-max_age_ms = 1000
 legs = [
-  { from_unit = "TOKEN", to_unit = "pUSD", client_id = "inactive-leg", instrument_id = "", orientation = "base_to_quote", max_age_ms = 1000 }
+  { authority = "market_quote", from_unit = "TOKEN", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "inactive-leg", instrument_id = "", orientation = "base_to_quote", max_age_ms = 9000 }
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", route);

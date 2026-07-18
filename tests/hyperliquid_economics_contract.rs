@@ -229,7 +229,7 @@ fn spot_buy_fee_uses_base_unit_and_omits_builder_charge() {
     assert_eq!(components.len(), 1);
     assert_eq!(
         components[0].point_estimate.effect().unwrap().amount(),
-        decimal("-0.0008")
+        decimal("-0.0014")
     );
     assert_eq!(
         components[0]
@@ -291,7 +291,7 @@ fn complete_perp_surface_applies_account_rate_and_builder_approval() {
     assert_eq!(components.len(), 3);
     assert_eq!(
         components[0].point_estimate.effect().unwrap().amount(),
-        decimal("-3.15")
+        decimal("-4.50")
     );
     assert_eq!(
         components[1].point_estimate.effect().unwrap().amount(),

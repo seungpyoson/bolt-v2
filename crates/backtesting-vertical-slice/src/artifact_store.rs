@@ -3585,6 +3585,24 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         Ok(())
     }
 
+    /// Create a capability-probe sentinel under the shared operator deadline.
+    /// Probe sentinels validate store behavior; unlike durable terminal
+    /// publications, they do not require the provider to return immutable
+    /// VersionId and ETag identity.
+    async fn put_create_probe_guarded(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        work_budget: &OperatorWorkBudgetGuard,
+    ) -> Result<()> {
+        guarded_async_operation_outcome(
+            work_budget,
+            OperatorWorkBudgetStage::Publish,
+            self.put_create(path, payload),
+        )
+        .await?
+    }
+
     /// Perform one strict create-only publication and accept only the direct
     /// response's complete immutable identity. No occupied object is read or
     /// reused, even when it contains identical bytes.
@@ -3653,7 +3671,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                 Ok((probe_uri, path, probe_id.as_bytes().to_vec()))
             },
         )??;
-        self.put_create_strict_guarded(&path, payload.clone(), work_budget)
+        self.put_create_probe_guarded(&path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe setup write {probe_uri}"))?;
 
@@ -3698,7 +3716,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                     ))
                 },
             )??;
-        self.put_create_strict_guarded(&copy_source_path, payload.clone(), work_budget)
+        self.put_create_probe_guarded(&copy_source_path, payload.clone(), work_budget)
             .await
             .with_context(|| format!("create-only probe copy source setup {copy_source_uri}"))?;
         self.copy_if_not_exists_strict(

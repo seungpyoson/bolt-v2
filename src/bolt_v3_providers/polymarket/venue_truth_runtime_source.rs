@@ -283,11 +283,7 @@ pub fn build_polymarket_venue_truth_snapshot(
 
     let mut positions_by_product_id = BTreeMap::new();
     for position in input.positions {
-        let size = Decimal::try_from(position.size).map_err(|_| {
-            PolymarketVenueTruthBuildError::InvalidPositionSize {
-                token_id: position.asset.clone(),
-            }
-        })?;
+        let size = position.size;
         if size < Decimal::ZERO {
             return Err(PolymarketVenueTruthBuildError::InvalidPositionSize {
                 token_id: position.asset,

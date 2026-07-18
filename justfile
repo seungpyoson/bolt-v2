@@ -72,10 +72,6 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
-verify-bolt-v3-poison-lock-fence: check-workspace
-    python3 scripts/test_verify_bolt_v3_poison_lock_fence.py
-    python3 scripts/verify_bolt_v3_poison_lock_fence.py
-
 verify-bolt-v3-no-exit-market-command: check-workspace
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
@@ -149,9 +145,6 @@ test-archive archive *args: check-workspace require-rust-verification-owner
 
 test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}
-
-test-archive-filtered-run archive extract_root filterset: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" --no-tests=fail -E {{quote(filterset)}}
 
 build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build

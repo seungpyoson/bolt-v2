@@ -10,6 +10,7 @@ use nautilus_common::{
 use nautilus_core::Params;
 use nautilus_model::{
     enums::OrderSide,
+    events::OrderFillVoided,
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
     instruments::InstrumentAny,
     orders::{Order, OrderAny, OrderList},
@@ -72,6 +73,16 @@ pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
         cancel_all_orders_type: type_name::<CancelAllOrders>(),
         modify_order_type: type_name::<ModifyOrder>(),
     }
+}
+
+/// Stops the runtime when the venue retracts a fill that Bolt has already
+/// incorporated into strategy-local exposure or basket state.
+///
+/// Reversal is not safe without a caller-bounded correction protocol. Silently
+/// accepting NT's default no-op would leave Bolt's state diverged from venue
+/// truth, so all registered strategy callbacks share this fail-closed boundary.
+pub(crate) fn fail_closed_on_order_fill_voided(event: &OrderFillVoided) -> ! {
+    panic!("order fill correction requires an explicit reversal protocol: {event:?}")
 }
 
 impl BoltV3OrderExecutionPolicy {
@@ -1066,11 +1077,14 @@ mod tests {
     use nautilus_core::Params;
     use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{AssetClass, OrderSide, OrderType, PositionSide, TimeInForce, TradingState},
-        events::{OrderCanceled, OrderEventAny},
+        enums::{
+            AssetClass, LiquiditySide, OrderSide, OrderType, PositionSide, TimeInForce,
+            TradingState,
+        },
+        events::{OrderCanceled, OrderEventAny, OrderFillVoided},
         identifiers::{
             AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol,
-            TraderId, VenueOrderId,
+            TradeId, TraderId, VenueOrderId,
         },
         instruments::{BinaryOption, InstrumentAny},
         orders::{LimitOrder, Order, OrderAny},
@@ -1084,9 +1098,39 @@ mod tests {
         BoltV3MakerOrderRuntime, BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink,
         BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3SubmitContext,
         BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
-        clamp_risk_reducing_exit_to_venue_position, route_kill_switch_flatten_command_with_sink,
-        route_maker_order_command_with_runtime,
+        clamp_risk_reducing_exit_to_venue_position, fail_closed_on_order_fill_voided,
+        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
+
+    #[test]
+    #[should_panic(expected = "order fill correction requires an explicit reversal protocol")]
+    fn order_fill_voided_correction_fails_closed() {
+        fail_closed_on_order_fill_voided(&OrderFillVoided::new(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("instrument-yes.VENUE-A"),
+            ClientOrderId::from("COID-VOIDED"),
+            VenueOrderId::from("venue-order-1"),
+            AccountId::from("ACCOUNT-001"),
+            Ustr::from("CORRECTION-001"),
+            TradeId::from("TRADE-001"),
+            Quantity::from("1"),
+            None,
+            OrderSide::Buy,
+            OrderType::Market,
+            Price::from("0.50"),
+            Currency::USD(),
+            LiquiditySide::Taker,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_u64),
+            UnixNanos::from(2_u64),
+            false,
+            false,
+        ));
+    }
     use crate::{
         bolt_v3_capital_admission::{
             CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,

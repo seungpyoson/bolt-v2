@@ -65,7 +65,7 @@ growth_shape = "tree"
 owner = "owned"
 native_policy = "yes"
 cleanup_mode = "toolchain_retention"
-retain_exact_names = ["1.96.0-aarch64-apple-darwin"]
+retain_exact_names = ["1.97.0-aarch64-apple-darwin"]
 remove_exact_names = []
 
 [preflight]

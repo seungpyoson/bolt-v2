@@ -15,7 +15,7 @@ use nautilus_model::{
     events::{OrderAccepted, OrderCancelRejected, OrderFilled},
     identifiers::{InstrumentId, StrategyId},
 };
-use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
+use nautilus_trading::{StrategyConfig, StrategyCore};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use toml::Value;
@@ -208,15 +208,15 @@ impl CompleteSetArbitrage {
     }
 }
 
-impl DataActor for CompleteSetArbitrage {
-    fn on_order_filled(&mut self, event: &OrderFilled) -> anyhow::Result<()> {
+impl DataActor for CompleteSetArbitrage {}
+
+crate::strategies::nautilus_strategy_with_fill_void_guard!(CompleteSetArbitrage, {
+    fn on_order_filled(&mut self, event: &OrderFilled) {
         self.event_forwarder
             .forward_order_filled(event)
-            .map_err(anyhow::Error::new)
+            .expect("complete-set fill event forwarding must succeed");
     }
-}
 
-nautilus_strategy!(CompleteSetArbitrage, {
     fn on_order_accepted(&mut self, event: OrderAccepted) {
         if let Err(error) = self.event_forwarder.forward_order_accepted(&event) {
             log::error!(
@@ -490,7 +490,7 @@ impl StrategyBuilder for CompleteSetArbitrageBuilder {
         }
     }
 
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy> {
+    fn build_typed(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy> {
         CompleteSetArbitrage::new(Self::parse_config(raw)?, context.clone())
     }
 }

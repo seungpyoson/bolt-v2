@@ -8,7 +8,7 @@ use aws_sdk_ssm::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::TradeTick,
+    data::{Data, TradeTick},
     enums::{AggressorSide, AssetClass},
     identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{BinaryOption, CryptoPerpetual, Instrument, InstrumentAny},
@@ -426,12 +426,19 @@ pub fn run_nt_catalog_s3_conformance_probe_guarded(
             .collect::<Vec<_>>())
     })?;
     let expected_trade_tick_count = trade_ticks.len();
+    let trade_data = run_guarded_nt_catalog_step(work_budget, || {
+        Ok(trade_ticks
+            .iter()
+            .cloned()
+            .map(Data::Trade)
+            .collect::<Vec<_>>())
+    })?;
     let mut catalog = run_guarded_nt_catalog_step(work_budget, || {
         ParquetDataCatalog::from_uri(&catalog_uri, Some(storage_options), None, None, None)
     })?;
     run_guarded_nt_catalog_step(work_budget, || catalog.write_instruments(instruments))?;
     run_guarded_nt_catalog_step(work_budget, || {
-        catalog.write_to_parquet(&trade_ticks, None, None, None)
+        catalog.write_data_enum(&trade_data, None, None, None)
     })?;
     let files = run_guarded_nt_catalog_step(work_budget, || {
         catalog.query_files(
@@ -618,7 +625,7 @@ impl NtCatalogReadBackEvidence {
         );
         ensure!(
             self.write_trade_ticks_succeeded,
-            "capability evidence must prove NT write_to_parquet over S3"
+            "capability evidence must prove NT identity-grouped write_data_enum over S3"
         );
         ensure!(
             self.query_trade_ticks_succeeded,

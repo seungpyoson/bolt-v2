@@ -2582,8 +2582,7 @@ async fn catalog_publication_rejects_different_bytes_at_terminal_receipt_key() {
 
     assert!(!is_terminal_create_indeterminate(&error), "{error:#}");
     assert!(
-        format!("{error:#}").contains("byte length")
-            || format!("{error:#}").contains("different payload"),
+        format!("{error:#}").contains("occupied terminal key"),
         "{error:#}"
     );
 }
@@ -3350,10 +3349,7 @@ async fn changed_authorized_catalog_bytes_conflict_with_existing_immutable_objec
     .await
     .expect_err("changed immutable object must conflict");
 
-    assert!(
-        format!("{error:#}").contains("different payload"),
-        "{error:#}"
-    );
+    assert!(format!("{error:#}").contains("occupied key"), "{error:#}");
 }
 
 #[tokio::test]
@@ -5256,7 +5252,7 @@ async fn artifact_index_commit_appends_audit_epoch() {
         .append_audit_epoch(&root, &conflicting_audit)
         .await
         .expect_err("audit epoch create-only write rejects different payload");
-    assert_error_chain_contains(&err, "different payload");
+    assert_error_chain_contains(&err, "occupied key");
 }
 
 #[tokio::test]

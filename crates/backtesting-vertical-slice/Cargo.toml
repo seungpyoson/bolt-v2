@@ -12,7 +12,7 @@
 name = "backtesting-vertical-slice"
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.96.0"
+rust-version = "1.97.0"
 publish = false
 autotests = false
 
@@ -27,7 +27,7 @@ arrow = "58.3.0"
 aws-config = "=1.8.18"
 aws-sdk-s3 = { version = "=1.132.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-ssm = { version = "=1.113.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
-bytes = "=1.12.0"
+bytes = "=1.12.1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
@@ -47,23 +47,23 @@ toml = "1.1"
 ustr = "1.1.0"
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
-nautilus-analysis = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
-nautilus-backtest = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860", features = ["streaming", "examples"] }
-nautilus-common = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
-nautilus-core = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
-nautilus-execution = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
-nautilus-model = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
-nautilus-persistence = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860", features = ["cloud"] }
-nautilus-serialization = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
-nautilus-polymarket = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
-nautilus-trading = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
+nautilus-analysis = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
+nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218", features = ["streaming", "examples"] }
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
+nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
+nautilus-execution = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
+nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
+nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218", features = ["cloud"] }
+nautilus-serialization = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
+nautilus-polymarket = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
+nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
 object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }
 bolt-v2 = { path = "../.." }
 
 [dev-dependencies]
 async-trait = "0.1"
 hmac = "=0.12.1"
-nautilus-persistence-macros = { git = "https://github.com/seungpyoson/nautilus_trader.git", rev = "d636f17604cdbddc28ad40e0e15720e2d19bf860" }
+nautilus-persistence-macros = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "d81be0bcc7a473c45d2dc8a8885638336073a218" }
 proc-macro2 = "=1.0.106"
 quote = "=1.0.45"
 syn = { version = "=2.0.118", features = ["full", "parsing", "visit", "visit-mut"] }

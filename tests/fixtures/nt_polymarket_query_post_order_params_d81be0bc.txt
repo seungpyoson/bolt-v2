@@ -1,5 +1,5 @@
 Source: NautilusTrader
-Revision: d636f17604cdbddc28ad40e0e15720e2d19bf860
+Revision: d81be0bcc7a473c45d2dc8a8885638336073a218
 Path: crates/adapters/polymarket/src/http/query.rs
 Full source SHA-256: 39c2ae4e66fd5be0c79669721157ddb9c354296a5bd1b7afbd9f39b9d22fad5d
 Extracted ranges from pinned checkout: lines 130-137 and 529-547

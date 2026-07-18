@@ -85,13 +85,11 @@ fn fill_arms_cooldown_for_filled_market_not_current_selection() {
     set_pending_entry(&mut strategy, pending);
 
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
-    strategy
-        .on_order_filled(&order_filled_event(
-            entry_client_order_id,
-            instrument_a,
-            position_id,
-        ))
-        .expect("fill bookkeeping should succeed");
+    strategy.on_order_filled(&order_filled_event(
+        entry_client_order_id,
+        instrument_a,
+        position_id,
+    ));
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
@@ -122,13 +120,11 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
-    strategy
-        .on_order_filled(&order_filled_event(
-            exit_client_order_id,
-            tracked_instrument,
-            position_id,
-        ))
-        .expect("exit fill bookkeeping should succeed");
+    strategy.on_order_filled(&order_filled_event(
+        exit_client_order_id,
+        tracked_instrument,
+        position_id,
+    ));
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
@@ -160,13 +156,11 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
-    strategy
-        .on_order_filled(&order_filled_event(
-            exit_client_order_id,
-            tracked_instrument,
-            position_id,
-        ))
-        .expect("exit fill bookkeeping should succeed");
+    strategy.on_order_filled(&order_filled_event(
+        exit_client_order_id,
+        tracked_instrument,
+        position_id,
+    ));
 
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
 }
@@ -195,13 +189,11 @@ fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection()
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
     strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
 
-    strategy
-        .on_order_filled(&order_filled_event(
-            exit_client_order_id,
-            tracked_instrument,
-            position_id,
-        ))
-        .expect("delayed exit fill should not arm the wrong market cooldown");
+    strategy.on_order_filled(&order_filled_event(
+        exit_client_order_id,
+        tracked_instrument,
+        position_id,
+    ));
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));

@@ -313,6 +313,12 @@ base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 proxy_url = "http://127.0.0.1:8080"
 http_timeout_secs = 60
 ws_timeout_secs = 30
+stale_stream_receive_timeout_secs = 0
+stream_health_check_interval_secs = 0
+stale_stream_warning_cooldown_secs = 60
+stale_stream_recovery_enabled = false
+stale_stream_recovery_cooldown_secs = 120
+stale_stream_max_targeted_resubscribes = 3
 update_instruments_interval_mins = 5
 transport_backend = "sockudo"
 "#,
@@ -516,6 +522,7 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(data.ws_max_subscriptions, 200);
     assert_eq!(data.update_instruments_interval_mins, Some(1));
     assert!(!data.subscribe_new_markets);
+    assert!(data.drop_quotes_missing_side);
     assert_eq!(
         data.base_url_rtds.as_deref(),
         Some("wss://ws-live-data.polymarket.com")
@@ -675,6 +682,12 @@ fn hyperliquid_data_maps_to_nt_market_data_adapter_without_execution_approval() 
     assert_eq!(config.environment, NtHyperliquidEnvironment::Testnet);
     assert_eq!(config.http_timeout_secs, 60);
     assert_eq!(config.ws_timeout_secs, 30);
+    assert_eq!(config.stale_stream_receive_timeout_secs, 0);
+    assert_eq!(config.stream_health_check_interval_secs, 0);
+    assert_eq!(config.stale_stream_warning_cooldown_secs, 60);
+    assert!(!config.stale_stream_recovery_enabled);
+    assert_eq!(config.stale_stream_recovery_cooldown_secs, 120);
+    assert_eq!(config.stale_stream_max_targeted_resubscribes, 3);
     assert_eq!(config.update_instruments_interval_mins, 5);
     assert_eq!(config.transport_backend, TransportBackend::Sockudo);
 }

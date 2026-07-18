@@ -201,7 +201,7 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
         support::fixture_execution_venue(),
     );
     assert!(
-        BinaryOracleEdgeTakerBuilder::build(raw, &context).is_err(),
+        BinaryOracleEdgeTakerBuilder::build_typed(raw, &context).is_err(),
         "{label} entry runtime table must not parse into the strategy config"
     );
 }
@@ -239,16 +239,29 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
     }
 }
 
+fn placeholder_realized_volatility_client() -> ClientBlock {
+    let data = toml::from_str(
+        r#"
+book_stale_check_interval_secs = 0
+book_stale_threshold_secs = 0
+book_snapshot_timeout_secs = 3
+"#,
+    )
+    .expect("placeholder OKX data config should parse");
+
+    ClientBlock {
+        venue: Venue::from(RV_DATA_CLIENT_VENUE),
+        data: Some(data),
+        execution: None,
+        secrets: None,
+        readiness_probe: None,
+    }
+}
+
 fn insert_placeholder_realized_volatility_client(root: &mut BoltV3RootConfig) {
     root.clients.insert(
         RV_DATA_CLIENT_ID.to_string(),
-        ClientBlock {
-            venue: Venue::from(RV_DATA_CLIENT_VENUE),
-            data: Some(toml::Value::Table(toml::map::Map::new())),
-            execution: None,
-            secrets: None,
-            readiness_probe: None,
-        },
+        placeholder_realized_volatility_client(),
     );
 }
 
@@ -526,13 +539,7 @@ fn realized_volatility_validation_rejects_same_instrument_distinct_data_clients(
             surface.sources.push(second_source);
             loaded.root.clients.insert(
                 "<DATA_CLIENT_ID_B>".to_string(),
-                ClientBlock {
-                    venue: Venue::from(RV_DATA_CLIENT_VENUE),
-                    data: Some(toml::Value::Table(toml::map::Map::new())),
-                    execution: None,
-                    secrets: None,
-                    readiness_probe: None,
-                },
+                placeholder_realized_volatility_client(),
             );
             insert_realized_volatility_surface(&mut loaded.root, surface);
             loaded.strategies[0].config.realized_volatility_surface_id =
@@ -772,7 +779,7 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("surfaced runtime config should build without legacy RV fields");
 }
 
@@ -2225,7 +2232,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("MarketIfTouched exit runtime table should parse into the strategy config");
 }
 
@@ -2387,7 +2394,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("TrailingStopMarket exit runtime table should parse into the strategy config");
 }
 
@@ -2623,7 +2630,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("StopLimit exit runtime table should parse into the strategy config");
 }
 
@@ -2695,7 +2702,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("LimitIfTouched exit runtime table should parse into the strategy config");
 }
 

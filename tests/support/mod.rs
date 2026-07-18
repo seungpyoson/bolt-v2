@@ -140,6 +140,22 @@ pub fn sample_order_routing_handle(
 }
 
 impl bolt_v2::economics::VenueEconomicsAdapter for SampleEconomicsAdapter {
+    fn resolve_edge_basis(
+        &self,
+        request: &bolt_v2::economics::EconomicQuoteRequest,
+    ) -> Result<bolt_v2::economics::ResolvedEdgeBasis, bolt_v2::economics::EconomicsUnavailable>
+    {
+        Ok(bolt_v2::economics::ResolvedEdgeBasis {
+            normalized_amount: request
+                .planned_fill_legs
+                .iter()
+                .map(|leg| leg.price * leg.quantity)
+                .sum(),
+            source_snapshot_ids: vec![self.estimate.authority.snapshot_id.clone()],
+            valid_until_ns: self.estimate.authority.valid_until_ns,
+        })
+    }
+
     fn quote(
         &self,
         _request: &bolt_v2::economics::EconomicQuoteRequest,

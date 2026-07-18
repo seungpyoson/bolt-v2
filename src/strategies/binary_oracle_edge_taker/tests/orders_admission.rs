@@ -849,14 +849,20 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
     // The fixture instrument declares max_price = 0.999 (the production NT
     // Polymarket adapter's ceiling), so the cap is valued at the ceiling
     // (0.999 * 100 = 99.9), NOT at the 0.33 reference price (33.00).
+    let base_reservation_notional = admission.economics_admission.base_reservation_notional();
     assert_eq!(
-        admission.notional,
+        base_reservation_notional,
         Decimal::from_str("99.9").expect("expected decimal should parse"),
         "a market-style base-quantity entry must be valued at qty * the instrument price ceiling"
     );
     assert!(
-        admission.notional > price.as_decimal() * Decimal::from(100u32),
+        base_reservation_notional > price.as_decimal() * Decimal::from(100u32),
         "the ceiling valuation must bound strictly above the reference-price estimate it replaces"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional(),
+        "submit admission must reserve the sealed base notional plus economics debits"
     );
 }
 
@@ -1315,6 +1321,8 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
 #[test]
 fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
     let mut strategy = ready_to_trade_strategy();
+    strategy.active.phase = SelectionPhase::Freeze;
+    strategy.config.forced_exit_order.is_quote_quantity = true;
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1419,6 +1427,7 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
 #[test]
 fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
     let mut strategy = ready_to_trade_strategy();
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;
     strategy.config.exit_order.order_type = OrderType::Limit;
     strategy.config.exit_order.time_in_force = TimeInForce::Gtc;

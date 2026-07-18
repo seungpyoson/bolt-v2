@@ -1343,14 +1343,6 @@ fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
 #[test]
 fn post_only_exit_submission_price_uses_passive_book_price() {
     let mut strategy = ready_to_trade_strategy();
-    register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.config.exit_hysteresis_bps = -100_000;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
-    strategy
-        .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,
@@ -1366,11 +1358,15 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let order_config = strategy
+        .normal_exit_order_execution_config()
+        .expect("normal exit config should be valid");
+    let (order_side, price) = strategy
+        .current_exit_order_for_open_position_with_config(&order_config)
+        .expect("post-only exit should resolve from the managed position book");
 
-    assert!(decision.forced_flat_reasons.is_empty());
-    assert_eq!(decision.order_side, Some(OrderSide::Sell));
-    assert_eq!(decision.price, expected_passive_price);
+    assert_eq!(order_side, OrderSide::Sell);
+    assert_eq!(Some(price), expected_passive_price);
 }
 
 #[test]

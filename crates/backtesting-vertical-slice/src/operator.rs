@@ -25,7 +25,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use nautilus_backtest::result::BacktestResult;
-use object_store::{ObjectStore, aws::AmazonS3};
+use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

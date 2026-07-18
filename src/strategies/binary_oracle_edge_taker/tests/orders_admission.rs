@@ -1181,6 +1181,7 @@ fn market_quote_quantity_entry_submission_sizes_from_current_book_notional() {
 #[test]
 fn market_quote_quantity_entry_submission_blocks_below_venue_minimum() {
     let mut strategy = ready_to_trade_strategy();
+    register_test_strategy_with_active_instruments(&mut strategy);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
@@ -1328,6 +1329,7 @@ fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
 #[test]
 fn post_only_exit_submission_price_uses_passive_book_price() {
     let mut strategy = ready_to_trade_strategy();
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));

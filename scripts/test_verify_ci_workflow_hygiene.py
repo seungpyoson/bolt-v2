@@ -5443,6 +5443,8 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
         'TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}',
         '--pull-request-author-id "$PR_AUTHOR_ID"',
         '--config "$verdict_config"',
+        "backtester_test_archive_timeout_minutes: ${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}",
+        "backtester_issue_789_timeout_minutes: ${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}",
     ):
         if required not in workflow:
             raise AssertionError(
@@ -5481,6 +5483,14 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
         ),
         (
             '--config "$verdict_config"',
+            "",
+        ),
+        (
+            "backtester_test_archive_timeout_minutes: ${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}",
+            "",
+        ),
+        (
+            "backtester_issue_789_timeout_minutes: ${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}",
             "",
         ),
     ):
@@ -8849,6 +8859,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
   test-archive:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]
+    timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}
     outputs:
       bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
@@ -9086,6 +9097,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
   issue_789:
     name: bvs-test issue-789
     needs: [ci-policy, detect, gate]
+    timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}
     if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.issue_789 == 'true' && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
     env:
       BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst
@@ -9118,6 +9130,22 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 
     good_errors = bvs_cache_errors(good)
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+    for original, replacement, expected in (
+        (
+            "timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}",
+            "timeout-minutes: 360",
+            "backtester bvs-test archive timeout must come from trusted policy without fallback",
+        ),
+        (
+            "timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}",
+            "timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes || '120') }}",
+            "backtester bvs-test issue-789 timeout must come from trusted policy without fallback",
+        ),
+    ):
+        mutated = replace_once(good, original, replacement)
+        mutated_errors = bvs_cache_errors(mutated)
+        assert any(expected in error for error in mutated_errors), mutated_errors
 
     full_ci_gated_issue_789 = replace_once(
         good,

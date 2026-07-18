@@ -102,6 +102,7 @@ REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
 TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
 BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES = 360
+GITHUB_ARTIFACT_RETENTION_MAX_DAYS = 90
 SECONDS_PER_MINUTE = 60
 FINITE_RUST_U64_MAX = (1 << 64) - 2
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -398,11 +399,9 @@ def optional_positive_int(parent: dict[str, object], key: str, prefix: str) -> i
     return value
 
 
-def load_backtester_test_archive_timeout_config(
-    data: dict[str, object],
-    *,
-    required: bool,
-) -> BacktesterTestArchiveTimeoutConfig | None:
+def load_backtester_policy_table(
+    data: dict[str, object], *, required: bool
+) -> dict[str, object] | None:
     backtester = data.get("backtester")
     if backtester is None and not required:
         return None
@@ -410,6 +409,27 @@ def load_backtester_test_archive_timeout_config(
         raise ProvenanceError(
             "missing [backtester]" if backtester is None else "backtester must be a table"
         )
+    expected_keys = {
+        "test_archive_timeout",
+        "ra001a_durable_tracer",
+        "issue_789",
+    }
+    unexpected_keys = sorted(set(backtester) - expected_keys)
+    if unexpected_keys:
+        raise ProvenanceError(f"backtester has unexpected keys: {unexpected_keys}")
+    return backtester
+
+
+def load_backtester_test_archive_timeout_config(
+    data: dict[str, object],
+    *,
+    required: bool,
+    backtester: dict[str, object] | None = None,
+) -> BacktesterTestArchiveTimeoutConfig | None:
+    if backtester is None:
+        backtester = load_backtester_policy_table(data, required=required)
+    if backtester is None:
+        return None
 
     timeout_prefix = "backtester.test_archive_timeout"
     timeout = require_table(backtester, "test_archive_timeout", "backtester")
@@ -522,7 +542,7 @@ def load_backtester_test_archive_timeout_config(
         raise ProvenanceError(
             f"{tracer_prefix}.receipt_artifact_name must be one static safe artifact name"
         )
-    receipt_retention_days = require_positive_int(
+    receipt_retention_days = require_github_artifact_retention_days(
         tracer,
         "receipt_retention_days",
         tracer_prefix,
@@ -534,7 +554,13 @@ def load_backtester_test_archive_timeout_config(
         "transient",
         "artifact_retention.classes",
     )
-    transient_max_retention_days = require_positive_int(
+    unexpected_transient_keys = sorted(set(transient_class) - {"max_retention_days"})
+    if unexpected_transient_keys:
+        raise ProvenanceError(
+            "artifact_retention.classes.transient has unexpected keys: "
+            f"{unexpected_transient_keys}"
+        )
+    transient_max_retention_days = require_github_artifact_retention_days(
         transient_class,
         "max_retention_days",
         "artifact_retention.classes.transient",
@@ -679,11 +705,6 @@ def load_backtester_test_archive_timeout_config(
             getattr(pack_limits, field.name),
             f"{pack_limits_prefix}.{field.name}",
         )
-    if pack_limits.max_concurrent_records != 1:
-        raise ProvenanceError(
-            f"{pack_limits_prefix}.max_concurrent_records must equal 1 for the "
-            "bounded process-isolated tracer"
-        )
     if pack_limits.min_worker_reserved_overhead_bytes >= pack_limits.max_worker_virtual_memory_bytes:
         raise ProvenanceError(
             f"{pack_limits_prefix}.min_worker_reserved_overhead_bytes must be below "
@@ -824,16 +845,24 @@ def load_backtester_issue_789_timeout_minutes(
     data: dict[str, object],
     *,
     required: bool,
+    backtester: dict[str, object] | None = None,
 ) -> int | None:
-    backtester = data.get("backtester")
-    if backtester is None and not required:
+    if backtester is None:
+        backtester = load_backtester_policy_table(data, required=required)
+    if backtester is None:
         return None
-    if not isinstance(backtester, dict):
-        raise ProvenanceError(
-            "missing [backtester]" if backtester is None else "backtester must be a table"
-        )
 
     issue_789 = require_table(backtester, "issue_789", "backtester")
+    expected_keys = {
+        "artifact_name_template",
+        "artifact_name_template_vars",
+        "max_job_minutes",
+    }
+    unexpected_keys = sorted(set(issue_789) - expected_keys)
+    if unexpected_keys:
+        raise ProvenanceError(
+            f"backtester.issue_789 has unexpected keys: {unexpected_keys}"
+        )
     max_job_minutes = require_positive_int(
         issue_789,
         "max_job_minutes",
@@ -845,6 +874,18 @@ def load_backtester_issue_789_timeout_minutes(
             f"maximum of {BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES} minutes"
         )
     return max_job_minutes
+
+
+def require_github_artifact_retention_days(
+    parent: dict[str, object], key: str, prefix: str
+) -> int:
+    value = require_finite_rust_u64(parent, key, prefix)
+    if value > GITHUB_ARTIFACT_RETENTION_MAX_DAYS:
+        raise ProvenanceError(
+            f"{prefix}.{key} must not exceed GitHub's artifact retention maximum "
+            f"of {GITHUB_ARTIFACT_RETENTION_MAX_DAYS} days"
+        )
+    return value
 
 
 def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
@@ -1142,13 +1183,16 @@ def load_config(
     if ci_provenance.get("schema_version") != 1:
         raise ProvenanceError("ci_provenance.schema_version must be 1")
 
+    backtester = load_backtester_policy_table(data, required=require_workflows)
     backtester_test_archive_timeout = load_backtester_test_archive_timeout_config(
         data,
         required=require_workflows,
+        backtester=backtester,
     )
     backtester_issue_789_timeout_minutes = load_backtester_issue_789_timeout_minutes(
         data,
         required=require_workflows,
+        backtester=backtester,
     )
 
     duplicated_fingerprint_keys = {

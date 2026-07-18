@@ -121,11 +121,13 @@ impl ReplayEconomicsAdmissionSource {
         for snapshot in &snapshots {
             validate_snapshot(snapshot)?;
             let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
-            let margin_ns = adapter
-                .economics
-                .resting_order_refresh_margin_ms
-                .checked_mul(bolt_v2::bolt_v3_numeric::NANOS_PER_MILLI_U64)
-                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+            let margin_ns = u64::try_from(
+                std::time::Duration::from_millis(
+                    adapter.economics.resting_order_refresh_margin_ms,
+                )
+                .as_nanos(),
+            )
+            .map_err(|_| EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
             match resting_order_refresh_margin_ns {
                 Some(existing) if existing != margin_ns => {
                     return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);

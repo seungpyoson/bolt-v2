@@ -272,7 +272,7 @@ fn normalize_planned_fill_legs(
 ) -> anyhow::Result<Vec<BoltV3PlannedFillLeg>> {
     anyhow::ensure!(!legs.is_empty(), "economics requires planned fill levels");
     let mut remaining = if order.is_quote_quantity() {
-        facts.base_reservation_notional
+        facts.quantity
     } else {
         facts.planned_fill_quantity
     };

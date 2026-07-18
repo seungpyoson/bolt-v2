@@ -460,8 +460,14 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
         .expect("order quantity should parse as quote quantity");
 
     assert_eq!(
-        admission.notional, submitted_quote_quantity,
-        "SELL Limit admission must not understate submitted quote quantity when bid exceeds limit price"
+        admission.economics_admission.base_reservation_notional(),
+        submitted_quote_quantity,
+        "SELL Limit base reservation must not understate submitted quote quantity when bid exceeds limit price"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional(),
+        "submit admission must reserve the base amount plus the sealed economics debit"
     );
 }
 
@@ -1223,6 +1229,7 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
+    strategy.config.entry_order.is_quote_quantity = false;
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.trigger_price = Some(0.52);
     strategy.config.entry_order.trigger_type = Some(TriggerType::MarkPrice);
@@ -1279,7 +1286,8 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
 #[test]
 fn submit_admission_uses_configured_execution_client_id() {
     let mut strategy = ready_to_trade_strategy();
-    let _cache = register_test_strategy(&mut strategy);
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(2.0, 2);
     let price = Price::new(0.50, 2);
@@ -1450,6 +1458,7 @@ fn reduce_only_entry_order_build_is_rejected_before_nt_factory() {
 #[test]
 fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
     let mut strategy = ready_to_trade_strategy();
+    strategy.active.phase = SelectionPhase::Freeze;
     strategy.config.forced_exit_order.order_type = OrderType::Market;
     strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
     strategy.config.forced_exit_order.is_post_only = false;
@@ -2504,6 +2513,8 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
 #[test]
 fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
     let mut strategy = ready_to_trade_strategy();
+    strategy.config.exit_order.order_type = OrderType::StopMarket;
+    strategy.config.exit_order.trigger_price = Some(0.40);
     strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
     strategy.config.exit_order.is_post_only = false;
     let instrument_id = selected_entry_instrument(&strategy);

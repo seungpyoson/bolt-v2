@@ -237,6 +237,21 @@ pub fn sample_economics_admission_with_debit(
     )
 }
 
+pub fn sample_risk_reduction_economics_admission_with_debit(
+    base_reservation_notional: rust_decimal::Decimal,
+    debit: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    sample_economics_admission_with_component(
+        base_reservation_notional,
+        bolt_v2::economics::EconomicClass::Charge,
+        -debit,
+        "test-core-debit",
+        "test-debit-formula",
+        u64::MAX,
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionPurpose::RiskReduction,
+    )
+}
+
 fn sample_economics_admission_with_component(
     base_reservation_notional: rust_decimal::Decimal,
     class: bolt_v2::economics::EconomicClass,

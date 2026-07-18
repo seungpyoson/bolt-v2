@@ -3228,7 +3228,7 @@ pub fn build_submit_admission_request_from_order(
                 total.checked_add(leg.price.checked_mul(leg.quantity)?)
             });
         anyhow::ensure!(
-            planned_fill_notional == Some(facts.base_reservation_notional),
+            planned_fill_notional == Some(facts.quantity),
             "bolt-v3 economics admission planned fill does not match final quote quantity"
         );
     } else {

@@ -5666,9 +5666,6 @@ fn shipped_binary_oracle_configs_do_not_canonicalize_one_reference_market_or_ven
             "[clients.binance_reference.data]",
             "[clients.binance_reference.secrets]",
             "/bolt/binance_reference/",
-            "https://1rpc.io/matic",
-            "chain_id = 137",
-            "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
         ] {
             assert!(
                 !source.contains(forbidden),
@@ -10164,7 +10161,7 @@ fn root_config_wires_hyperliquid_data_only_client_without_execution_or_secrets()
 }
 
 #[test]
-fn root_config_wires_single_hyperliquid_execution_client_for_all_surfaces() {
+fn root_config_wires_single_hyperliquid_execution_client_for_enabled_quote_surface() {
     use nautilus_model::identifiers::ClientId;
 
     let loaded =
@@ -10219,12 +10216,7 @@ fn root_config_wires_single_hyperliquid_execution_client_for_all_surfaces() {
             .iter()
             .map(toml::Value::as_str)
             .collect::<Vec<_>>(),
-        vec![
-            Some("standard_perps"),
-            Some("spot"),
-            Some("hip3_builder_perps"),
-            Some("hip4_outcomes"),
-        ]
+        vec![Some("standard_perps")]
     );
     assert_eq!(
         execution

@@ -1075,10 +1075,11 @@ fn economics_preflight_failure_for_second_strategy_runs_no_binding_preparation()
         },
         "binance_reference",
         |loaded| {
-            let client: ClientBlock = toml::from_str(include_str!(
+            let mut client: ClientBlock = toml::from_str(include_str!(
                 "fixtures/bolt_v3/binance_reference_client.toml"
             ))
             .expect("configured Binance reference client fixture should parse");
+            client.execution = Some(toml::Value::Table(toml::map::Map::new()));
             loaded
                 .root
                 .clients

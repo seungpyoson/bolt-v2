@@ -664,6 +664,7 @@ pub fn write_source_universe_execution_pack(
         let run_dir = output_dir.join("runs").join(run_directory_name(record));
         let run_spec_text = materialize_run_spec(RunSpecMaterializationInput {
             template: &template,
+            catalog_encoding: &template_catalog_dispatch.encoding,
             record,
             input,
             instrument,
@@ -958,6 +959,7 @@ fn selected_records(
 
 struct RunSpecMaterializationInput<'a> {
     template: &'a Value,
+    catalog_encoding: &'a CatalogEncodingConfig,
     record: &'a SourceUniverseConversionWorkOrderRecord,
     input: &'a SourceUniverseOperatorInputRecord,
     instrument: &'a SourceUniverseOperatorInstrumentSpecRecord,
@@ -971,6 +973,7 @@ struct RunSpecMaterializationInput<'a> {
 fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String> {
     let RunSpecMaterializationInput {
         template,
+        catalog_encoding,
         record,
         input,
         instrument,
@@ -1103,7 +1106,7 @@ fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String
     patch_strategy_bar_type(manifest, &instrument.nt_instrument_id)?;
     patch_catalog_dispatch(
         &mut value,
-        &template_catalog_dispatch.encoding,
+        catalog_encoding,
         &record.source_binding,
         market_structure_fixture,
         &record.operator_run_id,

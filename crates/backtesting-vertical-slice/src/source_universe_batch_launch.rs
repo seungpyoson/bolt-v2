@@ -915,6 +915,40 @@ mod tests {
     }
 
     fn summary_value(pack_id: &str) -> Value {
+        let artifact_refs = json!([{
+            "role": "source_bindings",
+            "path": "config/source-bindings.toml",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }]);
+        let records = json!([{
+            "sequence": 0,
+            "work_item_id": "work-item",
+            "operator_run_id": "operator-run",
+            "source_binding": "source-binding",
+            "category": "spot",
+            "symbol": "SYMBOL",
+            "archive_date": "2026-07-01",
+            "source_uri": "s3://bucket/object",
+            "source_url": "https://example.invalid/object",
+            "selected_object_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "selected_object_bytes": 1,
+            "source_proof_id": "source-proof",
+            "source_proof_version": 1,
+            "accepted_tranche_id": "accepted-tranche",
+            "output_prefix": "s3://bucket/output",
+            "source_bindings_path": "config/source-bindings.toml",
+            "source_bindings_bytes": 1,
+            "source_bindings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "run_spec_path": "controls/run-spec.toml",
+            "run_spec_bytes": 1,
+            "run_spec_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "accepted_tranche_path": "controls/accepted-tranche.json",
+            "accepted_tranche_bytes": 1,
+            "accepted_tranche_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "execution_plan_path": "controls/execution-plan.json",
+            "execution_plan_bytes": 1,
+            "execution_plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }]);
         json!({
             "schema_version": "source-universe-execution-pack.v4",
             "pack_id": pack_id,
@@ -936,40 +970,8 @@ mod tests {
             "skipped_executable_record_count": 0,
             "executable_source_bytes": 1,
             "materialized_source_bytes": 1,
-            "artifact_refs": [{
-                "role": "source_bindings",
-                "path": "config/source-bindings.toml",
-                "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-            }],
-            "records": [{
-                "sequence": 0,
-                "work_item_id": "work-item",
-                "operator_run_id": "operator-run",
-                "source_binding": "source-binding",
-                "category": "spot",
-                "symbol": "SYMBOL",
-                "archive_date": "2026-07-01",
-                "source_uri": "s3://bucket/object",
-                "source_url": "https://example.invalid/object",
-                "selected_object_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                "selected_object_bytes": 1,
-                "source_proof_id": "source-proof",
-                "source_proof_version": 1,
-                "accepted_tranche_id": "accepted-tranche",
-                "output_prefix": "s3://bucket/output",
-                "source_bindings_path": "config/source-bindings.toml",
-                "source_bindings_bytes": 1,
-                "source_bindings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                "run_spec_path": "controls/run-spec.toml",
-                "run_spec_bytes": 1,
-                "run_spec_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                "accepted_tranche_path": "controls/accepted-tranche.json",
-                "accepted_tranche_bytes": 1,
-                "accepted_tranche_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                "execution_plan_path": "controls/execution-plan.json",
-                "execution_plan_bytes": 1,
-                "execution_plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-            }],
+            "artifact_refs": artifact_refs,
+            "records": records,
             "blocking_reasons": []
         })
     }

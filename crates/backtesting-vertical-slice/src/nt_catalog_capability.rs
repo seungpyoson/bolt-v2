@@ -72,7 +72,7 @@ pub struct NtCatalogSsmCredentialResolver {
 }
 
 fn github_actions_oidc_credentials_from_environment() -> Result<Credentials> {
-    github_actions_oidc_credentials_from(env::var)
+    github_actions_oidc_credentials_from(|name| env::var(name))
 }
 
 fn github_actions_oidc_credentials_from(

@@ -474,7 +474,7 @@ impl RetiredBackfillEvidenceInventory {
                 validate_portable_relative_path(role, "aggregate artifact role")?;
                 if let Some(previous) = previous_role {
                     ensure!(
-                        previous < role,
+                        previous < role.as_str(),
                         "aggregate artifact_roles must be strictly sorted and unique"
                     );
                 }

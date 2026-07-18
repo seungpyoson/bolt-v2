@@ -770,9 +770,7 @@ fn validate_committed_ra001a_pack_limits(
     limits.validate()?;
     let launch = &committed.launch_spec;
     ensure!(
-        launch
-            .max_concurrent_records
-            .is_some_and(|value| value <= limits.max_concurrent_records),
+        launch.max_concurrent_records <= limits.max_concurrent_records,
         "RA-001a pack {} concurrency exceeds the trusted process-isolation policy",
         committed.pack_id
     );
@@ -3892,7 +3890,7 @@ mod tests {
 
         let mut concurrent = discover_test_execution_packs(&repo_root())
             .expect("rediscover committed execution packs for concurrency mutation");
-        concurrent[0].launch_spec.max_concurrent_records = Some(2);
+        concurrent[0].launch_spec.max_concurrent_records = 2;
         let policy = run_policy(aggregate_limits);
         let mut captures = 0_u64;
         let error = run_admitted_source_universe_durable_tracer_registry(

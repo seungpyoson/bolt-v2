@@ -36,9 +36,9 @@ use crate::atomic_artifact_write::{atomic_file_create_strict_guarded, open_pinne
 use crate::{
     artifact_store::{
         ArtifactStoreConfig, BucketVersioningEnabled, CatalogDispatchConfig,
-        CatalogProjectionPublicationReceipt, CreateOnlyArtifactWriter, PersistedCatalogProjection,
-        PersistedCatalogProjectionObject, ResolvedArtifactRoot, S3ConditionalPutMode,
-        ensure_immutable_s3_version_id, hydrate_catalog_projection_from_receipt_guarded,
+        CreateOnlyArtifactWriter, PersistedCatalogProjection, PersistedCatalogProjectionObject,
+        ResolvedArtifactRoot, S3ConditionalPutMode, ensure_immutable_s3_version_id,
+        hydrate_catalog_projection_from_receipt_guarded,
         persist_catalog_projection_for_source_binding_guarded,
     },
     canonical_market_data::{
@@ -60,18 +60,16 @@ use crate::{
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
         normalize_registered_seeded_l2_quote_converter,
         normalize_registered_tar_order_book_delta_converter,
-        normalize_registered_tar_seeded_l2_quote_converter, normalize_registered_trade_converter,
-        require_registered_source_adapter, require_registered_source_adapter_for_table_family,
-        verify_canonical_rows_materialization, verify_parquet_file_trailer_preflight,
-        verify_single_parquet_metadata_budget,
+        normalize_registered_tar_seeded_l2_quote_converter, require_registered_source_adapter,
+        require_registered_source_adapter_for_table_family, verify_canonical_rows_materialization,
+        verify_parquet_file_trailer_preflight, verify_single_parquet_metadata_budget,
     },
     catalog_projection::{
-        CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
-        NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
-        NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
-        NT_DATA_TYPE_TRADE_TICK, actual_nt_market_data_metadata_guarded,
-        logical_catalog_hash_guarded, preflight_nt_catalog_parquet_guarded,
-        project_canonical_bars_to_catalog_guarded,
+        CatalogInstrumentSpec, NT_DATA_TYPE_BAR, NT_DATA_TYPE_FUNDING_RATE_UPDATE,
+        NT_DATA_TYPE_INDEX_PRICE_UPDATE, NT_DATA_TYPE_MARK_PRICE_UPDATE,
+        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK, NT_DATA_TYPE_TRADE_TICK,
+        actual_nt_market_data_metadata_guarded, logical_catalog_hash_guarded,
+        preflight_nt_catalog_parquet_guarded, project_canonical_bars_to_catalog_guarded,
         project_canonical_funding_rates_to_catalog_guarded,
         project_canonical_index_to_catalog_guarded, project_canonical_mark_to_catalog_guarded,
         project_canonical_order_book_deltas_to_catalog_guarded,
@@ -86,8 +84,8 @@ use crate::{
         CONVERSION_TABLES_FILE, CatalogConsumptionEvidence, CatalogPublicationReceiptIdentity,
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
         ConversionFingerprint, ConversionManifest, ConversionTableRecord,
-        validate_conversion_tables_index, write_completed_conversion_artifacts_guarded,
-        write_conversion_tables_index_guarded, write_pending_conversion_artifacts,
+        write_completed_conversion_artifacts_guarded, write_conversion_tables_index_guarded,
+        write_pending_conversion_artifacts,
     },
     hashing::is_lowercase_sha256_hex,
     nt_catalog_capability::{NtCatalogSsmCredentialResolver, NtCatalogSsmParameterRefs},
@@ -113,8 +111,7 @@ use crate::{
         assert_bar_read_back_matches_guarded, assert_delta_read_back_matches_guarded,
         assert_funding_read_back_matches_guarded, assert_index_read_back_matches_guarded,
         assert_mark_read_back_matches_guarded, assert_quote_read_back_matches_guarded,
-        assert_read_back_matches_guarded, assert_time_window_overlaps_data_guarded,
-        execute_prepared_backtest, expected_iterations_guarded, iterations_mismatch,
+        assert_read_back_matches_guarded, execute_prepared_backtest, iterations_mismatch,
         market_structure_label, mint_local_catalog_run_view_authority_guarded,
         nt_extension_surface_claim_limits, prepare_backtest, result_contract_feed_labels,
         result_contract_warnings, run_nt_backtest_node_guarded, run_purpose_label,
@@ -3878,7 +3875,6 @@ fn prepare_run_from_run_spec_inner(
     let conversion_fingerprint =
         conversion_fingerprint_for(spec, &accepted, source_binding_registry)?;
     let canonical_path = output_dir.join(CANONICAL_ARTIFACT_FILE);
-    let catalog_root = output_dir.join(CATALOG_DIR);
     let contract_path = output_dir.join(RESULT_CONTRACT_FILE);
     let run_manifest_path = output_dir.join(BACKTEST_RUN_MANIFEST_FILE);
     let proof_path = output_dir.join(ACCEPTED_SOURCE_PROOF_FILE);

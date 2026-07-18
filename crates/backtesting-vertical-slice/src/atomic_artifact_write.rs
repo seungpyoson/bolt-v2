@@ -1119,8 +1119,7 @@ pub(crate) fn validate_owned_temp_directory_receipt(
         "owned temp receipt must have exactly one link"
     );
     let mut actual = Vec::new();
-    receipt
-        .by_ref()
+    std::io::Read::by_ref(&mut receipt)
         .take(u64::try_from(MAX_OWNED_TEMP_RECEIPT_BYTES)?)
         .read_to_end(&mut actual)
         .context("read owned temp receipt")?;

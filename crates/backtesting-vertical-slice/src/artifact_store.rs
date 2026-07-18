@@ -17,9 +17,7 @@ use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
-use object_store::{
-    GetOptions, ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Path as ObjectPath,
-};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -3782,43 +3780,10 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         path: &ObjectPath,
         payload: Vec<u8>,
     ) -> Result<UpdateVersion> {
-        self.put_create_strict_inner(path, payload, None).await
-    }
-
-    pub(crate) async fn put_create_strict_guarded(
-        &self,
-        path: &ObjectPath,
-        payload: Vec<u8>,
-        work_budget: &OperatorWorkBudgetGuard,
-    ) -> Result<UpdateVersion> {
-        self.put_create_strict_inner(path, payload, Some(work_budget))
-            .await
-    }
-
-    async fn put_create_strict_inner(
-        &self,
-        path: &ObjectPath,
-        payload: Vec<u8>,
-        work_budget: Option<&OperatorWorkBudgetGuard>,
-    ) -> Result<UpdateVersion> {
         self.enforce_payload_cap(&format!("create-only object {path}"), &payload)?;
-        // Convert once before the remote operation. Cloning `Bytes` for the
-        // create attempt is O(1), including on the terminal manifest path
-        // where the one-use commit permit has already been consumed.
-        let payload = Bytes::from(payload);
-        let put_outcome = if let Some(work_budget) = work_budget {
-            guarded_async_operation_outcome(work_budget, OperatorWorkBudgetStage::Publish, async {
-                self.store
-                    .put_opts(path, payload.clone().into(), PutMode::Create.into())
-                    .await
-            })
-            .await?
-        } else {
-            self.store
-                .put_opts(path, payload.clone().into(), PutMode::Create.into())
-                .await
-        };
-        put_outcome
+        self.store
+            .put_opts(path, payload.into(), PutMode::Create.into())
+            .await
             .map(Into::into)
             .with_context(|| format!("strict create-only put {path}"))
     }

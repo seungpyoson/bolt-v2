@@ -75,7 +75,20 @@ def render_config_string_template(
     error_cls: type[Exception],
     require_same_name_github_bindings: bool = False,
 ) -> str:
-    placeholders = set(CONFIG_TEMPLATE_PLACEHOLDER_RE.findall(template))
+    placeholders: set[str] = set()
+    cursor = 0
+    while cursor < len(template):
+        character = template[cursor]
+        if character == "}":
+            raise error_cls(f"{label} contains malformed template placeholder syntax")
+        if character != "{":
+            cursor += 1
+            continue
+        match = CONFIG_TEMPLATE_PLACEHOLDER_RE.match(template, cursor)
+        if match is None:
+            raise error_cls(f"{label} contains malformed template placeholder syntax")
+        placeholders.add(match.group(1))
+        cursor = match.end()
     if not placeholders:
         raise error_cls(f"{label} must include at least one template placeholder")
     missing_vars = sorted(placeholders - set(template_vars))

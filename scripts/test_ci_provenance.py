@@ -1195,6 +1195,24 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
                 1,
             ),
         ),
+        *(
+            (
+                "backtester.issue_789.artifact_name_template contains malformed template placeholder syntax",
+                CONFIG_TOML.replace(
+                    'artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"',
+                    f'artifact_name_template = "{template}"',
+                    1,
+                ),
+            )
+            for template in (
+                "issue-789-{run_id}-{run_attempt}-{",
+                "issue-789-{run_id}-{run_attempt}-}",
+                "issue-789-{{run_id}}-{run_attempt}",
+                "issue-789-{run-id}-{run_attempt}",
+                "issue-789-{9run_id}-{run_attempt}",
+                "issue-789-{}-{run_attempt}",
+            )
+        ),
         (
             "backtester.issue_789.max_job_minutes must be a positive integer",
             CONFIG_TOML.replace(

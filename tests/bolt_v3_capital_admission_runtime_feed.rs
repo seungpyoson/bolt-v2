@@ -2367,7 +2367,7 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
     let mut third_request = capital_admission_submit_request("client-order-3");
     third_request.economics_admission =
         support::sample_economics_admission_with_debit(Decimal::new(4, 1), Decimal::new(3, 1));
-    third_request.notional = Decimal::new(4, 1);
+    third_request.notional = Decimal::new(7, 1);
     third_request.order_quantity = Decimal::new(1, 0);
     third_request
         .admission_evidence

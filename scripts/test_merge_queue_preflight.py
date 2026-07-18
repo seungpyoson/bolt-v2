@@ -841,6 +841,31 @@ def assert_advisory_check_matrix_does_not_affect_admission() -> None:
     assert_equal(decisions, {label: expected for label in variants}, "advisory check matrix")
 
 
+def assert_missing_or_null_draft_metadata_cannot_queue() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        decisions: dict[str, tuple[int, str]] = {}
+        for label, draft_value in (("missing", object()), ("null", None)):
+            view = approved_pr_view(head)
+            if label == "missing":
+                view.pop("isDraft")
+            else:
+                view["isDraft"] = draft_value
+            variant_root = root / label
+            variant_root.mkdir()
+            bin_dir = write_fake_gh(variant_root, views={1: view})
+            result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
+            payload = parse_json(result.stdout)
+            decisions[label] = (result.returncode, str(payload["verdict"]))
+    assert_equal(
+        decisions,
+        {"missing": (2, "blocked"), "null": (2, "blocked")},
+        "draft metadata fail-closed matrix",
+    )
+
+
 def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
     expectations = ci_provenance.MERGIFY_CONFIG_EXPECTATIONS
     if "required_checks" in expectations:
@@ -2499,6 +2524,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
 
 def main() -> int:
     assert_advisory_check_matrix_does_not_affect_admission()
+    assert_missing_or_null_draft_metadata_cannot_queue()
     assert_post_cutover_mergify_contract_is_review_only_and_single_pr()
     assert_queue_ci_and_verifier_flags_are_removed()
     assert_preflight_config_is_identity_only()

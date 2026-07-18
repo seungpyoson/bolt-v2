@@ -31,6 +31,14 @@ class ReviewFailed(RuntimeError):
     """Raised after a visible failure notice has been posted."""
 
 
+def is_secret_env_name(name: str) -> bool:
+    return (
+        name in EXPLICIT_SECRET_ENV_NAMES
+        or name.startswith(SECRET_ENV_PREFIXES)
+        or name.endswith(SECRET_ENV_SUFFIXES)
+    )
+
+
 @dataclass(frozen=True)
 class ReviewOutputContract:
     finding_required_labels: tuple[str, ...]
@@ -273,9 +281,22 @@ class KimiCliClient:
             telemetry_value = "false" if self.telemetry_disabled else "true"
             config_path.write_text(f"telemetry = {telemetry_value}\n", encoding="utf-8")
 
-        env = os.environ.copy()
+        subprocess_home = kimi_home / "subprocess-home"
+        gh_config_dir = kimi_home / "gh-config"
+        subprocess_home.mkdir(exist_ok=True)
+        gh_config_dir.mkdir(exist_ok=True)
+        env = {
+            name: value
+            for name, value in os.environ.items()
+            if not is_secret_env_name(name)
+            and name not in {"GIT_ASKPASS", "GIT_SSH_COMMAND", "GH_CONFIG_DIR", "SSH_ASKPASS", "SSH_AUTH_SOCK"}
+        }
         env.update(
             {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GH_CONFIG_DIR": str(gh_config_dir),
+                "HOME": str(subprocess_home),
                 "KIMI_CODE_HOME": str(kimi_home),
                 "KIMI_DISABLE_TELEMETRY": "1" if self.telemetry_disabled else "0",
                 "KIMI_MODEL_NAME": self.model,
@@ -1432,7 +1453,7 @@ def secret_env_values() -> list[str]:
     names.update(
         name
         for name in os.environ
-        if name.startswith(SECRET_ENV_PREFIXES) or name.endswith(SECRET_ENV_SUFFIXES)
+        if is_secret_env_name(name)
     )
     return sorted(
         {secret for name in names if len(secret := os.environ.get(name, "")) >= 8},

@@ -1,4 +1,5 @@
 [pr_reviewer]
+persistent_comment = true
 extra_instructions = """\
 Review against AGENTS.md as the repository governance source. The critical AGENTS.md review rules are inlined here so this reviewer has the required governance context; update this block when the AGENTS.md rules it mirrors change.
 

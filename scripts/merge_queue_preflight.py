@@ -1355,13 +1355,10 @@ class MetadataExpectation:
     field: str
     expected: object
     message: str
-    warn_when_missing: bool = True
 
     def evaluate(self, payload: dict[str, object]) -> ReadinessIssue | None:
         actual = payload.get(self.field)
         if actual == self.expected:
-            return None
-        if actual is None and not self.warn_when_missing:
             return None
         return ReadinessIssue(
             code=self.code,
@@ -1403,7 +1400,7 @@ class PreflightConfig:
 
 STATIC_READINESS_EXPECTATIONS = (
     MetadataExpectation("not_open", "state", "OPEN", "PR is not open"),
-    MetadataExpectation("draft", "isDraft", False, "PR is draft", warn_when_missing=False),
+    MetadataExpectation("draft", "isDraft", False, "PR is draft"),
     MetadataExpectation(
         "not_mergeable",
         "mergeable",

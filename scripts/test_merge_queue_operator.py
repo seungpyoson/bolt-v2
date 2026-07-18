@@ -156,6 +156,30 @@ def assert_queue_as_one_wave_posts_mergify_comments() -> None:
     assert f"1={HEAD_ONE}" in preflight_command, preflight_command
 
 
+def assert_public_operator_ignores_advisory_check_outcomes() -> None:
+    variants = {
+        "green": [{"name": "gate", "state": "SUCCESS"}],
+        "failed": [{"name": "gate", "state": "FAILURE"}],
+        "missing": [],
+        "skipped": [{"name": "gate", "state": "SKIPPED"}],
+        "cancelled": [{"name": "gate", "state": "CANCELLED"}],
+        "unavailable": None,
+    }
+    decisions: dict[str, tuple[int, bool]] = {}
+    for label, checks in variants.items():
+        payload = ready_payload()
+        payload["advisory_checks"] = checks
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            runner = FakeRunner(payload, 0)
+            rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+        queued = any(command[:3] == ("gh", "pr", "comment") for command in runner.commands)
+        decisions[label] = (rc, queued)
+        assert not stderr, (label, stderr)
+        assert "queued PR #1" in stdout, (label, stdout)
+    assert decisions == {label: (0, True) for label in variants}, decisions
+
+
 def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
     previous_gh_host = os.environ.get("GH_HOST")
     os.environ["GH_HOST"] = "attacker.invalid"
@@ -494,6 +518,7 @@ def assert_verifier_profile_is_not_an_operator_flag() -> None:
 def main() -> int:
     assert_operator_imports_preflight_verdict_constants()
     assert_queue_as_one_wave_posts_mergify_comments()
+    assert_public_operator_ignores_advisory_check_outcomes()
     assert_preflight_and_queue_use_pinned_repository_identity()
     assert_alternate_repository_authorities_fail_before_transport()
     assert_config_snapshot_is_immutable_across_operator_and_preflight()

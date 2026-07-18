@@ -1,12 +1,14 @@
-use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
+use bolt_v2::{
+    bolt_v3_strategy_context::StrategyBuildContext,
+    bolt_v3_strategy_registration::PreparedStrategyRegistration,
+};
 
-use std::{cell::RefCell, rc::Rc};
+use std::cell::RefCell;
 
 use anyhow::{Context, Result};
-use bolt_v2::strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError};
-use nautilus_common::{actor::DataActor, component::Component};
+use bolt_v2::strategies::registry::{StrategyBuilder, StrategyRegistry, ValidationError};
+use nautilus_common::actor::DataActor;
 use nautilus_model::identifiers::StrategyId;
-use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 use toml::Value;
 
@@ -47,6 +49,8 @@ pub(crate) fn take_market_exit_calls() -> Vec<StrategyId> {
 pub(crate) struct StubRuntimeStrategyBuilder;
 
 impl StrategyBuilder for StubRuntimeStrategyBuilder {
+    type Strategy = StubRuntimeStrategy;
+
     fn kind() -> &'static str {
         "stub_runtime_strategy"
     }
@@ -61,26 +65,21 @@ impl StrategyBuilder for StubRuntimeStrategyBuilder {
         }
     }
 
-    fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+    fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
         let strategy_id = raw
             .get("strategy_id")
             .and_then(Value::as_str)
             .context("stub runtime strategy requires strategy_id")?;
-        Ok(Box::new(StubRuntimeStrategy::new(strategy_id)))
+        Ok(StubRuntimeStrategy::new(strategy_id))
     }
+}
 
-    fn register(
-        raw: &Value,
-        _context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId> {
-        let strategy_id = raw
-            .get("strategy_id")
-            .and_then(Value::as_str)
-            .context("stub runtime strategy requires strategy_id")?;
-        let strategy = StubRuntimeStrategy::new(strategy_id);
-        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-        trader.borrow_mut().add_strategy(strategy)?;
-        Ok(strategy_id)
-    }
+pub(crate) fn prepare_stub_runtime_strategy(
+    strategy_id: &str,
+    context: &StrategyBuildContext,
+) -> Result<PreparedStrategyRegistration> {
+    let mut registry = StrategyRegistry::new();
+    registry.register::<StubRuntimeStrategyBuilder>()?;
+    let raw = toml::toml! { strategy_id = strategy_id }.into();
+    registry.prepare_strategy(StubRuntimeStrategyBuilder::kind(), &raw, context)
 }

@@ -9,9 +9,6 @@ scripts/install-cargo-shim
 scripts/lane_governor.py
 scripts/local_verification_gate.py
 scripts/nextest_fingerprint.py
-scripts/render_install_unit.py
 scripts/rust_verification.py
 scripts/sync_ci_debug_ssh_secret.py
-scripts/test_verify_install_unit_generated.py
 scripts/ubicloud_runner_minutes.py
-scripts/verify_install_unit_generated.py

@@ -1,13 +1,12 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use nautilus_common::{actor::DataActor, component::Component};
-use nautilus_model::identifiers::StrategyId;
-use nautilus_system::trader::Trader;
-use nautilus_trading::Strategy;
+use nautilus_common::{actor::DataActorNative, component::Component};
+use nautilus_trading::{Strategy, StrategyNative};
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
+use crate::bolt_v3_strategy_registration::PreparedStrategyRegistration;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValidationError {
@@ -22,41 +21,33 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-mod runtime_strategy_sealed {
-    use super::*;
-
-    pub trait Sealed {}
-
-    impl<T> Sealed for T where T: Strategy + DataActor + Component + std::fmt::Debug {}
-}
-
-/// Object-safe runtime strategy boundary.
-///
-/// The private marker supertrait prevents components that are not NautilusTrader
-/// strategies and data actors from manually opting into this erased boundary.
-pub trait RuntimeStrategy: Component + std::fmt::Debug + runtime_strategy_sealed::Sealed {}
-
-impl<T> RuntimeStrategy for T where T: Strategy + DataActor + Component + std::fmt::Debug {}
-
-pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
-
 pub trait StrategyBuilder: Send + Sync + 'static {
+    type Strategy: Strategy
+        + StrategyNative
+        + DataActorNative
+        + Component
+        + std::fmt::Debug
+        + 'static;
+
     fn kind() -> &'static str;
     fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>);
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy>;
-    fn register(
-        raw: &Value,
-        context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId>;
+    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy>;
+}
+
+fn prepare_builder<B: StrategyBuilder>(
+    raw: &Value,
+    context: &StrategyBuildContext,
+) -> Result<PreparedStrategyRegistration> {
+    Ok(PreparedStrategyRegistration::from_strategy(B::build(
+        raw, context,
+    )?))
 }
 
 #[derive(Clone, Copy)]
 pub struct StrategyRegistration {
     kind: &'static str,
     validate_config: fn(&Value, &str, &mut Vec<ValidationError>),
-    build: fn(&Value, &StrategyBuildContext) -> Result<BoxedStrategy>,
-    register: fn(&Value, &StrategyBuildContext, &Rc<RefCell<Trader>>) -> Result<StrategyId>,
+    prepare: fn(&Value, &StrategyBuildContext) -> Result<PreparedStrategyRegistration>,
 }
 
 impl StrategyRegistration {
@@ -73,17 +64,12 @@ impl StrategyRegistration {
         (self.validate_config)(raw, field_prefix, errors);
     }
 
-    pub fn build(&self, raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        (self.build)(raw, context)
-    }
-
-    pub fn register(
+    pub fn prepare(
         &self,
         raw: &Value,
         context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId> {
-        (self.register)(raw, context, trader)
+    ) -> Result<PreparedStrategyRegistration> {
+        (self.prepare)(raw, context)
     }
 }
 
@@ -107,8 +93,7 @@ impl StrategyRegistry {
         let registration = StrategyRegistration {
             kind: B::kind(),
             validate_config: B::validate_config,
-            build: B::build,
-            register: B::register,
+            prepare: prepare_builder::<B>,
         };
 
         if self.registrations.contains_key(registration.kind()) {
@@ -138,29 +123,16 @@ impl StrategyRegistry {
         }
     }
 
-    pub fn build(
+    pub fn prepare_strategy(
         &self,
         kind: &str,
         raw: &Value,
         context: &StrategyBuildContext,
-    ) -> Result<BoxedStrategy> {
+    ) -> Result<PreparedStrategyRegistration> {
         let registration = self
             .get(kind)
             .with_context(|| format!("unsupported strategy kind '{kind}'"))?;
-        registration.build(raw, context)
-    }
-
-    pub fn register_strategy(
-        &self,
-        kind: &str,
-        raw: &Value,
-        context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId> {
-        let registration = self
-            .get(kind)
-            .with_context(|| format!("unsupported strategy kind '{kind}'"))?;
-        registration.register(raw, context, trader)
+        registration.prepare(raw, context)
     }
 
     pub fn kinds(&self) -> Vec<&'static str> {
@@ -174,6 +146,7 @@ mod tests {
 
     use anyhow::{Context, anyhow};
     use futures_util::future::{BoxFuture, FutureExt};
+    use nautilus_common::actor::DataActor;
     use nautilus_model::identifiers::{InstrumentId, StrategyId, Venue};
     use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 
@@ -334,6 +307,8 @@ mod tests {
     struct AlphaBuilder;
 
     impl StrategyBuilder for AlphaBuilder {
+        type Strategy = TestStrategy;
+
         fn kind() -> &'static str {
             "alpha_runtime"
         }
@@ -348,48 +323,27 @@ mod tests {
             }
         }
 
-        fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+        fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
             let strategy_id = raw
                 .get("strategy_id")
                 .and_then(Value::as_str)
                 .context("alpha builder requires strategy_id")?;
-            Ok(Box::new(TestStrategy::new(strategy_id)))
-        }
-
-        fn register(
-            raw: &Value,
-            _context: &StrategyBuildContext,
-            trader: &Rc<RefCell<Trader>>,
-        ) -> Result<StrategyId> {
-            let strategy_id = raw
-                .get("strategy_id")
-                .and_then(Value::as_str)
-                .context("alpha builder requires strategy_id")?;
-            let strategy = TestStrategy::new(strategy_id);
-            let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-            trader.borrow_mut().add_strategy(strategy)?;
-            Ok(strategy_id)
+            Ok(TestStrategy::new(strategy_id))
         }
     }
 
     struct BetaBuilder;
 
     impl StrategyBuilder for BetaBuilder {
+        type Strategy = TestStrategy;
+
         fn kind() -> &'static str {
             "beta_runtime"
         }
 
         fn validate_config(_raw: &Value, _field_prefix: &str, _errors: &mut Vec<ValidationError>) {}
 
-        fn build(_raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-            Err(anyhow!("beta builder is test-only"))
-        }
-
-        fn register(
-            _raw: &Value,
-            _context: &StrategyBuildContext,
-            _trader: &Rc<RefCell<Trader>>,
-        ) -> Result<StrategyId> {
+        fn build(_raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
             Err(anyhow!("beta builder is test-only"))
         }
     }
@@ -484,16 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_strategy_blanket_impl_remains_object_safe_for_nt_strategy() {
-        fn assert_runtime_strategy_contract<T: RuntimeStrategy>() {}
-        assert_runtime_strategy_contract::<TestStrategy>();
-
-        let strategy: BoxedStrategy = Box::new(TestStrategy::new("OBJECT-SAFE-001"));
-        assert_eq!(strategy.component_id().inner().as_str(), "OBJECT-SAFE-001");
-    }
-
-    #[test]
-    fn strategy_registry_dispatches_validate_and_build() {
+    fn strategy_registry_dispatches_validate_and_prepare() {
         let mut registry = StrategyRegistry::new();
         registry.register::<AlphaBuilder>().unwrap();
 
@@ -507,8 +452,7 @@ mod tests {
         registration.validate_config(&raw, "strategies[0].config", &mut errors);
         assert!(errors.is_empty());
 
-        let strategy = registration.build(&raw, &test_context()).unwrap();
-        assert_eq!(strategy.component_id().inner().as_str(), "ALPHA-001");
+        registration.prepare(&raw, &test_context()).unwrap();
     }
 
     #[test]

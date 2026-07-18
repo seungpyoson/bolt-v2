@@ -137,6 +137,10 @@ probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
+[workflows.root_artifact]
+preflight = "github_hosted"
+produce = "managed_heavy"
+
 [cargo_build_jobs.ci]
 clippy = 3
 check-aarch64 = 3
@@ -172,9 +176,6 @@ glm-pr-agent-review = "github_hosted"
 
 [workflows.ai_review_kimi_cli]
 kimi-cli-review = "github_hosted"
-
-[workflows.ai_review_coding_plan_smoke]
-smoke = "github_hosted"
 
 [workflows.claude_code_review]
 claude-review = "github_hosted"
@@ -238,6 +239,7 @@ included_workflows = [
   "ci_runner_debug",
   "debug_test",
   "rust_probe",
+  "root_artifact",
 ]
 
 [meter.api_limits]

@@ -5038,6 +5038,12 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must include 'python3.12 scripts/sccache_eligibility.py'",
         ),
         (
+            "shared action must pass the runner architecture",
+            action_text.replace("        RUNNER_ARCH: ${{ runner.arch }}\n", "", 1),
+            config_text,
+            "must pass runner.arch to the sccache eligibility owner",
+        ),
+        (
             "shared action must keep enablement fail-open",
             action_text.replace("      id: enable\n      continue-on-error: true\n", "      id: enable\n", 1),
             config_text,
@@ -5048,6 +5054,18 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             action_text.replace('        disable_annotations: "true"\n', "", 1),
             config_text,
             "must disable vendor sccache stats annotations",
+        ),
+        (
+            "shared action must verify installed sccache bytes",
+            action_text.replace(
+                "          if python3.12 scripts/sccache_eligibility.py verify-executable \\\n"
+                '              "$SCCACHE_PATH" "$EXPECTED_VERSION" "$EXPECTED_SHA256" \\\n'
+                '              && "$SCCACHE_PATH" --start-server; then\n',
+                '          if "$SCCACHE_PATH" --start-server; then\n',
+                1,
+            ),
+            config_text,
+            "must verify installed sccache bytes before server startup",
         ),
         (
             "shared action must summarize cache state",
@@ -5070,6 +5088,18 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             action_text,
             re.sub(r'key_prefix = "[^"]+"', 'key_prefix = ""', config_text, count=1),
             "location.key_prefix must be a non-empty string ending in '/'",
+        ),
+        (
+            "sccache location config owns the exact version",
+            action_text,
+            re.sub(r'version = "[^"]+"', 'version = "0.10"', config_text, count=1),
+            "location.version must be a v-prefixed semantic version",
+        ),
+        (
+            "sccache location config owns executable bytes",
+            action_text,
+            re.sub(r'X64 = "[^"]+"', 'X64 = ""', config_text, count=1),
+            "location.executable_sha256.X64 must be a lowercase SHA-256 digest",
         ),
     )
     for label, mutated_action, mutated_config, expected in action_cases:

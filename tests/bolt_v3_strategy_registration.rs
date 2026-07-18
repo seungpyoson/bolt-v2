@@ -107,7 +107,7 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
         support::fixture_execution_venue(),
     );
     assert!(
-        BinaryOracleEdgeTakerBuilder::build(raw, &context).is_err(),
+        BinaryOracleEdgeTakerBuilder::build_typed(raw, &context).is_err(),
         "{label} entry runtime table must not parse into the strategy config"
     );
 }
@@ -687,7 +687,7 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("surfaced runtime config should build without legacy RV fields");
 }
 
@@ -1679,7 +1679,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("MarketIfTouched exit runtime table should parse into the strategy config");
 }
 
@@ -1847,7 +1847,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("TrailingStopMarket exit runtime table should parse into the strategy config");
 }
 
@@ -2095,7 +2095,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("StopLimit exit runtime table should parse into the strategy config");
 }
 
@@ -2170,7 +2170,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
         .expect("LimitIfTouched exit runtime table should parse into the strategy config");
 }
 

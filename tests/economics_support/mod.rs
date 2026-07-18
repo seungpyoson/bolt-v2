@@ -61,7 +61,7 @@ pub fn estimated_component(
         scope: EconomicScope::Order {
             order_id: OrderId::new("order").unwrap(),
         },
-        point_effect: SignedNativeEffect::currency(point, native_unit("pUSD")).unwrap(),
+        point_effect: Some(SignedNativeEffect::currency(point, native_unit("pUSD")).unwrap()),
         debit_risk_bound: debit_bound
             .map(|bound| SignedNativeEffect::currency(bound, native_unit("pUSD")).unwrap()),
         admission_treatment: treatment,

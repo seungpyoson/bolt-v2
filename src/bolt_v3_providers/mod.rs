@@ -621,7 +621,7 @@ pub struct ProviderBinding {
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub(crate) execution_economics: Option<ExecutionEconomicsLoader>,
     pub(crate) build_economics_authority: Option<EconomicsAuthorityBuilder>,
-    build_offline_economics_adapter: Option<OfflineEconomicsAdapterBuilder>,
+    pub(crate) build_offline_economics_adapter: Option<OfflineEconomicsAdapterBuilder>,
     pub supported_market_families: &'static [&'static str],
     pub market_exit_order_constraints: ProviderMarketExitOrderConstraints,
     pub metadata_refresh_interval_mins: Option<MetadataRefreshIntervalLoader>,

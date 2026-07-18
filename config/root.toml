@@ -642,6 +642,7 @@ evidence_fixture_id = "hyperliquid-usdc-settlement-v1"
 
 [clients.hyperliquid_execution.execution.economics.carry]
 funding_interval_secs = 3600
+funding_schedule_phase_secs = 0
 funding_venue_rate_cap_bps_per_hour = "400"
 funding_standard_price_stress_multiplier = "1.5"
 component_id = "funding-carry"

@@ -605,12 +605,14 @@ impl BoltV3EconomicsRuntime {
         };
         let mut valuations = Vec::new();
         for component in &estimate.components {
-            push_valuation(
-                &mut valuations,
-                intent.valuation_provider.as_ref(),
-                &component.point_effect,
-                &valuation_request,
-            )?;
+            if let Some(point_effect) = &component.point_effect {
+                push_valuation(
+                    &mut valuations,
+                    intent.valuation_provider.as_ref(),
+                    point_effect,
+                    &valuation_request,
+                )?;
+            }
             if let Some(bound) = &component.debit_risk_bound {
                 push_valuation(
                     &mut valuations,
@@ -777,8 +779,10 @@ pub(crate) fn test_economics_admission_with_binding(
             scope: EconomicScope::Decision {
                 decision_correlation_id: decision_correlation_id.clone(),
             },
-            point_effect: SignedNativeEffect::currency(Decimal::ONE, reporting_unit)
-                .expect("valid test effect"),
+            point_effect: Some(
+                SignedNativeEffect::currency(Decimal::ONE, reporting_unit)
+                    .expect("valid test effect"),
+            ),
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
             calculation_factors: Vec::new(),
@@ -889,10 +893,10 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
                 scope: EconomicScope::Decision {
                     decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
-                point_effect: SignedNativeEffect::currency(
+                point_effect: Some(SignedNativeEffect::currency(
                     Decimal::ONE,
                     intent.request.reporting_unit.clone(),
-                )?,
+                )?),
                 debit_risk_bound: None,
                 admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
                 calculation_factors: Vec::new(),

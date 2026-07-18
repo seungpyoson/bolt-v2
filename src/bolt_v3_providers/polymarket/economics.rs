@@ -860,7 +860,7 @@ impl PolymarketEconomicsAdapter {
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
-            point_effect,
+            point_effect: Some(point_effect),
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
             calculation_factors: vec![calculation_factor],

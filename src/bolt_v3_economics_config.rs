@@ -164,6 +164,7 @@ pub enum ValuationOrientation {
 #[serde(deny_unknown_fields)]
 pub struct CarryQuotePolicyConfig {
     pub funding_interval_secs: u64,
+    pub funding_schedule_phase_secs: u64,
     pub funding_venue_rate_cap_bps_per_hour: String,
     pub funding_standard_price_stress_multiplier: String,
     pub component_id: String,
@@ -430,6 +431,9 @@ impl ExecutionEconomicsConfig {
         if let Some(carry) = &self.carry {
             if is_zero(carry.funding_interval_secs) {
                 errors.push(EconomicsConfigError::ZeroCarryHorizon);
+            }
+            if carry.funding_schedule_phase_secs >= carry.funding_interval_secs {
+                errors.push(EconomicsConfigError::InvalidQuoteWindow);
             }
             for value in [
                 &carry.funding_venue_rate_cap_bps_per_hour,

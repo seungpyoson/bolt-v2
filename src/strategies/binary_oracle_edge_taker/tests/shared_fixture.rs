@@ -216,6 +216,22 @@ impl RecordingEconomicsAdmissionSource {
 impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
     for RecordingEconomicsAdmissionSource
 {
+    fn resolve_product_surface(
+        &self,
+        _execution_client_id: &crate::economics::ExecutionClientId,
+        _instrument_id: &crate::economics::InstrumentId,
+        candidates: &[crate::economics::ProductSurfaceId],
+    ) -> std::result::Result<
+        crate::economics::ProductSurfaceId,
+        crate::economics::EconomicsUnavailable,
+    > {
+        match candidates {
+            [surface] => Ok(surface.clone()),
+            [] => Err(crate::economics::EconomicsUnavailable::MissingQuoteAuthority),
+            _ => Err(crate::economics::EconomicsUnavailable::AmbiguousQuoteAuthority),
+        }
+    }
+
     fn quote_admission(
         &self,
         intent: crate::bolt_v3_economics_runtime::EconomicsAdmissionQuoteIntent,
@@ -251,10 +267,10 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     scope: EconomicScope::Decision {
                         decision_correlation_id: intent.request.decision_correlation_id.clone(),
                     },
-                    point_effect: SignedNativeEffect::currency(
+                    point_effect: Some(SignedNativeEffect::currency(
                         effect,
                         intent.request.reporting_unit.clone(),
-                    )?,
+                    )?),
                     debit_risk_bound: None,
                     admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
                     calculation_factors: Vec::new(),

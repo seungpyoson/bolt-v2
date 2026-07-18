@@ -104,6 +104,13 @@ impl HyperliquidEconomicsAdapterConfig {
                             value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
                         })
                         .ok_or(HyperliquidEconomicsError::InvalidIdentity)?,
+                    funding_schedule_phase_ns: carry
+                        .funding_schedule_phase_secs
+                        .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
+                        .and_then(|value| {
+                            value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+                        })
+                        .ok_or(HyperliquidEconomicsError::InvalidIdentity)?,
                     venue_rate_cap_fraction: basis_points_to_fraction(
                         Decimal::from_str(&carry.funding_venue_rate_cap_bps_per_hour)
                             .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
@@ -168,6 +175,7 @@ pub struct HyperliquidCarryPolicy {
     pub oracle_price_factor_id: FormulaId,
     pub next_funding_at_factor_id: FormulaId,
     pub funding_interval_ns: u64,
+    pub funding_schedule_phase_ns: u64,
     pub venue_rate_cap_fraction: Decimal,
     pub standard_price_stress_multiplier: Decimal,
 }
@@ -503,6 +511,10 @@ impl HyperliquidProductEconomicsSnapshot {
         serde_json::from_str(json).map_err(|_| HyperliquidEconomicsError::InvalidProductMetadata)
     }
 
+    pub fn carry_next_funding_at_ns(&self) -> Option<u64> {
+        self.carry_next_funding_at_ns
+    }
+
     pub fn from_perp_meta_wire(
         metadata: HyperliquidSnapshotMetadata,
         json: &[u8],
@@ -519,6 +531,7 @@ impl HyperliquidProductEconomicsSnapshot {
             || meta.margin_tables.is_empty()
             || meta.universe.len() != contexts.len()
             || carry.funding_interval_ns == 0
+            || carry.funding_schedule_phase_ns >= carry.funding_interval_ns
             || carry.venue_rate_cap_fraction <= Decimal::ZERO
         {
             return Err(HyperliquidEconomicsError::InvalidProductMetadata);
@@ -542,11 +555,26 @@ impl HyperliquidProductEconomicsSnapshot {
         {
             return Err(HyperliquidEconomicsError::InvalidProductMetadata);
         }
-        let remainder = metadata.source_at_ns % carry.funding_interval_ns;
-        let next_funding_at_ns = metadata
-            .source_at_ns
-            .checked_add(carry.funding_interval_ns - remainder)
-            .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
+        let next_funding_at_ns = if metadata.source_at_ns < carry.funding_schedule_phase_ns {
+            carry.funding_schedule_phase_ns
+        } else {
+            let elapsed = metadata
+                .source_at_ns
+                .checked_sub(carry.funding_schedule_phase_ns)
+                .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
+            let completed_intervals = elapsed
+                .checked_div(carry.funding_interval_ns)
+                .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
+            carry
+                .funding_schedule_phase_ns
+                .checked_add(
+                    completed_intervals
+                        .checked_add(1)
+                        .and_then(|count| count.checked_mul(carry.funding_interval_ns))
+                        .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?,
+                )
+                .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?
+        };
         Ok(Self {
             snapshot_id: metadata.snapshot_id,
             source_at_ns: metadata.source_at_ns,
@@ -1145,14 +1173,9 @@ impl HyperliquidEconomicsAdapter {
         if current_adverse_projection > debit_bound.abs() {
             return Err(HyperliquidEconomicsError::InvalidCarryBound);
         }
-        let point_amount = if point_projection.is_zero() {
-            debit_bound
-        } else {
-            point_projection
-        };
         Ok(Some(EstimatedEconomicComponent {
             component_id: policy.component_id.clone(),
-            class: if point_amount.is_sign_negative() {
+            class: if point_projection.is_sign_negative() || point_projection.is_zero() {
                 EconomicClass::Charge
             } else {
                 EconomicClass::Credit
@@ -1161,11 +1184,17 @@ impl HyperliquidEconomicsAdapter {
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
-            point_effect: SignedNativeEffect::currency(
-                point_amount,
-                self.config.settlement_unit.clone(),
-            )
-            .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
+            point_effect: if point_projection.is_zero() {
+                None
+            } else {
+                Some(
+                    SignedNativeEffect::currency(
+                        point_projection,
+                        self.config.settlement_unit.clone(),
+                    )
+                    .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
+                )
+            },
             debit_risk_bound: Some(
                 SignedNativeEffect::currency(debit_bound, self.config.settlement_unit.clone())
                     .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
@@ -1238,7 +1267,7 @@ impl HyperliquidEconomicsAdapter {
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
-            point_effect,
+            point_effect: Some(point_effect),
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
             calculation_factors: vec![CalculationFactor {

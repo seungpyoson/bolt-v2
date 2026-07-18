@@ -43,14 +43,20 @@ pub fn validate_and_aggregate_quote(
             });
         }
         validate_source_timeline(request, &component)?;
-        if !matches!(
-            (
-                component.class,
-                component.point_effect.amount().is_sign_negative()
-            ),
-            (super::EconomicClass::Charge, true) | (super::EconomicClass::Credit, false)
+        if let Some(point_effect) = &component.point_effect {
+            if !matches!(
+                (component.class, point_effect.amount().is_sign_negative()),
+                (super::EconomicClass::Charge, true) | (super::EconomicClass::Credit, false)
+            ) {
+                return Err(EconomicsUnavailable::EconomicClassSignMismatch);
+            }
+        } else if !matches!(
+            component.admission_treatment,
+            AdmissionTreatment::RiskBound { .. }
         ) {
-            return Err(EconomicsUnavailable::EconomicClassSignMismatch);
+            return Err(EconomicsUnavailable::MissingPointEstimate {
+                component_id: component.component_id,
+            });
         }
         if component.source.valid_until_ns < request.requested_at_ns {
             if component.admission_treatment == AdmissionTreatment::ForecastOnly {
@@ -62,28 +68,33 @@ pub fn validate_and_aggregate_quote(
             });
         }
 
-        let point_valuation = match resolve_valuation(
-            &component.point_effect,
-            component.normalized.as_ref(),
-            valuations,
-            request,
-        ) {
-            Ok(valuation) => valuation,
-            Err(
-                EconomicsUnavailable::MissingValuation { .. }
-                | EconomicsUnavailable::MissingValuationRoute { .. }
-                | EconomicsUnavailable::StaleValuation { .. },
-            ) if component.admission_treatment == AdmissionTreatment::ForecastOnly => {
-                forecast_complete = false;
-                accepted.push(component);
-                continue;
-            }
-            Err(error) => return Err(error),
+        let point_valid_until_ns = if let Some(point_effect) = &component.point_effect {
+            let point_valuation = match resolve_valuation(
+                point_effect,
+                component.normalized.as_ref(),
+                valuations,
+                request,
+            ) {
+                Ok(valuation) => valuation,
+                Err(
+                    EconomicsUnavailable::MissingValuation { .. }
+                    | EconomicsUnavailable::MissingValuationRoute { .. }
+                    | EconomicsUnavailable::StaleValuation { .. },
+                ) if component.admission_treatment == AdmissionTreatment::ForecastOnly => {
+                    forecast_complete = false;
+                    accepted.push(component);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let valid_until_ns = point_valuation.valid_until_ns;
+            forecast_total += point_valuation.normalized_amount;
+            component.normalized = Some(point_valuation.clone());
+            normalizations.push(point_valuation);
+            valid_until_ns
+        } else {
+            None
         };
-        let point_valid_until_ns = point_valuation.valid_until_ns;
-        forecast_total += point_valuation.normalized_amount;
-        component.normalized = Some(point_valuation.clone());
-        normalizations.push(point_valuation);
 
         match component.admission_treatment {
             AdmissionTreatment::GuaranteedConditionalOnAction => {

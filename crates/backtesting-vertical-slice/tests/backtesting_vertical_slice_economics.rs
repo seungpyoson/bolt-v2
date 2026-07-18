@@ -1,9 +1,12 @@
 use backtesting_vertical_slice::economics::{
     HistoricalEconomicsSnapshot, HistoricalEdgeBasisEvidence, HistoricalSourceSnapshot,
-    ReplayEconomicsAdapter, ReplayQuoteIntent, canonical_quote_request_from_replay,
+    ReplayEconomicsAdapter, ReplayEconomicsAdmissionSource, ReplayQuoteIntent,
+    canonical_quote_request_from_replay,
 };
+use bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource;
 use bolt_v2::economics::{
-    LiquidityRoleAssumption, OrderSide, PlannedFillLeg, VenueEconomicsAdapter,
+    ExecutionClientId, InstrumentId, LiquidityRoleAssumption, OrderSide, PlannedFillLeg,
+    ProductSurfaceId, VenueEconomicsAdapter,
 };
 use rust_decimal::Decimal;
 use std::str::FromStr;
@@ -123,4 +126,33 @@ fn historical_fee_free_snapshot_is_valid() {
     let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("fee-free snapshot");
 
     assert!(adapter.quote(&request(100)).unwrap().components.is_empty());
+}
+
+#[test]
+fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
+    let first = snapshot();
+    let mut second = first.clone();
+    second.snapshot_id = "quote-snapshot-next".to_string();
+    second.source_at_ns = 111;
+    second.fetched_at_ns = 115;
+    second.valid_until_ns = 130;
+    second.edge_basis.source_snapshot_ids = vec![second.snapshot_id.clone()];
+    second.edge_basis.valid_until_ns = second.valid_until_ns;
+    second.source_snapshots[0].snapshot_id = second.snapshot_id.clone();
+    second.source_snapshots[0].source_at_ns = second.source_at_ns;
+    second.source_snapshots[0].fetched_at_ns = second.fetched_at_ns;
+    second.source_snapshots[0].valid_until_ns = second.valid_until_ns;
+    let source = ReplayEconomicsAdmissionSource::from_snapshots(vec![first, second]).unwrap();
+
+    assert_eq!(
+        source
+            .resolve_product_surface(
+                &ExecutionClientId::new("execution-client").unwrap(),
+                &InstrumentId::new("instrument").unwrap(),
+                &[ProductSurfaceId::new("binary_outcome").unwrap()],
+            )
+            .unwrap()
+            .as_str(),
+        "binary_outcome"
+    );
 }

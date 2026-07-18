@@ -42,6 +42,7 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
             oracle_price_factor_id: FormulaId::new("funding-oracle-price").unwrap(),
             next_funding_at_factor_id: FormulaId::new("funding-next-event-at").unwrap(),
             funding_interval_ns: 3_600_000_000_000,
+            funding_schedule_phase_ns: 900_000_000_000,
             venue_rate_cap_fraction: decimal("0.04"),
             standard_price_stress_multiplier: decimal("1.5"),
         }),
@@ -174,8 +175,14 @@ fn spot_buy_fee_uses_base_unit_and_omits_builder_charge() {
     let components = adapter.quote_components(&request).unwrap();
 
     assert_eq!(components.len(), 1);
-    assert_eq!(components[0].point_effect.amount(), decimal("-0.0008"));
-    assert_eq!(components[0].point_effect.unit().as_str(), "BTC");
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("-0.0008")
+    );
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().unit().as_str(),
+        "BTC"
+    );
 }
 
 #[test]
@@ -200,7 +207,7 @@ fn spot_sell_fee_and_builder_charge_use_quote_unit() {
     assert!(
         components
             .iter()
-            .all(|component| component.point_effect.unit().as_str() == "USDC")
+            .all(|component| component.point_effect.as_ref().unwrap().unit().as_str() == "USDC")
     );
 }
 
@@ -221,8 +228,14 @@ fn complete_perp_surface_applies_account_rate_and_builder_approval() {
 
     let components = adapter.quote_components(&request).unwrap();
     assert_eq!(components.len(), 3);
-    assert_eq!(components[0].point_effect.amount(), decimal("-3.15"));
-    assert_eq!(components[1].point_effect.amount(), decimal("-1.00"));
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("-3.15")
+    );
+    assert_eq!(
+        components[1].point_effect.as_ref().unwrap().amount(),
+        decimal("-1.00")
+    );
 }
 
 #[test]
@@ -239,7 +252,10 @@ fn official_user_fees_wire_shape_drives_effective_taker_rate_without_double_stak
 
     let components = adapter.quote_components(&request).unwrap();
 
-    assert_eq!(components[0].point_effect.amount(), decimal("-3.024"));
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("-3.024")
+    );
 }
 
 #[test]
@@ -269,7 +285,10 @@ fn negative_maker_rate_bypasses_referral_and_hip3_scaling() {
 
     let components = adapter.quote_components(&request).unwrap();
 
-    assert_eq!(components[0].point_effect.amount(), decimal("0.50"));
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("0.50")
+    );
 }
 
 #[test]
@@ -311,7 +330,10 @@ fn negative_maker_rate_is_guaranteed_credit_not_forecast_reward() {
     request.planned_fill_legs[0].quantity = decimal("500");
 
     let components = adapter.quote_components(&request).unwrap();
-    assert_eq!(components[0].point_effect.amount(), decimal("0.50"));
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("0.50")
+    );
     assert_eq!(components[0].class, EconomicClass::Credit);
     assert!(components[0].authorizes_admission());
 }
@@ -385,6 +407,7 @@ fn funding_bound_counts_intersected_events_at_the_exact_boundary() {
         carry.debit_risk_bound.as_ref().unwrap().amount(),
         decimal("-30")
     );
+    assert!(carry.point_effect.is_some());
 }
 
 #[test]
@@ -415,6 +438,7 @@ fn zero_point_funding_still_seals_the_venue_debit_bound() {
         carry.debit_risk_bound.as_ref().unwrap().amount(),
         decimal("-30")
     );
+    assert!(carry.point_effect.is_none());
 }
 
 #[test]
@@ -502,9 +526,9 @@ fn user_fees_parser_requires_complete_account_surface() {
 fn governed_live_hyperliquid_quote_authority_captures_parse() {
     let metadata = HyperliquidSnapshotMetadata {
         snapshot_id: "governed-live-user-fees".to_string(),
-        source_at_ns: 90,
-        fetched_at_ns: 95,
-        valid_until_ns: 110,
+        source_at_ns: 1_000_000_000_000,
+        fetched_at_ns: 1_000_000_000_005,
+        valid_until_ns: 1_000_000_000_110,
     };
     HyperliquidUserFeesSnapshot::from_wire_json(
         metadata.clone(),
@@ -512,13 +536,14 @@ fn governed_live_hyperliquid_quote_authority_captures_parse() {
         include_str!("fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"),
     )
     .unwrap();
-    HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
+    let product = HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
         metadata,
         include_bytes!("fixtures/bolt_v3/boundary_evidence/hyperliquid-meta-and-asset-ctxs.json"),
         "BTC",
         config().carry.as_ref().unwrap(),
     )
     .unwrap();
+    assert_eq!(product.carry_next_funding_at_ns(), Some(4_500_000_000_000));
 }
 
 #[test]

@@ -1,19 +1,19 @@
 use std::{str::FromStr, sync::Arc};
 
 use bolt_v2::bolt_v3_economics_runtime::{
-    AuthoritativeValuationObservation, BoltV3EconomicsRuntime,
-    ConfiguredValuationProvider, EconomicsAdmission, EconomicsAdmissionIntent,
-    EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
+    AuthoritativeValuationObservation, BoltV3EconomicsRuntime, ConfiguredValuationProvider,
+    EconomicsAdmission, EconomicsAdmissionIntent, EconomicsAdmissionQuoteIntent,
+    EconomicsAdmissionSource,
+};
+use bolt_v2::bolt_v3_providers::{
+    OfflineEconomicsAdapterBuildContext, OfflineEconomicsSnapshotInput,
+    build_offline_economics_adapter,
 };
 use bolt_v2::economics::{
     AccountId, DecisionCorrelationId, EconomicQuoteRequest, EconomicScope, EconomicsUnavailable,
     EdgeBasisEvidence, EdgeBasisPolicyId, ExecutionClientId, FormulaId, InstrumentId,
     LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg,
     PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingContext, SnapshotId, SourceId,
-};
-use bolt_v2::bolt_v3_providers::{
-    OfflineEconomicsAdapterBuildContext, OfflineEconomicsSnapshotInput,
-    build_offline_economics_adapter,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,6 @@ pub struct ReplayEconomicsAdmissionSource {
     snapshots: Vec<HistoricalEconomicsSnapshot>,
 }
 
-
 impl ReplayEconomicsAdmissionSource {
     pub fn from_snapshots(
         snapshots: Vec<HistoricalEconomicsSnapshot>,
@@ -121,19 +120,30 @@ impl ReplayEconomicsAdmissionSource {
     {
         let authority = self.snapshots[0].clone();
         let mut route_configs = std::collections::BTreeMap::new();
+        let mut routing_attachment_policy = None;
         for snapshot in &self.snapshots {
             let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
+            match routing_attachment_policy {
+                Some(policy) if policy != adapter.economics.routing_attachment_policy => {
+                    return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+                }
+                Some(_) => {}
+                None => {
+                    routing_attachment_policy = Some(adapter.economics.routing_attachment_policy);
+                }
+            }
             let carry_plan = if adapter
-                    .economics
-                    .carry_surfaces
-                    .contains(&snapshot.product_surface_id)
-                {
-                    bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::Required
-                } else {
-                    bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry
-                };
+                .economics
+                .carry_surfaces
+                .contains(&snapshot.product_surface_id)
+            {
+                bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::Required
+            } else {
+                bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry
+            };
             let route = (snapshot.edge_basis.policy_id.clone(), carry_plan);
-            if let Some(existing) = route_configs.insert(snapshot.product_surface_id.clone(), route.clone())
+            if let Some(existing) =
+                route_configs.insert(snapshot.product_surface_id.clone(), route.clone())
                 && existing != route
             {
                 return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
@@ -157,8 +167,8 @@ impl ReplayEconomicsAdmissionSource {
                 product_surface_routes: routes,
                 reporting_policy_id: &authority.reporting_policy_id,
                 reporting_unit: &authority.reporting_unit,
-                routing_attachment_policy:
-                    bolt_v2::bolt_v3_economics_config::EconomicsRoutingAttachmentPolicy::Forbidden,
+                routing_attachment_policy: routing_attachment_policy
+                    .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?,
             },
         )
         .map_err(|_| EconomicsUnavailable::InvalidIdentifier {
@@ -174,20 +184,23 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         instrument_id: &InstrumentId,
         candidates: &[ProductSurfaceId],
     ) -> Result<ProductSurfaceId, EconomicsUnavailable> {
-        let mut matching = self.snapshots.iter().filter(|snapshot| {
-            snapshot.execution_client_id == execution_client_id.as_str()
-                && snapshot.instrument_id == instrument_id.as_str()
-                && candidates
-                    .iter()
-                    .any(|candidate| candidate.as_str() == snapshot.product_surface_id)
-        });
-        let selected = matching
-            .next()
-            .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
-        if matching.next().is_some() {
-            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+        let matching = self
+            .snapshots
+            .iter()
+            .filter(|snapshot| {
+                snapshot.execution_client_id == execution_client_id.as_str()
+                    && snapshot.instrument_id == instrument_id.as_str()
+                    && candidates
+                        .iter()
+                        .any(|candidate| candidate.as_str() == snapshot.product_surface_id)
+            })
+            .map(|snapshot| snapshot.product_surface_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        match matching.iter().copied().collect::<Vec<_>>().as_slice() {
+            [] => Err(EconomicsUnavailable::MissingQuoteAuthority),
+            [surface] => ProductSurfaceId::new(*surface),
+            _ => Err(EconomicsUnavailable::AmbiguousQuoteAuthority),
         }
-        ProductSurfaceId::new(selected.product_surface_id.clone())
     }
 
     fn quote_admission(
@@ -517,9 +530,7 @@ pub fn canonical_quote_request_from_replay(
                 .routing_attachment_id
                 .map(|attachment_id| {
                     Ok(bolt_v2::economics::RoutingAttachment {
-                        attachment_id: bolt_v2::economics::RoutingAttachmentId::new(
-                            attachment_id,
-                        )?,
+                        attachment_id: bolt_v2::economics::RoutingAttachmentId::new(attachment_id)?,
                     })
                 })
                 .transpose()?,

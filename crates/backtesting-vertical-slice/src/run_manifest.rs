@@ -4913,13 +4913,12 @@ mod tests {
                 "shadow".to_string(),
             ),
         ]);
-        manifest.economics_snapshots =
-            vec![replay_economics_snapshot(
-                "maker_execution_client",
-                "USD",
-                TEST_INSTRUMENT_ID,
-                0,
-            )];
+        manifest.economics_snapshots = vec![replay_economics_snapshot(
+            "maker_execution_client",
+            "USD",
+            TEST_INSTRUMENT_ID,
+            0,
+        )];
         manifest.strategy_config_hash =
             "3333333333333333333333333333333333333333333333333333333333333333".to_string();
         manifest

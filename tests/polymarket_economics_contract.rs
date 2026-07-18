@@ -46,8 +46,14 @@ fn nonlinear_fee_is_rounded_and_summed_per_planned_fill_level() {
 
     let components = adapter.quote_components(&request).unwrap();
 
-    assert_eq!(components[0].point_effect.amount(), decimal("-0.14000"));
-    assert_ne!(components[0].point_effect.amount(), decimal("-0.14700"));
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("-0.14000")
+    );
+    assert_ne!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("-0.14700")
+    );
 }
 
 fn snapshot(fees_enabled: bool, exponent: u32) -> PolymarketMarketInfoSnapshot {
@@ -82,8 +88,14 @@ fn taker_formula_matches_authoritative_price_shaped_example() {
 
     let components = adapter.quote_components(&request).unwrap();
     assert_eq!(components.len(), 1);
-    assert_eq!(components[0].point_effect.amount(), decimal("-1.75"));
-    assert_eq!(components[0].point_effect.unit().as_str(), "pUSD");
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("-1.75")
+    );
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().unit().as_str(),
+        "pUSD"
+    );
 }
 
 #[test]
@@ -143,7 +155,10 @@ fn documented_exponent_two_descriptor_applies_the_exponent_to_the_price_shape() 
     request.planned_fill_legs[0].quantity = decimal("100");
 
     let components = adapter.quote_components(&request).unwrap();
-    assert_eq!(components[0].point_effect.amount(), decimal("-0.43750"));
+    assert_eq!(
+        components[0].point_effect.as_ref().unwrap().amount(),
+        decimal("-0.43750")
+    );
 }
 
 #[test]

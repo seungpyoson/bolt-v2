@@ -24,6 +24,18 @@ fn core_total_uses_guaranteed_point_and_risk_bound_debit() {
 }
 
 #[test]
+fn bound_only_component_reserves_core_without_inventing_a_forecast_point() {
+    let mut component = risk_bound(decimal("-0.25"), decimal("-0.75"));
+    component.point_effect = None;
+
+    let quote = quote_fixture([component]).unwrap();
+
+    assert_eq!(quote.core_total(), decimal("-0.75"));
+    assert_eq!(quote.forecast_total(), decimal("0"));
+    assert!(quote.forecast_complete());
+}
+
+#[test]
 fn missing_or_positive_risk_bound_rejects_core_quote() {
     assert!(matches!(
         quote_fixture([risk_bound_without_debit_bound()]),
@@ -118,9 +130,10 @@ fn distinct_native_units_require_explicit_valuation() {
         None,
     );
     let mut component = component;
-    component.point_effect =
+    component.point_effect = Some(
         bolt_v2::economics::SignedNativeEffect::currency(decimal("-1"), native_unit("USDC"))
-            .unwrap();
+            .unwrap(),
+    );
 
     assert!(matches!(
         quote_fixture([component]),
@@ -132,7 +145,7 @@ fn distinct_native_units_require_explicit_valuation() {
 fn missing_forecast_valuation_degrades_forecast_without_blocking_core() {
     let mut supplemental = forecast(decimal("2.00"));
     supplemental.point_effect =
-        SignedNativeEffect::currency(decimal("2.00"), native_unit("USDC")).unwrap();
+        Some(SignedNativeEffect::currency(decimal("2.00"), native_unit("USDC")).unwrap());
 
     let quote = quote_fixture([guaranteed(decimal("-1.00")), supplemental]).unwrap();
 
@@ -156,9 +169,9 @@ fn component_class_must_match_its_signed_effect() {
 fn required_valuation_expiry_limits_quote_validity() {
     let mut component = guaranteed(decimal("-1.00"));
     component.point_effect =
-        SignedNativeEffect::currency(decimal("-1.00"), native_unit("USDC")).unwrap();
+        Some(SignedNativeEffect::currency(decimal("-1.00"), native_unit("USDC")).unwrap());
     component.normalized = Some(ValuationEvidence {
-        native_effect: component.point_effect.clone(),
+        native_effect: component.point_effect.clone().unwrap(),
         normalized_amount: decimal("-1.00"),
         reporting_unit: native_unit("pUSD"),
         route_id: Some(ValuationRouteId::new("configured-route").unwrap()),

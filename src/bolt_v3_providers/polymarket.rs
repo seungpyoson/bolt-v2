@@ -760,11 +760,8 @@ fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig
             "clients.{key}.execution.on_chain_collateral.redemption_semantics_source_commit must be a full Git commit"
         ));
     }
-    if on_chain
-        .redemption_rate
-        .parse::<Decimal>()
-        .is_err_or(|rate| rate <= Decimal::ZERO)
-    {
+    let redemption_rate = on_chain.redemption_rate.parse::<Decimal>();
+    if !matches!(redemption_rate, Ok(rate) if rate > Decimal::ZERO) {
         errors.push(format!(
             "clients.{key}.execution.on_chain_collateral.redemption_rate must be positive"
         ));

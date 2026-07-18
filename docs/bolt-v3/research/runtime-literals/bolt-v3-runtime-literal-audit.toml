@@ -21793,6 +21793,14 @@ classification = "funding_interval_arithmetic"
 reason = "A horizon reaching the next funding event intersects that first event before counting later configured intervals."
 
 [[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "number"
+literal = '''1'''
+context = '''.checked_add(1)'''
+classification = "funding_schedule_arithmetic"
+reason = "The next configured funding boundary is the first interval after the completed interval count; period and phase remain TOML-owned."
+
+[[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
 literal = '''"account_fees"'''

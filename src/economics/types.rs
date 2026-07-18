@@ -297,7 +297,7 @@ pub struct EstimatedEconomicComponent {
     pub class: EconomicClass,
     pub kind: EconomicKind,
     pub scope: EconomicScope,
-    pub point_effect: SignedNativeEffect,
+    pub point_effect: Option<SignedNativeEffect>,
     pub debit_risk_bound: Option<SignedNativeEffect>,
     pub admission_treatment: AdmissionTreatment,
     pub calculation_factors: Vec<CalculationFactor>,
@@ -541,6 +541,9 @@ pub enum EconomicsUnavailable {
     InvalidQuoteValidityPolicy,
     InvalidDecimal,
     EconomicClassSignMismatch,
+    MissingPointEstimate {
+        component_id: EconomicComponentId,
+    },
     MissingQuoteAuthority,
     AmbiguousQuoteAuthority,
     InvalidSourceTimeline {

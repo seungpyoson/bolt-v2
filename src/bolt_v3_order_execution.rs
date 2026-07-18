@@ -1347,7 +1347,8 @@ mod tests {
         BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
         BoltV3OrderExecutionPolicy, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
         BoltV3SubmitRoutingRequest, clamp_risk_reducing_exit_to_venue_position,
-        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
+        economics_order_binding, route_kill_switch_flatten_command_with_sink,
+        route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{

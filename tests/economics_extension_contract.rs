@@ -46,8 +46,9 @@ impl VenueEconomicsAdapter for SyntheticVenue {
                 scope: EconomicScope::Decision {
                     decision_correlation_id: request.decision_correlation_id.clone(),
                 },
-                point_effect: SignedNativeEffect::currency(decimal("-0.25"), native_unit("pUSD"))
-                    .unwrap(),
+                point_effect: Some(
+                    SignedNativeEffect::currency(decimal("-0.25"), native_unit("pUSD")).unwrap(),
+                ),
                 debit_risk_bound: None,
                 admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
                 calculation_factors: Vec::new(),

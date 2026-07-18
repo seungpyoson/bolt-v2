@@ -46,6 +46,20 @@ struct SampleEconomicsAdmissionSource;
 impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
     for SampleEconomicsAdmissionSource
 {
+    fn resolve_product_surface(
+        &self,
+        _execution_client_id: &bolt_v2::economics::ExecutionClientId,
+        _instrument_id: &bolt_v2::economics::InstrumentId,
+        candidates: &[bolt_v2::economics::ProductSurfaceId],
+    ) -> Result<bolt_v2::economics::ProductSurfaceId, bolt_v2::economics::EconomicsUnavailable>
+    {
+        match candidates {
+            [surface] => Ok(surface.clone()),
+            [] => Err(bolt_v2::economics::EconomicsUnavailable::MissingQuoteAuthority),
+            _ => Err(bolt_v2::economics::EconomicsUnavailable::AmbiguousQuoteAuthority),
+        }
+    }
+
     fn quote_admission(
         &self,
         intent: bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionQuoteIntent,
@@ -75,10 +89,10 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     scope: EconomicScope::Decision {
                         decision_correlation_id: intent.request.decision_correlation_id.clone(),
                     },
-                    point_effect: SignedNativeEffect::currency(
+                    point_effect: Some(SignedNativeEffect::currency(
                         Decimal::ONE,
                         intent.request.reporting_unit.clone(),
-                    )?,
+                    )?),
                     debit_risk_bound: None,
                     admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
                     calculation_factors: Vec::new(),
@@ -267,8 +281,10 @@ fn sample_economics_admission_with_component(
                 scope: EconomicScope::Decision {
                     decision_correlation_id: decision_correlation_id.clone(),
                 },
-                point_effect: SignedNativeEffect::currency(point_effect, reporting_unit)
-                    .expect("valid test effect"),
+                point_effect: Some(
+                    SignedNativeEffect::currency(point_effect, reporting_unit)
+                        .expect("valid test effect"),
+                ),
                 debit_risk_bound: None,
                 admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
                 calculation_factors: Vec::new(),

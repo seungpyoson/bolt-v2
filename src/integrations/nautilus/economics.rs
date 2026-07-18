@@ -3,8 +3,8 @@ use nautilus_model::{
     events::OrderInitialized,
     identifiers::{AccountId as NtAccountId, InstrumentId as NtInstrumentId},
     orders::OrderAny,
-    types::{Price, Quantity},
 };
+use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -12,8 +12,8 @@ use crate::{
     economics::{
         AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
         ExecutionClientId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId,
-        OrderSide, PlannedFillLeg, ProductSurfaceId, ReportingPolicyId, RoutingAttachment,
-        RoutingAttachmentId, RoutingContext,
+        OrderSide, PlannedFillLeg, PositionContext, ProductSurfaceId, ReportingPolicyId,
+        RoutingAttachment, RoutingAttachmentId, RoutingContext,
     },
 };
 
@@ -24,8 +24,9 @@ pub struct NtEconomicsIntent<'a> {
     pub product_surface_id: &'a str,
     pub order_side: NtOrderSide,
     pub liquidity_role: LiquidityRoleAssumption,
-    pub planned_fill_legs: &'a [(Price, Quantity)],
+    pub planned_fill_legs: &'a [(Decimal, Decimal)],
     pub routing_attachment_id: Option<&'a str>,
+    pub position: Option<PositionContext>,
     pub lifecycle_path: LifecyclePath,
     pub reporting_policy_id: &'a str,
     pub reporting_unit: &'a str,
@@ -63,14 +64,14 @@ pub fn canonical_quote_request_from_nt(
         .planned_fill_legs
         .iter()
         .map(|(price, quantity)| PlannedFillLeg {
-            price: price.as_decimal(),
-            quantity: quantity.as_decimal(),
+            price: *price,
+            quantity: *quantity,
         })
         .collect::<Vec<_>>();
     if planned_fill_legs.is_empty()
-        || planned_fill_legs.iter().any(|leg| {
-            leg.price <= rust_decimal::Decimal::ZERO || leg.quantity <= rust_decimal::Decimal::ZERO
-        })
+        || planned_fill_legs
+            .iter()
+            .any(|leg| leg.price <= Decimal::ZERO || leg.quantity <= Decimal::ZERO)
     {
         return Err(NtEconomicsMappingError::InvalidFillLeg);
     }
@@ -94,7 +95,7 @@ pub fn canonical_quote_request_from_nt(
         liquidity_role: intent.liquidity_role,
         planned_fill_legs,
         routing: RoutingContext { attached_charge },
-        position: None,
+        position: intent.position,
         lifecycle_path: intent.lifecycle_path,
         reporting_policy_id: ReportingPolicyId::new(intent.reporting_policy_id)
             .map_err(|_| NtEconomicsMappingError::InvalidIdentity)?,

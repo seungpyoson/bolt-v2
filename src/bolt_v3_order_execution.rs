@@ -40,13 +40,14 @@ use crate::{
         build_submit_admission_request_from_order, order_economics_facts,
     },
     economics::{
-        AccountId as EconomicsAccountId, DecisionCorrelationId, EconomicQuoteRequest,
-        EdgeBasisPolicyId, ExecutionClientId as EconomicsExecutionClientId,
-        InstrumentId as EconomicsInstrumentId, LifecyclePath, LiquidityRoleAssumption,
-        NativeUnitId, OrderSide as EconomicsOrderSide, PlannedFillLeg, PositionContext,
-        ProductSurfaceId, ReportingPolicyId, RoutingContext,
+        AccountId as EconomicsAccountId, EdgeBasisPolicyId,
+        ExecutionClientId as EconomicsExecutionClientId, InstrumentId as EconomicsInstrumentId,
+        LifecyclePath, LiquidityRoleAssumption, NativeUnitId, PositionContext, ProductSurfaceId,
+        ReportingPolicyId,
     },
-    integrations::nautilus::economics::economics_order_binding,
+    integrations::nautilus::economics::{
+        NtEconomicsIntent, canonical_quote_request_from_nt, economics_order_binding,
+    },
 };
 
 #[cfg(test)]
@@ -174,11 +175,6 @@ impl BoltV3OrderRoutingHandle {
             self.execution_client_id.as_str() == intent.request.execution_client_id,
             "economics routing execution client does not match the final order route"
         );
-        let order_side = match intent.request.order.order_side() {
-            OrderSide::Buy => EconomicsOrderSide::Buy,
-            OrderSide::Sell => EconomicsOrderSide::Sell,
-            _ => anyhow::bail!("bolt-v3 economics rejects unsupported order side"),
-        };
         match intent.liquidity_role {
             LiquidityRoleAssumption::GuaranteedMaker => anyhow::ensure!(
                 intent.request.order.is_post_only(),
@@ -221,31 +217,28 @@ impl BoltV3OrderRoutingHandle {
                 )
             })?),
         };
-        let request = EconomicQuoteRequest {
-            execution_client_id: self.execution_client_id.clone(),
-            account_id: self.account_id.clone(),
-            instrument_id,
-            product_surface_id,
-            order_side,
+        let nt_planned_fill_legs = planned_fill_legs
+            .iter()
+            .map(|leg| (leg.price, leg.quantity))
+            .collect::<Vec<_>>();
+        let request = canonical_quote_request_from_nt(NtEconomicsIntent {
+            execution_client_id: self.execution_client_id.as_str(),
+            account_id: nautilus_model::identifiers::AccountId::from(self.account_id.as_str()),
+            instrument_id: intent.request.order.instrument_id(),
+            product_surface_id: product_surface_id.as_str(),
+            order_side: intent.request.order.order_side(),
             liquidity_role: intent.liquidity_role,
-            planned_fill_legs: planned_fill_legs
-                .into_iter()
-                .map(|leg| PlannedFillLeg {
-                    price: leg.price,
-                    quantity: leg.quantity,
-                })
-                .collect(),
-            routing: RoutingContext {
-                attached_charge: None,
-            },
+            planned_fill_legs: &nt_planned_fill_legs,
+            routing_attachment_id: None,
             position,
             lifecycle_path: intent.lifecycle_path,
-            reporting_policy_id: self.reporting_policy_id.clone(),
-            reporting_unit: self.reporting_unit.clone(),
-            edge_basis_policy_id: edge_basis_policy_id.clone(),
+            reporting_policy_id: self.reporting_policy_id.as_str(),
+            reporting_unit: self.reporting_unit.as_str(),
+            edge_basis_policy_id: edge_basis_policy_id.as_str(),
             requested_at_ns: intent.requested_at_ns,
-            decision_correlation_id: DecisionCorrelationId::new(intent.decision_correlation_id)?,
-        };
+            decision_correlation_id: intent.decision_correlation_id,
+        })
+        .map_err(|error| anyhow::anyhow!("economics NT mapping failed: {error:?}"))?;
         self.source
             .quote_admission(EconomicsAdmissionQuoteIntent {
                 request,

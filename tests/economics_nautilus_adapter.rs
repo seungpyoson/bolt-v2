@@ -7,10 +7,15 @@ use bolt_v2::{
 use nautilus_model::{
     enums::OrderSide as NtOrderSide,
     identifiers::{AccountId, InstrumentId},
-    types::{Price, Quantity},
 };
+use rust_decimal::Decimal;
+use std::str::FromStr;
 
-fn intent<'a>(legs: &'a [(Price, Quantity)]) -> NtEconomicsIntent<'a> {
+fn decimal(value: &str) -> Decimal {
+    Decimal::from_str(value).unwrap()
+}
+
+fn intent<'a>(legs: &'a [(Decimal, Decimal)]) -> NtEconomicsIntent<'a> {
     NtEconomicsIntent {
         execution_client_id: "execution-client",
         account_id: AccountId::from("ACCOUNT-001"),
@@ -20,6 +25,7 @@ fn intent<'a>(legs: &'a [(Price, Quantity)]) -> NtEconomicsIntent<'a> {
         liquidity_role: LiquidityRoleAssumption::Taker,
         planned_fill_legs: legs,
         routing_attachment_id: None,
+        position: None,
         lifecycle_path: LifecyclePath::PlannedExit,
         reporting_policy_id: "primary-pnl",
         reporting_unit: "USDC",
@@ -31,14 +37,11 @@ fn intent<'a>(legs: &'a [(Price, Quantity)]) -> NtEconomicsIntent<'a> {
 
 #[test]
 fn nt_intent_maps_exact_decimal_fill_plan() {
-    let legs = [(Price::new(100.25, 2), Quantity::new(3.5, 1))];
+    let legs = [(decimal("100.25"), decimal("3.5"))];
     let request = canonical_quote_request_from_nt(intent(&legs)).unwrap();
     assert_eq!(request.order_side, OrderSide::Buy);
-    assert_eq!(request.planned_fill_legs[0].price, legs[0].0.as_decimal());
-    assert_eq!(
-        request.planned_fill_legs[0].quantity,
-        legs[0].1.as_decimal()
-    );
+    assert_eq!(request.planned_fill_legs[0].price, legs[0].0);
+    assert_eq!(request.planned_fill_legs[0].quantity, legs[0].1);
 }
 
 #[test]

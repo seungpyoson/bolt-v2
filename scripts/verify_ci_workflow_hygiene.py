@@ -1275,7 +1275,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "28c6de24916fdedb70617280a973cda65f727b9fd6303f09e5fb80c835bab703"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "4644c3dd2ae81d4a7d5fe2cec0a678566407fe79f795449f4a08546adbe5b727"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
@@ -8552,6 +8552,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             errors.append(f"backtester bvs-test archive must emit explicit {label} S3 save status")
 
     archive_fragments = [
+        (
+            "backtester bvs-test archive timeout must come from trusted policy without fallback",
+            "timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}",
+        ),
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
         ("backtester bvs-test archive must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
         ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
@@ -8730,6 +8734,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
     ]
     issue_fragments = [
+        (
+            "backtester bvs-test issue-789 timeout must come from trusted policy without fallback",
+            "timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}",
+        ),
         ("backtester bvs-test issue-789 must use dedicated job name", "name: bvs-test issue-789"),
         (
             "backtester bvs-test issue-789 must depend on backtester-gate",
@@ -8939,6 +8947,8 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
             "trusted_revision: ${{ steps.policy_base.outputs.revision }}",
+            "backtester_test_archive_timeout_minutes: ${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}",
+            "backtester_issue_789_timeout_minutes: ${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}",
             "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
             "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
             '[[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]',

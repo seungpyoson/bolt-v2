@@ -997,6 +997,11 @@ def assert_positive_int_config_rejects_booleans() -> None:
 def assert_backtester_timeout_configs_reject_invalid_values() -> None:
     module = load_script()
     cases = {
+        "backtester has unexpected keys: ['rogue']": CONFIG_TOML.replace(
+            "[backtester.test_archive_timeout]",
+            "[backtester.rogue]\nvalue = 1\n\n[backtester.test_archive_timeout]",
+            1,
+        ),
         "backtester.test_archive_timeout.ordinary_max_job_minutes must be a positive integer": CONFIG_TOML.replace(
             "ordinary_max_job_minutes = 360",
             "ordinary_max_job_minutes = true",
@@ -1080,6 +1085,21 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
             "receipt_retention_days = 8",
             1,
         ),
+        "backtester.ra001a_durable_tracer.receipt_retention_days must fit a finite Rust u64": CONFIG_TOML.replace(
+            "receipt_retention_days = 7",
+            "receipt_retention_days = 18446744073709551615",
+            1,
+        ),
+        "artifact_retention.classes.transient.max_retention_days must not exceed GitHub's artifact retention maximum of 90 days": CONFIG_TOML.replace(
+            "max_retention_days = 7",
+            "max_retention_days = 91",
+            1,
+        ),
+        "artifact_retention.classes.transient has unexpected keys: ['rogue_limit']": CONFIG_TOML.replace(
+            "max_retention_days = 7",
+            "max_retention_days = 7\nrogue_limit = 999",
+            1,
+        ),
         "backtester.ra001a_durable_tracer.termination_grace_seconds must be a positive integer": CONFIG_TOML.replace(
             "termination_grace_seconds = 30",
             "termination_grace_seconds = 0",
@@ -1157,6 +1177,14 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
                 1,
             ),
         ),
+        (
+            "backtester.issue_789 has unexpected keys: ['rogue_limit']",
+            CONFIG_TOML.replace(
+                "[backtester.issue_789]\nmax_job_minutes = 120",
+                "[backtester.issue_789]\nmax_job_minutes = 120\nrogue_limit = 999",
+                1,
+            ),
+        ),
     ]
     pack_limit_values = {
         "max_concurrent_records": "1",
@@ -1198,14 +1226,6 @@ def assert_backtester_timeout_configs_reject_invalid_values() -> None:
         )
     pack_limit_cases.extend(
         [
-            (
-                "backtester.ra001a_durable_tracer.pack_limits.max_concurrent_records must equal 1 for the bounded process-isolated tracer",
-                CONFIG_TOML.replace(
-                    "max_concurrent_records = 1",
-                    "max_concurrent_records = 2",
-                    1,
-                ),
-            ),
             (
                 "backtester.ra001a_durable_tracer.pack_limits has unexpected keys: ['rogue_limit']",
                 CONFIG_TOML.replace(
@@ -1550,6 +1570,24 @@ def assert_backtester_timeout_configs_load_limits() -> None:
         raise AssertionError(
             "the backtester policy maximum of 360 minutes must remain a valid issue #789 bound"
         )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        policy_controlled_concurrency = module.load_config(
+            write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(
+                    "max_concurrent_records = 1",
+                    "max_concurrent_records = 2",
+                    1,
+                ),
+            )
+        )
+    if (
+        policy_controlled_concurrency.backtester_test_archive_timeout
+        .ra001a_pack_limits.max_concurrent_records
+        != 2
+    ):
+        raise AssertionError("trusted TOML must be the sole concurrency ceiling authority")
 
 
 def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:

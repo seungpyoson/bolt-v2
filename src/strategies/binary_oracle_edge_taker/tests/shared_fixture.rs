@@ -196,6 +196,7 @@ pub(super) struct RecordingEconomicsAdmissionSource {
 }
 
 const RECORDING_ECONOMICS_VALID_UNTIL_NS: u64 = u64::MAX;
+const RECORDING_ECONOMICS_REFRESH_MARGIN_NS: u64 = 1;
 
 impl Default for RecordingEconomicsAdmissionSource {
     fn default() -> Self {
@@ -234,6 +235,10 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
             [] => Err(crate::economics::EconomicsUnavailable::MissingQuoteAuthority),
             _ => Err(crate::economics::EconomicsUnavailable::AmbiguousQuoteAuthority),
         }
+    }
+
+    fn resting_order_refresh_margin_ns(&self) -> u64 {
+        RECORDING_ECONOMICS_REFRESH_MARGIN_NS
     }
 
     fn quote_admission(

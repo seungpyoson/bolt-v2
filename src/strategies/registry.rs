@@ -147,7 +147,7 @@ mod tests {
     use anyhow::{Context, anyhow};
     use futures_util::future::{BoxFuture, FutureExt};
     use nautilus_common::actor::DataActor;
-    use nautilus_model::identifiers::{InstrumentId, StrategyId, Venue};
+    use nautilus_model::identifiers::{StrategyId, Venue};
     use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 
     use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;

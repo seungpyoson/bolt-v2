@@ -811,7 +811,16 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
         )
         .expect("quote-quantity market admission should use submitted quote quantity");
 
-    assert_eq!(admission.notional, raw_quote_quantity);
+    assert_eq!(
+        admission.economics_admission.base_reservation_notional(),
+        raw_quote_quantity,
+        "Market BUY commits exactly the submitted quote quantity as its base reservation"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional(),
+        "submit admission must reserve the sealed base notional plus economics debits"
+    );
 }
 
 #[test]
@@ -933,7 +942,16 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
         )
         .expect("quote-quantity market admission should use submitted quote quantity");
 
-    assert_eq!(admission.notional, raw_quote_quantity);
+    assert_eq!(
+        admission.economics_admission.base_reservation_notional(),
+        raw_quote_quantity,
+        "Market BUY commits exactly the submitted quote quantity as its base reservation"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional(),
+        "submit admission must reserve the sealed base notional plus economics debits"
+    );
 }
 
 #[test]

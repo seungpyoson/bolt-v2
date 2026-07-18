@@ -108,6 +108,7 @@ jobs:
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
       reason: ${{ steps.policy.outputs.reason }}
+      trusted_revision: ${{ steps.policy_base.outputs.revision }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -118,39 +119,50 @@ jobs:
 
       - name: Prepare trusted base policy tree
         id: policy_base
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_branch="$PR_BASE_REF"
-            base_ref="refs/remotes/origin/bvs-policy-base-${PR_NUMBER}"
+            trusted_branch="$PR_BASE_REF"
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
             merge_group_base="$MERGE_GROUP_BASE_REF"
             if [[ "$merge_group_base" == refs/heads/* ]]; then
-              base_branch="${merge_group_base#refs/heads/}"
+              trusted_branch="${merge_group_base#refs/heads/}"
             elif [[ "$merge_group_base" == refs/* ]]; then
               echo "unsupported merge_group base_ref: $merge_group_base" >&2
               exit 1
             else
-              base_branch="$merge_group_base"
+              trusted_branch="$merge_group_base"
             fi
-            base_ref="refs/remotes/origin/bvs-policy-base-merge-group-${GITHUB_RUN_ID}"
+          elif [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            trusted_branch="$REPOSITORY_DEFAULT_BRANCH"
           else
-            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            echo "unsupported trusted policy event: $EVENT_NAME" >&2
             exit 1
           fi
-          git check-ref-format "refs/heads/$base_branch"
-          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          git check-ref-format "refs/heads/$trusted_branch"
+          trusted_ref="refs/remotes/origin/bvs-policy-trusted-${GITHUB_RUN_ID}"
+          git fetch --no-tags origin "+refs/heads/${trusted_branch}:${trusted_ref}"
+          trusted_revision="$(git rev-parse --verify "${trusted_ref}^{commit}")"
+          if [[ ! "$trusted_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted policy revision is missing or malformed: $trusted_revision" >&2
+            exit 1
+          fi
+          readonly trusted_revision
           base_tree="$RUNNER_TEMP/bvs-policy-base-tree"
-          mkdir -p "$base_tree"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
-          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
-          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
+          mkdir "$base_tree"
+          git archive "$trusted_revision" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          test -f "$base_tree/scripts/ci_provenance.py"
+          test -f "$base_tree/ci/github-actions-runners.toml"
+          {
+            echo "script=$base_tree/scripts/ci_provenance.py"
+            echo "config=$base_tree/ci/github-actions-runners.toml"
+            echo "revision=$trusted_revision"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Compute Backtester CI policy
         id: policy
@@ -160,25 +172,17 @@ jobs:
           PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || '' }}
           EVENT_SENDER_ID: ${{ github.event.sender.id }}
         run: |
-          policy_script="${{ steps.policy_base.outputs.script }}"
-          if [[ -z "$policy_script" ]]; then
-            policy_script="scripts/ci_provenance.py"
-          fi
-          policy_config="${{ steps.policy_base.outputs.config }}"
-          if [[ -z "$policy_config" ]]; then
-            policy_config="ci/github-actions-runners.toml"
-          fi
-          author_args=()
-          if python3 "$policy_script" ci-policy --help | grep -q -- "--pull-request-author-id"; then
-            author_args=(--pull-request-author-id "$PR_AUTHOR_ID")
-          fi
+          readonly policy_script="${{ steps.policy_base.outputs.script }}"
+          readonly policy_config="${{ steps.policy_base.outputs.config }}"
+          test -f "$policy_script"
+          test -f "$policy_config"
           python3 "$policy_script" ci-policy \
             --config "$policy_config" \
             --event-name "${{ github.event_name }}" \
             --event-action "${{ github.event.action || '' }}" \
             --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
             --pull-request-head-ref "$PR_HEAD_REF" \
-            "${author_args[@]}" \
+            --pull-request-author-id "$PR_AUTHOR_ID" \
             --pull-request-base-changed "${{ github.event.changes.base.ref.from && true || false }}" \
             --ref "${{ github.ref }}" \
             | tee -a "$GITHUB_OUTPUT"
@@ -819,47 +823,40 @@ jobs:
 
       - name: Prepare trusted base verdict tree
         id: verdict_base
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
-          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+          TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}
         run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_branch="$PR_BASE_REF"
-            base_ref="refs/remotes/origin/bvs-gate-base-${PR_NUMBER}"
-          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
-            merge_group_base="$MERGE_GROUP_BASE_REF"
-            if [[ "$merge_group_base" == refs/heads/* ]]; then
-              base_branch="${merge_group_base#refs/heads/}"
-            elif [[ "$merge_group_base" == refs/* ]]; then
-              echo "unsupported merge_group base_ref: $merge_group_base" >&2
-              exit 1
-            else
-              base_branch="$merge_group_base"
-            fi
-            base_ref="refs/remotes/origin/bvs-gate-base-merge-group-${GITHUB_RUN_ID}"
-          else
-            echo "unsupported trusted base event: $EVENT_NAME" >&2
+          if [[ ! "$TRUSTED_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "trusted verdict revision is missing or malformed: $TRUSTED_REVISION" >&2
             exit 1
           fi
-          git check-ref-format "refs/heads/$base_branch"
-          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          trusted_ref="refs/remotes/origin/bvs-gate-trusted-${GITHUB_RUN_ID}"
+          git fetch --no-tags origin "+${TRUSTED_REVISION}:${trusted_ref}"
+          fetched_revision="$(git rev-parse --verify "${trusted_ref}^{commit}")"
+          if [[ "$fetched_revision" != "$TRUSTED_REVISION" ]]; then
+            echo "trusted verdict revision changed during fetch" >&2
+            exit 1
+          fi
           base_tree="$RUNNER_TEMP/bvs-gate-base-tree"
-          mkdir -p "$base_tree"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
-          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          mkdir "$base_tree"
+          git archive "$TRUSTED_REVISION" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          test -f "$base_tree/scripts/ci_provenance.py"
+          test -f "$base_tree/ci/github-actions-runners.toml"
+          {
+            echo "script=$base_tree/scripts/ci_provenance.py"
+            echo "config=$base_tree/ci/github-actions-runners.toml"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check required lanes
         shell: bash
         run: |
-          verdict_script="${{ steps.verdict_base.outputs.script }}"
-          if [[ -z "$verdict_script" ]]; then
-            verdict_script="scripts/ci_provenance.py"
-          fi
+          readonly verdict_script="${{ steps.verdict_base.outputs.script }}"
+          readonly verdict_config="${{ steps.verdict_base.outputs.config }}"
+          test -f "$verdict_script"
+          test -f "$verdict_config"
           python3 "$verdict_script" check-backtester-gate \
+            --config "$verdict_config" \
             --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
             --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
             --bvs-changed "${{ needs.detect.outputs.bvs_changed || 'false' }}" \

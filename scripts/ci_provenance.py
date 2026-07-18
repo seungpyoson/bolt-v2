@@ -40,6 +40,7 @@ SUPPORTED_MODES = {
     "emit-inherited-ci",
     "resolve-exact-sha",
     "resolve-fingerprint",
+    "ra001a-policy",
     "validate-record",
 }
 POLICY_VALUES = {"full", "docs", "iteration", "tag_reuse"}
@@ -100,6 +101,10 @@ REQUIRED_CHECK_INTEGRATION_ID = 15368
 REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
 TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
+BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES = 360
+GITHUB_ARTIFACT_RETENTION_MAX_DAYS = 90
+SECONDS_PER_MINUTE = 60
+FINITE_RUST_U64_MAX = (1 << 64) - 2
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 NEXTEST_FINGERPRINT_RE = re.compile(
@@ -136,6 +141,19 @@ require_positive_int = functools.partial(_cv.require_positive_int, error_cls=Pro
 as_text = _cv.as_text
 
 
+def require_finite_rust_u64_value(value: int, label: str) -> int:
+    if value > FINITE_RUST_U64_MAX:
+        raise ProvenanceError(f"{label} must fit a finite Rust u64")
+    return value
+
+
+def require_finite_rust_u64(table: dict[str, object], key: str, prefix: str) -> int:
+    return require_finite_rust_u64_value(
+        require_positive_int(table, key, prefix),
+        f"{prefix}.{key}",
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class JobConfig:
     logical_name: str
@@ -156,6 +174,63 @@ class RequiredCheckConfig:
     runs_on_tags: bool
     arrivals: tuple[str, ...]
     fresh_event_classes: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class Ra001aDurableTracerPackLimitsConfig:
+    max_concurrent_records: int
+    max_fetch_timeout_seconds: int
+    max_worker_termination_grace_seconds: int
+    max_worker_virtual_memory_bytes: int
+    min_worker_reserved_overhead_bytes: int
+    max_decoded_bytes: int
+    max_source_rows: int
+    max_projected_row_groups: int
+    max_operator_wall_seconds: int
+    max_terminal_commit_timeout_seconds: int
+    max_launch_artifact_bytes: int
+    max_control_artifact_bytes: int
+    max_retained_control_input_bytes: int
+    max_final_object_bytes: int
+    max_workspace_bytes: int
+    max_cache_bytes: int
+    min_free_space_reserve_bytes: int
+    min_one_record_worst_case_bytes: int
+    cache_retention_age_seconds: int
+    candidate_retention_age_seconds: int
+    max_lifecycle_cleanup_entries: int
+    max_lifecycle_cleanup_depth: int
+
+
+@dataclasses.dataclass(frozen=True)
+class Ra001aDurableTracerGitExecutableConfig:
+    path: str
+    max_bytes: int
+
+
+@dataclasses.dataclass(frozen=True)
+class Ra001aDurableTracerAwsConfig:
+    role_arn: str
+    region: str
+
+
+@dataclasses.dataclass(frozen=True)
+class BacktesterTestArchiveTimeoutConfig:
+    ordinary_max_job_minutes: int
+    ra001a_max_job_minutes: int
+    ra001a_durable_tracer_max_registry_packs: int
+    ra001a_durable_tracer_max_total_selected_object_bytes: int
+    ra001a_durable_tracer_max_worker_executable_bytes: int
+    ra001a_git_executable: Ra001aDurableTracerGitExecutableConfig
+    ra001a_aws: Ra001aDurableTracerAwsConfig
+    ra001a_receipt_artifact_name: str
+    ra001a_receipt_retention_days: int
+    ra001a_durable_tracer_max_wall_seconds: int
+    ra001a_durable_tracer_termination_grace_seconds: int
+    ra001a_pack_limits: Ra001aDurableTracerPackLimitsConfig
+    ra001a_allowed_ignored_runtime_roots: tuple[str, ...]
+    ra001a_max_ignored_entry_bytes: int
+    ra001a_max_ignored_entries: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,6 +262,8 @@ class ProvenanceConfig:
     max_lookback_pages: int
     max_lookback_age_seconds: int
     inherited_emitter_probe_timeout_seconds: int
+    backtester_test_archive_timeout: BacktesterTestArchiveTimeoutConfig | None
+    backtester_issue_789_timeout_minutes: int | None
     policy: dict[str, str]
     gate_names: dict[str, str]
     required_checks: dict[str, RequiredCheckConfig]
@@ -205,8 +282,51 @@ class CiPolicyResult:
     full_ci_required: bool
     gate_name: str
     backtester_gate_name: str
+    backtester_test_archive_timeout_minutes: int
+    backtester_issue_789_timeout_minutes: int
     expected_event_class: str
     reason: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Ra001aPolicyResult:
+    ra001a_max_job_minutes: int
+    ra001a_max_registry_packs: int
+    ra001a_max_total_selected_object_bytes: int
+    ra001a_max_worker_executable_bytes: int
+    ra001a_git_executable_path: str
+    ra001a_max_git_executable_bytes: int
+    ra001a_aws_role_arn: str
+    ra001a_aws_region: str
+    ra001a_receipt_artifact_name: str
+    ra001a_receipt_retention_days: int
+    ra001a_max_concurrent_records: int
+    ra001a_max_fetch_timeout_seconds: int
+    ra001a_max_worker_termination_grace_seconds: int
+    ra001a_max_worker_virtual_memory_bytes: int
+    ra001a_min_worker_reserved_overhead_bytes: int
+    ra001a_max_decoded_bytes: int
+    ra001a_max_source_rows: int
+    ra001a_max_projected_row_groups: int
+    ra001a_max_operator_wall_seconds: int
+    ra001a_max_terminal_commit_timeout_seconds: int
+    ra001a_max_launch_artifact_bytes: int
+    ra001a_max_control_artifact_bytes: int
+    ra001a_max_retained_control_input_bytes: int
+    ra001a_max_final_object_bytes: int
+    ra001a_max_workspace_bytes: int
+    ra001a_max_cache_bytes: int
+    ra001a_min_free_space_reserve_bytes: int
+    ra001a_min_one_record_worst_case_bytes: int
+    ra001a_cache_retention_age_seconds: int
+    ra001a_candidate_retention_age_seconds: int
+    ra001a_max_lifecycle_cleanup_entries: int
+    ra001a_max_lifecycle_cleanup_depth: int
+    ra001a_max_wall_seconds: int
+    ra001a_termination_grace_seconds: int
+    ra001a_allowed_ignored_runtime_roots: str
+    ra001a_max_ignored_entry_bytes: int
+    ra001a_max_ignored_entries: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -276,6 +396,514 @@ def optional_positive_int(parent: dict[str, object], key: str, prefix: str) -> i
     value = parent.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
+def load_backtester_policy_table(
+    data: dict[str, object], *, required: bool
+) -> dict[str, object] | None:
+    backtester = data.get("backtester")
+    if backtester is None and not required:
+        return None
+    if not isinstance(backtester, dict):
+        raise ProvenanceError(
+            "missing [backtester]" if backtester is None else "backtester must be a table"
+        )
+    expected_keys = {
+        "test_archive_timeout",
+        "ra001a_durable_tracer",
+        "issue_789",
+    }
+    unexpected_keys = sorted(set(backtester) - expected_keys)
+    if unexpected_keys:
+        raise ProvenanceError(f"backtester has unexpected keys: {unexpected_keys}")
+    return backtester
+
+
+def load_backtester_test_archive_timeout_config(
+    data: dict[str, object],
+    *,
+    required: bool,
+    backtester: dict[str, object] | None = None,
+) -> BacktesterTestArchiveTimeoutConfig | None:
+    if backtester is None:
+        backtester = load_backtester_policy_table(data, required=required)
+    if backtester is None:
+        return None
+
+    timeout_prefix = "backtester.test_archive_timeout"
+    timeout = require_table(backtester, "test_archive_timeout", "backtester")
+    tracer_prefix = "backtester.ra001a_durable_tracer"
+    tracer = require_table(backtester, "ra001a_durable_tracer", "backtester")
+    unexpected_timeout_keys = sorted(set(timeout) - {"ordinary_max_job_minutes"})
+    if unexpected_timeout_keys:
+        raise ProvenanceError(
+            f"{timeout_prefix} has unexpected keys: {unexpected_timeout_keys}"
+        )
+    expected_tracer_keys = {
+        "max_job_minutes",
+        "max_registry_packs",
+        "max_total_selected_object_bytes",
+        "max_worker_executable_bytes",
+        "git_executable",
+        "aws",
+        "receipt_artifact_name",
+        "receipt_retention_days",
+        "max_wall_seconds",
+        "termination_grace_seconds",
+        "pack_limits",
+        "checkout",
+    }
+    unexpected_tracer_keys = sorted(set(tracer) - expected_tracer_keys)
+    if unexpected_tracer_keys:
+        raise ProvenanceError(
+            f"{tracer_prefix} has unexpected keys: {unexpected_tracer_keys}"
+        )
+    ordinary_minutes = require_positive_int(timeout, "ordinary_max_job_minutes", timeout_prefix)
+    tracer_minutes = require_positive_int(
+        tracer,
+        "max_job_minutes",
+        tracer_prefix,
+    )
+    max_registry_packs = require_finite_rust_u64(
+        tracer, "max_registry_packs", tracer_prefix
+    )
+    max_total_selected_object_bytes = require_finite_rust_u64(
+        tracer,
+        "max_total_selected_object_bytes",
+        tracer_prefix,
+    )
+    max_worker_executable_bytes = require_finite_rust_u64(
+        tracer,
+        "max_worker_executable_bytes",
+        tracer_prefix,
+    )
+    git_executable_prefix = f"{tracer_prefix}.git_executable"
+    git_executable_table = require_table(tracer, "git_executable", tracer_prefix)
+    unexpected_git_executable_keys = sorted(
+        set(git_executable_table) - {"path", "max_bytes"}
+    )
+    if unexpected_git_executable_keys:
+        raise ProvenanceError(
+            f"{git_executable_prefix} has unexpected keys: "
+            f"{unexpected_git_executable_keys}"
+        )
+    git_executable_path = require_string(
+        git_executable_table,
+        "path",
+        git_executable_prefix,
+    )
+    normalized_git_executable_path = pathlib.PurePosixPath(git_executable_path)
+    if (
+        not normalized_git_executable_path.is_absolute()
+        or git_executable_path.startswith("//")
+        or str(normalized_git_executable_path) != git_executable_path
+        or ".." in normalized_git_executable_path.parts
+        or normalized_git_executable_path.name == ""
+        or any(character in git_executable_path for character in ("\0", "\r", "\n"))
+    ):
+        raise ProvenanceError(
+            f"{git_executable_prefix}.path must be a normalized absolute path"
+        )
+    git_executable = Ra001aDurableTracerGitExecutableConfig(
+        path=git_executable_path,
+        max_bytes=require_finite_rust_u64(
+            git_executable_table,
+            "max_bytes",
+            git_executable_prefix,
+        ),
+    )
+    aws_prefix = f"{tracer_prefix}.aws"
+    aws_table = require_table(tracer, "aws", tracer_prefix)
+    unexpected_aws_keys = sorted(set(aws_table) - {"role_arn", "region"})
+    if unexpected_aws_keys:
+        raise ProvenanceError(f"{aws_prefix} has unexpected keys: {unexpected_aws_keys}")
+    aws_role_arn = require_string(aws_table, "role_arn", aws_prefix)
+    if (
+        re.fullmatch(
+            r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+",
+            aws_role_arn,
+        )
+        is None
+        or "//" in aws_role_arn
+        or any(character.isspace() for character in aws_role_arn)
+    ):
+        raise ProvenanceError(f"{aws_prefix}.role_arn must be one canonical IAM role ARN")
+    aws_region = require_string(aws_table, "region", aws_prefix)
+    if re.fullmatch(r"[a-z]{2}(?:-gov)?-[a-z]+-[1-9][0-9]*", aws_region) is None:
+        raise ProvenanceError(f"{aws_prefix}.region must be one canonical AWS region")
+    aws = Ra001aDurableTracerAwsConfig(role_arn=aws_role_arn, region=aws_region)
+    receipt_artifact_name = require_string(
+        tracer,
+        "receipt_artifact_name",
+        tracer_prefix,
+    )
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", receipt_artifact_name) is None:
+        raise ProvenanceError(
+            f"{tracer_prefix}.receipt_artifact_name must be one static safe artifact name"
+        )
+    receipt_retention_days = require_github_artifact_retention_days(
+        tracer,
+        "receipt_retention_days",
+        tracer_prefix,
+    )
+    artifact_retention = require_table(data, "artifact_retention", "root")
+    artifact_classes = require_table(artifact_retention, "classes", "artifact_retention")
+    transient_class = require_table(
+        artifact_classes,
+        "transient",
+        "artifact_retention.classes",
+    )
+    unexpected_transient_keys = sorted(set(transient_class) - {"max_retention_days"})
+    if unexpected_transient_keys:
+        raise ProvenanceError(
+            "artifact_retention.classes.transient has unexpected keys: "
+            f"{unexpected_transient_keys}"
+        )
+    transient_max_retention_days = require_github_artifact_retention_days(
+        transient_class,
+        "max_retention_days",
+        "artifact_retention.classes.transient",
+    )
+    if receipt_retention_days > transient_max_retention_days:
+        raise ProvenanceError(
+            f"{tracer_prefix}.receipt_retention_days must not exceed "
+            "artifact_retention.classes.transient.max_retention_days"
+        )
+    max_wall_seconds = require_finite_rust_u64(
+        tracer, "max_wall_seconds", tracer_prefix
+    )
+    termination_grace_seconds = require_finite_rust_u64(
+        tracer,
+        "termination_grace_seconds",
+        tracer_prefix,
+    )
+    pack_limits_prefix = f"{tracer_prefix}.pack_limits"
+    pack_limits_table = require_table(tracer, "pack_limits", tracer_prefix)
+    expected_pack_limit_keys = {
+        field.name for field in dataclasses.fields(Ra001aDurableTracerPackLimitsConfig)
+    }
+    unexpected_pack_limit_keys = sorted(set(pack_limits_table) - expected_pack_limit_keys)
+    if unexpected_pack_limit_keys:
+        raise ProvenanceError(
+            f"{pack_limits_prefix} has unexpected keys: {unexpected_pack_limit_keys}"
+        )
+    pack_limits = Ra001aDurableTracerPackLimitsConfig(
+        max_concurrent_records=require_finite_rust_u64(
+            pack_limits_table,
+            "max_concurrent_records",
+            pack_limits_prefix,
+        ),
+        max_fetch_timeout_seconds=require_finite_rust_u64(
+            pack_limits_table,
+            "max_fetch_timeout_seconds",
+            pack_limits_prefix,
+        ),
+        max_worker_termination_grace_seconds=require_positive_int(
+            pack_limits_table,
+            "max_worker_termination_grace_seconds",
+            pack_limits_prefix,
+        ),
+        max_worker_virtual_memory_bytes=require_positive_int(
+            pack_limits_table,
+            "max_worker_virtual_memory_bytes",
+            pack_limits_prefix,
+        ),
+        min_worker_reserved_overhead_bytes=require_positive_int(
+            pack_limits_table,
+            "min_worker_reserved_overhead_bytes",
+            pack_limits_prefix,
+        ),
+        max_decoded_bytes=require_positive_int(
+            pack_limits_table,
+            "max_decoded_bytes",
+            pack_limits_prefix,
+        ),
+        max_source_rows=require_positive_int(
+            pack_limits_table,
+            "max_source_rows",
+            pack_limits_prefix,
+        ),
+        max_projected_row_groups=require_positive_int(
+            pack_limits_table,
+            "max_projected_row_groups",
+            pack_limits_prefix,
+        ),
+        max_operator_wall_seconds=require_positive_int(
+            pack_limits_table,
+            "max_operator_wall_seconds",
+            pack_limits_prefix,
+        ),
+        max_terminal_commit_timeout_seconds=require_positive_int(
+            pack_limits_table,
+            "max_terminal_commit_timeout_seconds",
+            pack_limits_prefix,
+        ),
+        max_launch_artifact_bytes=require_positive_int(
+            pack_limits_table,
+            "max_launch_artifact_bytes",
+            pack_limits_prefix,
+        ),
+        max_control_artifact_bytes=require_positive_int(
+            pack_limits_table,
+            "max_control_artifact_bytes",
+            pack_limits_prefix,
+        ),
+        max_retained_control_input_bytes=require_positive_int(
+            pack_limits_table,
+            "max_retained_control_input_bytes",
+            pack_limits_prefix,
+        ),
+        max_final_object_bytes=require_positive_int(
+            pack_limits_table,
+            "max_final_object_bytes",
+            pack_limits_prefix,
+        ),
+        max_workspace_bytes=require_positive_int(
+            pack_limits_table,
+            "max_workspace_bytes",
+            pack_limits_prefix,
+        ),
+        max_cache_bytes=require_positive_int(
+            pack_limits_table,
+            "max_cache_bytes",
+            pack_limits_prefix,
+        ),
+        min_free_space_reserve_bytes=require_positive_int(
+            pack_limits_table,
+            "min_free_space_reserve_bytes",
+            pack_limits_prefix,
+        ),
+        min_one_record_worst_case_bytes=require_positive_int(
+            pack_limits_table,
+            "min_one_record_worst_case_bytes",
+            pack_limits_prefix,
+        ),
+        cache_retention_age_seconds=require_positive_int(
+            pack_limits_table,
+            "cache_retention_age_seconds",
+            pack_limits_prefix,
+        ),
+        candidate_retention_age_seconds=require_positive_int(
+            pack_limits_table,
+            "candidate_retention_age_seconds",
+            pack_limits_prefix,
+        ),
+        max_lifecycle_cleanup_entries=require_positive_int(
+            pack_limits_table,
+            "max_lifecycle_cleanup_entries",
+            pack_limits_prefix,
+        ),
+        max_lifecycle_cleanup_depth=require_positive_int(
+            pack_limits_table,
+            "max_lifecycle_cleanup_depth",
+            pack_limits_prefix,
+        ),
+    )
+    for field in dataclasses.fields(pack_limits):
+        require_finite_rust_u64_value(
+            getattr(pack_limits, field.name),
+            f"{pack_limits_prefix}.{field.name}",
+        )
+    if pack_limits.min_worker_reserved_overhead_bytes >= pack_limits.max_worker_virtual_memory_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.min_worker_reserved_overhead_bytes must be below "
+            "max_worker_virtual_memory_bytes"
+        )
+    if pack_limits.max_decoded_bytes >= pack_limits.max_worker_virtual_memory_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_decoded_bytes must be below "
+            "max_worker_virtual_memory_bytes"
+        )
+    if pack_limits.max_projected_row_groups > pack_limits.max_source_rows:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_projected_row_groups must not exceed max_source_rows"
+        )
+    if pack_limits.max_fetch_timeout_seconds > pack_limits.max_operator_wall_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_fetch_timeout_seconds must not exceed "
+            "max_operator_wall_seconds"
+        )
+    if pack_limits.max_terminal_commit_timeout_seconds > pack_limits.max_operator_wall_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_terminal_commit_timeout_seconds must not exceed "
+            "max_operator_wall_seconds"
+        )
+    if pack_limits.max_operator_wall_seconds > max_wall_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_operator_wall_seconds must not exceed "
+            f"{tracer_prefix}.max_wall_seconds"
+        )
+    if pack_limits.max_control_artifact_bytes > pack_limits.max_retained_control_input_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_control_artifact_bytes must not exceed "
+            "max_retained_control_input_bytes"
+        )
+    if pack_limits.max_cache_bytes > pack_limits.max_workspace_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_cache_bytes must not exceed max_workspace_bytes"
+        )
+    if pack_limits.min_one_record_worst_case_bytes > pack_limits.max_cache_bytes:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.min_one_record_worst_case_bytes must not exceed "
+            "max_cache_bytes"
+        )
+    if pack_limits.candidate_retention_age_seconds > pack_limits.cache_retention_age_seconds:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.candidate_retention_age_seconds must not exceed "
+            "cache_retention_age_seconds"
+        )
+    if pack_limits.max_lifecycle_cleanup_depth > pack_limits.max_lifecycle_cleanup_entries:
+        raise ProvenanceError(
+            f"{pack_limits_prefix}.max_lifecycle_cleanup_depth must not exceed "
+            "max_lifecycle_cleanup_entries"
+        )
+    checkout_prefix = f"{tracer_prefix}.checkout"
+    checkout = require_table(tracer, "checkout", tracer_prefix)
+    expected_checkout_keys = {
+        "allowed_ignored_runtime_roots",
+        "max_ignored_entry_bytes",
+        "max_ignored_entries",
+    }
+    unexpected_checkout_keys = sorted(set(checkout) - expected_checkout_keys)
+    if unexpected_checkout_keys:
+        raise ProvenanceError(
+            f"{checkout_prefix} has unexpected keys: {unexpected_checkout_keys}"
+        )
+    allowed_ignored_runtime_roots = require_string_list(
+        checkout,
+        "allowed_ignored_runtime_roots",
+        checkout_prefix,
+    )
+    if not allowed_ignored_runtime_roots:
+        raise ProvenanceError(
+            f"{checkout_prefix}.allowed_ignored_runtime_roots must not be empty"
+        )
+    if allowed_ignored_runtime_roots != tuple(sorted(set(allowed_ignored_runtime_roots))):
+        raise ProvenanceError(
+            f"{checkout_prefix}.allowed_ignored_runtime_roots must be sorted and unique"
+        )
+    for root in allowed_ignored_runtime_roots:
+        components = root.removesuffix("/").split("/")
+        if (
+            root.startswith("/")
+            or not root.endswith("/")
+            or "\\" in root
+            or re.fullmatch(r"[A-Za-z0-9._/-]+", root) is None
+            or any(character in root for character in ("\0", "\r", "\n", ","))
+            or any(not component or component in {".", ".."} for component in components)
+        ):
+            raise ProvenanceError(
+                f"{checkout_prefix}.allowed_ignored_runtime_roots must contain normalized "
+                "repository-relative directories"
+            )
+    max_ignored_entry_bytes = require_finite_rust_u64(
+        checkout,
+        "max_ignored_entry_bytes",
+        checkout_prefix,
+    )
+    max_ignored_entries = require_finite_rust_u64(
+        checkout,
+        "max_ignored_entries",
+        checkout_prefix,
+    )
+    if ordinary_minutes > BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES:
+        raise ProvenanceError(
+            f"{timeout_prefix}.ordinary_max_job_minutes must not exceed the backtester "
+            f"policy maximum of {BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES} minutes"
+        )
+    if tracer_minutes > BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES:
+        raise ProvenanceError(
+            f"{tracer_prefix}.max_job_minutes must not exceed the backtester policy "
+            f"maximum of {BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES} minutes"
+        )
+    if tracer_minutes * SECONDS_PER_MINUTE <= max_wall_seconds + termination_grace_seconds:
+        raise ProvenanceError(
+            f"{tracer_prefix}.max_job_minutes must exceed "
+            "the tracer wall limit plus termination grace"
+        )
+    return BacktesterTestArchiveTimeoutConfig(
+        ordinary_max_job_minutes=ordinary_minutes,
+        ra001a_max_job_minutes=tracer_minutes,
+        ra001a_durable_tracer_max_registry_packs=max_registry_packs,
+        ra001a_durable_tracer_max_total_selected_object_bytes=max_total_selected_object_bytes,
+        ra001a_durable_tracer_max_worker_executable_bytes=max_worker_executable_bytes,
+        ra001a_git_executable=git_executable,
+        ra001a_aws=aws,
+        ra001a_receipt_artifact_name=receipt_artifact_name,
+        ra001a_receipt_retention_days=receipt_retention_days,
+        ra001a_durable_tracer_max_wall_seconds=max_wall_seconds,
+        ra001a_durable_tracer_termination_grace_seconds=termination_grace_seconds,
+        ra001a_pack_limits=pack_limits,
+        ra001a_allowed_ignored_runtime_roots=allowed_ignored_runtime_roots,
+        ra001a_max_ignored_entry_bytes=max_ignored_entry_bytes,
+        ra001a_max_ignored_entries=max_ignored_entries,
+    )
+
+
+def load_backtester_issue_789_timeout_minutes(
+    data: dict[str, object],
+    *,
+    required: bool,
+    backtester: dict[str, object] | None = None,
+) -> int | None:
+    if backtester is None:
+        backtester = load_backtester_policy_table(data, required=required)
+    if backtester is None:
+        return None
+
+    issue_789 = require_table(backtester, "issue_789", "backtester")
+    expected_keys = {
+        "artifact_name_template",
+        "artifact_name_template_vars",
+        "max_job_minutes",
+    }
+    unexpected_keys = sorted(set(issue_789) - expected_keys)
+    if unexpected_keys:
+        raise ProvenanceError(
+            f"backtester.issue_789 has unexpected keys: {unexpected_keys}"
+        )
+    artifact_name_template = _cv.require_string(
+        issue_789,
+        "artifact_name_template",
+        "backtester.issue_789",
+        error_cls=ProvenanceError,
+    )
+    artifact_name_template_vars = _cv.require_string_map(
+        issue_789,
+        "artifact_name_template_vars",
+        "backtester.issue_789",
+        error_cls=ProvenanceError,
+    )
+    _cv.render_config_string_template(
+        artifact_name_template,
+        artifact_name_template_vars,
+        "backtester.issue_789.artifact_name_template",
+        error_cls=ProvenanceError,
+        require_same_name_github_bindings=True,
+    )
+    max_job_minutes = require_positive_int(
+        issue_789,
+        "max_job_minutes",
+        "backtester.issue_789",
+    )
+    if max_job_minutes > BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES:
+        raise ProvenanceError(
+            "backtester.issue_789.max_job_minutes must not exceed the backtester policy "
+            f"maximum of {BACKTESTER_POLICY_MAX_JOB_TIMEOUT_MINUTES} minutes"
+        )
+    return max_job_minutes
+
+
+def require_github_artifact_retention_days(
+    parent: dict[str, object], key: str, prefix: str
+) -> int:
+    value = require_finite_rust_u64(parent, key, prefix)
+    if value > GITHUB_ARTIFACT_RETENTION_MAX_DAYS:
+        raise ProvenanceError(
+            f"{prefix}.{key} must not exceed GitHub's artifact retention maximum "
+            f"of {GITHUB_ARTIFACT_RETENTION_MAX_DAYS} days"
+        )
     return value
 
 
@@ -574,6 +1202,18 @@ def load_config(
     if ci_provenance.get("schema_version") != 1:
         raise ProvenanceError("ci_provenance.schema_version must be 1")
 
+    backtester = load_backtester_policy_table(data, required=require_workflows)
+    backtester_test_archive_timeout = load_backtester_test_archive_timeout_config(
+        data,
+        required=require_workflows,
+        backtester=backtester,
+    )
+    backtester_issue_789_timeout_minutes = load_backtester_issue_789_timeout_minutes(
+        data,
+        required=require_workflows,
+        backtester=backtester,
+    )
+
     duplicated_fingerprint_keys = {
         "fingerprint_artifact_prefix",
         "fingerprint_workflow",
@@ -834,6 +1474,8 @@ def load_config(
         ),
         max_lookback_age_seconds=max_lookback_age_seconds,
         inherited_emitter_probe_timeout_seconds=inherited_emitter_probe_timeout_seconds,
+        backtester_test_archive_timeout=backtester_test_archive_timeout,
+        backtester_issue_789_timeout_minutes=backtester_issue_789_timeout_minutes,
         policy=policy,
         gate_names=gate_names,
         required_checks=required_checks,
@@ -1255,6 +1897,12 @@ def evaluate_ci_policy(
     pull_request_author_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
+    timeout = config.backtester_test_archive_timeout
+    if timeout is None:
+        raise ProvenanceError("backtester test-archive timeout config is unavailable")
+    issue_789_timeout_minutes = config.backtester_issue_789_timeout_minutes
+    if issue_789_timeout_minutes is None:
+        raise ProvenanceError("backtester issue #789 timeout config is unavailable")
     mergify_temp_pr = mergify_temp_pr_matches(
         event_name=event_name,
         event_action=event_action,
@@ -1342,8 +1990,101 @@ def evaluate_ci_policy(
         full_ci_required=path == "full",
         gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
+        backtester_test_archive_timeout_minutes=timeout.ordinary_max_job_minutes,
+        backtester_issue_789_timeout_minutes=issue_789_timeout_minutes,
         expected_event_class=expected_event_class_for(reason, path),
         reason=reason,
+    )
+
+
+def evaluate_ra001a_policy(
+    config: ProvenanceConfig,
+    *,
+    event_name: str,
+    ref: str,
+    repository_default_branch: str,
+) -> Ra001aPolicyResult:
+    if event_name != "workflow_dispatch":
+        raise ProvenanceError("ra001a-policy requires workflow_dispatch")
+    if (
+        not repository_default_branch
+        or repository_default_branch != repository_default_branch.strip()
+        or repository_default_branch.startswith("refs/")
+        or any(character in repository_default_branch for character in ("\0", "\r", "\n"))
+    ):
+        raise ProvenanceError(
+            "repository_default_branch must be a non-empty branch name"
+        )
+    expected_ref = f"refs/heads/{repository_default_branch}"
+    if ref != expected_ref:
+        raise ProvenanceError(f"ra001a-policy requires ref {expected_ref!r}")
+
+    timeout = config.backtester_test_archive_timeout
+    if timeout is None:
+        raise ProvenanceError("backtester test-archive timeout config is unavailable")
+    pack_limits = timeout.ra001a_pack_limits
+    return Ra001aPolicyResult(
+        ra001a_max_job_minutes=timeout.ra001a_max_job_minutes,
+        ra001a_max_registry_packs=timeout.ra001a_durable_tracer_max_registry_packs,
+        ra001a_max_total_selected_object_bytes=(
+            timeout.ra001a_durable_tracer_max_total_selected_object_bytes
+        ),
+        ra001a_max_worker_executable_bytes=(
+            timeout.ra001a_durable_tracer_max_worker_executable_bytes
+        ),
+        ra001a_git_executable_path=timeout.ra001a_git_executable.path,
+        ra001a_max_git_executable_bytes=timeout.ra001a_git_executable.max_bytes,
+        ra001a_aws_role_arn=timeout.ra001a_aws.role_arn,
+        ra001a_aws_region=timeout.ra001a_aws.region,
+        ra001a_receipt_artifact_name=timeout.ra001a_receipt_artifact_name,
+        ra001a_receipt_retention_days=timeout.ra001a_receipt_retention_days,
+        ra001a_max_concurrent_records=pack_limits.max_concurrent_records,
+        ra001a_max_fetch_timeout_seconds=pack_limits.max_fetch_timeout_seconds,
+        ra001a_max_worker_termination_grace_seconds=(
+            pack_limits.max_worker_termination_grace_seconds
+        ),
+        ra001a_max_worker_virtual_memory_bytes=(
+            pack_limits.max_worker_virtual_memory_bytes
+        ),
+        ra001a_min_worker_reserved_overhead_bytes=(
+            pack_limits.min_worker_reserved_overhead_bytes
+        ),
+        ra001a_max_decoded_bytes=pack_limits.max_decoded_bytes,
+        ra001a_max_source_rows=pack_limits.max_source_rows,
+        ra001a_max_projected_row_groups=pack_limits.max_projected_row_groups,
+        ra001a_max_operator_wall_seconds=pack_limits.max_operator_wall_seconds,
+        ra001a_max_terminal_commit_timeout_seconds=(
+            pack_limits.max_terminal_commit_timeout_seconds
+        ),
+        ra001a_max_launch_artifact_bytes=pack_limits.max_launch_artifact_bytes,
+        ra001a_max_control_artifact_bytes=pack_limits.max_control_artifact_bytes,
+        ra001a_max_retained_control_input_bytes=(
+            pack_limits.max_retained_control_input_bytes
+        ),
+        ra001a_max_final_object_bytes=pack_limits.max_final_object_bytes,
+        ra001a_max_workspace_bytes=pack_limits.max_workspace_bytes,
+        ra001a_max_cache_bytes=pack_limits.max_cache_bytes,
+        ra001a_min_free_space_reserve_bytes=pack_limits.min_free_space_reserve_bytes,
+        ra001a_min_one_record_worst_case_bytes=(
+            pack_limits.min_one_record_worst_case_bytes
+        ),
+        ra001a_cache_retention_age_seconds=pack_limits.cache_retention_age_seconds,
+        ra001a_candidate_retention_age_seconds=(
+            pack_limits.candidate_retention_age_seconds
+        ),
+        ra001a_max_lifecycle_cleanup_entries=(
+            pack_limits.max_lifecycle_cleanup_entries
+        ),
+        ra001a_max_lifecycle_cleanup_depth=pack_limits.max_lifecycle_cleanup_depth,
+        ra001a_max_wall_seconds=timeout.ra001a_durable_tracer_max_wall_seconds,
+        ra001a_termination_grace_seconds=(
+            timeout.ra001a_durable_tracer_termination_grace_seconds
+        ),
+        ra001a_allowed_ignored_runtime_roots=",".join(
+            timeout.ra001a_allowed_ignored_runtime_roots
+        ),
+        ra001a_max_ignored_entry_bytes=timeout.ra001a_max_ignored_entry_bytes,
+        ra001a_max_ignored_entries=timeout.ra001a_max_ignored_entries,
     )
 
 
@@ -3052,7 +3793,10 @@ def emit_inherited_ci_record(
 
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}", allow_abbrev=False)
-    parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
+    if mode == "ra001a-policy":
+        parser.add_argument("--config", type=pathlib.Path, required=True)
+    else:
+        parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     if mode == "artifact-metadata":
         parser.add_argument("--run-attempt", required=True)
     if mode == "ci-policy":
@@ -3064,6 +3808,10 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--docs-only", default="false")
         parser.add_argument("--ref", required=True)
+    if mode == "ra001a-policy":
+        parser.add_argument("--event-name", required=True)
+        parser.add_argument("--ref", required=True)
+        parser.add_argument("--repository-default-branch", required=True)
     if mode == "check-ci-gate":
         parser.add_argument("--policy-path", required=True)
         parser.add_argument("--expected-event-class", required=True)
@@ -3150,9 +3898,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"full_ci_required={str(result.full_ci_required).lower()}")
             print(f"gate_name={result.gate_name}")
             print(f"backtester_gate_name={result.backtester_gate_name}")
+            print(
+                "backtester_test_archive_timeout_minutes="
+                f"{result.backtester_test_archive_timeout_minutes}"
+            )
+            print(
+                "backtester_issue_789_timeout_minutes="
+                f"{result.backtester_issue_789_timeout_minutes}"
+            )
             print(f"expected_event_class={result.expected_event_class}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
+        elif mode == "ra001a-policy":
+            result = evaluate_ra001a_policy(
+                config,
+                event_name=args.event_name,
+                ref=args.ref,
+                repository_default_branch=args.repository_default_branch,
+            )
+            for field in dataclasses.fields(result):
+                print(f"{field.name}={getattr(result, field.name)}")
         elif mode == "check-ci-gate":
             print(
                 evaluate_ci_gate_verdict(

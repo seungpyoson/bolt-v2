@@ -40,6 +40,67 @@ host-health = "github_hosted"
 [workflows.actionlint]
 actionlint = "github_hosted"
 
+[backtester.test_archive_timeout]
+ordinary_max_job_minutes = 360
+
+[backtester.ra001a_durable_tracer]
+max_job_minutes = 120
+max_registry_packs = 64
+max_total_selected_object_bytes = 1073741824
+max_worker_executable_bytes = 1073741824
+max_wall_seconds = 3600
+termination_grace_seconds = 30
+receipt_artifact_name = "ra001a-durable-tracer-receipt"
+receipt_retention_days = 7
+
+[backtester.ra001a_durable_tracer.git_executable]
+path = "/usr/bin/git"
+max_bytes = 67108864
+
+[backtester.ra001a_durable_tracer.aws]
+role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
+region = "us-east-1"
+
+[backtester.ra001a_durable_tracer.pack_limits]
+max_concurrent_records = 1
+max_fetch_timeout_seconds = 300
+max_worker_termination_grace_seconds = 30
+max_worker_virtual_memory_bytes = 2147483648
+min_worker_reserved_overhead_bytes = 536870912
+max_decoded_bytes = 1073741824
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_operator_wall_seconds = 1800
+max_terminal_commit_timeout_seconds = 60
+max_launch_artifact_bytes = 65536
+max_control_artifact_bytes = 65536
+max_retained_control_input_bytes = 262144
+max_final_object_bytes = 4194304
+max_workspace_bytes = 34359738368
+max_cache_bytes = 17179869184
+min_free_space_reserve_bytes = 10737418240
+min_one_record_worst_case_bytes = 4294967296
+cache_retention_age_seconds = 2592000
+candidate_retention_age_seconds = 86400
+max_lifecycle_cleanup_entries = 1000000
+max_lifecycle_cleanup_depth = 64
+
+[backtester.ra001a_durable_tracer.checkout]
+allowed_ignored_runtime_roots = [".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]
+max_ignored_entry_bytes = 4096
+max_ignored_entries = 128
+
+[backtester.issue_789]
+artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
+max_job_minutes = 120
+
+[backtester.issue_789.artifact_name_template_vars]
+run_id = "${{ github.run_id }}"
+run_attempt = "${{ github.run_attempt }}"
+
+[artifact_retention.classes.transient]
+max_retention_days = 7
+
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
@@ -244,6 +305,67 @@ actionlint = "github_hosted"
 
 [workflows.ci]
 host-health = "github_hosted"
+
+[backtester.ra001a_durable_tracer]
+termination_grace_seconds = 30
+max_wall_seconds = 3600
+max_total_selected_object_bytes = 1073741824
+max_worker_executable_bytes = 1073741824
+max_registry_packs = 64
+max_job_minutes = 120
+receipt_retention_days = 7
+receipt_artifact_name = "ra001a-durable-tracer-receipt"
+
+[backtester.ra001a_durable_tracer.git_executable]
+max_bytes = 67108864
+path = "/usr/bin/git"
+
+[backtester.ra001a_durable_tracer.aws]
+region = "us-east-1"
+role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
+
+[backtester.ra001a_durable_tracer.pack_limits]
+candidate_retention_age_seconds = 86400
+cache_retention_age_seconds = 2592000
+max_concurrent_records = 1
+max_worker_termination_grace_seconds = 30
+max_workspace_bytes = 34359738368
+max_worker_virtual_memory_bytes = 2147483648
+min_worker_reserved_overhead_bytes = 536870912
+max_retained_control_input_bytes = 262144
+max_terminal_commit_timeout_seconds = 60
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_operator_wall_seconds = 1800
+max_lifecycle_cleanup_entries = 1000000
+max_lifecycle_cleanup_depth = 64
+max_launch_artifact_bytes = 65536
+max_final_object_bytes = 4194304
+max_fetch_timeout_seconds = 300
+max_decoded_bytes = 1073741824
+max_control_artifact_bytes = 65536
+max_cache_bytes = 17179869184
+min_one_record_worst_case_bytes = 4294967296
+min_free_space_reserve_bytes = 10737418240
+
+[backtester.ra001a_durable_tracer.checkout]
+max_ignored_entries = 128
+max_ignored_entry_bytes = 4096
+allowed_ignored_runtime_roots = [".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]
+
+[backtester.test_archive_timeout]
+ordinary_max_job_minutes = 360
+
+[backtester.issue_789]
+artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
+max_job_minutes = 120
+
+[backtester.issue_789.artifact_name_template_vars]
+run_id = "${{ github.run_id }}"
+run_attempt = "${{ github.run_attempt }}"
+
+[artifact_retention.classes.transient]
+max_retention_days = 7
 
 [ci_provenance.policy.override]
 ignore_emit_failure = false
@@ -532,7 +654,65 @@ def run_cli_with_event_sender(args: list[str], sender: object) -> tuple[int, str
 
 
 def output_dict(stdout: str) -> dict[str, str]:
-    return dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+    pairs = [line.split("=", 1) for line in stdout.splitlines() if "=" in line]
+    counts: dict[str, int] = {}
+    for key, _value in pairs:
+        counts[key] = counts.get(key, 0) + 1
+    duplicates = sorted(key for key, count in counts.items() if count != 1)
+    if duplicates:
+        raise AssertionError(f"CLI emitted duplicate output keys: {duplicates}")
+    return dict(pairs)
+
+
+EXPECTED_RA001A_OUTPUT_KEYS = {
+    "ra001a_max_job_minutes",
+    "ra001a_max_registry_packs",
+    "ra001a_max_total_selected_object_bytes",
+    "ra001a_max_worker_executable_bytes",
+    "ra001a_git_executable_path",
+    "ra001a_max_git_executable_bytes",
+    "ra001a_aws_role_arn",
+    "ra001a_aws_region",
+    "ra001a_receipt_artifact_name",
+    "ra001a_receipt_retention_days",
+    "ra001a_max_concurrent_records",
+    "ra001a_max_fetch_timeout_seconds",
+    "ra001a_max_worker_termination_grace_seconds",
+    "ra001a_max_worker_virtual_memory_bytes",
+    "ra001a_min_worker_reserved_overhead_bytes",
+    "ra001a_max_decoded_bytes",
+    "ra001a_max_source_rows",
+    "ra001a_max_projected_row_groups",
+    "ra001a_max_operator_wall_seconds",
+    "ra001a_max_terminal_commit_timeout_seconds",
+    "ra001a_max_launch_artifact_bytes",
+    "ra001a_max_control_artifact_bytes",
+    "ra001a_max_retained_control_input_bytes",
+    "ra001a_max_final_object_bytes",
+    "ra001a_max_workspace_bytes",
+    "ra001a_max_cache_bytes",
+    "ra001a_min_free_space_reserve_bytes",
+    "ra001a_min_one_record_worst_case_bytes",
+    "ra001a_cache_retention_age_seconds",
+    "ra001a_candidate_retention_age_seconds",
+    "ra001a_max_lifecycle_cleanup_entries",
+    "ra001a_max_lifecycle_cleanup_depth",
+    "ra001a_max_wall_seconds",
+    "ra001a_termination_grace_seconds",
+    "ra001a_allowed_ignored_runtime_roots",
+    "ra001a_max_ignored_entry_bytes",
+    "ra001a_max_ignored_entries",
+}
+
+
+def assert_exact_ra001a_output_keys(output: dict[str, str]) -> None:
+    actual = set(output)
+    if actual != EXPECTED_RA001A_OUTPUT_KEYS:
+        raise AssertionError(
+            "ra001a-policy output set drifted: "
+            f"missing={sorted(EXPECTED_RA001A_OUTPUT_KEYS - actual)}, "
+            f"unexpected={sorted(actual - EXPECTED_RA001A_OUTPUT_KEYS)}"
+        )
 
 
 def assert_fails(fragment: str, args: list[str]) -> None:
@@ -822,6 +1002,917 @@ def assert_positive_int_config_rejects_booleans() -> None:
         for expected, text in cases.items():
             config = write_config(pathlib.Path(tmp), text)
             assert_raises(expected, lambda config=config: module.load_config(config))
+
+
+def assert_backtester_timeout_configs_reject_invalid_values() -> None:
+    module = load_script()
+    cases = {
+        "backtester has unexpected keys: ['rogue']": CONFIG_TOML.replace(
+            "[backtester.test_archive_timeout]",
+            "[backtester.rogue]\nvalue = 1\n\n[backtester.test_archive_timeout]",
+            1,
+        ),
+        "backtester.test_archive_timeout.ordinary_max_job_minutes must be a positive integer": CONFIG_TOML.replace(
+            "ordinary_max_job_minutes = 360",
+            "ordinary_max_job_minutes = true",
+            1,
+        ),
+        "backtester.test_archive_timeout has unexpected keys: ['ra001a_durable_tracer_max_job_minutes']": CONFIG_TOML.replace(
+            "ordinary_max_job_minutes = 360",
+            (
+                "ordinary_max_job_minutes = 360\n"
+                "ra001a_durable_tracer_max_job_minutes = 120"
+            ),
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_job_minutes must be a positive integer": CONFIG_TOML.replace(
+            "max_job_minutes = 120",
+            "max_job_minutes = 0",
+            1,
+        ),
+        "backtester.test_archive_timeout.ordinary_max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
+            "ordinary_max_job_minutes = 360",
+            "ordinary_max_job_minutes = 361",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_job_minutes must not exceed the backtester policy maximum of 360 minutes": CONFIG_TOML.replace(
+            "max_job_minutes = 120",
+            "max_job_minutes = 361",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_wall_seconds must be a positive integer": CONFIG_TOML.replace(
+            "max_wall_seconds = 3600",
+            "max_wall_seconds = true",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_registry_packs must be a positive integer": CONFIG_TOML.replace(
+            "max_registry_packs = 64",
+            "max_registry_packs = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_total_selected_object_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_total_selected_object_bytes = 1073741824",
+            "max_total_selected_object_bytes = true",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_worker_executable_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_worker_executable_bytes = 1073741824",
+            "max_worker_executable_bytes = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.git_executable.path must be a normalized absolute path": CONFIG_TOML.replace(
+            'path = "/usr/bin/git"',
+            'path = "git"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.git_executable.max_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_bytes = 67108864",
+            "max_bytes = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.aws.role_arn must be one canonical IAM role ARN": CONFIG_TOML.replace(
+            'role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"',
+            'role_arn = "bolt-v2-github-ra001a-tracer"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.aws.region must be one canonical AWS region": CONFIG_TOML.replace(
+                'region = "us-east-1"',
+            'region = "EU_WEST_2"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.receipt_artifact_name must be one static safe artifact name": CONFIG_TOML.replace(
+            'receipt_artifact_name = "ra001a-durable-tracer-receipt"',
+            'receipt_artifact_name = "ra001a-{run_id}"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.receipt_retention_days must be a positive integer": CONFIG_TOML.replace(
+            "receipt_retention_days = 7",
+            "receipt_retention_days = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.receipt_retention_days must not exceed artifact_retention.classes.transient.max_retention_days": CONFIG_TOML.replace(
+            "receipt_retention_days = 7",
+            "receipt_retention_days = 8",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.receipt_retention_days must fit a finite Rust u64": CONFIG_TOML.replace(
+            "receipt_retention_days = 7",
+            "receipt_retention_days = 18446744073709551615",
+            1,
+        ),
+        "artifact_retention.classes.transient.max_retention_days must not exceed GitHub's artifact retention maximum of 90 days": CONFIG_TOML.replace(
+            "max_retention_days = 7",
+            "max_retention_days = 91",
+            1,
+        ),
+        "artifact_retention.classes.transient has unexpected keys: ['rogue_limit']": CONFIG_TOML.replace(
+            "max_retention_days = 7",
+            "max_retention_days = 7\nrogue_limit = 999",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.termination_grace_seconds must be a positive integer": CONFIG_TOML.replace(
+            "termination_grace_seconds = 30",
+            "termination_grace_seconds = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.max_job_minutes must exceed the tracer wall limit plus termination grace": CONFIG_TOML.replace(
+            "max_job_minutes = 120",
+            "max_job_minutes = 60",
+            1,
+        ).replace("max_wall_seconds = 3600", "max_wall_seconds = 3570", 1),
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must be sorted and unique": CONFIG_TOML.replace(
+            '[".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]',
+            '["target/", ".nextest-archive/"]',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must not be empty": CONFIG_TOML.replace(
+            '[".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]',
+            "[]",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots must contain normalized repository-relative directories": CONFIG_TOML.replace(
+            '".nextest-archive/"',
+            '".nextest-archive/../bad/"',
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.max_ignored_entry_bytes must be a positive integer": CONFIG_TOML.replace(
+            "max_ignored_entry_bytes = 4096",
+            "max_ignored_entry_bytes = 0",
+            1,
+        ),
+        "backtester.ra001a_durable_tracer.checkout.max_ignored_entries must be a positive integer": CONFIG_TOML.replace(
+            "max_ignored_entries = 128",
+            "max_ignored_entries = true",
+            1,
+        ),
+    }
+    issue_789_cases = [
+        (
+            "backtester.issue_789.artifact_name_template must be a non-empty string",
+            CONFIG_TOML.replace(
+                'artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"\n',
+                "",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template_vars must be a non-empty string table",
+            CONFIG_TOML.replace(
+                '[backtester.issue_789.artifact_name_template_vars]\nrun_id = "${{ github.run_id }}"\nrun_attempt = "${{ github.run_attempt }}"\n',
+                "",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template missing template vars: ['run_attempt']",
+            CONFIG_TOML.replace(
+                'run_attempt = "${{ github.run_attempt }}"\n\n[artifact_retention.classes.transient]',
+                "\n[artifact_retention.classes.transient]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template has unused template vars: ['rogue']",
+            CONFIG_TOML.replace(
+                'run_attempt = "${{ github.run_attempt }}"\n\n[artifact_retention.classes.transient]',
+                'run_attempt = "${{ github.run_attempt }}"\nrogue = "${{ github.rogue }}"\n\n[artifact_retention.classes.transient]',
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template_vars values must be non-empty strings",
+            CONFIG_TOML.replace(
+                'run_id = "${{ github.run_id }}"',
+                "run_id = 7",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.artifact_name_template must bind run_id to ${{ github.run_id }}",
+            CONFIG_TOML.replace(
+                'run_id = "${{ github.run_id }}"',
+                'run_id = "${{ github.sha }}"',
+                1,
+            ),
+        ),
+        *(
+            (
+                "backtester.issue_789.artifact_name_template contains malformed template placeholder syntax",
+                CONFIG_TOML.replace(
+                    'artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"',
+                    f'artifact_name_template = "{template}"',
+                    1,
+                ),
+            )
+            for template in (
+                "issue-789-{run_id}-{run_attempt}-{",
+                "issue-789-{run_id}-{run_attempt}-}",
+                "issue-789-{{run_id}}-{run_attempt}",
+                "issue-789-{run-id}-{run_attempt}",
+                "issue-789-{9run_id}-{run_attempt}",
+                "issue-789-{}-{run_attempt}",
+            )
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "[backtester.issue_789.artifact_name_template_vars]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = true\n\n[backtester.issue_789.artifact_name_template_vars]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                'max_job_minutes = "120"\n\n[backtester.issue_789.artifact_name_template_vars]',
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must be a positive integer",
+            CONFIG_TOML.replace(
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = 0\n\n[backtester.issue_789.artifact_name_template_vars]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789.max_job_minutes must not exceed the backtester policy maximum of 360 minutes",
+            CONFIG_TOML.replace(
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = 361\n\n[backtester.issue_789.artifact_name_template_vars]",
+                1,
+            ),
+        ),
+        (
+            "backtester.issue_789 has unexpected keys: ['rogue_limit']",
+            CONFIG_TOML.replace(
+                "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                "max_job_minutes = 120\nrogue_limit = 999\n\n[backtester.issue_789.artifact_name_template_vars]",
+                1,
+            ),
+        ),
+    ]
+    pack_limit_values = {
+        "max_concurrent_records": "1",
+        "max_fetch_timeout_seconds": "300",
+        "max_worker_termination_grace_seconds": "30",
+        "max_worker_virtual_memory_bytes": "2147483648",
+        "min_worker_reserved_overhead_bytes": "536870912",
+        "max_decoded_bytes": "1073741824",
+        "max_source_rows": "1000000",
+        "max_projected_row_groups": "128",
+        "max_operator_wall_seconds": "1800",
+        "max_terminal_commit_timeout_seconds": "60",
+        "max_launch_artifact_bytes": "65536",
+        "max_control_artifact_bytes": "65536",
+        "max_retained_control_input_bytes": "262144",
+        "max_final_object_bytes": "4194304",
+        "max_workspace_bytes": "34359738368",
+        "max_cache_bytes": "17179869184",
+        "min_free_space_reserve_bytes": "10737418240",
+        "min_one_record_worst_case_bytes": "4294967296",
+        "cache_retention_age_seconds": "2592000",
+        "candidate_retention_age_seconds": "86400",
+        "max_lifecycle_cleanup_entries": "1000000",
+        "max_lifecycle_cleanup_depth": "64",
+    }
+    pack_limit_cases = []
+    for key, value in pack_limit_values.items():
+        expected = (
+            f"backtester.ra001a_durable_tracer.pack_limits.{key} "
+            "must be a positive integer"
+        )
+        assignment = f"{key} = {value}"
+        pack_limit_cases.extend(
+            [
+                (expected, CONFIG_TOML.replace(f"{assignment}\n", "", 1)),
+                (expected, CONFIG_TOML.replace(assignment, f"{key} = 0", 1)),
+                (expected, CONFIG_TOML.replace(assignment, f"{key} = true", 1)),
+            ]
+        )
+    pack_limit_cases.extend(
+        [
+            (
+                "backtester.ra001a_durable_tracer.pack_limits has unexpected keys: ['rogue_limit']",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 300\nrogue_limit = 999",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_fetch_timeout_seconds must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 18446744073709551615",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_fetch_timeout_seconds must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 18446744073709551616",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.min_worker_reserved_overhead_bytes must be below max_worker_virtual_memory_bytes",
+                CONFIG_TOML.replace(
+                    "min_worker_reserved_overhead_bytes = 536870912",
+                    "min_worker_reserved_overhead_bytes = 2147483648",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_decoded_bytes must be below max_worker_virtual_memory_bytes",
+                CONFIG_TOML.replace(
+                    "max_decoded_bytes = 1073741824",
+                    "max_decoded_bytes = 2147483648",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_projected_row_groups must not exceed max_source_rows",
+                CONFIG_TOML.replace(
+                    "max_projected_row_groups = 128",
+                    "max_projected_row_groups = 1000001",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_fetch_timeout_seconds must not exceed max_operator_wall_seconds",
+                CONFIG_TOML.replace(
+                    "max_fetch_timeout_seconds = 300",
+                    "max_fetch_timeout_seconds = 1801",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_terminal_commit_timeout_seconds must not exceed max_operator_wall_seconds",
+                CONFIG_TOML.replace(
+                    "max_terminal_commit_timeout_seconds = 60",
+                    "max_terminal_commit_timeout_seconds = 1801",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_operator_wall_seconds must not exceed backtester.ra001a_durable_tracer.max_wall_seconds",
+                CONFIG_TOML.replace(
+                    "max_operator_wall_seconds = 1800",
+                    "max_operator_wall_seconds = 3601",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_control_artifact_bytes must not exceed max_retained_control_input_bytes",
+                CONFIG_TOML.replace(
+                    "max_retained_control_input_bytes = 262144",
+                    "max_retained_control_input_bytes = 32768",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_cache_bytes must not exceed max_workspace_bytes",
+                CONFIG_TOML.replace(
+                    "max_cache_bytes = 17179869184",
+                    "max_cache_bytes = 34359738369",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.min_one_record_worst_case_bytes must not exceed max_cache_bytes",
+                CONFIG_TOML.replace(
+                    "min_one_record_worst_case_bytes = 4294967296",
+                    "min_one_record_worst_case_bytes = 17179869185",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.candidate_retention_age_seconds must not exceed cache_retention_age_seconds",
+                CONFIG_TOML.replace(
+                    "candidate_retention_age_seconds = 86400",
+                    "candidate_retention_age_seconds = 2592001",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.pack_limits.max_lifecycle_cleanup_depth must not exceed max_lifecycle_cleanup_entries",
+                CONFIG_TOML.replace(
+                    "max_lifecycle_cleanup_depth = 64",
+                    "max_lifecycle_cleanup_depth = 1000001",
+                    1,
+                ),
+            ),
+        ]
+    )
+    normalized_root_error = (
+        "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+        "must contain normalized repository-relative directories"
+    )
+    root_cases = [
+        (
+            "backtester.ra001a_durable_tracer.checkout has unexpected keys: ['rogue_limit']",
+            CONFIG_TOML.replace(
+                "max_ignored_entries = 128",
+                "max_ignored_entries = 128\nrogue_limit = 999",
+                1,
+            ),
+        ),
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace('".nextest-archive/"', '".nextest-archive/,evil/"', 1),
+        ),
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace(
+                '[".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"]',
+                '["/target/"]',
+                1,
+            ),
+        ),
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace('"target/"', '"target"', 1),
+        ),
+        (
+            "backtester.ra001a_durable_tracer.checkout.allowed_ignored_runtime_roots "
+            "must be sorted and unique",
+            CONFIG_TOML.replace(
+                '".nextest-archive/", ".rust-verification/"',
+                '".nextest-archive/", ".nextest-archive/", ".rust-verification/"',
+                1,
+            ),
+        ),
+        (
+            normalized_root_error,
+            CONFIG_TOML.replace('"target/"', '"target//"', 1),
+        ),
+    ]
+    git_path_error = (
+        "backtester.ra001a_durable_tracer.git_executable.path must be a normalized absolute path"
+    )
+    git_path_cases = [
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "//usr/bin/git"', 1),
+        ),
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "/usr//bin/git"', 1),
+        ),
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "/usr/bin/./git"', 1),
+        ),
+        (
+            git_path_error,
+            CONFIG_TOML.replace('path = "/usr/bin/git"', 'path = "/usr/bin/git/"', 1),
+        ),
+    ]
+    finite_u64_cases = [
+        (
+            f"backtester.ra001a_durable_tracer.{key} must fit a finite Rust u64",
+            CONFIG_TOML.replace(f"{key} = {value}", f"{key} = 18446744073709551615", 1),
+        )
+        for key, value in {
+            "max_registry_packs": "64",
+            "max_total_selected_object_bytes": "1073741824",
+            "max_worker_executable_bytes": "1073741824",
+            "max_wall_seconds": "3600",
+            "termination_grace_seconds": "30",
+        }.items()
+    ]
+    finite_u64_cases.extend(
+        [
+            (
+                "backtester.ra001a_durable_tracer.git_executable.max_bytes must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_bytes = 67108864",
+                    "max_bytes = 18446744073709551615",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.checkout.max_ignored_entry_bytes must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_ignored_entry_bytes = 4096",
+                    "max_ignored_entry_bytes = 18446744073709551615",
+                    1,
+                ),
+            ),
+            (
+                "backtester.ra001a_durable_tracer.checkout.max_ignored_entries must fit a finite Rust u64",
+                CONFIG_TOML.replace(
+                    "max_ignored_entries = 128",
+                    "max_ignored_entries = 18446744073709551615",
+                    1,
+                ),
+            ),
+        ]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        for expected, text in cases.items():
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in issue_789_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+            code, stdout, stderr = run_cli(
+                [
+                    "ra001a-policy",
+                    "--config",
+                    str(config),
+                    "--event-name",
+                    "workflow_dispatch",
+                    "--ref",
+                    "refs/heads/main",
+                    "--repository-default-branch",
+                    "main",
+                ]
+            )
+            if code == 0 or stdout or expected not in stderr:
+                raise AssertionError(
+                    "invalid issue-789 policy must fail atomically: "
+                    f"expected={expected!r}, code={code}, stdout={stdout!r}, stderr={stderr!r}"
+                )
+        for expected, text in pack_limit_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in root_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in git_path_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+        for expected, text in finite_u64_cases:
+            config = write_config(pathlib.Path(tmp), text)
+            assert_raises(expected, lambda config=config: module.load_config(config))
+
+
+def assert_backtester_timeout_configs_load_limits() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        loaded = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    timeout = loaded.backtester_test_archive_timeout
+    actual = (
+        timeout.ordinary_max_job_minutes,
+        timeout.ra001a_max_job_minutes,
+        timeout.ra001a_durable_tracer_max_registry_packs,
+        timeout.ra001a_durable_tracer_max_total_selected_object_bytes,
+        timeout.ra001a_durable_tracer_max_worker_executable_bytes,
+        timeout.ra001a_git_executable,
+        timeout.ra001a_aws,
+        timeout.ra001a_receipt_artifact_name,
+        timeout.ra001a_receipt_retention_days,
+        timeout.ra001a_pack_limits,
+        timeout.ra001a_durable_tracer_max_wall_seconds,
+        timeout.ra001a_durable_tracer_termination_grace_seconds,
+        timeout.ra001a_allowed_ignored_runtime_roots,
+        timeout.ra001a_max_ignored_entry_bytes,
+        timeout.ra001a_max_ignored_entries,
+    )
+    if actual != (
+        360,
+        120,
+        64,
+        1073741824,
+        1073741824,
+        module.Ra001aDurableTracerGitExecutableConfig(
+            path="/usr/bin/git",
+            max_bytes=67108864,
+        ),
+        module.Ra001aDurableTracerAwsConfig(
+            role_arn="arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
+            region="us-east-1",
+        ),
+        "ra001a-durable-tracer-receipt",
+        7,
+        module.Ra001aDurableTracerPackLimitsConfig(
+            max_concurrent_records=1,
+            max_fetch_timeout_seconds=300,
+            max_worker_termination_grace_seconds=30,
+            max_worker_virtual_memory_bytes=2147483648,
+            min_worker_reserved_overhead_bytes=536870912,
+            max_decoded_bytes=1073741824,
+            max_source_rows=1000000,
+            max_projected_row_groups=128,
+            max_operator_wall_seconds=1800,
+            max_terminal_commit_timeout_seconds=60,
+            max_launch_artifact_bytes=65536,
+            max_control_artifact_bytes=65536,
+            max_retained_control_input_bytes=262144,
+            max_final_object_bytes=4194304,
+            max_workspace_bytes=34359738368,
+            max_cache_bytes=17179869184,
+            min_free_space_reserve_bytes=10737418240,
+            min_one_record_worst_case_bytes=4294967296,
+            cache_retention_age_seconds=2592000,
+            candidate_retention_age_seconds=86400,
+            max_lifecycle_cleanup_entries=1000000,
+            max_lifecycle_cleanup_depth=64,
+        ),
+        3600,
+        30,
+        (".nextest-archive/", ".rust-verification/", "scripts/__pycache__/", "target/"),
+        4096,
+        128,
+    ):
+        raise AssertionError(f"backtester test-archive timeout config drifted: {actual}")
+    if loaded.backtester_issue_789_timeout_minutes != 120:
+        raise AssertionError(
+            "backtester issue #789 timeout config drifted: "
+            f"{loaded.backtester_issue_789_timeout_minutes}"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        boundary = module.load_config(
+            write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(
+                    "max_job_minutes = 120",
+                    "max_job_minutes = 61",
+                    1,
+                ),
+            )
+        )
+    if boundary.backtester_test_archive_timeout.ra001a_max_job_minutes != 61:
+        raise AssertionError("a 61-minute job ceiling must cover a 60-minute wall limit plus 30-second grace")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        issue_789_boundary = module.load_config(
+            write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(
+                    "max_job_minutes = 120\n\n[backtester.issue_789.artifact_name_template_vars]",
+                    "max_job_minutes = 360\n\n[backtester.issue_789.artifact_name_template_vars]",
+                    1,
+                ),
+            )
+        )
+    if issue_789_boundary.backtester_issue_789_timeout_minutes != 360:
+        raise AssertionError(
+            "the backtester policy maximum of 360 minutes must remain a valid issue #789 bound"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        policy_controlled_concurrency = module.load_config(
+            write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(
+                    "max_concurrent_records = 1",
+                    "max_concurrent_records = 2",
+                    1,
+                ),
+            )
+        )
+    if (
+        policy_controlled_concurrency.backtester_test_archive_timeout
+        .ra001a_pack_limits.max_concurrent_records
+        != 2
+    ):
+        raise AssertionError("trusted TOML must be the sole concurrency ceiling authority")
+
+
+def assert_ra001a_policy_requires_exact_default_branch_dispatch() -> None:
+    module = load_script()
+    ordinary_result_fields = {
+        field.name for field in module.dataclasses.fields(module.CiPolicyResult)
+    }
+    ordinary_ra001a_fields = sorted(
+        field for field in ordinary_result_fields if field.startswith("ra001a_")
+    )
+    if ordinary_ra001a_fields:
+        raise AssertionError(
+            "ordinary CiPolicyResult must not carry RA-001a fields: "
+            f"{ordinary_ra001a_fields}"
+        )
+    ordinary_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml"
+    ).read_text(encoding="utf-8")
+    if "ra001a" in ordinary_workflow.lower():
+        raise AssertionError(
+            "ordinary backtester-ci workflow must not carry RA-001a inputs, branches, or env"
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        config = module.load_config(config_path)
+        result = module.evaluate_ra001a_policy(
+            config,
+            event_name="workflow_dispatch",
+            ref="refs/heads/main",
+            repository_default_branch="main",
+        )
+        expected_limits = (
+            120,
+            64,
+            1073741824,
+            1073741824,
+            "/usr/bin/git",
+            67108864,
+            "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
+            "us-east-1",
+            "ra001a-durable-tracer-receipt",
+            7,
+            1,
+            300,
+            30,
+            2147483648,
+            536870912,
+            1073741824,
+            1000000,
+            128,
+            1800,
+            60,
+            65536,
+            65536,
+            262144,
+            4194304,
+            34359738368,
+            17179869184,
+            10737418240,
+            4294967296,
+            2592000,
+            86400,
+            1000000,
+            64,
+            3600,
+            30,
+            ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
+            4096,
+            128,
+        )
+        actual_limits = (
+            result.ra001a_max_job_minutes,
+            result.ra001a_max_registry_packs,
+            result.ra001a_max_total_selected_object_bytes,
+            result.ra001a_max_worker_executable_bytes,
+            result.ra001a_git_executable_path,
+            result.ra001a_max_git_executable_bytes,
+            result.ra001a_aws_role_arn,
+            result.ra001a_aws_region,
+            result.ra001a_receipt_artifact_name,
+            result.ra001a_receipt_retention_days,
+            result.ra001a_max_concurrent_records,
+            result.ra001a_max_fetch_timeout_seconds,
+            result.ra001a_max_worker_termination_grace_seconds,
+            result.ra001a_max_worker_virtual_memory_bytes,
+            result.ra001a_min_worker_reserved_overhead_bytes,
+            result.ra001a_max_decoded_bytes,
+            result.ra001a_max_source_rows,
+            result.ra001a_max_projected_row_groups,
+            result.ra001a_max_operator_wall_seconds,
+            result.ra001a_max_terminal_commit_timeout_seconds,
+            result.ra001a_max_launch_artifact_bytes,
+            result.ra001a_max_control_artifact_bytes,
+            result.ra001a_max_retained_control_input_bytes,
+            result.ra001a_max_final_object_bytes,
+            result.ra001a_max_workspace_bytes,
+            result.ra001a_max_cache_bytes,
+            result.ra001a_min_free_space_reserve_bytes,
+            result.ra001a_min_one_record_worst_case_bytes,
+            result.ra001a_cache_retention_age_seconds,
+            result.ra001a_candidate_retention_age_seconds,
+            result.ra001a_max_lifecycle_cleanup_entries,
+            result.ra001a_max_lifecycle_cleanup_depth,
+            result.ra001a_max_wall_seconds,
+            result.ra001a_termination_grace_seconds,
+            result.ra001a_allowed_ignored_runtime_roots,
+            result.ra001a_max_ignored_entry_bytes,
+            result.ra001a_max_ignored_entries,
+        )
+        if actual_limits != expected_limits:
+            raise AssertionError(f"RA-001a trusted aggregate limits drifted: {actual_limits}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ra001a-policy",
+                "--config",
+                str(config_path),
+                "--event-name",
+                "workflow_dispatch",
+                "--ref",
+                "refs/heads/main",
+                "--repository-default-branch",
+                "main",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"ra001a-policy CLI failed: {stderr}")
+        output = output_dict(stdout)
+        assert_exact_ra001a_output_keys(output)
+        for key, expected in {
+            "ra001a_max_job_minutes": "120",
+            "ra001a_git_executable_path": "/usr/bin/git",
+            "ra001a_max_git_executable_bytes": "67108864",
+            "ra001a_aws_role_arn": "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer",
+            "ra001a_aws_region": "us-east-1",
+            "ra001a_receipt_artifact_name": "ra001a-durable-tracer-receipt",
+            "ra001a_receipt_retention_days": "7",
+            "ra001a_max_fetch_timeout_seconds": "300",
+            "ra001a_max_worker_termination_grace_seconds": "30",
+            "ra001a_max_worker_virtual_memory_bytes": "2147483648",
+            "ra001a_min_worker_reserved_overhead_bytes": "536870912",
+            "ra001a_max_decoded_bytes": "1073741824",
+            "ra001a_max_source_rows": "1000000",
+            "ra001a_max_projected_row_groups": "128",
+            "ra001a_max_operator_wall_seconds": "1800",
+            "ra001a_max_terminal_commit_timeout_seconds": "60",
+            "ra001a_max_launch_artifact_bytes": "65536",
+            "ra001a_max_control_artifact_bytes": "65536",
+            "ra001a_max_retained_control_input_bytes": "262144",
+            "ra001a_max_final_object_bytes": "4194304",
+            "ra001a_max_workspace_bytes": "34359738368",
+            "ra001a_max_cache_bytes": "17179869184",
+            "ra001a_min_free_space_reserve_bytes": "10737418240",
+            "ra001a_min_one_record_worst_case_bytes": "4294967296",
+            "ra001a_cache_retention_age_seconds": "2592000",
+            "ra001a_candidate_retention_age_seconds": "86400",
+            "ra001a_max_lifecycle_cleanup_entries": "1000000",
+            "ra001a_max_lifecycle_cleanup_depth": "64",
+            "ra001a_allowed_ignored_runtime_roots": ".nextest-archive/,.rust-verification/,scripts/__pycache__/,target/",
+            "ra001a_max_ignored_entry_bytes": "4096",
+            "ra001a_max_ignored_entries": "128",
+        }.items():
+            if output.get(key) != expected:
+                raise AssertionError(f"ra001a-policy CLI output {key} drifted: {output}")
+
+        required_args = [
+            "ra001a-policy",
+            "--config",
+            str(config_path),
+            "--event-name",
+            "workflow_dispatch",
+            "--ref",
+            "refs/heads/main",
+            "--repository-default-branch",
+            "main",
+        ]
+        for option in (
+            "--config",
+            "--event-name",
+            "--ref",
+            "--repository-default-branch",
+        ):
+            option_index = required_args.index(option)
+            missing = required_args[:option_index] + required_args[option_index + 2 :]
+            assert_fails(option, missing)
+
+        assert_fails(
+            "unrecognized arguments: --ra001a-durable-tracer-requested true",
+            [
+                "ci-policy",
+                "--config",
+                str(config_path),
+                "--event-name",
+                "workflow_dispatch",
+                "--ref",
+                "refs/heads/main",
+                "--ra001a-durable-tracer-requested",
+                "true",
+            ],
+        )
+
+        assert_fails(
+            "ra001a-policy requires workflow_dispatch",
+            [
+                *required_args[: required_args.index("workflow_dispatch")],
+                "pull_request",
+                *required_args[required_args.index("workflow_dispatch") + 1 :],
+            ],
+        )
+        assert_fails(
+            "ra001a-policy requires ref 'refs/heads/main'",
+            [
+                *required_args[: required_args.index("refs/heads/main")],
+                "refs/heads/codex/branch",
+                *required_args[required_args.index("refs/heads/main") + 1 :],
+            ],
+        )
+        assert_fails(
+            "ra001a-policy requires ref 'refs/heads/other'",
+            [
+                *required_args[:-1],
+                "other",
+            ],
+        )
+        assert_fails(
+            "repository_default_branch must be a non-empty branch name",
+            [
+                *required_args[:-1],
+                "refs/heads/main",
+            ],
+        )
 
 
 def assert_deploy_artifact_window_uses_short_deploy_policy() -> None:
@@ -2632,7 +3723,15 @@ def assert_ci_policy_outputs_matrix() -> None:
             )
             if code != 0:
                 raise AssertionError(f"ci-policy failed for {event_name}/{action}: {stderr}")
-            output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+            output = output_dict(stdout)
+            ra001a_output_keys = sorted(
+                key for key in output if key.startswith("ra001a_")
+            )
+            if ra001a_output_keys:
+                raise AssertionError(
+                    "ordinary ci-policy must not emit RA-001a outputs: "
+                    f"{ra001a_output_keys}"
+                )
             if output.get("ci_policy_path") != expected:
                 raise AssertionError((event_name, action, draft, ref, expected, output))
             if output.get("full_ci_required") != str(expected == "full").lower():
@@ -2652,6 +3751,10 @@ def assert_ci_policy_outputs_matrix() -> None:
                 )
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
+            if output.get("backtester_test_archive_timeout_minutes") != "360":
+                raise AssertionError(f"ci-policy must expose the trusted ordinary timeout: {output}")
+            if output.get("backtester_issue_789_timeout_minutes") != "120":
+                raise AssertionError(f"ci-policy must expose the trusted issue #789 timeout: {output}")
 
         code, stdout, stderr = run_cli_with_event_sender(
             [
@@ -4934,6 +6037,9 @@ def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_positive_int_config_rejects_booleans()
+    assert_backtester_timeout_configs_reject_invalid_values()
+    assert_backtester_timeout_configs_load_limits()
+    assert_ra001a_policy_requires_exact_default_branch_dispatch()
     assert_deploy_artifact_window_uses_short_deploy_policy()
     assert_capture_config_can_omit_deploy_artifact_window()
     assert_optional_deploy_window_rejects_partial_config()

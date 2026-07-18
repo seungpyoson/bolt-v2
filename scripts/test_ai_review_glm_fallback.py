@@ -2511,6 +2511,18 @@ def test_pr_agent_prompt_pins_no_findings_contract() -> None:
     assert "Risk areas considered:" in prompt
 
 
+def test_advisory_workflows_cannot_submit_pull_request_reviews() -> None:
+    workflow_paths = (
+        ".github/workflows/ai-review-kimi-cli.yml",
+        ".github/workflows/ai-review-coding-plan-smoke.yml",
+    )
+
+    for workflow_path in workflow_paths:
+        workflow = (REPO_ROOT / workflow_path).read_text(encoding="utf-8")
+        assert "  pull-requests: read\n" in workflow, workflow_path
+        assert "  pull-requests: write\n" not in workflow, workflow_path
+
+
 def main() -> int:
     test_packs_more_than_two_review_chunks_when_budget_requires_it()
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
@@ -2579,6 +2591,7 @@ def main() -> int:
     test_notice_env_supports_claude_notice_marker()
     test_notice_env_fails_closed_without_notice_marker()
     test_pr_agent_prompt_pins_no_findings_contract()
+    test_advisory_workflows_cannot_submit_pull_request_reviews()
     print("GLM fallback self-tests OK")
     return 0
 

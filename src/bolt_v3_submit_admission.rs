@@ -3359,10 +3359,10 @@ pub fn base_quantity_admission_notional(order_price: Decimal, order_quantity: De
 ///   order the result is exactly `order_price * order_quantity`, unchanged from
 ///   the historical per-call-site computation.
 /// - `last_price` is the conservative reference/last price used to value a
-///   quote-quantity order. For a quote-quantity order it MUST be `Some`; when a
-///   caller cannot resolve a reference price it passes `None` and this function
-///   returns `None` so the caller can apply its own degraded fallback. It is
-///   ignored for base-quantity orders.
+///   quote-quantity order. It is not required for a non-inverse Market BUY:
+///   that order shape commits exactly the submitted quote quantity in settlement
+///   currency. Other quote-quantity shapes return `None` when the caller cannot
+///   supply a reference price. It is ignored for base-quantity orders.
 /// - `quote_reference_price` is the side-appropriate top-of-book price (best ask
 ///   for a BUY, best bid for a SELL) used to pick a conservative effective price
 ///   for the quote→base conversion. `None` means no top-of-book is available, in
@@ -3407,6 +3407,18 @@ pub fn admission_base_notional_from_order(
     if instrument.is_inverse() {
         return None;
     }
+    let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim()).ok()?;
+    if matches!(order, OrderAny::Market(_)) && order.order_side() == OrderSide::Buy {
+        return Some(conservative_quote_quantity_admission_notional(
+            BoltV3QuoteQuantityAdmissionInput {
+                order_side: BoltV3QuoteQuantityOrderSide::Buy,
+                is_quote_quantity: true,
+                is_inverse: false,
+                submitted_quote_quantity,
+                calculated_notional: submitted_quote_quantity,
+            },
+        ));
+    }
     let last_px = last_price?;
     let effective_price =
         quote_quantity_effective_price(order, instrument, last_px, quote_reference_price);
@@ -3414,7 +3426,6 @@ pub fn admission_base_notional_from_order(
     let calculated_notional = instrument
         .calculate_notional_value(effective_quantity, last_px, Some(true))
         .as_decimal();
-    let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim()).ok()?;
     Some(conservative_quote_quantity_admission_notional(
         BoltV3QuoteQuantityAdmissionInput {
             order_side: match order.order_side() {

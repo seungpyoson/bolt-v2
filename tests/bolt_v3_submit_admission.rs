@@ -315,12 +315,22 @@ fn quote_quantity_order_maps_quote_amount_to_canonical_fill_quantity() {
         price.to_string(),
         &order,
     );
+    let quote = QuoteTick::new_checked(
+        instrument_id,
+        Price::new(0.49, 2),
+        price,
+        Quantity::new(100.0, 2),
+        Quantity::new(100.0, 2),
+        nautilus_core::UnixNanos::from(1_u64),
+        nautilus_core::UnixNanos::from(1_u64),
+    )
+    .expect("authoritative quote should be valid");
     let input = BoltV3SubmitAdmissionRequestInput {
         execution_client_id: "configured-execution-client",
         intent: &intent,
         order: &order,
         valuation: OrderValuationContext {
-            last_quote: None,
+            last_quote: Some(quote),
             instrument: Some(&instrument),
         },
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),

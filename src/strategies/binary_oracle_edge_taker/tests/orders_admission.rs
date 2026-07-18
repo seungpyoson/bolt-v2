@@ -1343,6 +1343,10 @@ fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
 #[test]
 fn post_only_exit_submission_price_uses_passive_book_price() {
     let mut strategy = ready_to_trade_strategy();
+    strategy.config.exit_order.order_type = OrderType::Limit;
+    strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.exit_order.is_post_only = true;
+    strategy.config.exit_order.is_quote_quantity = false;
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,

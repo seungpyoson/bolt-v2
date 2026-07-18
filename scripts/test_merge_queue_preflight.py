@@ -1002,6 +1002,209 @@ def assert_checkout_remote_must_match_configured_repository() -> None:
             raise AssertionError(result.stderr)
 
 
+def assert_isolated_transport_environment_discards_ambient_git_config() -> None:
+    environment = git_remote_utils.isolated_git_transport_environment(
+        {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "url.file:///alternate/.insteadOf",
+            "GIT_CONFIG_VALUE_0": "https://github.com/example/",
+            "GIT_CONFIG_PARAMETERS": "'url.file:///alternate/.insteadOf'='https://github.com/example/'",
+            "GIT_DIR": "/tmp/alternate.git",
+            "GIT_EXEC_PATH": "/tmp/alternate-exec-path",
+            "GIT_SSH_COMMAND": "alternate-ssh",
+        }
+    )
+    assert environment["GIT_CONFIG_COUNT"] == "1", environment
+    assert environment["GIT_CONFIG_KEY_0"] == "credential.https://github.com.helper", environment
+    assert environment["GIT_CONFIG_VALUE_0"] == "!gh auth git-credential", environment
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1", environment
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull, environment
+    allowed_git_keys = {
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+    }
+    assert {key for key in environment if key.startswith("GIT_")} == allowed_git_keys, environment
+
+
+def assert_private_fetch_repo_ignores_ambient_git_template() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        template = root / "hostile-template"
+        alternate_url = (root / "alternate.git").resolve().as_uri()
+        write(
+            template / "config",
+            f'[url "{alternate_url}"]\n\tinsteadOf = https://github.com/seungpyoson/bolt-v2.git\n',
+        )
+        previous_template = os.environ.get("GIT_TEMPLATE_DIR")
+        os.environ["GIT_TEMPLATE_DIR"] = str(template)
+        private_fetch = None
+        try:
+            private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+            configured_rewrites = module.git(
+                private_fetch.git_repo,
+                "config",
+                "--local",
+                "--get-regexp",
+                r"^url\.",
+                check=False,
+                timeout_seconds=10,
+            )
+        finally:
+            if previous_template is None:
+                os.environ.pop("GIT_TEMPLATE_DIR", None)
+            else:
+                os.environ["GIT_TEMPLATE_DIR"] = previous_template
+            if private_fetch is not None:
+                private_fetch.cleanup()
+        assert_equal(configured_rewrites.returncode, 1, "private fetch URL rewrite status")
+        assert_equal(configured_rewrites.stdout, "", "private fetch URL rewrites")
+
+
+def assert_synthetic_commit_ignores_ambient_git_repository_override() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        tree = git(fixture.repo, "rev-parse", "HEAD^{tree}")
+        parent = git(fixture.repo, "rev-parse", "HEAD")
+        previous_git_dir = os.environ.get("GIT_DIR")
+        os.environ["GIT_DIR"] = str(root / "hostile.git")
+        try:
+            commit_sha = module.commit_tree(
+                fixture.repo,
+                tree,
+                [parent],
+                "isolated synthetic commit",
+                10,
+            )
+        finally:
+            if previous_git_dir is None:
+                os.environ.pop("GIT_DIR", None)
+            else:
+                os.environ["GIT_DIR"] = previous_git_dir
+        assert_equal(
+            git(fixture.repo, "cat-file", "-t", commit_sha),
+            "commit",
+            "synthetic commit object type",
+        )
+
+
+def assert_exact_origin_identity_blocks_chained_git_url_rewrites() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        alternate = root / "alternate.git"
+        init_fixture_repo(alternate, "--bare")
+        origin_url = "https://github.com/seungpyoson/bolt-v2.git"
+        alternate_url = alternate.resolve().as_uri()
+        git(fixture.repo, "config", "--local", f"url.{alternate_url}.insteadOf", origin_url)
+        git(fixture.repo, "remote", "set-url", "origin", origin_url)
+
+        ambient = dict(fixture.environment)
+        ambient["GIT_CONFIG_PARAMETERS"] = f"'url.{alternate_url}.insteadOf'='{origin_url}'"
+        ambient["GIT_DIR"] = str(fixture.repo / ".git")
+        ambient["GIT_EXEC_PATH"] = str(root / "alternate-exec-path")
+        ambient["GIT_SSH_COMMAND"] = "alternate-ssh"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--expected-base-sha",
+                fixture.base,
+                "--expected-head-sha",
+                f"1={head}",
+                "--no-gh",
+                "--json",
+                "1",
+            ],
+            cwd=fixture.repo,
+            env=ambient,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        payload = parse_json(result.stdout)
+        assert_equal(result.returncode, 3, "rewrite-protected origin rc")
+        assert_equal(payload["actual_base_sha"], fixture.base, "rewrite-protected base")
+        assert_equal(payload["pr_heads"], {"1": head}, "rewrite-protected PR head")
+
+
+def assert_private_fetch_uses_exact_checkout_remote_without_private_remote() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        previous_path = os.environ.get("PATH")
+        os.environ["PATH"] = fixture.environment["PATH"]
+        private_fetch = None
+        try:
+            private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+            assert_equal(
+                private_fetch.fetch_origin("origin"),
+                "https://github.com/seungpyoson/bolt-v2.git",
+                "private fetch origin URL",
+            )
+            assert_equal(git(private_fetch.git_repo, "remote"), "", "private fetch remotes")
+        finally:
+            if previous_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = previous_path
+            if private_fetch is not None:
+                private_fetch.cleanup()
+
+
+def assert_private_fetch_failure_redacts_remote_credentials() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+        remote_url = "https://github.com/example/repo.git?access_token=preflight-secret"
+        original_popen = module.subprocess.Popen
+        intercepted: list[tuple[str, ...]] = []
+
+        class FailingFetchProcess:
+            returncode = 1
+
+            def communicate(
+                self,
+                input: str | None = None,
+                timeout: int | None = None,
+            ) -> tuple[str, str]:
+                del input, timeout
+                return f"stdout {remote_url}", f"stderr {remote_url}"
+
+        def failing_popen(command: list[str], **kwargs: object) -> object:
+            del kwargs
+            if command[:2] != ["git", "fetch"]:
+                raise AssertionError(f"unexpected process: {command!r}")
+            intercepted.append(tuple(command))
+            return FailingFetchProcess()
+
+        private_fetch.remotes["origin"] = remote_url
+        module.subprocess.Popen = failing_popen
+        try:
+            try:
+                private_fetch.fetch_sha("origin", "refs/heads/main", "base")
+            except module.PreflightError as exc:
+                message = str(exc)
+            else:
+                raise AssertionError("failing private fetch must raise PreflightError")
+        finally:
+            module.subprocess.Popen = original_popen
+            private_fetch.cleanup()
+        assert intercepted and remote_url in intercepted[0], intercepted
+        assert "preflight-secret" not in message, message
+        assert remote_url not in message, message
+        assert "<remote-url>" in message, message
+
+
 def assert_mergify_config_snapshot_uses_base_blob() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
@@ -2317,6 +2520,12 @@ def main() -> int:
     assert_preflight_config_is_identity_only()
     assert_origin_and_base_cli_overrides_are_rejected()
     assert_checkout_remote_must_match_configured_repository()
+    assert_isolated_transport_environment_discards_ambient_git_config()
+    assert_private_fetch_repo_ignores_ambient_git_template()
+    assert_synthetic_commit_ignores_ambient_git_repository_override()
+    assert_exact_origin_identity_blocks_chained_git_url_rewrites()
+    assert_private_fetch_uses_exact_checkout_remote_without_private_remote()
+    assert_private_fetch_failure_redacts_remote_credentials()
     assert_mergify_config_gaps_are_reported()
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()

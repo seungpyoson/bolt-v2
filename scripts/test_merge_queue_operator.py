@@ -90,17 +90,22 @@ def load_operator_module() -> object:
     return module
 
 
-def write_config(root: pathlib.Path) -> pathlib.Path:
+def write_config(
+    root: pathlib.Path,
+    *,
+    origin: str = "origin",
+    repository: str = REPOSITORY,
+) -> pathlib.Path:
     config = root / "preflight.toml"
     config.write_text(
         "\n".join(
             (
                 "[merge_queue_preflight]",
-                'origin = "origin"',
+                f"origin = {json.dumps(origin)}",
                 'base = "main"',
                 "",
                 "[merge_queue_preflight.operator]",
-                f"repository = {json.dumps(REPOSITORY)}",
+                f"repository = {json.dumps(repository)}",
                 'queue_command = "@mergifyio queue"',
                 "ref_timeout_seconds = 30",
                 "queue_timeout_seconds = 30",
@@ -155,13 +160,21 @@ def assert_queue_as_one_wave_posts_mergify_comments() -> None:
 
 
 def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner(
-            {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]},
-            0,
-        )
-        rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+    previous_gh_host = os.environ.get("GH_HOST")
+    os.environ["GH_HOST"] = "attacker.invalid"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            runner = FakeRunner(
+                {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]},
+                0,
+            )
+            rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+    finally:
+        if previous_gh_host is None:
+            os.environ.pop("GH_HOST", None)
+        else:
+            os.environ["GH_HOST"] = previous_gh_host
     assert rc == 0, (rc, stdout, stderr)
     preflight_command, preflight_environment = next(
         item
@@ -178,6 +191,8 @@ def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
     for command, environment in runner.command_environments:
         if command[:2] == ("git", "ls-remote"):
             assert environment == preflight_environment, (command, environment)
+            cwd = next(recorded_cwd for recorded, recorded_cwd in runner.command_cwds if recorded == command)
+            assert cwd != REPO_ROOT, cwd
     assert (
         "gh",
         "pr",
@@ -188,6 +203,76 @@ def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
         "--body-file",
         "-",
     ) in runner.commands
+
+
+def assert_alternate_repository_authorities_fail_before_transport() -> None:
+    class ResolvedRemoteRunner(FakeRunner):
+        def __init__(self, remote_url: str) -> None:
+            super().__init__({"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]}, 0)
+            self.remote_url = remote_url
+
+        def __call__(self, command: list[str], **kwargs: object) -> object:
+            if command[:4] == ["git", "config", "--local", "--get-all"]:
+                self.commands.append(tuple(command))
+                return completed(command, stdout=f"{self.remote_url}\n")
+            return super().__call__(command, **kwargs)
+
+    cases = (
+        (write_config, {"origin": "../origin.git"}),
+        (write_config, {"repository": "example.invalid/example/repo"}),
+    )
+    for writer, options in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = writer(pathlib.Path(tmp), **options)
+            runner = FakeRunner({"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]}, 0)
+            rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+        assert rc == 4, (options, rc, stdout, stderr)
+        assert not any(command[:2] == ("git", "ls-remote") for command in runner.commands)
+        assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands)
+
+    for remote_url in (
+        "http://github.com/example/repo.git",
+        "ssh://git@github.com/example/repo.git",
+        "git@github.com:example/repo.git",
+        "file:///tmp/repo.git",
+        "../repo.git",
+        "https://github.com/example/repo.git?access_token=preflight-secret",
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            runner = ResolvedRemoteRunner(remote_url)
+            rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+        assert rc == 4, (remote_url, rc, stdout, stderr)
+        assert remote_url not in stderr, stderr
+        assert "preflight-secret" not in stderr, stderr
+        assert not any(command[:2] == ("git", "ls-remote") for command in runner.commands)
+        assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands)
+
+
+def assert_config_snapshot_is_immutable_across_operator_and_preflight() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        original_text = config.read_text(encoding="utf-8")
+
+        class MutatingConfigRunner(FakeRunner):
+            def __call__(self, command: list[str], **kwargs: object) -> object:
+                if command[:4] == ["git", "config", "--local", "--get-all"]:
+                    config.write_text(
+                        original_text.replace('origin = "origin"', 'origin = "changed-origin"'),
+                        encoding="utf-8",
+                    )
+                if command[:2] == ["python3", str(REPO_ROOT / "scripts" / "merge_queue_preflight.py")]:
+                    snapshot = pathlib.Path(command[command.index("--config") + 1])
+                    assert snapshot != config, (snapshot, config)
+                    assert snapshot.read_text(encoding="utf-8") == original_text
+                return super().__call__(command, **kwargs)
+
+        runner = MutatingConfigRunner(
+            {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]},
+            0,
+        )
+        rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+    assert rc == 0, (rc, stdout, stderr)
 
 
 def assert_multi_pr_ready_verdict_does_not_queue() -> None:
@@ -454,6 +539,8 @@ def main() -> int:
     assert_operator_imports_preflight_verdict_constants()
     assert_queue_as_one_wave_posts_mergify_comments()
     assert_preflight_and_queue_use_pinned_repository_identity()
+    assert_alternate_repository_authorities_fail_before_transport()
+    assert_config_snapshot_is_immutable_across_operator_and_preflight()
     assert_multi_pr_ready_verdict_does_not_queue()
     assert_ready_batch_must_be_single_and_match_requested_pr()
     assert_split_advised_prints_subsets_without_queueing()

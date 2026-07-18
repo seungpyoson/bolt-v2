@@ -117,3 +117,14 @@ pub mod source_canonicalization;
 pub mod strategies;
 pub mod strategy_bindings;
 pub mod venue_contract;
+
+#[cfg(test)]
+pub(crate) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}

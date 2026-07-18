@@ -212,6 +212,36 @@ fn live_input_health_accumulator_starts_unobserved_then_tracks_source_transition
 }
 
 #[test]
+fn poisoned_live_input_health_snapshot_fails_closed_as_unobserved() {
+    let accumulator = Arc::new(Mutex::new(BoltV3LiveInputHealthAccumulator::new(
+        1,
+        &BTreeMap::new(),
+    )));
+    poison_mutex(&accumulator);
+
+    assert_eq!(live_input_health_snapshot(&accumulator), None);
+
+    let input_health = apply_live_input_health_transition(
+        &accumulator,
+        1,
+        BoltV3InputHealthSourceTransition {
+            source: BoltV3MissingInputSource {
+                strategy_instance_id: "poisoned-input-health".to_string(),
+                source_id: "poisoned-source".to_string(),
+                asset: "BTC".to_string(),
+                provider: "poisoned-provider".to_string(),
+                provider_instrument: "BTC-USD.POISONED".to_string(),
+                reason: "poisoned".to_string(),
+            },
+            missing: false,
+        },
+    );
+    assert_eq!(input_health.status, BoltV3OperatorHealthStatus::Unobserved);
+    assert_eq!(input_health.configured_source_count, 1);
+    assert_eq!(input_health.observed_source_count, 0);
+}
+
+#[test]
 fn live_input_health_sources_include_only_providers_with_transition_emitters() {
     let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
@@ -425,6 +455,60 @@ fn production_settlement_health_emitter_returns_context_for_poisoned_lock() {
         error
             .to_string()
             .contains("settlement health lock poisoned")
+    );
+}
+
+#[test]
+fn settlement_health_snapshot_returns_context_for_poisoned_lock() {
+    let settlement_health = Arc::new(Mutex::new(BoltV3SettlementHealth::nominal()));
+    poison_mutex(&settlement_health);
+
+    let error = settlement_health_snapshot(&settlement_health)
+        .expect_err("poisoned settlement health must remain an explicit read error");
+
+    assert!(
+        error
+            .to_string()
+            .contains("settlement health lock poisoned")
+    );
+}
+
+#[test]
+fn settlement_runtime_sink_panics_on_poisoned_capital_admission_feed() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    let feed = runtime
+        .capital_admission_runtime_feed
+        .as_ref()
+        .expect("fixture should configure capital-admission feed")
+        .clone();
+    poison_mutex(&feed);
+    let sink = BoltV3LiveSettlementRuntimeSink {
+        loss_protection: None,
+        capital_admission_runtime_feed: Some(feed),
+    };
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sink.record_venue_truth_settlement(
+            crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation {
+                settlement_key: "poisoned-settlement".to_string(),
+                market_id: "poisoned-market".to_string(),
+                product_id: "poisoned-product".to_string(),
+                side: OrderSide::Sell,
+                settled_quantity: Decimal::ONE,
+                payout_per_share: Decimal::ONE,
+                collateral_payout: Decimal::ONE,
+            },
+        )
+        .expect("poisoned feed must panic before returning a result");
+    }))
+    .expect_err("poisoned capital-admission feed must panic");
+
+    assert!(
+        crate::panic_payload_message(panic.as_ref())
+            .contains("capital admission runtime feed lock poisoned")
     );
 }
 

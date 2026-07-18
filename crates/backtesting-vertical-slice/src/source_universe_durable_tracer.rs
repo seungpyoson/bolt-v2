@@ -441,10 +441,6 @@ impl SourceUniverseDurableTracerPackLimits {
             );
         }
         ensure!(
-            self.max_concurrent_records == 1,
-            "RA-001a trusted max_concurrent_records must equal 1"
-        );
-        ensure!(
             self.min_worker_reserved_overhead_bytes < self.max_worker_virtual_memory_bytes,
             "RA-001a pack policy worker overhead floor must be below the worker virtual-memory ceiling"
         );
@@ -777,8 +773,8 @@ fn validate_committed_ra001a_pack_limits(
     limits.validate()?;
     let launch = &committed.launch_spec;
     ensure!(
-        launch.max_concurrent_records == Some(limits.max_concurrent_records),
-        "RA-001a pack {} concurrency must equal the trusted process-isolation policy",
+        launch.max_concurrent_records.is_some_and(|value| value <= limits.max_concurrent_records),
+        "RA-001a pack {} concurrency exceeds the trusted process-isolation policy",
         committed.pack_id
     );
     ensure!(
@@ -3774,11 +3770,6 @@ mod tests {
             }};
         }
         case!(
-            max_concurrent_records,
-            2,
-            "trusted max_concurrent_records must equal 1"
-        );
-        case!(
             max_fetch_timeout_seconds,
             baseline.max_fetch_timeout_seconds - 1,
             "fetch_timeout_seconds"
@@ -3911,6 +3902,23 @@ mod tests {
     }
 
     #[test]
+    fn trusted_concurrency_is_a_ceiling_instead_of_a_code_literal() {
+        let committed = discover_test_execution_packs(&repo_root())
+            .expect("discover committed execution packs");
+        let (aggregate_limits, _) = exact_aggregate_limits(&committed);
+        let mut limits = pack_limits();
+        limits.max_concurrent_records = 2;
+
+        validate_source_universe_durable_tracer_aggregate_limits(
+            &committed,
+            aggregate_limits,
+            limits,
+            EXPECTED_AWS_REGION,
+        )
+        .expect("trusted concurrency above the committed value is an admissible ceiling");
+    }
+
+    #[test]
     fn head_controlled_concurrency_and_region_reject_before_worker_capture() {
         let committed = discover_test_execution_packs(&repo_root())
             .expect("discover committed execution packs");
@@ -3931,7 +3939,7 @@ mod tests {
             |_, _| unreachable!("concurrency rejection must precede launch"),
         )
         .expect_err("head-controlled concurrency must reject");
-        assert!(format!("{error:#}").contains("concurrency must equal"));
+        assert!(format!("{error:#}").contains("concurrency exceeds"));
         assert_eq!(captures, 0);
 
         let mut wrong_region_policy = policy;

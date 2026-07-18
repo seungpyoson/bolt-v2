@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_process_parallelism_fails_before_pack_or_output_access() {
+    fn invalid_process_concurrency_fails_before_pack_or_output_access() {
         let temp = tempfile::tempdir().expect("temporary output parent");
         let spec_path = temp.path().join("launch.toml");
         let output_dir = temp.path().join("must-not-be-created");
@@ -451,7 +451,7 @@ mod tests {
                 continue_on_error: true,
                 fetch_timeout_seconds: 1,
                 worker_termination_grace_seconds: 1,
-                max_concurrent_records: 2,
+                max_concurrent_records: 0,
                 transport: SourceUniverseBatchTransportSpec::StagedS3,
                 object_cache_dir: temp.path().join("workspace/cache"),
                 allow_partial: true,
@@ -467,12 +467,12 @@ mod tests {
                 local_storage: test_local_storage_policy(temp.path()),
             },
         )
-        .expect_err("unsupported process parallelism must be a global configuration error");
+        .expect_err("invalid process concurrency must be a global configuration error");
 
         assert!(
             error
                 .to_string()
-                .contains("requires max_concurrent_records=1"),
+                .contains("max_concurrent_records must be positive and finite"),
             "{error:#}"
         );
         assert!(

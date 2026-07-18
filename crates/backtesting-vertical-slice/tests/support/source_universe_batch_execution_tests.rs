@@ -38,7 +38,7 @@ use backtesting_vertical_slice::{
         execute_source_universe_batch_with_pinned_artifacts,
         execute_source_universe_batch_with_pinned_artifacts_factories,
         synthetic_test_durable_completion, validate_source_universe_batch_execution_report,
-        write_source_universe_batch_execution_report,
+        validate_process_isolated_max_concurrent_records, write_source_universe_batch_execution_report,
     },
     source_universe_execution_pack::{
         SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION, SourceUniverseExecutionPack,
@@ -2786,52 +2786,11 @@ fn factory_construction_error_is_a_record_failure_under_continue_on_error() {
 }
 
 #[test]
-fn process_runner_parallelism_rejection_precedes_fetch_and_spawn() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let fixture = write_valid_single_record_pack(temp_dir.path());
-    let fetcher_factory_calls = AtomicUsize::new(0);
-    let request_root = fixture
-        .output_dir
-        .join(SOURCE_UNIVERSE_OPERATOR_WORKER_REQUEST_ROOT);
-
-    let report = execute_source_universe_batch_with_factories(
-        "source-universe-process-memory-bound",
-        &fixture.pack_path,
-        &fixture.output_dir,
-        SourceUniverseBatchExecutionConfig {
-            start_sequence: None,
-            record_limit: Some(1),
-            continue_on_error: true,
-            max_concurrent_records: Some(2),
-        },
-        || -> anyhow::Result<NeverFetcher> {
-            fetcher_factory_calls.fetch_add(1, Ordering::SeqCst);
-            anyhow::bail!("fetcher must not be constructed")
-        },
-        || {
-            ProcessIsolatedSourceUniverseOperatorRunner::new(
-                request_root.clone(),
-                fs::File::open("/dev/null").expect("open inert test descriptor"),
-                2,
-                Duration::from_secs(1),
-                SourceUniverseBatchResourceLimits {
-                    worker_max_virtual_memory_bytes: 1,
-                    worker_reserved_overhead_bytes: 1,
-                },
-            )
-        },
-    )
-    .expect("parallel process-runner rejection is a record failure");
-
-    assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(report.failed_record_count, 1);
-    assert!(
-        report.failures[0]
-            .error
-            .contains("requires max_concurrent_records=1"),
-        "{:?}",
-        report.failures[0]
-    );
+fn process_runner_concurrency_is_validated_without_a_literal_authority() {
+    validate_process_isolated_max_concurrent_records(2)
+        .expect("positive configured concurrency is valid");
+    assert!(validate_process_isolated_max_concurrent_records(0).is_err());
+    assert!(validate_process_isolated_max_concurrent_records(u64::MAX).is_err());
 }
 
 #[test]

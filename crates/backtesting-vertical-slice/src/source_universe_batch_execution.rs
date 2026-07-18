@@ -1651,14 +1651,13 @@ struct ProcessIsolatedSourceUniverseOperatorRunner {
     resource_limits: SourceUniverseBatchResourceLimits,
 }
 
-/// Reject process-level record parallelism until the execution plan carries a
-/// real aggregate parent/child memory ceiling. The CLI calls this before any
-/// pack, cache, output, fetch, or spawn activity; the constructor repeats the
-/// same single source of truth for library callers.
+/// Validate the TOML-selected process concurrency without selecting a value in
+/// code. The trusted tracer policy owns the upper bound; this lower boundary
+/// rejects only values that cannot represent a finite execution capability.
 pub fn validate_process_isolated_max_concurrent_records(max_concurrent_records: u64) -> Result<()> {
     ensure!(
-        max_concurrent_records == 1,
-        "process-isolated execution requires max_concurrent_records=1 until a configured aggregate-memory byte budget exists; got {max_concurrent_records}"
+        max_concurrent_records > 0 && max_concurrent_records != u64::MAX,
+        "process-isolated max_concurrent_records must be positive and finite"
     );
     Ok(())
 }
@@ -1669,13 +1668,9 @@ pub fn validate_process_isolated_batch_selection(
     record_limit: Option<u64>,
     max_concurrent_records: Option<u64>,
 ) -> Result<()> {
-    ensure!(
-        max_concurrent_records == Some(1),
-        "process-isolated execution requires max_concurrent_records=1; got {max_concurrent_records:?}"
-    );
-    validate_process_isolated_max_concurrent_records(
-        max_concurrent_records.expect("exact process-isolated concurrency was checked"),
-    )?;
+    let max_concurrent_records = max_concurrent_records
+        .context("process-isolated execution requires configured max_concurrent_records")?;
+    validate_process_isolated_max_concurrent_records(max_concurrent_records)?;
     ensure!(
         record_limit == Some(1),
         "process-isolated execution requires record_limit=1; got {record_limit:?}"
@@ -6681,25 +6676,15 @@ mod tests {
     }
 
     #[test]
-    fn process_isolated_runner_rejects_parallelism_before_fetch_or_spawn_setup() {
-        let error = ProcessIsolatedSourceUniverseOperatorRunner::new(
-            PathBuf::from("relative-path-must-not-be-inspected"),
-            fs::File::open("/dev/null").expect("open inert test descriptor"),
-            2,
-            Duration::from_secs(1),
-            SourceUniverseBatchResourceLimits {
-                worker_max_virtual_memory_bytes: 1,
-                worker_reserved_overhead_bytes: 1,
-            },
-        )
-        .expect_err("parallel process workers need an explicit aggregate-memory budget");
+    fn process_isolated_concurrency_accepts_policy_values_and_rejects_invalid_values() {
+        validate_process_isolated_max_concurrent_records(2)
+            .expect("process isolation must accept a positive policy-owned concurrency");
 
-        assert!(
-            error
-                .to_string()
-                .contains("requires max_concurrent_records=1"),
-            "{error:#}"
-        );
+        for invalid in [0, u64::MAX] {
+            let error = validate_process_isolated_max_concurrent_records(invalid)
+                .expect_err("invalid process-isolated concurrency must fail closed");
+            assert!(error.to_string().contains("must be positive and finite"));
+        }
     }
 
     #[test]

@@ -56,6 +56,64 @@ test-archive = "managed_heavy"
 issue_789 = "managed_heavy"
 gate = "github_hosted"
 
+[backtester.test_archive_timeout]
+ordinary_max_job_minutes = 360
+
+[backtester.ra001a_durable_tracer]
+max_job_minutes = 120
+max_registry_packs = 64
+max_total_selected_object_bytes = 1073741824
+max_worker_executable_bytes = 1073741824
+max_wall_seconds = 3600
+termination_grace_seconds = 30
+receipt_artifact_name = "ra001a-durable-tracer-receipt"
+receipt_retention_days = 7
+
+[backtester.ra001a_durable_tracer.git_executable]
+path = "/usr/bin/git"
+max_bytes = 67108864
+
+[backtester.ra001a_durable_tracer.aws]
+role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
+region = "us-east-1"
+
+# Trusted-default-branch bounds checked against every committed pack before
+# worker capture. `max_*` values are ceilings; `min_*` values are safety floors;
+# unprefixed retention ages are exact because either direction changes cost.
+[backtester.ra001a_durable_tracer.pack_limits]
+max_concurrent_records = 1
+max_fetch_timeout_seconds = 300
+max_worker_termination_grace_seconds = 30
+max_worker_virtual_memory_bytes = 2147483648
+min_worker_reserved_overhead_bytes = 536870912
+max_decoded_bytes = 1073741824
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_operator_wall_seconds = 1800
+max_terminal_commit_timeout_seconds = 60
+max_launch_artifact_bytes = 65536
+max_control_artifact_bytes = 65536
+max_retained_control_input_bytes = 262144
+max_final_object_bytes = 4194304
+max_workspace_bytes = 34359738368
+max_cache_bytes = 17179869184
+min_free_space_reserve_bytes = 10737418240
+min_one_record_worst_case_bytes = 4294967296
+cache_retention_age_seconds = 2592000
+candidate_retention_age_seconds = 86400
+max_lifecycle_cleanup_entries = 1000000
+max_lifecycle_cleanup_depth = 64
+
+[backtester.ra001a_durable_tracer.checkout]
+allowed_ignored_runtime_roots = [
+  ".nextest-archive/",
+  ".rust-verification/",
+  "scripts/__pycache__/",
+  "target/",
+]
+max_ignored_entry_bytes = 4096
+max_ignored_entries = 128
+
 [workflows.flaky_test_detection]
 flaky-detection-rust-root = "managed_heavy"
 flaky-detection-rust-backtester = "managed_heavy"
@@ -202,6 +260,7 @@ run_attempt = "${{ github.run_attempt }}"
 
 [backtester.issue_789]
 artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
+max_job_minutes = 120
 
 [backtester.issue_789.artifact_name_template_vars]
 run_id = "${{ github.run_id }}"

@@ -23,6 +23,8 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import config_validators as _cv  # noqa: E402
+
 from workflow_expression_analysis import (
     ELSE_RE,
     FI_RE,
@@ -383,7 +385,6 @@ DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
 RUNNERS_CONFIG_LABEL = "ci/github-actions-runners.toml"
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
-CONFIG_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 ARTIFACT_RETENTION_WORKFLOW_SOURCE_RE = re.compile(r"\.github/workflows/[^/]+\.ya?ml")
 ARTIFACT_RETENTION_ACTION_SOURCE_RE = re.compile(
     r"\.github/actions/[^/]+(?:/[^/]+)*/action\.ya?ml"
@@ -9765,19 +9766,12 @@ def resolve_config_string_map_ref(data: dict[str, object], ref: str, prefix: str
 
 
 def render_config_string_template(template: str, template_vars: dict[str, str], prefix: str) -> str:
-    placeholders = set(CONFIG_TEMPLATE_PLACEHOLDER_RE.findall(template))
-    if not placeholders:
-        raise ValueError(f"{prefix} must include at least one template placeholder")
-    missing_vars = sorted(placeholders - set(template_vars))
-    if missing_vars:
-        raise ValueError(f"{prefix} missing template vars: {missing_vars!r}")
-    unused_vars = sorted(set(template_vars) - placeholders)
-    if unused_vars:
-        raise ValueError(f"{prefix} has unused template vars: {unused_vars!r}")
-    rendered = template
-    for name in sorted(placeholders):
-        rendered = rendered.replace(f"{{{name}}}", template_vars[name])
-    return rendered
+    return _cv.render_config_string_template(
+        template,
+        template_vars,
+        prefix,
+        error_cls=ValueError,
+    )
 
 
 def artifact_retention_select_source_mode(

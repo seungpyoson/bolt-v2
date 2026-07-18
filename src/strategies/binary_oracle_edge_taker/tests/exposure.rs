@@ -2274,6 +2274,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
 #[test]
 fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
     let mut strategy = ready_to_trade_strategy();
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     set_shadow_order_execution_policy(&mut strategy);

@@ -30,11 +30,9 @@ import config_validators as _cv  # noqa: E402
 from ci_provenance import MERGIFY_CONFIG_EXPECTATIONS  # noqa: E402
 from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG  # noqa: E402
 from git_remote_utils import (  # noqa: E402
-    fetchable_remote_url,
+    github_https_remote_url as _github_https_remote_url,
     isolated_git_transport_environment,
     redact_remote_urls,
-    remote_url_sha256,
-    require_credential_free_remote_url as _require_credential_free_remote_url,
     require_remote_name as _require_remote_name,
 )
 
@@ -43,8 +41,6 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "rust-verification.toml"
 MERGIFY_CONFIG_PATH = ".mergify.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-EXPECTED_ORIGIN_URL_SHA256_ENV = "MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"
 EXPECTED_HEAD_SHA_RE = re.compile(r"^(?P<pr>[1-9][0-9]*)=(?P<sha>[0-9a-f]{40})$")
 MERGIFY_REQUIRED_REVIEWER_RE = re.compile(r"(?:^|\n)approved-reviews-by = (?P<reviewer>[^\n]+)")
 MERGIFY_CHECK_SUCCESS_RE = re.compile(r"(?:^|\n)check-success = (?P<check>[^\n]+)")
@@ -634,11 +630,8 @@ class PreflightError(RuntimeError):
     """Raised when preflight input or repository state is invalid."""
 
 
-require_credential_free_remote_url = functools.partial(
-    _require_credential_free_remote_url,
-    error_cls=PreflightError,
-)
 require_remote_name = functools.partial(_require_remote_name, error_cls=PreflightError)
+github_https_remote_url = functools.partial(_github_https_remote_url, error_cls=PreflightError)
 
 
 require_table = functools.partial(_cv.require_table, error_cls=PreflightError)
@@ -2007,8 +2000,6 @@ class PrivateFetchRefs:
         if result.returncode != 0 or len(remote_urls) != 1 or not remote_urls[0]:
             raise PreflightError("configured Git remote did not resolve to a URL")
         remote_url = remote_urls[0]
-        remote_url = fetchable_remote_url(remote_url, self.source_repo)
-        remote_url = require_credential_free_remote_url(remote_url)
         self.remotes[origin] = remote_url
         return remote_url
 
@@ -2197,6 +2188,7 @@ class Batch:
 class PreflightConfig:
     origin: str
     base: str
+    repository: str
     default_verifier_profile: str
     verifier_profiles: dict[str, tuple[str, ...]]
     source_fence_full_profile_pathspecs: tuple[str, ...]
@@ -2568,9 +2560,12 @@ def validate_verifier_profile_commands(
 def load_config(path: pathlib.Path) -> PreflightConfig:
     root = load_toml(path)
     settings = require_table(root, "merge_queue_preflight", "config")
+    operator = require_table(settings, "operator", "config.merge_queue_preflight")
     cheap_gate_labels = cheap_local_gate_labels(root)
     origin = require_string(settings, "origin", "config.merge_queue_preflight")
     base = require_string(settings, "base", "config.merge_queue_preflight")
+    repository = require_string(operator, "repository", "config.merge_queue_preflight.operator")
+    github_https_remote_url(repository)
     default_profile = require_string(
         settings, "default_verifier_profile", "config.merge_queue_preflight"
     )
@@ -2650,6 +2645,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     return PreflightConfig(
         origin=origin,
         base=base,
+        repository=repository,
         default_verifier_profile=default_profile,
         verifier_profiles=profiles,
         source_fence_full_profile_pathspecs=source_fence_full_profile_pathspecs,
@@ -2845,7 +2841,6 @@ def configure_verifier_worktree_origin(
     origin_url: str,
     input_timeout_seconds: int,
 ) -> None:
-    origin_url = require_credential_free_remote_url(origin_url)
     completed = git(
         worktree,
         "config",
@@ -3782,8 +3777,8 @@ def preflight(
     repo: pathlib.Path,
     origin: str,
     base: str,
+    expected_origin_url: str,
     expected_base_sha: str,
-    expected_origin_url_sha256: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
@@ -3801,8 +3796,8 @@ def preflight(
         return preflight_with_fetch_refs(
             origin=origin,
             base=base,
+            expected_origin_url=expected_origin_url,
             expected_base_sha=expected_base_sha,
-            expected_origin_url_sha256=expected_origin_url_sha256,
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
             verifier_commands=verifier_commands,
@@ -3824,8 +3819,8 @@ def preflight_with_fetch_refs(
     *,
     origin: str,
     base: str,
+    expected_origin_url: str,
     expected_base_sha: str,
-    expected_origin_url_sha256: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
     verifier_commands: Sequence[str],
@@ -3844,8 +3839,8 @@ def preflight_with_fetch_refs(
     git_repo = fetch_refs.git_repo
     try:
         origin_url = fetch_refs.fetch_origin(origin)
-        if remote_url_sha256(origin_url) != expected_origin_url_sha256:
-            raise PreflightError("configured Git remote identity changed during merge queue preflight")
+        if origin_url != expected_origin_url:
+            raise PreflightError("checkout Git remote does not match configured repository")
         actual_base_sha = fetch_base(fetch_refs, origin, base)
     except PreflightError as exc:
         return unavailable_base_payload(
@@ -4131,24 +4126,18 @@ def verifier_commands(config: PreflightConfig, profile: str | None, extra: Seque
     return (*config.verifier_profiles[selected], *extra)
 
 
-def expected_origin_url_sha256(environ: Mapping[str, str] | None = None) -> str:
-    source = os.environ if environ is None else environ
-    value = source.get(EXPECTED_ORIGIN_URL_SHA256_ENV, "")
-    if SHA256_RE.fullmatch(value) is None:
-        raise PreflightError(f"{EXPECTED_ORIGIN_URL_SHA256_ENV} must contain one SHA-256 digest")
-    return value
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         config = load_config(args.config)
+        os.environ["GH_HOST"] = config.repository.split("/", 1)[0]
+        os.environ["GH_REPO"] = config.repository
         payload, exit_code = preflight(
             repo=pathlib.Path.cwd(),
             origin=config.origin,
             base=config.base,
+            expected_origin_url=github_https_remote_url(config.repository),
             expected_base_sha=args.expected_base_sha,
-            expected_origin_url_sha256=expected_origin_url_sha256(),
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,
             verifier_commands=verifier_commands(config, args.verifier_profile, args.run_verifier),

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import importlib.util
 import io
 import json
@@ -91,6 +90,7 @@ def write_config(
     *,
     origin: str = "origin",
     base: str = "main",
+    repository: str = "github.com/example/repo",
 ) -> pathlib.Path:
     config = root / "preflight.toml"
     config.write_text(
@@ -102,6 +102,7 @@ def write_config(
                 'default_verifier_profile = "static"',
                 "",
                 "[merge_queue_preflight.operator]",
+                f"repository = {json.dumps(repository)}",
                 'queue_command = "@mergifyio queue"',
                 "ref_timeout_seconds = 30",
                 "queue_timeout_seconds = 30",
@@ -147,8 +148,26 @@ def assert_queue_as_one_wave_posts_mergify_comments() -> None:
     assert rc == 0, (rc, stdout, stderr)
     assert "queued PR #1" in stdout, stdout
     assert "queued PR #2" in stdout, stdout
-    assert ("gh", "pr", "comment", "1", "--repo", "example/repo", "--body-file", "-") in runner.commands, runner.commands
-    assert ("gh", "pr", "comment", "2", "--repo", "example/repo", "--body-file", "-") in runner.commands, runner.commands
+    assert (
+        "gh",
+        "pr",
+        "comment",
+        "1",
+        "--repo",
+        "github.com/example/repo",
+        "--body-file",
+        "-",
+    ) in runner.commands, runner.commands
+    assert (
+        "gh",
+        "pr",
+        "comment",
+        "2",
+        "--repo",
+        "github.com/example/repo",
+        "--body-file",
+        "-",
+    ) in runner.commands, runner.commands
     preflight_command = next(command for command in runner.commands if "merge_queue_preflight.py" in command[1])
     assert "--expected-base-sha" in preflight_command, preflight_command
     assert BASE_SHA in preflight_command, preflight_command
@@ -322,23 +341,57 @@ def assert_unconfigured_or_credential_bearing_origins_never_reach_ls_remote() ->
         )
 
 
-def assert_credential_bearing_resolved_origin_never_reaches_ls_remote() -> None:
-    class CredentialRemoteRunner(FakeRunner):
+def assert_noncanonical_resolved_origins_never_reach_ls_remote() -> None:
+    class ResolvedRemoteRunner(FakeRunner):
+        def __init__(self, remote_url: str) -> None:
+            super().__init__({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
+            self.remote_url = remote_url
+
         def __call__(self, command: list[str], **kwargs: object) -> object:
             if command[:4] == ["git", "config", "--local", "--get-all"]:
                 self.commands.append(tuple(command))
-                return completed(
-                    command,
-                    stdout="https://example.invalid/repo.git?access_token=preflight-secret\n",
-                )
+                return completed(command, stdout=f"{self.remote_url}\n")
             return super().__call__(command, **kwargs)
 
+    rejected = (
+        "http://github.com/example/repo.git",
+        "ssh://git@github.com/example/repo.git",
+        "git@github.com:example/repo.git",
+        "file:///tmp/repo.git",
+        "/tmp/repo.git",
+        "../repo.git",
+        "https://example.invalid/example/repo.git",
+        "https://github.com/example/repo",
+        "https://github.com/example/repo.git?access_token=preflight-secret",
+    )
+    for remote_url in rejected:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            runner = ResolvedRemoteRunner(remote_url)
+            rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+        assert rc == 4, (remote_url, rc, stdout, stderr)
+        assert remote_url not in stderr, (remote_url, stderr)
+        assert "preflight-secret" not in stderr, stderr
+        assert not any(command[:2] == ("git", "ls-remote") for command in runner.commands), (
+            remote_url,
+            runner.commands,
+        )
+        assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), (
+            remote_url,
+            runner.commands,
+        )
+
+
+def assert_configured_repository_is_the_single_remote_identity() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
-        runner = CredentialRemoteRunner({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
+        config = write_config(
+            pathlib.Path(tmp),
+            repository="github.com/another/repository",
+        )
+        runner = FakeRunner({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
         rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
     assert rc == 4, (rc, stdout, stderr)
-    assert "preflight-secret" not in stderr, stderr
+    assert "does not match configured repository" in stderr, stderr
     assert not any(command[:2] == ("git", "ls-remote") for command in runner.commands), runner.commands
     assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
 
@@ -369,10 +422,18 @@ def assert_operator_and_preflight_share_immutable_config_snapshot() -> None:
 
 
 def assert_preflight_and_queue_use_pinned_remote_identity() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
-        rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+    previous_gh_host = os.environ.get("GH_HOST")
+    os.environ["GH_HOST"] = "attacker.invalid"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            runner = FakeRunner({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
+            rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+    finally:
+        if previous_gh_host is None:
+            os.environ.pop("GH_HOST", None)
+        else:
+            os.environ["GH_HOST"] = previous_gh_host
     assert rc == 0, (rc, stdout, stderr)
     preflight_command, environment = next(
         item
@@ -395,10 +456,7 @@ def assert_preflight_and_queue_use_pinned_remote_identity() -> None:
         "GIT_CONFIG_KEY_0",
         "GIT_CONFIG_VALUE_0",
     }
-    assert environment["MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"] == hashlib.sha256(
-        b"https://github.com/example/repo.git"
-    ).hexdigest()
-    assert environment["GH_REPO"] == "example/repo"
+    assert environment["GH_REPO"] == "github.com/example/repo"
     config_count = int(environment["GIT_CONFIG_COUNT"])
     assert config_count == 1
     assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
@@ -420,7 +478,7 @@ def assert_preflight_and_queue_use_pinned_remote_identity() -> None:
         "comment",
         "1",
         "--repo",
-        "example/repo",
+        "github.com/example/repo",
         "--body-file",
         "-",
     ) in runner.commands, runner.commands
@@ -439,7 +497,7 @@ def assert_non_github_remote_cannot_reach_preflight_or_queue() -> None:
         runner = NonGithubRemoteRunner({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
         rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
     assert rc == 4, (rc, stdout, stderr)
-    assert "must identify one GitHub repository" in stderr, stderr
+    assert "does not match configured repository" in stderr, stderr
     assert not any(len(command) > 1 and "merge_queue_preflight.py" in command[1] for command in runner.commands)
     assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands)
 
@@ -526,7 +584,8 @@ def main() -> int:
     assert_dry_run_does_not_queue()
     assert_duplicate_prs_are_rejected_before_preflight()
     assert_unconfigured_or_credential_bearing_origins_never_reach_ls_remote()
-    assert_credential_bearing_resolved_origin_never_reaches_ls_remote()
+    assert_noncanonical_resolved_origins_never_reach_ls_remote()
+    assert_configured_repository_is_the_single_remote_identity()
     assert_operator_and_preflight_share_immutable_config_snapshot()
     assert_preflight_and_queue_use_pinned_remote_identity()
     assert_non_github_remote_cannot_reach_preflight_or_queue()

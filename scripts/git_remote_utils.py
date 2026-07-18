@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
 import pathlib
 import re
@@ -14,6 +13,9 @@ from collections.abc import Mapping, Sequence
 REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
 REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+GITHUB_REPOSITORY_RE = re.compile(
+    r"^github\.com/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+)
 SAFE_GIT_OBSERVABILITY_ENV = ("GIT_TRACE2_EVENT",)
 
 
@@ -22,10 +24,9 @@ def is_direct_remote_url(remote_url: str) -> bool:
 
 
 def fetchable_remote_url(remote_url: str, source_repo: pathlib.Path) -> str:
-    if pathlib.Path(remote_url).is_absolute():
-        return str(pathlib.Path(remote_url).resolve(strict=False))
     if (
-        remote_url.startswith("~")
+        pathlib.Path(remote_url).is_absolute()
+        or remote_url.startswith("~")
         or is_direct_remote_url(remote_url)
     ):
         return remote_url
@@ -40,21 +41,6 @@ def redact_remote_urls(text: str, remote_urls: Sequence[str]) -> str:
     return redacted
 
 
-def require_credential_free_remote_url(
-    remote_url: str,
-    *,
-    error_cls: type[Exception] = ValueError,
-) -> str:
-    parsed = urllib.parse.urlsplit(remote_url)
-    has_forbidden_userinfo = parsed.username is not None and parsed.scheme != "ssh"
-    if parsed.password is not None or has_forbidden_userinfo or parsed.query or parsed.fragment:
-        raise error_cls(
-            "Git remote URLs must not contain embedded credentials or URL query/fragment components; "
-            "use a credential helper or SSH agent auth"
-        )
-    return remote_url
-
-
 def require_remote_name(
     remote_name: str,
     *,
@@ -65,8 +51,14 @@ def require_remote_name(
     return remote_name
 
 
-def remote_url_sha256(remote_url: str) -> str:
-    return hashlib.sha256(remote_url.encode("utf-8")).hexdigest()
+def github_https_remote_url(
+    repository: str,
+    *,
+    error_cls: type[Exception] = ValueError,
+) -> str:
+    if GITHUB_REPOSITORY_RE.fullmatch(repository) is None:
+        raise error_cls("configured repository must identify one github.com repository")
+    return f"https://{repository}.git"
 
 
 def isolated_git_transport_environment(

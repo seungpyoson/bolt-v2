@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import importlib.util
 import io
 import json
@@ -151,6 +150,56 @@ def commit(repo: pathlib.Path, message: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+def preflight_transport_environment(
+    repo: pathlib.Path,
+    remote: pathlib.Path,
+    environ: dict[str, str] | None = None,
+) -> dict[str, str]:
+    environment = dict(os.environ if environ is None else environ)
+    base_path = environment.get("PREFLIGHT_TEST_BASE_PATH", environment.get("PATH", ""))
+    real_git = environment.get("PREFLIGHT_TEST_REAL_GIT") or shutil.which(
+        "git", path=base_path
+    )
+    if real_git is None:
+        raise AssertionError("git executable unavailable")
+    bin_dir = repo.parent / "preflight-transport-bin"
+    shim = bin_dir / "git"
+    write(
+        shim,
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import pathlib\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "source_repo = pathlib.Path(os.environ['PREFLIGHT_TEST_SOURCE_REPO']).resolve()\n"
+        "if args == ['config', '--local', '--get-all', 'remote.origin.url'] and pathlib.Path.cwd().resolve() == source_repo:\n"
+        "    print(os.environ['PREFLIGHT_TEST_REMOTE_URL'])\n"
+        "    raise SystemExit(0)\n"
+        "if args and args[0] == 'fetch':\n"
+        "    rewrite = f\"url.{os.environ['PREFLIGHT_TEST_REMOTE_PATH']}.insteadOf={os.environ['PREFLIGHT_TEST_REMOTE_URL']}\"\n"
+        "    args = ['-c', rewrite, *args]\n"
+        "real_git = os.environ['PREFLIGHT_TEST_REAL_GIT']\n"
+        "os.execv(real_git, [real_git, *args])\n",
+    )
+    shim.chmod(0o755)
+    environment["PATH"] = f"{bin_dir}{os.pathsep}{base_path}"
+    environment["PREFLIGHT_TEST_BASE_PATH"] = base_path
+    environment["PREFLIGHT_TEST_REAL_GIT"] = real_git
+    environment["PREFLIGHT_TEST_SOURCE_REPO"] = str(repo.resolve())
+    environment["PREFLIGHT_TEST_REMOTE_PATH"] = str(remote.resolve())
+    environment["PREFLIGHT_TEST_REMOTE_URL"] = "https://github.com/seungpyoson/bolt-v2.git"
+    for key in (
+        "PATH",
+        "PREFLIGHT_TEST_BASE_PATH",
+        "PREFLIGHT_TEST_REAL_GIT",
+        "PREFLIGHT_TEST_SOURCE_REPO",
+        "PREFLIGHT_TEST_REMOTE_PATH",
+        "PREFLIGHT_TEST_REMOTE_URL",
+    ):
+        os.environ[key] = environment[key]
+    return environment
+
+
 class GitFixture:
     def __init__(self, root: pathlib.Path) -> None:
         self.root = root
@@ -158,6 +207,7 @@ class GitFixture:
         self.repo = root / "repo"
         init_fixture_repo(self.remote, "--bare")
         clone_fixture_repo(self.remote, self.repo)
+        git(self.repo, "remote", "set-url", "origin", str(self.remote.resolve()))
         git(self.repo, "config", "user.email", "preflight@example.invalid")
         git(self.repo, "config", "user.name", "Merge Queue Preflight Test")
         write(self.repo / "shared.txt", "base\n")
@@ -165,9 +215,7 @@ class GitFixture:
         self.base = commit(self.repo, "base")
         git(self.repo, "branch", "-M", "main")
         git(self.repo, "push", "origin", "main")
-        os.environ["MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"] = hashlib.sha256(
-            str(self.remote.resolve()).encode("utf-8")
-        ).hexdigest()
+        preflight_transport_environment(self.repo, self.remote)
 
     def make_pr(self, number: int, edits: dict[str, str]) -> str:
         branch = f"pr-{number}"
@@ -202,6 +250,7 @@ def run_preflight(
     result = subprocess.run(
         command,
         cwd=repo,
+        env=preflight_transport_environment(repo, origin),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -600,6 +649,11 @@ def assert_preflight_input_timeout_is_config_driven() -> None:
 def assert_real_preflight_config_loads() -> None:
     module = load_preflight_module()
     loaded = module.load_config(REPO_ROOT / "ci" / "rust-verification.toml")
+    assert_equal(
+        loaded.repository,
+        "github.com/seungpyoson/bolt-v2",
+        "real merge queue repository",
+    )
     assert_equal(
         loaded.source_fence_full_profile_pathspecs,
         tuple(DEFAULT_SOURCE_FENCE_FULL_PROFILE_PATHSPECS),
@@ -1310,6 +1364,8 @@ def write_preflight_config(
         f"base = {json.dumps(base)}\n"
         f"default_verifier_profile = {json.dumps(profile)}\n\n"
         f"source_fence_full_profile_pathspecs = [{rendered_pathspecs}]\n\n"
+        "[merge_queue_preflight.operator]\n"
+        'repository = "github.com/seungpyoson/bolt-v2"\n\n'
         "[merge_queue_preflight.timeouts]\n"
         f"input_seconds = {input_timeout_seconds}\n"
         f"verifier_seconds = {verifier_timeout_seconds}\n\n"
@@ -1347,12 +1403,16 @@ def write_fake_gh(
         path,
         "#!/usr/bin/env python3\n"
         "import json\n"
+        "import os\n"
         "import sys\n"
         f"views = {views!r}\n"
         f"checks = {checks_by_pr!r}\n"
         f"required_checks = {required_checks_by_pr!r}\n"
         f"failed_views = {(failed_views or {})!r}\n"
         f"check_exit_codes = {check_exit_codes_by_pr!r}\n"
+        "if os.environ.get('GH_HOST') != 'github.com' or os.environ.get('GH_REPO') != 'github.com/seungpyoson/bolt-v2':\n"
+        "    print('GitHub repository identity is not pinned', file=sys.stderr)\n"
+        "    raise SystemExit(9)\n"
         "args = sys.argv[1:]\n"
         "if len(args) >= 3 and args[0:2] == ['pr', 'view']:\n"
         "    if int(args[2]) in failed_views:\n"
@@ -1441,7 +1501,9 @@ def run_preflight_with_gh(
         "--json",
         *prs,
     ]
-    env = os.environ.copy()
+    env = preflight_transport_environment(repo, origin)
+    env["GH_HOST"] = "attacker.invalid"
+    env["GH_REPO"] = "attacker.invalid/owner/repository"
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     return subprocess.run(
         command,
@@ -1533,7 +1595,6 @@ def assert_private_fetches_resolve_checkout_remote_names() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
         head = fixture.make_pr(1, {"one.txt": "one\n"})
-        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
         checkout_preflight_refs = fixture.repo / ".git" / "refs" / "preflight"
         checkout_preflight_refs.mkdir(parents=True, exist_ok=True)
         original_mode = checkout_preflight_refs.stat().st_mode
@@ -1594,7 +1655,8 @@ def assert_origin_identity_drift_is_terminal() -> None:
         head = fixture.make_pr(1, {"one.txt": "one\n"})
         alternate = root / "alternate.git"
         init_fixture_repo(alternate, "--bare")
-        git(fixture.repo, "remote", "set-url", "origin", str(alternate))
+        os.environ["PREFLIGHT_TEST_REMOTE_URL"] = "https://github.com/attacker/repository.git"
+        os.environ["PREFLIGHT_TEST_REMOTE_PATH"] = str(alternate)
         command = [
             sys.executable,
             str(SCRIPT_PATH),
@@ -1621,7 +1683,7 @@ def assert_origin_identity_drift_is_terminal() -> None:
         findings = payload["findings"]
         assert any(
             finding["reason_code"] == "base_unavailable"
-            and "configured Git remote identity changed" in finding["evidence"]["reason"]
+            and "does not match configured repository" in finding["evidence"]["reason"]
             for finding in findings
         ), findings
 
@@ -1633,7 +1695,7 @@ def assert_exact_origin_identity_blocks_chained_git_url_rewrites() -> None:
         head = fixture.make_pr(1, {"one.txt": "one\n"})
         alternate = root / "alternate.git"
         init_fixture_repo(alternate, "--bare")
-        origin_url = fixture.remote.resolve().as_uri()
+        origin_url = "https://github.com/seungpyoson/bolt-v2.git"
         alternate_url = alternate.resolve().as_uri()
         git(fixture.repo, "config", "--local", f"url.{alternate_url}.insteadOf", origin_url)
         git(fixture.repo, "remote", "set-url", "origin", origin_url)
@@ -1648,9 +1710,6 @@ def assert_exact_origin_identity_blocks_chained_git_url_rewrites() -> None:
         ambient["GIT_EXEC_PATH"] = str(root / "alternate-exec-path")
         ambient["GIT_SSH_COMMAND"] = "alternate-ssh"
         env = git_remote_utils.isolated_git_transport_environment(ambient)
-        env["MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"] = hashlib.sha256(
-            origin_url.encode("utf-8")
-        ).hexdigest()
         command = [
             sys.executable,
             str(SCRIPT_PATH),
@@ -1706,15 +1765,18 @@ def assert_isolated_transport_environment_discards_ambient_git_config() -> None:
     assert {key for key in environment if key.startswith("GIT_")} == allowed_git_keys, environment
 
 
-def assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote() -> None:
+def assert_private_fetch_uses_exact_checkout_remote_url_without_private_remote() -> None:
     module = load_preflight_module()
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
-        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
         private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
         try:
             resolved = private_fetch.fetch_origin("origin")
-            assert_equal(resolved, str(fixture.remote.resolve()), "private fetch origin URL")
+            assert_equal(
+                resolved,
+                "https://github.com/seungpyoson/bolt-v2.git",
+                "private fetch origin URL",
+            )
             configured_remotes = git(private_fetch.git_repo, "remote")
             assert_equal(configured_remotes, "", "private fetch must not configure temp remotes")
         finally:
@@ -1853,34 +1915,6 @@ def assert_private_fetches_do_not_freshen_checkout_objects() -> None:
         assert_equal(after, before, "private preflight must not freshen checkout loose objects")
 
 
-def assert_remote_url_normalization_uses_shared_helper() -> None:
-    source = SCRIPT_PATH.read_text(encoding="utf-8")
-    if "REMOTE_URL_SCHEME_RE =" in source or "\ndef fetchable_remote_url(" in source:
-        raise AssertionError("remote URL normalization must live in one shared helper")
-
-
-def assert_shared_remote_url_normalization_matrix() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        source_repo = pathlib.Path(tmp) / "repo"
-        source_repo.mkdir()
-        absolute = str((source_repo.parent / "origin.git").resolve())
-        cases = {
-            "https://example.invalid/org/repo.git": "https://example.invalid/org/repo.git",
-            "ssh://example.invalid/org/repo.git": "ssh://example.invalid/org/repo.git",
-            "git@example.invalid:org/repo.git": "git@example.invalid:org/repo.git",
-            "file:///tmp/origin.git": "file:///tmp/origin.git",
-            absolute: absolute,
-            "~/origin.git": "~/origin.git",
-            "../origin.git": str((source_repo / "../origin.git").resolve(strict=False)),
-            "./origin.git": str((source_repo / "./origin.git").resolve(strict=False)),
-            "origin.git": str((source_repo / "origin.git").resolve(strict=False)),
-        }
-        for value, expected in cases.items():
-            assert_equal(
-                git_remote_utils.fetchable_remote_url(value, source_repo),
-                expected,
-                f"fetchable remote URL for {value}",
-            )
 def assert_github_actions_auth_helper_fails_without_actions_identity() -> None:
     for env in (
         {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "owner/repo"},
@@ -2012,11 +2046,9 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
-        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
         verifier = root / "require_origin_remote.py"
         write(
             verifier,
-            "import pathlib\n"
             "import subprocess\n"
             "import sys\n"
             "completed = subprocess.run(\n"
@@ -2028,8 +2060,8 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             "if completed.returncode != 0:\n"
             "    sys.stderr.write(completed.stderr)\n"
             "    sys.exit(7)\n"
-            "actual = pathlib.Path(completed.stdout.strip()).resolve()\n"
-            "expected = pathlib.Path(sys.argv[1]).resolve()\n"
+            "actual = completed.stdout.strip()\n"
+            "expected = sys.argv[1]\n"
             "if actual != expected:\n"
             "    print(f'expected origin {expected}, got {actual}', file=sys.stderr)\n"
             "    sys.exit(8)\n"
@@ -2039,7 +2071,7 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             "    stdout=subprocess.PIPE,\n"
             "    check=False,\n"
             ")\n"
-            "if worktree_url.returncode != 0 or pathlib.Path(worktree_url.stdout.strip()).resolve() != expected:\n"
+            "if worktree_url.returncode != 0 or worktree_url.stdout.strip() != expected:\n"
             "    print('origin is not worktree-local', file=sys.stderr)\n"
             "    sys.exit(9)\n"
             "shared_url = subprocess.run(\n"
@@ -2061,7 +2093,7 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
             "    print('ambient Git command config leaked into verifier', file=sys.stderr)\n"
             "    sys.exit(11)\n",
         )
-        normalized_origin = str(fixture.remote.resolve())
+        normalized_origin = "https://github.com/seungpyoson/bolt-v2.git"
         config = write_preflight_config(
             root,
             "strict",
@@ -2113,108 +2145,11 @@ def assert_verifier_worktrees_inherit_origin_remote() -> None:
         )
 
 
-def assert_verifier_origin_rejects_embedded_credentials_before_git() -> None:
-    module = load_preflight_module()
-    credential = "preflight-secret"
-    credential_origins = (
-        f"https://user:{credential}@example.invalid/repo.git",
-        f"https://example.invalid/repo.git?access_token={credential}",
-        f"https://example.invalid/repo.git#token={credential}",
-        f"ftp://{credential}@example.invalid/repo.git",
-        f"git+ssh://{credential}@example.invalid/repo.git",
-    )
-    git_calls: list[tuple[object, ...]] = []
-
-    def fake_git(*args: object, **_kwargs: object) -> object:
-        git_calls.append(args)
-        raise AssertionError("credential-bearing origin reached Git")
-
-    original_git = module.git
-    with tempfile.TemporaryDirectory() as tmp:
-        fixture = GitFixture(pathlib.Path(tmp))
-        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
-        module.git = fake_git
-        try:
-            for origin_url in credential_origins:
-                git_calls.clear()
-                try:
-                    private_fetch.fetch_origin(origin_url)
-                except module.PreflightError as exc:
-                    message = str(exc)
-                else:
-                    raise AssertionError(
-                        f"credential-bearing fetch origin was accepted: {origin_url!r}"
-                    )
-                if credential in message or origin_url in message:
-                    raise AssertionError(f"credential leaked through fetch-origin error: {message!r}")
-                assert_equal(
-                    git_calls,
-                    [],
-                    f"credential-bearing fetch origin Git calls for {origin_url!r}",
-                )
-        finally:
-            module.git = original_git
-            private_fetch.cleanup()
-
-    module.git = fake_git
-    try:
-        for origin_url in credential_origins:
-            git_calls.clear()
-            try:
-                module.configure_verifier_worktree_origin(pathlib.Path("/tmp/worktree"), origin_url, 10)
-            except module.PreflightError as exc:
-                message = str(exc)
-            else:
-                raise AssertionError(
-                    f"credential-bearing verifier origin was accepted: {origin_url!r}"
-                )
-            if credential in message or origin_url in message:
-                raise AssertionError(f"credential leaked through verifier-origin error: {message!r}")
-            assert_equal(
-                git_calls,
-                [],
-                f"credential-bearing origin Git calls for {origin_url!r}",
-            )
-    finally:
-        module.git = original_git
-
-    for ssh_origin in (
-        "ssh://git@example.invalid/repo.git",
-        "git@example.invalid:org/repo.git",
-    ):
-        assert_equal(
-            module.require_credential_free_remote_url(ssh_origin),
-            ssh_origin,
-            f"credential-free SSH origin {ssh_origin!r}",
-        )
-
-    safe_origin = "https://example.invalid/repo.git"
-
-    def failing_git(*args: object, **_kwargs: object) -> object:
-        return module.CommandResult(tuple(str(arg) for arg in args), 1, "", f"cannot set {safe_origin}")
-
-    module.git = failing_git
-    try:
-        try:
-            module.configure_verifier_worktree_origin(pathlib.Path("/tmp/worktree"), safe_origin, 10)
-        except module.PreflightError as exc:
-            message = str(exc)
-        else:
-            raise AssertionError("failed verifier-origin configuration was accepted")
-    finally:
-        module.git = original_git
-    if safe_origin in message:
-        raise AssertionError(f"origin URL leaked through configuration error: {message!r}")
-    if "<remote-url>" not in message:
-        raise AssertionError(f"origin placeholder absent from configuration error: {message!r}")
-
-
 def assert_verifier_diagnostics_redact_origin_url() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
-        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
         verifier = root / "print_origin_remote.py"
         write(
             verifier,
@@ -2254,7 +2189,7 @@ def assert_verifier_diagnostics_redact_origin_url() -> None:
             check=False,
         )
         assert_equal(result.returncode, 2, "origin-redaction verifier rc")
-        normalized_origin = str(fixture.remote.resolve())
+        normalized_origin = "https://github.com/seungpyoson/bolt-v2.git"
         combined_output = f"{result.stdout}\n{result.stderr}"
         if normalized_origin in combined_output:
             raise AssertionError("normalized origin leaked through verifier diagnostics")
@@ -5303,19 +5238,16 @@ def main() -> int:
     assert_origin_identity_drift_is_terminal()
     assert_exact_origin_identity_blocks_chained_git_url_rewrites()
     assert_isolated_transport_environment_discards_ambient_git_config()
-    assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
+    assert_private_fetch_uses_exact_checkout_remote_url_without_private_remote()
     assert_private_fetch_repo_persists_auto_maintenance_suppression()
     assert_private_fetch_sha_spawns_no_background_maintenance()
     assert_origin_and_base_cli_overrides_are_rejected()
     assert_private_fetches_do_not_freshen_checkout_objects()
-    assert_remote_url_normalization_uses_shared_helper()
-    assert_shared_remote_url_normalization_matrix()
     assert_github_actions_auth_helper_fails_without_actions_identity()
     assert_github_actions_auth_helper_keeps_local_ambient_auth_optional()
     assert_verifier_worktrees_do_not_write_checkout_git_metadata()
     assert_verifier_worktrees_can_read_checkout_object_database()
     assert_verifier_worktrees_inherit_origin_remote()
-    assert_verifier_origin_rejects_embedded_credentials_before_git()
     assert_verifier_diagnostics_redact_origin_url()
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()

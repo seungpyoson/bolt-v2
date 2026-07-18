@@ -25,11 +25,8 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import config_validators as _cv  # noqa: E402
 from git_remote_utils import (  # noqa: E402
-    fetchable_remote_url,
-    github_repository_slug,
+    github_https_remote_url as _github_https_remote_url,
     isolated_git_transport_environment,
-    remote_url_sha256,
-    require_credential_free_remote_url as _require_credential_free_remote_url,
     require_remote_name as _require_remote_name,
 )
 from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE, VERDICT_SPLIT_ADVISED  # noqa: E402
@@ -56,10 +53,7 @@ class OperatorError(Exception):
 require_table = functools.partial(_cv.require_table, error_cls=OperatorError)
 require_string = functools.partial(_cv.require_string, error_cls=OperatorError)
 require_positive_int = functools.partial(_cv.require_positive_int, error_cls=OperatorError)
-require_credential_free_remote_url = functools.partial(
-    _require_credential_free_remote_url,
-    error_cls=OperatorError,
-)
+github_https_remote_url = functools.partial(_github_https_remote_url, error_cls=OperatorError)
 require_remote_name = functools.partial(_require_remote_name, error_cls=OperatorError)
 
 
@@ -120,6 +114,7 @@ def positive_pr_number(value: str) -> int:
 class OperatorConfig:
     origin: str
     base: str
+    repository: str
     queue_command: str
     ref_timeout_seconds: int
     queue_timeout_seconds: int
@@ -132,9 +127,12 @@ def load_operator_config(path: pathlib.Path) -> OperatorConfig:
         raise OperatorError(f"unable to read config {path}: {exc}") from exc
     settings = require_table(root, "merge_queue_preflight", "config")
     operator = require_table(settings, "operator", "config.merge_queue_preflight")
+    repository = require_string(operator, "repository", "config.merge_queue_preflight.operator")
+    github_https_remote_url(repository)
     return OperatorConfig(
         origin=require_string(settings, "origin", "config.merge_queue_preflight"),
         base=require_string(settings, "base", "config.merge_queue_preflight"),
+        repository=repository,
         queue_command=require_string(operator, "queue_command", "config.merge_queue_preflight.operator"),
         ref_timeout_seconds=require_positive_int(
             operator,
@@ -159,6 +157,7 @@ def parse_ls_remote_sha(output: str, ref: str) -> str:
 def resolve_remote_url(
     repo: pathlib.Path,
     remote_name: str,
+    expected_remote_url: str,
     runner: Runner,
     timeout_seconds: int,
 ) -> str:
@@ -173,14 +172,13 @@ def resolve_remote_url(
     remote_urls = result.stdout.splitlines()
     if result.returncode != 0 or len(remote_urls) != 1 or not remote_urls[0]:
         raise OperatorError("configured Git remote did not resolve to a URL")
-    remote_url = remote_urls[0]
-    remote_url = fetchable_remote_url(remote_url, repo)
-    return require_credential_free_remote_url(remote_url)
+    if remote_urls[0] != expected_remote_url:
+        raise OperatorError("checkout Git remote does not match configured repository")
+    return remote_urls[0]
 
 
-def preflight_environment(remote_url: str, queue_repository: str) -> dict[str, str]:
+def preflight_environment(queue_repository: str) -> dict[str, str]:
     environment = isolated_git_transport_environment(os.environ)
-    environment["MERGE_QUEUE_PREFLIGHT_ORIGIN_URL_SHA256"] = remote_url_sha256(remote_url)
     environment["GH_REPO"] = queue_repository
     return environment
 
@@ -258,13 +256,11 @@ def run_preflight(
     remote_url = resolve_remote_url(
         repo,
         operator_config.origin,
+        github_https_remote_url(operator_config.repository),
         runner,
         operator_config.ref_timeout_seconds,
     )
-    queue_repository = github_repository_slug(remote_url)
-    if queue_repository is None:
-        raise OperatorError("configured Git remote must identify one GitHub repository")
-    environment = preflight_environment(remote_url, queue_repository)
+    environment = preflight_environment(operator_config.repository)
     expected_base_sha = remote_ref_sha(
         config.parent,
         remote_url,
@@ -302,7 +298,7 @@ def run_preflight(
         raise OperatorError(f"merge queue preflight did not emit valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise OperatorError("merge queue preflight JSON payload must be an object")
-    return payload, result.returncode, queue_repository
+    return payload, result.returncode, operator_config.repository
 
 
 def queue_pr(

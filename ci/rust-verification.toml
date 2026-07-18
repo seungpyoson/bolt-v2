@@ -63,6 +63,7 @@ source_fence_full_profile_pathspecs = [
 ]
 
 [merge_queue_preflight.operator]
+repository = "github.com/seungpyoson/bolt-v2"
 queue_command = "@mergifyio queue"
 ref_timeout_seconds = 300
 queue_timeout_seconds = 300

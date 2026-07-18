@@ -190,18 +190,23 @@ fn market_info_parser_rejects_missing_or_unknown_economics_shape() {
 }
 
 #[test]
-fn market_info_rejects_base_fee_values_outside_the_governed_descriptor_shape() {
-    let contradictory = r#"{
+fn side_specific_base_fee_values_do_not_become_unbound_builder_authority() {
+    let side_specific = r#"{
         "r":{},"t":[{"t":"token-yes","o":"Yes"}],"mos":5,"mts":0.001,
         "mbf":999,"tbf":1000,"ibce":true,
         "fd":{"r":0.07,"e":1,"to":true}
     }"#;
-    let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(metadata(), contradictory).unwrap();
+    let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(metadata(), side_specific).unwrap();
+    let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot, None).unwrap();
+    let mut request = canonical_fixture_request();
+    request.routing.attached_charge = Some(RoutingAttachment {
+        attachment_id: RoutingAttachmentId::new("builder-profile").unwrap(),
+    });
 
-    assert!(matches!(
-        PolymarketEconomicsAdapter::try_new(config(), snapshot, None),
-        Err(PolymarketEconomicsError::InvalidMarketInfo)
-    ));
+    assert_eq!(
+        adapter.quote_components(&request),
+        Err(PolymarketEconomicsError::MissingBuilderDescriptor)
+    );
 }
 
 #[test]

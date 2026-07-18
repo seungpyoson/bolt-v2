@@ -313,6 +313,7 @@ impl BoltV3OrderRoutingHandle {
         }
     }
 
+    #[cfg(test)]
     fn register_resting_order(
         &self,
         client_order_id: ClientOrderId,

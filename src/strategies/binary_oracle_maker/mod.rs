@@ -22,7 +22,6 @@ use nautilus_model::{
     enums::OmsType,
     identifiers::{ClientId, StrategyId},
     instruments::{Instrument, InstrumentAny},
-    orders::Order,
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};

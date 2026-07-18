@@ -107,6 +107,7 @@ pub struct ReplayEconomicsAdapter {
 
 pub struct ReplayEconomicsAdmissionSource {
     snapshots: Vec<HistoricalEconomicsSnapshot>,
+    resting_order_refresh_margin_ns: u64,
 }
 
 impl ReplayEconomicsAdmissionSource {
@@ -116,8 +117,22 @@ impl ReplayEconomicsAdmissionSource {
         if snapshots.is_empty() {
             return Err(EconomicsUnavailable::MissingQuoteAuthority);
         }
+        let mut resting_order_refresh_margin_ns = None;
         for snapshot in &snapshots {
             validate_snapshot(snapshot)?;
+            let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
+            let margin_ns = adapter
+                .economics
+                .resting_order_refresh_margin_ms
+                .checked_mul(bolt_v2::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+            match resting_order_refresh_margin_ns {
+                Some(existing) if existing != margin_ns => {
+                    return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+                }
+                Some(_) => {}
+                None => resting_order_refresh_margin_ns = Some(margin_ns),
+            }
         }
         let authority = &snapshots[0];
         if snapshots.iter().any(|snapshot| {
@@ -129,7 +144,11 @@ impl ReplayEconomicsAdmissionSource {
         }) {
             return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
-        Ok(Self { snapshots })
+        Ok(Self {
+            snapshots,
+            resting_order_refresh_margin_ns: resting_order_refresh_margin_ns
+                .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?,
+        })
     }
 
     pub fn snapshot_for_request(
@@ -222,6 +241,10 @@ impl ReplayEconomicsAdmissionSource {
 }
 
 impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
+    fn resting_order_refresh_margin_ns(&self) -> u64 {
+        self.resting_order_refresh_margin_ns
+    }
+
     fn resolve_product_surface(
         &self,
         execution_client_id: &ExecutionClientId,

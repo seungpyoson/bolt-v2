@@ -9,6 +9,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -295,6 +296,37 @@ def assert_multiple_prs_are_rejected_by_parser() -> None:
         raise AssertionError("merge queue operator must accept exactly one PR")
 
 
+def assert_just_multi_pr_rejected_before_git() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        marker = root / "git-invoked"
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        fake_git = bin_dir / "git"
+        fake_git.write_text(
+            '#!/bin/sh\n: > "$MERGE_QUEUE_GIT_MARKER"\nexit 99\n',
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        environment = os.environ.copy()
+        environment["MERGE_QUEUE_GIT_MARKER"] = str(marker)
+        environment["PATH"] = str(bin_dir) + os.pathsep + environment["PATH"]
+        result = subprocess.run(
+            ["just", "--justfile", str(REPO_ROOT / "justfile"), "merge-queue", "1", "2"],
+            cwd=REPO_ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        git_invoked = marker.exists()
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "unrecognized arguments: 2" in result.stderr, result.stderr
+    if git_invoked:
+        raise AssertionError("just merge-queue invoked Git before rejecting multiple PRs")
+
+
 def assert_ready_payload_must_match_requested_pr() -> None:
     malformed_payloads = {
         "missing": {"verdict": "queue_as_one_wave"},
@@ -498,6 +530,7 @@ def main() -> int:
     assert_alternate_repository_authorities_fail_before_transport()
     assert_config_snapshot_is_immutable_across_operator_and_preflight()
     assert_multiple_prs_are_rejected_by_parser()
+    assert_just_multi_pr_rejected_before_git()
     assert_ready_payload_must_match_requested_pr()
     assert_blocked_verdict_does_not_queue()
     assert_unexpected_success_payload_is_operator_error()

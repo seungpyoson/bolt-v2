@@ -1574,6 +1574,7 @@ fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_toleran
 #[test]
 fn executable_edge_blocks_unsupported_post_only_entry_shape() {
     let mut strategy = ready_to_trade_strategy();
+    strategy.config.entry_order.is_post_only = true;
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1597,7 +1598,7 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
 }
 
 #[test]
-fn entry_submission_supports_limit_base_entry_with_planned_fill_economics() {
+fn entry_submission_supports_market_quote_entry_with_planned_fill_economics() {
     let mut strategy = ready_to_trade_strategy();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;

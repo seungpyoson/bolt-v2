@@ -977,8 +977,8 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
         use crate::economics::{
             AdmissionTreatment, EconomicClass, EconomicComponentId, EconomicKind, EconomicScope,
-            EstimatedEconomicComponent, ExecutionKind, FormulaId, SignedNativeEffect, SourceId,
-            SourceValidity, VenueQuoteEstimate,
+            EstimatedEconomicComponent, ExecutionKind, FormulaId, PointEstimate,
+            SignedNativeEffect, SourceId, SourceValidity, VenueQuoteEstimate,
         };
 
         #[derive(Clone)]

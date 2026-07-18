@@ -177,6 +177,9 @@ instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
 contract_types = ["linear", "inverse"]
 load_spreads = true
 environment = "demo"
+book_stale_check_interval_secs = 0
+book_stale_threshold_secs = 0
+book_snapshot_timeout_secs = 3
 transport_backend = "sockudo"
 "#,
         ),

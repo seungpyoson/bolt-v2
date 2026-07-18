@@ -1318,7 +1318,7 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalR
                     .events()
                     .iter()
                     .filter_map(|event| match event {
-                        OrderEventAny::Filled(fill) => Some(*fill),
+                        OrderEventAny::Filled(fill) => Some(fill.clone()),
                         _ => None,
                     })
                     .collect(),
@@ -2794,38 +2794,43 @@ mod tests {
         let no = maker_smoke_binary_option(MAKER_SMOKE_NO_INSTRUMENT, "No");
         let yes_id = yes.id();
         let no_id = no.id();
-        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
         catalog
             .write_instruments(vec![yes, no])
             .context("write maker smoke instruments")?;
         catalog
             .write_to_parquet(
-                &[
-                    maker_smoke_trade(
-                        yes_id,
-                        "maker-smoke-yes-1",
-                        AggressorSide::Buyer,
-                        MAKER_SMOKE_TS_NS,
-                    ),
-                    maker_smoke_trade(
-                        no_id,
-                        "maker-smoke-no-1",
-                        AggressorSide::Seller,
-                        MAKER_SMOKE_TS_NS + 1_000_000,
-                    ),
-                ],
+                &[maker_smoke_trade(
+                    yes_id,
+                    "maker-smoke-yes-1",
+                    AggressorSide::Buyer,
+                    MAKER_SMOKE_TS_NS,
+                )],
                 None,
                 None,
                 None,
             )
-            .context("write maker smoke trade ticks")?;
+            .context("write maker smoke YES trade tick")?;
+        catalog
+            .write_to_parquet(
+                &[maker_smoke_trade(
+                    no_id,
+                    "maker-smoke-no-1",
+                    AggressorSide::Seller,
+                    MAKER_SMOKE_TS_NS + 1_000_000,
+                )],
+                None,
+                None,
+                None,
+            )
+            .context("write maker smoke NO trade tick")?;
         Ok(())
     }
 
     fn write_execution_contract_smoke_catalog(catalog_root: &Path) -> Result<()> {
         let instrument = maker_smoke_binary_option(MAKER_SMOKE_YES_INSTRUMENT, "Yes");
         let instrument_id = instrument.id();
-        let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+        let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
         catalog
             .write_instruments(vec![instrument])
             .context("write execution-contract smoke instrument")?;
@@ -3266,6 +3271,7 @@ mod tests {
         let up_projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
             source_binding: "pmxt-free-r2-archive".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
             selected_token_id: ISSUE_789_UP_TOKEN.to_string(),
             gamma_markets: gamma_markets.clone(),
@@ -3275,6 +3281,7 @@ mod tests {
         let down_projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
             source_binding: "pmxt-free-r2-archive".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
             selected_token_id: ISSUE_789_DOWN_TOKEN.to_string(),
             gamma_markets,
@@ -3473,7 +3480,7 @@ mod tests {
             .fills
             .iter()
             .filter(|fill| fill.ts_event < settlement_ts)
-            .copied()
+            .cloned()
             .collect();
         ensure!(
             !entry_fills.is_empty(),
@@ -3977,6 +3984,7 @@ mod tests {
             let projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
                 source_binding: "pmxt-free-r2-archive".to_string(),
                 usage_scope: SourceProofUsageScope::OneOffBackfillData,
+                drop_quotes_missing_side: true,
                 selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
                 selected_token_id: token.to_string(),
                 gamma_markets: gamma_markets.clone(),

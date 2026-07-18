@@ -83,8 +83,8 @@ name = "redemption-fence-fixture"
 version = "0.0.0"
 edition = "2024"
 [dependencies]
-alloy-signer = "=2.1.0"
-alloy-signer-local = "=2.1.0"
+alloy-signer = "=2.1.1"
+alloy-signer-local = "=2.1.1"
 [[test]]
 name = "polymarket_redemption_preparation"
 path = "tests/polymarket_redemption_preparation.rs"
@@ -317,7 +317,7 @@ class PolymarketRedemptionPreparationVerifierTests(unittest.TestCase):
         temporary, root = self.fixture()
         self.addCleanup(temporary.cleanup)
         (root / "Cargo.toml").write_text(
-            CARGO.replace('alloy-signer = "=2.1.0"', 'alloy-signer = "2"'),
+            CARGO.replace('alloy-signer = "=2.1.1"', 'alloy-signer = "2"'),
             encoding="utf-8",
         )
         self.assertTrue(

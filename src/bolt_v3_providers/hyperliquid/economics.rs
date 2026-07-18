@@ -1279,11 +1279,10 @@ impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
         &self,
         request: &EconomicQuoteRequest,
     ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
-        self.validate_request(request).map_err(|_| {
-            EconomicsUnavailable::ProviderQuoteUnavailable {
+        self.validate(request)
+            .map_err(|_| EconomicsUnavailable::ProviderQuoteUnavailable {
                 source_id: self.config.source_id.clone(),
-            }
-        })?;
+            })?;
         Ok(crate::economics::ResolvedEdgeBasis {
             normalized_amount: self.notional(request).map_err(|_| {
                 EconomicsUnavailable::ProviderQuoteUnavailable {

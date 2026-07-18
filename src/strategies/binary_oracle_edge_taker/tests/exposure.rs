@@ -2109,6 +2109,7 @@ fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
 #[test]
 fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
     let mut strategy = ready_to_trade_strategy();
+    configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     let cache = register_test_strategy(&mut strategy);

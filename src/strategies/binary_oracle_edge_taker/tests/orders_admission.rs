@@ -1591,6 +1591,7 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
 #[test]
 fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
     let mut strategy = ready_to_trade_strategy();
+    configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;

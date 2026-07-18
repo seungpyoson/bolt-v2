@@ -34,7 +34,7 @@ use nautilus_model::data::QuoteTick;
 use nautilus_model::enums::{AssetClass, OrderSide, PositionSide, TimeInForce};
 use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId};
 use nautilus_model::instruments::{BinaryOption, InstrumentAny};
-use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
+use nautilus_model::orders::{LimitOrder, MarketOrder, MarketToLimitOrder, OrderAny};
 use nautilus_model::types::{Currency, Price, Quantity};
 use rust_decimal::Decimal;
 use std::{

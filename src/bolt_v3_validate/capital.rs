@@ -33,6 +33,15 @@ pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> 
             errors.push(format!(
                 "{label}.collateral_currency must be a non-empty string"
             ));
+        } else if crate::bolt_v3_strategy_registration::settlement_currency_from_config_code(
+            pool.collateral_currency.as_str(),
+        )
+        .is_none()
+        {
+            errors.push(format!(
+                "{label}.collateral_currency must be a registered currency code or pUSD alias: `{}`",
+                pool.collateral_currency
+            ));
         }
         if pool.product_kind != "prediction_market_binary" {
             errors.push(format!(

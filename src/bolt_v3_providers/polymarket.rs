@@ -90,7 +90,9 @@ use crate::{
         ProviderVenueTruthRuntimeSource, ProviderVenueTruthSourceContext, ResolvedClientSecrets,
         SsmSecretResolver,
     },
-    bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_secrets::{
+        BoltV3SecretError, EVM_SIGNING_KEY_BYTES, ResolvedEvmSigningKey, resolve_field,
+    },
     bolt_v3_wire_boundary::TransportBackend,
 };
 
@@ -352,8 +354,8 @@ pub struct ResolvedBoltV3PolymarketSecrets {
     /// Each secret field is wrapped in [`Zeroizing`] so the individual secret
     /// bytes are scrubbed on drop even when a field is moved out of the
     /// container — per-field zeroize in addition to the container-level
-    /// `ZeroizeOnDrop`. All four fields deref to `String`; the redacting
-    /// `Debug` impl below keeps them out of logs.
+    /// `ZeroizeOnDrop`. The four text fields deref to `String`. The redacting
+    /// `Debug` impl below keeps every field out of logs.
     pub private_key: Zeroizing<String>,
     pub api_key: Zeroizing<String>,
     /// Canonical URL-safe base64 `api_secret` (padded) handed to the NT
@@ -797,15 +799,15 @@ pub fn resolve_secrets(
         &secrets.private_key_ssm_path,
         resolver,
     )?;
-    if let Err(reason) = validate_private_key_shape(&private_key) {
-        return Err(BoltV3SecretError {
+    decode_private_key(&private_key).map_err(|reason| {
+        BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: "private_key_ssm_path".to_string(),
             source: format!(
                 "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter: {reason}"
             ),
-        });
-    }
+        }
+    })?;
     let api_key = resolve_field(
         context.client_key,
         "api_key_ssm_path",
@@ -821,7 +823,7 @@ pub fn resolve_secrets(
         resolver,
     )?;
     let api_secret = normalize_api_secret_padding(api_secret_raw);
-    // Symmetric with `validate_private_key_shape` (Polymarket) and
+    // Symmetric with `decode_private_key` (Polymarket) and
     // `validate_binance_api_secret_shape` (Binance): reject api_secret material
     // the NT Polymarket credential cannot decode BEFORE it is stored, so a
     // malformed secret fails loud at SSM resolution rather than deep inside NT
@@ -896,10 +898,15 @@ fn parse_secrets_config(
         })
 }
 
-fn validate_private_key_shape(private_key: &str) -> Result<(), String> {
-    EvmPrivateKey::new(private_key)
-        .map(|_| ())
-        .map_err(|source| source.to_string())
+pub(crate) fn decode_private_key(private_key: &str) -> Result<ResolvedEvmSigningKey, String> {
+    let private_key = EvmPrivateKey::new(private_key).map_err(|source| source.to_string())?;
+    let source = private_key.as_bytes();
+    if source.len() != EVM_SIGNING_KEY_BYTES {
+        return Err("EVM private key must be exactly 32 bytes".to_string());
+    }
+    let mut bytes = Zeroizing::new([u8::default(); EVM_SIGNING_KEY_BYTES]);
+    bytes.copy_from_slice(source);
+    ResolvedEvmSigningKey::new(bytes)
 }
 
 fn normalize_api_secret_padding(mut api_secret: String) -> String {
@@ -914,7 +921,7 @@ fn normalize_api_secret_padding(mut api_secret: String) -> String {
 /// `Credential::new` uses, so an unusable secret is rejected at SSM resolution
 /// time rather than surfacing as an opaque NT client-construction failure
 /// later. Mirrors the resolve-time shape checks for `private_key`
-/// ([`validate_private_key_shape`]) and the Binance `api_secret`
+/// ([`decode_private_key`]) and the Binance `api_secret`
 /// (`binance::validate_binance_api_secret_shape`).
 fn validate_api_secret_shape(api_secret: &str) -> Result<(), String> {
     use base64::Engine as _;
@@ -1487,6 +1494,12 @@ fn map_execution(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_key_snapshot_rejects_an_invalid_scalar() {
+        let zero_key = format!("0x{}", "00".repeat(32));
+        assert!(decode_private_key(&zero_key).is_err());
+    }
 
     #[test]
     fn market_slug_filters_include_static_binary_event_targets_for_matching_client() {

@@ -73,6 +73,7 @@ pub mod bolt_v3_prod_profile;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_settlement_runtime;
 pub use bolt_v3_providers::boundary_registry as bolt_v3_boundary_registry;
+pub mod bolt_v3_polymarket_redemption;
 pub mod bolt_v3_quote_lifecycle;
 pub mod bolt_v3_quoting;
 pub mod bolt_v3_readiness;

@@ -13,17 +13,14 @@
 //! `StrategyBuilder` impl) mirrors `binary_oracle_edge_taker` *structurally* —
 //! it does not copy taker behaviour.
 
-use std::{cell::RefCell, rc::Rc};
-
 use anyhow::Result;
-use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
+use nautilus_common::{actor::DataActor, timer::TimeEvent};
 use nautilus_model::{
     data::TradeTick,
     enums::OmsType,
     identifiers::{ClientId, StrategyId},
     instruments::{Instrument, InstrumentAny},
 };
-use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 use toml::Value;
 
@@ -74,7 +71,7 @@ use crate::{
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
     strategies::binary_oracle_maker::runtime::MakerRuntime,
-    strategies::registry::{BoxedStrategy, StrategyBuilder, ValidationError},
+    strategies::registry::{StrategyBuilder, ValidationError},
 };
 
 pub mod archetype;
@@ -994,6 +991,8 @@ impl DataActor for BinaryOracleMaker {
 nautilus_strategy!(BinaryOracleMaker);
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
+    type Strategy = BinaryOracleMaker;
+
     fn kind() -> &'static str {
         KEY
     }
@@ -1002,22 +1001,8 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
         validate_config(raw, field_prefix, errors);
     }
 
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(BinaryOracleMaker::new(
-            parse_config(raw)?,
-            context.clone(),
-        )))
-    }
-
-    fn register(
-        raw: &Value,
-        context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId> {
-        let strategy = BinaryOracleMaker::new(parse_config(raw)?, context.clone());
-        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-        trader.borrow_mut().add_strategy(strategy)?;
-        Ok(strategy_id)
+    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy> {
+        Ok(BinaryOracleMaker::new(parse_config(raw)?, context.clone()))
     }
 }
 

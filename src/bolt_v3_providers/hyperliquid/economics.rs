@@ -425,23 +425,21 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
         .iter()
         .filter(|tier| tier.ntl_cutoff <= user_volume)
         .max_by_key(|tier| tier.ntl_cutoff);
-    let selected_perp_taker = eligible_vip.map_or(schedule.cross, |tier| tier.cross);
-    let selected_perp_maker = eligible_vip.map_or(schedule.add, |tier| tier.add);
-    let selected_spot_taker = eligible_vip.map_or(schedule.spot_cross, |tier| tier.spot_cross);
-    let selected_spot_maker = eligible_vip.map_or(schedule.spot_add, |tier| tier.spot_add);
+    let (selected_perp_taker, selected_perp_maker, selected_spot_taker, selected_spot_maker) =
+        match eligible_vip {
+            Some(tier) => (tier.cross, tier.add, tier.spot_cross, tier.spot_add),
+            None => (
+                schedule.cross,
+                schedule.add,
+                schedule.spot_cross,
+                schedule.spot_add,
+            ),
+        };
     let maker_fraction = if exchange_volume.is_zero() {
         None
     } else {
         user_maker_volume.checked_div(exchange_volume)
     };
-    let eligible_maker_rebate = maker_fraction.and_then(|fraction| {
-        schedule
-            .tiers
-            .mm
-            .iter()
-            .filter(|tier| tier.maker_fraction_cutoff <= fraction)
-            .max_by_key(|tier| tier.maker_fraction_cutoff)
-    });
     let nonnegative_rates = schedule.cross >= Decimal::ZERO
         && schedule.add >= Decimal::ZERO
         && schedule.spot_cross >= Decimal::ZERO
@@ -454,8 +452,16 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
         staking_scale,
     ) && effective_rate_matches_schedule(
         wire.user_add_rate,
-        std::iter::once(selected_perp_maker)
-            .chain(eligible_maker_rebate.into_iter().map(|tier| tier.add)),
+        std::iter::once(selected_perp_maker).chain(maker_fraction.into_iter().flat_map(
+            |fraction| {
+                schedule
+                    .tiers
+                    .mm
+                    .iter()
+                    .filter(move |tier| tier.maker_fraction_cutoff <= fraction)
+                    .map(|tier| tier.add)
+            },
+        )),
         staking_scale,
     ) && effective_rate_matches_schedule(
         wire.user_spot_cross_rate,

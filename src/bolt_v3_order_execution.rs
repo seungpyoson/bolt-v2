@@ -1343,12 +1343,12 @@ mod tests {
     use ustr::Ustr;
 
     use super::{
-        BoltV3CancelRoutingOutcome, BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime,
-        BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
-        BoltV3OrderExecutionPolicy, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
-        BoltV3SubmitRoutingRequest, clamp_risk_reducing_exit_to_venue_position,
-        economics_order_binding, route_kill_switch_flatten_command_with_sink,
-        route_maker_order_command_with_runtime,
+        BoltV3CancelAllRoutingOutcome, BoltV3CancelRoutingOutcome, BoltV3MakerOrderRoutingContext,
+        BoltV3MakerOrderRuntime, BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink,
+        BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3SubmitContext,
+        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        clamp_risk_reducing_exit_to_venue_position, economics_order_binding,
+        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{
@@ -1799,6 +1799,52 @@ mod tests {
             BoltV3AdmissionOutcome::Admitted
         );
         assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn live_submit_rejected_by_latched_kill_switch_never_calls_nt() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap(),
+        ));
+        admission.replace_kill_switch_state(KillSwitchState::FailedManualIntervention {
+            halt_id: "halt-latched".to_string(),
+            reason: "operator intervention required".to_string(),
+        });
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_order("O-19700101-000000-001-LATCHED-1");
+        let intent = intent_for_order(&order);
+        let request = submit_request_for_order(&order, Decimal::new(50, 0));
+
+        let error = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect_err("latched kill switch must reject before NT submit");
+
+        assert!(
+            error
+                .to_string()
+                .contains("blocked by kill-switch state FailedManualIntervention"),
+            "unexpected latched kill-switch rejection: {error:#}"
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert_eq!(writer.records().len(), 1);
+        assert_eq!(writer.admission_decisions().len(), 1);
+        assert_eq!(
+            writer.admission_decisions()[0].outcome,
+            BoltV3AdmissionOutcome::RejectedKillSwitchLatched
+        );
     }
 
     #[test]
@@ -2473,6 +2519,51 @@ mod tests {
         assert_eq!(live_outcome, BoltV3CancelRoutingOutcome::Canceled);
         assert_eq!(shadow_outcome, BoltV3CancelRoutingOutcome::SkippedByPolicy);
         assert_eq!(sink.cancel_calls, 1);
+    }
+
+    #[test]
+    fn live_and_shadow_cancel_all_route_through_the_same_policy_boundary() {
+        let mut live_sink = RecordingVenueMutationSink::default();
+        let mut shadow_sink = RecordingVenueMutationSink::default();
+        let instrument_id = InstrumentId::from("instrument-yes.VENUE-A");
+
+        // Hold every request field constant so only execution mode can explain the differential.
+        // A counterfeit implementation that routes by side must therefore fail this test.
+        let live_outcome = BoltV3OrderExecutionPolicy::live()
+            .route_cancel_all_with_sink(
+                &mut live_sink,
+                instrument_id,
+                Some(OrderSide::Buy),
+                Some(ClientId::from("execution_client")),
+                None,
+            )
+            .expect("live cancel-all should call NT");
+        let shadow_outcome = BoltV3OrderExecutionPolicy::shadow()
+            .route_cancel_all_with_sink(
+                &mut shadow_sink,
+                instrument_id,
+                Some(OrderSide::Buy),
+                Some(ClientId::from("execution_client")),
+                None,
+            )
+            .expect("shadow cancel-all should be suppressed by policy");
+
+        assert_eq!(live_outcome, BoltV3CancelAllRoutingOutcome::CanceledAll);
+        assert_eq!(
+            shadow_outcome,
+            BoltV3CancelAllRoutingOutcome::SkippedByPolicy
+        );
+        assert_eq!(live_sink.cancel_all_calls, 1);
+        assert_eq!(
+            live_sink.cancel_all_requests,
+            vec![(
+                instrument_id,
+                Some(OrderSide::Buy),
+                Some(ClientId::from("execution_client")),
+            )]
+        );
+        assert_eq!(shadow_sink.cancel_all_calls, 0);
+        assert!(shadow_sink.cancel_all_requests.is_empty());
     }
 
     #[test]

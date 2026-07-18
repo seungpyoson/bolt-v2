@@ -7,11 +7,15 @@ import os
 import pathlib
 import re
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 
 REMOTE_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 REMOTE_URL_SCP_RE = re.compile(r"^(?:[^/@\\]+@)?[^:/\\]+:.+$")
+REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+GITHUB_REPOSITORY_RE = re.compile(
+    r"^github\.com/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+)
 
 
 def is_direct_remote_url(remote_url: str) -> bool:
@@ -28,20 +32,47 @@ def fetchable_remote_url(remote_url: str, source_repo: pathlib.Path) -> str:
     return str((source_repo / remote_url).resolve(strict=False))
 
 
-def looks_like_local_path(value: str) -> bool:
-    return (
-        pathlib.Path(value).is_absolute()
-        or value.startswith(("~", ".", "/", "\\"))
-        or value.endswith(".git")
-        or "/" in value
-        or "\\" in value
-    )
+def redact_remote_urls(text: str, remote_urls: Sequence[str]) -> str:
+    redacted = text
+    for remote_url in remote_urls:
+        if remote_url:
+            redacted = redacted.replace(remote_url, "<remote-url>")
+    return redacted
 
 
-def fetchable_origin_argument(origin: str, source_repo: pathlib.Path) -> str:
-    if is_direct_remote_url(origin) or looks_like_local_path(origin):
-        return fetchable_remote_url(origin, source_repo)
-    return origin
+def require_remote_name(
+    remote_name: str,
+    *,
+    error_cls: type[Exception] = ValueError,
+) -> str:
+    if REMOTE_NAME_RE.fullmatch(remote_name) is None:
+        raise error_cls("configured Git origin must be a remote name")
+    return remote_name
+
+
+def github_https_remote_url(
+    repository: str,
+    *,
+    error_cls: type[Exception] = ValueError,
+) -> str:
+    if GITHUB_REPOSITORY_RE.fullmatch(repository) is None:
+        raise error_cls("configured repository must identify one github.com repository")
+    return f"https://{repository}.git"
+
+
+def isolated_git_transport_environment(
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    environment = dict(environ)
+    for key in tuple(environment):
+        if key.startswith("GIT_"):
+            environment.pop(key)
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_CONFIG_COUNT"] = "1"
+    environment["GIT_CONFIG_KEY_0"] = "credential.https://github.com.helper"
+    environment["GIT_CONFIG_VALUE_0"] = "!gh auth git-credential"
+    return environment
 
 
 def github_repository_slug(remote_url: str) -> str | None:

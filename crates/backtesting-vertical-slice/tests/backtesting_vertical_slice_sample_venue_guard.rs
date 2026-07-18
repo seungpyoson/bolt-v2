@@ -2168,26 +2168,12 @@ ensure!("../tests/fixtures/core.rs");
     write_synthetic_source(
         &crate_root,
         "src/lib.rs",
-        r##"
+        r#"
 fn checked_control() {
     use std::assert as checked;
     checked!(true);
 }
-
-#[test]
-fn decoded_and_concatenated_sample_venue_literals_fail_closed() {
-    let decoded = decoded_production_string_values(
-        r#"
-const ESCAPED: &str = "\x62ybit";
-const CONCATENATED: &str = concat!("bi", "nance");
 "#,
-    )
-    .expect("decode production string semantics")
-    .to_ascii_lowercase();
-    assert!(decoded.contains("bybit"));
-    assert!(decoded.contains("binance"));
-}
-"##,
     );
     let (_, errors) = production_source_graph(&crate_root, &synthetic_manifest());
     assert!(
@@ -2221,6 +2207,20 @@ external_item_shape!(SyntheticStrategy);
         errors.is_empty(),
         "a defined source-inert item macro must remain accepted: {errors:?}"
     );
+}
+
+#[test]
+fn decoded_and_concatenated_sample_venue_literals_fail_closed() {
+    let decoded = decoded_production_string_values(
+        r#"
+const ESCAPED: &str = "\x62ybit";
+const CONCATENATED: &str = concat!("bi", "nance");
+"#,
+    )
+    .expect("decode production string semantics")
+    .to_ascii_lowercase();
+    assert!(decoded.contains("bybit"));
+    assert!(decoded.contains("binance"));
 }
 
 #[test]

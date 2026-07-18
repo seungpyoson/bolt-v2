@@ -606,8 +606,18 @@ fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
         .expect("order quantity should parse as quote quantity");
 
     assert_eq!(
-        admission.notional, submitted_quote_quantity,
+        admission.economics_admission.base_reservation_notional(),
+        submitted_quote_quantity,
         "SELL StopLimit admission must not understate submitted quote quantity when bid exceeds limit price"
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional(),
+        "submit admission must reserve the sealed base notional plus economics debits"
+    );
+    assert!(
+        admission.notional > submitted_quote_quantity,
+        "the fixture must prove the sealed economics debit is added to the base reservation"
     );
 }
 
@@ -1330,6 +1340,7 @@ fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
 fn post_only_exit_submission_price_uses_passive_book_price() {
     let mut strategy = ready_to_trade_strategy();
     register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.exit_hysteresis_bps = -100_000;
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));

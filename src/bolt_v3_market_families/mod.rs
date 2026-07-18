@@ -1643,7 +1643,7 @@ mod tests {
     }
 
     #[test]
-    fn settlement_and_fee_curve_route_through_canonical_updown_family_binding() {
+    fn settlement_routes_through_canonical_updown_family_binding() {
         let up_payout = BinarySettlementPayout::new(1.0, 0.0).expect("terminal up payout");
         let down_payout = BinarySettlementPayout::new(0.0, 1.0).expect("terminal down payout");
 

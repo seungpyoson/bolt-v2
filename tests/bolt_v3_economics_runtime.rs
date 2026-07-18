@@ -268,6 +268,18 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
     assert_eq!(admission.reservation_notional(), decimal("5.25"));
     assert_eq!(admission.net_edge().basis().normalized_amount, decimal("5"));
     assert_eq!(
+        admission.net_edge().basis().resolver_id.as_str(),
+        "fixture-resolver"
+    );
+    assert_eq!(
+        admission
+            .net_edge()
+            .basis()
+            .product_metadata_source
+            .as_str(),
+        "fixture-product-metadata"
+    );
+    assert_eq!(
         admission.net_edge().basis().scope,
         EconomicScope::Decision {
             decision_correlation_id: admission.quote().decision_correlation_id().clone(),

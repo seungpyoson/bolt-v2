@@ -914,7 +914,7 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             .context
             .clone()
             .with_order_routing(fixture_order_routing(
-                RecordingEconomicsAdmissionSource::with_core_effect(Decimal::new(1, 2)),
+                RecordingEconomicsAdmissionSource::with_core_effect(Decimal::ONE),
             ));
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -2195,6 +2195,12 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
         );
+        strategy.context = strategy
+            .context
+            .clone()
+            .with_order_routing(fixture_order_routing(
+                RecordingEconomicsAdmissionSource::with_core_effect(Decimal::ONE),
+            ));
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;

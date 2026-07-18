@@ -388,7 +388,7 @@ rate_factor_id = "polymarket-live-builder-rate"
 [clients.polymarket_main.execution.economics.assets.collateral]
 native_unit = "pUSD"
 identity_kind = "currency"
-evidence_fixture_id = "polymarket-collateral-pusd-v1"
+evidence_fixture_id = "polymarket-v2-collateral-pusd"
 
 [clients.polymarket_main.execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"
@@ -398,7 +398,7 @@ product_metadata_source = "polymarket-market-info"
 [clients.polymarket_main.execution.economics.product_surface_policies]
 binary_outcome = "primary"
 
-[clients.polymarket_main.execution.economics.valuation.routes.pusd_to_usd]
+[clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
 from_unit = "pUSD"
 to_currency = "USD"
 legs = [

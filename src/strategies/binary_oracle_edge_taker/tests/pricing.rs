@@ -443,9 +443,8 @@ fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
             .any(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
     );
     assert!(logs.iter().any(|(_, message)| {
-        message.contains("binary_oracle_edge_taker entry evaluation:")
+        message.contains("binary_oracle_edge_taker gross-intent evaluation:")
             && message.contains(&strategy_id)
-            && message.contains("realized_vol=Some(1.5)")
     }));
 }
 

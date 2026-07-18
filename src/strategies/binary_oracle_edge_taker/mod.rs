@@ -5329,13 +5329,18 @@ impl BinaryOracleEdgeTaker {
             risk_reducing_exit_position,
         };
         let planned_fill_legs = planned_fill_input.resolve(&admission_input)?;
+        let liquidity_role = if order.is_post_only() {
+            LiquidityRoleAssumption::GuaranteedMaker
+        } else {
+            LiquidityRoleAssumption::Taker
+        };
         let economics_admission =
             self.context
                 .order_routing()?
                 .quote_admission(BoltV3OrderEconomicsIntent {
                     request: &admission_input,
                     planned_fill_legs,
-                    liquidity_role: LiquidityRoleAssumption::Taker,
+                    liquidity_role,
                     position: None,
                     lifecycle_path: LifecyclePath::PlannedExit,
                     requested_at_ns: order.ts_init().as_u64(),

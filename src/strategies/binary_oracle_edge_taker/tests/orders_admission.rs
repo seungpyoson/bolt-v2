@@ -2037,6 +2037,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     strategy.config.entry_order.trailing_offset = Some(2.5);
     strategy.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::BasisPoints);
     strategy.config.entry_order.is_post_only = false;
+    strategy.config.entry_order.is_quote_quantity = false;
     strategy.config.exit_order.order_type = OrderType::TrailingStopMarket;
     strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
     strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
@@ -2045,6 +2046,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     strategy.config.exit_order.trailing_offset = Some(3.0);
     strategy.config.exit_order.trailing_offset_type = Some(TrailingOffsetType::Ticks);
     strategy.config.exit_order.is_post_only = false;
+    strategy.config.exit_order.is_quote_quantity = false;
 
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(2.0, 2);

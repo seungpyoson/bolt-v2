@@ -2736,7 +2736,7 @@ mod tests {
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
             economics_admission:
-                crate::bolt_v3_economics_runtime::test_risk_reduction_economics_admission_with_binding(
+                crate::bolt_v3_economics_runtime::test_economics_admission_with_binding(
                     notional,
                     economics_order_binding(order).expect("test order binding should serialize"),
                 ),
@@ -2782,7 +2782,7 @@ mod tests {
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
             economics_admission:
-                crate::bolt_v3_economics_runtime::test_economics_admission_with_binding(
+                crate::bolt_v3_economics_runtime::test_risk_reduction_economics_admission_with_binding(
                     Decimal::new(25, 1),
                     economics_order_binding(order).expect("test order binding should serialize"),
                 ),

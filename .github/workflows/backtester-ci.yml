@@ -109,8 +109,6 @@ jobs:
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
       reason: ${{ steps.policy.outputs.reason }}
       trusted_revision: ${{ steps.policy_base.outputs.revision }}
-      backtester_test_archive_timeout_minutes: ${{ steps.policy.outputs.backtester_test_archive_timeout_minutes }}
-      backtester_issue_789_timeout_minutes: ${{ steps.policy.outputs.backtester_issue_789_timeout_minutes }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -301,7 +299,6 @@ jobs:
     needs: [ci-policy, detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_test_archive_timeout_minutes) }}
     outputs:
       bvs_nextest_archive_cache_save_outcome: ${{ steps.bvs-nextest-archive-cache-save.outputs.save-status || (steps.bvs-nextest-archive-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
       bvs_bin_sidecars_cache_save_outcome: ${{ steps.bvs-bin-sidecars-cache-save.outputs.save-status || (steps.bvs-bin-sidecars-cache-save.outcome == 'skipped' && 'skipped' || 'failed') }}
@@ -769,7 +766,6 @@ jobs:
     needs: [ci-policy, detect, gate]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.issue_789 == 'true' && needs.ci-policy.outputs.ci_policy_path == 'iteration' && needs.detect.outputs.bvs_changed == 'true' && needs.gate.result == 'success' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    timeout-minutes: ${{ fromJSON(needs.ci-policy.outputs.backtester_issue_789_timeout_minutes) }}
     env:
       BVS_ISSUE_789_ARCHIVE_PATH: .nextest-archive/bvs-issue-789-lib.tar.zst
       BOLT_ISSUE_789_RESULT_PATH: ${{ github.workspace }}/crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json

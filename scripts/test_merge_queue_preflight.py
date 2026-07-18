@@ -1765,6 +1765,74 @@ def assert_isolated_transport_environment_discards_ambient_git_config() -> None:
     assert {key for key in environment if key.startswith("GIT_")} == allowed_git_keys, environment
 
 
+def assert_private_fetch_repo_ignores_ambient_git_template() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        template = root / "hostile-template"
+        alternate_url = (root / "alternate.git").resolve().as_uri()
+        write(
+            template / "config",
+            "[url \"{alternate_url}\"]\n"
+            "\tinsteadOf = https://github.com/seungpyoson/bolt-v2.git\n".format(
+                alternate_url=alternate_url
+            ),
+        )
+        previous_template = os.environ.get("GIT_TEMPLATE_DIR")
+        os.environ["GIT_TEMPLATE_DIR"] = str(template)
+        private_fetch = None
+        try:
+            private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
+            configured_rewrites = module.git(
+                private_fetch.git_repo,
+                "config",
+                "--local",
+                "--get-regexp",
+                r"^url\.",
+                check=False,
+                timeout_seconds=10,
+            )
+        finally:
+            if previous_template is None:
+                os.environ.pop("GIT_TEMPLATE_DIR", None)
+            else:
+                os.environ["GIT_TEMPLATE_DIR"] = previous_template
+            if private_fetch is not None:
+                private_fetch.cleanup()
+        assert_equal(configured_rewrites.returncode, 1, "private fetch URL rewrite status")
+        assert_equal(configured_rewrites.stdout, "", "private fetch URL rewrites")
+
+
+def assert_synthetic_commit_ignores_ambient_git_repository_override() -> None:
+    module = load_preflight_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        tree = git(fixture.repo, "rev-parse", "HEAD^{tree}")
+        parent = git(fixture.repo, "rev-parse", "HEAD")
+        previous_git_dir = os.environ.get("GIT_DIR")
+        os.environ["GIT_DIR"] = str(root / "hostile.git")
+        try:
+            commit_sha = module.commit_tree(
+                fixture.repo,
+                tree,
+                [parent],
+                "isolated synthetic commit",
+                10,
+            )
+        finally:
+            if previous_git_dir is None:
+                os.environ.pop("GIT_DIR", None)
+            else:
+                os.environ["GIT_DIR"] = previous_git_dir
+        assert_equal(
+            git(fixture.repo, "cat-file", "-t", commit_sha),
+            "commit",
+            "synthetic commit object type",
+        )
+
+
 def assert_private_fetch_uses_exact_checkout_remote_url_without_private_remote() -> None:
     module = load_preflight_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -5238,6 +5306,8 @@ def main() -> int:
     assert_origin_identity_drift_is_terminal()
     assert_exact_origin_identity_blocks_chained_git_url_rewrites()
     assert_isolated_transport_environment_discards_ambient_git_config()
+    assert_private_fetch_repo_ignores_ambient_git_template()
+    assert_synthetic_commit_ignores_ambient_git_repository_override()
     assert_private_fetch_uses_exact_checkout_remote_url_without_private_remote()
     assert_private_fetch_repo_persists_auto_maintenance_suppression()
     assert_private_fetch_sha_spawns_no_background_maintenance()

@@ -62,9 +62,9 @@ def github_https_remote_url(
 
 
 def isolated_git_transport_environment(
-    environ: Mapping[str, str] | None = None,
+    environ: Mapping[str, str],
 ) -> dict[str, str]:
-    environment = dict(os.environ if environ is None else environ)
+    environment = dict(environ)
     observability = {
         key: environment[key]
         for key in SAFE_GIT_OBSERVABILITY_ENV

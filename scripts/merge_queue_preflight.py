@@ -1942,10 +1942,11 @@ class PrivateFetchRefs:
         temp_dir = tempfile.TemporaryDirectory(prefix="merge-queue-preflight-git-")
         git_repo = pathlib.Path(temp_dir.name) / "repo.git"
         try:
-            run_command(
-                ["git", "init", "--bare", str(git_repo)],
-                cwd=pathlib.Path(temp_dir.name),
-                check=True,
+            git(
+                pathlib.Path(temp_dir.name),
+                "init",
+                "--bare",
+                str(git_repo),
                 timeout_seconds=input_timeout_seconds,
             )
             for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
@@ -1993,7 +1994,6 @@ class PrivateFetchRefs:
             "--get-all",
             f"remote.{origin}.url",
             check=False,
-            env=isolated_git_transport_environment(os.environ),
             timeout_seconds=self.input_timeout_seconds,
         )
         remote_urls = result.stdout.splitlines()
@@ -2339,17 +2339,15 @@ def git(
     repo: pathlib.Path,
     *args: str,
     check: bool = True,
-    env: dict[str, str] | None = None,
     input_text: str | None = None,
     timeout_seconds: int | None = None,
     redact_values: Sequence[str] = (),
 ) -> CommandResult:
-    process_env = isolated_git_transport_environment(os.environ) if env is None else env
     return run_command(
         ["git", *args],
         cwd=repo,
         check=check,
-        env=process_env,
+        env=isolated_git_transport_environment(os.environ),
         input_text=input_text,
         timeout_seconds=timeout_seconds,
         redact_values=redact_values,
@@ -2791,19 +2789,20 @@ def commit_tree(
     message: str,
     input_timeout_seconds: int,
 ) -> str:
-    args = ["commit-tree", tree]
+    args = [
+        "-c",
+        "user.name=merge-queue-preflight",
+        "-c",
+        "user.email=merge-queue-preflight@example.invalid",
+        "commit-tree",
+        tree,
+    ]
     for parent in parents:
         args.extend(["-p", parent])
-    env = os.environ.copy()
-    env.setdefault("GIT_AUTHOR_NAME", "merge-queue-preflight")
-    env.setdefault("GIT_AUTHOR_EMAIL", "merge-queue-preflight@example.invalid")
-    env.setdefault("GIT_COMMITTER_NAME", "merge-queue-preflight")
-    env.setdefault("GIT_COMMITTER_EMAIL", "merge-queue-preflight@example.invalid")
     completed = git(
         repo,
         *args,
         check=False,
-        env=env,
         input_text=message,
         timeout_seconds=input_timeout_seconds,
     )

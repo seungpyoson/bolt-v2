@@ -1,4 +1,302 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::ErrorKind,
+    path::PathBuf,
+    process::{Command, Output},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+const CANONICAL_EXEC_START: &str = "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config";
+const VALID_RENDER_LAYOUT: &[u8] = b"BOLT_HOME=/srv/bolt-v2\nBOLT_INSTALL_ROOT=/opt/bolt-v2\nLIVE_ENV_DIR=/etc/bolt-v2\nBOLT_USER=bolt\nBOLT_GROUP=bolt\nMOUNTPOINT_BIN=/usr/bin/mountpoint\n";
+static RENDERER_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+struct RendererFixture {
+    root: PathBuf,
+}
+
+impl RendererFixture {
+    fn new(layout: &[u8], template: &[u8]) -> Self {
+        let root = loop {
+            let id = RENDERER_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+            let candidate = std::env::temp_dir().join(format!(
+                "bolt-v2-render-install-unit-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("renderer fixture root should be created: {error}"),
+            }
+        };
+
+        let scripts_dir = root.join("scripts");
+        let systemd_dir = root.join("deploy/systemd");
+        fs::create_dir_all(&scripts_dir).expect("renderer fixture scripts directory should exist");
+        fs::create_dir_all(&systemd_dir).expect("renderer fixture systemd directory should exist");
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/render_install_unit.py"),
+            scripts_dir.join("render_install_unit.py"),
+        )
+        .expect("real install-unit renderer should copy into fixture");
+        fs::write(root.join("deploy/install-layout.env"), layout)
+            .expect("renderer fixture layout should be written");
+        fs::write(systemd_dir.join("bolt-v2.service.in"), template)
+            .expect("renderer fixture template should be written");
+
+        Self { root }
+    }
+
+    fn render(&self) -> Output {
+        Command::new("python3")
+            .arg(self.root.join("scripts/render_install_unit.py"))
+            .current_dir(&self.root)
+            .output()
+            .expect("fixture renderer should execute with python3")
+    }
+}
+
+impl Drop for RendererFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn install_unit_template() -> Vec<u8> {
+    fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service.in"))
+        .expect("systemd unit template should exist")
+}
+
+fn assert_renderer_rejects(layout: &[u8], template: &[u8], expected_error: &str) {
+    let output = RendererFixture::new(layout, template).render();
+    assert!(
+        !output.status.success(),
+        "renderer must reject invalid fixture; stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(expected_error),
+        "renderer error must identify {expected_error:?}; stderr={stderr}"
+    );
+}
+
+fn validate_packaged_systemd_unit(rendered: &[u8], generated: &[u8]) -> Result<(), String> {
+    if rendered != generated {
+        return Err(
+            "deploy/systemd/bolt-v2.service must match render_install_unit.py byte-for-byte"
+                .to_string(),
+        );
+    }
+
+    let unit = std::str::from_utf8(generated)
+        .map_err(|error| format!("rendered systemd unit must be UTF-8: {error}"))?;
+    let active_exec_starts: Vec<&str> = unit
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.starts_with("ExecStart="))
+        .collect();
+    if active_exec_starts != [CANONICAL_EXEC_START] {
+        return Err(format!(
+            "packaged systemd must have exactly the canonical ops launch ExecStart; got {active_exec_starts:?}"
+        ));
+    }
+
+    Ok(())
+}
+
+fn rendered_install_unit() -> Vec<u8> {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let renderer = repo_root.join("scripts/render_install_unit.py");
+    let output = Command::new("python3")
+        .arg(&renderer)
+        .current_dir(&repo_root)
+        .output()
+        .expect("render_install_unit.py should execute with python3");
+    assert!(
+        output.status.success(),
+        "render_install_unit.py failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+#[test]
+fn packaged_systemd_unit_matches_the_single_renderer_byte_for_byte() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let generated = fs::read(&unit_path).expect("generated systemd unit should exist");
+
+    validate_packaged_systemd_unit(&rendered_install_unit(), &generated)
+        .expect("renderer output and packaged unit must satisfy the deploy contract");
+}
+
+#[test]
+fn packaged_systemd_evidence_rejects_executable_path_mutation() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let generated = fs::read_to_string(&unit_path).expect("generated systemd unit should exist");
+    let mutated = generated.replace(
+        "/opt/bolt-v2/bolt-v2 ops launch",
+        "/opt/bolt-v2/alternate-binary ops launch",
+    );
+    assert_ne!(
+        mutated, generated,
+        "executable-path mutation must take effect"
+    );
+
+    let error = validate_packaged_systemd_unit(mutated.as_bytes(), mutated.as_bytes())
+        .expect_err("executable-path mutation must fail deploy evidence");
+    assert!(error.contains("canonical ops launch ExecStart"), "{error}");
+}
+
+#[test]
+fn packaged_systemd_evidence_rejects_ops_launch_subcommand_mutation() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let generated = fs::read_to_string(&unit_path).expect("generated systemd unit should exist");
+    let mutated = generated.replace(" ops launch --profile", " run --profile");
+    assert_ne!(mutated, generated, "ops-launch mutation must take effect");
+
+    let error = validate_packaged_systemd_unit(mutated.as_bytes(), mutated.as_bytes())
+        .expect_err("ops-launch mutation must fail deploy evidence");
+    assert!(error.contains("canonical ops launch ExecStart"), "{error}");
+}
+
+#[test]
+fn packaged_systemd_evidence_rejects_rendered_byte_drift() {
+    let rendered = rendered_install_unit();
+    let generated = String::from_utf8(rendered.clone()).expect("rendered unit should be UTF-8");
+    let mutated = generated.replace("Restart=on-failure", "Restart=always");
+    assert_ne!(
+        mutated, generated,
+        "rendered-byte mutation must take effect"
+    );
+
+    let error = validate_packaged_systemd_unit(&rendered, mutated.as_bytes())
+        .expect_err("rendered-byte mutation must fail byte-equality evidence");
+    assert!(error.contains("byte-for-byte"), "{error}");
+}
+
+#[test]
+fn install_unit_renderer_accepts_bare_layout_and_derives_every_substitution() {
+    let layout = b"BOLT_HOME=/srv/render-fixture\nBOLT_INSTALL_ROOT=/opt/render-fixture\nLIVE_ENV_DIR=/etc/render-fixture\nBOLT_USER=service-user\nBOLT_GROUP=service-group\nMOUNTPOINT_BIN=/usr/local/bin/mountpoint\n";
+    let output = RendererFixture::new(layout, &install_unit_template()).render();
+    assert!(
+        output.status.success(),
+        "renderer should accept safe bare values: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("rendered unit should be UTF-8");
+    for required in [
+        "WorkingDirectory=/srv/render-fixture",
+        "EnvironmentFile=/etc/render-fixture/live.env",
+        "User=service-user",
+        "Group=service-group",
+        "ExecStartPre=/usr/local/bin/mountpoint -q /srv/render-fixture",
+        "ExecStart=/opt/render-fixture/bolt-v2 ops launch",
+        "--config-root /opt/render-fixture/config",
+        "${BOLT_LIVE_PROFILE}",
+    ] {
+        assert!(
+            rendered.contains(required),
+            "rendered unit must contain layout-derived value {required:?}"
+        );
+    }
+    assert!(
+        !rendered.contains('@'),
+        "successful render must not retain generate-time markers"
+    );
+}
+
+#[test]
+fn install_unit_renderer_rejects_missing_required_layout_key() {
+    let layout = String::from_utf8(VALID_RENDER_LAYOUT.to_vec())
+        .expect("valid fixture layout should be UTF-8")
+        .replace("LIVE_ENV_DIR=/etc/bolt-v2\n", "");
+    assert_renderer_rejects(layout.as_bytes(), &install_unit_template(), "LIVE_ENV_DIR");
+}
+
+#[test]
+fn install_unit_renderer_rejects_shell_divergent_layout_syntax() {
+    let valid = String::from_utf8(VALID_RENDER_LAYOUT.to_vec())
+        .expect("valid fixture layout should be UTF-8");
+    let mut cases = vec![
+        (
+            "inline comment",
+            valid
+                .replace("BOLT_USER=bolt", "BOLT_USER=bolt # service user")
+                .into_bytes(),
+            "BOLT_USER",
+        ),
+        (
+            "quoted value",
+            valid
+                .replace("BOLT_HOME=/srv/bolt-v2", "BOLT_HOME=\"/srv/bolt-v2\"")
+                .into_bytes(),
+            "BOLT_HOME",
+        ),
+        (
+            "spaced value",
+            valid
+                .replace("BOLT_GROUP=bolt", "BOLT_GROUP=bolt staff")
+                .into_bytes(),
+            "BOLT_GROUP",
+        ),
+        (
+            "space after equals",
+            valid
+                .replace("BOLT_USER=bolt", "BOLT_USER= bolt")
+                .into_bytes(),
+            "BOLT_USER",
+        ),
+        (
+            "key-side whitespace",
+            valid
+                .replace("BOLT_USER=bolt", "BOLT_USER =bolt")
+                .into_bytes(),
+            "BOLT_USER",
+        ),
+        (
+            "CRLF lines",
+            valid.replace('\n', "\r\n").into_bytes(),
+            "BOLT_HOME",
+        ),
+    ];
+    let mut vertical_tab_comment = VALID_RENDER_LAYOUT.to_vec();
+    vertical_tab_comment.extend_from_slice(b"\x0b#comment\n");
+    cases.push((
+        "vertical-tab comment",
+        vertical_tab_comment,
+        "\\x0b#comment",
+    ));
+    let mut carriage_return_line = VALID_RENDER_LAYOUT.to_vec();
+    carriage_return_line.extend_from_slice(b"\r\n");
+    cases.push(("carriage-return-only line", carriage_return_line, "\\r"));
+
+    let template = install_unit_template();
+    for (case, layout, expected_error) in cases {
+        let output = RendererFixture::new(&layout, &template).render();
+        assert!(
+            !output.status.success(),
+            "renderer must reject {case}; stdout={}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected_error),
+            "renderer error for {case} must contain {expected_error:?}; stderr={stderr}"
+        );
+    }
+}
+
+#[test]
+fn install_unit_renderer_rejects_unresolved_template_marker() {
+    assert_renderer_rejects(
+        VALID_RENDER_LAYOUT,
+        b"WorkingDirectory=@BOLT_HOME@\nExtra=@TYPO_MARKER@\n",
+        "@TYPO_MARKER@",
+    );
+}
 
 #[test]
 fn systemd_unit_sets_srv_working_directory() {
@@ -35,9 +333,7 @@ fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
         "systemd unit must load live profile selection from operator config, not hardcode a venue/market/strategy profile"
     );
     assert!(
-        unit.contains(
-            "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
-        ),
+        unit.contains(CANONICAL_EXEC_START),
         "systemd unit must enter the same binary-owned ops launch lane as just live"
     );
     let active_exec_starts: Vec<&str> = unit
@@ -47,9 +343,7 @@ fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
         .collect();
     assert_eq!(
         active_exec_starts,
-        vec![
-            "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
-        ],
+        vec![CANONICAL_EXEC_START],
         "systemd unit must have exactly one active ExecStart, and it must be the ops launch lane (no second ExecStart bypass)"
     );
     assert!(

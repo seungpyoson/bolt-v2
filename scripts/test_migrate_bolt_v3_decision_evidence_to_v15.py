@@ -40,7 +40,7 @@ def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements() -> 
     lines = [
         '{"schema_version":13,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.position_sizer_rebuild","kind":"position_sizer_rebuild","payload":{"source":"nt_position_sizer_runtime_components","unchanged":[1,13,"position_sizer_rebuild"]}}',
         '{"schema_version":13,"recorded_at_utc_ns":1700000000000000001,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{"reservation_id":"reservation-one","source":"nt_sizing_state","unchanged":13}}',
-        '{"schema_version":13,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_position_sizing","snapshot_source":"nt_sizing_state"},"note":"unchanged"}}',
+        '{"schema_version":13,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"notional":"0","outcome":"rejected_position_sizing","snapshot_source":"nt_sizing_state"},"note":"unchanged"}}',
         '{"schema_version":13,"recorded_at_utc_ns":1700000000000000003,"gate_id":"bolt_v3.submit_admission","kind":"loss_snapshot","payload":{"source":"nt_sizing_state","note":"untouched-tail"}}',
     ]
     write_jsonl(path, lines)
@@ -51,7 +51,7 @@ def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements() -> 
     assert migrated == [
         '{"schema_version":15,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{"source":"nt_capital_admission_runtime_components","unchanged":[1,13,"position_sizer_rebuild"]}}',
         '{"schema_version":15,"recorded_at_utc_ns":1700000000000000001,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{"reservation_id":"reservation-one","source":"nt_capital_admission_state","unchanged":13}}',
-        '{"schema_version":15,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_capital_admission","snapshot_source":"nt_capital_admission_state"},"note":"unchanged"}}',
+        '{"schema_version":15,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"notional":"0","economics_quote_id":"legacy-pre-v15-unavailable","economics_core_total":"0","economics_core_net_edge":"0","economics_core_edge_ratio":"0","economics_forecast_net_edge":"0","economics_valid_until_ns":0,"economics_source_snapshot_ids":[],"outcome":"rejected_capital_admission","snapshot_source":"nt_capital_admission_state"},"note":"unchanged"}}',
         '{"schema_version":15,"recorded_at_utc_ns":1700000000000000003,"gate_id":"bolt_v3.submit_admission","kind":"loss_snapshot","payload":{"source":"nt_capital_admission_state","note":"untouched-tail"}}',
     ]
     try:
@@ -87,6 +87,25 @@ def test_non_corruption_guard_preserves_timestamps_and_payload_string_values() -
     assert '"sequence":13' in migrated
     assert '"schema_version":15' in migrated
     assert '"source":"nt_capital_admission_state"' in migrated
+    temp.cleanup()
+
+
+def test_legacy_admission_decision_without_notional_fails_closed() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
+    path = tmp_path / "records.jsonl"
+    original = b'{"schema_version":13,"kind":"admission_decision","decision":{}}\n'
+    path.write_bytes(original)
+
+    try:
+        run_migration(tmp_path)
+    except MIGRATOR.MigrationError as error:
+        message = str(error)
+    else:
+        raise AssertionError("legacy admission decision without notional must be refused")
+
+    assert "exactly one string notional field" in message
+    assert path.read_bytes() == original
     temp.cleanup()
 
 

@@ -24,6 +24,18 @@ SUPPORTED_INPUT_SCHEMA_VERSIONS = {
     SUPPORTED_CURRENT_SCHEMA_VERSION,
 }
 VERSION_RE = re.compile(rb'("schema_version"\s*:\s*)(?P<version>-?\d+)\b')
+ADMISSION_DECISION_KIND_RE = re.compile(rb'"kind"\s*:\s*"admission_decision"')
+ECONOMICS_QUOTE_ID_RE = re.compile(rb'"economics_quote_id"\s*:')
+NOTIONAL_FIELD_RE = re.compile(rb'("notional"\s*:\s*"[^"]*")')
+LEGACY_ECONOMICS_AUDIT_FIELDS = (
+    b',"economics_quote_id":"legacy-pre-v15-unavailable"'
+    b',"economics_core_total":"0"'
+    b',"economics_core_net_edge":"0"'
+    b',"economics_core_edge_ratio":"0"'
+    b',"economics_forecast_net_edge":"0"'
+    b',"economics_valid_until_ns":0'
+    b',"economics_source_snapshot_ids":[]'
+)
 
 KEY_STRING_REPLACEMENTS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
     (
@@ -102,11 +114,26 @@ def stamp_current_schema_version(line: bytes) -> bytes:
     )
 
 
+def add_legacy_economics_audit_fields(line: bytes) -> bytes:
+    if (
+        ADMISSION_DECISION_KIND_RE.search(line) is None
+        or ECONOMICS_QUOTE_ID_RE.search(line) is not None
+    ):
+        return line
+    notional_fields = list(NOTIONAL_FIELD_RE.finditer(line))
+    if len(notional_fields) != 1:
+        raise MigrationError(
+            "legacy admission_decision must contain exactly one string notional field"
+        )
+    match = notional_fields[0]
+    return line[: match.end()] + LEGACY_ECONOMICS_AUDIT_FIELDS + line[match.end() :]
+
+
 def migrate_v13_line(line: bytes) -> bytes:
     migrated = stamp_current_schema_version(line)
     for pattern, new_value in KEY_STRING_REPLACEMENTS:
         migrated = replace_key_string(migrated, pattern, new_value)
-    return migrated
+    return add_legacy_economics_audit_fields(migrated)
 
 
 def migrate_file_bytes(path: Path, payload: bytes) -> bytes:
@@ -118,7 +145,9 @@ def migrate_file_bytes(path: Path, payload: bytes) -> bytes:
         if version == SUPPORTED_OLD_SCHEMA_VERSION:
             migrated_lines.append(migrate_v13_line(content) + suffix)
         elif version == SUPPORTED_INTERMEDIATE_SCHEMA_VERSION:
-            migrated_lines.append(stamp_current_schema_version(content) + suffix)
+            migrated_lines.append(
+                add_legacy_economics_audit_fields(stamp_current_schema_version(content)) + suffix
+            )
         else:
             migrated_lines.append(line)
     return b"".join(migrated_lines)

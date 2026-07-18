@@ -173,9 +173,6 @@ glm-pr-agent-review = "github_hosted"
 [workflows.ai_review_kimi_cli]
 kimi-cli-review = "github_hosted"
 
-[workflows.ai_review_coding_plan_smoke]
-smoke = "github_hosted"
-
 [workflows.claude_code_review]
 claude-review = "github_hosted"
 

@@ -714,7 +714,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
             .iter()
             .filter(|token| token.text == ":")
             .count(),
-        5
+        6
     );
     assert_field_type(
         execution_controls,
@@ -745,6 +745,11 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
             "BoltV3SettlementHealthTransitionEmitter",
             ">",
         ],
+    );
+    assert_field_type(
+        execution_controls,
+        "economics_inputs",
+        &["AuthoritativeEconomicsInputStore"],
     );
 }
 

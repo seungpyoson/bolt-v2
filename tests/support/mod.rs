@@ -34,7 +34,7 @@ use nautilus_model::{
 };
 
 const TEST_DELAY_POST_STOP_SECS: u64 = 0;
-const TEST_RESTING_ORDER_REFRESH_MARGIN_NS: u64 = 1;
+const TEST_RESTING_ORDER_REFRESH_MARGIN_NS: u64 = 60_000_000_000;
 const TEST_TRADER_ID: &str = "TESTER-001";
 
 #[derive(Clone)]

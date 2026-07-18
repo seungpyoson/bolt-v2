@@ -2250,6 +2250,12 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
+        if request.notional <= Decimal::ZERO {
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
+                now_ns,
+            );
+        }
         if request.notional != request.economics_admission.reservation_notional() {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch,
@@ -2313,13 +2319,6 @@ impl BoltV3SubmitAdmissionState {
                 );
             }
             inner.loss_halt_episodes.clear();
-        }
-        if request.notional <= Decimal::ZERO {
-            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
-                now_ns,
-            )
-            .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
         }
         if let Some(limits) = inner
             .live_submit_approval_limits

@@ -30,6 +30,14 @@ FORBIDDEN_SOURCE_PATTERNS = (
         re.compile(r"\bcrate\s*::\s*(?!economics\b)[A-Za-z_][A-Za-z0-9_]*"),
         "dependency outside the shared economics domain",
     ),
+    (
+        re.compile(r"\bsuper\s*::\s*super\s*::\s*[A-Za-z_][A-Za-z0-9_]*"),
+        "dependency outside the shared economics domain",
+    ),
+    (
+        re.compile(r"::\s*bolt_v2\s*::"),
+        "absolute dependency on the Bolt runtime crate",
+    ),
 )
 ESTIMATE_TO_ACTUAL_PATTERNS = (
     re.compile(

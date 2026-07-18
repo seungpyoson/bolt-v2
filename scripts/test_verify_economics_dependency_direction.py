@@ -31,6 +31,15 @@ class EconomicsDependencyDirectionTest(unittest.TestCase):
         errors = self.verify_source("use crate::bolt_v3_order_execution::OrderExecutor;\n")
         self.assertTrue(any("bolt_v3" in error for error in errors), errors)
 
+    def test_rejects_parent_escape_and_absolute_crate_imports(self) -> None:
+        for source in (
+            "use super::super::venue_contract::FeeSchedule;\n",
+            "use ::bolt_v2::venue_contract::FeeSchedule;\n",
+        ):
+            with self.subTest(source=source):
+                errors = self.verify_source(source)
+                self.assertTrue(any("dependency" in error for error in errors), errors)
+
     def test_ignores_comments_and_literals(self) -> None:
         errors = self.verify_source(
             '// use nautilus_model::orders::Order;\nconst NOTE: &str = "crate::bolt_v3";\n'

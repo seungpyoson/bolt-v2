@@ -48,6 +48,10 @@ class EconomicsLegacyPathRemovedTest(unittest.TestCase):
             "refresh_fee_readiness();\n",
             "let net = gross * (1.0 - fee_bps / 10_000.0);\n",
             "let net = gross * taker_fee_bps;\n",
+            "let net = gross - commission;\n",
+            "let net = gross - taker_fee;\n",
+            "let net = gross - maker_fee;\n",
+            "let net = gross * fee_rate;\n",
         ):
             with self.subTest(source=source):
                 errors = self.verify_source(source)

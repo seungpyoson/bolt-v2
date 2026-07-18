@@ -13,7 +13,12 @@ from rust_source_scanner import strip_rust_comments_and_literals
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ADAPTER_ROOT = pathlib.Path("src/bolt_v3_providers")
 FORBIDDEN_PATTERNS = (
-    (re.compile(r"\.(?:unwrap_or|unwrap_or_else|map_or|map_or_else|or_else)\s*\("), "conditional fallback primitive"),
+    (
+        re.compile(
+            r"\.(?:unwrap_or|unwrap_or_else|unwrap_or_default|map_or|map_or_else|or|or_else)\s*\("
+        ),
+        "conditional fallback primitive",
+    ),
     (re.compile(r"\bfn\s+effective_protocol_rate\b"), "runtime rate-selection function"),
     (
         re.compile(r"\bif\s+self\s*\.\s*product\s*\.\s*(?:stable_pair|growth_mode|hip3)\b"),
@@ -29,7 +34,15 @@ def line_number(source: str, offset: int) -> int:
 def verify(root: pathlib.Path = REPO_ROOT) -> list[str]:
     errors: list[str] = []
     adapter_root = root / ADAPTER_ROOT
-    paths = sorted(adapter_root.glob("*/economics.rs")) if adapter_root.is_dir() else []
+    paths = (
+        sorted(
+            path
+            for path in adapter_root.rglob("*.rs")
+            if path.name == "economics.rs" or "economics" in path.relative_to(adapter_root).parts
+        )
+        if adapter_root.is_dir()
+        else []
+    )
     if not paths:
         return [f"no venue economics adapters found under {ADAPTER_ROOT}"]
     for path in paths:

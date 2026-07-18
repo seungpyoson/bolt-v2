@@ -28,8 +28,23 @@ class EconomicsSinglePathTest(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_rejects_conditional_fallback_primitive(self) -> None:
-        errors = self.verify_adapter_source("let rate = snapshot.rate.unwrap_or(config.rate);\n")
-        self.assertTrue(any("conditional fallback" in error for error in errors), errors)
+        for primitive in (
+            "snapshot.rate.unwrap_or(config.rate)",
+            "snapshot.rate.unwrap_or_default()",
+            "snapshot.rate.or(config.rate)",
+        ):
+            with self.subTest(primitive=primitive):
+                errors = self.verify_adapter_source(f"let rate = {primitive};\n")
+                self.assertTrue(any("conditional fallback" in error for error in errors), errors)
+
+    def test_discovers_nested_economics_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            path = root / verifier.ADAPTER_ROOT / "synthetic" / "economics" / "quote.rs"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("let rate = snapshot.rate.unwrap_or_default();\n", encoding="utf-8")
+            errors = verifier.verify(root)
+        self.assertTrue(any("economics/quote.rs" in error for error in errors), errors)
 
     def test_rejects_runtime_modifier_chain(self) -> None:
         errors = self.verify_adapter_source("if self.product.hip3 { rate *= scale; }\n")

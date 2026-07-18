@@ -37,6 +37,7 @@ STRATEGY_FORBIDDEN_PATTERNS = (
     re.compile(r"\bfee_cost_cents\b"),
     re.compile(r"\brefresh_fee_readiness\b"),
     re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*fee_bps\b|\bfee_bps\b"),
+    re.compile(r"\b(?:fee_rate|commission|taker_fee|maker_fee)\b"),
 )
 
 

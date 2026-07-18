@@ -3831,6 +3831,7 @@ fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
 #[test]
 fn new_entry_submit_clears_stale_flat_terminal_override() {
     let mut strategy = ready_to_trade_strategy();
+    register_test_strategy_with_active_instruments(&mut strategy);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     strategy.config.order_notional_target = 25.0;
     strategy.config.maximum_position_notional = 25.0;

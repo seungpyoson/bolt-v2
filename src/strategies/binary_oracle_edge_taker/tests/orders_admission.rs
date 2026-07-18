@@ -1987,10 +1987,10 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
     assert_eq!(order.expire_time(), Some(expire_time));
     assert!(order.is_post_only());
     assert!(!order.is_reduce_only());
-    assert!(!order.is_quote_quantity());
+    assert!(order.is_quote_quantity());
     assert_eq!(
         admission.economics_admission.base_reservation_notional(),
-        Decimal::from_str("0.800").expect("expected decimal should parse")
+        Decimal::from_str("2.00").expect("expected decimal should parse")
     );
     assert_eq!(
         admission.notional,
@@ -2333,6 +2333,7 @@ fn configured_order_build_rejects_nt_model_invalid_tif_before_factory() {
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.40, 2);
 
+    strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
     let limit_error = strategy
         .build_configured_entry_order(

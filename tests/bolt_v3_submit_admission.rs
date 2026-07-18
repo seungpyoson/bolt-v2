@@ -791,8 +791,10 @@ fn notional_equal_to_cap_is_admitted() {
 #[test]
 fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
     let admission = limited_admission(1, Decimal::new(1, 0));
+    let mut request = submit_request(Decimal::ONE);
+    request.notional = Decimal::ZERO;
 
-    let result = admission.admit(&submit_request(Decimal::ZERO));
+    let result = admission.admit(&request);
     let nt_submit_called = result.is_ok();
     let error = result.expect_err("zero notional must reject");
 

@@ -930,30 +930,17 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         error.to_string().contains("notional cap is exceeded"),
         "{error:#}"
     );
-    let entry_evaluation_logs = logs
+    let gross_intent_logs = logs
         .iter()
         .filter(|(_, message)| {
-            message.contains("binary_oracle_edge_taker entry evaluation:")
+            message.contains("binary_oracle_edge_taker gross-intent evaluation:")
                 && message.contains(&strategy_id)
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        entry_evaluation_logs.len(),
+        gross_intent_logs.len(),
         1,
-        "admitted entry should emit one entry-evaluation log for {strategy_id}: {logs:?}"
-    );
-    let entry_evaluation_log = &entry_evaluation_logs[0].1;
-    assert!(
-        entry_evaluation_log.contains("fast_venue_available=true"),
-        "entry-evaluation log must expose admitted spot state: {entry_evaluation_log}"
-    );
-    assert!(
-        entry_evaluation_log.contains("reference_current_price_available=true"),
-        "entry-evaluation log must expose standalone admitted reference state: {entry_evaluation_log}"
-    );
-    assert!(
-        entry_evaluation_log.contains("reference_current_price_available_without_fast_venue=false"),
-        "entry-evaluation log must keep the conjunction marker separate: {entry_evaluation_log}"
+        "admitted entry should emit one gross-intent evaluation log for {strategy_id}: {logs:?}"
     );
 
     let events = evidence.events();

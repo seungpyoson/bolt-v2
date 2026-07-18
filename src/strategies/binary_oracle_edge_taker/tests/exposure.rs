@@ -1911,6 +1911,8 @@ fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycl
 fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-FOK-NO-MATCH");
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     strategy.config.entry_order.is_quote_quantity = true;

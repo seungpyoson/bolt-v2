@@ -1044,7 +1044,8 @@ fn fixture_settlement_identity() -> (String, Currency) {
         pool.account_id.to_string(),
         crate::bolt_v3_strategy_registration::settlement_currency_from_config_code(
             pool.collateral_currency.as_str(),
-        ),
+        )
+        .expect("bolt-v3 fixture capital pool should declare a registered settlement currency"),
     )
 }
 

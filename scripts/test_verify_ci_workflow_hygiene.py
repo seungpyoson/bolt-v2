@@ -1026,6 +1026,24 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
 
+    sentinel_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        event_sender_id=actor_id,
+        pull_request_author_id=actor_id,
+        ref="refs/pull/965/merge",
+    )
+    if sentinel_result.reason == "mergify_temp_pr" or sentinel_result.ci_policy_path != "iteration":
+        raise AssertionError(
+            "omitted Mergify identity overrides must preserve never-match sentinels: "
+            f"{sentinel_result}"
+        )
+
     mergify_sync_result = verifier.evaluate_ci_policy(
         policy,
         gate_names,
@@ -1256,13 +1274,10 @@ def assert_ci_policy_matrix() -> None:
 
 
 def assert_ci_policy_resolvers_agree() -> None:
-    # The runtime resolver (ci_provenance.evaluate_ci_policy) and the static
-    # contract resolver (verify_ci_workflow_hygiene.evaluate_ci_policy) are
-    # independent hand-maintained mirrors with no shared implementation. #848
-    # adds a merge_group row to both; this parity lock fails loud if the two ever
-    # diverge on any event, so a future drift cannot let the verifier certify a
-    # workflow the runtime actually under-validates (a skipped required check
-    # counts as passing in GitHub). Both are fed the real production config.
+    # The static adapter delegates to the runtime resolver with a typed copy of
+    # the real production config. Whole-result equality keeps every current and
+    # future CiPolicyResult field in the adapter contract instead of allowing a
+    # hand-maintained projection to silently omit new trusted outputs.
     verifier = load_verifier()
     provenance = load_provenance()
     config_path = REPO_ROOT / "ci" / "github-actions-runners.toml"
@@ -1310,26 +1325,16 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_base_changed=base_changed,
             ref=ref,
         )
-        ver_tuple = (
-            ver.ci_policy_path,
-            ver.full_ci_required,
-            ver.gate_name,
-            ver.backtester_gate_name,
-            ver.expected_event_class,
-            ver.reason,
+        ver_contract = tuple(
+            (field.name, getattr(ver, field.name)) for field in dataclasses.fields(ver)
         )
-        prov_tuple = (
-            prov.ci_policy_path,
-            prov.full_ci_required,
-            prov.gate_name,
-            prov.backtester_gate_name,
-            prov.expected_event_class,
-            prov.reason,
+        prov_contract = tuple(
+            (field.name, getattr(prov, field.name)) for field in dataclasses.fields(prov)
         )
-        if ver_tuple != prov_tuple:
+        if ver_contract != prov_contract:
             raise AssertionError(
                 f"ci_policy resolver drift for {event_name}/{action!r}: "
-                f"verifier={ver_tuple} provenance={prov_tuple}"
+                f"verifier={ver_contract} provenance={prov_contract}"
             )
         saw_full = saw_full or ver.ci_policy_path == "full"
         saw_iteration = saw_iteration or ver.ci_policy_path == "iteration"
@@ -4881,6 +4886,12 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             "must include 'python3.12 scripts/sccache_eligibility.py'",
         ),
         (
+            "shared action must pass the runner architecture",
+            action_text.replace("        RUNNER_ARCH: ${{ runner.arch }}\n", "", 1),
+            config_text,
+            "must pass runner.arch to the sccache eligibility owner",
+        ),
+        (
             "shared action must keep enablement fail-open",
             action_text.replace("      id: enable\n      continue-on-error: true\n", "      id: enable\n", 1),
             config_text,
@@ -4891,6 +4902,18 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             action_text.replace('        disable_annotations: "true"\n', "", 1),
             config_text,
             "must disable vendor sccache stats annotations",
+        ),
+        (
+            "shared action must verify installed sccache bytes",
+            action_text.replace(
+                "          if python3.12 scripts/sccache_eligibility.py verify-executable \\\n"
+                '              "$SCCACHE_PATH" "$EXPECTED_VERSION" "$EXPECTED_SHA256" \\\n'
+                '              && "$SCCACHE_PATH" --start-server; then\n',
+                '          if "$SCCACHE_PATH" --start-server; then\n',
+                1,
+            ),
+            config_text,
+            "must verify installed sccache bytes before server startup",
         ),
         (
             "shared action must summarize cache state",
@@ -4913,6 +4936,18 @@ def assert_debug_lane_compile_cache_parity_contract() -> None:
             action_text,
             re.sub(r'key_prefix = "[^"]+"', 'key_prefix = ""', config_text, count=1),
             "location.key_prefix must be a non-empty string ending in '/'",
+        ),
+        (
+            "sccache location config owns the exact version",
+            action_text,
+            re.sub(r'version = "[^"]+"', 'version = "0.10"', config_text, count=1),
+            "location.version must be a v-prefixed semantic version",
+        ),
+        (
+            "sccache location config owns executable bytes",
+            action_text,
+            re.sub(r'X64 = "[^"]+"', 'X64 = ""', config_text, count=1),
+            "location.executable_sha256.X64 must be a lowercase SHA-256 digest",
         ),
     )
     for label, mutated_action, mutated_config, expected in action_cases:
@@ -5279,9 +5314,170 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
     verifier = load_verifier()
     workflow_name = ".github/workflows/backtester-ci.yml"
     workflow = repo_workflow_text(workflow_name)
+    for required in (
+        "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+        'echo "revision=$trusted_revision"',
+        "trusted_revision: ${{ steps.policy_base.outputs.revision }}",
+        'TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}',
+        '--pull-request-author-id "$PR_AUTHOR_ID"',
+        '--config "$verdict_config"',
+    ):
+        if required not in workflow:
+            raise AssertionError(
+                f"backtester-ci must use one explicit trusted policy revision ({required})"
+            )
+    for forbidden in (
+        'if [[ -z "$policy_script" ]]',
+        'policy_script="scripts/ci_provenance.py"',
+        'if [[ -z "$policy_config" ]]',
+        'policy_config="ci/github-actions-runners.toml"',
+        'ci-policy --help',
+        "author_args=()",
+        'if [[ -z "$verdict_script" ]]',
+        'verdict_script="scripts/ci_provenance.py"',
+    ):
+        if forbidden in workflow:
+            raise AssertionError(
+                f"backtester-ci must not retain trusted-policy fallbacks ({forbidden})"
+            )
     errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
     if any("backtester iteration policy" in error for error in errors):
         raise AssertionError(f"backtester-ci workflow must satisfy iteration policy, got: {errors}")
+
+    for marker, replacement in (
+        (
+            "REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            "REPOSITORY_DEFAULT_BRANCH: ''",
+        ),
+        (
+            'echo "revision=$trusted_revision"',
+            'echo "revision="',
+        ),
+        (
+            "TRUSTED_REVISION: ${{ needs.ci-policy.outputs.trusted_revision }}",
+            "TRUSTED_REVISION: ''",
+        ),
+        (
+            '--config "$verdict_config"',
+            "",
+        ),
+    ):
+        mutated = replace_once(workflow, marker, replacement)
+        mutated_errors = verifier.verify_repo_automation_texts({workflow_name: mutated})
+        if not any("backtester iteration policy" in error for error in mutated_errors):
+            raise AssertionError(
+                f"backtester-ci must reject missing trusted-policy binding {marker}: "
+                f"{mutated_errors}"
+            )
+
+    policy_fallback = replace_once(
+        workflow,
+        '          readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+        (
+            '          policy_script="${{ steps.policy_base.outputs.script }}"\n'
+            '          if [[ -z "$policy_script" ]]; then\n'
+            '            policy_script="scripts/ci_provenance.py"\n'
+            "          fi"
+        ),
+    )
+    policy_fallback_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: policy_fallback}
+    )
+    if not any(
+        "must not retain trusted-policy fallbacks" in error
+        for error in policy_fallback_errors
+    ):
+        raise AssertionError(
+            "backtester-ci must reject a local policy-script fallback, got: "
+            f"{policy_fallback_errors}"
+        )
+
+    for marker, replacement, expected_error in (
+        (
+            'readonly policy_script="${{ steps.policy_base.outputs.script }}"',
+            (
+                "readonly policy_script=\"${{ steps.policy_base.outputs.script "
+                "|| 'scripts/ci_provenance.py' }}\""
+            ),
+            "must bind each trusted policy capability exactly once without fallback",
+        ),
+        (
+            'readonly policy_config="${{ steps.policy_base.outputs.config }}"',
+            (
+                "readonly policy_config=\"${{ steps.policy_base.outputs.config "
+                "|| 'ci/github-actions-runners.toml' }}\""
+            ),
+            "must bind each trusted policy capability exactly once without fallback",
+        ),
+        (
+            'trusted_branch="$PR_BASE_REF"',
+            'trusted_branch="${PR_BASE_REF:-$REPOSITORY_DEFAULT_BRANCH}"',
+            "must select one event-scoped trusted branch without fallback",
+        ),
+        (
+            'readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+            (
+                "readonly verdict_script=\"${{ steps.verdict_base.outputs.script "
+                "|| 'scripts/ci_provenance.py' }}\""
+            ),
+            "must bind each trusted verdict capability exactly once without fallback",
+        ),
+        (
+            'readonly verdict_config="${{ steps.verdict_base.outputs.config }}"',
+            (
+                "readonly verdict_config=\"${{ steps.verdict_base.outputs.config "
+                "|| 'ci/github-actions-runners.toml' }}\""
+            ),
+            "must bind each trusted verdict capability exactly once without fallback",
+        ),
+    ):
+        mutated = replace_once(workflow, marker, replacement)
+        mutated_errors = verifier.verify_repo_automation_texts({workflow_name: mutated})
+        if not any(expected_error in error for error in mutated_errors):
+            raise AssertionError(
+                f"backtester-ci must reject conditional capability fallback {marker}: "
+                f"{mutated_errors}"
+            )
+
+    help_probe = replace_once(
+        workflow,
+        '            --pull-request-author-id "$PR_AUTHOR_ID" \\',
+        (
+            '            $(python3 "$policy_script" ci-policy --help | '
+            'grep -q -- "--pull-request-author-id" && '
+            'echo --pull-request-author-id "$PR_AUTHOR_ID") \\'
+        ),
+    )
+    help_probe_errors = verifier.verify_repo_automation_texts({workflow_name: help_probe})
+    if not any(
+        "must not retain trusted-policy fallbacks" in error
+        for error in help_probe_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci must reject ci-policy capability probes, got: {help_probe_errors}"
+        )
+
+    verdict_fallback = replace_once(
+        workflow,
+        '          readonly verdict_script="${{ steps.verdict_base.outputs.script }}"',
+        (
+            '          verdict_script="${{ steps.verdict_base.outputs.script }}"\n'
+            '          if [[ -z "$verdict_script" ]]; then\n'
+            '            verdict_script="scripts/ci_provenance.py"\n'
+            "          fi"
+        ),
+    )
+    verdict_fallback_errors = verifier.verify_repo_automation_texts(
+        {workflow_name: verdict_fallback}
+    )
+    if not any(
+        "must not retain trusted-verdict fallbacks" in error
+        for error in verdict_fallback_errors
+    ):
+        raise AssertionError(
+            "backtester-ci must reject a local verdict-script fallback, got: "
+            f"{verdict_fallback_errors}"
+        )
 
     missing_required_gate_note = replace_once(
         workflow,
@@ -7864,6 +8060,11 @@ lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
         "ci_provenance.artifact_name_template_vars values must be non-empty strings": config_text.replace(
             "run_attempt = \"${{ github.run_attempt }}\"",
             "run_attempt = true",
+        ),
+        "ci_provenance.artifact_name_template contains malformed template placeholder syntax": config_text.replace(
+            'artifact_name_template = "ci-provenance-attempt-{run_attempt}"',
+            'artifact_name_template = "ci-provenance-attempt-{{run_attempt}}"',
+            1,
         ),
         "has partial artifact name source; missing ['artifact_name_config_file']": config_text.replace(
             'artifact_name_config_file = "ci/github-actions-runners.toml"\n'

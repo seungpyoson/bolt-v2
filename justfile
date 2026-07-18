@@ -240,7 +240,8 @@ cargo-shim-tests:
 
 # Render the systemd unit from deploy/install-layout.env + the .in template. The
 # committed deploy/systemd/bolt-v2.service is a GENERATED artifact — edit the template
-# or layout and regenerate; never hand-edit the unit. Drift is caught by source-fence.
+# or layout and regenerate; never hand-edit the unit. Drift is caught by the
+# deploy_systemd Rust integration tests in the platform_config harness.
 generate-unit:
     python3 scripts/render_install_unit.py > deploy/systemd/bolt-v2.service
 

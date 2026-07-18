@@ -79,6 +79,77 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
+[execution.economics]
+economics_slice = "quote_only"
+routing_attachment_policy = "forbidden"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+refresh_max_concurrency = 8
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+carry_surfaces = ["standard_perps"]
+
+[execution.economics.sources]
+account_fees = "user_fees"
+builder_approval = "max_builder_fee"
+funding = "user_funding_stream_and_history"
+
+[execution.economics.formula]
+stable_pair_scale = "0.2"
+growth_mode_scale = "0.1"
+hip3_scale_threshold = "1"
+hip3_below_threshold_base = "1"
+hip3_at_or_above_threshold_multiplier = "2"
+hip3_at_or_above_deployer_share = "0.5"
+fee_volume_history_days = "15"
+fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "0"
+
+[execution.economics.quote_components.protocol]
+component_id = "hyperliquid-protocol-execution"
+formula_id = "hyperliquid-effective-account-rate"
+rate_factor_id = "hyperliquid-live-effective-rate"
+
+[execution.economics.quote_components.builder]
+component_id = "hyperliquid-builder-execution"
+formula_id = "hyperliquid-builder-notional-fee"
+rate_factor_id = "hyperliquid-live-builder-rate"
+
+[execution.economics.assets.settlement]
+native_unit = "USDC"
+identity_kind = "currency"
+evidence_fixture_id = "hyperliquid-usdc-settlement-v1"
+
+[execution.economics.carry]
+funding_interval_secs = 3600
+funding_schedule_phase_secs = 0
+funding_venue_rate_cap_bps_per_hour = "400"
+funding_standard_price_stress_multiplier = "1.5"
+component_id = "funding-carry"
+formula_id = "funding-rate-bound"
+point_rate_factor_id = "funding-point-rate"
+bound_rate_factor_id = "funding-bound-rate"
+risk_policy_id = "funding-risk-policy"
+stress_fixture_id = "funding-standard-stress"
+oracle_price_factor_id = "funding-oracle-price"
+next_funding_at_factor_id = "funding-next-event-at"
+
+[execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+policy_version = 1
+product_metadata_source = "hyperliquid-meta"
+
+[execution.economics.product_surface_policies]
+standard_perps = "primary"
+
+[execution.economics.valuation.routes.usdc_usd]
+from_unit = "USDC"
+to_currency = "USD"
+legs = [
+  { authority = "market_quote", from_unit = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+]
+
 [execution.live_submit.standard_perps]
 approval_id = "hl-standard-perps-approval-001"
 approval_artifact_path = "operator/hyperliquid-live-submit-approval.json"

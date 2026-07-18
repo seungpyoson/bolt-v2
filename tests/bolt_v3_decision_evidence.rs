@@ -2250,7 +2250,7 @@ fn binary_oracle_edge_taker_routes_evidence_admission_and_submit_through_shared_
         .find(".record_strategy_input_snapshot(&strategy_input_snapshot)")
         .expect("entry strategy input snapshot must be recorded");
     let evidence_wrapper_call_after_strategy_input = strategy_source[strategy_input_index..]
-        .find("self.submit_order_with_decision_evidence(")
+        .find("self.submit_order_with_decision_evidence_and_fill_plan(")
         .expect("entry path must submit through evidence wrapper");
     assert!(
         evidence_wrapper_call_after_strategy_input > 0,

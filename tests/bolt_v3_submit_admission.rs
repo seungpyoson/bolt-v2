@@ -2993,7 +2993,7 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
         outcomes,
         vec![
             BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
+            BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,

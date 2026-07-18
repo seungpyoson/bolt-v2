@@ -1352,6 +1352,16 @@ pub(crate) trait BoltV3NtVenueMutationSink {
         client_id: Option<ClientId>,
         params: Option<Params>,
     ) -> Result<()>;
+
+    #[expect(dead_code)]
+    fn modify_order_via_nt(
+        &mut self,
+        client_order_id: ClientOrderId,
+        quantity: Quantity,
+        price: Price,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -1403,6 +1413,19 @@ where
             "kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"
         )
     }
+
+    fn modify_order_via_nt(
+        &mut self,
+        client_order_id: ClientOrderId,
+        _quantity: Quantity,
+        _price: Price,
+        _client_id: Option<ClientId>,
+        _params: Option<Params>,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "kill switch flatten submit sink cannot modify client_order_id={client_order_id}"
+        )
+    }
 }
 
 struct NtStrategyVenueMutationSink<'a, S>
@@ -1444,6 +1467,24 @@ where
     ) -> Result<()> {
         self.strategy
             .cancel_all_orders(instrument_id, order_side, client_id, params)
+    }
+
+    fn modify_order_via_nt(
+        &mut self,
+        client_order_id: ClientOrderId,
+        quantity: Quantity,
+        price: Price,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<()> {
+        self.strategy.modify_order(
+            client_order_id,
+            Some(quantity),
+            Some(price),
+            None,
+            client_id,
+            params,
+        )
     }
 }
 
@@ -1490,6 +1531,24 @@ where
     ) -> Result<()> {
         self.strategy
             .cancel_all_orders(instrument_id, order_side, client_id, params)
+    }
+
+    fn modify_order_via_nt(
+        &mut self,
+        client_order_id: ClientOrderId,
+        quantity: Quantity,
+        price: Price,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<()> {
+        self.strategy.modify_order(
+            client_order_id,
+            Some(quantity),
+            Some(price),
+            None,
+            client_id,
+            params,
+        )
     }
 }
 
@@ -1993,6 +2052,18 @@ mod tests {
             self.venue_sink
                 .cancel_all_orders_via_nt(instrument_id, order_side, client_id, params)
         }
+
+        fn modify_order_via_nt(
+            &mut self,
+            client_order_id: ClientOrderId,
+            quantity: Quantity,
+            price: Price,
+            client_id: Option<ClientId>,
+            params: Option<Params>,
+        ) -> Result<()> {
+            self.venue_sink
+                .modify_order_via_nt(client_order_id, quantity, price, client_id, params)
+        }
     }
 
     impl BoltV3MakerOrderRuntime for RecordingMakerRuntime {
@@ -2298,6 +2369,8 @@ mod tests {
         cancel_calls: usize,
         cancel_all_calls: usize,
         cancel_all_requests: Vec<(InstrumentId, Option<OrderSide>, Option<ClientId>)>,
+        modify_calls: usize,
+        modify_requests: Vec<(ClientOrderId, Quantity, Price, Option<ClientId>)>,
         fail_submits: bool,
     }
 
@@ -2335,6 +2408,20 @@ mod tests {
             self.cancel_all_calls += 1;
             self.cancel_all_requests
                 .push((instrument_id, order_side, client_id));
+            Ok(())
+        }
+
+        fn modify_order_via_nt(
+            &mut self,
+            client_order_id: ClientOrderId,
+            quantity: Quantity,
+            price: Price,
+            client_id: Option<ClientId>,
+            _params: Option<Params>,
+        ) -> Result<()> {
+            self.modify_calls += 1;
+            self.modify_requests
+                .push((client_order_id, quantity, price, client_id));
             Ok(())
         }
     }

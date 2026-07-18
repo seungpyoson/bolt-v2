@@ -1597,7 +1597,7 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
 }
 
 #[test]
-fn entry_submission_blocks_legacy_limit_base_entry_shape_before_liability_sizing() {
+fn entry_submission_supports_limit_base_entry_with_planned_fill_economics() {
     let mut strategy = ready_to_trade_strategy();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;
@@ -1625,26 +1625,14 @@ fn entry_submission_blocks_legacy_limit_base_entry_shape_before_liability_sizing
 
     let decision = strategy.entry_submission_decision_at(1_200);
 
-    assert_eq!(
-        decision.blocked_reason,
-        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+    assert_eq!(decision.blocked_reason, None, "{decision:#?}");
+    assert!(
+        decision.evaluation.pricing_blocked_by.is_empty(),
+        "{decision:#?}"
     );
-    assert_eq!(
-        decision.evaluation.pricing_blocked_by,
-        vec![
-            EntryPricingBlockReason::ExecutableEdgeUnavailable(
-                OutcomeSide::Up,
-                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
-            ),
-            EntryPricingBlockReason::ExecutableEdgeUnavailable(
-                OutcomeSide::Down,
-                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
-            ),
-        ],
-        "legacy limit/base entry sizing must not bypass the Lane 1 supported-shape guard: {decision:#?}"
-    );
-    assert_eq!(decision.price, None);
-    assert_eq!(decision.quantity_value, None);
+    assert!(decision.price.is_some(), "{decision:#?}");
+    assert!(decision.quantity_value.is_some(), "{decision:#?}");
+    assert!(!decision.planned_fill_legs.is_empty(), "{decision:#?}");
 }
 
 #[test]

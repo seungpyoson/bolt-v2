@@ -402,6 +402,7 @@ pub struct ConfiguredEconomicsAdmissionSource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfiguredEconomicsSourcePolicy {
     pub quote_refresh_ns: u64,
+    pub quote_max_age_ns: u64,
     pub quote_validity_ns: u64,
     pub resting_order_refresh_margin_ns: u64,
 }
@@ -414,6 +415,7 @@ impl ConfiguredEconomicsAdmissionSource {
     ) -> Result<Self, EconomicsUnavailable> {
         if provider_key.trim().is_empty()
             || policy.quote_refresh_ns == 0
+            || policy.quote_max_age_ns == 0
             || policy.quote_validity_ns == 0
             || policy.resting_order_refresh_margin_ns == 0
             || policy.resting_order_refresh_margin_ns >= policy.quote_validity_ns
@@ -455,12 +457,18 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
             .refreshed_at_ns
             .checked_add(self.policy.quote_refresh_ns)
             .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+        let maximum_age_deadline_ns = dependencies
+            .refreshed_at_ns
+            .checked_add(self.policy.quote_max_age_ns)
+            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
         if dependencies.refreshed_at_ns > intent.request.requested_at_ns {
             return Err(EconomicsUnavailable::InvalidSourceTimeline {
                 source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
             });
         }
-        if intent.request.requested_at_ns > refresh_deadline_ns {
+        if intent.request.requested_at_ns > refresh_deadline_ns
+            || intent.request.requested_at_ns > maximum_age_deadline_ns
+        {
             return Err(EconomicsUnavailable::StaleSource {
                 source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
             });

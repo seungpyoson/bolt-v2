@@ -64,6 +64,7 @@ fn configured_source_resolves_the_one_published_surface_for_an_instrument() {
         inputs,
         ConfiguredEconomicsSourcePolicy {
             quote_refresh_ns: 5,
+            quote_max_age_ns: 5,
             quote_validity_ns: 5,
             resting_order_refresh_margin_ns: 1,
         },
@@ -203,6 +204,7 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
         inputs,
         ConfiguredEconomicsSourcePolicy {
             quote_refresh_ns: 5,
+            quote_max_age_ns: 5,
             quote_validity_ns: 5,
             resting_order_refresh_margin_ns: 1,
         },
@@ -229,8 +231,7 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
     );
 }
 
-#[test]
-fn configured_source_rejects_dependencies_past_the_refresh_deadline() {
+fn assert_configured_source_rejects_stale_dependencies(policy: ConfiguredEconomicsSourcePolicy) {
     let request = canonical_fixture_request();
     let component = estimated_component(
         "charge",
@@ -263,16 +264,8 @@ fn configured_source_rejects_dependencies_past_the_refresh_deadline() {
             },
         )
         .unwrap();
-    let source = ConfiguredEconomicsAdmissionSource::new(
-        "configured-provider",
-        inputs,
-        ConfiguredEconomicsSourcePolicy {
-            quote_refresh_ns: 5,
-            quote_validity_ns: 5,
-            resting_order_refresh_margin_ns: 1,
-        },
-    )
-    .unwrap();
+    let source =
+        ConfiguredEconomicsAdmissionSource::new("configured-provider", inputs, policy).unwrap();
 
     let error = source
         .quote_admission(EconomicsAdmissionQuoteIntent {
@@ -281,9 +274,29 @@ fn configured_source_rejects_dependencies_past_the_refresh_deadline() {
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })
-        .expect_err("expired refresh deadline must fail closed");
+        .expect_err("expired source deadline must fail closed");
 
     assert!(matches!(error, EconomicsUnavailable::StaleSource { .. }));
+}
+
+#[test]
+fn configured_source_rejects_dependencies_past_the_refresh_deadline() {
+    assert_configured_source_rejects_stale_dependencies(ConfiguredEconomicsSourcePolicy {
+        quote_refresh_ns: 5,
+        quote_max_age_ns: 10,
+        quote_validity_ns: 5,
+        resting_order_refresh_margin_ns: 1,
+    });
+}
+
+#[test]
+fn configured_source_rejects_dependencies_past_the_maximum_age() {
+    assert_configured_source_rejects_stale_dependencies(ConfiguredEconomicsSourcePolicy {
+        quote_refresh_ns: 10,
+        quote_max_age_ns: 5,
+        quote_validity_ns: 5,
+        resting_order_refresh_margin_ns: 1,
+    });
 }
 
 #[test]
@@ -327,6 +340,7 @@ fn configured_source_rejects_maker_quote_shorter_than_resting_margin() {
         inputs,
         ConfiguredEconomicsSourcePolicy {
             quote_refresh_ns: 10,
+            quote_max_age_ns: 10,
             quote_validity_ns: 10,
             resting_order_refresh_margin_ns: 6,
         },

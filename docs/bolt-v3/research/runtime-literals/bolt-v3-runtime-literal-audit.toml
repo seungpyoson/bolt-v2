@@ -21951,3 +21951,19 @@ literal = '''"platform"'''
 context = '''!= BTreeSet::from(["builder", "platform"])'''
 classification = "polymarket_economics_component_schema_key"
 reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
+
+[[allowed]]
+path = "src/bolt_v3_economics_runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| policy.quote_max_age_ns == 0'''
+classification = "fail_closed_policy_validation"
+reason = "Zero is the invalid sentinel for the mandatory TOML-derived maximum source age."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"execution economics quote maximum age overflows nanoseconds"'''
+context = '''"execution economics quote maximum age overflows nanoseconds".to_string(),'''
+classification = "diagnostic_template"
+reason = "Stable checked-conversion diagnostic; the maximum age value remains TOML-owned."

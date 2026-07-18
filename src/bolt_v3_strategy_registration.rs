@@ -183,6 +183,16 @@ fn build_order_routing_handle(
                 "execution economics quote refresh overflows nanoseconds".to_string(),
             )
         })?;
+    let quote_max_age_ns = economics
+        .quote_max_age_secs
+        .checked_mul(MILLIS_PER_SECOND_U64)
+        .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
+        .ok_or_else(|| {
+            binding_message(
+                context,
+                "execution economics quote maximum age overflows nanoseconds".to_string(),
+            )
+        })?;
     let resting_order_refresh_margin_ns = economics
         .resting_order_refresh_margin_ms
         .checked_mul(NANOS_PER_MILLI_U64)
@@ -219,6 +229,7 @@ fn build_order_routing_handle(
         context.economics_inputs.clone(),
         ConfiguredEconomicsSourcePolicy {
             quote_refresh_ns,
+            quote_max_age_ns,
             quote_validity_ns,
             resting_order_refresh_margin_ns,
         },

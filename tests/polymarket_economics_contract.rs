@@ -190,6 +190,21 @@ fn market_info_parser_rejects_missing_or_unknown_economics_shape() {
 }
 
 #[test]
+fn market_info_rejects_base_fee_values_outside_the_governed_descriptor_shape() {
+    let contradictory = r#"{
+        "r":{},"t":[{"t":"token-yes","o":"Yes"}],"mos":5,"mts":0.001,
+        "mbf":999,"tbf":1000,"ibce":true,
+        "fd":{"r":0.07,"e":1,"to":true}
+    }"#;
+    let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(metadata(), contradictory).unwrap();
+
+    assert_eq!(
+        PolymarketEconomicsAdapter::try_new(config(), snapshot, None),
+        Err(PolymarketEconomicsError::InvalidMarketInfo)
+    );
+}
+
+#[test]
 fn governed_live_market_info_captures_parse_fee_bearing_and_fee_free_shapes() {
     let fee_bearing =
         include_str!("fixtures/bolt_v3/boundary_evidence/polymarket-market-info-fee-bearing.json");

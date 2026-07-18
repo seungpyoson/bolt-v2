@@ -608,6 +608,110 @@ fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
 }
 
 #[test]
+fn user_fees_parser_rejects_ineligible_vip_effective_rates() {
+    let json = serde_json::to_string(&serde_json::json!({
+        "dailyUserVlm": [{
+            "date": "2026-07-18",
+            "userCross": "0",
+            "userAdd": "0",
+            "exchange": "1000000"
+        }],
+        "feeSchedule": {
+            "cross": "0.00045",
+            "add": "0.00015",
+            "spotCross": "0.0007",
+            "spotAdd": "0.0004",
+            "tiers": {
+                "vip": [{
+                    "ntlCutoff": "5000000",
+                    "cross": "0.0004",
+                    "add": "0.00012",
+                    "spotCross": "0.0006",
+                    "spotAdd": "0.0003"
+                }],
+                "mm": []
+            },
+            "referralDiscount": "0.04",
+            "stakingDiscountTiers": [{"bpsOfMaxSupply": "0", "discount": "0"}]
+        },
+        "userCrossRate": "0.0004",
+        "userAddRate": "0.00012",
+        "userSpotCrossRate": "0.0006",
+        "userSpotAddRate": "0.0003",
+        "activeReferralDiscount": "0",
+        "trial": null,
+        "feeTrialEscrow": "0",
+        "nextTrialAvailableTimestamp": null,
+        "stakingLink": null,
+        "activeStakingDiscount": {"bpsOfMaxSupply": "0", "discount": "0"}
+    }))
+    .unwrap();
+
+    assert_eq!(
+        HyperliquidUserFeesSnapshot::from_wire_json(
+            HyperliquidSnapshotMetadata {
+                snapshot_id: "user-fees-snapshot".to_string(),
+                source_at_ns: 90,
+                fetched_at_ns: 95,
+                valid_until_ns: 110,
+            },
+            "account",
+            &json,
+        ),
+        Err(HyperliquidEconomicsError::InvalidUserFees)
+    );
+}
+
+#[test]
+fn user_fees_parser_rejects_ineligible_maker_rebate() {
+    let json = serde_json::to_string(&serde_json::json!({
+        "dailyUserVlm": [{
+            "date": "2026-07-18",
+            "userCross": "0",
+            "userAdd": "0",
+            "exchange": "1000000"
+        }],
+        "feeSchedule": {
+            "cross": "0.00045",
+            "add": "0.00015",
+            "spotCross": "0.0007",
+            "spotAdd": "0.0004",
+            "tiers": {
+                "vip": [],
+                "mm": [{"makerFractionCutoff": "0.005", "add": "-0.00001"}]
+            },
+            "referralDiscount": "0.04",
+            "stakingDiscountTiers": [{"bpsOfMaxSupply": "0", "discount": "0"}]
+        },
+        "userCrossRate": "0.00045",
+        "userAddRate": "-0.00001",
+        "userSpotCrossRate": "0.0007",
+        "userSpotAddRate": "0.0004",
+        "activeReferralDiscount": "0",
+        "trial": null,
+        "feeTrialEscrow": "0",
+        "nextTrialAvailableTimestamp": null,
+        "stakingLink": null,
+        "activeStakingDiscount": {"bpsOfMaxSupply": "0", "discount": "0"}
+    }))
+    .unwrap();
+
+    assert_eq!(
+        HyperliquidUserFeesSnapshot::from_wire_json(
+            HyperliquidSnapshotMetadata {
+                snapshot_id: "user-fees-snapshot".to_string(),
+                source_at_ns: 90,
+                fetched_at_ns: 95,
+                valid_until_ns: 110,
+            },
+            "account",
+            &json,
+        ),
+        Err(HyperliquidEconomicsError::InvalidUserFees)
+    );
+}
+
+#[test]
 fn contradictory_product_kind_flags_fail_closed() {
     let spot_hip3 = HyperliquidProductEconomicsSnapshot::from_json(
         r#"{

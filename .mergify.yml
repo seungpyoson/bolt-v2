@@ -1,6 +1,7 @@
 merge_queue:
   max_parallel_checks: 1
   reset_on_external_merge: always
+  queue_controls_comment: false
 
 queue_rules:
   # Exceptional path only. Normal merge sessions use the default queue below.

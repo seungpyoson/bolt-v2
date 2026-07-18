@@ -108,7 +108,9 @@ MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS = frozenset(
         "pull_request_rules",
     }
 )
-MERGIFY_MERGE_QUEUE_KEYS = frozenset({"max_parallel_checks", "reset_on_external_merge"})
+MERGIFY_MERGE_QUEUE_KEYS = frozenset(
+    {"max_parallel_checks", "queue_controls_comment", "reset_on_external_merge"}
+)
 MERGIFY_QUEUE_RULE_KEYS = frozenset(
     {
         "name",

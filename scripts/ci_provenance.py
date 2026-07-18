@@ -1784,6 +1784,7 @@ MERGIFY_CONFIG_EXPECTATIONS = {
     "merge_queue": {
         "max_parallel_checks": 1,
         "reset_on_external_merge": "always",
+        "queue_controls_comment": False,
     },
     "queue_rule_order": ("hotfix", "default"),
     "queue_rules": {

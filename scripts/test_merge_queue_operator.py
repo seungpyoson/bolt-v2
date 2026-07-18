@@ -312,7 +312,15 @@ def assert_just_multi_pr_rejected_before_git() -> None:
         environment["MERGE_QUEUE_GIT_MARKER"] = str(marker)
         environment["PATH"] = str(bin_dir) + os.pathsep + environment["PATH"]
         result = subprocess.run(
-            ["just", "--justfile", str(REPO_ROOT / "justfile"), "merge-queue", "1", "2"],
+            [
+                "just",
+                "--justfile",
+                str(REPO_ROOT / "justfile"),
+                "merge-queue",
+                "1",
+                "merge-queue",
+                "2",
+            ],
             cwd=REPO_ROOT,
             env=environment,
             text=True,
@@ -322,9 +330,68 @@ def assert_just_multi_pr_rejected_before_git() -> None:
         )
         git_invoked = marker.exists()
     assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
-    assert "unrecognized arguments: 2" in result.stderr, result.stderr
+    assert "unrecognized arguments: merge-queue 2" in result.stderr, result.stderr
     if git_invoked:
         raise AssertionError("just merge-queue invoked Git before rejecting multiple PRs")
+
+
+def assert_just_pr_argument_is_not_shell_evaluated() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        marker = root / "shell-evaluated"
+        argument = f'$(printf evaluated > "{marker}"; printf invalid)'
+        result = subprocess.run(
+            ["just", "--justfile", str(REPO_ROOT / "justfile"), "merge-queue", argument],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        shell_evaluated = marker.exists()
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "invalid PR number" in result.stderr, result.stderr
+    if shell_evaluated:
+        raise AssertionError("just merge-queue shell-evaluated the PR argument")
+
+
+def assert_just_recipe_does_not_expose_operator_flags() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        marker = root / "git-invoked"
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        fake_git = bin_dir / "git"
+        fake_git.write_text(
+            '#!/bin/sh\n: > "$MERGE_QUEUE_GIT_MARKER"\nexit 99\n',
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        environment = os.environ.copy()
+        environment["MERGE_QUEUE_GIT_MARKER"] = str(marker)
+        environment["PATH"] = str(bin_dir) + os.pathsep + environment["PATH"]
+        result = subprocess.run(
+            [
+                "just",
+                "--justfile",
+                str(REPO_ROOT / "justfile"),
+                "--",
+                "merge-queue",
+                "--dry-run",
+                "1",
+            ],
+            cwd=REPO_ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        git_invoked = marker.exists()
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "invalid PR number '--dry-run'" in result.stderr, result.stderr
+    if git_invoked:
+        raise AssertionError("just merge-queue exposed operator flags before PR validation")
 
 
 def assert_ready_payload_must_match_requested_pr() -> None:
@@ -531,6 +598,8 @@ def main() -> int:
     assert_config_snapshot_is_immutable_across_operator_and_preflight()
     assert_multiple_prs_are_rejected_by_parser()
     assert_just_multi_pr_rejected_before_git()
+    assert_just_pr_argument_is_not_shell_evaluated()
+    assert_just_recipe_does_not_expose_operator_flags()
     assert_ready_payload_must_match_requested_pr()
     assert_blocked_verdict_does_not_queue()
     assert_unexpected_success_payload_is_operator_error()

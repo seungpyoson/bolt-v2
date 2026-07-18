@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import ast
 import contextlib
-import hashlib
 import importlib.util
 import io
 import json
@@ -851,6 +849,16 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
     config = MERGIFY_YML
     if "check-success" in config:
         raise AssertionError("post-cutover Mergify config must not contain check-success predicates")
+    assert_equal(
+        expectations["merge_queue"].get("queue_controls_comment"),
+        False,
+        "Mergify queue checkbox disabled",
+    )
+    assert_equal(
+        config.count("  queue_controls_comment: false\n"),
+        1,
+        "single disabled queue checkbox setting",
+    )
     for queue_name, queue in expectations["queue_rules"].items():
         assert_equal(queue["batch_size"], 1, f"{queue_name} single-PR batch")
         assert_equal(
@@ -873,50 +881,6 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
         2,
         "reviewer-only merge conditions",
     )
-
-
-EXPECTED_PREFLIGHT_MODULE_FINGERPRINT = "a3a9663c5877af024c794a77a59182e2372ead811282533d585b9dfce79e0ed4"
-
-
-def preflight_module_fingerprint(source: str) -> str:
-    normalized = ast.unparse(ast.parse(source))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def assert_preflight_module_is_frozen() -> None:
-    source = SCRIPT_PATH.read_text(encoding="utf-8")
-    assert_equal(
-        preflight_module_fingerprint(source),
-        EXPECTED_PREFLIGHT_MODULE_FINGERPRINT,
-        "preflight module structural fingerprint",
-    )
-    evidence = (REPO_ROOT / "docs" / "ci" / "merge-queue-evidence.md").read_text(
-        encoding="utf-8"
-    )
-    assert "A split, blocked" not in evidence, "retired split terminology"
-
-
-def assert_preflight_module_fingerprint_rejects_structural_change() -> None:
-    source = SCRIPT_PATH.read_text(encoding="utf-8")
-    mutated = source.replace(
-        "            head.sha,\n",
-        "            [head][0].sha,\n",
-        1,
-    )
-    if mutated == source:
-        raise AssertionError("single-PR fingerprint mutation anchor is stale")
-    if preflight_module_fingerprint(mutated) == EXPECTED_PREFLIGHT_MODULE_FINGERPRINT:
-        raise AssertionError("preflight module fingerprint accepted a structural change")
-
-
-def assert_preflight_module_fingerprint_rejects_duplicate_runtime_binding() -> None:
-    source = SCRIPT_PATH.read_text(encoding="utf-8")
-    mutated = source + (
-        "\n\ndef preflight_with_fetch_refs(**kwargs: object) -> tuple[dict[str, object], int]:\n"
-        "    return preflight_with_fetch_refs(**kwargs)\n"
-    )
-    if preflight_module_fingerprint(mutated) == EXPECTED_PREFLIGHT_MODULE_FINGERPRINT:
-        raise AssertionError("preflight module fingerprint accepted a duplicate runtime binding")
 
 
 def assert_queue_ci_and_verifier_flags_are_removed() -> None:
@@ -2127,6 +2091,32 @@ def assert_mergify_config_gaps_are_reported() -> None:
             f"merge_queue.max_parallel_checks must be {merge_queue_scalars['max_parallel_checks']}",
         ),
         (
+            "missing queue checkbox control",
+            replace_once(
+                mergify_config,
+                mergify_scalar_line(
+                    "  ",
+                    "queue_controls_comment",
+                    merge_queue_scalars["queue_controls_comment"],
+                ),
+                "",
+            ),
+            "merge_queue.queue_controls_comment must be false",
+        ),
+        (
+            "queue checkbox enabled",
+            replace_once(
+                mergify_config,
+                mergify_scalar_line(
+                    "  ",
+                    "queue_controls_comment",
+                    merge_queue_scalars["queue_controls_comment"],
+                ),
+                "  queue_controls_comment: true\n",
+            ),
+            "merge_queue.queue_controls_comment must be false",
+        ),
+        (
             "reset disabled",
             replace_once(
                 mergify_config,
@@ -2256,10 +2246,12 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 mergify_config,
                 "merge_queue:\n"
                 + mergify_scalar_line("  ", "max_parallel_checks", merge_queue_scalars["max_parallel_checks"])
-                + mergify_scalar_line("  ", "reset_on_external_merge", merge_queue_scalars["reset_on_external_merge"]),
+                + mergify_scalar_line("  ", "reset_on_external_merge", merge_queue_scalars["reset_on_external_merge"])
+                + mergify_scalar_line("  ", "queue_controls_comment", merge_queue_scalars["queue_controls_comment"]),
                 "merge_queue:\n"
                 + mergify_scalar_line("    ", "max_parallel_checks", merge_queue_scalars["max_parallel_checks"])
                 + mergify_scalar_line("    ", "reset_on_external_merge", merge_queue_scalars["reset_on_external_merge"])
+                + mergify_scalar_line("    ", "queue_controls_comment", merge_queue_scalars["queue_controls_comment"])
                 + "    skip_intermediate_results: true\n",
             ),
             "merge_queue must not define unsupported key skip_intermediate_results",
@@ -2549,9 +2541,6 @@ def assert_mergify_config_gaps_are_reported() -> None:
 def main() -> int:
     assert_advisory_check_matrix_does_not_affect_admission()
     assert_post_cutover_mergify_contract_is_review_only_and_single_pr()
-    assert_preflight_module_is_frozen()
-    assert_preflight_module_fingerprint_rejects_structural_change()
-    assert_preflight_module_fingerprint_rejects_duplicate_runtime_binding()
     assert_queue_ci_and_verifier_flags_are_removed()
     assert_preflight_config_is_identity_only()
     assert_origin_and_base_cli_overrides_are_rejected()

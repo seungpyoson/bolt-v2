@@ -751,21 +751,7 @@ fn quote_quantity_sell_stop_limit_helper_floors_to_submitted_quote_quantity() {
 }
 
 #[test]
-fn quote_quantity_sell_limit_helper_missing_quote_uses_submitted_quote_quantity() {
-    let notional =
-        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_side: BoltV3QuoteQuantityOrderSide::Sell,
-            is_quote_quantity: true,
-            is_inverse: false,
-            submitted_quote_quantity: Decimal::new(2500, 2),
-            calculated_notional: Decimal::new(2500, 2),
-        });
-
-    assert_eq!(notional, Decimal::new(2500, 2));
-}
-
-#[test]
-fn quote_quantity_sell_stop_limit_helper_missing_quote_uses_submitted_quote_quantity() {
+fn quote_quantity_helper_preserves_equal_calculated_notional() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
             order_side: BoltV3QuoteQuantityOrderSide::Sell,

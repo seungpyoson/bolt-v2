@@ -3365,9 +3365,9 @@ pub fn base_quantity_admission_notional(order_price: Decimal, order_quantity: De
 ///   supply a reference price. It is ignored for base-quantity orders.
 /// - `quote_reference_price` is the side-appropriate top-of-book price (best ask
 ///   for a BUY, best bid for a SELL) used to pick a conservative effective price
-///   for the quote→base conversion. `None` means no top-of-book is available, in
-///   which case the effective price is the `last_price` (matching the historical
-///   no-quote-tick fallback).
+///   for the quote→base conversion. Limit and StopLimit quote-quantity orders
+///   require this authority; `None` rejects admission instead of substituting a
+///   different price source.
 ///
 /// For a quote-quantity, non-inverse Limit/StopLimit order the effective price is
 /// pulled toward the book (`min(last, ask)` for a BUY, `max(last, bid)` for a
@@ -3421,7 +3421,7 @@ pub fn admission_base_notional_from_order(
     }
     let last_px = last_price?;
     let effective_price =
-        quote_quantity_effective_price(order, instrument, last_px, quote_reference_price);
+        quote_quantity_effective_price(order, instrument, last_px, quote_reference_price)?;
     let effective_quantity = instrument.calculate_base_quantity(order.quantity(), effective_price);
     let calculated_notional = instrument
         .calculate_notional_value(effective_quantity, last_px, Some(true))
@@ -3446,26 +3446,26 @@ pub fn admission_base_notional_from_order(
 /// non-inverse Limit/StopLimit order it pulls the price toward the book
 /// (`min(last, ask)` for a BUY, `max(last, bid)` for a SELL) so a smaller
 /// effective price yields a larger base quantity — the conservative direction.
-/// Every other shape, or a missing top-of-book, falls back to `last_price`.
+/// Other supported shapes use their authoritative compiled-order price. A
+/// Limit/StopLimit order without top-of-book authority is economically
+/// incomplete and returns `None`.
 fn quote_quantity_effective_price(
     order: &OrderAny,
     instrument: &InstrumentAny,
     last_price: Price,
     quote_reference_price: Option<Price>,
-) -> Price {
+) -> Option<Price> {
     if !order.is_quote_quantity()
         || instrument.is_inverse()
         || !matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
     {
-        return last_price;
+        return Some(last_price);
     }
-    let Some(quote_reference_price) = quote_reference_price else {
-        return last_price;
-    };
+    let quote_reference_price = quote_reference_price?;
     match order.order_side() {
-        OrderSide::Buy => last_price.min(quote_reference_price),
-        OrderSide::Sell => last_price.max(quote_reference_price),
-        _ => last_price,
+        OrderSide::Buy => Some(last_price.min(quote_reference_price)),
+        OrderSide::Sell => Some(last_price.max(quote_reference_price)),
+        _ => None,
     }
 }
 

@@ -466,8 +466,10 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
 }
 
 #[test]
-fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
+fn quote_quantity_sell_limit_missing_quote_fails_closed() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&strategy);
@@ -486,7 +488,7 @@ fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
         .expect("quote-quantity sell limit order should build through the strategy factory path");
     assert!(order.is_quote_quantity());
 
-    let admission = strategy
+    let error = strategy
         .submit_admission_request_from_order(
             &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
@@ -497,11 +499,13 @@ fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
             &order,
             test_gross_expected_value(),
         )
-        .expect("missing quote should fall back to submitted quote quantity");
+        .expect_err("missing quote authority must fail closed");
 
-    assert_eq!(
-        admission.notional,
-        Decimal::from_str("25.00").expect("expected decimal should parse")
+    assert!(
+        error
+            .to_string()
+            .contains("cannot derive authoritative quote-quantity notional"),
+        "{error:#}"
     );
 }
 
@@ -608,8 +612,10 @@ fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
 }
 
 #[test]
-fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() {
+fn quote_quantity_sell_stop_limit_missing_quote_fails_closed() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::StopLimit;
     strategy.config.entry_order.trigger_price = Some(0.52);
     strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
@@ -633,7 +639,7 @@ fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() 
     assert!(order.is_quote_quantity());
     assert!(matches!(order, OrderAny::StopLimit(_)));
 
-    let admission = strategy
+    let error = strategy
         .submit_admission_request_from_order(
             &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
@@ -644,11 +650,13 @@ fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() 
             &order,
             test_gross_expected_value(),
         )
-        .expect("missing quote should fall back to submitted quote quantity");
+        .expect_err("missing quote authority must fail closed");
 
-    assert_eq!(
-        admission.notional,
-        Decimal::from_str("25.00").expect("expected decimal should parse")
+    assert!(
+        error
+            .to_string()
+            .contains("cannot derive authoritative quote-quantity notional"),
+        "{error:#}"
     );
 }
 
@@ -705,8 +713,10 @@ fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
 }
 
 #[test]
-fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing() {
+fn quote_quantity_limit_missing_nt_cache_quote_fails_closed() {
     let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&strategy);
@@ -725,7 +735,7 @@ fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing(
         .expect("quote-quantity limit order should build through the strategy factory path");
     assert!(order.is_quote_quantity());
 
-    let admission = strategy
+    let error = strategy
         .submit_admission_request_from_order(
             &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
@@ -736,11 +746,13 @@ fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing(
             &order,
             test_gross_expected_value(),
         )
-        .expect("quote-quantity admission should use NT no-quote fallback");
+        .expect_err("missing quote authority must fail closed");
 
-    assert_eq!(
-        admission.notional,
-        Decimal::from_str("25.00").expect("expected decimal should parse")
+    assert!(
+        error
+            .to_string()
+            .contains("cannot derive authoritative quote-quantity notional"),
+        "{error:#}"
     );
 }
 

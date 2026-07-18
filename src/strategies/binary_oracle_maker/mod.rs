@@ -20,8 +20,9 @@ use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
 use nautilus_model::{
     data::TradeTick,
     enums::OmsType,
-    identifiers::{ClientId, StrategyId},
+    identifiers::{ClientId, ClientOrderId, StrategyId},
     instruments::{Instrument, InstrumentAny},
+    orders::Order,
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
@@ -62,7 +63,8 @@ use crate::{
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3MakerOrderRoutingContext,
+        BoltV3MakerOrderRoutingContext, BoltV3RestingOrderEconomicsAction,
+        BoltV3RestingOrderObservation,
         route_maker_order_command as route_maker_order_command_through_policy,
     },
     bolt_v3_order_intent::NtOrderTemplate,
@@ -311,6 +313,47 @@ impl BinaryOracleMaker {
                 submit_order_prefix,
             },
         )
+    }
+
+    fn cancel_resting_order_for_economics(
+        &mut self,
+        client_order_id: ClientOrderId,
+    ) -> anyhow::Result<()> {
+        let policy = self.context.order_execution_policy();
+        policy.route_cancel(
+            self,
+            client_order_id,
+            Some(ClientId::from(self.config.client_id.as_str())),
+            None,
+        )?;
+        Ok(())
+    }
+
+    fn refresh_resting_order_economics(&mut self, now_ns: u64) -> anyhow::Result<()> {
+        let order_routing = self.context.order_routing_handle()?;
+        for client_order_id in order_routing.resting_order_ids()? {
+            let order_observation = match self.cache().order(&client_order_id) {
+                Some(order) if order.is_closed() => BoltV3RestingOrderObservation::Closed,
+                Some(order) => BoltV3RestingOrderObservation::Open {
+                    remaining_quantity: order.leaves_qty().as_decimal(),
+                    maker_guarantee_intact: order.is_post_only(),
+                },
+                None => BoltV3RestingOrderObservation::Missing,
+            };
+            match order_routing.observe_resting_order(client_order_id, order_observation, now_ns)? {
+                BoltV3RestingOrderEconomicsAction::None
+                | BoltV3RestingOrderEconomicsAction::Complete => {}
+                BoltV3RestingOrderEconomicsAction::Cancel { reason } => {
+                    log::warn!(
+                        "binary_oracle_maker resting economics requires cancellation: strategy_id={} client_order_id={} reason={reason:?}",
+                        self.config.strategy_id,
+                        client_order_id,
+                    );
+                    self.cancel_resting_order_for_economics(client_order_id)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn update_requote_throttle_edge(
@@ -962,6 +1005,11 @@ impl DataActor for BinaryOracleMaker {
         // prior run consumed. (Cross-process restart durability needs a persisted
         // high-water — arming-time work, #869.)
         self.runtime.deactivate_all();
+        let order_routing = self.context.order_routing_handle()?;
+        for client_order_id in order_routing.resting_order_ids()? {
+            self.cancel_resting_order_for_economics(client_order_id)?;
+        }
+        order_routing.clear_resting_orders()?;
         Ok(())
     }
 
@@ -972,6 +1020,11 @@ impl DataActor for BinaryOracleMaker {
 
     fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
         if event.name.as_str() == self.quote_timer_name() {
+            let now_ns = self
+                .now_milliseconds()
+                .checked_mul(NANOS_PER_MILLI_U64)
+                .ok_or_else(|| anyhow::anyhow!("binary_oracle_maker clock overflow"))?;
+            self.refresh_resting_order_economics(now_ns)?;
             self.refresh_active_markets();
         }
         Ok(())

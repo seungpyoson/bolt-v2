@@ -73,10 +73,10 @@ fn governed_fee_eligibility_policy() -> HyperliquidFeeEligibilityPolicy {
 
 fn governed_user_fees_metadata() -> HyperliquidSnapshotMetadata {
     HyperliquidSnapshotMetadata {
-        snapshot_id: "governed-live-user-fees".to_string(),
-        source_at_ns: 1_784_331_328_000_000_000,
-        fetched_at_ns: 1_784_331_328_000_000_000,
-        valid_until_ns: 1_784_331_388_000_000_000,
+        snapshot_id: "governed-user-fees-fixture-replay".to_string(),
+        source_at_ns: 1_784_246_400_000_000_000,
+        fetched_at_ns: 1_784_246_400_000_000_000,
+        valid_until_ns: 1_784_246_460_000_000_000,
     }
 }
 

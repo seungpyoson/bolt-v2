@@ -10,12 +10,13 @@ use nautilus_model::{
     instruments::InstrumentAny,
 };
 use rust_decimal::Decimal;
+use sha2::Digest;
 
 use crate::economics::{
-    EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence, NativeUnitId,
-    NetEdgeQuote, SignedNativeEffect, SnapshotId, ValuationProvider, ValuationRequest,
-    ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
-    validate_and_aggregate_quote, value_with_route,
+    EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence,
+    LiquidityRoleAssumption, NativeUnitId, NetEdgeQuote, SignedNativeEffect, SnapshotId,
+    ValuationProvider, ValuationRequest, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter,
+    fold_net_edge, validate_and_aggregate_quote, value_with_route,
 };
 
 use crate::bolt_v3_economics_config::{ValuationConfig, ValuationLegConfig, ValuationOrientation};
@@ -57,9 +58,19 @@ impl EconomicsOrderBinding {
     pub fn sha256(&self) -> &sha2::digest::Output<sha2::Sha256> {
         &self.sha256
     }
+
+    fn for_resting_remainder(&self, remaining_quantity: Decimal, requested_at_ns: u64) -> Self {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&self.sha256);
+        hasher.update(remaining_quantity.to_string().as_bytes());
+        hasher.update(requested_at_ns.to_be_bytes());
+        Self::from_sha256(hasher.finalize())
+    }
 }
 
 pub trait EconomicsAdmissionSource: Send + Sync {
+    fn resting_order_refresh_margin_ns(&self) -> u64;
+
     fn resolve_product_surface(
         &self,
         execution_client_id: &crate::economics::ExecutionClientId,
@@ -567,6 +578,10 @@ impl ConfiguredEconomicsAdmissionSource {
 }
 
 impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
+    fn resting_order_refresh_margin_ns(&self) -> u64 {
+        self.policy.resting_order_refresh_margin_ns
+    }
+
     fn resolve_product_surface(
         &self,
         execution_client_id: &crate::economics::ExecutionClientId,
@@ -711,6 +726,153 @@ impl EconomicsAdmission {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestingOrderEconomicsCancelReason {
+    InvalidState,
+    MakerGuaranteeLost,
+    QuoteUnavailable,
+    TermsChanged,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RestingOrderEconomicsRefresh {
+    NotDue,
+    Complete,
+    Refreshed(EconomicsAdmission),
+    CancelRequired(RestingOrderEconomicsCancelReason),
+}
+
+pub fn refresh_resting_order_economics(
+    source: &dyn EconomicsAdmissionSource,
+    prior: &EconomicsAdmission,
+    remaining_quantity: Decimal,
+    maker_guarantee_intact: bool,
+    now_ns: u64,
+) -> RestingOrderEconomicsRefresh {
+    if remaining_quantity <= Decimal::ZERO {
+        return RestingOrderEconomicsRefresh::Complete;
+    }
+    if prior.request.liquidity_role != LiquidityRoleAssumption::GuaranteedMaker
+        || prior.purpose != EconomicsAdmissionPurpose::TradingEdge
+    {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    }
+    if !maker_guarantee_intact {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::MakerGuaranteeLost,
+        );
+    }
+    let Some(refresh_at_ns) = prior
+        .quote
+        .valid_until_ns()
+        .checked_sub(source.resting_order_refresh_margin_ns())
+    else {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    };
+    if now_ns < refresh_at_ns {
+        return RestingOrderEconomicsRefresh::NotDue;
+    }
+    let [prior_leg] = prior.request.planned_fill_legs.as_slice() else {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    };
+    let Some(base_reservation_notional) = prior_leg.price.checked_mul(remaining_quantity) else {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    };
+    if base_reservation_notional <= Decimal::ZERO
+        || prior.base_reservation_notional <= Decimal::ZERO
+    {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    }
+    let Some(gross_expected_value) = prior
+        .net_edge
+        .gross_expected_value()
+        .checked_mul(base_reservation_notional)
+        .and_then(|value| value.checked_div(prior.base_reservation_notional))
+    else {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    };
+    let mut request = prior.request.clone();
+    let Some(refreshed_leg) = request.planned_fill_legs.first_mut() else {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    };
+    refreshed_leg.quantity = remaining_quantity;
+    request.requested_at_ns = now_ns;
+    let refreshed = match source.quote_admission(EconomicsAdmissionQuoteIntent {
+        request,
+        order_binding: prior
+            .order_binding
+            .for_resting_remainder(remaining_quantity, now_ns),
+        purpose: prior.purpose,
+        gross_expected_value,
+        base_reservation_notional,
+    }) {
+        Ok(admission) => admission,
+        Err(_) => {
+            return RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::QuoteUnavailable,
+            );
+        }
+    };
+    if !resting_economic_terms_match(prior, &refreshed) {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::TermsChanged,
+        );
+    }
+    RestingOrderEconomicsRefresh::Refreshed(refreshed)
+}
+
+fn resting_economic_terms_match(
+    prior: &EconomicsAdmission,
+    refreshed: &EconomicsAdmission,
+) -> bool {
+    let component_identity = |component: &crate::economics::EstimatedEconomicComponent| {
+        (
+            &component.component_id,
+            component.class,
+            &component.kind,
+            &component.scope,
+            component.admission_treatment,
+            &component.formula_id,
+        )
+    };
+    let same_component_authority = prior.quote.components().len()
+        == refreshed.quote.components().len()
+        && prior
+            .quote
+            .components()
+            .iter()
+            .zip(refreshed.quote.components())
+            .all(|(before, after)| component_identity(before) == component_identity(after));
+    let normalized_core = |admission: &EconomicsAdmission| {
+        admission
+            .quote
+            .core_total()
+            .checked_div(admission.base_reservation_notional)
+    };
+    let normalized_debit = |admission: &EconomicsAdmission| {
+        admission
+            .debit_reservation()
+            .checked_div(admission.base_reservation_notional)
+    };
+    same_component_authority
+        && normalized_core(prior) == normalized_core(refreshed)
+        && normalized_debit(prior) == normalized_debit(refreshed)
+}
+
 pub struct BoltV3EconomicsRuntime {
     adapter: Arc<dyn VenueEconomicsAdapter>,
     quote_validity_ns: u64,
@@ -837,6 +999,15 @@ pub(crate) fn test_economics_admission(base_reservation_notional: Decimal) -> Ec
         )),
         EconomicsAdmissionPurpose::TradingEdge,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn test_maker_economics_admission(
+    base_reservation_notional: Decimal,
+) -> EconomicsAdmission {
+    let mut admission = test_economics_admission(base_reservation_notional);
+    admission.request.liquidity_role = LiquidityRoleAssumption::GuaranteedMaker;
+    admission
 }
 
 #[cfg(test)]
@@ -1014,6 +1185,10 @@ struct TestEconomicsAdmissionSource;
 
 #[cfg(test)]
 impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
+    fn resting_order_refresh_margin_ns(&self) -> u64 {
+        1
+    }
+
     fn resolve_product_surface(
         &self,
         _execution_client_id: &crate::economics::ExecutionClientId,
@@ -1120,6 +1295,143 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
             valuation_provider: identity_valuation_provider(),
             base_reservation_notional: intent.base_reservation_notional,
         })
+    }
+}
+
+#[cfg(test)]
+mod resting_order_refresh_tests {
+    use super::*;
+
+    fn maker_admission() -> EconomicsAdmission {
+        let mut admission = test_economics_admission(Decimal::new(2, 0));
+        admission.request.liquidity_role = LiquidityRoleAssumption::GuaranteedMaker;
+        admission
+    }
+
+    #[test]
+    fn remaining_quantity_refreshes_at_the_configured_margin() {
+        let prior = maker_admission();
+        let refresh = refresh_resting_order_economics(
+            &TestEconomicsAdmissionSource,
+            &prior,
+            Decimal::new(2, 0),
+            true,
+            u64::MAX - 1,
+        );
+        let RestingOrderEconomicsRefresh::Refreshed(admission) = refresh else {
+            panic!("expected refreshed resting economics, got {refresh:?}");
+        };
+        assert_eq!(admission.request.requested_at_ns, u64::MAX - 1);
+        assert_ne!(admission.order_binding, prior.order_binding);
+        assert_eq!(
+            admission.request.planned_fill_legs[0].quantity,
+            Decimal::new(2, 0)
+        );
+    }
+
+    #[test]
+    fn lost_maker_guarantee_requires_cancellation() {
+        assert_eq!(
+            refresh_resting_order_economics(
+                &TestEconomicsAdmissionSource,
+                &maker_admission(),
+                Decimal::new(2, 0),
+                false,
+                u64::MAX - 1,
+            ),
+            RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::MakerGuaranteeLost
+            )
+        );
+    }
+
+    struct UnavailableRefreshSource;
+
+    impl EconomicsAdmissionSource for UnavailableRefreshSource {
+        fn resting_order_refresh_margin_ns(&self) -> u64 {
+            1
+        }
+
+        fn resolve_product_surface(
+            &self,
+            _execution_client_id: &crate::economics::ExecutionClientId,
+            _instrument_id: &crate::economics::InstrumentId,
+            _candidates: &[crate::economics::ProductSurfaceId],
+        ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
+            Err(EconomicsUnavailable::MissingQuoteAuthority)
+        }
+
+        fn quote_admission(
+            &self,
+            _intent: EconomicsAdmissionQuoteIntent,
+        ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
+            Err(EconomicsUnavailable::MissingQuoteAuthority)
+        }
+    }
+
+    #[test]
+    fn failed_or_stale_refresh_requires_cancellation() {
+        assert_eq!(
+            refresh_resting_order_economics(
+                &UnavailableRefreshSource,
+                &maker_admission(),
+                Decimal::new(2, 0),
+                true,
+                u64::MAX - 1,
+            ),
+            RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::QuoteUnavailable
+            )
+        );
+    }
+
+    struct ChangedTermsSource;
+
+    impl EconomicsAdmissionSource for ChangedTermsSource {
+        fn resting_order_refresh_margin_ns(&self) -> u64 {
+            1
+        }
+
+        fn resolve_product_surface(
+            &self,
+            execution_client_id: &crate::economics::ExecutionClientId,
+            instrument_id: &crate::economics::InstrumentId,
+            candidates: &[crate::economics::ProductSurfaceId],
+        ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
+            TestEconomicsAdmissionSource.resolve_product_surface(
+                execution_client_id,
+                instrument_id,
+                candidates,
+            )
+        }
+
+        fn quote_admission(
+            &self,
+            intent: EconomicsAdmissionQuoteIntent,
+        ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
+            let mut admission = TestEconomicsAdmissionSource.quote_admission(intent)?;
+            admission.base_reservation_notional = admission
+                .base_reservation_notional
+                .checked_mul(Decimal::new(2, 0))
+                .ok_or(EconomicsUnavailable::InvalidDecimal)?;
+            Ok(admission)
+        }
+    }
+
+    #[test]
+    fn changed_economic_terms_require_cancellation() {
+        assert_eq!(
+            refresh_resting_order_economics(
+                &ChangedTermsSource,
+                &maker_admission(),
+                Decimal::new(2, 0),
+                true,
+                u64::MAX - 1,
+            ),
+            RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::TermsChanged
+            )
+        );
     }
 }
 

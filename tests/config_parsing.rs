@@ -6114,10 +6114,11 @@ api_key_ssm_path = "/bolt/bybit/api_key"
         "expected direct credential-field rejection, got: {messages:#?}"
     );
     assert!(
-        messages.iter().any(
-            |message| message.contains("bybit_data.data.ws_reconnect_delay_secs")
-                && message.contains("not an NT BYBIT data-client config field")
-        ),
+        messages
+            .iter()
+            .any(|message| message.contains("bybit_data.data")
+                && message.contains("NT BYBIT data-client config")
+                && message.contains("unknown field `ws_reconnect_delay_secs`")),
         "expected unknown NT data-field rejection, got: {messages:#?}"
     );
     assert!(rendered.contains("(provider=BYBIT)"));

@@ -54,21 +54,30 @@ pub trait StrategyBuilder: Send + Sync + 'static {
     fn kind() -> &'static str;
     fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>);
     fn build_typed(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy>;
+}
 
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(Self::build_typed(raw, context)?))
-    }
+fn build_registered_strategy<B: StrategyBuilder>(
+    raw: &Value,
+    context: &StrategyBuildContext,
+) -> Result<BoxedStrategy>
+where
+    B::Strategy: super::FillVoidPolicyGuard,
+{
+    Ok(Box::new(B::build_typed(raw, context)?))
+}
 
-    fn register(
-        raw: &Value,
-        context: &StrategyBuildContext,
-        trader: &Rc<RefCell<Trader>>,
-    ) -> Result<StrategyId> {
-        let strategy = Self::build_typed(raw, context)?;
-        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-        trader.borrow_mut().add_strategy(strategy)?;
-        Ok(strategy_id)
-    }
+fn register_built_strategy<B: StrategyBuilder>(
+    raw: &Value,
+    context: &StrategyBuildContext,
+    trader: &Rc<RefCell<Trader>>,
+) -> Result<StrategyId>
+where
+    B::Strategy: super::FillVoidPolicyGuard,
+{
+    let strategy = B::build_typed(raw, context)?;
+    let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
+    trader.borrow_mut().add_strategy(strategy)?;
+    Ok(strategy_id)
 }
 
 #[derive(Clone, Copy)]
@@ -123,12 +132,15 @@ impl StrategyRegistry {
         }
     }
 
-    fn register<B: StrategyBuilder>(&mut self) -> Result<()> {
+    pub(crate) fn register_guarded<B: StrategyBuilder>(&mut self) -> Result<()>
+    where
+        B::Strategy: super::FillVoidPolicyGuard,
+    {
         let registration = StrategyRegistration {
             kind: B::kind(),
             validate_config: B::validate_config,
-            build: B::build,
-            register: B::register,
+            build: build_registered_strategy::<B>,
+            register: register_built_strategy::<B>,
         };
 
         if self.registrations.contains_key(registration.kind()) {
@@ -140,13 +152,6 @@ impl StrategyRegistry {
 
         self.registrations.insert(registration.kind(), registration);
         Ok(())
-    }
-
-    pub(crate) fn register_guarded<B: StrategyBuilder>(&mut self) -> Result<()>
-    where
-        B::Strategy: super::FillVoidPolicyGuard,
-    {
-        self.register::<B>()
     }
 
     pub fn get(&self, kind: &str) -> Option<&StrategyRegistration> {
@@ -202,7 +207,7 @@ mod tests {
     use anyhow::{Context, anyhow};
     use futures_util::future::{BoxFuture, FutureExt};
     use nautilus_model::identifiers::{InstrumentId, StrategyId, Venue};
-    use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
+    use nautilus_trading::{StrategyConfig, StrategyCore};
 
     use crate::{
         bolt_v3_providers::FeeProvider, bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
@@ -356,7 +361,7 @@ mod tests {
 
     impl DataActor for TestStrategy {}
 
-    nautilus_strategy!(TestStrategy);
+    crate::strategies::nautilus_strategy_with_fill_void_guard!(TestStrategy, {});
 
     struct AlphaBuilder;
 
@@ -470,8 +475,8 @@ mod tests {
     fn strategy_registry_registers_and_sorts_kinds() {
         let mut registry = StrategyRegistry::new();
 
-        registry.register::<BetaBuilder>().unwrap();
-        registry.register::<AlphaBuilder>().unwrap();
+        registry.register_guarded::<BetaBuilder>().unwrap();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
 
         assert_eq!(registry.kinds(), vec!["alpha_runtime", "beta_runtime"]);
         assert_eq!(
@@ -485,8 +490,8 @@ mod tests {
     fn strategy_registry_rejects_duplicate_registration() {
         let mut registry = StrategyRegistry::new();
 
-        registry.register::<AlphaBuilder>().unwrap();
-        let error = registry.register::<AlphaBuilder>().unwrap_err();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
+        let error = registry.register_guarded::<AlphaBuilder>().unwrap_err();
 
         assert!(error.to_string().contains("alpha_runtime"));
     }
@@ -503,7 +508,7 @@ mod tests {
     #[test]
     fn strategy_registry_dispatches_validate_and_build() {
         let mut registry = StrategyRegistry::new();
-        registry.register::<AlphaBuilder>().unwrap();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
 
         let registration = registry.get("alpha_runtime").unwrap();
         let raw = toml::toml! {
@@ -522,7 +527,7 @@ mod tests {
     #[test]
     fn strategy_registry_validate_reports_missing_strategy_id() {
         let mut registry = StrategyRegistry::new();
-        registry.register::<AlphaBuilder>().unwrap();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
 
         let registration = registry.get("alpha_runtime").unwrap();
         let raw = toml::Value::Table(Default::default());

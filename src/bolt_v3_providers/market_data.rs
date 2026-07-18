@@ -107,115 +107,6 @@ const DIRECT_CREDENTIAL_FIELDS: &[&str] = &[
     "wallet_address",
 ];
 
-const BITMEX_DATA_FIELDS: &[&str] = &[
-    "api_key",
-    "api_secret",
-    "base_url_http",
-    "base_url_ws",
-    "proxy_url",
-    "http_timeout_secs",
-    "max_retries",
-    "retry_delay_initial_ms",
-    "retry_delay_max_ms",
-    "heartbeat_interval_secs",
-    "recv_window_ms",
-    "active_only",
-    "update_instruments_interval_mins",
-    "environment",
-    "max_requests_per_second",
-    "max_requests_per_minute",
-    "transport_backend",
-];
-const BYBIT_DATA_FIELDS: &[&str] = &[
-    "api_key",
-    "api_secret",
-    "product_types",
-    "environment",
-    "base_url_http",
-    "base_url_ws_public",
-    "base_url_ws_private",
-    "proxy_url",
-    "http_timeout_secs",
-    "max_retries",
-    "retry_delay_initial_ms",
-    "retry_delay_max_ms",
-    "heartbeat_interval_secs",
-    "recv_window_ms",
-    "update_instruments_interval_mins",
-    "instrument_status_poll_secs",
-    "transport_backend",
-];
-const COINBASE_DATA_FIELDS: &[&str] = &[
-    "api_key",
-    "api_secret",
-    "base_url_rest",
-    "base_url_ws",
-    "proxy_url",
-    "environment",
-    "http_timeout_secs",
-    "ws_timeout_secs",
-    "update_instruments_interval_mins",
-    "derivatives_poll_interval_secs",
-    "transport_backend",
-];
-const DERIBIT_DATA_FIELDS: &[&str] = &[
-    "api_key",
-    "api_secret",
-    "product_types",
-    "base_url_http",
-    "base_url_ws",
-    "proxy_url",
-    "environment",
-    "http_timeout_secs",
-    "max_retries",
-    "retry_delay_initial_ms",
-    "retry_delay_max_ms",
-    "heartbeat_interval_secs",
-    "update_instruments_interval_mins",
-    "auto_load_missing_instruments",
-    "transport_backend",
-];
-const OKX_DATA_FIELDS: &[&str] = &[
-    "api_key",
-    "api_secret",
-    "api_passphrase",
-    "instrument_types",
-    "contract_types",
-    "load_spreads",
-    "instrument_families",
-    "base_url_http",
-    "base_url_ws_public",
-    "base_url_ws_business",
-    "proxy_url",
-    "environment",
-    "http_timeout_secs",
-    "max_retries",
-    "retry_delay_initial_ms",
-    "retry_delay_max_ms",
-    "update_instruments_interval_mins",
-    "book_stale_check_interval_secs",
-    "book_stale_threshold_secs",
-    "book_snapshot_timeout_secs",
-    "vip_level",
-    "transport_backend",
-];
-const KRAKEN_DATA_FIELDS: &[&str] = &[
-    "api_key",
-    "api_secret",
-    "product_type",
-    "environment",
-    "base_url",
-    "ws_public_url",
-    "ws_private_url",
-    "ws_l3_url",
-    "validate_l3_checksum",
-    "proxy_url",
-    "timeout_secs",
-    "heartbeat_interval_secs",
-    "ws_idle_timeout_ms",
-    "max_requests_per_second",
-    "transport_backend",
-];
 trait DataConfigBoundary: ClientConfig + Sized + 'static {
     fn parse(value: &toml::Value) -> Result<Self, String>;
 }
@@ -276,44 +167,33 @@ impl DataConfigBoundary for KrakenDataClientConfig {
 }
 
 pub fn validate_bitmex_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<BitmexDataClientConfig>(BITMEX_KEY, key, client, BITMEX_DATA_FIELDS)
+    validate_data_only_client::<BitmexDataClientConfig>(BITMEX_KEY, key, client)
 }
 
 pub fn validate_bybit_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<BybitDataClientConfig>(BYBIT_KEY, key, client, BYBIT_DATA_FIELDS)
+    validate_data_only_client::<BybitDataClientConfig>(BYBIT_KEY, key, client)
 }
 
 pub fn validate_coinbase_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<CoinbaseDataClientConfig>(
-        COINBASE_KEY,
-        key,
-        client,
-        COINBASE_DATA_FIELDS,
-    )
+    validate_data_only_client::<CoinbaseDataClientConfig>(COINBASE_KEY, key, client)
 }
 
 pub fn validate_deribit_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<DeribitDataClientConfig>(
-        DERIBIT_KEY,
-        key,
-        client,
-        DERIBIT_DATA_FIELDS,
-    )
+    validate_data_only_client::<DeribitDataClientConfig>(DERIBIT_KEY, key, client)
 }
 
 pub fn validate_okx_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<OKXDataClientConfig>(OKX_KEY, key, client, OKX_DATA_FIELDS)
+    validate_data_only_client::<OKXDataClientConfig>(OKX_KEY, key, client)
 }
 
 pub fn validate_kraken_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<KrakenDataClientConfig>(KRAKEN_KEY, key, client, KRAKEN_DATA_FIELDS)
+    validate_data_only_client::<KrakenDataClientConfig>(KRAKEN_KEY, key, client)
 }
 
 fn validate_data_only_client<T>(
     provider_key: &'static str,
     key: &str,
     client: &ClientBlock,
-    allowed_fields: &[&str],
 ) -> Vec<String>
 where
     T: DataConfigBoundary,
@@ -335,20 +215,9 @@ where
         ));
         return errors;
     };
-    errors.extend(validate_no_direct_credential_fields(
-        provider_key,
-        key,
-        data,
-    ));
-    errors.extend(validate_known_data_fields(
-        provider_key,
-        key,
-        data,
-        allowed_fields,
-    ));
-    match T::parse(data) {
+    match parse_data_only_config::<T>(provider_key, key, data) {
         Ok(_) => {}
-        Err(message) => errors.push(format!("clients.{key}.data: {message}")),
+        Err(config_errors) => errors.extend(config_errors),
     }
     errors
 }
@@ -372,33 +241,25 @@ fn validate_no_direct_credential_fields(
     errors
 }
 
-fn validate_known_data_fields(
+fn parse_data_only_config<T>(
     provider_key: &'static str,
     key: &str,
-    data: &toml::Value,
-    allowed_fields: &[&str],
-) -> Vec<String> {
-    unknown_data_fields(data, allowed_fields)
-        .into_iter()
-        .map(|field| {
-            format!(
-                "clients.{key}.data.{field} is not an NT {provider_key} data-client config field; remove it or add an upstream-backed provider binding before using it in readiness evidence"
-            )
-        })
-        .collect()
-}
-
-fn unknown_data_fields(data: &toml::Value, allowed_fields: &[&str]) -> Vec<String> {
-    let mut fields: Vec<String> = match data.as_table() {
-        Some(table) => table
-            .keys()
-            .filter(|field| !allowed_fields.contains(&field.as_str()))
-            .cloned()
-            .collect(),
-        None => Vec::new(),
-    };
-    fields.sort();
-    fields
+    value: &toml::Value,
+) -> Result<T, Vec<String>>
+where
+    T: DataConfigBoundary,
+{
+    let mut errors = validate_no_direct_credential_fields(provider_key, key, value);
+    match T::parse(value) {
+        Ok(config) if errors.is_empty() => Ok(config),
+        Ok(_) => Err(errors),
+        Err(message) => {
+            errors.push(format!(
+                "clients.{key}.data: NT {provider_key} data-client config: {message}"
+            ));
+            Err(errors)
+        }
+    }
 }
 
 pub fn resolve_unsupported_secrets(
@@ -439,7 +300,6 @@ pub fn map_bitmex_adapters(
         context,
         BitmexDataClientFactory::new(),
         BITMEX_KEY,
-        BITMEX_DATA_FIELDS,
     )
 }
 
@@ -450,7 +310,6 @@ pub fn map_bybit_adapters(
         context,
         BybitDataClientFactory::new(),
         BYBIT_KEY,
-        BYBIT_DATA_FIELDS,
     )
 }
 
@@ -461,7 +320,6 @@ pub fn map_coinbase_adapters(
         context,
         CoinbaseDataClientFactory::new(),
         COINBASE_KEY,
-        COINBASE_DATA_FIELDS,
     )
 }
 
@@ -472,19 +330,13 @@ pub fn map_deribit_adapters(
         context,
         DeribitDataClientFactory::new(),
         DERIBIT_KEY,
-        DERIBIT_DATA_FIELDS,
     )
 }
 
 pub fn map_okx_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
-    map_data_only_adapters::<OKXDataClientConfig, _>(
-        context,
-        OKXDataClientFactory::new(),
-        OKX_KEY,
-        OKX_DATA_FIELDS,
-    )
+    map_data_only_adapters::<OKXDataClientConfig, _>(context, OKXDataClientFactory::new(), OKX_KEY)
 }
 
 pub fn map_kraken_adapters(
@@ -494,7 +346,6 @@ pub fn map_kraken_adapters(
         context,
         KrakenDataClientFactory::new(),
         KRAKEN_KEY,
-        KRAKEN_DATA_FIELDS,
     )
 }
 
@@ -502,7 +353,6 @@ fn map_data_only_adapters<T, F>(
     context: ProviderAdapterMapContext<'_>,
     factory: F,
     provider_key: &'static str,
-    allowed_fields: &[&str],
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>
 where
     T: DataConfigBoundary,
@@ -518,53 +368,33 @@ where
                 block: "data",
                 message: format!("provider {provider_key} requires a [data] block"),
             })?;
-    reject_unknown_data_fields_for_mapping(
-        context.client_key,
-        provider_key,
-        value,
-        allowed_fields,
-    )?;
     Ok(BoltV3ClientAdapterConfig {
         data: Some(BoltV3DataClientAdapterConfig {
             factory: Box::new(factory),
-            config: Box::new(parse_data_config::<T>(context.client_key, value)?),
+            config: Box::new(parse_data_config::<T>(
+                context.client_key,
+                provider_key,
+                value,
+            )?),
         }),
         execution: None,
     })
 }
 
-fn reject_unknown_data_fields_for_mapping(
-    client_key: &str,
-    provider_key: &'static str,
-    value: &toml::Value,
-    allowed_fields: &[&str],
-) -> Result<(), BoltV3AdapterMappingError> {
-    let unknown_fields = unknown_data_fields(value, allowed_fields);
-    if unknown_fields.is_empty() {
-        Ok(())
-    } else {
-        Err(BoltV3AdapterMappingError::SchemaParse {
-            client_key: client_key.to_string(),
-            block: "data",
-            message: format!(
-                "provider {provider_key} data config contains unknown NT field(s): {}",
-                unknown_fields.join(", ")
-            ),
-        })
-    }
-}
-
 fn parse_data_config<T>(
     client_key: &str,
+    provider_key: &'static str,
     value: &toml::Value,
 ) -> Result<T, BoltV3AdapterMappingError>
 where
     T: DataConfigBoundary,
 {
-    T::parse(value).map_err(|message| BoltV3AdapterMappingError::SchemaParse {
-        client_key: client_key.to_string(),
-        block: "data",
-        message,
+    parse_data_only_config::<T>(provider_key, client_key, value).map_err(|messages| {
+        BoltV3AdapterMappingError::SchemaParse {
+            client_key: client_key.to_string(),
+            block: "data",
+            message: messages.join("; "),
+        }
     })
 }
 

@@ -73,7 +73,7 @@ use bolt_v2::{
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
-use nautilus_okx::config::OKXDataClientConfig;
+use nautilus_okx::{common::enums::OKXRegion, config::OKXDataClientConfig};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
@@ -173,6 +173,34 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { clients }
 }
 
+fn assert_data_config_rejected_at_validation_and_mapping(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    client_key: &str,
+    expected: &str,
+) {
+    let client = loaded
+        .root
+        .clients
+        .get(client_key)
+        .unwrap_or_else(|| panic!("{client_key} should be configured"));
+    let validation = validate_client_block(client_key, client).join("\n");
+    assert!(
+        validation.contains(expected),
+        "startup validation must reject {client_key} with {expected}: {validation}"
+    );
+
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(loaded).expect("plan should derive cleanly");
+    let error =
+        map_bolt_v3_adapters_with_market_identity(loaded, &resolved, &plan, fixed_clock(601))
+            .expect_err("adapter mapping must reject the same invalid data config");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains(client_key) && rendered.contains(expected),
+        "mapping must reject {client_key} with {expected}: {rendered}"
+    );
+}
+
 #[test]
 fn okx_monitor_controls_are_required_by_typed_config_boundary() {
     for field in [
@@ -196,22 +224,117 @@ fn okx_monitor_controls_are_required_by_typed_config_boundary() {
             .expect("okx_data [data] should be a table")
             .remove(field);
 
-        let validation = validate_client_block("okx_data", client).join("\n");
-        assert!(
-            validation.contains(field),
-            "startup validation must reject missing OKX field {field}: {validation}"
+        assert_data_config_rejected_at_validation_and_mapping(&loaded, "okx_data", field);
+    }
+}
+
+#[test]
+fn hyperliquid_monitor_controls_are_required_at_both_config_boundaries() {
+    for field in [
+        "stale_stream_receive_timeout_secs",
+        "stream_health_check_interval_secs",
+        "stale_stream_warning_cooldown_secs",
+        "stale_stream_recovery_enabled",
+        "stale_stream_recovery_cooldown_secs",
+        "stale_stream_max_targeted_resubscribes",
+    ] {
+        let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+        let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+        loaded
+            .root
+            .clients
+            .insert("hyperliquid_data".to_string(), hyperliquid_data_client(60));
+        loaded
+            .root
+            .clients
+            .get_mut("hyperliquid_data")
+            .expect("hyperliquid_data should be configured")
+            .data
+            .as_mut()
+            .expect("hyperliquid_data should include [data]")
+            .as_table_mut()
+            .expect("hyperliquid_data [data] should be a table")
+            .remove(field);
+
+        assert_data_config_rejected_at_validation_and_mapping(&loaded, "hyperliquid_data", field);
+    }
+}
+
+#[test]
+fn polymarket_drop_quotes_control_is_required_at_both_config_boundaries() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded
+        .root
+        .clients
+        .get_mut("polymarket_main")
+        .expect("polymarket_main should be configured")
+        .data
+        .as_mut()
+        .expect("polymarket_main should include [data]")
+        .as_table_mut()
+        .expect("polymarket_main [data] should be a table")
+        .remove("drop_quotes_missing_side");
+
+    assert_data_config_rejected_at_validation_and_mapping(
+        &loaded,
+        "polymarket_main",
+        "drop_quotes_missing_side",
+    );
+}
+
+#[test]
+fn kraken_spot_demo_is_rejected_at_both_config_boundaries() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    add_requested_market_data_clients(&mut loaded);
+    loaded
+        .root
+        .clients
+        .get_mut("kraken_spot_data")
+        .expect("kraken_spot_data should be configured")
+        .data
+        .as_mut()
+        .expect("kraken_spot_data should include [data]")
+        .as_table_mut()
+        .expect("kraken_spot_data [data] should be a table")
+        .insert(
+            "environment".to_string(),
+            toml::Value::String("demo".to_string()),
         );
 
-        let resolved = fixture_resolved_secrets();
-        let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
-        let error =
-            map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
-                .expect_err("mapping must reject a missing required OKX monitor control");
-        assert!(
-            error.to_string().contains(field),
-            "mapping error must name missing OKX field {field}: {error}"
+    assert_data_config_rejected_at_validation_and_mapping(
+        &loaded,
+        "kraken_spot_data",
+        "Kraken Spot does not support the demo environment",
+    );
+}
+
+#[test]
+fn direct_data_credentials_are_rejected_at_both_config_boundaries() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    add_requested_market_data_clients(&mut loaded);
+    loaded
+        .root
+        .clients
+        .get_mut("bybit_data")
+        .expect("bybit_data should be configured")
+        .data
+        .as_mut()
+        .expect("bybit_data should include [data]")
+        .as_table_mut()
+        .expect("bybit_data [data] should be a table")
+        .insert(
+            "api_key".to_string(),
+            toml::Value::String("not-from-ssm".to_string()),
         );
-    }
+
+    assert_data_config_rejected_at_validation_and_mapping(
+        &loaded,
+        "bybit_data",
+        "SSM-backed [secrets] binding",
+    );
 }
 
 fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
@@ -743,6 +866,7 @@ instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
 contract_types = ["linear", "inverse"]
 load_spreads = true
 environment = "demo"
+region = "eea"
 book_stale_check_interval_secs = 0
 book_stale_threshold_secs = 0
 book_snapshot_timeout_secs = 3
@@ -1916,6 +2040,19 @@ fn requested_market_data_clients_map_as_data_only_and_execution_stays_config_own
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(601);
 
+    let okx_validation = validate_client_block(
+        "okx_data",
+        loaded
+            .root
+            .clients
+            .get("okx_data")
+            .expect("okx_data should be configured"),
+    );
+    assert!(
+        okx_validation.is_empty(),
+        "the official OKX region field must pass startup validation: {okx_validation:#?}"
+    );
+
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("requested market data clients should map cleanly");
 
@@ -1973,10 +2110,11 @@ fn requested_market_data_clients_map_as_data_only_and_execution_stays_config_own
     assert_eq!(okx.book_stale_check_interval_secs, 0);
     assert_eq!(okx.book_stale_threshold_secs, 0);
     assert_eq!(okx.book_snapshot_timeout_secs, 3);
+    assert_eq!(okx.region, OKXRegion::Eea);
 }
 
 #[test]
-fn requested_market_data_clients_reject_nt_ignored_fields_at_mapper_boundary() {
+fn requested_market_data_clients_reject_unknown_nt_fields_at_mapper_boundary() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     add_requested_market_data_clients(&mut loaded);
@@ -2010,8 +2148,8 @@ fn requested_market_data_clients_reject_nt_ignored_fields_at_mapper_boundary() {
         "expected error to cite the unknown field, got: {rendered}"
     );
     assert!(
-        rendered.contains("unknown NT field"),
-        "expected NT-field vocabulary, got: {rendered}"
+        rendered.contains("NT BYBIT data-client config") && rendered.contains("unknown field"),
+        "expected the official NT schema error, got: {rendered}"
     );
 }
 

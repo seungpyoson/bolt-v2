@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -852,6 +854,11 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
     for queue_name, queue in expectations["queue_rules"].items():
         assert_equal(queue["batch_size"], 1, f"{queue_name} single-PR batch")
         assert_equal(
+            queue["batch_max_failure_resolution_attempts"],
+            0,
+            f"{queue_name} failure-resolution retries disabled",
+        )
+        assert_equal(
             queue["branch_protection_injection_mode"],
             "none",
             f"{queue_name} branch-protection injection",
@@ -866,6 +873,46 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
         2,
         "reviewer-only merge conditions",
     )
+
+
+EXPECTED_SINGLE_PR_CORE_FINGERPRINT = "e306574527b390f34a50f544cf6a900d465af18c318dfe4e959359f6cda0cb36"
+
+
+def single_pr_core_fingerprint(source: str) -> str:
+    tree = ast.parse(source)
+    core = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "preflight_with_fetch_refs"
+    )
+    normalized = ast.unparse(core)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def assert_preflight_single_pr_core_is_frozen() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    assert_equal(
+        single_pr_core_fingerprint(source),
+        EXPECTED_SINGLE_PR_CORE_FINGERPRINT,
+        "single-PR preflight structural fingerprint",
+    )
+    evidence = (REPO_ROOT / "docs" / "ci" / "merge-queue-evidence.md").read_text(
+        encoding="utf-8"
+    )
+    assert "A split, blocked" not in evidence, "retired split terminology"
+
+
+def assert_single_pr_core_fingerprint_rejects_structural_change() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    mutated = source.replace(
+        "            head.sha,\n",
+        "            [head][0].sha,\n",
+        1,
+    )
+    if mutated == source:
+        raise AssertionError("single-PR fingerprint mutation anchor is stale")
+    if single_pr_core_fingerprint(mutated) == EXPECTED_SINGLE_PR_CORE_FINGERPRINT:
+        raise AssertionError("single-PR fingerprint accepted a structural change")
 
 
 def assert_queue_ci_and_verifier_flags_are_removed() -> None:
@@ -1475,12 +1522,10 @@ def assert_unsupported_mergify_queue_condition_route_is_inconclusive() -> None:
                 }
             ]
         },
-        readiness=[
-            {
-                "pr": 1,
-                "metadata": {"labels": []},
-            }
-        ],
+        readiness={
+            "pr": 1,
+            "metadata": {"labels": []},
+        },
     )
     assert_equal(
         findings,
@@ -1862,15 +1907,15 @@ def assert_non_missing_head_fetch_failure_is_inspection_error() -> None:
         fixture.make_pr(1, {"one.txt": "one\n"})
         fetch_refs = module.PrivateFetchRefs.create(fixture.repo, 30)
         try:
-            heads, blocks = module.fetch_available_pr_heads(
+            head, blocks = module.fetch_available_pr_head(
                 fetch_refs=fetch_refs,
                 origin=str(root / "not-a-remote.git"),
-                requested=(1,),
-                blocked_numbers=set(),
+                pr=1,
+                blocked=False,
             )
         finally:
             fetch_refs.cleanup()
-        assert_equal(heads, {}, "inspection error heads")
+        assert_equal(head, None, "inspection error head")
         if len(blocks) != 1 or blocks[0]["pr"] != 1 or blocks[0]["type"] != "head_fetch_failed":
             raise AssertionError(blocks)
         if "head ref was not found" in str(blocks[0]["reason"]):
@@ -2334,7 +2379,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
             f"hotfix batch_max_wait_time must be {hotfix_queue['batch_max_wait_time']}",
         ),
         (
-            "hotfix failure split enabled",
+            "hotfix failure resolution enabled",
             replace_once(
                 mergify_config,
                 mergify_scalar_line(
@@ -2345,13 +2390,13 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 mergify_scalar_line(
                     "    ",
                     "batch_max_failure_resolution_attempts",
-                    default_queue["batch_max_failure_resolution_attempts"],
+                    1,
                 ),
             ),
             f"hotfix batch_max_failure_resolution_attempts must be {hotfix_queue['batch_max_failure_resolution_attempts']}",
         ),
         (
-            "default failure split disabled",
+            "default failure resolution enabled",
             replace_once_after(
                 mergify_config,
                 "  - name: default\n",
@@ -2363,7 +2408,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 mergify_scalar_line(
                     "    ",
                     "batch_max_failure_resolution_attempts",
-                    hotfix_queue["batch_max_failure_resolution_attempts"],
+                    1,
                 ),
             ),
             f"default batch_max_failure_resolution_attempts must be {default_queue['batch_max_failure_resolution_attempts']}",
@@ -2500,6 +2545,8 @@ def assert_mergify_config_gaps_are_reported() -> None:
 def main() -> int:
     assert_advisory_check_matrix_does_not_affect_admission()
     assert_post_cutover_mergify_contract_is_review_only_and_single_pr()
+    assert_preflight_single_pr_core_is_frozen()
+    assert_single_pr_core_fingerprint_rejects_structural_change()
     assert_queue_ci_and_verifier_flags_are_removed()
     assert_preflight_config_is_identity_only()
     assert_origin_and_base_cli_overrides_are_rejected()

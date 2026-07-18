@@ -15,7 +15,7 @@ For a queue operation, retain:
 - the PR URL and Mergify queue comment or resulting queue item;
 - direct confirmation of the live GitHub rules governing `main` when merge authority is under review.
 
-Queue only one PR per invocation. A split, blocked, inconclusive, usage-error, or internal-error result is not queue permission.
+Queue only one PR per invocation. Only `queue_as_one_wave` grants queue permission; every other result refuses queueing.
 
 ## Advisory CI Evidence
 

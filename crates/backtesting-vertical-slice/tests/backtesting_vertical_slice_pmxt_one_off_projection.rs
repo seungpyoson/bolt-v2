@@ -62,6 +62,7 @@ fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
     let projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -215,6 +216,7 @@ fn pmxt_one_off_projection_rejects_canonical_usage_scope() {
     let error = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -370,6 +372,7 @@ fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     let selected = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -425,6 +428,7 @@ fn pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_colum
     let selected = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -468,6 +472,7 @@ fn pmxt_selected_source_parquet_projects_binary_view_market_column() {
     let selected = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -505,6 +510,7 @@ fn pmxt_selected_source_parquet_projects_fixed_size_binary_market_column() {
     let selected = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: selected_condition_id.to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets_for_condition(selected_condition_id),
@@ -542,6 +548,7 @@ fn pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows() {
     let error = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -572,6 +579,7 @@ fn pmxt_selected_source_projection_requires_selector_to_exclude_forbidden_event_
     let error = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -867,6 +875,7 @@ fn pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source
         project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: "0xcondition".to_string(),
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
@@ -883,6 +892,7 @@ fn pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source
         selected_source: PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: "0xcondition".to_string(),
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
@@ -996,6 +1006,7 @@ fn pmxt_one_off_l2_artifact_root_run_resolves_repo_relative_catalog_root_for_run
         project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: "0xcondition".to_string(),
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
@@ -1012,6 +1023,7 @@ fn pmxt_one_off_l2_artifact_root_run_resolves_repo_relative_catalog_root_for_run
         selected_source: PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: "0xcondition".to_string(),
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
@@ -1124,6 +1136,7 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: "0xcondition".to_string(),
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
@@ -1222,6 +1235,7 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         selected_source: PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: "0xcondition".to_string(),
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
@@ -1352,6 +1366,7 @@ fn pmxt_one_off_l2_artifact_root_cli_writes_result_contract_from_config_owned_sp
         project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
             usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            drop_quotes_missing_side: true,
             selected_condition_id: "0xcondition".to_string(),
             selected_token_id: "token-a".to_string(),
             gamma_markets: gamma_markets(),
@@ -1389,6 +1404,7 @@ claim_limits = [
 [selected_source]
 source_binding = "synthetic-pmxt-one-off-source"
 usage_scope = "one_off_backfill_data"
+drop_quotes_missing_side = true
 selected_condition_id = "0xcondition"
 selected_token_id = "token-a"
 gamma_markets_json_path = "{gamma_markets_path}"
@@ -1520,6 +1536,7 @@ fn pmxt_projection_fixture()
     project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),
@@ -1559,6 +1576,7 @@ fn pmxt_trade_projection_fixture() -> PmxtOneOffNtProjection {
     project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
         usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
         selected_condition_id: "0xcondition".to_string(),
         selected_token_id: "token-a".to_string(),
         gamma_markets: gamma_markets(),

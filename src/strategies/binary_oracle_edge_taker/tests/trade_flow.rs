@@ -124,13 +124,11 @@ fn real_market_change_preserves_retained_instrument_trade_flow() {
     // the original (now non-active) instrument, which becomes the tracked
     // position instrument with its own freshly subscribed trade-flow buffer.
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
-    strategy
-        .on_order_filled(&order_filled_event(
-            entry_client_order_id,
-            retained_instrument,
-            position_id,
-        ))
-        .expect("fill bookkeeping should succeed");
+    strategy.on_order_filled(&order_filled_event(
+        entry_client_order_id,
+        retained_instrument,
+        position_id,
+    ));
     assert_eq!(
         strategy.book_subscriptions.tracked_position_instrument_id,
         Some(retained_instrument),

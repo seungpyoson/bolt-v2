@@ -91,7 +91,7 @@ python3 scripts/developer_tool_storage_hygiene.py preflight \
   --home-root "$HOME" \
   --repo-root "$PWD" \
   --available-disk-bytes 10737418240 \
-  --active-rustup-toolchain 1.96.0-aarch64-apple-darwin \
+  --active-rustup-toolchain 1.97.0-aarch64-apple-darwin \
   --default-rustup-toolchain 1.94.1-aarch64-apple-darwin \
   --json
 ```

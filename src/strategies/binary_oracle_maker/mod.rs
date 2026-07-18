@@ -9,7 +9,7 @@
 //! quote tick through the shared quote planner, order compiler, and
 //! execution/admission policy; the strategy still has no autonomous subscription
 //! or quote loop until later runtime slices. The
-//! NautilusTrader surface (`core: StrategyCore`, `nautilus_strategy!`, the
+//! NautilusTrader surface (`core: StrategyCore`, the shared strategy macro, the
 //! `StrategyBuilder` impl) mirrors `binary_oracle_edge_taker` *structurally* —
 //! it does not copy taker behaviour.
 
@@ -21,7 +21,7 @@ use nautilus_model::{
     identifiers::{ClientId, StrategyId},
     instruments::{Instrument, InstrumentAny},
 };
-use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
+use nautilus_trading::{StrategyConfig, StrategyCore};
 use rust_decimal::Decimal;
 use toml::Value;
 
@@ -1001,7 +1001,7 @@ impl DataActor for BinaryOracleMaker {
     }
 }
 
-nautilus_strategy!(BinaryOracleMaker);
+crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleMaker, {});
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     type Strategy = BinaryOracleMaker;
@@ -1014,7 +1014,7 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
         validate_config(raw, field_prefix, errors);
     }
 
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy> {
+    fn build_typed(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy> {
         Ok(BinaryOracleMaker::new(parse_config(raw)?, context.clone()))
     }
 }

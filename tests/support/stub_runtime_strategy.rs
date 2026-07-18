@@ -65,7 +65,7 @@ impl StrategyBuilder for StubRuntimeStrategyBuilder {
         }
     }
 
-    fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
+    fn build_typed(raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
         let strategy_id = raw
             .get("strategy_id")
             .and_then(Value::as_str)

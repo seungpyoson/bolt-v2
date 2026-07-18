@@ -65,9 +65,9 @@ def _manifest_errors(cargo: Mapping[str, object]) -> list[str]:
     if not isinstance(dependencies, Mapping):
         return ["Cargo.toml dependencies must be a table"]
     for dependency in ("alloy-signer", "alloy-signer-local"):
-        if dependencies.get(dependency) != "=2.1.0":
+        if dependencies.get(dependency) != "=2.1.1":
             errors.append(
-                f"direct signer dependency must remain exact and locked: {dependency} = =2.1.0"
+                f"direct signer dependency must remain exact and locked: {dependency} = =2.1.1"
             )
 
     tests = cargo.get("test")

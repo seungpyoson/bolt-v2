@@ -421,7 +421,8 @@ impl<'a> StrategyRegistrationContext<'a> {
             })
             .transpose()
             .map_err(|error| binding_error(strategy, error.message()))?;
-        let order_routing = build_order_routing_handle(loaded, strategy, &economics_inputs)?;
+        let order_routing =
+            build_order_routing_handle(loaded, strategy, execution_client, &economics_inputs)?;
         Ok(Self {
             strategy,
             strategy_kind,
@@ -581,14 +582,10 @@ pub fn assemble_strategy_build_context(
 fn build_order_routing_handle(
     loaded: &LoadedBoltV3Config,
     strategy: &LoadedStrategy,
+    client: &ClientBlock,
     economics_inputs: &AuthoritativeEconomicsInputStore,
 ) -> Result<BoltV3OrderRoutingHandle, BoltV3StrategyRegistrationError> {
     let execution_client_id = strategy.config.execution_client_id.as_str();
-    let client = loaded
-        .root
-        .clients
-        .get(execution_client_id)
-        .ok_or_else(|| binding_error(strategy, "execution client is missing"))?;
     let execution = client
         .execution
         .as_ref()
@@ -682,7 +679,7 @@ fn build_order_routing_handle(
         },
     )
     .map_err(|error| binding_error(strategy, format!("economics source: {error}")))?;
-    let account_id = execution_account_id(&loaded.root, execution_client_id).ok_or_else(|| {
+    let account_id = execution_account_id_from_client(client).ok_or_else(|| {
         binding_error(
             strategy,
             "execution economics requires a configured account_id".to_string(),

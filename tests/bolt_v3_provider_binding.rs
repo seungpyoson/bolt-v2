@@ -2025,39 +2025,26 @@ standard_perps = "primary"
 }
 
 fn hyperliquid_execution_client_with_latency_profile() -> ClientBlock {
-    data_only_client_from_toml(
-        r#"
-venue = "HYPERLIQUID"
-
-[execution]
-account_id = "HYPERLIQUID-001"
-environment = "testnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["standard_perps"]
-base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
-base_url_http = "https://api.hyperliquid-testnet.xyz/info"
-base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[execution.latency_profile]
-local_info_node_url = "http://127.0.0.1:3001/info"
-placement_profile = "aws-ap-northeast-1a-near-hyperliquid-info"
-measurement_artifact_path = "/var/lib/bolt/hyperliquid/latency-profile.json"
-
-[secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-"#,
-    )
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    let execution = client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table");
+    execution.insert(
+        stringify!(latency_profile).to_string(),
+        toml::toml! {
+            local_info_node_url = "http://127.0.0.1:3001/info"
+            placement_profile = "aws-ap-northeast-1a-near-hyperliquid-info"
+            measurement_artifact_path = "/var/lib/bolt/hyperliquid/latency-profile.json"
+        }
+        .into(),
+    );
+    client
 }
 
 fn hyperliquid_hip4_client_without_settlement_poll() -> ClientBlock {

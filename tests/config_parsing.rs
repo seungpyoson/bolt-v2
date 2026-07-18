@@ -505,7 +505,7 @@ fn tracked_root_is_btc_only_live_profile() {
 }
 
 #[test]
-fn shipped_roots_use_polymarket_safe_profile_without_placeholder_collateral() {
+fn shipped_roots_use_polymarket_safe_profile_with_complete_collateral_authority() {
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = fs::read_to_string(support::repo_path(relative_path))
             .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
@@ -540,10 +540,42 @@ fn shipped_roots_use_polymarket_safe_profile_without_placeholder_collateral() {
             funder, PLACEHOLDER_POLYMARKET_FUNDER,
             "{relative_path} must not ship the placeholder Polymarket funder"
         );
-        assert!(
-            !execution.contains_key("on_chain_collateral"),
-            "{relative_path} must not ship placeholder on-chain collateral config"
-        );
+        let collateral = execution
+            .get("on_chain_collateral")
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| {
+                panic!("{relative_path} must declare the on-chain collateral authority")
+            });
+        for field in [
+            "rpc_url",
+            "collateral_token_address",
+            "collateral_offramp_address",
+            "redemption_asset_address",
+            "redemption_asset_unit",
+            "collateral_token_proxy_code_sha256",
+            "collateral_token_implementation_address",
+            "collateral_token_implementation_code_sha256",
+            "collateral_offramp_code_sha256",
+            "redemption_semantics_source_commit",
+            "redemption_rate",
+        ] {
+            assert!(
+                collateral
+                    .get(field)
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "{relative_path} on-chain collateral field `{field}` must be configured"
+            );
+        }
+        for field in ["chain_id", "finality_confirmations"] {
+            assert!(
+                collateral
+                    .get(field)
+                    .and_then(toml::Value::as_integer)
+                    .is_some_and(|value| value > 0),
+                "{relative_path} on-chain collateral field `{field}` must be positive"
+            );
+        }
     }
 }
 
@@ -10224,89 +10256,10 @@ fn root_config_wires_single_hyperliquid_execution_client_for_enabled_quote_surfa
             .and_then(toml::Value::as_integer),
         Some(30)
     );
-    let live_submit = execution
-        .get(stringify!(live_submit))
-        .and_then(toml::Value::as_table)
-        .expect("hyperliquid_execution must declare per-surface live-submit gates");
-    for (surface, approval_id, approval_artifact_path, product_proof_artifact_path) in [
-        (
-            "standard_perps",
-            "hl-standard-perps-mainnet-001",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json",
-        ),
-        (
-            "spot",
-            "hl-spot-mainnet-001",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json",
-        ),
-        (
-            "hip3_builder_perps",
-            "hl-hip3-builder-perps-mainnet-001",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json",
-        ),
-        (
-            "hip4_outcomes",
-            "hl-hip4-outcomes-mainnet-001",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json",
-            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json",
-        ),
-    ] {
-        let surface_config = live_submit
-            .get(surface)
-            .and_then(toml::Value::as_table)
-            .unwrap_or_else(|| panic!("live_submit.{surface} must be configured"));
-        assert_eq!(
-            surface_config
-                .get(stringify!(approval_id))
-                .and_then(toml::Value::as_str),
-            Some(approval_id)
-        );
-        assert_eq!(
-            surface_config
-                .get(stringify!(approval_artifact_path))
-                .and_then(toml::Value::as_str),
-            Some(approval_artifact_path)
-        );
-        assert_eq!(
-            surface_config
-                .get(stringify!(approval_artifact_max_bytes))
-                .and_then(toml::Value::as_integer),
-            Some(65536)
-        );
-        assert_eq!(
-            surface_config
-                .get(stringify!(max_order_count))
-                .and_then(toml::Value::as_integer),
-            Some(1)
-        );
-        assert_eq!(
-            surface_config
-                .get(stringify!(max_order_notional))
-                .and_then(toml::Value::as_str),
-            Some("10.00")
-        );
-        assert_eq!(
-            surface_config
-                .get(stringify!(product_proof_artifact_path))
-                .and_then(toml::Value::as_str),
-            Some(product_proof_artifact_path)
-        );
-        assert_eq!(
-            surface_config
-                .get(stringify!(product_proof_artifact_sha256))
-                .and_then(toml::Value::as_str),
-            Some("0000000000000000000000000000000000000000000000000000000000000000")
-        );
-        assert_eq!(
-            surface_config
-                .get(stringify!(product_proof_artifact_max_bytes))
-                .and_then(toml::Value::as_integer),
-            Some(65536)
-        );
-    }
+    assert!(
+        !execution.contains_key(stringify!(live_submit)),
+        "quote-only economics must not retain Hyperliquid live-submit authority"
+    );
 
     let secrets = client
         .secrets

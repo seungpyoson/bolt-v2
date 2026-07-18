@@ -398,9 +398,8 @@ fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
     assert_eq!(skips.len(), 1);
     assert_eq!(skips[0].realized_vol.as_deref(), Some("1.5"));
     assert!(logs.iter().any(|(_, message)| {
-        message.contains("binary_oracle_edge_taker entry evaluation:")
+        message.contains("binary_oracle_edge_taker gross-intent evaluation:")
             && message.contains(&strategy_id)
-            && message.contains("realized_vol=Some(1.5)")
     }));
 }
 

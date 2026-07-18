@@ -361,6 +361,7 @@ economics_slice = "quote_only"
 routing_attachment_policy = "forbidden"
 reporting_policy = "primary-pnl"
 quote_refresh_secs = 30
+refresh_max_concurrency = 8
 quote_max_age_secs = 60
 quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000

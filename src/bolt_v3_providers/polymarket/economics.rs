@@ -15,7 +15,7 @@ use crate::{
 use alloy_primitives::keccak256;
 use anyhow::Context;
 use async_trait::async_trait;
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::{StreamExt, stream};
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::{
     identifiers::{InstrumentId, Venue},
@@ -697,22 +697,17 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             .get(&self.edge_basis_policy_id)
             .context("Polymarket economics edge-basis policy is missing")?;
         let market_info = async {
-            let mut pending = FuturesUnordered::new();
-            for instrument in instruments {
+            stream::iter(instruments.into_iter().map(|instrument| async move {
                 let instrument_id = instrument.id();
-                pending.push(async move {
-                    (
-                        instrument_id,
-                        self.refresh_market_info(instrument, receipt_clock, max_age_ns)
-                            .await,
-                    )
-                });
-            }
-            let mut results = Vec::with_capacity(pending.len());
-            while let Some(result) = pending.next().await {
-                results.push(result);
-            }
-            results
+                (
+                    instrument_id,
+                    self.refresh_market_info(instrument, receipt_clock, max_age_ns)
+                        .await,
+                )
+            }))
+            .buffer_unordered(self.economics.refresh_max_concurrency.get())
+            .collect::<Vec<_>>()
+            .await
         };
         let collateral = async {
             self.observe_collateral_redemption(receipt_clock, max_age_ns)

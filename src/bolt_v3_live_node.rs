@@ -107,6 +107,16 @@ use sha2::{Digest, Sha256};
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
+async fn await_economics_refresh_before_deadline<F, T>(
+    deadline: Duration,
+    refresh: F,
+) -> Result<T, tokio::time::error::Elapsed>
+where
+    F: Future<Output = T>,
+{
+    tokio::time::timeout(deadline, refresh).await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoltV3LoggingNotReadyForRun {
     max_level: LevelFilter,
@@ -1278,10 +1288,22 @@ impl BoltV3LiveNodeRuntime {
                         .into_iter()
                         .cloned()
                         .collect::<Vec<_>>();
-                    match authority
-                        .refresh_batch(instruments, &current_unix_nanos)
-                        .await
-                    {
+                    let refreshes = await_economics_refresh_before_deadline(
+                        refresh_interval,
+                        authority.refresh_batch(instruments, &current_unix_nanos),
+                    )
+                    .await;
+                    let refreshes = match refreshes {
+                        Ok(refreshes) => refreshes,
+                        Err(error) => {
+                            log::error!(
+                                "economics authority batch refresh failed: execution_client_id={} error={error}",
+                                authority.execution_client_id()
+                            );
+                            continue;
+                        }
+                    };
+                    match refreshes {
                         Ok(refreshes) => {
                             for refresh in refreshes {
                                 let instrument_id = refresh.instrument_id;

@@ -21,6 +21,7 @@ economics_slice = "quote_only"
 routing_attachment_policy = "forbidden"
 reporting_policy = "shared-pnl"
 quote_refresh_secs = 5
+refresh_max_concurrency = 8
 quote_max_age_secs = 10
 quote_validity_ms = 4000
 resting_order_refresh_margin_ms = 500
@@ -74,6 +75,13 @@ fn quote_only_config_is_strict_and_validates_freshness_and_policy() {
 
     assert!(parse(&valid_config().replace("quote_only", "live")).is_err());
     assert!(parse(&format!("{}\nunknown_key = true", valid_config())).is_err());
+    assert!(parse(&valid_config().replace("refresh_max_concurrency = 8\n", "")).is_err());
+    assert!(
+        parse(
+            &valid_config().replace("refresh_max_concurrency = 8", "refresh_max_concurrency = 0")
+        )
+        .is_err()
+    );
 }
 
 #[test]

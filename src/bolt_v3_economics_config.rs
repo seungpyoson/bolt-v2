@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 use serde::Deserialize;
 
@@ -44,6 +47,7 @@ pub struct ExecutionEconomicsConfig {
     pub routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
     pub reporting_policy: String,
     pub quote_refresh_secs: u64,
+    pub refresh_max_concurrency: NonZeroUsize,
     pub quote_max_age_secs: u64,
     pub quote_validity_ms: u64,
     pub resting_order_refresh_margin_ms: u64,

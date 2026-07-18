@@ -2168,7 +2168,7 @@ ensure!("../tests/fixtures/core.rs");
     write_synthetic_source(
         &crate_root,
         "src/lib.rs",
-        r#"
+        r##"
 fn checked_control() {
     use std::assert as checked;
     checked!(true);
@@ -2187,7 +2187,7 @@ const CONCATENATED: &str = concat!("bi", "nance");
     assert!(decoded.contains("bybit"));
     assert!(decoded.contains("binance"));
 }
-"#,
+"##,
     );
     let (_, errors) = production_source_graph(&crate_root, &synthetic_manifest());
     assert!(

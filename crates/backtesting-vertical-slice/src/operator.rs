@@ -6544,5 +6544,3 @@ fn run_multi_table_from_run_spec_with_verified_registry(
     )?;
     Ok(artifacts)
 }
-
-}

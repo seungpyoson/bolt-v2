@@ -94,9 +94,11 @@ jobs:
             echo "RA-001a policy digest is invalid" >&2
             exit 1
           }
-          printf 'source_revision=%s\n' "$checked_out_revision" >> "$GITHUB_OUTPUT"
-          printf 'policy_sha256=%s\n' "$policy_sha256" >> "$GITHUB_OUTPUT"
-          cat "$policy_output" >> "$GITHUB_OUTPUT"
+          {
+            printf 'source_revision=%s\n' "$checked_out_revision"
+            printf 'policy_sha256=%s\n' "$policy_sha256"
+            cat "$policy_output"
+          } >> "$GITHUB_OUTPUT"
 
   execute:
     name: ra001a-execute
@@ -185,14 +187,16 @@ jobs:
             echo "RA-001a receipt path is not fresh" >&2
             exit 1
           }
-          printf 'worker=%s\n' "$worker" >> "$GITHUB_OUTPUT"
-          printf 'worker_bytes=%s\n' "$worker_bytes" >> "$GITHUB_OUTPUT"
-          printf 'worker_sha256=%s\n' "$worker_sha256" >> "$GITHUB_OUTPUT"
-          printf 'git_executable=%s\n' "$GIT_EXECUTABLE" >> "$GITHUB_OUTPUT"
-          printf 'git_bytes=%s\n' "$git_bytes" >> "$GITHUB_OUTPUT"
-          printf 'git_sha256=%s\n' "$git_sha256" >> "$GITHUB_OUTPUT"
-          printf 'archive_path=%s\n' "$BVS_NEXTEST_ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
-          printf 'receipt_path=%s\n' "$BOLT_RA001A_RECEIPT_PATH" >> "$GITHUB_OUTPUT"
+          {
+            printf 'worker=%s\n' "$worker"
+            printf 'worker_bytes=%s\n' "$worker_bytes"
+            printf 'worker_sha256=%s\n' "$worker_sha256"
+            printf 'git_executable=%s\n' "$GIT_EXECUTABLE"
+            printf 'git_bytes=%s\n' "$git_bytes"
+            printf 'git_sha256=%s\n' "$git_sha256"
+            printf 'archive_path=%s\n' "$BVS_NEXTEST_ARCHIVE_PATH"
+            printf 'receipt_path=%s\n' "$BOLT_RA001A_RECEIPT_PATH"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Preflight the exact registry before AWS credentials
         shell: bash
@@ -321,9 +325,11 @@ jobs:
           readonly receipt_sha256="$(sha256sum "$BOLT_RA001A_RECEIPT_PATH" | cut -d ' ' -f 1)"
           [[ "$receipt_bytes" =~ ^[1-9][0-9]*$ ]]
           [[ "$receipt_sha256" =~ ^[0-9a-f]{64}$ ]]
-          printf 'receipt_path=%s\n' "$BOLT_RA001A_RECEIPT_PATH" >> "$GITHUB_OUTPUT"
-          printf 'receipt_bytes=%s\n' "$receipt_bytes" >> "$GITHUB_OUTPUT"
-          printf 'receipt_sha256=%s\n' "$receipt_sha256" >> "$GITHUB_OUTPUT"
+          {
+            printf 'receipt_path=%s\n' "$BOLT_RA001A_RECEIPT_PATH"
+            printf 'receipt_bytes=%s\n' "$receipt_bytes"
+            printf 'receipt_sha256=%s\n' "$receipt_sha256"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload RA-001a durable tracer receipt
         id: upload-ra001a-durable-tracer-receipt

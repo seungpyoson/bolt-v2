@@ -1,31 +1,27 @@
 #[test]
-fn entry_evaluation_log_keeps_sizing_field_order_aligned_with_arguments() {
+fn gross_intent_evaluation_log_keeps_field_order_aligned_with_arguments() {
     let source = std::fs::read_to_string("src/strategies/binary_oracle_edge_taker/mod.rs")
         .expect("strategy source should be readable");
-    let sizing_format_sequence = "expected_ev_per_notional={:?} order_notional_target={} \
-         maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} \
-         book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?}";
+    let format_sequence = "market_id={:?} selected_side={:?} gross_edge_bps={:?} \
+         sized_notional={:?} submission_blocked_reason={:?}";
     assert_eq!(
-        source.matches(sizing_format_sequence).count(),
-        2,
-        "warn and info entry-evaluation log formats must expose sizing fields in the same order"
+        source.matches(format_sequence).count(),
+        1,
+        "the gross-intent evaluation log must expose decision fields in one stable order"
     );
 
     let normalized_source = source.split_whitespace().collect::<Vec<_>>().join(" ");
-    let sizing_argument_sequence = [
-        "fields.expected_ev_per_notional,",
-        "fields.order_notional_target,",
-        "fields.maximum_position_notional,",
-        "fields.risk_lambda,",
-        "fields.sizing_ev_reference_bps,",
-        "fields.book_impact_cap_bps,",
-        "fields.book_impact_cap_notional,",
+    let argument_sequence = [
+        "fields.market_id,",
+        "fields.selected_side,",
+        "fields.sized_worst_case_ev_bps,",
         "fields.sized_notional,",
+        "fields.submission_blocked_reason,",
     ]
     .join(" ");
     assert_eq!(
-        normalized_source.matches(&sizing_argument_sequence).count(),
-        2,
-        "warn and info entry-evaluation log argument lists must match the sizing field format order"
+        normalized_source.matches(&argument_sequence).count(),
+        1,
+        "gross-intent evaluation log arguments must match the format-field order"
     );
 }

@@ -4624,9 +4624,9 @@ mod loss_governor_halt_evidence_tests {
         assert!(
             matches!(
                 routing_admission.admit_at(&request, 1_000),
-                Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
+                Err(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)
             ),
-            "the rejected-path fixture must route through non-positive-notional rejection"
+            "post-quote notional mutation must route through economics/order mismatch rejection"
         );
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             admission.poison_reject_episodes_for_test();

@@ -2048,6 +2048,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
     strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
     strategy.config.entry_order.trigger_price = Some(0.52);
+    strategy.config.entry_order.activation_price = Some(0.47);
     strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
     strategy.config.entry_order.trailing_offset = Some(2.5);
     strategy.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::BasisPoints);
@@ -2102,7 +2103,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     assert_eq!(order.time_in_force(), TimeInForce::Gtd);
     assert_eq!(order.price(), None);
     assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
-    assert_eq!(order.activation_price(), None);
+    assert_eq!(order.activation_price(), Some(Price::new(0.47, 2)));
     assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
     assert_eq!(order.trailing_offset(), Some(Decimal::new(25, 1)));
     assert_eq!(
@@ -2174,7 +2175,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     assert_eq!(exit_order.order_type(), OrderType::TrailingStopMarket);
     assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
     assert_eq!(exit_order.price(), None);
-    assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
+    assert_eq!(exit_order.trigger_price(), None);
     assert_eq!(exit_order.activation_price(), Some(Price::new(0.48, 2)));
     // The fixture instrument declares max_price = 0.999 (the production NT
     // Polymarket adapter's ceiling), so the market-style exit cap is valued

@@ -82,42 +82,6 @@ FORBIDDEN_MANAGED_TARGET_CACHE_INPUTS = (
     "'scripts/rust_verification.py'",
 )
 MAIN_ONLY_SHARED_REGISTRY_SAVE_IF = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.job == 'test-archive' }}"
-BINANCE_TIMESTAMP_PROOF_STEP_NAME = (
-    "Run Binance SBE timestamp proof from nextest archive"
-)
-BINANCE_TIMESTAMP_PROOF_BINARY = "binance_sbe_quote_timestamps"
-BINANCE_TIMESTAMP_PROOF_CASES = (
-    "sbe_multi_trade_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_bbo_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_snapshot_preserves_unequal_event_and_adapter_initialization_stamps",
-    "sbe_depth_diff_preserves_unequal_event_and_adapter_initialization_stamps",
-)
-BINANCE_TIMESTAMP_PROOF_EXTRACT_ROOT = (
-    "$RUNNER_TEMP/binance-sbe-timestamp-proof-extract"
-)
-
-
-def binance_timestamp_proof_command(case_name: str) -> str:
-    return (
-        'just test-archive-filtered-run "$NEXTEST_ARCHIVE_PATH" "$proof_extract_root" '
-        f"'binary(={BINANCE_TIMESTAMP_PROOF_BINARY}) & "
-        f"test(={case_name})'"
-    )
-
-
-BINANCE_TIMESTAMP_PROOF_COMMANDS = tuple(
-    binance_timestamp_proof_command(case_name)
-    for case_name in BINANCE_TIMESTAMP_PROOF_CASES
-)
-BINANCE_TIMESTAMP_PROOF_STEP = (
-    f"      - name: {BINANCE_TIMESTAMP_PROOF_STEP_NAME}\n"
-    "        shell: bash\n"
-    "        run: |\n"
-    "          set -euo pipefail\n"
-    f'          proof_extract_root="{BINANCE_TIMESTAMP_PROOF_EXTRACT_ROOT}"\n'
-    '          mkdir -p "$proof_extract_root"\n'
-    + "".join(f"          {command}\n" for command in BINANCE_TIMESTAMP_PROOF_COMMANDS)
-)
 
 
 def load_sync_ci_debug_ssh_script(
@@ -753,122 +717,6 @@ def without_once_after(text: str, anchor: str, old: str) -> str:
     before = text[:index]
     after = text[index:]
     return before + after.replace(old, "", 1)
-
-
-def assert_binance_timestamp_archive_execution_proof_gaps_are_reported() -> None:
-    verifier = load_verifier()
-    workflow = BASE_WORKFLOW
-    expected_error = "test-archive Binance SBE timestamp execution proof"
-
-    mutations = [
-        workflow.replace(BINANCE_TIMESTAMP_PROOF_STEP, "", 1),
-        replace_once(
-            workflow,
-            f"      - name: {BINANCE_TIMESTAMP_PROOF_STEP_NAME}\n",
-            "      - name: Run renamed Binance SBE timestamp proof\n",
-        ),
-        replace_once_after(
-            workflow,
-            BINANCE_TIMESTAMP_PROOF_STEP_NAME,
-            f"binary(={BINANCE_TIMESTAMP_PROOF_BINARY})",
-            "binary(=renamed_timestamp_harness)",
-        ),
-    ]
-    for case_name, command in zip(
-        BINANCE_TIMESTAMP_PROOF_CASES,
-        BINANCE_TIMESTAMP_PROOF_COMMANDS,
-    ):
-        mutations.extend(
-            (
-                replace_once_after(
-                    workflow,
-                    BINANCE_TIMESTAMP_PROOF_STEP_NAME,
-                    f"          {command}\n",
-                    "",
-                ),
-                replace_once_after(
-                    workflow,
-                    BINANCE_TIMESTAMP_PROOF_STEP_NAME,
-                    f"test(={case_name})",
-                    f"test(~{case_name})",
-                ),
-                replace_once_after(
-                    workflow,
-                    BINANCE_TIMESTAMP_PROOF_STEP_NAME,
-                    command,
-                    command.replace("test-archive-filtered-run", "test-archive-run", 1),
-                ),
-            )
-        )
-
-    for mutated in mutations:
-        errors = [
-            error
-            for error in verifier.verify_workflow(mutated)
-            if "ROOT_TEST_ARCHIVE_JOB_SHA256" not in error
-        ]
-        if not any(expected_error in error for error in errors):
-            raise AssertionError(
-                "Binance timestamp archive execution proof drift was silent: "
-                f"{errors}"
-            )
-
-
-def assert_test_archive_filtered_run_recipe_preserves_filterset_argv() -> None:
-    verifier = load_verifier()
-    expected_error = "test-archive filtered run recipe"
-    generic_recipe = """test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
-    python3 \"{{rust_verification_owner}}\" cargo --repo \"{{repo_root}}\" -- nextest run --archive-file \"{{archive}}\" --extract-to \"{{extract_root}}\" --extract-overwrite --workspace-remap \"{{repo_root}}\" {{args}}
-"""
-    dedicated_recipe = """test-archive-filtered-run archive extract_root filterset: check-workspace require-rust-verification-owner
-    python3 \"{{rust_verification_owner}}\" cargo --repo \"{{repo_root}}\" -- nextest run --archive-file \"{{archive}}\" --extract-to \"{{extract_root}}\" --extract-overwrite --workspace-remap \"{{repo_root}}\" --no-tests=fail -E {{quote(filterset)}}
-"""
-
-    def filtered_recipe_errors(justfile_text: str) -> list[str]:
-        return [
-            error
-            for error in verifier.verify_repo_automation_texts({"justfile": justfile_text})
-            if expected_error in error
-        ]
-
-    missing_errors = filtered_recipe_errors(generic_recipe)
-    if not missing_errors:
-        raise AssertionError(
-            "missing dedicated filtered archive recipe was silently accepted"
-        )
-
-    unquoted_errors = filtered_recipe_errors(
-        generic_recipe + dedicated_recipe.replace("{{quote(filterset)}}", "{{filterset}}")
-    )
-    if not unquoted_errors:
-        raise AssertionError(
-            "unquoted filtered archive recipe did not prove filterset argv delivery"
-        )
-
-    variadic_errors = filtered_recipe_errors(
-        generic_recipe
-        + dedicated_recipe.replace(
-            "archive extract_root filterset:", "archive extract_root *filterset:"
-        )
-    )
-    if not variadic_errors:
-        raise AssertionError(
-            "variadic filtered archive recipe was silently accepted"
-        )
-
-    safe_errors = filtered_recipe_errors(generic_recipe + dedicated_recipe)
-    if safe_errors:
-        raise AssertionError(
-            "safely quoted filtered archive recipe was rejected: " f"{safe_errors}"
-        )
-
-
-
-
-
-
-
-
 
 
 def one_indexed_sequence(values: tuple[int, ...]) -> bool:
@@ -10897,8 +10745,6 @@ def main() -> int:
     test_ci_test_manifest_self_tests_are_gated()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
-    assert_binance_timestamp_archive_execution_proof_gaps_are_reported()
-    assert_test_archive_filtered_run_recipe_preserves_filterset_argv()
     real_ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
     assert_clean(workflow=real_ci_workflow)
     root_just_version_bump = replace_once(

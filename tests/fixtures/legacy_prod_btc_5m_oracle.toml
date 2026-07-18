@@ -311,6 +311,7 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_secs = 60
 ws_timeout_secs = 30
 subscribe_new_markets = false
+drop_quotes_missing_side = true
 new_market_fetch_max_concurrency = 8
 auto_load_missing_instruments = false
 auto_load_debounce_ms = 250
@@ -601,6 +602,9 @@ load_spreads = false
 # paper-trading websocket serves empty/thin books for production instruments,
 # producing `deltas cannot be empty` parse errors. See T043A docs.
 environment = "live"
+book_stale_check_interval_secs = 0
+book_stale_threshold_secs = 0
+book_snapshot_timeout_secs = 3
 transport_backend = "sockudo"
 
 [clients.okx_data.readiness_probe]

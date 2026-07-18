@@ -111,6 +111,7 @@ pub mod execution_state;
 pub mod integrations;
 pub mod lake_batch;
 pub mod log_sweep;
+pub mod nautilus_source_capabilities;
 pub mod nt_runtime_capture;
 pub mod raw_types;
 pub mod secrets;
@@ -119,3 +120,14 @@ pub mod source_canonicalization;
 pub mod strategies;
 pub mod strategy_bindings;
 pub mod venue_contract;
+
+#[cfg(test)]
+pub(crate) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}

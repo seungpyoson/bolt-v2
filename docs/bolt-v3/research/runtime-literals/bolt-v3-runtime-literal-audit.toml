@@ -5359,306 +5359,18 @@ reason = "This is a private credential field-name marker for provider config val
 [[allowed]]
 path = "src/bolt_v3_providers/market_data.rs"
 kind = "string"
-literal = '''"base_url_http"'''
-context = '''"base_url_http",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
+literal = '''"clients.{key}.data: NT {provider_key} data-client config: {message}"'''
+context = '''"clients.{key}.data: NT {provider_key} data-client config: {message}"'''
+classification = "provider_data_config_validation_diagnostic"
+reason = "This diagnostic reports rejection by the pinned NautilusTrader data-client schema; it does not provide a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/market_data.rs"
 kind = "string"
-literal = '''"base_url_ws"'''
-context = '''"base_url_ws",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"proxy_url"'''
-context = '''"proxy_url",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"http_timeout_secs"'''
-context = '''"http_timeout_secs",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"max_retries"'''
-context = '''"max_retries",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"retry_delay_initial_ms"'''
-context = '''"retry_delay_initial_ms",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"retry_delay_max_ms"'''
-context = '''"retry_delay_max_ms",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"heartbeat_interval_secs"'''
-context = '''"heartbeat_interval_secs",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"recv_window_ms"'''
-context = '''"recv_window_ms",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"active_only"'''
-context = '''"active_only",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"update_instruments_interval_mins"'''
-context = '''"update_instruments_interval_mins",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"environment"'''
-context = '''"environment",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"max_requests_per_second"'''
-context = '''"max_requests_per_second",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"max_requests_per_minute"'''
-context = '''"max_requests_per_minute",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"transport_backend"'''
-context = '''"transport_backend",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"product_types"'''
-context = '''"product_types",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"base_url_ws_public"'''
-context = '''"base_url_ws_public",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"base_url_ws_private"'''
-context = '''"base_url_ws_private",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"instrument_status_poll_secs"'''
-context = '''"instrument_status_poll_secs",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"base_url_rest"'''
-context = '''"base_url_rest",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"ws_timeout_secs"'''
-context = '''"ws_timeout_secs",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"derivatives_poll_interval_secs"'''
-context = '''"derivatives_poll_interval_secs",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"auto_load_missing_instruments"'''
-context = '''"auto_load_missing_instruments",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"instrument_types"'''
-context = '''"instrument_types",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"contract_types"'''
-context = '''"contract_types",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"load_spreads"'''
-context = '''"load_spreads",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"instrument_families"'''
-context = '''"instrument_families",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"base_url_ws_business"'''
-context = '''"base_url_ws_business",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"vip_level"'''
-context = '''"vip_level",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"product_type"'''
-context = '''"product_type",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"base_url"'''
-context = '''"base_url",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"ws_public_url"'''
-context = '''"ws_public_url",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"ws_private_url"'''
-context = '''"ws_private_url",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"ws_l3_url"'''
-context = '''"ws_l3_url",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"validate_l3_checksum"'''
-context = '''"validate_l3_checksum",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"ws_idle_timeout_ms"'''
-context = '''"ws_idle_timeout_ms",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''"timeout_secs"'''
-context = '''"timeout_secs",'''
-classification = "provider_data_config_toml_field"
-reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/market_data.rs"
-kind = "string"
-literal = '''", "'''
-context = '''unknown_fields.join(", ")'''
+literal = '''"; "'''
+context = '''message: messages.join("; "),'''
 classification = "diagnostic_separator"
-reason = "This separator formats validation diagnostics only and is not an operator runtime value."
+reason = "This separator combines fail-closed provider config diagnostics and is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate/clients.rs"
@@ -18488,6 +18200,22 @@ literal = '''"/gated_source_roots.rs"'''
 context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
 classification = "source_canonicalization_codegen_include"
 reason = "Build-time include path literal: the build.rs-generated GATED_SOURCE_ROOTS file name under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
+
+[[allowed]]
+path = "src/nautilus_source_capabilities.rs"
+kind = "string"
+literal = '''"OUT_DIR"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/nautilus_source_capabilities.rs"));'''
+classification = "nautilus_source_capability_codegen_include"
+reason = "Build-time Cargo environment name locating the generated immutable Nautilus source-capability registry; a compile-time codegen reference, not an operator runtime value."
+
+[[allowed]]
+path = "src/nautilus_source_capabilities.rs"
+kind = "string"
+literal = '''"/nautilus_source_capabilities.rs"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/nautilus_source_capabilities.rs"));'''
+classification = "nautilus_source_capability_codegen_include"
+reason = "Build-time include filename for the generated immutable Nautilus source-capability registry under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/archetype.rs"

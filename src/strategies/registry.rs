@@ -31,14 +31,14 @@ pub trait StrategyBuilder: Send + Sync + 'static {
 
     fn kind() -> &'static str;
     fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>);
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy>;
+    fn build_typed(raw: &Value, context: &StrategyBuildContext) -> Result<Self::Strategy>;
 }
 
 fn prepare_builder<B: StrategyBuilder>(
     raw: &Value,
     context: &StrategyBuildContext,
 ) -> Result<PreparedStrategyRegistration> {
-    Ok(PreparedStrategyRegistration::from_strategy(B::build(
+    Ok(PreparedStrategyRegistration::from_strategy(B::build_typed(
         raw, context,
     )?))
 }
@@ -107,6 +107,13 @@ impl StrategyRegistry {
         Ok(())
     }
 
+    pub(crate) fn register_guarded<B: StrategyBuilder>(&mut self) -> Result<()>
+    where
+        B::Strategy: super::FillVoidPolicyGuard,
+    {
+        self.register::<B>()
+    }
+
     pub fn get(&self, kind: &str) -> Option<&StrategyRegistration> {
         self.registrations.get(kind)
     }
@@ -147,7 +154,7 @@ mod tests {
     use anyhow::{Context, anyhow};
     use futures_util::future::{BoxFuture, FutureExt};
     use nautilus_common::actor::DataActor;
-    use nautilus_model::identifiers::{StrategyId, Venue};
+    use nautilus_model::identifiers::{InstrumentId, StrategyId, Venue};
     use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 
     use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
@@ -287,7 +294,7 @@ mod tests {
 
     impl DataActor for TestStrategy {}
 
-    nautilus_strategy!(TestStrategy);
+    crate::strategies::nautilus_strategy_with_fill_void_guard!(TestStrategy, {});
 
     struct AlphaBuilder;
 
@@ -308,7 +315,7 @@ mod tests {
             }
         }
 
-        fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
+        fn build_typed(raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
             let strategy_id = raw
                 .get("strategy_id")
                 .and_then(Value::as_str)
@@ -328,7 +335,7 @@ mod tests {
 
         fn validate_config(_raw: &Value, _field_prefix: &str, _errors: &mut Vec<ValidationError>) {}
 
-        fn build(_raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
+        fn build_typed(_raw: &Value, _context: &StrategyBuildContext) -> Result<Self::Strategy> {
             Err(anyhow!("beta builder is test-only"))
         }
     }
@@ -400,8 +407,8 @@ mod tests {
     fn strategy_registry_registers_and_sorts_kinds() {
         let mut registry = StrategyRegistry::new();
 
-        registry.register::<BetaBuilder>().unwrap();
-        registry.register::<AlphaBuilder>().unwrap();
+        registry.register_guarded::<BetaBuilder>().unwrap();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
 
         assert_eq!(registry.kinds(), vec!["alpha_runtime", "beta_runtime"]);
         assert_eq!(
@@ -415,8 +422,8 @@ mod tests {
     fn strategy_registry_rejects_duplicate_registration() {
         let mut registry = StrategyRegistry::new();
 
-        registry.register::<AlphaBuilder>().unwrap();
-        let error = registry.register::<AlphaBuilder>().unwrap_err();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
+        let error = registry.register_guarded::<AlphaBuilder>().unwrap_err();
 
         assert!(error.to_string().contains("alpha_runtime"));
     }
@@ -424,7 +431,7 @@ mod tests {
     #[test]
     fn strategy_registry_dispatches_validate_and_prepare() {
         let mut registry = StrategyRegistry::new();
-        registry.register::<AlphaBuilder>().unwrap();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
 
         let registration = registry.get("alpha_runtime").unwrap();
         let raw = toml::toml! {
@@ -442,7 +449,7 @@ mod tests {
     #[test]
     fn strategy_registry_validate_reports_missing_strategy_id() {
         let mut registry = StrategyRegistry::new();
-        registry.register::<AlphaBuilder>().unwrap();
+        registry.register_guarded::<AlphaBuilder>().unwrap();
 
         let registration = registry.get("alpha_runtime").unwrap();
         let raw = toml::Value::Table(Default::default());

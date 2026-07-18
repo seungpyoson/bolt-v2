@@ -14,6 +14,7 @@ mod deploy_systemd;
 mod hyperliquid_fail_closed;
 mod hyperliquid_live_submit_artifact;
 mod hyperliquid_product_matrix;
+mod nautilus_source_capabilities;
 mod venue_contract;
 // Shared helper module (tests/support/mod.rs); not a [[test]] member.
 mod support;

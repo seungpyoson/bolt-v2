@@ -256,7 +256,7 @@ fn venue_truth_settlement_recorded_through_feed_explains_next_capture() {
         Decimal::new(50_000_000, 0),
         Decimal::new(40_000_000, 0),
         "yes123",
-        4.0,
+        Decimal::new(4, 0),
     ))
     .expect("baseline venue truth should reconcile");
     feed.record_venue_truth_settlement(VenueTruthSettlementExplanation {
@@ -2869,6 +2869,11 @@ fn portfolio_snapshot(
         vec![],
         vec![],
         vec![Money::new(total_equity, currency)],
+        None,
+        false,
+        vec![],
+        vec![],
+        vec![],
         UUID4::default(),
         UnixNanos::from(ts_event),
         UnixNanos::from(ts_event),
@@ -3245,14 +3250,14 @@ fn polymarket_venue_truth_snapshot_with_orders_and_positions(
             DataApiPosition {
                 asset: "yes123".to_string(),
                 condition_id: "condition".to_string(),
-                size: 7.0,
-                avg_price: Some(0.42),
+                size: Decimal::new(7, 0),
+                avg_price: Some(Decimal::new(42, 2)),
             },
             DataApiPosition {
                 asset: "no456".to_string(),
                 condition_id: "condition".to_string(),
-                size: 2.0,
-                avg_price: Some(0.58),
+                size: Decimal::new(2, 0),
+                avg_price: Some(Decimal::new(58, 2)),
             },
         ],
     })
@@ -3264,7 +3269,7 @@ fn polymarket_venue_truth_snapshot_with_position(
     balance: Decimal,
     allowance: Decimal,
     asset: &str,
-    size: f64,
+    size: Decimal,
 ) -> VenueTruthSnapshot {
     build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
         captured_at: UnixNanos::from(captured_at),
@@ -3279,7 +3284,7 @@ fn polymarket_venue_truth_snapshot_with_position(
             asset: asset.to_string(),
             condition_id: "condition".to_string(),
             size,
-            avg_price: Some(0.42),
+            avg_price: Some(Decimal::new(42, 2)),
         }],
     })
     .expect("test venue truth snapshot should be valid")
@@ -3412,6 +3417,7 @@ fn order_filled_event_with_reconciliation(
         UnixNanos::from(ts_event),
         reconciliation,
         Some(PositionId::from("position-1")),
+        None,
         None,
     )
 }

@@ -6,6 +6,7 @@ use nautilus_polymarket::{
     common::{consts::DUST_POSITION_THRESHOLD, credential::Secrets as PolymarketSecrets},
     http::{clob::PolymarketClobHttpClient, query::GetOrdersParams},
 };
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -295,9 +296,12 @@ fn positions_request_params(user_address: &str, limit: u32, offset: u32) -> Vec<
 }
 
 fn active_position_count(positions: &[ReadinessDataApiPosition]) -> usize {
+    let dust_position_threshold = DUST_POSITION_THRESHOLD
+        .to_f64()
+        .expect("Polymarket dust position threshold must fit in f64");
     positions
         .iter()
-        .filter(|position| position.size >= DUST_POSITION_THRESHOLD)
+        .filter(|position| position.size >= dust_position_threshold)
         .count()
 }
 
@@ -388,7 +392,12 @@ mod tests {
 
     #[test]
     fn active_position_count_counts_only_returned_non_redeemable_positions() {
-        let positions = vec![readiness_position(DUST_POSITION_THRESHOLD, false)];
+        let positions = vec![readiness_position(
+            DUST_POSITION_THRESHOLD
+                .to_f64()
+                .expect("Polymarket dust position threshold must fit in f64"),
+            false,
+        )];
 
         assert_eq!(active_position_count(&positions), 1);
     }

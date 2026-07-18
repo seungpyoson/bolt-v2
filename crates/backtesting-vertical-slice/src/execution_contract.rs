@@ -159,7 +159,7 @@ pub fn validate_execution_contract(
             && terminal_fill.last_qty == filled_quantity,
         "terminal settlement fill does not exactly close the validated entry quantity"
     );
-    let mut replayed_position = Position::new(trace.instrument, *opening_fill);
+    let mut replayed_position = Position::new(trace.instrument, opening_fill.clone());
     for fill in closing_fills {
         replayed_position.apply(fill);
     }
@@ -278,7 +278,7 @@ mod tests {
             "exit",
             "1.000",
         );
-        let mut position = Position::new(&instrument, entry_fill);
+        let mut position = Position::new(&instrument, entry_fill.clone());
         position.apply(&exit_fill);
         let realized_pnl = position
             .realized_pnl
@@ -290,7 +290,7 @@ mod tests {
         Fixture {
             instrument,
             book,
-            fills: vec![entry_fill],
+            fills: vec![entry_fill.clone()],
             position_fills: vec![entry_fill, exit_fill],
             initial_cash,
             terminal_cash,
@@ -302,7 +302,7 @@ mod tests {
     }
 
     fn reconcile_position_accounting(fixture: &mut Fixture) {
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         for fill in &fixture.position_fills[1..] {
             position.apply(fill);
         }
@@ -348,6 +348,7 @@ mod tests {
             false,
             Some(position_id),
             None,
+            None,
         )
     }
 
@@ -382,7 +383,7 @@ mod tests {
     fn rejects_non_market_entry_at_market_only_guard() {
         let mut fixture = fixture();
         fixture.fills[0].order_type = OrderType::Limit;
-        fixture.position_fills[0] = fixture.fills[0];
+        fixture.position_fills[0] = fixture.fills[0].clone();
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("non-market entry must fail the market-only contract");
         assert!(error.to_string().contains("market-order entry fills"));
@@ -406,7 +407,7 @@ mod tests {
             );
         }
         fixture.fills[0].last_qty = Quantity::from("1.00");
-        fixture.position_fills[0] = fixture.fills[0];
+        fixture.position_fills[0] = fixture.fills[0].clone();
         reconcile_position_accounting(&mut fixture);
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("market simulation must not stop at the observed last fill price");
@@ -442,7 +443,7 @@ mod tests {
         let mut fixture = fixture();
         fixture.position_fills[0].last_qty = Quantity::from("1.71");
         fixture.position_fills[1].last_qty = Quantity::from("1.71");
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         position.apply(&fixture.position_fills[1]);
         fixture.realized_pnl = position
             .realized_pnl
@@ -457,11 +458,11 @@ mod tests {
     #[test]
     fn rejects_extra_position_entry_leg_with_consistent_cash_and_pnl() {
         let mut fixture = fixture();
-        let mut extra_entry = fixture.position_fills[0];
+        let mut extra_entry = fixture.position_fills[0].clone();
         extra_entry.trade_id = nautilus_model::identifiers::TradeId::from("extra-entry");
         fixture.position_fills.insert(1, extra_entry);
         fixture.position_fills[2].last_qty = Quantity::from("5.42");
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         for fill in &fixture.position_fills[1..] {
             position.apply(fill);
         }
@@ -529,7 +530,7 @@ mod tests {
             UnixNanos::from(1),
         );
         fixture.fills[0].last_qty = Quantity::from("2.00");
-        fixture.position_fills[0] = fixture.fills[0];
+        fixture.position_fills[0] = fixture.fills[0].clone();
         fixture.position_fills[1].last_qty = Quantity::from("2.00");
         reconcile_position_accounting(&mut fixture);
         validate_execution_contract(&fixture.trace())
@@ -549,8 +550,8 @@ mod tests {
         let mut fixture = fixture();
         let commission = Money::from("0.01 USDC");
         fixture.fills[0].commission = Some(commission);
-        fixture.position_fills[0] = fixture.fills[0];
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0]);
+        fixture.position_fills[0] = fixture.fills[0].clone();
+        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
         position.apply(&fixture.position_fills[1]);
         fixture.realized_pnl = position
             .realized_pnl

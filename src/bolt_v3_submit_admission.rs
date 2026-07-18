@@ -663,6 +663,15 @@ impl BoltV3SubmitAdmissionState {
         panic!("poison submit admission inner");
     }
 
+    #[cfg(test)]
+    fn poison_reject_episodes_for_test(&self) {
+        let _guard = self
+            .reject_episodes
+            .lock()
+            .expect("test should acquire reject episodes lock before poisoning it");
+        panic!("poison submit admission reject episodes");
+    }
+
     pub fn capital_admission_state_snapshot(&self) -> Option<NtDerivedCapitalAdmissionState> {
         self.inner
             .lock()
@@ -1791,7 +1800,7 @@ impl BoltV3SubmitAdmissionState {
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
             self.reject_episodes
                 .lock()
-                .expect("submit admission state mutex should not be poisoned")
+                .expect("submit admission reject episodes mutex should not be poisoned")
                 .clear();
         } else if evaluation.outcome != BoltV3AdmissionOutcome::RejectedLossGovernorHalted {
             // Loss-governor halts are MECE with order-level rejects; RC5 records loss halts.
@@ -1817,7 +1826,7 @@ impl BoltV3SubmitAdmissionState {
             let mut reject_episodes = self
                 .reject_episodes
                 .lock()
-                .expect("submit admission state mutex should not be poisoned");
+                .expect("submit admission reject episodes mutex should not be poisoned");
             let episode = if let Some(episode) = reject_episodes.get_mut(&stable_episode_key) {
                 episode
             } else {
@@ -2451,7 +2460,7 @@ impl BoltV3SubmitAdmissionState {
     pub fn reject_episode_count(&self) -> usize {
         self.reject_episodes
             .lock()
-            .expect("submit admission state mutex should not be poisoned")
+            .expect("submit admission reject episodes mutex should not be poisoned")
             .len()
     }
 
@@ -4499,6 +4508,156 @@ mod loss_governor_halt_evidence_tests {
             kill_switch_forced_reduction: None,
             admission_evidence: None,
         }
+    }
+
+    #[test]
+    fn operator_health_snapshot_reports_poisoned_submit_admission_state() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_inner_for_test();
+        }));
+        assert!(poisoned.is_err(), "test setup must poison the state lock");
+
+        assert_eq!(
+            admission.operator_health_snapshot(),
+            Err(BoltV3SubmitAdmissionHealthReadError::StateLockPoisoned)
+        );
+    }
+
+    #[test]
+    fn poisoned_submit_admission_state_prevents_permit_and_provider_submit_side_effect() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let request = entry_request(
+            "strategy-poisoned-submit-state".to_string(),
+            "client-order-poisoned-submit-state".to_string(),
+        );
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_inner_for_test();
+        }));
+        assert!(poisoned.is_err(), "test setup must poison the state lock");
+        let provider_submit_count = AtomicU64::new(0);
+
+        let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(permit) = admission.admit_at(&request, 1_000) {
+                provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                // Do not drop a recovered permit here: Drop re-locks the deliberately
+                // poisoned inner state and would mask a fail-open recovery regression.
+                std::mem::forget(permit);
+            }
+        }));
+
+        let panic = admission_result.expect_err(
+            "a poisoned admission state must not return control to the provider-submit branch",
+        );
+        assert!(
+            crate::panic_payload_message(panic.as_ref())
+                .contains("submit admission state mutex should not be poisoned"),
+            "admission must panic specifically because the submit-admission state is poisoned"
+        );
+        assert_eq!(
+            provider_submit_count.load(Ordering::SeqCst),
+            0,
+            "a poisoned admission state must have no provider submit side effect"
+        );
+    }
+
+    #[test]
+    fn poisoned_reject_episode_state_prevents_permit_and_provider_submit_side_effect() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let request = entry_request(
+            "strategy-poisoned-reject-episodes".to_string(),
+            "client-order-poisoned-reject-episodes".to_string(),
+        );
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_reject_episodes_for_test();
+        }));
+        assert!(
+            poisoned.is_err(),
+            "test setup must poison the reject-episode lock"
+        );
+        let provider_submit_count = AtomicU64::new(0);
+
+        let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(permit) = admission.admit_at(&request, 1_000) {
+                provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                // Keep permit destruction from becoming an unrelated panic that could
+                // satisfy the poison assertion after an incorrect lock recovery.
+                std::mem::forget(permit);
+            }
+        }));
+
+        let panic = admission_result.expect_err(
+            "a poisoned reject-episode state must not return control to the provider-submit branch",
+        );
+        assert!(
+            crate::panic_payload_message(panic.as_ref())
+                .contains("submit admission reject episodes mutex should not be poisoned"),
+            "admission must panic specifically because the reject-episode state is poisoned"
+        );
+        assert_eq!(
+            provider_submit_count.load(Ordering::SeqCst),
+            0,
+            "a poisoned reject-episode state must have no provider submit side effect"
+        );
+    }
+
+    #[test]
+    fn poisoned_reject_episode_state_blocks_rejected_path_without_provider_submit_side_effect() {
+        let admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        let mut request = entry_request(
+            "strategy-poisoned-rejected-episode".to_string(),
+            "client-order-poisoned-rejected-episode".to_string(),
+        );
+        request.notional = Decimal::ZERO;
+        let routing_admission = BoltV3SubmitAdmissionState::new(Arc::new(
+            FailingLossGovernorHaltEvidenceWriter::default(),
+        ));
+        assert!(
+            matches!(
+                routing_admission.admit_at(&request, 1_000),
+                Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
+            ),
+            "the rejected-path fixture must route through non-positive-notional rejection"
+        );
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.poison_reject_episodes_for_test();
+        }));
+        assert!(
+            poisoned.is_err(),
+            "test setup must poison the reject-episode lock"
+        );
+        let provider_submit_count = AtomicU64::new(0);
+
+        let admission_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(permit) = admission.admit_at(&request, 1_000) {
+                provider_submit_count.fetch_add(1, Ordering::SeqCst);
+                // A recovered rejected path must return normally and fail the panic
+                // assertion; permit destruction must not supply that expected panic.
+                std::mem::forget(permit);
+            }
+        }));
+
+        let panic = admission_result.expect_err(
+            "a poisoned rejected-path episode lock must stop admission before returning",
+        );
+        assert!(
+            crate::panic_payload_message(panic.as_ref())
+                .contains("submit admission reject episodes mutex should not be poisoned"),
+            "the rejected path must panic specifically because reject episodes are poisoned"
+        );
+        assert_eq!(
+            provider_submit_count.load(Ordering::SeqCst),
+            0,
+            "a rejected request must never reach the provider-submit continuation"
+        );
     }
 
     #[test]

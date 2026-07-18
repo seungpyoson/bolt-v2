@@ -19,7 +19,7 @@ use nautilus_backtest::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::TradeTick,
+    data::{Data, TradeTick},
     enums::{AccountType, AggressorSide, BookType, OmsType},
     identifiers::{InstrumentId, Symbol, TradeId, Venue},
     instruments::{CurrencyPair, Instrument, InstrumentAny},
@@ -132,6 +132,7 @@ where
         instrument_ids.iter().map(ToString::to_string).collect();
     let ticks = build_trade_ticks(spec, &instrument_ids)?;
     let expected_trade_ticks = ticks.len();
+    let tick_data = ticks.iter().cloned().map(Data::Trade).collect::<Vec<_>>();
 
     let mut catalog = ParquetDataCatalog::from_uri(
         &spec.catalog_uri,
@@ -152,8 +153,8 @@ where
         )
         .context("write configured instruments through NT catalog")?;
     catalog
-        .write_to_parquet(&ticks, None, None, None)
-        .context("write configured TradeTick data through NT catalog")?;
+        .write_data_enum(&tick_data, None, None, None)
+        .context("write configured TradeTick data through NT identity grouping")?;
 
     let loaded_instruments = catalog
         .query_instruments(Some(&instrument_id_strings))

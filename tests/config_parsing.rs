@@ -1296,8 +1296,8 @@ fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vo
     // provider-neutral per the source-fence.
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
-    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\ndrop_quotes_missing_side = true\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
+    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\ndrop_quotes_missing_side = true\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let split_fixture = format!(
         "{}{}",
         replace_in_fixture_root(polymarket_main_data_block, ""),
@@ -2758,25 +2758,25 @@ fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
 
 #[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
-    let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_d636f176.txt");
-    let nt_field = ["post", "only"].join("_");
-    let fixture_revision = query_source
-        .lines()
-        .find_map(|line| line.strip_prefix("Revision: "))
-        .expect("pinned NT query fixture must declare its revision");
+    use nautilus_polymarket::{common::enums::PolymarketOrderType, http::query::PostOrderParams};
 
-    assert_eq!(
-        fixture_revision,
-        bolt_v2::bolt_v3_iv::runtime::cargo_pinned_nt_revision()
-    );
-    assert!(query_source.contains(
-        "Full source SHA-256: 39c2ae4e66fd5be0c79669721157ddb9c354296a5bd1b7afbd9f39b9d22fad5d"
-    ));
-    assert!(query_source.contains("pub struct PostOrderParams"));
-    assert!(query_source.contains(r#"#[serde(rename_all = "camelCase")]"#));
-    assert!(query_source.contains(&format!("pub {nt_field}: bool")));
-    assert!(query_source.contains(r#"json.contains("postOnly")"#));
-    assert!(query_source.contains(&format!(r#"json.contains("{nt_field}")"#)));
+    for post_only in [false, true] {
+        let params = PostOrderParams {
+            order_type: PolymarketOrderType::GTC,
+            post_only,
+        };
+        let json = serde_json::to_value(params)
+            .expect("official Polymarket PostOrderParams must serialize");
+        let object = json
+            .as_object()
+            .expect("official Polymarket PostOrderParams must serialize as an object");
+
+        assert_eq!(
+            object.get("postOnly").and_then(serde_json::Value::as_bool),
+            post_only.then_some(true)
+        );
+        assert!(!object.contains_key("post_only"));
+    }
 }
 
 #[test]
@@ -6221,10 +6221,11 @@ api_key_ssm_path = "/bolt/bybit/api_key"
         "expected direct credential-field rejection, got: {messages:#?}"
     );
     assert!(
-        messages.iter().any(
-            |message| message.contains("bybit_data.data.ws_reconnect_delay_secs")
-                && message.contains("not an NT BYBIT data-client config field")
-        ),
+        messages
+            .iter()
+            .any(|message| message.contains("bybit_data.data")
+                && message.contains("NT BYBIT data-client config")
+                && message.contains("unknown field `ws_reconnect_delay_secs`")),
         "expected unknown NT data-field rejection, got: {messages:#?}"
     );
     assert!(rendered.contains("(provider=BYBIT)"));
@@ -6358,6 +6359,7 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_secs = 0
 ws_timeout_secs = 0
 subscribe_new_markets = false
+drop_quotes_missing_side = true
 new_market_fetch_max_concurrency = 8
 auto_load_missing_instruments = false
 auto_load_debounce_ms = 250
@@ -8400,6 +8402,7 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_secs = 60
 ws_timeout_secs = 30
 subscribe_new_markets = false
+drop_quotes_missing_side = true
 auto_load_missing_instruments = false
 auto_load_debounce_ms = 250
 auto_load_max_retries = 12
@@ -9591,7 +9594,7 @@ fn rejects_polymarket_data_auto_load_retry_initial_after_max() {
 fn allows_multiple_configured_client_ids_for_same_nt_venue() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\ndrop_quotes_missing_side = true\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client}");

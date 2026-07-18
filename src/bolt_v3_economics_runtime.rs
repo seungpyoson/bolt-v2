@@ -370,15 +370,19 @@ impl AuthoritativeEconomicsInputStore {
             .entries
             .read()
             .map_err(|_| EconomicsUnavailable::AmbiguousQuoteAuthority)?;
-        let mut matches = entries.iter().filter_map(|(key, dependencies)| {
-            (key.execution_client_id == execution_client_id.as_str()
-                && key.instrument_id == instrument_id.as_str()
-                && dependencies.provider_key == provider_key
-                && candidates
-                    .iter()
-                    .any(|candidate| candidate.as_str() == key.product_surface_id))
-            .then(|| crate::economics::ProductSurfaceId::new(key.product_surface_id.clone()))
-        });
+        let mut matches = entries
+            .iter()
+            .filter(|(key, dependencies)| {
+                key.execution_client_id == execution_client_id.as_str()
+                    && key.instrument_id == instrument_id.as_str()
+                    && dependencies.provider_key == provider_key
+                    && candidates
+                        .iter()
+                        .any(|candidate| candidate.as_str() == key.product_surface_id)
+            })
+            .map(|(key, _)| {
+                crate::economics::ProductSurfaceId::new(key.product_surface_id.clone())
+            });
         let selected = matches
             .next()
             .ok_or(EconomicsUnavailable::MissingQuoteAuthority)??;

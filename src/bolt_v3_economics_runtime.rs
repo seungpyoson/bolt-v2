@@ -252,22 +252,21 @@ impl ConfiguredValuationProvider {
     }
 }
 
+type ResolvedValuationLeg = (
+    NativeUnitId,
+    NativeUnitId,
+    Decimal,
+    SnapshotId,
+    u64,
+    u64,
+    u64,
+    u64,
+);
+
 fn resolve_valuation_leg(
     configured: &ValuationLegConfig,
     observations: &[AuthoritativeValuationObservation],
-) -> Result<
-    (
-        NativeUnitId,
-        NativeUnitId,
-        Decimal,
-        SnapshotId,
-        u64,
-        u64,
-        u64,
-        u64,
-    ),
-    EconomicsUnavailable,
-> {
+) -> Result<ResolvedValuationLeg, EconomicsUnavailable> {
     let (
         from_unit,
         to_unit,

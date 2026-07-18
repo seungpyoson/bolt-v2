@@ -2247,11 +2247,7 @@ mod tests {
                 original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
             })
         );
-        assert_eq!(writer.admission_decisions().len(), 1);
-        assert_eq!(
-            writer.admission_decisions()[0].intent_kind,
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction
-        );
+        assert!(writer.admission_decisions().is_empty());
     }
 
     #[test]

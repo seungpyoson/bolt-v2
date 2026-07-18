@@ -910,6 +910,12 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
         );
+        strategy.context = strategy
+            .context
+            .clone()
+            .with_order_routing(fixture_order_routing(
+                RecordingEconomicsAdmissionSource::with_core_effect(Decimal::new(1, 2)),
+            ));
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -1800,6 +1806,7 @@ fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
     strategy.config.order_notional_target = 25.0;
     strategy.config.maximum_position_notional = 25.0;
     strategy.config.risk_lambda = 0.0001;
+    register_test_strategy_with_active_instruments(&mut strategy);
     let pending = pending_entry_state(&mut strategy, entry_client_order_id);
     let instrument_id = pending.instrument_id;
     strategy.exposure = ExposureState::PendingEntry(pending);
@@ -3863,6 +3870,7 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
 fn live_entered_and_pending_adopted_positions_retain_interval_end_boundary() {
     let live_pending_entry = || {
         let mut strategy = ready_to_trade_strategy();
+        configure_limit_base_entry_order(&mut strategy);
         let cache = register_test_strategy(&mut strategy);
         add_active_instruments_to_cache(&strategy, &cache);
         set_active_books_best_prices(&mut strategy, 0.40, 0.41);

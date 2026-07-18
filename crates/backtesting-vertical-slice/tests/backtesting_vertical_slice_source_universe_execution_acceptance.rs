@@ -12,12 +12,12 @@ use backtesting_vertical_slice::reference_fixture_index::{
     repo_root_from_manifest_dir,
 };
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+use backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchBootstrapLimits;
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use backtesting_vertical_slice::source_universe_batch_launch::{
     discover_committed_source_universe_execution_packs,
     inspect_worktree_source_universe_execution_pack_scope_names,
 };
-#[cfg(any(target_os = "linux", target_vendor = "apple"))]
-use backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchBootstrapLimits;
 use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
 use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_execution_acceptance::{
@@ -498,10 +498,10 @@ fn committed_execution_pack_registry_and_acceptance_ledger_are_an_exact_set() {
         &scope_names,
         test_registry_bootstrap_limits(),
     )
-        .expect("discover committed execution-pack registry")
-        .into_iter()
-        .map(|pack| pack.summary_path)
-        .collect::<BTreeSet<_>>();
+    .expect("discover committed execution-pack registry")
+    .into_iter()
+    .map(|pack| pack.summary_path)
+    .collect::<BTreeSet<_>>();
 
     let acceptance_ledgers_root = repo_root.join(
         "specs/023-nt-research-analytics-platform/reference/source-universe-execution-acceptance-ledgers",

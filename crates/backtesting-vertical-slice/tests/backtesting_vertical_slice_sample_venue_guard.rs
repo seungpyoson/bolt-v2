@@ -121,8 +121,8 @@ impl<'ast> Visit<'ast> for SemanticStringCollector {
             .segments
             .last()
             .is_some_and(|segment| segment.ident == "concat")
-            && let Ok(arguments) = Punctuated::<syn::Expr, Token![,]>::parse_terminated
-                .parse2(node.tokens.clone())
+            && let Ok(arguments) =
+                Punctuated::<syn::Expr, Token![,]>::parse_terminated.parse2(node.tokens.clone())
             && let Some(value) = concatenate_literal_strings(&arguments)
         {
             self.values.push(value);

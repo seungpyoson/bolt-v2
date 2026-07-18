@@ -150,8 +150,12 @@ pub fn atomic_file_create_strict_guarded<T>(
         Ok(Err(error)) => return Err(error),
         Err(error) => return Err(error),
     };
-    temp.publish_guarded(work_budget, stage)
-        .with_context(|| format!("strict create-only publish anonymous artifact to {}", path.display()))?;
+    temp.publish_guarded(work_budget, stage).with_context(|| {
+        format!(
+            "strict create-only publish anonymous artifact to {}",
+            path.display()
+        )
+    })?;
     Ok(value)
 }
 

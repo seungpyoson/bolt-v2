@@ -674,8 +674,7 @@ pub fn discover_committed_source_universe_execution_packs(
             launch_path.display()
         );
         ensure!(
-            launch_spec.execution_pack.bytes
-                <= trusted_bootstrap_limits.max_control_artifact_bytes,
+            launch_spec.execution_pack.bytes <= trusted_bootstrap_limits.max_control_artifact_bytes,
             "batch launch spec {} execution-pack bytes exceed the trusted control-artifact ceiling",
             launch_path.display()
         );
@@ -1107,8 +1106,7 @@ max_lifecycle_cleanup_depth = 64
     fn error_text(repo_root: &Path) -> String {
         format!(
             "{:#}",
-            discover_worktree_test_packs(repo_root, 2)
-                .expect_err("registry must fail closed")
+            discover_worktree_test_packs(repo_root, 2).expect_err("registry must fail closed")
         )
     }
 
@@ -1118,8 +1116,7 @@ max_lifecycle_cleanup_depth = 64
         write_committed_pack(repo.path(), "zeta-scope", "pack-zeta");
         write_committed_pack(repo.path(), "alpha-scope", "pack-alpha");
 
-        let packs =
-            discover_worktree_test_packs(repo.path(), 2).expect("discover committed packs");
+        let packs = discover_worktree_test_packs(repo.path(), 2).expect("discover committed packs");
 
         assert_eq!(
             packs

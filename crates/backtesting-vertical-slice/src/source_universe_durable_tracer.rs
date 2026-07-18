@@ -32,8 +32,8 @@ use crate::{
         PinnedWorkerExecutable, SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE,
         SourceUniverseBatchBootstrapLimits, SourceUniverseBatchExecutionRecordProvenance,
         SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
-        SourceUniverseSelectedControlPreflightInput, execution_record_digest,
-        calculate_process_isolated_record_resource_envelope,
+        SourceUniverseSelectedControlPreflightInput,
+        calculate_process_isolated_record_resource_envelope, execution_record_digest,
         preflight_selected_source_universe_controls,
         validate_source_universe_batch_execution_report,
     },
@@ -96,12 +96,9 @@ impl SourceUniverseDurableTracerGitExecutable {
             max_bytes > 0 && artifact.bytes <= max_bytes,
             "expected Git executable bytes exceed the applied ceiling"
         );
-        let executable = PinnedWorkerExecutable::capture_external_sealed(
-            path,
-            &artifact.sha256,
-            max_bytes,
-        )
-        .context("capture exact Git execution capability")?;
+        let executable =
+            PinnedWorkerExecutable::capture_external_sealed(path, &artifact.sha256, max_bytes)
+                .context("capture exact Git execution capability")?;
         ensure!(
             executable.byte_len() == artifact.bytes,
             "sealed Git executable byte length mismatch: expected {}, got {}",
@@ -273,9 +270,9 @@ fn validate_ra001a_policy_text(label: &str, value: &str) -> Result<()> {
         "RA-001a {label} must not have leading or trailing whitespace"
     );
     ensure!(
-        value
-            .chars()
-            .all(|character| character.is_ascii() && !character.is_ascii_control() && !character.is_ascii_whitespace()),
+        value.chars().all(|character| character.is_ascii()
+            && !character.is_ascii_control()
+            && !character.is_ascii_whitespace()),
         "RA-001a {label} must contain canonical non-whitespace ASCII without control characters"
     );
     Ok(())
@@ -300,9 +297,9 @@ fn validate_ra001a_aws_role_arn(role_arn: &str) -> Result<()> {
                     && !suffix.starts_with('-')
                     && !suffix.ends_with('-')
                     && !suffix.contains("--")
-                    && suffix
-                        .bytes()
-                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                    && suffix.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
             }),
         "RA-001a AWS role ARN has a noncanonical AWS partition"
     );
@@ -773,7 +770,9 @@ fn validate_committed_ra001a_pack_limits(
     limits.validate()?;
     let launch = &committed.launch_spec;
     ensure!(
-        launch.max_concurrent_records.is_some_and(|value| value <= limits.max_concurrent_records),
+        launch
+            .max_concurrent_records
+            .is_some_and(|value| value <= limits.max_concurrent_records),
         "RA-001a pack {} concurrency exceeds the trusted process-isolation policy",
         committed.pack_id
     );
@@ -1052,8 +1051,7 @@ where
     // the worker is captured or `launch` is invoked even once. Production and
     // tests share this composition boundary, so ordering cannot drift behind a
     // test-only parallel implementation.
-    let aggregate =
-        preflight_committed_source_universe_durable_tracer_registry(committed, policy)?;
+    let aggregate = preflight_committed_source_universe_durable_tracer_registry(committed, policy)?;
     let worker = capture_worker()?;
     launch_preflighted_source_universe_durable_tracer_registry(committed, aggregate, |pack| {
         launch(&worker, pack)
@@ -1983,7 +1981,7 @@ pub fn verify_source_universe_durable_tracer_checkout(
         expected_source_revision,
         git_executable,
     )
-        .context("revalidate exact Git checkout identity after cleanliness verification")?;
+    .context("revalidate exact Git checkout identity after cleanliness verification")?;
     Ok(())
 }
 
@@ -2259,8 +2257,7 @@ pub fn validate_source_universe_durable_tracer_receipt_set(
         "durable tracer receipt-set applied policy mismatch"
     );
     ensure!(
-        receipt_set.git_executable.bytes
-            <= receipt_set.applied_policy.max_git_executable_bytes,
+        receipt_set.git_executable.bytes <= receipt_set.applied_policy.max_git_executable_bytes,
         "durable tracer receipt-set Git executable pin exceeds the applied ceiling"
     );
     ensure!(
@@ -2427,8 +2424,8 @@ pub fn write_source_universe_durable_tracer_receipt_set(
         expected_policy,
         receipt_set,
     )?;
-    let work_budget = OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(
-        BackfillExecutionWorkBudget {
+    let work_budget =
+        OperatorWorkBudgetGuard::new(OperatorWorkBudget::Backfill(BackfillExecutionWorkBudget {
             max_decoded_bytes: expected_policy.pack_limits.max_final_object_bytes,
             max_source_rows: expected_policy.pack_limits.max_source_rows,
             max_projected_row_groups: expected_policy.pack_limits.max_projected_row_groups,
@@ -2436,9 +2433,8 @@ pub fn write_source_universe_durable_tracer_receipt_set(
                 .pack_limits
                 .max_terminal_commit_timeout_seconds,
             require_object_selection_metadata: false,
-        },
-    ))
-    .context("construct bounded RA-001a receipt publication budget")?;
+        }))
+        .context("construct bounded RA-001a receipt publication budget")?;
     let bytes = crate::reference_artifact::canonical_json_bytes(receipt_set)
         .context("serialize canonical durable tracer receipt set")?;
     let byte_len = u64::try_from(bytes.len()).context("receipt-set byte length exceeds u64")?;
@@ -2535,10 +2531,10 @@ mod tests {
 
     use super::{
         CommittedRegistrySnapshot, SourceUniverseDurableTracerAggregateLimits,
-        SourceUniverseDurableTracerCheckoutPolicy, SourceUniverseDurableTracerRegistryRun,
-        SourceUniverseDurableTracerGitExecutable, SourceUniverseDurableTracerReportInput,
-        SourceUniverseDurableTracerRunPolicy,
-        build_source_universe_durable_tracer_receipt_set, load_exact_source_revision_registry,
+        SourceUniverseDurableTracerCheckoutPolicy, SourceUniverseDurableTracerGitExecutable,
+        SourceUniverseDurableTracerRegistryRun, SourceUniverseDurableTracerReportInput,
+        SourceUniverseDurableTracerRunPolicy, build_source_universe_durable_tracer_receipt_set,
+        load_exact_source_revision_registry,
         parse_and_validate_source_universe_durable_tracer_receipt_set,
         read_and_validate_source_universe_durable_tracer_receipt_set,
         run_admitted_source_universe_durable_tracer_registry,
@@ -2849,12 +2845,9 @@ mod tests {
             bytes: u64::try_from(reviewed_bytes.len()).expect("reviewed Git bytes fit u64"),
             sha256: sha256_hex(&reviewed_bytes),
         };
-        let capability = SourceUniverseDurableTracerGitExecutable::capture(
-            &reviewed,
-            &pin,
-            pin.bytes,
-        )
-        .expect("capture reviewed Git fixture once");
+        let capability =
+            SourceUniverseDurableTracerGitExecutable::capture(&reviewed, &pin, pin.bytes)
+                .expect("capture reviewed Git fixture once");
 
         let displaced = temp.path().join("displaced-git");
         fs::rename(&reviewed, &displaced).expect("replace reviewed Git pathname");
@@ -2970,25 +2963,16 @@ mod tests {
             .expect("revision A is UTF-8")
             .trim()
             .to_string();
-        let authority_a = source_revision_registry_authority(
-            temp.path(),
-            &revision_a,
-            2,
-            &test_git_executable(),
-        )
-            .expect("resolve revision A registry");
+        let authority_a =
+            source_revision_registry_authority(temp.path(), &revision_a, 2, &test_git_executable())
+                .expect("resolve revision A registry");
         assert_eq!(authority_a.scope_names, ["alpha-scope", "beta-scope"]);
 
         let late_scope = registry.join("gamma-scope");
         fs::create_dir_all(&late_scope).expect("create late worktree scope");
         fs::write(late_scope.join("marker"), b"gamma-scope").expect("write late worktree marker");
         let authority_a_after_late_entry =
-            source_revision_registry_authority(
-                temp.path(),
-                &revision_a,
-                2,
-                &test_git_executable(),
-            )
+            source_revision_registry_authority(temp.path(), &revision_a, 2, &test_git_executable())
                 .expect("late worktree entry is inert for revision A");
         assert_eq!(authority_a_after_late_entry, authority_a);
 
@@ -3011,13 +2995,9 @@ mod tests {
             .expect("revision B is UTF-8")
             .trim()
             .to_string();
-        let authority_b = source_revision_registry_authority(
-            temp.path(),
-            &revision_b,
-            3,
-            &test_git_executable(),
-        )
-            .expect("resolve revision B registry");
+        let authority_b =
+            source_revision_registry_authority(temp.path(), &revision_b, 3, &test_git_executable())
+                .expect("resolve revision B registry");
         assert_eq!(
             authority_b.scope_names,
             ["alpha-scope", "beta-scope", "gamma-scope"]
@@ -3026,13 +3006,11 @@ mod tests {
             authority_b.registry_tree_sha256,
             authority_a.registry_tree_sha256
         );
-        let over_ceiling = source_revision_registry_authority(
-            temp.path(),
-            &revision_b,
-            2,
-            &test_git_executable(),
-        )
-        .expect_err("revision B must be admitted against its complete three-pack membership");
+        let over_ceiling =
+            source_revision_registry_authority(temp.path(), &revision_b, 2, &test_git_executable())
+                .expect_err(
+                    "revision B must be admitted against its complete three-pack membership",
+                );
         assert!(
             format!("{over_ceiling:#}").contains("configured pack ceiling")
                 || format!("{over_ceiling:#}").contains("byte bound")
@@ -3250,13 +3228,9 @@ mod tests {
             .to_string();
         run_git(temp.path(), &["replace", &revision_a, &revision_b]);
         run_git(temp.path(), &["update-ref", "HEAD", &revision_a]);
-        let authority = source_revision_registry_authority(
-            temp.path(),
-            &revision_a,
-            1,
-            &test_git_executable(),
-        )
-            .expect("replacement object cannot redirect exact revision A");
+        let authority =
+            source_revision_registry_authority(temp.path(), &revision_a, 1, &test_git_executable())
+                .expect("replacement object cannot redirect exact revision A");
         assert_eq!(authority.scope_names, ["alpha-scope"]);
 
         let tree_oid = String::from_utf8(
@@ -3270,13 +3244,8 @@ mod tests {
         .trim()
         .to_string();
         assert!(
-            source_revision_registry_authority(
-                temp.path(),
-                &tree_oid,
-                1,
-                &test_git_executable(),
-            )
-            .is_err()
+            source_revision_registry_authority(temp.path(), &tree_oid, 1, &test_git_executable(),)
+                .is_err()
         );
         run_git(
             temp.path(),
@@ -3297,13 +3266,8 @@ mod tests {
                 .trim()
                 .to_string();
         assert!(
-            source_revision_registry_authority(
-                temp.path(),
-                &tag_oid,
-                1,
-                &test_git_executable(),
-            )
-            .is_err()
+            source_revision_registry_authority(temp.path(), &tag_oid, 1, &test_git_executable(),)
+                .is_err()
         );
     }
 
@@ -3416,7 +3380,9 @@ mod tests {
         ] {
             let mut policy = baseline.clone();
             policy.aws_role_arn = invalid_role_arn.to_string();
-            let error = policy.validate().expect_err("invalid AWS role ARN must fail");
+            let error = policy
+                .validate()
+                .expect_err("invalid AWS role ARN must fail");
             assert!(format!("{error:#}").contains("AWS role ARN"), "{error:#}");
         }
 
@@ -4883,6 +4849,5 @@ mod tests {
             .expect("reopen exact pinned receipt set"),
             receipts
         );
-
     }
 }

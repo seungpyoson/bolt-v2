@@ -32,9 +32,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::atomic_artifact_write::{
-    atomic_file_create_strict_guarded, open_pinned_regular_file,
-};
+use crate::atomic_artifact_write::{atomic_file_create_strict_guarded, open_pinned_regular_file};
 use crate::{
     artifact_store::{
         ArtifactStoreConfig, BucketVersioningEnabled, CatalogDispatchConfig,
@@ -88,9 +86,8 @@ use crate::{
         CONVERSION_TABLES_FILE, CatalogConsumptionEvidence, CatalogPublicationReceiptIdentity,
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
         ConversionFingerprint, ConversionManifest, ConversionTableRecord,
-        validate_conversion_tables_index,
-        write_completed_conversion_artifacts_guarded, write_conversion_tables_index_guarded,
-        write_pending_conversion_artifacts,
+        validate_conversion_tables_index, write_completed_conversion_artifacts_guarded,
+        write_conversion_tables_index_guarded, write_pending_conversion_artifacts,
     },
     hashing::is_lowercase_sha256_hex,
     nt_catalog_capability::{NtCatalogSsmCredentialResolver, NtCatalogSsmParameterRefs},
@@ -244,8 +241,8 @@ impl RunSpec {
             .get("region")
             .map(String::as_str)
             .context(
-            "run spec manifest.artifact_store missing region for durable artifact store",
-        )?;
+                "run spec manifest.artifact_store missing region for durable artifact store",
+            )?;
         ensure!(
             manifest_region == artifact_store.s3.region,
             "run spec artifact-store region mismatch: manifest.artifact_store.rust_storage_options {:?} != artifact_store.s3.region {:?}",
@@ -3051,15 +3048,11 @@ async fn assert_current_durable_completion_absent_guarded(
     )
     .await?
     {
-        Ok(_) => anyhow::bail!(
-            "fresh durable execution refuses existing completion object {uri}"
-        ),
+        Ok(_) => anyhow::bail!("fresh durable execution refuses existing completion object {uri}"),
         Err(object_store::Error::NotFound { .. }) => Ok(()),
-        Err(error) => {
-            Err(anyhow::Error::new(error).context(format!(
-                "discover deterministic durable completion key {uri}"
-            )))
-        }
+        Err(error) => Err(anyhow::Error::new(error).context(format!(
+            "discover deterministic durable completion key {uri}"
+        ))),
     }
 }
 
@@ -3947,24 +3940,24 @@ fn prepare_run_from_run_spec_inner(
     };
     let backtest = prepare_backtest(&backtest_inputs, submitted_identity)?;
     Ok(PreparedTradeRunArtifacts {
-            verified_sha256,
-            accepted_source_proof: accepted_proof,
-            accepted,
-            conversion_fingerprint,
-            canonical_artifact_path: canonical_path,
-            catalog_root,
-            proof_path,
-            contract_path,
-            run_manifest_path,
-            conversion_manifest_path,
-            conversion_checkpoint_path,
-            catalog_metadata_path,
-            local_manifest: manifest,
-            contract_manifest_hash,
-            artifact_uris,
-            backtest,
-            transient_catalog_root_lease,
-        })
+        verified_sha256,
+        accepted_source_proof: accepted_proof,
+        accepted,
+        conversion_fingerprint,
+        canonical_artifact_path: canonical_path,
+        catalog_root,
+        proof_path,
+        contract_path,
+        run_manifest_path,
+        conversion_manifest_path,
+        conversion_checkpoint_path,
+        catalog_metadata_path,
+        local_manifest: manifest,
+        contract_manifest_hash,
+        artifact_uris,
+        backtest,
+        transient_catalog_root_lease,
+    })
 }
 
 fn finalize_prepared_trade_run(

@@ -1183,7 +1183,6 @@ impl VersionedCatalogStore {
         }
         Ok(())
     }
-
 }
 
 impl fmt::Debug for VersionedCatalogStore {
@@ -3966,14 +3965,14 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let completion_path_for_hook = completion_path.clone();
     let candidate_path_for_hook = candidate_path.clone();
     let store = VersionedCatalogStore::new().with_after_successful_put(Arc::new(move |path, _| {
-            if path == &completion_path_for_hook {
-                assert!(
-                    candidate_path_for_hook.is_file(),
-                    "local output candidate seal must precede the remote terminal PUT"
-                );
-                terminal_put_observed_candidate_for_hook.store(true, Ordering::SeqCst);
-            }
-        }));
+        if path == &completion_path_for_hook {
+            assert!(
+                candidate_path_for_hook.is_file(),
+                "local output candidate seal must precede the remote terminal PUT"
+            );
+            terminal_put_observed_candidate_for_hook.store(true, Ordering::SeqCst);
+        }
+    }));
     let legacy_completion_bytes: &[u8] = b"preexisting immutable v3 durable terminal";
     store
         .put_opts(

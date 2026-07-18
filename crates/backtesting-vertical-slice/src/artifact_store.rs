@@ -3556,13 +3556,14 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                     .into()),
                 }
             }
-            Err(error) if is_object_store_create_only_conflict(&error) => Err(error)
-                .with_context(|| {
+            Err(error) if is_object_store_create_only_conflict(&error) => {
+                Err(error).with_context(|| {
                     format!(
                         "{} conflicts with an occupied terminal key",
                         prepared.object_label
                     )
-                }),
+                })
+            }
             Err(error) => Err(TerminalCreateIndeterminate {
                 detail: format!(
                     "{} at {}: create request failed and may have committed ({error})",
@@ -3618,10 +3619,13 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                     })?;
                 Ok(CreatedTerminalObject { version_id, e_tag })
             }
-            Err(error) if is_object_store_create_only_conflict(&error) => Err(error)
-                .with_context(|| format!("{object_label} conflicts with an occupied key")),
+            Err(error) if is_object_store_create_only_conflict(&error) => {
+                Err(error).with_context(|| format!("{object_label} conflicts with an occupied key"))
+            }
             Err(error) => Err(TerminalCreateIndeterminate {
-                detail: format!("{object_label}: create request failed and may have committed ({error})"),
+                detail: format!(
+                    "{object_label}: create request failed and may have committed ({error})"
+                ),
             }
             .into()),
         }
@@ -3765,9 +3769,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         )
         .await?
         .with_context(|| {
-            format!(
-                "strict create-only probe copy setup {copy_source_uri} -> {copy_dest_uri}"
-            )
+            format!("strict create-only probe copy setup {copy_source_uri} -> {copy_dest_uri}")
         })
     }
 

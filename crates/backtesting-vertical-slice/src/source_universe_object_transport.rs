@@ -288,12 +288,11 @@ mod tests {
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     fn discover_test_packs(
         repository_root: &std::path::Path,
-    ) -> anyhow::Result<Vec<crate::source_universe_batch_launch::CommittedSourceUniverseExecutionPack>>
-    {
-        let scope_names = inspect_worktree_source_universe_execution_pack_scope_names(
-            repository_root,
-            64,
-        )?;
+    ) -> anyhow::Result<
+        Vec<crate::source_universe_batch_launch::CommittedSourceUniverseExecutionPack>,
+    > {
+        let scope_names =
+            inspect_worktree_source_universe_execution_pack_scope_names(repository_root, 64)?;
         discover_committed_source_universe_execution_packs(
             repository_root,
             &scope_names,

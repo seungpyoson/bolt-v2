@@ -4,15 +4,14 @@ use std::{
 };
 
 use backtesting_vertical_slice::source_universe_durable_tracer::{
-        SourceUniverseDurableTracerAggregateLimits, SourceUniverseDurableTracerArtifactPin,
-        SourceUniverseDurableTracerCheckoutPolicy, SourceUniverseDurableTracerPackLimits,
-        SourceUniverseDurableTracerGitExecutable, SourceUniverseDurableTracerRunPolicy,
-        build_source_universe_durable_tracer_receipt_set,
-        preflight_source_universe_durable_tracer_registry,
-        read_and_validate_source_universe_durable_tracer_receipt_set,
-        run_source_universe_durable_tracer_registry,
-        verify_source_universe_durable_tracer_checkout,
-        write_source_universe_durable_tracer_receipt_set,
+    SourceUniverseDurableTracerAggregateLimits, SourceUniverseDurableTracerArtifactPin,
+    SourceUniverseDurableTracerCheckoutPolicy, SourceUniverseDurableTracerGitExecutable,
+    SourceUniverseDurableTracerPackLimits, SourceUniverseDurableTracerRunPolicy,
+    build_source_universe_durable_tracer_receipt_set,
+    preflight_source_universe_durable_tracer_registry,
+    read_and_validate_source_universe_durable_tracer_receipt_set,
+    run_source_universe_durable_tracer_registry, verify_source_universe_durable_tracer_checkout,
+    write_source_universe_durable_tracer_receipt_set,
 };
 
 const SOURCE_REVISION_ENV: &str = "BOLT_RA001A_SOURCE_REVISION";

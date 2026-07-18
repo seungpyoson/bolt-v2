@@ -645,8 +645,8 @@ fn validate_worker_completion_absence(bytes: &[u8]) -> Result<()> {
         !bytes.is_empty(),
         "source-universe completion-absence worker did not return a response"
     );
-    let response: SourceUniverseOperatorWorkerResponse =
-        serde_json::from_slice(bytes).context("parse source-universe completion-absence response")?;
+    let response: SourceUniverseOperatorWorkerResponse = serde_json::from_slice(bytes)
+        .context("parse source-universe completion-absence response")?;
     ensure!(
         crate::reference_artifact::canonical_json_bytes(&response)? == bytes,
         "source-universe completion-absence response bytes are not canonical"
@@ -2122,9 +2122,10 @@ impl SourceUniverseOperatorRunner for ProcessIsolatedSourceUniverseOperatorRunne
         work_budget: &OperatorWorkBudgetGuard,
     ) -> Result<()> {
         self.seal_executable_once(work_budget)?;
-        let worker_executable_sha256 = self.executable_sha256.clone().context(
-            "sealed worker executable is missing its cached SHA-256",
-        )?;
+        let worker_executable_sha256 = self
+            .executable_sha256
+            .clone()
+            .context("sealed worker executable is missing its cached SHA-256")?;
         let execution_attestation =
             DurableExecutionAttestation::new_process_isolated(worker_executable_sha256)?;
         let output_lease = PinnedWorkerDirectoryLease::capture(output_dir)?;
@@ -9069,7 +9070,11 @@ mod tests {
         )
         .expect_err("an existing terminal must never become fresh execution success");
 
-        assert!(error.to_string().contains("refuses existing completion object"));
+        assert!(
+            error
+                .to_string()
+                .contains("refuses existing completion object")
+        );
         assert_eq!(discovery_calls.load(Ordering::SeqCst), 1);
         assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
         assert_eq!(run_calls.load(Ordering::SeqCst), 0);

@@ -449,6 +449,7 @@ adapter_id = "HYPERLIQUID"
 class = "HttpResponseBody"
 feeder = "EconomicsQuoteAuthority"
 captured_at = "2026-06-25"
+captured_at_utc = "2026-06-25T12:00:00Z"
 [[captures]]
 kind = "user_fees"
 fixture = "hyperliquid-user-fees.json"
@@ -513,6 +514,22 @@ def scan_temp(mutator=None, today: dt.date = dt.date(2026, 6, 26)) -> list[str]:
 def assert_finding(findings: list[str], needle: str) -> None:
     if not any(needle in finding for finding in findings):
         raise AssertionError(f"missing finding containing {needle!r}: {findings}")
+
+
+def test_hyperliquid_capture_requires_exact_utc_timestamp() -> None:
+    def mutate(root: Path) -> None:
+        manifest = (
+            root
+            / "tests/fixtures/bolt_v3/boundary_evidence/hyperliquid-economics-captures.toml"
+        )
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'captured_at_utc = "2026-06-25T12:00:00Z"\n', ""
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "captured_at_utc must be an exact ISO UTC timestamp")
 
 
 def test_pin_census_rejects_each_mismatched_surface() -> None:

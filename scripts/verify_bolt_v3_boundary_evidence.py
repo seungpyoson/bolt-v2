@@ -328,6 +328,7 @@ ECONOMICS_CAPTURE_MANIFESTS = {
     Path("tests/fixtures/bolt_v3/boundary_evidence/hyperliquid-economics-captures.toml"): {
         "adapter_id": "HYPERLIQUID",
         "required_kinds": {"user_fees", "perp_meta_and_asset_contexts"},
+        "requires_exact_timestamp": True,
     },
     Path("tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-rpc-captures.toml"): {
         "adapter_id": "OnChainCollateralRpcClient",
@@ -687,6 +688,22 @@ def scan_economics_capture_evidence(
             captured_at = None
         if captured_at is not None and captured_at > today:
             findings.append(f"{manifest_path}: captured_at cannot be in the future")
+        if contract.get("requires_exact_timestamp"):
+            try:
+                captured_at_utc = dt.datetime.fromisoformat(
+                    str(manifest.get("captured_at_utc")).replace("Z", "+00:00")
+                )
+            except ValueError:
+                findings.append(
+                    f"{manifest_path}: captured_at_utc must be an exact ISO UTC timestamp"
+                )
+            else:
+                if captured_at_utc.utcoffset() != dt.timedelta(0):
+                    findings.append(f"{manifest_path}: captured_at_utc must use UTC")
+                if captured_at is not None and captured_at_utc.date() != captured_at:
+                    findings.append(
+                        f"{manifest_path}: captured_at_utc date must equal captured_at"
+                    )
         captures = manifest.get("captures")
         if not isinstance(captures, list):
             findings.append(f"{manifest_path}: captures must be an array of tables")

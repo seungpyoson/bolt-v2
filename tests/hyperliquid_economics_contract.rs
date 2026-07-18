@@ -67,16 +67,16 @@ fn governed_fee_eligibility_policy() -> HyperliquidFeeEligibilityPolicy {
     HyperliquidFeeEligibilityPolicy {
         history_days: NonZeroUsize::new(15).unwrap(),
         rolling_window_days: NonZeroUsize::new(14).unwrap(),
-        latest_day_offset_days: 1,
+        latest_day_offset_days: 0,
     }
 }
 
 fn governed_user_fees_metadata() -> HyperliquidSnapshotMetadata {
     HyperliquidSnapshotMetadata {
         snapshot_id: "governed-live-user-fees".to_string(),
-        source_at_ns: 1_784_332_800_000_000_000,
-        fetched_at_ns: 1_784_332_800_000_000_000,
-        valid_until_ns: 1_784_332_860_000_000_000,
+        source_at_ns: 1_784_331_328_000_000_000,
+        fetched_at_ns: 1_784_331_328_000_000_000,
+        valid_until_ns: 1_784_331_388_000_000_000,
     }
 }
 
@@ -713,6 +713,27 @@ fn user_fees_parser_requires_the_highest_eligible_maker_tier() {
 }
 
 #[test]
+fn user_fees_parser_accepts_the_highest_eligible_maker_tier() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    for row in wire["dailyUserVlm"].as_array_mut().unwrap() {
+        row["userAdd"] = serde_json::Value::String("20000".to_string());
+        row["exchange"] = serde_json::Value::String("1000000".to_string());
+    }
+    wire["userAddRate"] = serde_json::Value::String("-0.00002".to_string());
+
+    HyperliquidUserFeesSnapshot::from_wire_json(
+        governed_user_fees_metadata(),
+        "account",
+        &serde_json::to_string(&wire).unwrap(),
+        &governed_fee_eligibility_policy(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn user_fees_parser_rejects_duplicate_or_non_monotonic_maker_tiers() {
     for (field, invalid_value) in [("makerFractionCutoff", "0.005"), ("add", "-0.000005")] {
         let mut wire: serde_json::Value = serde_json::from_str(include_str!(
@@ -783,6 +804,18 @@ fn user_fees_parser_rejects_impossible_maker_eligibility_inputs() {
     impossible_volume["dailyUserVlm"][0]["exchange"] =
         serde_json::Value::String("1000000".to_string());
     assert_governed_user_fees_invalid(impossible_volume);
+
+    let mut impossible_total_volume: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    impossible_total_volume["dailyUserVlm"][0]["userCross"] =
+        serde_json::Value::String("900001".to_string());
+    impossible_total_volume["dailyUserVlm"][0]["userAdd"] =
+        serde_json::Value::String("100000".to_string());
+    impossible_total_volume["dailyUserVlm"][0]["exchange"] =
+        serde_json::Value::String("1000000".to_string());
+    assert_governed_user_fees_invalid(impossible_total_volume);
 
     let mut impossible_cutoff: serde_json::Value = serde_json::from_str(include_str!(
         "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"

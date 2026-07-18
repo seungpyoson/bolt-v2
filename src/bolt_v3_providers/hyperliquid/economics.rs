@@ -405,7 +405,10 @@ impl HyperliquidUserFeesSnapshot {
                     || volume.user_cross < Decimal::ZERO
                     || volume.user_add < Decimal::ZERO
                     || volume.exchange < Decimal::ZERO
-                    || volume.user_add > volume.exchange
+                    || volume
+                        .user_cross
+                        .checked_add(volume.user_add)
+                        .is_none_or(|user_volume| user_volume > volume.exchange)
             })
             || !valid_fee_schedule(&wire, eligible_volume)
         {

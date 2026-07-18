@@ -3,6 +3,7 @@ adapter_id = "HYPERLIQUID"
 class = "HttpResponseBody"
 feeder = "EconomicsQuoteAuthority"
 captured_at = "2026-07-17"
+captured_at_utc = "2026-07-17T23:35:28Z"
 source_url = "https://api.hyperliquid.xyz/info"
 source_method = "POST"
 

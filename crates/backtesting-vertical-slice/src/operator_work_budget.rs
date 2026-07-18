@@ -2564,10 +2564,20 @@ mod tests {
         let guarded =
             super::guarded_blocking_join_outcome(&guard, OperatorWorkBudgetStage::Backtest, task);
         tokio::pin!(guarded);
+
+        // Poll once so the guarded join registers its wall timer before
+        // advancing paused Tokio time. A competing sleep inside this select
+        // can leave auto-advance waiting on the blocking task indefinitely.
         tokio::select! {
             biased;
             outcome = &mut guarded => panic!("timed-out blocking task returned before quiescence: {outcome:?}"),
-            () = tokio::time::sleep(Duration::from_secs(2)) => {}
+            () = tokio::task::yield_now() => {}
+        }
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::select! {
+            biased;
+            outcome = &mut guarded => panic!("timed-out blocking task returned before quiescence: {outcome:?}"),
+            () = tokio::task::yield_now() => {}
         }
         assert!(
             !quiesced.load(Ordering::SeqCst),

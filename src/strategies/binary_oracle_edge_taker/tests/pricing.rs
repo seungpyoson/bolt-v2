@@ -811,6 +811,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
 #[test]
 fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
     let mut strategy = ready_to_trade_strategy();
+    strategy.pricing.set_selected_pricing_spot(None);
     strategy
         .pricing
         .set_last_reference_fair_value(Some(3_101.0));

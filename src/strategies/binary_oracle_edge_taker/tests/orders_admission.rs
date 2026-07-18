@@ -2748,6 +2748,8 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
 #[test]
 fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
     let mut strategy = ready_to_trade_strategy();
+    let mut exit_book = strategy.active.books.up.clone();
+    exit_book.best_bid = Some(0.550);
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -2764,7 +2766,7 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
         avg_px_open: 0.450,
-        book: strategy.active.books.up.clone(),
+        book: exit_book,
     };
     set_managed_position(
         &mut strategy,
@@ -2786,7 +2788,7 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         decision.instrument_id,
         strategy.active.books.up.instrument_id
     );
-    assert_eq!(decision.price, strategy.active.books.up.best_bid);
+    assert_eq!(decision.price, Some(0.550));
     assert_eq!(decision.quantity, Some(Quantity::new(10.0, 2)));
     assert_eq!(decision.blocked_reason, None);
 }

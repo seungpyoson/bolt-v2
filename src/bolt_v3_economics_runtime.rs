@@ -746,6 +746,7 @@ pub fn refresh_resting_order_economics(
     source: &dyn EconomicsAdmissionSource,
     prior: &EconomicsAdmission,
     remaining_quantity: Decimal,
+    authorized_quantity_ceiling: Decimal,
     maker_guarantee_intact: bool,
     now_ns: u64,
 ) -> RestingOrderEconomicsRefresh {
@@ -781,6 +782,14 @@ pub fn refresh_resting_order_economics(
             RestingOrderEconomicsCancelReason::InvalidState,
         );
     };
+    if authorized_quantity_ceiling <= Decimal::ZERO
+        || remaining_quantity > authorized_quantity_ceiling
+        || remaining_quantity > prior_leg.quantity
+    {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    }
     let Some(base_reservation_notional) = prior_leg.price.checked_mul(remaining_quantity) else {
         return RestingOrderEconomicsRefresh::CancelRequired(
             RestingOrderEconomicsCancelReason::InvalidState,
@@ -839,24 +848,121 @@ fn resting_economic_terms_match(
     prior: &EconomicsAdmission,
     refreshed: &EconomicsAdmission,
 ) -> bool {
-    let component_identity = |component: &crate::economics::EstimatedEconomicComponent| {
-        (
-            &component.component_id,
-            component.class,
-            &component.kind,
-            &component.scope,
-            component.admission_treatment,
-            &component.formula_id,
-        )
-    };
-    let same_component_authority = prior.quote.components().len()
-        == refreshed.quote.components().len()
+    fn normalized_effect_matches(
+        before: &crate::economics::SignedNativeEffect,
+        before_base: Decimal,
+        after: &crate::economics::SignedNativeEffect,
+        after_base: Decimal,
+    ) -> bool {
+        before.unit() == after.unit()
+            && before.inventory_application() == after.inventory_application()
+            && before.amount().checked_div(before_base) == after.amount().checked_div(after_base)
+    }
+
+    fn point_estimate_matches(
+        before: &crate::economics::PointEstimate,
+        before_base: Decimal,
+        after: &crate::economics::PointEstimate,
+        after_base: Decimal,
+    ) -> bool {
+        match (before, after) {
+            (
+                crate::economics::PointEstimate::NonZero(before),
+                crate::economics::PointEstimate::NonZero(after),
+            ) => normalized_effect_matches(before, before_base, after, after_base),
+            (
+                crate::economics::PointEstimate::ProvenZero { factor_id: before },
+                crate::economics::PointEstimate::ProvenZero { factor_id: after },
+            ) => before == after,
+            _ => false,
+        }
+    }
+
+    fn optional_effect_matches(
+        before: Option<&crate::economics::SignedNativeEffect>,
+        before_base: Decimal,
+        after: Option<&crate::economics::SignedNativeEffect>,
+        after_base: Decimal,
+    ) -> bool {
+        match (before, after) {
+            (Some(before), Some(after)) => {
+                normalized_effect_matches(before, before_base, after, after_base)
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn valuation_matches(
+        before: Option<&crate::economics::ValuationEvidence>,
+        before_base: Decimal,
+        after: Option<&crate::economics::ValuationEvidence>,
+        after_base: Decimal,
+    ) -> bool {
+        match (before, after) {
+            (Some(before), Some(after)) => {
+                normalized_effect_matches(
+                    &before.native_effect,
+                    before_base,
+                    &after.native_effect,
+                    after_base,
+                ) && before.normalized_amount.checked_div(before_base)
+                    == after.normalized_amount.checked_div(after_base)
+                    && before.reporting_unit == after.reporting_unit
+                    && before.route_id == after.route_id
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    let same_components = prior.quote.components().len() == refreshed.quote.components().len()
         && prior
             .quote
             .components()
             .iter()
             .zip(refreshed.quote.components())
-            .all(|(before, after)| component_identity(before) == component_identity(after));
+            .all(|(before, after)| {
+                before.component_id == after.component_id
+                    && before.class == after.class
+                    && before.kind == after.kind
+                    && before.scope == after.scope
+                    && before.admission_treatment == after.admission_treatment
+                    && before.formula_id == after.formula_id
+                    && before.source.source_id == after.source.source_id
+                    && before.calculation_factors == after.calculation_factors
+                    && point_estimate_matches(
+                        &before.point_estimate,
+                        prior.base_reservation_notional,
+                        &after.point_estimate,
+                        refreshed.base_reservation_notional,
+                    )
+                    && optional_effect_matches(
+                        before.debit_risk_bound.as_ref(),
+                        prior.base_reservation_notional,
+                        after.debit_risk_bound.as_ref(),
+                        refreshed.base_reservation_notional,
+                    )
+                    && valuation_matches(
+                        before.normalized.as_ref(),
+                        prior.base_reservation_notional,
+                        after.normalized.as_ref(),
+                        refreshed.base_reservation_notional,
+                    )
+            });
+    let prior_basis = prior.net_edge.basis();
+    let refreshed_basis = refreshed.net_edge.basis();
+    let same_basis_authority = prior_basis.policy_id == refreshed_basis.policy_id
+        && prior_basis.resolver_id == refreshed_basis.resolver_id
+        && prior_basis.product_metadata_source == refreshed_basis.product_metadata_source
+        && prior_basis.policy_version == refreshed_basis.policy_version
+        && prior_basis.scope == refreshed_basis.scope
+        && prior_basis
+            .normalized_amount
+            .checked_div(prior.base_reservation_notional)
+            == refreshed_basis
+                .normalized_amount
+                .checked_div(refreshed.base_reservation_notional);
     let normalized_core = |admission: &EconomicsAdmission| {
         admission
             .quote
@@ -868,7 +974,8 @@ fn resting_economic_terms_match(
             .debit_reservation()
             .checked_div(admission.base_reservation_notional)
     };
-    same_component_authority
+    same_components
+        && same_basis_authority
         && normalized_core(prior) == normalized_core(refreshed)
         && normalized_debit(prior) == normalized_debit(refreshed)
 }
@@ -1186,7 +1293,7 @@ struct TestEconomicsAdmissionSource;
 #[cfg(test)]
 impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
     fn resting_order_refresh_margin_ns(&self) -> u64 {
-        1
+        5_000_000_000
     }
 
     fn resolve_product_surface(
@@ -1206,39 +1313,50 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
         &self,
         intent: EconomicsAdmissionQuoteIntent,
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
-        use crate::economics::{
-            AdmissionTreatment, EconomicClass, EconomicComponentId, EconomicKind, EconomicScope,
-            EstimatedEconomicComponent, ExecutionKind, FormulaId, PointEstimate,
-            SignedNativeEffect, SourceId, SourceValidity, VenueQuoteEstimate,
-        };
+        test_economics_admission_source_support::quote_admission(intent, Decimal::ONE)
+    }
+}
 
-        #[derive(Clone)]
-        struct TestAdapter(VenueQuoteEstimate);
+#[cfg(test)]
+mod test_economics_admission_source_support {
+    use super::*;
+    use crate::economics::{
+        AdmissionTreatment, CalculationFactor, EconomicClass, EconomicComponentId, EconomicKind,
+        EconomicScope, EstimatedEconomicComponent, ExecutionKind, FormulaId, PointEstimate,
+        SignedNativeEffect, SourceId, SourceValidity, VenueQuoteEstimate,
+    };
 
-        impl VenueEconomicsAdapter for TestAdapter {
-            fn resolve_edge_basis(
-                &self,
-                request: &EconomicQuoteRequest,
-            ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
-                Ok(crate::economics::ResolvedEdgeBasis {
-                    normalized_amount: request
-                        .planned_fill_legs
-                        .iter()
-                        .map(|leg| leg.price * leg.quantity)
-                        .sum(),
-                    source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
-                    valid_until_ns: self.0.authority.valid_until_ns,
-                })
-            }
+    #[derive(Clone)]
+    struct TestAdapter(VenueQuoteEstimate);
 
-            fn quote(
-                &self,
-                _request: &EconomicQuoteRequest,
-            ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
-                Ok(self.0.clone())
-            }
+    impl VenueEconomicsAdapter for TestAdapter {
+        fn resolve_edge_basis(
+            &self,
+            request: &EconomicQuoteRequest,
+        ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
+            Ok(crate::economics::ResolvedEdgeBasis {
+                normalized_amount: request
+                    .planned_fill_legs
+                    .iter()
+                    .map(|leg| leg.price * leg.quantity)
+                    .sum(),
+                source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
+                valid_until_ns: self.0.authority.valid_until_ns,
+            })
         }
 
+        fn quote(
+            &self,
+            _request: &EconomicQuoteRequest,
+        ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
+            Ok(self.0.clone())
+        }
+    }
+
+    pub(super) fn quote_admission(
+        intent: EconomicsAdmissionQuoteIntent,
+        schedule_factor: Decimal,
+    ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
         let valid_until_ns = u64::MAX;
         let source = SourceValidity {
             source_id: SourceId::new("test-economics-source")?,
@@ -1263,7 +1381,10 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
                 )?),
                 debit_risk_bound: None,
                 admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
-                calculation_factors: Vec::new(),
+                calculation_factors: vec![CalculationFactor {
+                    factor_id: FormulaId::new("test-schedule-factor")?,
+                    value: schedule_factor,
+                }],
                 formula_id: FormulaId::new("test-credit-formula")?,
                 source: source.clone(),
                 normalized: None,
@@ -1315,6 +1436,7 @@ mod resting_order_refresh_tests {
             &TestEconomicsAdmissionSource,
             &prior,
             Decimal::new(2, 0),
+            Decimal::new(2, 0),
             true,
             u64::MAX - 1,
         );
@@ -1336,11 +1458,45 @@ mod resting_order_refresh_tests {
                 &TestEconomicsAdmissionSource,
                 &maker_admission(),
                 Decimal::new(2, 0),
+                Decimal::new(2, 0),
                 false,
                 u64::MAX - 1,
             ),
             RestingOrderEconomicsRefresh::CancelRequired(
                 RestingOrderEconomicsCancelReason::MakerGuaranteeLost
+            )
+        );
+    }
+
+    #[test]
+    fn remaining_quantity_cannot_increase_beyond_prior_or_original_authority() {
+        let prior = maker_admission();
+        assert_eq!(
+            refresh_resting_order_economics(
+                &TestEconomicsAdmissionSource,
+                &prior,
+                Decimal::new(3, 0),
+                Decimal::new(2, 0),
+                true,
+                u64::MAX - 1,
+            ),
+            RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::InvalidState
+            )
+        );
+
+        let partial = test_maker_economics_admission(Decimal::ONE);
+        assert_eq!(
+            refresh_resting_order_economics(
+                &TestEconomicsAdmissionSource,
+                &partial,
+                Decimal::new(15, 1),
+                Decimal::new(2, 0),
+                true,
+                u64::MAX - 1,
+            ),
+            RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::InvalidState
             )
         );
     }
@@ -1376,6 +1532,7 @@ mod resting_order_refresh_tests {
                 &UnavailableRefreshSource,
                 &maker_admission(),
                 Decimal::new(2, 0),
+                Decimal::new(2, 0),
                 true,
                 u64::MAX - 1,
             ),
@@ -1409,12 +1566,7 @@ mod resting_order_refresh_tests {
             &self,
             intent: EconomicsAdmissionQuoteIntent,
         ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
-            let mut admission = TestEconomicsAdmissionSource.quote_admission(intent)?;
-            admission.base_reservation_notional = admission
-                .base_reservation_notional
-                .checked_mul(Decimal::new(2, 0))
-                .ok_or(EconomicsUnavailable::InvalidDecimal)?;
-            Ok(admission)
+            test_economics_admission_source_support::quote_admission(intent, Decimal::new(2, 0))
         }
     }
 
@@ -1424,6 +1576,7 @@ mod resting_order_refresh_tests {
             refresh_resting_order_economics(
                 &ChangedTermsSource,
                 &maker_admission(),
+                Decimal::new(2, 0),
                 Decimal::new(2, 0),
                 true,
                 u64::MAX - 1,

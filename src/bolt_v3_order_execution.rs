@@ -3,7 +3,7 @@ use std::{
     cell::RefMut,
     collections::BTreeMap,
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, RwLockWriteGuard},
 };
 
 use anyhow::{Context, Result};
@@ -82,7 +82,28 @@ pub struct BoltV3OrderRoutingHandle {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RestingOrderEconomicsRecord {
     admission: EconomicsAdmission,
+    original_quantity: Decimal,
     cancel_pending: bool,
+}
+
+struct RestingOrderRegistrationGuard<'a> {
+    records: RwLockWriteGuard<'a, BTreeMap<ClientOrderId, RestingOrderEconomicsRecord>>,
+    client_order_id: ClientOrderId,
+    committed: bool,
+}
+
+impl RestingOrderRegistrationGuard<'_> {
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for RestingOrderRegistrationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.records.remove(&self.client_order_id);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +175,16 @@ pub struct BoltV3MultiSurfaceOrderRoutingConfig<'a> {
 }
 
 impl BoltV3OrderRoutingHandle {
+    pub fn validate_resting_order_refresh_cadence(&self, cadence_ns: u64) -> anyhow::Result<()> {
+        let margin_ns = self.source.resting_order_refresh_margin_ns();
+        if cadence_ns == 0 || cadence_ns >= margin_ns {
+            anyhow::bail!(
+                "resting economics cadence must be positive and strictly shorter than the configured refresh margin: cadence_ns={cadence_ns} margin_ns={margin_ns}"
+            );
+        }
+        Ok(())
+    }
+
     pub fn resting_order_ids(&self) -> anyhow::Result<Vec<ClientOrderId>> {
         Ok(self
             .resting_economics
@@ -162,14 +193,6 @@ impl BoltV3OrderRoutingHandle {
             .keys()
             .copied()
             .collect())
-    }
-
-    pub fn clear_resting_orders(&self) -> anyhow::Result<()> {
-        self.resting_economics
-            .write()
-            .map_err(|_| anyhow::anyhow!("resting economics state lock poisoned"))?
-            .clear();
-        Ok(())
     }
 
     pub fn observe_resting_order(
@@ -189,8 +212,10 @@ impl BoltV3OrderRoutingHandle {
         let Some(record) = records.get_mut(&client_order_id) else {
             return Ok(BoltV3RestingOrderEconomicsAction::None);
         };
-        if record.cancel_pending || observation == BoltV3RestingOrderObservation::Missing {
-            record.cancel_pending = true;
+        if record.cancel_pending {
+            return Ok(BoltV3RestingOrderEconomicsAction::None);
+        }
+        if observation == BoltV3RestingOrderObservation::Missing {
             return Ok(BoltV3RestingOrderEconomicsAction::Cancel {
                 reason: crate::bolt_v3_economics_runtime::RestingOrderEconomicsCancelReason::InvalidState,
             });
@@ -200,7 +225,6 @@ impl BoltV3OrderRoutingHandle {
             maker_guarantee_intact,
         } = observation
         else {
-            record.cancel_pending = true;
             return Ok(BoltV3RestingOrderEconomicsAction::Cancel {
                 reason: crate::bolt_v3_economics_runtime::RestingOrderEconomicsCancelReason::InvalidState,
             });
@@ -209,6 +233,7 @@ impl BoltV3OrderRoutingHandle {
             self.source.as_ref(),
             &record.admission,
             remaining_quantity,
+            record.original_quantity,
             maker_guarantee_intact,
             now_ns,
         ) {
@@ -227,10 +252,7 @@ impl BoltV3OrderRoutingHandle {
             }
             crate::bolt_v3_economics_runtime::RestingOrderEconomicsRefresh::CancelRequired(
                 reason,
-            ) => {
-                record.cancel_pending = true;
-                Ok(BoltV3RestingOrderEconomicsAction::Cancel { reason })
-            }
+            ) => Ok(BoltV3RestingOrderEconomicsAction::Cancel { reason }),
         }
     }
 
@@ -239,17 +261,45 @@ impl BoltV3OrderRoutingHandle {
         client_order_id: ClientOrderId,
         admission: EconomicsAdmission,
     ) -> anyhow::Result<()> {
-        self.resting_economics
-            .write()
-            .map_err(|_| anyhow::anyhow!("resting economics state lock poisoned"))?
-            .insert(
-                client_order_id,
-                RestingOrderEconomicsRecord {
-                    admission,
-                    cancel_pending: false,
-                },
-            );
+        self.prepare_resting_order_registration(client_order_id, admission)?
+            .commit();
         Ok(())
+    }
+
+    fn prepare_resting_order_registration(
+        &self,
+        client_order_id: ClientOrderId,
+        admission: EconomicsAdmission,
+    ) -> anyhow::Result<RestingOrderRegistrationGuard<'_>> {
+        let [leg] = admission.request().planned_fill_legs.as_slice() else {
+            anyhow::bail!("resting economics registration requires exactly one planned fill leg");
+        };
+        if leg.quantity <= Decimal::ZERO {
+            anyhow::bail!("resting economics registration requires positive quantity");
+        }
+        let original_quantity = leg.quantity;
+        let mut records = self
+            .resting_economics
+            .write()
+            .map_err(|_| anyhow::anyhow!("resting economics state lock poisoned"))?;
+        if records.contains_key(&client_order_id) {
+            anyhow::bail!(
+                "resting economics registration rejected duplicate client order id: {client_order_id}"
+            );
+        }
+        records.insert(
+            client_order_id,
+            RestingOrderEconomicsRecord {
+                admission,
+                original_quantity,
+                cancel_pending: false,
+            },
+        );
+        Ok(RestingOrderRegistrationGuard {
+            records,
+            client_order_id,
+            committed: false,
+        })
     }
 
     fn mark_resting_order_cancel_pending(
@@ -488,6 +538,68 @@ fn normalize_planned_fill_legs(
         );
     }
     Ok(normalized)
+}
+
+pub fn resting_order_observation(order: Option<&OrderAny>) -> BoltV3RestingOrderObservation {
+    match order {
+        Some(order) if order.is_closed() => BoltV3RestingOrderObservation::Closed,
+        Some(order) => BoltV3RestingOrderObservation::Open {
+            remaining_quantity: order.leaves_qty().as_decimal(),
+            maker_guarantee_intact: order.is_post_only(),
+        },
+        None => BoltV3RestingOrderObservation::Missing,
+    }
+}
+
+pub(crate) fn drive_resting_order_economics<S>(
+    order_routing: &BoltV3OrderRoutingHandle,
+    policy: BoltV3OrderExecutionPolicy,
+    sink: &mut S,
+    execution_client_id: &str,
+    observations: Vec<(ClientOrderId, BoltV3RestingOrderObservation)>,
+    now_ns: u64,
+) -> Result<()>
+where
+    S: BoltV3NtVenueMutationSink + ?Sized,
+{
+    for (client_order_id, observation) in observations {
+        if let BoltV3RestingOrderEconomicsAction::Cancel { reason } =
+            order_routing.observe_resting_order(client_order_id, observation, now_ns)?
+        {
+            log::warn!(
+                "resting order economics requires cancellation: execution_client_id={execution_client_id} client_order_id={client_order_id} reason={reason:?}"
+            );
+            policy.route_cancel_with_sink(
+                sink,
+                client_order_id,
+                Some(ClientId::from(execution_client_id)),
+                None,
+            )?;
+            order_routing.mark_resting_order_cancel_pending(client_order_id)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn cancel_tracked_resting_orders<S>(
+    order_routing: &BoltV3OrderRoutingHandle,
+    policy: BoltV3OrderExecutionPolicy,
+    sink: &mut S,
+    execution_client_id: &str,
+) -> Result<()>
+where
+    S: BoltV3NtVenueMutationSink + ?Sized,
+{
+    for client_order_id in order_routing.resting_order_ids()? {
+        policy.route_cancel_with_sink(
+            sink,
+            client_order_id,
+            Some(ClientId::from(execution_client_id)),
+            None,
+        )?;
+        order_routing.mark_resting_order_cancel_pending(client_order_id)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -1413,6 +1525,13 @@ where
         let client_order_id = order.client_order_id();
         let submit_context =
             BoltV3SubmitContext::with_client_id(ClientId::from(self.context.execution_client_id));
+        let registration = retained_economics
+            .map(|admission| {
+                self.context
+                    .order_routing
+                    .prepare_resting_order_registration(client_order_id, admission)
+            })
+            .transpose()?;
         let outcome = self.policy.route_submit_with_sink(
             BoltV3SubmitRoutingRequest::new(
                 self.decision_evidence,
@@ -1423,15 +1542,16 @@ where
             self.runtime,
             order,
             submit_context,
-        )?;
-        if outcome == BoltV3SubmitRoutingOutcome::Submitted {
-            if let Some(admission) = retained_economics {
-                self.context
-                    .order_routing
-                    .register_resting_order(client_order_id, admission)?;
+        );
+        match (outcome, registration) {
+            (Ok(BoltV3SubmitRoutingOutcome::Submitted), Some(registration)) => {
+                registration.commit();
+                Ok(())
             }
+            (Ok(_), None) => Ok(()),
+            (Ok(_), _) => anyhow::bail!("resting economics registration state mismatch"),
+            (Err(error), _) => Err(error),
         }
-        Ok(())
     }
 
     fn cancel_maker_order(
@@ -1588,19 +1708,74 @@ mod tests {
             )
             .unwrap();
 
-        assert!(matches!(
-            handle
-                .observe_resting_order(client_order_id, BoltV3RestingOrderObservation::Missing, 1,)
-                .unwrap(),
-            BoltV3RestingOrderEconomicsAction::Cancel { .. }
-        ));
-        assert_eq!(
-            handle
-                .observe_resting_order(client_order_id, BoltV3RestingOrderObservation::Closed, 2,)
-                .unwrap(),
-            BoltV3RestingOrderEconomicsAction::Complete
-        );
+        let mut sink = RecordingVenueMutationSink::default();
+        super::drive_resting_order_economics(
+            &handle,
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            "execution_client",
+            vec![(client_order_id, BoltV3RestingOrderObservation::Missing)],
+            1,
+        )
+        .unwrap();
+        super::drive_resting_order_economics(
+            &handle,
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            "execution_client",
+            vec![(client_order_id, BoltV3RestingOrderObservation::Missing)],
+            1,
+        )
+        .unwrap();
+        super::drive_resting_order_economics(
+            &handle,
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            "execution_client",
+            vec![(client_order_id, BoltV3RestingOrderObservation::Closed)],
+            2,
+        )
+        .unwrap();
+        assert_eq!(sink.cancel_calls, 1);
         assert!(handle.resting_order_ids().unwrap().is_empty());
+    }
+
+    #[test]
+    fn refresh_cadence_must_be_strictly_shorter_than_margin() {
+        let handle =
+            crate::bolt_v3_economics_runtime::test_order_routing_handle("execution_client");
+        assert!(handle.validate_resting_order_refresh_cadence(1).is_ok());
+        assert!(
+            handle
+                .validate_resting_order_refresh_cadence(5_000_000_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn duplicate_resting_order_registration_is_rejected_without_replacement() {
+        let handle =
+            crate::bolt_v3_economics_runtime::test_order_routing_handle("execution_client");
+        let client_order_id = ClientOrderId::from("MAKER-RESTING-DUPLICATE");
+        handle
+            .register_resting_order(
+                client_order_id,
+                crate::bolt_v3_economics_runtime::test_maker_economics_admission(Decimal::ONE),
+            )
+            .unwrap();
+        let error = handle
+            .register_resting_order(
+                client_order_id,
+                crate::bolt_v3_economics_runtime::test_maker_economics_admission(Decimal::new(
+                    2, 0,
+                )),
+            )
+            .expect_err("duplicate registration must fail closed");
+        assert!(error.to_string().contains("duplicate client order id"));
+        assert_eq!(
+            handle.resting_economics.read().unwrap()[&client_order_id].original_quantity,
+            Decimal::ONE
+        );
     }
     use crate::{
         bolt_v3_capital_admission::{
@@ -1782,6 +1957,53 @@ mod tests {
             BoltV3AdmissionOutcome::Admitted
         );
         assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn maker_submit_never_mutates_venue_when_resting_state_cannot_register() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap_for_client("maker_execution_client"),
+        ));
+        let mut runtime = RecordingMakerRuntime::new();
+        let order_routing = Box::leak(Box::new(
+            crate::bolt_v3_economics_runtime::test_order_routing_handle("maker_execution_client"),
+        ));
+        let poisoned_state = order_routing.resting_economics.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poisoned_state.write().unwrap();
+            panic!("poison resting economics state");
+        });
+        let command = MakerCompiledOrderCommand::Submit {
+            leg: Leg::Yes,
+            template: Box::new(maker_limit_post_only_template()),
+            inputs: NtOrderBuildInputs {
+                instrument_id: InstrumentId::from("YES.INSTRUMENT"),
+                order_side: OrderSide::Buy,
+                quantity: Quantity::new(2.0, 2),
+                price: Some(Price::new(0.40, 2)),
+                client_order_id: ClientOrderId::from("MAKER-YES-STATE-FAIL"),
+            },
+            fallback_price: Price::new(0.40, 2),
+            gross_expected_value: 0.02,
+        };
+
+        let result = route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context_with_handle(order_routing),
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(runtime.venue_sink.submit_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
     }
 
     #[test]
@@ -3113,14 +3335,18 @@ mod tests {
     }
 
     fn maker_routing_context() -> BoltV3MakerOrderRoutingContext<'static> {
+        maker_routing_context_with_handle(Box::leak(Box::new(
+            crate::bolt_v3_economics_runtime::test_order_routing_handle("maker_execution_client"),
+        )))
+    }
+
+    fn maker_routing_context_with_handle(
+        order_routing: &'static super::BoltV3OrderRoutingHandle,
+    ) -> BoltV3MakerOrderRoutingContext<'static> {
         BoltV3MakerOrderRoutingContext {
             strategy_id: "maker-strategy",
             execution_client_id: "maker_execution_client",
-            order_routing: Box::leak(Box::new(
-                crate::bolt_v3_economics_runtime::test_order_routing_handle(
-                    "maker_execution_client",
-                ),
-            )),
+            order_routing,
             submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         }
     }

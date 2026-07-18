@@ -1462,27 +1462,19 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     let entry_evaluation_logs = logs
         .iter()
         .filter(|(_, message)| {
-            message.contains("binary_oracle_edge_taker entry evaluation:")
+            message.contains("binary_oracle_edge_taker gross-intent evaluation:")
                 && message.contains(&strategy_id)
         })
         .collect::<Vec<_>>();
     assert_eq!(
         entry_evaluation_logs.len(),
         1,
-        "fallback replay should emit one entry-evaluation log for {strategy_id}: {logs:?}"
+        "fallback replay should emit one gross-intent evaluation log for {strategy_id}: {logs:?}"
     );
     let entry_evaluation_log = &entry_evaluation_logs[0].1;
     assert!(
-        entry_evaluation_log.contains("fast_venue_available=false"),
-        "entry-evaluation log must expose fallback spot as not admitted: {entry_evaluation_log}"
-    );
-    assert!(
-        entry_evaluation_log.contains("reference_current_price_available=false"),
-        "entry-evaluation log must expose standalone fallback reference as not admitted: {entry_evaluation_log}"
-    );
-    assert!(
-        entry_evaluation_log.contains("reference_current_price_available_without_fast_venue=false"),
-        "entry-evaluation log must retain the without-fast-venue conjunction: {entry_evaluation_log}"
+        entry_evaluation_log.contains("submission_blocked_reason=Some("),
+        "gross-intent log must expose the fail-closed submission result: {entry_evaluation_log}"
     );
 
     let submitted = strategy

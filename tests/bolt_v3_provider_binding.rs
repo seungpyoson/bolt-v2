@@ -539,34 +539,36 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 }
 
 fn hyperliquid_hip4_client_without_settlement_poll() -> ClientBlock {
-    data_only_client_from_toml(
-        r#"
-venue = "HYPERLIQUID"
-
-[execution]
-account_id = "HYPERLIQUID-001"
-environment = "testnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["hip4_outcomes"]
-base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
-base_url_http = "https://api.hyperliquid-testnet.xyz/info"
-base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-"#,
-    )
+    let mut client = hyperliquid_execution_client_with_secret_fields(
+        "private_key_ssm_path = \"/bolt/hyperliquid/master_api_wallet/private_key\"\naccount_address_ssm_path = \"/bolt/hyperliquid/master_api_wallet/account_address\"",
+    );
+    let execution = client
+        .execution
+        .as_mut()
+        .and_then(toml::Value::as_table_mut)
+        .expect("test Hyperliquid execution should be a table");
+    execution.insert(
+        "product_surfaces".to_string(),
+        toml::Value::Array(vec![toml::Value::String("hip4_outcomes".to_string())]),
+    );
+    let economics = execution
+        .get_mut("economics")
+        .and_then(toml::Value::as_table_mut)
+        .expect("test Hyperliquid economics should be a table");
+    economics.insert(
+        "carry_surfaces".to_string(),
+        toml::Value::Array(vec![toml::Value::String("hip4_outcomes".to_string())]),
+    );
+    let policies = economics
+        .get_mut("product_surface_policies")
+        .and_then(toml::Value::as_table_mut)
+        .expect("test Hyperliquid economics policies should be a table");
+    policies.clear();
+    policies.insert(
+        "hip4_outcomes".to_string(),
+        toml::Value::String("primary".to_string()),
+    );
+    client
 }
 
 fn add_requested_market_data_clients(loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config) {

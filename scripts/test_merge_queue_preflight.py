@@ -93,6 +93,42 @@ def commit(repo: pathlib.Path, message: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+def preflight_transport_environment(
+    repo: pathlib.Path,
+    remote: pathlib.Path,
+    environ: dict[str, str] | None = None,
+    remote_url: str = "https://github.com/seungpyoson/bolt-v2.git",
+) -> dict[str, str]:
+    environment = dict(os.environ if environ is None else environ)
+    base_path = environment.get("PREFLIGHT_TEST_BASE_PATH", environment.get("PATH", ""))
+    real_git = shutil.which("git", path=base_path)
+    if real_git is None:
+        raise AssertionError("git executable unavailable")
+    bin_dir = repo.parent / "preflight-transport-bin"
+    shim = bin_dir / "git"
+    source_repo = str(repo.resolve())
+    rewrite = f"url.{remote.resolve()}.insteadOf={remote_url}"
+    write(
+        shim,
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import pathlib\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        f"source_repo = pathlib.Path({source_repo!r})\n"
+        "if args == ['config', '--local', '--get-all', 'remote.origin.url'] and pathlib.Path.cwd().resolve() == source_repo:\n"
+        f"    print({remote_url!r})\n"
+        "    raise SystemExit(0)\n"
+        "if args and args[0] == 'fetch':\n"
+        f"    args = ['-c', {rewrite!r}, *args]\n"
+        f"os.execv({real_git!r}, [{real_git!r}, *args])\n",
+    )
+    shim.chmod(0o755)
+    environment["PATH"] = f"{bin_dir}{os.pathsep}{base_path}"
+    environment["PREFLIGHT_TEST_BASE_PATH"] = base_path
+    return environment
+
+
 class GitFixture:
     def __init__(self, root: pathlib.Path) -> None:
         self.root = root
@@ -107,6 +143,7 @@ class GitFixture:
         self.base = commit(self.repo, "base")
         git(self.repo, "branch", "-M", "main")
         git(self.repo, "push", "origin", "main")
+        self.environment = preflight_transport_environment(self.repo, self.remote)
 
     def make_pr(self, number: int, edits: dict[str, str]) -> str:
         branch = f"pr-{number}"
@@ -129,10 +166,6 @@ def run_preflight(
     command = [
         sys.executable,
         str(SCRIPT_PATH),
-        "--origin",
-        str(origin),
-        "--base",
-        "main",
         "--expected-base-sha",
         expected_base_sha or git(repo, "rev-parse", "main"),
         *expected_head_sha_args(origin, args),
@@ -143,6 +176,7 @@ def run_preflight(
     result = subprocess.run(
         command,
         cwd=repo,
+        env=preflight_transport_environment(repo, origin),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -701,13 +735,17 @@ def write_preflight_config(
     root: pathlib.Path,
     *,
     input_timeout_seconds: int = 30,
+    base: str = "main",
 ) -> pathlib.Path:
     path = root / "preflight.toml"
     write(
         path,
         "[merge_queue_preflight]\n"
         'origin = "origin"\n'
-        'base = "main"\n'
+        f"base = {json.dumps(base)}\n"
+        "\n"
+        "[merge_queue_preflight.operator]\n"
+        'repository = "github.com/seungpyoson/bolt-v2"\n'
         "\n"
         "[merge_queue_preflight.timeouts]\n"
         f"input_seconds = {input_timeout_seconds}\n",
@@ -794,17 +832,13 @@ def run_preflight_with_gh(
     command = [
         sys.executable,
         str(SCRIPT_PATH),
-        "--origin",
-        str(origin),
-        "--base",
-        "main",
         "--expected-base-sha",
         expected_base_sha or git(repo, "rev-parse", "main"),
         *expected_head_sha_args(origin, prs),
         "--json",
         *prs,
     ]
-    env = os.environ.copy()
+    env = preflight_transport_environment(repo, origin)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     return subprocess.run(
         command,
@@ -913,9 +947,59 @@ def assert_preflight_config_is_identity_only() -> None:
     loaded = module.load_config(REPO_ROOT / "ci" / "rust-verification.toml")
     assert_equal(
         set(loaded.__dataclass_fields__),
-        {"origin", "base", "input_timeout_seconds"},
+        {"origin", "base", "repository", "input_timeout_seconds"},
         "post-cutover preflight config fields",
     )
+
+
+def assert_origin_and_base_cli_overrides_are_rejected() -> None:
+    module = load_preflight_module()
+    base_args = [
+        "--expected-base-sha",
+        "a" * 40,
+        "--expected-head-sha",
+        f"1={'b' * 40}",
+        "1",
+    ]
+    for flag, value in (("--origin", "../origin.git"), ("--base", "other")):
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                module.parser().parse_args([flag, value, *base_args])
+        except SystemExit as exc:
+            assert_equal(exc.code, 4, f"rejected {flag} exit")
+        else:
+            raise AssertionError(f"{flag} must not be accepted")
+
+
+def assert_checkout_remote_must_match_configured_repository() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = GitFixture(pathlib.Path(tmp))
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        env = os.environ.copy()
+        env["PATH"] = env.get("PREFLIGHT_TEST_BASE_PATH", env["PATH"])
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--expected-base-sha",
+                fixture.base,
+                "--expected-head-sha",
+                f"1={head}",
+                "--no-gh",
+                "--json",
+                "1",
+            ],
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 4, "noncanonical checkout remote exit")
+        if "does not match configured repository" not in result.stderr:
+            raise AssertionError(result.stderr)
 
 
 def assert_mergify_config_snapshot_uses_base_blob() -> None:
@@ -993,61 +1077,6 @@ def assert_private_fetches_do_not_write_checkout_refs() -> None:
         assert_equal(leaked_refs, "", "checkout preflight refs must stay empty")
 
 
-def assert_private_fetches_resolve_checkout_remote_names() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        fixture = GitFixture(pathlib.Path(tmp))
-        head = fixture.make_pr(1, {"one.txt": "one\n"})
-        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
-        checkout_preflight_refs = fixture.repo / ".git" / "refs" / "preflight"
-        checkout_preflight_refs.mkdir(parents=True, exist_ok=True)
-        original_mode = checkout_preflight_refs.stat().st_mode
-        checkout_preflight_refs.chmod(0o500)
-        try:
-            command = [
-                sys.executable,
-                str(SCRIPT_PATH),
-                "--origin",
-                "origin",
-                "--base",
-                "main",
-                "--expected-base-sha",
-                fixture.base,
-                "--expected-head-sha",
-                f"1={head}",
-                "--no-gh",
-                "--json",
-                "1",
-            ]
-            result = subprocess.run(
-                command,
-                cwd=fixture.repo,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-        finally:
-            checkout_preflight_refs.chmod(original_mode)
-        payload = parse_json(result.stdout)
-        assert_equal(result.returncode, 3, "remote-name private fetch no-gh rc")
-        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "private fetches must resolve checkout remote names")
-
-
-def assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote() -> None:
-    module = load_preflight_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        fixture = GitFixture(pathlib.Path(tmp))
-        git(fixture.repo, "remote", "set-url", "origin", "../origin.git")
-        private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
-        try:
-            resolved = private_fetch.fetch_origin("origin")
-            assert_equal(resolved, str(fixture.remote.resolve()), "private fetch origin URL")
-            configured_remotes = git(private_fetch.git_repo, "remote")
-            assert_equal(configured_remotes, "", "private fetch must not configure temp remotes")
-        finally:
-            private_fetch.cleanup()
-
-
 def assert_private_fetch_repo_persists_auto_maintenance_suppression() -> None:
     module = load_preflight_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1080,17 +1109,20 @@ def assert_private_fetch_sha_spawns_no_background_maintenance() -> None:
         requested = fixture.make_pr(1, {"one.txt": "one\n"})
         private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
         trace = root / "private-fetch-trace.json"
-        previous_trace = os.environ.get("GIT_TRACE2_EVENT")
+        isolated_environment = module.isolated_git_transport_environment
+
+        def traced_environment(environ: dict[str, str]) -> dict[str, str]:
+            environment = isolated_environment(environ)
+            environment["GIT_TRACE2_EVENT"] = str(trace)
+            return environment
+
+        module.isolated_git_transport_environment = traced_environment
         try:
-            os.environ["GIT_TRACE2_EVENT"] = str(trace)
-            fetched = private_fetch.fetch_sha(str(fixture.remote), requested, "probe")
+            fetched = private_fetch.fetch_sha("origin", requested, "probe")
             trace_children = count_trace2_children(trace)
             maintenance_children = count_trace2_maintenance_children(trace)
         finally:
-            if previous_trace is None:
-                os.environ.pop("GIT_TRACE2_EVENT", None)
-            else:
-                os.environ["GIT_TRACE2_EVENT"] = previous_trace
+            module.isolated_git_transport_environment = isolated_environment
             private_fetch.cleanup()
 
         assert_equal(fetched, requested, "private fetch SHA")
@@ -1101,71 +1133,6 @@ def assert_private_fetch_sha_spawns_no_background_maintenance() -> None:
             0,
             "private fetch maintenance children before cleanup",
         )
-
-
-def assert_private_fetch_resolves_raw_relative_origin_path() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        fixture = GitFixture(pathlib.Path(tmp))
-        head = fixture.make_pr(1, {"one.txt": "one\n"})
-        command = [
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--origin",
-            "../origin.git",
-            "--base",
-            "main",
-            "--expected-base-sha",
-            fixture.base,
-            "--expected-head-sha",
-            f"1={head}",
-            "--no-gh",
-            "--json",
-            "1",
-        ]
-        result = subprocess.run(
-            command,
-            cwd=fixture.repo,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        payload = parse_json(result.stdout)
-        assert_equal(result.returncode, 3, "raw-relative-origin no-gh rc")
-        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "raw relative --origin path must fetch PR heads")
-
-
-def assert_private_fetch_resolves_raw_bare_git_origin_path() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        fixture = GitFixture(pathlib.Path(tmp))
-        head = fixture.make_pr(1, {"one.txt": "one\n"})
-        os.symlink(fixture.remote, fixture.repo / "origin.git")
-        command = [
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--origin",
-            "origin.git",
-            "--base",
-            "main",
-            "--expected-base-sha",
-            fixture.base,
-            "--expected-head-sha",
-            f"1={head}",
-            "--no-gh",
-            "--json",
-            "1",
-        ]
-        result = subprocess.run(
-            command,
-            cwd=fixture.repo,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        payload = parse_json(result.stdout)
-        assert_equal(result.returncode, 3, "raw-bare-git-origin no-gh rc")
-        assert_equal(set(payload["pr_heads"].keys()), {"1"}, "origin.git --origin path must fetch PR heads")
 
 
 def loose_object_mtimes(repo: pathlib.Path) -> dict[str, int]:
@@ -1206,51 +1173,6 @@ def assert_private_fetches_do_not_freshen_checkout_objects() -> None:
         assert_equal(set(payload["pr_heads"].keys()), {"1"}, "object-mtime private fetch pr heads")
         after = loose_object_mtimes(fixture.repo)
         assert_equal(after, before, "private preflight must not freshen checkout loose objects")
-
-
-def assert_remote_url_normalization_uses_shared_helper() -> None:
-    source = SCRIPT_PATH.read_text(encoding="utf-8")
-    if "REMOTE_URL_SCHEME_RE =" in source or "\ndef fetchable_remote_url(" in source:
-        raise AssertionError("remote URL normalization must live in one shared helper")
-
-
-def assert_shared_remote_url_normalization_matrix() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        source_repo = pathlib.Path(tmp) / "repo"
-        source_repo.mkdir()
-        absolute = str((source_repo.parent / "origin.git").resolve())
-        cases = {
-            "https://example.invalid/org/repo.git": "https://example.invalid/org/repo.git",
-            "ssh://example.invalid/org/repo.git": "ssh://example.invalid/org/repo.git",
-            "git@example.invalid:org/repo.git": "git@example.invalid:org/repo.git",
-            "file:///tmp/origin.git": "file:///tmp/origin.git",
-            absolute: absolute,
-            "~/origin.git": "~/origin.git",
-            "../origin.git": str((source_repo / "../origin.git").resolve(strict=False)),
-            "./origin.git": str((source_repo / "./origin.git").resolve(strict=False)),
-            "origin.git": str((source_repo / "origin.git").resolve(strict=False)),
-        }
-        for value, expected in cases.items():
-            assert_equal(
-                git_remote_utils.fetchable_remote_url(value, source_repo),
-                expected,
-                f"fetchable remote URL for {value}",
-            )
-        assert_equal(
-            git_remote_utils.fetchable_origin_argument("origin", source_repo),
-            "origin",
-            "bare remote name must stay a remote name",
-        )
-        assert_equal(
-            git_remote_utils.fetchable_origin_argument("../origin.git", source_repo),
-            str((source_repo / "../origin.git").resolve(strict=False)),
-            "raw relative origin path must resolve from checkout",
-        )
-        assert_equal(
-            git_remote_utils.fetchable_origin_argument("origin.git", source_repo),
-            str((source_repo / "origin.git").resolve(strict=False)),
-            "raw bare .git origin path must resolve from checkout",
-        )
 
 
 def assert_github_actions_auth_helper_fails_without_actions_identity() -> None:
@@ -1492,13 +1414,12 @@ def assert_unavailable_base_ref_is_inconclusive() -> None:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
         head = fixture.make_pr(1, {"one.txt": "one\n"})
+        config = write_preflight_config(root, base="missing")
         command = [
             sys.executable,
             str(SCRIPT_PATH),
-            "--origin",
-            str(root / "missing-origin.git"),
-            "--base",
-            "main",
+            "--config",
+            str(config),
             "--expected-base-sha",
             fixture.base,
             "--expected-head-sha",
@@ -1510,6 +1431,7 @@ def assert_unavailable_base_ref_is_inconclusive() -> None:
         result = subprocess.run(
             command,
             cwd=fixture.repo,
+            env=preflight_transport_environment(fixture.repo, fixture.remote),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1533,10 +1455,6 @@ def assert_stale_expected_head_sha_blocks_pr() -> None:
         command = [
             sys.executable,
             str(SCRIPT_PATH),
-            "--origin",
-            str(fixture.remote),
-            "--base",
-            "main",
             "--expected-base-sha",
             git(fixture.repo, "rev-parse", "main"),
             "--expected-head-sha",
@@ -1548,6 +1466,7 @@ def assert_stale_expected_head_sha_blocks_pr() -> None:
         result = subprocess.run(
             command,
             cwd=fixture.repo,
+            env=preflight_transport_environment(fixture.repo, fixture.remote),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1737,10 +1656,6 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
         command = [
             sys.executable,
             str(SCRIPT_PATH),
-            "--origin",
-            str(fixture.remote),
-            "--base",
-            "main",
             "--expected-base-sha",
             fixture.base,
             "--expected-head-sha",
@@ -1751,7 +1666,7 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
             "1",
             "2",
         ]
-        env = os.environ.copy()
+        env = preflight_transport_environment(fixture.repo, fixture.remote)
         env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
         result = subprocess.run(
             command,
@@ -1808,10 +1723,6 @@ def assert_invalid_pr_input_is_rejected() -> None:
         command = [
             sys.executable,
             str(SCRIPT_PATH),
-            "--origin",
-            str(fixture.remote),
-            "--base",
-            "main",
             "--expected-base-sha",
             git(fixture.repo, "rev-parse", "main"),
             "--expected-head-sha",
@@ -1840,10 +1751,6 @@ def assert_missing_expected_base_sha_is_rejected() -> None:
         command = [
             sys.executable,
             str(SCRIPT_PATH),
-            "--origin",
-            str(fixture.remote),
-            "--base",
-            "main",
             "--no-gh",
             "--json",
             "1",
@@ -1868,10 +1775,6 @@ def assert_missing_expected_head_sha_is_rejected() -> None:
         command = [
             sys.executable,
             str(SCRIPT_PATH),
-            "--origin",
-            str(fixture.remote),
-            "--base",
-            "main",
             "--expected-base-sha",
             git(fixture.repo, "rev-parse", "main"),
             "--no-gh",
@@ -1904,10 +1807,6 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
         command = [
             sys.executable,
             str(SCRIPT_PATH),
-            "--origin",
-            str(fixture.remote),
-            "--base",
-            "main",
             "--expected-base-sha",
             fixture.base,
             "--expected-head-sha",
@@ -1915,8 +1814,8 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
             "--json",
             "1",
         ]
-        env = os.environ.copy()
-        env["PATH"] = str(bin_dir)
+        env = preflight_transport_environment(fixture.repo, fixture.remote)
+        env["PATH"] = env["PATH"].split(os.pathsep, 1)[0]
         result = subprocess.run(
             command,
             cwd=fixture.repo,
@@ -2416,6 +2315,8 @@ def main() -> int:
     assert_post_cutover_mergify_contract_is_review_only_and_single_pr()
     assert_queue_ci_and_verifier_flags_are_removed()
     assert_preflight_config_is_identity_only()
+    assert_origin_and_base_cli_overrides_are_rejected()
+    assert_checkout_remote_must_match_configured_repository()
     assert_mergify_config_gaps_are_reported()
     assert_contract_result_reduces_findings_by_table()
     assert_preflight_input_timeout_is_config_driven()
@@ -2431,15 +2332,9 @@ def main() -> int:
     assert_mergify_config_snapshot_uses_base_blob()
     assert_fetches_use_private_refs_without_fetch_head()
     assert_private_fetches_do_not_write_checkout_refs()
-    assert_private_fetches_resolve_checkout_remote_names()
-    assert_private_fetch_resolves_checkout_remote_to_url_without_private_remote()
     assert_private_fetch_repo_persists_auto_maintenance_suppression()
     assert_private_fetch_sha_spawns_no_background_maintenance()
-    assert_private_fetch_resolves_raw_relative_origin_path()
-    assert_private_fetch_resolves_raw_bare_git_origin_path()
     assert_private_fetches_do_not_freshen_checkout_objects()
-    assert_remote_url_normalization_uses_shared_helper()
-    assert_shared_remote_url_normalization_matrix()
     assert_github_actions_auth_helper_fails_without_actions_identity()
     assert_github_actions_auth_helper_keeps_local_ambient_auth_optional()
     assert_unsupported_mergify_queue_condition_does_not_match()

@@ -29,7 +29,12 @@ if str(SCRIPT_DIR) not in sys.path:
 import config_validators as _cv  # noqa: E402
 from ci_provenance import MERGIFY_CONFIG_EXPECTATIONS  # noqa: E402
 from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG  # noqa: E402
-from git_remote_utils import fetchable_origin_argument, fetchable_remote_url  # noqa: E402
+from git_remote_utils import (  # noqa: E402
+    github_https_remote_url as _github_https_remote_url,
+    isolated_git_transport_environment,
+    redact_remote_urls,
+    require_remote_name as _require_remote_name,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -522,6 +527,8 @@ class PreflightError(RuntimeError):
 require_table = functools.partial(_cv.require_table, error_cls=PreflightError)
 require_string = functools.partial(_cv.require_string, error_cls=PreflightError)
 require_positive_int = functools.partial(_cv.require_positive_int, error_cls=PreflightError)
+github_https_remote_url = functools.partial(_github_https_remote_url, error_cls=PreflightError)
+require_remote_name = functools.partial(_require_remote_name, error_cls=PreflightError)
 
 
 class PreflightArgumentParser(argparse.ArgumentParser):
@@ -1372,10 +1379,11 @@ class PrivateFetchRefs:
         temp_dir = tempfile.TemporaryDirectory(prefix="merge-queue-preflight-git-")
         git_repo = pathlib.Path(temp_dir.name) / "repo.git"
         try:
-            run_command(
-                ["git", "init", "--bare", str(git_repo)],
-                cwd=pathlib.Path(temp_dir.name),
-                check=True,
+            git(
+                pathlib.Path(temp_dir.name),
+                "init",
+                "--bare",
+                str(git_repo),
                 timeout_seconds=input_timeout_seconds,
             )
             for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG:
@@ -1410,6 +1418,7 @@ class PrivateFetchRefs:
         )
 
     def fetch_origin(self, origin: str) -> str:
+        require_remote_name(origin)
         cached = self.remotes.get(origin)
         if cached is not None:
             return cached
@@ -1417,18 +1426,17 @@ class PrivateFetchRefs:
             raise PreflightError(f"source repository directory {self.source_repo} does not exist")
         result = git(
             self.source_repo,
-            "remote",
-            "get-url",
-            origin,
+            "config",
+            "--local",
+            "--get-all",
+            f"remote.{origin}.url",
             check=False,
             timeout_seconds=self.input_timeout_seconds,
         )
-        remote_url = result.stdout.strip()
-        if result.returncode != 0 or not remote_url:
-            remote_url = fetchable_origin_argument(origin, self.source_repo)
-            self.remotes[origin] = remote_url
-            return remote_url
-        remote_url = fetchable_remote_url(remote_url, self.source_repo)
+        remote_urls = result.stdout.splitlines()
+        if result.returncode != 0 or len(remote_urls) != 1 or not remote_urls[0]:
+            raise PreflightError("configured Git remote did not resolve to a URL")
+        remote_url = remote_urls[0]
         self.remotes[origin] = remote_url
         return remote_url
 
@@ -1436,14 +1444,16 @@ class PrivateFetchRefs:
         if not self.git_repo.is_dir():
             raise PreflightError(f"private Git repository directory {self.git_repo} does not exist")
         ref = f"{self.namespace}/{name}"
+        remote_url = self.fetch_origin(origin)
         git(
             self.git_repo,
             "fetch",
             "--quiet",
             "--no-write-fetch-head",
             "--no-tags",
-            self.fetch_origin(origin),
+            remote_url,
             f"{source}:{ref}",
+            redact_values=(remote_url,),
             timeout_seconds=self.input_timeout_seconds,
         )
         self.refs.append(ref)
@@ -1561,6 +1571,7 @@ class Batch:
 class PreflightConfig:
     origin: str
     base: str
+    repository: str
     input_timeout_seconds: int
 
 
@@ -1617,6 +1628,7 @@ def run_command(
     input_text: str | None = None,
     timeout_seconds: int | None = None,
     process_group: bool = False,
+    redact_values: Sequence[str] = (),
 ) -> CommandResult:
     command_args = list(args)
     stdin = subprocess.PIPE if input_text is not None else subprocess.DEVNULL
@@ -1678,9 +1690,16 @@ def run_command(
         failure_type=failure_type,
     )
     if check and result.returncode != 0:
-        rendered = " ".join(shlex.quote(part) for part in result.args)
+        rendered = " ".join(
+            shlex.quote(redact_remote_urls(part, redact_values)) for part in result.args
+        )
         raise PreflightError(
-            f"command failed ({result.returncode}): {rendered}\n{result.stderr}{result.stdout}"
+            "command failed ({returncode}): {rendered}\n{stderr}{stdout}".format(
+                returncode=result.returncode,
+                rendered=rendered,
+                stderr=redact_remote_urls(result.stderr, redact_values),
+                stdout=redact_remote_urls(result.stdout, redact_values),
+            )
         )
     return result
 
@@ -1689,17 +1708,18 @@ def git(
     repo: pathlib.Path,
     *args: str,
     check: bool = True,
-    env: dict[str, str] | None = None,
     input_text: str | None = None,
     timeout_seconds: int | None = None,
+    redact_values: Sequence[str] = (),
 ) -> CommandResult:
     return run_command(
         ["git", *args],
         cwd=repo,
         check=check,
-        env=env,
+        env=isolated_git_transport_environment(os.environ),
         input_text=input_text,
         timeout_seconds=timeout_seconds,
+        redact_values=redact_values,
     )
 
 
@@ -1720,6 +1740,9 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     settings = require_table(root, "merge_queue_preflight", "config")
     origin = require_string(settings, "origin", "config.merge_queue_preflight")
     base = require_string(settings, "base", "config.merge_queue_preflight")
+    operator = require_table(settings, "operator", "config.merge_queue_preflight")
+    repository = require_string(operator, "repository", "config.merge_queue_preflight.operator")
+    github_https_remote_url(repository)
     timeout_settings = require_table(settings, "timeouts", "config.merge_queue_preflight")
     input_timeout_seconds = require_positive_int(
         timeout_settings,
@@ -1729,6 +1752,7 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
     return PreflightConfig(
         origin=origin,
         base=base,
+        repository=repository,
         input_timeout_seconds=input_timeout_seconds,
     )
 
@@ -1792,7 +1816,7 @@ def unique_preserving_order(values: Sequence[int]) -> tuple[int, ...]:
 
 
 def fetch_base(fetch_refs: PrivateFetchRefs, origin: str, base: str) -> str:
-    sha = fetch_refs.fetch_sha(origin, base, "base")
+    sha = fetch_refs.fetch_sha(origin, f"refs/heads/{base}", f"base-{base}")
     if SHA_RE.fullmatch(sha) is None:
         raise PreflightError(f"base {base!r} did not resolve to a commit SHA")
     return sha
@@ -1866,19 +1890,20 @@ def commit_tree(
     message: str,
     input_timeout_seconds: int,
 ) -> str:
-    args = ["commit-tree", tree]
+    args = [
+        "-c",
+        "user.name=merge-queue-preflight",
+        "-c",
+        "user.email=merge-queue-preflight@example.invalid",
+        "commit-tree",
+        tree,
+    ]
     for parent in parents:
         args.extend(["-p", parent])
-    env = os.environ.copy()
-    env.setdefault("GIT_AUTHOR_NAME", "merge-queue-preflight")
-    env.setdefault("GIT_AUTHOR_EMAIL", "merge-queue-preflight@example.invalid")
-    env.setdefault("GIT_COMMITTER_NAME", "merge-queue-preflight")
-    env.setdefault("GIT_COMMITTER_EMAIL", "merge-queue-preflight@example.invalid")
     completed = git(
         repo,
         *args,
         check=False,
-        env=env,
         input_text=message,
         timeout_seconds=input_timeout_seconds,
     )
@@ -2323,6 +2348,7 @@ def preflight(
     repo: pathlib.Path,
     origin: str,
     base: str,
+    expected_origin_url: str,
     expected_base_sha: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
@@ -2334,6 +2360,7 @@ def preflight(
         return preflight_with_fetch_refs(
             origin=origin,
             base=base,
+            expected_origin_url=expected_origin_url,
             expected_base_sha=expected_base_sha,
             expected_head_inputs=expected_head_inputs,
             pr_numbers=pr_numbers,
@@ -2349,6 +2376,7 @@ def preflight_with_fetch_refs(
     *,
     origin: str,
     base: str,
+    expected_origin_url: str,
     expected_base_sha: str,
     expected_head_inputs: Sequence[ExpectedHead],
     pr_numbers: Sequence[int],
@@ -2359,6 +2387,8 @@ def preflight_with_fetch_refs(
     requested = unique_preserving_order(pr_numbers)
     expected_heads = expected_head_map(expected_head_inputs, requested)
     git_repo = fetch_refs.git_repo
+    if fetch_refs.fetch_origin(origin) != expected_origin_url:
+        raise PreflightError("checkout Git remote does not match configured repository")
     try:
         actual_base_sha = fetch_base(fetch_refs, origin, base)
     except PreflightError as exc:
@@ -2522,10 +2552,8 @@ def plain_text(payload: dict[str, object]) -> str:
 def parser() -> argparse.ArgumentParser:
     root = PreflightArgumentParser(prog="merge_queue_preflight.py")
     root.add_argument("prs", nargs="+", type=positive_pr_number)
-    root.add_argument("--base")
     root.add_argument("--expected-base-sha", required=True, type=commit_sha)
     root.add_argument("--expected-head-sha", action="append", required=True, type=expected_head_sha)
-    root.add_argument("--origin")
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     root.add_argument("--no-gh", action="store_true")
     root.add_argument("--json", action="store_true")
@@ -2536,10 +2564,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         config = load_config(args.config)
+        os.environ["GH_HOST"] = config.repository.split("/", 1)[0]
+        os.environ["GH_REPO"] = config.repository
         payload, exit_code = preflight(
             repo=pathlib.Path.cwd(),
-            origin=args.origin or config.origin,
-            base=args.base or config.base,
+            origin=config.origin,
+            base=config.base,
+            expected_origin_url=github_https_remote_url(config.repository),
             expected_base_sha=args.expected_base_sha,
             expected_head_inputs=args.expected_head_sha,
             pr_numbers=args.prs,

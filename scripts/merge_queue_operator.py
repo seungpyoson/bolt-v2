@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import functools
 import json
@@ -13,8 +14,9 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -22,6 +24,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import config_validators as _cv  # noqa: E402
+from git_remote_utils import (  # noqa: E402
+    github_https_remote_url as _github_https_remote_url,
+    isolated_git_transport_environment,
+    require_remote_name as _require_remote_name,
+)
 from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE, VERDICT_SPLIT_ADVISED  # noqa: E402
 
 
@@ -46,6 +53,8 @@ class OperatorError(Exception):
 require_table = functools.partial(_cv.require_table, error_cls=OperatorError)
 require_string = functools.partial(_cv.require_string, error_cls=OperatorError)
 require_positive_int = functools.partial(_cv.require_positive_int, error_cls=OperatorError)
+github_https_remote_url = functools.partial(_github_https_remote_url, error_cls=OperatorError)
+require_remote_name = functools.partial(_require_remote_name, error_cls=OperatorError)
 
 
 Runner = Callable[..., CommandResult]
@@ -58,6 +67,7 @@ def run_command(
     check: bool = False,
     input_text: str | None = None,
     timeout_seconds: int | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> CommandResult:
     stdin = subprocess.PIPE if input_text is not None else subprocess.DEVNULL
     try:
@@ -69,6 +79,7 @@ def run_command(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
+            env=environment,
         )
     except FileNotFoundError as exc:
         raise OperatorError(f"{command[0]} is unavailable") from exc
@@ -103,6 +114,7 @@ def positive_pr_number(value: str) -> int:
 class OperatorConfig:
     origin: str
     base: str
+    repository: str
     queue_command: str
     ref_timeout_seconds: int
     queue_timeout_seconds: int
@@ -115,9 +127,12 @@ def load_operator_config(path: pathlib.Path) -> OperatorConfig:
         raise OperatorError(f"unable to read config {path}: {exc}") from exc
     settings = require_table(root, "merge_queue_preflight", "config")
     operator = require_table(settings, "operator", "config.merge_queue_preflight")
+    repository = require_string(operator, "repository", "config.merge_queue_preflight.operator")
+    github_https_remote_url(repository)
     return OperatorConfig(
         origin=require_string(settings, "origin", "config.merge_queue_preflight"),
         base=require_string(settings, "base", "config.merge_queue_preflight"),
+        repository=repository,
         queue_command=require_string(operator, "queue_command", "config.merge_queue_preflight.operator"),
         ref_timeout_seconds=require_positive_int(
             operator,
@@ -139,14 +154,65 @@ def parse_ls_remote_sha(output: str, ref: str) -> str:
     return fields[0]
 
 
-def remote_ref_sha(repo: pathlib.Path, origin: str, ref: str, runner: Runner, timeout_seconds: int) -> str:
+def resolve_remote_url(
+    repo: pathlib.Path,
+    remote_name: str,
+    expected_remote_url: str,
+    runner: Runner,
+    timeout_seconds: int,
+) -> str:
+    require_remote_name(remote_name)
     result = runner(
-        ["git", "ls-remote", "--exit-code", origin, ref],
+        ["git", "config", "--local", "--get-all", f"remote.{remote_name}.url"],
         cwd=repo,
-        check=True,
+        check=False,
         timeout_seconds=timeout_seconds,
+        environment=isolated_git_transport_environment(os.environ),
     )
+    remote_urls = result.stdout.splitlines()
+    if result.returncode != 0 or len(remote_urls) != 1 or not remote_urls[0]:
+        raise OperatorError("configured Git remote did not resolve to a URL")
+    if remote_urls[0] != expected_remote_url:
+        raise OperatorError("checkout Git remote does not match configured repository")
+    return remote_urls[0]
+
+
+def preflight_environment(queue_repository: str) -> dict[str, str]:
+    environment = isolated_git_transport_environment(os.environ)
+    environment["GH_REPO"] = queue_repository
+    return environment
+
+
+def remote_ref_sha(
+    repo: pathlib.Path,
+    remote_url: str,
+    ref: str,
+    runner: Runner,
+    timeout_seconds: int,
+    environment: Mapping[str, str],
+) -> str:
+    result = runner(
+        ["git", "ls-remote", "--exit-code", remote_url, ref],
+        cwd=repo,
+        check=False,
+        timeout_seconds=timeout_seconds,
+        environment=environment,
+    )
+    if result.returncode != 0:
+        raise OperatorError(f"configured Git remote did not resolve {ref}")
     return parse_ls_remote_sha(result.stdout, ref)
+
+
+@contextlib.contextmanager
+def immutable_config_snapshot(path: pathlib.Path) -> Iterator[pathlib.Path]:
+    try:
+        config_bytes = path.read_bytes()
+    except OSError as exc:
+        raise OperatorError(f"unable to read config {path}: {exc}") from exc
+    with tempfile.TemporaryDirectory(prefix="merge-queue-operator-config-") as temp_dir:
+        snapshot = pathlib.Path(temp_dir) / "rust-verification.toml"
+        snapshot.write_bytes(config_bytes)
+        yield snapshot
 
 
 def expected_head_arg(pr: int, sha: str) -> str:
@@ -156,8 +222,6 @@ def expected_head_arg(pr: int, sha: str) -> str:
 def build_preflight_command(
     *,
     prs: Sequence[int],
-    origin: str,
-    base: str,
     config: pathlib.Path,
     expected_base_sha: str,
     expected_head_shas: dict[int, str],
@@ -166,10 +230,6 @@ def build_preflight_command(
         "python3",
         str(PREFLIGHT_SCRIPT),
         *(str(pr) for pr in prs),
-        "--origin",
-        origin,
-        "--base",
-        base,
         "--config",
         str(config),
         "--expected-base-sha",
@@ -188,45 +248,60 @@ def run_preflight(
     config: pathlib.Path,
     operator_config: OperatorConfig,
     runner: Runner,
-) -> tuple[dict[str, object], int]:
-    expected_base_sha = remote_ref_sha(
+) -> tuple[dict[str, object], int, str]:
+    remote_url = resolve_remote_url(
         repo,
         operator_config.origin,
-        f"refs/heads/{operator_config.base}",
+        github_https_remote_url(operator_config.repository),
         runner,
         operator_config.ref_timeout_seconds,
     )
+    environment = preflight_environment(operator_config.repository)
+    expected_base_sha = remote_ref_sha(
+        config.parent,
+        remote_url,
+        f"refs/heads/{operator_config.base}",
+        runner,
+        operator_config.ref_timeout_seconds,
+        environment,
+    )
     expected_head_shas = {
         pr: remote_ref_sha(
-            repo,
-            operator_config.origin,
+            config.parent,
+            remote_url,
             f"refs/pull/{pr}/head",
             runner,
             operator_config.ref_timeout_seconds,
+            environment,
         )
         for pr in prs
     }
     command = build_preflight_command(
         prs=prs,
-        origin=operator_config.origin,
-        base=operator_config.base,
         config=config,
         expected_base_sha=expected_base_sha,
         expected_head_shas=expected_head_shas,
     )
-    result = runner(command, cwd=repo)
+    result = runner(command, cwd=repo, environment=environment)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise OperatorError(f"merge queue preflight did not emit valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise OperatorError("merge queue preflight JSON payload must be an object")
-    return payload, result.returncode
+    return payload, result.returncode, operator_config.repository
 
 
-def queue_pr(pr: int, queue_command: str, repo: pathlib.Path, runner: Runner, timeout_seconds: int) -> None:
+def queue_pr(
+    pr: int,
+    queue_command: str,
+    queue_repository: str,
+    repo: pathlib.Path,
+    runner: Runner,
+    timeout_seconds: int,
+) -> None:
     runner(
-        ["gh", "pr", "comment", str(pr), "--body-file", "-"],
+        ["gh", "pr", "comment", str(pr), "--repo", queue_repository, "--body-file", "-"],
         cwd=repo,
         check=True,
         input_text=f"{queue_command}\n",
@@ -234,9 +309,16 @@ def queue_pr(pr: int, queue_command: str, repo: pathlib.Path, runner: Runner, ti
     )
 
 
-def queue_prs(prs: Sequence[int], queue_command: str, repo: pathlib.Path, runner: Runner, timeout_seconds: int) -> None:
+def queue_prs(
+    prs: Sequence[int],
+    queue_command: str,
+    queue_repository: str,
+    repo: pathlib.Path,
+    runner: Runner,
+    timeout_seconds: int,
+) -> None:
     for pr in prs:
-        queue_pr(pr, queue_command, repo, runner, timeout_seconds)
+        queue_pr(pr, queue_command, queue_repository, repo, runner, timeout_seconds)
         print(f"queued PR #{pr}")
 
 
@@ -254,17 +336,17 @@ def print_split_advice(batches: object) -> None:
 
 
 def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> int:
-    config_path = args.config
-    operator_config = load_operator_config(config_path)
     if len(set(args.prs)) != len(args.prs):
         raise OperatorError("duplicate PR numbers are not allowed")
-    payload, preflight_returncode = run_preflight(
-        repo=repo,
-        prs=args.prs,
-        config=config_path,
-        operator_config=operator_config,
-        runner=runner,
-    )
+    with immutable_config_snapshot(args.config) as config_path:
+        operator_config = load_operator_config(config_path)
+        payload, preflight_returncode, queue_repository = run_preflight(
+            repo=repo,
+            prs=args.prs,
+            config=config_path,
+            operator_config=operator_config,
+            runner=runner,
+        )
     verdict = payload.get("verdict")
     if preflight_returncode == 0 and verdict == VERDICT_QUEUE_AS_ONE_WAVE:
         if len(args.prs) != 1:
@@ -284,6 +366,7 @@ def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> 
             queue_prs(
                 args.prs,
                 operator_config.queue_command,
+                queue_repository,
                 repo,
                 runner,
                 operator_config.queue_timeout_seconds,

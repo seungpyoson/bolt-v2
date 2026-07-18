@@ -7,6 +7,7 @@ import functools
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -18,11 +19,15 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "merge_queue_operator.py"
 BASE_SHA = "a" * 40
 HEAD_ONE = "b" * 40
 HEAD_TWO = "c" * 40
+REPOSITORY = "github.com/example/repo"
+REMOTE_URL = "https://github.com/example/repo.git"
 
 
 class FakeRunner:
     def __init__(self, preflight_payload: dict[str, object], preflight_returncode: int) -> None:
         self.commands: list[tuple[str, ...]] = []
+        self.command_environments: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
+        self.command_cwds: list[tuple[tuple[str, ...], pathlib.Path]] = []
         self.preflight_payload = preflight_payload
         self.preflight_returncode = preflight_returncode
 
@@ -34,16 +39,25 @@ class FakeRunner:
         check: bool = False,
         input_text: str | None = None,
         timeout_seconds: int | None = None,
+        environment: dict[str, str] | None = None,
     ) -> object:
         self.commands.append(tuple(command))
+        self.command_environments.append((tuple(command), environment))
+        self.command_cwds.append((tuple(command), cwd))
+        if command[:4] == ["git", "config", "--local", "--get-all"]:
+            assert command == ["git", "config", "--local", "--get-all", "remote.origin.url"], command
+            return completed(command, stdout=f"{REMOTE_URL}\n")
         if command[:2] == ["git", "ls-remote"] and command[-1] == "refs/heads/main":
             assert timeout_seconds == 30, (command, timeout_seconds)
+            assert command[3] == REMOTE_URL, command
             return completed(command, stdout=f"{BASE_SHA}\trefs/heads/main\n")
         if command[:2] == ["git", "ls-remote"] and command[-1] == "refs/pull/1/head":
             assert timeout_seconds == 30, (command, timeout_seconds)
+            assert command[3] == REMOTE_URL, command
             return completed(command, stdout=f"{HEAD_ONE}\trefs/pull/1/head\n")
         if command[:2] == ["git", "ls-remote"] and command[-1] == "refs/pull/2/head":
             assert timeout_seconds == 30, (command, timeout_seconds)
+            assert command[3] == REMOTE_URL, command
             return completed(command, stdout=f"{HEAD_TWO}\trefs/pull/2/head\n")
         if command[:2] == ["python3", str(REPO_ROOT / "scripts" / "merge_queue_preflight.py")]:
             assert timeout_seconds is None, (command, timeout_seconds)
@@ -55,6 +69,7 @@ class FakeRunner:
         if command[:3] == ["gh", "pr", "comment"]:
             assert timeout_seconds == 30, (command, timeout_seconds)
             assert input_text == "@mergifyio queue\n", input_text
+            assert command[4:6] == ["--repo", REPOSITORY], command
             return completed(command)
         raise AssertionError(f"unexpected command: {command!r}")
 
@@ -85,6 +100,7 @@ def write_config(root: pathlib.Path) -> pathlib.Path:
                 'base = "main"',
                 "",
                 "[merge_queue_preflight.operator]",
+                f"repository = {json.dumps(REPOSITORY)}",
                 'queue_command = "@mergifyio queue"',
                 "ref_timeout_seconds = 30",
                 "queue_timeout_seconds = 30",
@@ -122,11 +138,56 @@ def assert_queue_as_one_wave_posts_mergify_comments() -> None:
         rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
     assert rc == 0, (rc, stdout, stderr)
     assert "queued PR #1" in stdout, stdout
-    assert ("gh", "pr", "comment", "1", "--body-file", "-") in runner.commands, runner.commands
+    assert (
+        "gh",
+        "pr",
+        "comment",
+        "1",
+        "--repo",
+        REPOSITORY,
+        "--body-file",
+        "-",
+    ) in runner.commands, runner.commands
     preflight_command = next(command for command in runner.commands if "merge_queue_preflight.py" in command[1])
     assert "--expected-base-sha" in preflight_command, preflight_command
     assert BASE_SHA in preflight_command, preflight_command
     assert f"1={HEAD_ONE}" in preflight_command, preflight_command
+
+
+def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        runner = FakeRunner(
+            {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]},
+            0,
+        )
+        rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
+    assert rc == 0, (rc, stdout, stderr)
+    preflight_command, preflight_environment = next(
+        item
+        for item in runner.command_environments
+        if len(item[0]) > 1 and "merge_queue_preflight.py" in item[0][1]
+    )
+    assert preflight_command
+    assert preflight_environment is not None
+    assert preflight_environment["GH_REPO"] == REPOSITORY
+    assert preflight_environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert preflight_environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert preflight_environment["GIT_CONFIG_KEY_0"] == "credential.https://github.com.helper"
+    assert preflight_environment["GIT_CONFIG_VALUE_0"] == "!gh auth git-credential"
+    for command, environment in runner.command_environments:
+        if command[:2] == ("git", "ls-remote"):
+            assert environment == preflight_environment, (command, environment)
+    assert (
+        "gh",
+        "pr",
+        "comment",
+        "1",
+        "--repo",
+        REPOSITORY,
+        "--body-file",
+        "-",
+    ) in runner.commands
 
 
 def assert_multi_pr_ready_verdict_does_not_queue() -> None:
@@ -392,6 +453,7 @@ def assert_verifier_profile_is_not_an_operator_flag() -> None:
 def main() -> int:
     assert_operator_imports_preflight_verdict_constants()
     assert_queue_as_one_wave_posts_mergify_comments()
+    assert_preflight_and_queue_use_pinned_repository_identity()
     assert_multi_pr_ready_verdict_does_not_queue()
     assert_ready_batch_must_be_single_and_match_requested_pr()
     assert_split_advised_prints_subsets_without_queueing()

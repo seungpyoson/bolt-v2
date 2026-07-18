@@ -22079,3 +22079,43 @@ literal = '''"kill-switch flatten submission is unavailable for execution client
 context = '''"kill-switch flatten submission is unavailable for execution client {client_id} under its configured economics slice"'''
 classification = "configured_capability_diagnostic"
 reason = "Reports the result of evaluating the TOML-derived economics slice for the named execution client."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"fee_volume_history_days"'''
+context = '''pub(super) const FEE_VOLUME_HISTORY_DAYS_KEY: &str = "fee_volume_history_days";'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML field name; the accepted history length remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"fee_eligibility_window_days"'''
+context = '''pub(super) const FEE_ELIGIBILITY_WINDOW_DAYS_KEY: &str = "fee_eligibility_window_days";'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML field name; the rolling eligibility window remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
+literal = '''"%Y-%m-%d"'''
+context = '''const USER_FEES_DATE_FORMAT: &str = "%Y-%m-%d";'''
+classification = "hyperliquid_user_fees_wire_format"
+reason = "Official userFees daily-volume dates use this provider wire representation; invalid shapes fail closed."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "number"
+literal = '''2'''
+context = '''const ADJACENT_DATE_PAIR_SIZE: usize = 2;'''
+classification = "hyperliquid_user_fees_history_structure"
+reason = "Two entries form the structural comparison window used only to prove daily dates are consecutive."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "number"
+literal = '''1'''
+context = '''const NEXT_CALENDAR_DAY_DELTA: i64 = 1;'''
+classification = "hyperliquid_user_fees_history_structure"
+reason = "Adjacent daily history entries must differ by exactly one calendar day; the window length remains TOML-owned."

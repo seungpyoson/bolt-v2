@@ -453,6 +453,8 @@ hip3_scale_threshold = "1"
 hip3_below_threshold_base = "1"
 hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
+fee_volume_history_days = "15"
+fee_eligibility_window_days = "14"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -817,8 +819,7 @@ fn provider_binding_accepts_hyperliquid_live_submit_when_official_user_fees_weig
 }
 
 #[test]
-fn provider_binding_accepts_surface_scoped_hyperliquid_live_submit_with_multiple_product_surfaces()
-{
+fn provider_binding_rejects_enabled_hyperliquid_surface_without_economics_policy() {
     let mut client = hyperliquid_execution_client(
         "/bolt/hyperliquid/master_api_wallet/private_key",
         "/bolt/hyperliquid/master_api_wallet/account_address",
@@ -838,9 +839,10 @@ fn provider_binding_accepts_surface_scoped_hyperliquid_live_submit_with_multiple
             ]),
         );
 
-    assert_eq!(
-        validate_client_block("hyperliquid_perps", &client),
-        Vec::<String>::new()
+    assert!(
+        validate_client_block("hyperliquid_perps", &client)
+            .join("\n")
+            .contains("MissingProductSurface { surface: \"spot\" }")
     );
 }
 

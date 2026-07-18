@@ -14,6 +14,7 @@ use crate::{
 };
 use anyhow::Context;
 use async_trait::async_trait;
+use chrono::{NaiveDate, TimeDelta};
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::{
     identifiers::Venue,
@@ -23,9 +24,14 @@ use nautilus_network::http::{HttpClient, USER_AGENT};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::str::FromStr;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, num::NonZeroUsize, str::FromStr, sync::Arc};
 use zeroize::Zeroizing;
+
+pub(super) const FEE_VOLUME_HISTORY_DAYS_KEY: &str = "fee_volume_history_days";
+pub(super) const FEE_ELIGIBILITY_WINDOW_DAYS_KEY: &str = "fee_eligibility_window_days";
+const USER_FEES_DATE_FORMAT: &str = "%Y-%m-%d";
+const ADJACENT_DATE_PAIR_SIZE: usize = 2;
+const NEXT_CALENDAR_DAY_DELTA: i64 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidFormulaPolicy {
@@ -38,6 +44,12 @@ pub struct HyperliquidFormulaPolicy {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HyperliquidFeeEligibilityPolicy {
+    pub history_days: NonZeroUsize,
+    pub rolling_window_days: NonZeroUsize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidEconomicsAdapterConfig {
     pub settlement_unit: NativeUnitId,
     pub protocol_component_id: crate::economics::EconomicComponentId,
@@ -47,6 +59,7 @@ pub struct HyperliquidEconomicsAdapterConfig {
     pub builder_formula_id: FormulaId,
     pub builder_rate_factor_id: FormulaId,
     pub source_id: SourceId,
+    pub fee_eligibility: HyperliquidFeeEligibilityPolicy,
     pub formula: HyperliquidFormulaPolicy,
     pub carry: Option<HyperliquidCarryPolicy>,
 }
@@ -74,6 +87,20 @@ impl HyperliquidEconomicsAdapterConfig {
                 .and_then(|value| Decimal::from_str(value).ok())
                 .ok_or(HyperliquidEconomicsError::InvalidIdentity)
         };
+        let count = |key: &str| {
+            economics
+                .formula
+                .get(key)
+                .and_then(|value| NonZeroUsize::from_str(value).ok())
+                .ok_or(HyperliquidEconomicsError::InvalidIdentity)
+        };
+        let fee_eligibility = HyperliquidFeeEligibilityPolicy {
+            history_days: count(FEE_VOLUME_HISTORY_DAYS_KEY)?,
+            rolling_window_days: count(FEE_ELIGIBILITY_WINDOW_DAYS_KEY)?,
+        };
+        if fee_eligibility.rolling_window_days > fee_eligibility.history_days {
+            return Err(HyperliquidEconomicsError::InvalidIdentity);
+        }
         let carry = economics
             .carry
             .as_ref()
@@ -151,6 +178,7 @@ impl HyperliquidEconomicsAdapterConfig {
                     .clone(),
             )
             .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+            fee_eligibility,
             formula: HyperliquidFormulaPolicy {
                 stable_pair_scale: decimal("stable_pair_scale")?,
                 growth_mode_scale: decimal("growth_mode_scale")?,
@@ -355,9 +383,12 @@ impl HyperliquidUserFeesSnapshot {
         metadata: HyperliquidSnapshotMetadata,
         account_id: &str,
         json: &str,
+        eligibility: &HyperliquidFeeEligibilityPolicy,
     ) -> Result<Self, HyperliquidEconomicsError> {
         let wire: HyperliquidUserFeesWire =
             serde_json::from_str(json).map_err(|_| HyperliquidEconomicsError::InvalidUserFees)?;
+        let eligible_volume = eligible_volume_window(&wire, eligibility)
+            .ok_or(HyperliquidEconomicsError::InvalidUserFees)?;
         if metadata.snapshot_id.trim().is_empty()
             || account_id.trim().is_empty()
             || wire.trial.is_some()
@@ -368,12 +399,11 @@ impl HyperliquidUserFeesSnapshot {
                     || volume.user_add < Decimal::ZERO
                     || volume.exchange < Decimal::ZERO
             })
-            || !valid_fee_schedule(&wire)
+            || !valid_fee_schedule(&wire, eligible_volume)
         {
             return Err(HyperliquidEconomicsError::InvalidUserFees);
         }
-        let daily_user_volume = wire
-            .daily_user_vlm
+        let daily_user_volume = eligible_volume
             .iter()
             .try_fold(Decimal::ZERO, |total, volume| {
                 total
@@ -399,31 +429,61 @@ impl HyperliquidUserFeesSnapshot {
     }
 }
 
-fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
+fn eligible_volume_window<'a>(
+    wire: &'a HyperliquidUserFeesWire,
+    policy: &HyperliquidFeeEligibilityPolicy,
+) -> Option<&'a [HyperliquidDailyUserVolumeWire]> {
+    if policy.rolling_window_days > policy.history_days
+        || wire.daily_user_vlm.len() != policy.history_days.get()
+    {
+        return None;
+    }
+    let dates = wire
+        .daily_user_vlm
+        .iter()
+        .map(|volume| NaiveDate::parse_from_str(&volume.date, USER_FEES_DATE_FORMAT).ok())
+        .collect::<Option<Vec<_>>>()?;
+    if dates.windows(ADJACENT_DATE_PAIR_SIZE).any(|pair| {
+        let [previous, current] = pair else {
+            return true;
+        };
+        current.signed_duration_since(*previous) != TimeDelta::days(NEXT_CALENDAR_DAY_DELTA)
+    }) {
+        return None;
+    }
+    let start = policy
+        .history_days
+        .get()
+        .checked_sub(policy.rolling_window_days.get())?;
+    wire.daily_user_vlm.get(start..)
+}
+
+fn valid_fee_schedule(
+    wire: &HyperliquidUserFeesWire,
+    eligible_volume: &[HyperliquidDailyUserVolumeWire],
+) -> bool {
     let schedule = &wire.fee_schedule;
     let unit_interval = |value: Decimal| (Decimal::ZERO..=Decimal::ONE).contains(&value);
     let staking_scale = Decimal::ONE - wire.active_staking_discount.discount;
-    let Some((user_volume, user_maker_volume, exchange_volume)) =
-        wire.daily_user_vlm.iter().try_fold(
-            (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO),
-            |(user_total, maker_total, exchange_total), volume| {
-                Some((
-                    user_total
-                        .checked_add(volume.user_cross)?
-                        .checked_add(volume.user_add)?,
-                    maker_total.checked_add(volume.user_add)?,
-                    exchange_total.checked_add(volume.exchange)?,
-                ))
-            },
-        )
-    else {
+    let Some((user_volume, user_maker_volume, exchange_volume)) = eligible_volume.iter().try_fold(
+        (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO),
+        |(user_total, maker_total, exchange_total), volume| {
+            Some((
+                user_total
+                    .checked_add(volume.user_cross)?
+                    .checked_add(volume.user_add)?,
+                maker_total.checked_add(volume.user_add)?,
+                exchange_total.checked_add(volume.exchange)?,
+            ))
+        },
+    ) else {
         return false;
     };
     let eligible_vip = schedule
         .tiers
         .vip
         .iter()
-        .filter(|tier| tier.ntl_cutoff <= user_volume)
+        .filter(|tier| tier.ntl_cutoff < user_volume)
         .max_by_key(|tier| tier.ntl_cutoff);
     let (selected_perp_taker, selected_perp_maker, selected_spot_taker, selected_spot_maker) =
         match eligible_vip {
@@ -458,7 +518,7 @@ fn valid_fee_schedule(wire: &HyperliquidUserFeesWire) -> bool {
                     .tiers
                     .mm
                     .iter()
-                    .filter(move |tier| tier.maker_fraction_cutoff <= fraction)
+                    .filter(move |tier| tier.maker_fraction_cutoff < fraction)
                     .map(|tier| tier.add)
             },
         )),
@@ -831,6 +891,7 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
             &self.account_id,
             std::str::from_utf8(&user_fees_body)
                 .context("Hyperliquid userFees response was not UTF-8 JSON")?,
+            &self.adapter_config.fee_eligibility,
         )
         .map_err(|error| anyhow::anyhow!("invalid Hyperliquid userFees response: {error:?}"))?;
         let carry = self

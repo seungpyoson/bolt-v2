@@ -3109,6 +3109,11 @@ fn capital_admission_sell_submit_request(client_order_id: &str) -> BoltV3SubmitA
 
 fn risk_reducing_exit_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     let mut request = capital_admission_sell_submit_request(client_order_id);
+    request.economics_admission = support::sample_risk_reduction_economics_admission_with_debit(
+        Decimal::new(4, 0),
+        Decimal::new(3, 1),
+    );
+    request.notional = Decimal::new(43, 1);
     request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
     request.risk_reducing_exit_proof = Some(BoltV3RiskReducingExitProof {
         position_id: "position-1".to_string(),

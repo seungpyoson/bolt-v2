@@ -412,8 +412,13 @@ fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy()
         .expect("quote-quantity admission should use NT effective notional");
 
     assert_eq!(
-        admission.notional,
+        admission.economics_admission.base_reservation_notional(),
         Decimal::from_str("50.00").expect("expected decimal should parse")
+    );
+    assert_eq!(
+        admission.notional,
+        admission.economics_admission.reservation_notional(),
+        "the final reservation includes the sealed economics debit"
     );
 }
 
@@ -1714,6 +1719,7 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::StopMarket;
+    strategy.config.entry_order.is_quote_quantity = false;
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.trigger_price = Some(0.52);
     strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);

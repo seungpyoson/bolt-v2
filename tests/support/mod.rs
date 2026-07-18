@@ -70,7 +70,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
         use bolt_v2::economics::*;
         use rust_decimal::Decimal;
 
-        let valid_until_ns = intent.request.requested_at_ns.saturating_add(1);
+        let valid_until_ns = u64::MAX;
         let source = SourceValidity {
             source_id: SourceId::new("test-economics-source")?,
             snapshot_id: SnapshotId::new("test-economics-snapshot")?,

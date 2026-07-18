@@ -71,6 +71,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -257,6 +258,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -434,6 +436,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -640,6 +643,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -817,6 +821,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -984,6 +989,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -1149,6 +1155,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"
@@ -1314,6 +1321,7 @@ hip3_at_or_above_threshold_multiplier = "2"
 hip3_at_or_above_deployer_share = "0.5"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"
+fee_history_latest_day_offset_days = "1"
 
 [execution.economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"

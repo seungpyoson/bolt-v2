@@ -800,6 +800,7 @@ fn validate_quote_economics_policy(
         "hip3_at_or_above_deployer_share",
         economics::FEE_VOLUME_HISTORY_DAYS_KEY,
         economics::FEE_ELIGIBILITY_WINDOW_DAYS_KEY,
+        economics::FEE_HISTORY_LATEST_DAY_OFFSET_KEY,
     ]);
     let actual_formula_keys: BTreeSet<&str> =
         economics.formula.keys().map(String::as_str).collect();
@@ -814,8 +815,13 @@ fn validate_quote_economics_policy(
                 .and_then(|value| value.parse::<std::num::NonZeroUsize>().ok()),
         )
         .is_some_and(|(history_days, window_days)| window_days <= history_days);
+    let latest_day_offset_valid = economics
+        .formula
+        .get(economics::FEE_HISTORY_LATEST_DAY_OFFSET_KEY)
+        .is_some_and(|value| value.parse::<u64>().is_ok());
     if actual_formula_keys != expected_formula_keys
         || !eligibility_shape_valid
+        || !latest_day_offset_valid
         || economics.formula.values().any(|value| {
             Decimal::from_str(value)
                 .map(|value| value < Decimal::ZERO)

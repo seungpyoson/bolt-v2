@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::Context;
 use async_trait::async_trait;
-use chrono::{NaiveDate, TimeDelta};
+use chrono::{DateTime, Days, NaiveDate, TimeDelta, Utc};
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::{
     identifiers::Venue,
@@ -29,6 +29,7 @@ use zeroize::Zeroizing;
 
 pub(super) const FEE_VOLUME_HISTORY_DAYS_KEY: &str = "fee_volume_history_days";
 pub(super) const FEE_ELIGIBILITY_WINDOW_DAYS_KEY: &str = "fee_eligibility_window_days";
+pub(super) const FEE_HISTORY_LATEST_DAY_OFFSET_KEY: &str = "fee_history_latest_day_offset_days";
 const USER_FEES_DATE_FORMAT: &str = "%Y-%m-%d";
 const ADJACENT_DATE_PAIR_SIZE: usize = 2;
 const NEXT_CALENDAR_DAY_DELTA: i64 = 1;
@@ -47,6 +48,7 @@ pub struct HyperliquidFormulaPolicy {
 pub struct HyperliquidFeeEligibilityPolicy {
     pub history_days: NonZeroUsize,
     pub rolling_window_days: NonZeroUsize,
+    pub latest_day_offset_days: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,6 +99,11 @@ impl HyperliquidEconomicsAdapterConfig {
         let fee_eligibility = HyperliquidFeeEligibilityPolicy {
             history_days: count(FEE_VOLUME_HISTORY_DAYS_KEY)?,
             rolling_window_days: count(FEE_ELIGIBILITY_WINDOW_DAYS_KEY)?,
+            latest_day_offset_days: economics
+                .formula
+                .get(FEE_HISTORY_LATEST_DAY_OFFSET_KEY)
+                .and_then(|value| u64::from_str(value).ok())
+                .ok_or(HyperliquidEconomicsError::InvalidIdentity)?,
         };
         if fee_eligibility.rolling_window_days > fee_eligibility.history_days {
             return Err(HyperliquidEconomicsError::InvalidIdentity);
@@ -387,7 +394,7 @@ impl HyperliquidUserFeesSnapshot {
     ) -> Result<Self, HyperliquidEconomicsError> {
         let wire: HyperliquidUserFeesWire =
             serde_json::from_str(json).map_err(|_| HyperliquidEconomicsError::InvalidUserFees)?;
-        let eligible_volume = eligible_volume_window(&wire, eligibility)
+        let eligible_volume = eligible_volume_window(&wire, eligibility, metadata.fetched_at_ns)
             .ok_or(HyperliquidEconomicsError::InvalidUserFees)?;
         if metadata.snapshot_id.trim().is_empty()
             || account_id.trim().is_empty()
@@ -432,6 +439,7 @@ impl HyperliquidUserFeesSnapshot {
 fn eligible_volume_window<'a>(
     wire: &'a HyperliquidUserFeesWire,
     policy: &HyperliquidFeeEligibilityPolicy,
+    fetched_at_ns: u64,
 ) -> Option<&'a [HyperliquidDailyUserVolumeWire]> {
     if policy.rolling_window_days > policy.history_days
         || wire.daily_user_vlm.len() != policy.history_days.get()
@@ -449,6 +457,18 @@ fn eligible_volume_window<'a>(
         };
         current.signed_duration_since(*previous) != TimeDelta::days(NEXT_CALENDAR_DAY_DELTA)
     }) {
+        return None;
+    }
+    let nanos_per_second = crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64
+        .checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)?;
+    let receipt_seconds = i64::try_from(fetched_at_ns.checked_div(nanos_per_second)?).ok()?;
+    let receipt_subsecond_nanos =
+        u32::try_from(fetched_at_ns.checked_rem(nanos_per_second)?).ok()?;
+    let expected_latest_date =
+        DateTime::<Utc>::from_timestamp(receipt_seconds, receipt_subsecond_nanos)?
+            .date_naive()
+            .checked_sub_days(Days::new(policy.latest_day_offset_days))?;
+    if dates.last() != Some(&expected_latest_date) {
         return None;
     }
     let start = policy
@@ -500,6 +520,18 @@ fn valid_fee_schedule(
     } else {
         user_maker_volume.checked_div(exchange_volume)
     };
+    let eligible_maker_tier = maker_fraction.and_then(|fraction| {
+        schedule
+            .tiers
+            .mm
+            .iter()
+            .filter(|tier| tier.maker_fraction_cutoff < fraction)
+            .max_by_key(|tier| tier.maker_fraction_cutoff)
+    });
+    let selected_perp_maker = match eligible_maker_tier {
+        Some(tier) => tier.add,
+        None => selected_perp_maker,
+    };
     let nonnegative_rates = schedule.cross >= Decimal::ZERO
         && schedule.add >= Decimal::ZERO
         && schedule.spot_cross >= Decimal::ZERO
@@ -512,16 +544,7 @@ fn valid_fee_schedule(
         staking_scale,
     ) && effective_rate_matches_schedule(
         wire.user_add_rate,
-        std::iter::once(selected_perp_maker).chain(maker_fraction.into_iter().flat_map(
-            |fraction| {
-                schedule
-                    .tiers
-                    .mm
-                    .iter()
-                    .filter(move |tier| tier.maker_fraction_cutoff < fraction)
-                    .map(|tier| tier.add)
-            },
-        )),
+        std::iter::once(selected_perp_maker),
         staking_scale,
     ) && effective_rate_matches_schedule(
         wire.user_spot_cross_rate,
@@ -532,17 +555,44 @@ fn valid_fee_schedule(
         std::iter::once(selected_spot_maker),
         staking_scale,
     );
-    let tier_rates_valid = schedule.tiers.vip.iter().all(|tier| {
-        tier.ntl_cutoff >= Decimal::ZERO
-            && tier.cross >= Decimal::ZERO
-            && tier.add >= Decimal::ZERO
-            && tier.spot_cross >= Decimal::ZERO
-            && tier.spot_add >= Decimal::ZERO
-    }) && schedule
+    let vip_tiers_ordered = schedule
+        .tiers
+        .vip
+        .windows(ADJACENT_DATE_PAIR_SIZE)
+        .all(|pair| {
+            let [previous, current] = pair else {
+                return false;
+            };
+            current.ntl_cutoff > previous.ntl_cutoff
+                && current.cross <= previous.cross
+                && current.add <= previous.add
+                && current.spot_cross <= previous.spot_cross
+                && current.spot_add <= previous.spot_add
+        });
+    let maker_tiers_ordered = schedule
         .tiers
         .mm
-        .iter()
-        .all(|tier| tier.maker_fraction_cutoff >= Decimal::ZERO && tier.add <= schedule.add);
+        .windows(ADJACENT_DATE_PAIR_SIZE)
+        .all(|pair| {
+            let [previous, current] = pair else {
+                return false;
+            };
+            current.maker_fraction_cutoff > previous.maker_fraction_cutoff
+                && current.add < previous.add
+        });
+    let tier_rates_valid =
+        vip_tiers_ordered
+            && maker_tiers_ordered
+            && schedule.tiers.vip.iter().all(|tier| {
+                tier.ntl_cutoff >= Decimal::ZERO
+                    && tier.cross >= Decimal::ZERO
+                    && tier.add >= Decimal::ZERO
+                    && tier.spot_cross >= Decimal::ZERO
+                    && tier.spot_add >= Decimal::ZERO
+            })
+            && schedule.tiers.mm.iter().all(|tier| {
+                tier.maker_fraction_cutoff >= Decimal::ZERO && tier.add <= schedule.add
+            });
     let staking_valid = !schedule.staking_discount_tiers.is_empty()
         && schedule
             .staking_discount_tiers

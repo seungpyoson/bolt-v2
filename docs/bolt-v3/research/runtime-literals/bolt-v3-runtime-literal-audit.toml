@@ -22099,6 +22099,14 @@ reason = "Stable provider-owned TOML field name; the rolling eligibility window 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
 kind = "string"
+literal = '''"fee_history_latest_day_offset_days"'''
+context = '''pub(super) const FEE_HISTORY_LATEST_DAY_OFFSET_KEY: &str = "fee_history_latest_day_offset_days";'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML field name; the UTC receipt-day offset remains mandatory configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
 literal = '''"%Y-%m-%d"'''
 context = '''const USER_FEES_DATE_FORMAT: &str = "%Y-%m-%d";'''
 classification = "hyperliquid_user_fees_wire_format"

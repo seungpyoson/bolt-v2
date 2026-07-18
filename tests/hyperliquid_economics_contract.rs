@@ -59,6 +59,24 @@ fn fee_eligibility_policy(
     HyperliquidFeeEligibilityPolicy {
         history_days: NonZeroUsize::new(history_days).unwrap(),
         rolling_window_days: NonZeroUsize::new(rolling_window_days).unwrap(),
+        latest_day_offset_days: 0,
+    }
+}
+
+fn governed_fee_eligibility_policy() -> HyperliquidFeeEligibilityPolicy {
+    HyperliquidFeeEligibilityPolicy {
+        history_days: NonZeroUsize::new(15).unwrap(),
+        rolling_window_days: NonZeroUsize::new(14).unwrap(),
+        latest_day_offset_days: 1,
+    }
+}
+
+fn governed_user_fees_metadata() -> HyperliquidSnapshotMetadata {
+    HyperliquidSnapshotMetadata {
+        snapshot_id: "governed-live-user-fees".to_string(),
+        source_at_ns: 1_784_332_800_000_000_000,
+        fetched_at_ns: 1_784_332_800_000_000_000,
+        valid_until_ns: 1_784_332_860_000_000_000,
     }
 }
 
@@ -78,6 +96,17 @@ fn user_fees_with_discounts(
     spot_taker_rate: &str,
     spot_maker_rate: &str,
 ) -> HyperliquidUserFeesSnapshot {
+    let (base_maker_rate, maker_volume, maker_tiers) = if maker_rate.starts_with('-') {
+        (
+            "0.00015",
+            "10000",
+            r#"[{"makerFractionCutoff":"0.005","add":"-0.00001"}]"#,
+        )
+    } else if maker_rate == "0" {
+        ("0", "0", "[]")
+    } else {
+        ("0.00015", "0", "[]")
+    };
     HyperliquidUserFeesSnapshot::from_wire_json(
         HyperliquidSnapshotMetadata {
             snapshot_id: "user-fees-snapshot".to_string(),
@@ -89,22 +118,19 @@ fn user_fees_with_discounts(
         &format!(
             r#"{{
                 "dailyUserVlm":[{{
-                    "date":"2026-07-18",
+                    "date":"1970-01-01",
                     "userCross":"100000",
-                    "userAdd":"50000",
+                    "userAdd":"{maker_volume}",
                     "exchange":"1000000"
                 }}],
                 "feeSchedule":{{
                     "cross":"0.00045",
-                    "add":"0.00015",
+                    "add":"{base_maker_rate}",
                     "spotCross":"0.0007",
                     "spotAdd":"0.0004",
                     "tiers":{{
                         "vip":[],
-                        "mm":[
-                            {{"makerFractionCutoff":"0.005","add":"-0.00001"}},
-                            {{"makerFractionCutoff":"0.01","add":"0"}}
-                        ]
+                        "mm":{maker_tiers}
                     }},
                     "referralDiscount":"0.04",
                     "stakingDiscountTiers":[
@@ -548,21 +574,21 @@ fn user_fees_parser_requires_complete_account_surface() {
 
 #[test]
 fn governed_live_hyperliquid_quote_authority_captures_parse() {
-    let metadata = HyperliquidSnapshotMetadata {
+    let product_metadata = HyperliquidSnapshotMetadata {
         snapshot_id: "governed-live-user-fees".to_string(),
         source_at_ns: 1_000_000_000_000,
         fetched_at_ns: 1_000_000_000_005,
         valid_until_ns: 1_000_000_000_110,
     };
     HyperliquidUserFeesSnapshot::from_wire_json(
-        metadata.clone(),
+        governed_user_fees_metadata(),
         "governed-public-fixture-account",
         include_str!("fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"),
-        &fee_eligibility_policy(15, 14),
+        &governed_fee_eligibility_policy(),
     )
     .unwrap();
     let product = HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
-        metadata,
+        product_metadata,
         include_bytes!("fixtures/bolt_v3/boundary_evidence/hyperliquid-meta-and-asset-ctxs.json"),
         "BTC",
         config().carry.as_ref().unwrap(),
@@ -584,15 +610,10 @@ fn user_fees_parser_rejects_unconfigured_volume_history_rows() {
 
     assert_eq!(
         HyperliquidUserFeesSnapshot::from_wire_json(
-            HyperliquidSnapshotMetadata {
-                snapshot_id: "user-fees-snapshot".to_string(),
-                source_at_ns: 90,
-                fetched_at_ns: 95,
-                valid_until_ns: 110,
-            },
+            governed_user_fees_metadata(),
             "account",
             &serde_json::to_string(&wire).unwrap(),
-            &fee_eligibility_policy(15, 14),
+            &governed_fee_eligibility_policy(),
         ),
         Err(HyperliquidEconomicsError::InvalidUserFees)
     );
@@ -607,15 +628,10 @@ fn user_fees_parser_excludes_history_outside_the_configured_rolling_window() {
     wire["dailyUserVlm"][0]["userCross"] = serde_json::Value::String("5000001".to_string());
 
     HyperliquidUserFeesSnapshot::from_wire_json(
-        HyperliquidSnapshotMetadata {
-            snapshot_id: "user-fees-snapshot".to_string(),
-            source_at_ns: 90,
-            fetched_at_ns: 95,
-            valid_until_ns: 110,
-        },
+        governed_user_fees_metadata(),
         "account",
         &serde_json::to_string(&wire).unwrap(),
-        &fee_eligibility_policy(15, 14),
+        &governed_fee_eligibility_policy(),
     )
     .unwrap();
 }
@@ -631,15 +647,75 @@ fn user_fees_parser_rejects_duplicate_or_gapped_volume_dates() {
 
         assert_eq!(
             HyperliquidUserFeesSnapshot::from_wire_json(
-                HyperliquidSnapshotMetadata {
-                    snapshot_id: "user-fees-snapshot".to_string(),
-                    source_at_ns: 90,
-                    fetched_at_ns: 95,
-                    valid_until_ns: 110,
-                },
+                governed_user_fees_metadata(),
                 "account",
                 &serde_json::to_string(&wire).unwrap(),
-                &fee_eligibility_policy(15, 14),
+                &governed_fee_eligibility_policy(),
+            ),
+            Err(HyperliquidEconomicsError::InvalidUserFees)
+        );
+    }
+}
+
+#[test]
+fn user_fees_parser_rejects_old_but_consecutive_volume_history() {
+    let metadata = HyperliquidSnapshotMetadata {
+        snapshot_id: "user-fees-snapshot".to_string(),
+        source_at_ns: 1_786_924_800_000_000_000,
+        fetched_at_ns: 1_786_924_800_000_000_000,
+        valid_until_ns: 1_786_924_860_000_000_000,
+    };
+
+    assert_eq!(
+        HyperliquidUserFeesSnapshot::from_wire_json(
+            metadata,
+            "account",
+            include_str!("fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"),
+            &governed_fee_eligibility_policy(),
+        ),
+        Err(HyperliquidEconomicsError::InvalidUserFees)
+    );
+}
+
+#[test]
+fn user_fees_parser_requires_the_highest_eligible_maker_tier() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    for row in wire["dailyUserVlm"].as_array_mut().unwrap() {
+        row["userAdd"] = serde_json::Value::String("20000".to_string());
+        row["exchange"] = serde_json::Value::String("1000000".to_string());
+    }
+    wire["userAddRate"] = serde_json::Value::String("-0.00001".to_string());
+
+    assert_eq!(
+        HyperliquidUserFeesSnapshot::from_wire_json(
+            governed_user_fees_metadata(),
+            "account",
+            &serde_json::to_string(&wire).unwrap(),
+            &governed_fee_eligibility_policy(),
+        ),
+        Err(HyperliquidEconomicsError::InvalidUserFees)
+    );
+}
+
+#[test]
+fn user_fees_parser_rejects_duplicate_or_non_monotonic_maker_tiers() {
+    for (field, invalid_value) in [("makerFractionCutoff", "0.005"), ("add", "-0.000005")] {
+        let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+            "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+        ))
+        .unwrap();
+        wire["feeSchedule"]["tiers"]["mm"][1][field] =
+            serde_json::Value::String(invalid_value.to_string());
+
+        assert_eq!(
+            HyperliquidUserFeesSnapshot::from_wire_json(
+                governed_user_fees_metadata(),
+                "account",
+                &serde_json::to_string(&wire).unwrap(),
+                &governed_fee_eligibility_policy(),
             ),
             Err(HyperliquidEconomicsError::InvalidUserFees)
         );
@@ -650,7 +726,7 @@ fn user_fees_parser_rejects_duplicate_or_gapped_volume_dates() {
 fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
     let json = serde_json::to_string(&serde_json::json!({
         "dailyUserVlm": [{
-            "date": "2026-07-18",
+            "date": "1970-01-01",
             "userCross": "100000",
             "userAdd": "50000",
             "exchange": "1000000"
@@ -703,7 +779,7 @@ fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
 fn user_fees_parser_rejects_vip_rate_at_exact_volume_cutoff() {
     let json = serde_json::to_string(&serde_json::json!({
         "dailyUserVlm": [{
-            "date": "2026-07-18",
+            "date": "1970-01-01",
             "userCross": "5000000",
             "userAdd": "0",
             "exchange": "1000000"
@@ -759,7 +835,7 @@ fn user_fees_parser_rejects_vip_rate_at_exact_volume_cutoff() {
 fn user_fees_parser_rejects_maker_rebate_at_exact_fraction_cutoff() {
     let json = serde_json::to_string(&serde_json::json!({
         "dailyUserVlm": [{
-            "date": "2026-07-18",
+            "date": "1970-01-01",
             "userCross": "0",
             "userAdd": "5000",
             "exchange": "1000000"

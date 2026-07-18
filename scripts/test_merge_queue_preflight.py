@@ -154,16 +154,17 @@ def preflight_transport_environment(
     repo: pathlib.Path,
     remote: pathlib.Path,
     environ: dict[str, str] | None = None,
+    remote_url: str = "https://github.com/seungpyoson/bolt-v2.git",
 ) -> dict[str, str]:
     environment = dict(os.environ if environ is None else environ)
     base_path = environment.get("PREFLIGHT_TEST_BASE_PATH", environment.get("PATH", ""))
-    real_git = environment.get("PREFLIGHT_TEST_REAL_GIT") or shutil.which(
-        "git", path=base_path
-    )
+    real_git = shutil.which("git", path=base_path)
     if real_git is None:
         raise AssertionError("git executable unavailable")
     bin_dir = repo.parent / "preflight-transport-bin"
     shim = bin_dir / "git"
+    source_repo = str(repo.resolve())
+    rewrite = f"url.{remote.resolve()}.insteadOf={remote_url}"
     write(
         shim,
         f"#!{sys.executable}\n"
@@ -171,31 +172,18 @@ def preflight_transport_environment(
         "import pathlib\n"
         "import sys\n"
         "args = sys.argv[1:]\n"
-        "source_repo = pathlib.Path(os.environ['PREFLIGHT_TEST_SOURCE_REPO']).resolve()\n"
+        f"source_repo = pathlib.Path({source_repo!r})\n"
         "if args == ['config', '--local', '--get-all', 'remote.origin.url'] and pathlib.Path.cwd().resolve() == source_repo:\n"
-        "    print(os.environ['PREFLIGHT_TEST_REMOTE_URL'])\n"
+        f"    print({remote_url!r})\n"
         "    raise SystemExit(0)\n"
         "if args and args[0] == 'fetch':\n"
-        "    rewrite = f\"url.{os.environ['PREFLIGHT_TEST_REMOTE_PATH']}.insteadOf={os.environ['PREFLIGHT_TEST_REMOTE_URL']}\"\n"
-        "    args = ['-c', rewrite, *args]\n"
-        "real_git = os.environ['PREFLIGHT_TEST_REAL_GIT']\n"
-        "os.execv(real_git, [real_git, *args])\n",
+        f"    args = ['-c', {rewrite!r}, *args]\n"
+        f"os.execv({real_git!r}, [{real_git!r}, *args])\n",
     )
     shim.chmod(0o755)
     environment["PATH"] = f"{bin_dir}{os.pathsep}{base_path}"
     environment["PREFLIGHT_TEST_BASE_PATH"] = base_path
-    environment["PREFLIGHT_TEST_REAL_GIT"] = real_git
-    environment["PREFLIGHT_TEST_SOURCE_REPO"] = str(repo.resolve())
-    environment["PREFLIGHT_TEST_REMOTE_PATH"] = str(remote.resolve())
-    environment["PREFLIGHT_TEST_REMOTE_URL"] = "https://github.com/seungpyoson/bolt-v2.git"
-    for key in (
-        "PATH",
-        "PREFLIGHT_TEST_BASE_PATH",
-        "PREFLIGHT_TEST_REAL_GIT",
-        "PREFLIGHT_TEST_SOURCE_REPO",
-        "PREFLIGHT_TEST_REMOTE_PATH",
-        "PREFLIGHT_TEST_REMOTE_URL",
-    ):
+    for key in ("PATH", "PREFLIGHT_TEST_BASE_PATH"):
         os.environ[key] = environment[key]
     return environment
 
@@ -1655,8 +1643,11 @@ def assert_origin_identity_drift_is_terminal() -> None:
         head = fixture.make_pr(1, {"one.txt": "one\n"})
         alternate = root / "alternate.git"
         init_fixture_repo(alternate, "--bare")
-        os.environ["PREFLIGHT_TEST_REMOTE_URL"] = "https://github.com/attacker/repository.git"
-        os.environ["PREFLIGHT_TEST_REMOTE_PATH"] = str(alternate)
+        env = preflight_transport_environment(
+            fixture.repo,
+            alternate,
+            remote_url="https://github.com/attacker/repository.git",
+        )
         command = [
             sys.executable,
             str(SCRIPT_PATH),
@@ -1677,6 +1668,7 @@ def assert_origin_identity_drift_is_terminal() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            env=env,
         )
         assert_equal(result.returncode, 3, "origin identity drift rc")
         payload = parse_json(result.stdout)
@@ -1883,17 +1875,20 @@ def assert_private_fetch_sha_spawns_no_background_maintenance() -> None:
         requested = fixture.make_pr(1, {"one.txt": "one\n"})
         private_fetch = module.PrivateFetchRefs.create(fixture.repo, 10)
         trace = root / "private-fetch-trace.json"
-        previous_trace = os.environ.get("GIT_TRACE2_EVENT")
+        isolated_environment = module.isolated_git_transport_environment
+
+        def traced_environment(environ: dict[str, str]) -> dict[str, str]:
+            environment = isolated_environment(environ)
+            environment["GIT_TRACE2_EVENT"] = str(trace)
+            return environment
+
+        module.isolated_git_transport_environment = traced_environment
         try:
-            os.environ["GIT_TRACE2_EVENT"] = str(trace)
             fetched = private_fetch.fetch_sha("origin", requested, "probe")
             trace_children = count_trace2_children(trace)
             maintenance_children = count_trace2_maintenance_children(trace)
         finally:
-            if previous_trace is None:
-                os.environ.pop("GIT_TRACE2_EVENT", None)
-            else:
-                os.environ["GIT_TRACE2_EVENT"] = previous_trace
+            module.isolated_git_transport_environment = isolated_environment
             private_fetch.cleanup()
 
         assert_equal(fetched, requested, "private fetch SHA")
@@ -2268,6 +2263,120 @@ def assert_verifier_diagnostics_redact_origin_url() -> None:
         for stream in ("stdout_preview", "stderr_preview"):
             if "<remote-url>" not in blocked[0][stream]:
                 raise AssertionError(f"origin placeholder absent from {stream}: {blocked[0][stream]!r}")
+
+
+def assert_verifier_environment_excludes_operator_credentials() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        fixture = GitFixture(root)
+        head = fixture.make_pr(1, {"one.txt": "one\n"})
+        verifier = root / "inspect_verifier_environment.py"
+        write(
+            verifier,
+            "import json\n"
+            "import os\n"
+            "import subprocess\n"
+            "import sys\n"
+            "credential = subprocess.run(\n"
+            "    ['git', 'credential', 'fill'],\n"
+            "    input='protocol=https\\nhost=github.com\\n\\n',\n"
+            "    text=True,\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    stderr=subprocess.PIPE,\n"
+            "    check=False,\n"
+            ")\n"
+            "helper = subprocess.run(\n"
+            "    ['git', 'config', '--get', 'credential.https://github.com.helper'],\n"
+            "    text=True,\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    stderr=subprocess.PIPE,\n"
+            "    check=False,\n"
+            ")\n"
+            "print(json.dumps({\n"
+            "    'GH_TOKEN': os.environ.get('GH_TOKEN'),\n"
+            "    'GITHUB_TOKEN': os.environ.get('GITHUB_TOKEN'),\n"
+            "    'AWS_ACCESS_KEY_ID': os.environ.get('AWS_ACCESS_KEY_ID'),\n"
+            "    'AWS_SECRET_ACCESS_KEY': os.environ.get('AWS_SECRET_ACCESS_KEY'),\n"
+            "    'AWS_SESSION_TOKEN': os.environ.get('AWS_SESSION_TOKEN'),\n"
+            "    'GH_CONFIG_DIR': os.environ.get('GH_CONFIG_DIR'),\n"
+            "    'XDG_CONFIG_HOME': os.environ.get('XDG_CONFIG_HOME'),\n"
+            "    'HOME': os.environ.get('HOME'),\n"
+            "    'credential_helper': helper.stdout.strip(),\n"
+            "    'credential_stdout': credential.stdout.strip(),\n"
+            "}, sort_keys=True))\n"
+            "sys.exit(7)\n",
+        )
+        config = write_preflight_config(root, "strict", [f"{sys.executable} {verifier}"])
+        trace = root / "operator-trace.json"
+        operator_home = root / "operator-home"
+        operator_gh_config = root / "operator-gh-config"
+        operator_xdg_config = root / "operator-xdg-config"
+        sensitive_values = (
+            "preflight-dummy-gh-token",
+            "preflight-dummy-github-token",
+            "preflight-dummy-aws-access-key",
+            "preflight-dummy-aws-secret-key",
+            "preflight-dummy-aws-session-token",
+            str(operator_home),
+            str(operator_gh_config),
+            str(operator_xdg_config),
+        )
+        env = os.environ.copy()
+        env.update(
+            {
+                "GH_TOKEN": sensitive_values[0],
+                "GITHUB_TOKEN": sensitive_values[1],
+                "AWS_ACCESS_KEY_ID": sensitive_values[2],
+                "AWS_SECRET_ACCESS_KEY": sensitive_values[3],
+                "AWS_SESSION_TOKEN": sensitive_values[4],
+                "HOME": sensitive_values[5],
+                "GH_CONFIG_DIR": sensitive_values[6],
+                "XDG_CONFIG_HOME": sensitive_values[7],
+                "GIT_TRACE2_EVENT": str(trace),
+            }
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--expected-base-sha",
+                fixture.base,
+                "--expected-head-sha",
+                f"1={head}",
+                "--no-gh",
+                "--config",
+                str(config),
+                "--json",
+                "1",
+            ],
+            cwd=fixture.repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert_equal(result.returncode, 2, "credential-free verifier rc")
+        combined_output = f"{result.stdout}\n{result.stderr}"
+        leaked = tuple(value for value in sensitive_values if value in combined_output)
+        assert_equal(leaked, (), "credential-free verifier diagnostics")
+        if trace.exists():
+            raise AssertionError("operator-selected Trace2 sink received verifier telemetry")
+        payload = parse_json(result.stdout)
+        preview = payload["blocked_prs"][0]["stdout_preview"]
+        for field in (
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "GH_CONFIG_DIR",
+            "XDG_CONFIG_HOME",
+        ):
+            if f'"{field}": null' not in preview:
+                raise AssertionError(preview)
+        if '"credential_helper": ""' not in preview or '"credential_stdout": ""' not in preview:
+            raise AssertionError(preview)
 
 
 def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
@@ -5319,6 +5428,7 @@ def main() -> int:
     assert_verifier_worktrees_can_read_checkout_object_database()
     assert_verifier_worktrees_inherit_origin_remote()
     assert_verifier_diagnostics_redact_origin_url()
+    assert_verifier_environment_excludes_operator_credentials()
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()

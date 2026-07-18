@@ -16,7 +16,6 @@ REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 GITHUB_REPOSITORY_RE = re.compile(
     r"^github\.com/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
 )
-SAFE_GIT_OBSERVABILITY_ENV = ("GIT_TRACE2_EVENT",)
 
 
 def is_direct_remote_url(remote_url: str) -> bool:
@@ -65,15 +64,9 @@ def isolated_git_transport_environment(
     environ: Mapping[str, str],
 ) -> dict[str, str]:
     environment = dict(environ)
-    observability = {
-        key: environment[key]
-        for key in SAFE_GIT_OBSERVABILITY_ENV
-        if key in environment
-    }
     for key in tuple(environment):
         if key.startswith("GIT_"):
             environment.pop(key)
-    environment.update(observability)
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     environment["GIT_CONFIG_COUNT"] = "1"

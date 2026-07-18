@@ -609,6 +609,7 @@ CHECK_STATE_ISSUE_MESSAGES = {
     "required_check_stale": "required check is stale: {name}",
 }
 VERIFIER_STREAMS = ("stdout", "stderr")
+VERIFIER_PASSTHROUGH_ENV = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ")
 FENCES_ONLY_FLAG = "--fences-only"
 SHELL_COMMAND_EXECUTABLES = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 PREFLIGHT_MODE_FINDINGS = {
@@ -2354,6 +2355,35 @@ def git(
     )
 
 
+def isolated_verifier_environment(
+    environ: Mapping[str, str],
+    runtime_root: pathlib.Path,
+    alternate_object_dir: str | None,
+) -> dict[str, str]:
+    home = runtime_root / "home"
+    temp = runtime_root / "tmp"
+    home.mkdir(parents=True)
+    temp.mkdir()
+    environment = {
+        key: environ[key]
+        for key in VERIFIER_PASSTHROUGH_ENV
+        if key in environ
+    }
+    environment.update(
+        {
+            "HOME": str(home),
+            "TMPDIR": str(temp),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    if alternate_object_dir:
+        environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = alternate_object_dir
+    return environment
+
+
 def load_toml(path: pathlib.Path) -> dict[str, object]:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -2870,6 +2900,11 @@ def run_verifier_commands(
     results: list[VerifierResult] = []
     with tempfile.TemporaryDirectory(prefix="merge-queue-preflight-") as tmp:
         worktree = pathlib.Path(tmp) / "worktree"
+        verifier_env = isolated_verifier_environment(
+            os.environ,
+            pathlib.Path(tmp) / "runtime",
+            alternate_object_dir,
+        )
         git(
             repo,
             "config",
@@ -2898,9 +2933,6 @@ def run_verifier_commands(
                 if not parts:
                     raise PreflightError("verifier command must not be empty")
                 public_command = redact_remote_urls(command, (origin_url,))
-                env = isolated_git_transport_environment(os.environ)
-                if alternate_object_dir:
-                    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = alternate_object_dir
                 print(
                     f"merge_queue_preflight: verifier running: {public_command}",
                     file=sys.stderr,
@@ -2910,7 +2942,7 @@ def run_verifier_commands(
                     parts,
                     cwd=worktree,
                     check=False,
-                    env=env,
+                    env=verifier_env,
                     timeout_seconds=timeout_seconds,
                     process_group=True,
                 )

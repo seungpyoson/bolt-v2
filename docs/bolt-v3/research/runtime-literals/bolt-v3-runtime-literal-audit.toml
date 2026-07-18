@@ -20923,22 +20923,6 @@ classification = "order_reject_observer_episode_counter_identity"
 reason = "Reject-observer retry totals fold from zero before observed episodes contribute counts; this is observability aggregation state, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node/risk_admission_loss.rs"
-kind = "string"
-literal = '''"kill switch flatten command failures: halt_id={} failures={}"'''
-context = '''"kill switch flatten command failures: halt_id={} failures={}",'''
-classification = "kill_switch_flatten_command_failure_diagnostic"
-reason = "Fail-loud aggregate diagnostic returned after attempting every planned kill-switch flatten command; it reports observed failures and does not configure route policy, sizing, timing, or venue behavior."
-
-[[allowed]]
-path = "src/bolt_v3_live_node/risk_admission_loss.rs"
-kind = "string"
-literal = '''" | "'''
-context = '''failures.join(" | ")'''
-classification = "kill_switch_flatten_command_failure_diagnostic_separator"
-reason = "Structural separator for the fail-loud aggregate kill-switch flatten command diagnostic; it does not configure runtime behavior."
-
-[[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"no live input-health transition observed for reference_current_price source"'''
@@ -21208,14 +21192,6 @@ literal = '''"complete_set_arbitrage"'''
 context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
 classification = "strategy_archetype_key"
 reason = "Stable complete-set discriminator used by the shared submit-mode contract's NT order-template validation."
-[[allowed]]
-path = "src/bolt_v3_live_node/risk_admission_loss.rs"
-kind = "string"
-literal = '''"kill-switch flatten submission is unavailable while economics_slice=quote_only"'''
-context = '''"kill-switch flatten submission is unavailable while economics_slice=quote_only"'''
-classification = "quote_only_capability_diagnostic"
-reason = "Stable diagnostic for the configured Slice 1 capability boundary; quote_only is TOML-owned and cannot arm a forced-reduction submit path."
-
 [[allowed]]
 path = "src/shadow_pnl.rs"
 kind = "string"
@@ -21967,3 +21943,27 @@ literal = '''"execution economics quote maximum age overflows nanoseconds"'''
 context = '''"execution economics quote maximum age overflows nanoseconds".to_string(),'''
 classification = "diagnostic_template"
 reason = "Stable checked-conversion diagnostic; the maximum age value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"execution client {client_id} has no registered economics binding"'''
+context = '''"execution client {client_id} has no registered economics binding"'''
+classification = "diagnostic_template"
+reason = "Fail-closed registry diagnostic; provider selection remains derived from the configured client venue key."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"execution client {client_id} has no economics configuration loader"'''
+context = '''"execution client {client_id} has no economics configuration loader"'''
+classification = "diagnostic_template"
+reason = "Fail-closed registry diagnostic when an execution binding lacks its mandatory economics loader."
+
+[[allowed]]
+path = "src/bolt_v3_live_node/risk_admission_loss.rs"
+kind = "string"
+literal = '''"kill-switch flatten submission is unavailable for execution client {client_id} under its configured economics slice"'''
+context = '''"kill-switch flatten submission is unavailable for execution client {client_id} under its configured economics slice"'''
+classification = "configured_capability_diagnostic"
+reason = "Reports the result of evaluating the TOML-derived economics slice for the named execution client."

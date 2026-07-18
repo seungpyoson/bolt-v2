@@ -10,7 +10,13 @@ use crate::bolt_v3_venue_truth::{
     VenueTruthCaptureFailureEvidence, venue_truth_capture_failure_parts,
 };
 use crate::{
-    bolt_v3_config::{KillSwitchFlattenConfigBlock, KillSwitchFlattenRouteKindConfig},
+    bolt_v3_config::KillSwitchFlattenRouteKindConfig,
+    bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionPolicy,
+};
+
+#[cfg(test)]
+use crate::{
+    bolt_v3_config::KillSwitchFlattenConfigBlock,
     bolt_v3_kill_switch_flatten::{
         BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenCommand,
         BoltV3KillSwitchFlattenPlan, BoltV3KillSwitchFlattenPlanRequest,
@@ -20,9 +26,6 @@ use crate::{
         BoltV3KillSwitchFlattenSupervisor,
     },
     bolt_v3_order_intent::NtOrderTemplate,
-    bolt_v3_submit_admission::{
-        BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-    },
 };
 
 use super::*;
@@ -35,10 +38,12 @@ const OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE: &str =
     stringify!(venue_truth_runtime_failure);
 const OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE: &str = stringify!(venue_truth_divergence);
 
+#[cfg(test)]
 struct ClosureKillSwitchFlattenExecutor<F: Fn(&KillSwitchLossAction) -> Result<()>> {
     execute_flatten: F,
 }
 
+#[cfg(test)]
 impl<F> KillSwitchFlattenExecutor for ClosureKillSwitchFlattenExecutor<F>
 where
     F: Fn(&KillSwitchLossAction) -> Result<()>,
@@ -1152,7 +1157,7 @@ impl KillSwitchLossActionSink for NtReducingLossActionSink {
 
 fn live_node_kill_switch_flatten_executor(
     loaded: &LoadedBoltV3Config,
-    node: &LiveNode,
+    _node: &LiveNode,
     _decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<Option<Rc<dyn KillSwitchFlattenExecutor>>, BoltV3LiveNodeError> {
@@ -1189,70 +1194,42 @@ fn live_node_kill_switch_flatten_executor(
             ),
         ));
     }
-    if flatten.route_kind == KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
-        return Err(BoltV3LiveNodeError::KillSwitchLossProtection(
-            anyhow::anyhow!(
-                "kill-switch flatten submission is unavailable while economics_slice=quote_only"
-            ),
-        ));
-    }
-
-    let flatten_policy = flatten_policy_from_config(flatten)
-        .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
-    let order_template = flatten_order_template_from_config(flatten);
-    let cache = node.kernel().cache();
-    let config_sha256 = loaded.config_bundle_checksum.clone();
-    let policy_sha256 = kill_switch.forced_reduction_policy_sha256.clone();
-    let executor = ClosureKillSwitchFlattenExecutor {
-        execute_flatten: move |action: &KillSwitchLossAction| {
-            let observed_at_unix_nanos = current_unix_nanos()?;
-            let candidates = kill_switch_flatten_candidates_from_cache(
-                &cache.borrow(),
-                action,
-                observed_at_unix_nanos,
-            )?;
-            let snapshot =
-                BoltV3KillSwitchFlattenSnapshot::new(candidates).map_err(domain_error)?;
-            let claim = BoltV3KillSwitchForcedReductionClaim::new(
-                action.halt_id.clone(),
-                action.action_id.clone(),
-                policy_sha256.clone(),
-            )
-            .map_err(domain_error)?;
-            let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(
-                BoltV3KillSwitchFlattenPlanRequest {
-                    kill_switch_state: KillSwitchState::Flattening {
-                        halt_id: action.halt_id.clone(),
-                    },
-                    nt_trading_state: TradingState::Reducing,
-                    action_id: action.action_id.clone(),
-                    config_sha256: config_sha256.clone(),
-                    policy_sha256: policy_sha256.clone(),
-                    source_timestamp_unix_nanos: observed_at_unix_nanos,
-                    policy: flatten_policy,
-                    snapshot,
-                    observed_at_unix_nanos,
-                    route_proof: BoltV3KillSwitchFlattenRouteProof::new(
-                        BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
-                    ),
-                    order_template: order_template.clone(),
-                    forced_reduction_claim: claim,
-                },
-            )
-            .map_err(domain_error)?;
-
-            route_planned_kill_switch_flatten_commands(&plan, |_command| {
-                anyhow::bail!(
-                    "kill-switch flatten submission is unavailable while economics_slice=quote_only"
-                )
+    for (client_id, client) in &loaded.root.clients {
+        let Some(execution) = client.execution.as_ref() else {
+            continue;
+        };
+        let binding = crate::bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+            .ok_or_else(|| {
+                BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+                    "execution client {client_id} has no registered economics binding"
+                ))
             })?;
-            Ok(())
-        },
-    };
-
-    Ok(Some(Rc::new(executor)))
+        let load = binding.execution_economics.ok_or_else(|| {
+            BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+                "execution client {client_id} has no economics configuration loader"
+            ))
+        })?;
+        let economics = load(execution).map_err(|error| {
+            BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+                "execution client {client_id} economics configuration is invalid: {error}"
+            ))
+        })?;
+        if economics.economics_slice.blocks_live_submission() {
+            return Err(BoltV3LiveNodeError::KillSwitchLossProtection(
+                anyhow::anyhow!(
+                    "kill-switch flatten submission is unavailable for execution client {client_id} under its configured economics slice"
+                ),
+            ));
+        }
+    }
+    Err(BoltV3LiveNodeError::KillSwitchLossProtection(
+        anyhow::anyhow!(
+            "kill-switch flatten submission requires an execution client with live economics capability"
+        ),
+    ))
 }
 
+#[cfg(test)]
 fn route_planned_kill_switch_flatten_commands<F>(
     plan: &BoltV3KillSwitchFlattenPlan,
     mut route_command: F,
@@ -1288,6 +1265,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn kill_switch_flatten_candidates_from_cache(
     cache: &nautilus_common::cache::Cache,
     action: &KillSwitchLossAction,
@@ -1329,6 +1307,7 @@ fn kill_switch_flatten_candidates_from_cache(
     Ok(candidates)
 }
 
+#[cfg(test)]
 fn domain_error(error: impl std::fmt::Debug) -> anyhow::Error {
     anyhow::anyhow!("{error:?}")
 }
@@ -1346,12 +1325,14 @@ fn kill_switch_forced_reduction_policy_from_config(
     .map_err(|error| anyhow::anyhow!("{error:?}"))
 }
 
+#[cfg(test)]
 fn flatten_policy_from_config(
     _flatten: &KillSwitchFlattenConfigBlock,
 ) -> Result<BoltV3KillSwitchFlattenPolicy> {
     Ok(BoltV3KillSwitchFlattenPolicy::new())
 }
 
+#[cfg(test)]
 fn flatten_order_template_from_config(flatten: &KillSwitchFlattenConfigBlock) -> NtOrderTemplate {
     NtOrderTemplate {
         order_type: flatten.order_type,

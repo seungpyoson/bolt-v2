@@ -197,6 +197,8 @@ impl ReplayEconomicsAdmissionSource {
                 reporting_unit: &authority.reporting_unit,
                 edge_basis_policy_id: &authority.edge_basis.policy_id,
                 carry_plan: bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+                routing_attachment_policy:
+                    bolt_v2::bolt_v3_economics_config::EconomicsRoutingAttachmentPolicy::Forbidden,
             },
         )
         .map_err(|_| EconomicsUnavailable::InvalidIdentifier {

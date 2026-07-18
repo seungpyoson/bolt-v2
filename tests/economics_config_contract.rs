@@ -18,6 +18,7 @@ fn parse(source: &str) -> Result<ExecutionEconomicsConfig, toml::de::Error> {
 fn valid_config() -> &'static str {
     r#"
 economics_slice = "quote_only"
+routing_attachment_policy = "forbidden"
 reporting_policy = "shared-pnl"
 quote_refresh_secs = 5
 quote_max_age_secs = 10

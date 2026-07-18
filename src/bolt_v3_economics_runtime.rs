@@ -887,6 +887,8 @@ pub(crate) fn test_order_routing_handle(
             reporting_unit: "test-reporting-unit",
             edge_basis_policy_id: "test-edge-policy",
             carry_plan: crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+            routing_attachment_policy:
+                crate::bolt_v3_economics_config::EconomicsRoutingAttachmentPolicy::Forbidden,
         },
     )
     .expect("test order routing handle should build")

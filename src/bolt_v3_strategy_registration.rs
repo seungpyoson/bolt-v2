@@ -256,6 +256,7 @@ fn build_order_routing_handle(
                 .reporting
                 .pnl_currency
                 .as_str(),
+            routing_attachment_policy: economics.routing_attachment_policy,
         },
     )
     .map_err(|error| binding_message(context, format!("economics routing: {error:#}")))

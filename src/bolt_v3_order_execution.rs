@@ -26,6 +26,7 @@ use crate::{
         BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3OrderIntentOrderFields,
     },
+    bolt_v3_economics_config::EconomicsRoutingAttachmentPolicy,
     bolt_v3_economics_runtime::{
         EconomicsAdmission, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
     },
@@ -67,6 +68,7 @@ pub struct BoltV3OrderRoutingHandle {
     product_surface_routes: BTreeMap<ProductSurfaceId, (EdgeBasisPolicyId, BoltV3CarryPlan)>,
     reporting_policy_id: ReportingPolicyId,
     reporting_unit: NativeUnitId,
+    routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,6 +102,7 @@ pub struct BoltV3OrderRoutingConfig<'a> {
     pub reporting_unit: &'a str,
     pub edge_basis_policy_id: &'a str,
     pub carry_plan: BoltV3CarryPlan,
+    pub routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
 }
 
 pub struct BoltV3ProductSurfaceRoute<'a> {
@@ -114,6 +117,7 @@ pub struct BoltV3MultiSurfaceOrderRoutingConfig<'a> {
     pub product_surface_routes: Vec<BoltV3ProductSurfaceRoute<'a>>,
     pub reporting_policy_id: &'a str,
     pub reporting_unit: &'a str,
+    pub routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
 }
 
 impl BoltV3OrderRoutingHandle {
@@ -133,6 +137,7 @@ impl BoltV3OrderRoutingHandle {
                 }],
                 reporting_policy_id: config.reporting_policy_id,
                 reporting_unit: config.reporting_unit,
+                routing_attachment_policy: config.routing_attachment_policy,
             },
         )
     }
@@ -163,6 +168,7 @@ impl BoltV3OrderRoutingHandle {
             product_surface_routes,
             reporting_policy_id: ReportingPolicyId::new(config.reporting_policy_id)?,
             reporting_unit: NativeUnitId::new(config.reporting_unit)?,
+            routing_attachment_policy: config.routing_attachment_policy,
         })
     }
 
@@ -229,7 +235,9 @@ impl BoltV3OrderRoutingHandle {
             order_side: intent.request.order.order_side(),
             liquidity_role: intent.liquidity_role,
             planned_fill_legs: &nt_planned_fill_legs,
-            routing_attachment_id: None,
+            routing_attachment_id: match self.routing_attachment_policy {
+                EconomicsRoutingAttachmentPolicy::Forbidden => None,
+            },
             position,
             lifecycle_path: intent.lifecycle_path,
             reporting_policy_id: self.reporting_policy_id.as_str(),

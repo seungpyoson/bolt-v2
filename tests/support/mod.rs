@@ -130,6 +130,8 @@ pub fn sample_order_routing_handle(
             reporting_unit: "test-reporting-unit",
             edge_basis_policy_id: "test-edge-policy",
             carry_plan: bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
+            routing_attachment_policy:
+                bolt_v2::bolt_v3_economics_config::EconomicsRoutingAttachmentPolicy::Forbidden,
         },
     )
     .expect("sample order routing handle should build")

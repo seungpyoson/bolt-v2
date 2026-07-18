@@ -432,6 +432,7 @@ outcome_settlement_poll_secs = 0
 
 [execution.economics]
 economics_slice = "quote_only"
+routing_attachment_policy = "forbidden"
 reporting_policy = "primary-pnl"
 quote_refresh_secs = 30
 quote_max_age_secs = 60

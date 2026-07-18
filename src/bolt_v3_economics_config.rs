@@ -23,6 +23,12 @@ pub enum EconomicsSliceConfig {
     QuoteOnly,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomicsRoutingAttachmentPolicy {
+    Forbidden,
+}
+
 impl EconomicsSliceConfig {
     pub const fn blocks_live_submission(self) -> bool {
         match self {
@@ -35,6 +41,7 @@ impl EconomicsSliceConfig {
 #[serde(deny_unknown_fields)]
 pub struct ExecutionEconomicsConfig {
     pub economics_slice: EconomicsSliceConfig,
+    pub routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
     pub reporting_policy: String,
     pub quote_refresh_secs: u64,
     pub quote_max_age_secs: u64,

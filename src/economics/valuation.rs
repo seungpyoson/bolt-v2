@@ -60,7 +60,11 @@ pub fn value_with_route(
                 route_id: route.route_id.clone(),
             });
         }
-        if leg.observed_at_ns > valued_at_ns || leg.valid_until_ns < valued_at_ns {
+        if leg.observed_at_ns > leg.fetched_at_ns
+            || leg.fetched_at_ns > leg.valid_until_ns
+            || leg.fetched_at_ns > valued_at_ns
+            || leg.valid_until_ns < valued_at_ns
+        {
             return Err(EconomicsUnavailable::StaleValuation {
                 route_id: route.route_id.clone(),
             });

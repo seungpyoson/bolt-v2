@@ -279,6 +279,7 @@ pub struct ValuationLegEvidence {
     pub rate: Decimal,
     pub source_snapshot_id: SnapshotId,
     pub observed_at_ns: u64,
+    pub fetched_at_ns: u64,
     pub valid_until_ns: u64,
 }
 

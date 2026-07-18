@@ -2415,6 +2415,8 @@ mod tests {
                 rate: "1".to_string(),
                 snapshot_id: "test-pusd-usdc".to_string(),
                 observed_at_ns,
+                fetched_at_ns: observed_at_ns,
+                valid_until_ns: u64::MAX,
             },
             crate::economics::HistoricalValuationObservation::MarketQuote {
                 client_id: "coinbase_data".to_string(),
@@ -2422,6 +2424,8 @@ mod tests {
                 price: "1".to_string(),
                 snapshot_id: "test-usdc-usd".to_string(),
                 observed_at_ns,
+                fetched_at_ns: observed_at_ns,
+                valid_until_ns: u64::MAX,
             },
         ]
     }

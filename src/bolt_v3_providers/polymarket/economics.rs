@@ -360,6 +360,8 @@ impl PolymarketEconomicsAuthority {
 
     async fn observe_collateral_redemption(
         &self,
+        fetched_at_ns: u64,
+        valid_until_ns: u64,
     ) -> anyhow::Result<AuthoritativeValuationObservation> {
         let rpc = super::collateral_accounting_source::OnChainCollateralRpcClient::try_new(
             &self.on_chain_collateral,
@@ -505,6 +507,10 @@ impl PolymarketEconomicsAuthority {
             .timestamp_secs
             .checked_mul(NANOS_PER_SECOND_U64)
             .context("Polymarket collateral block timestamp overflows nanoseconds")?;
+        anyhow::ensure!(
+            observed_at_ns <= fetched_at_ns && fetched_at_ns <= valid_until_ns,
+            "Polymarket collateral redemption timeline is invalid"
+        );
         let proof = CollateralRedemptionProof {
             chain_id,
             block_number,
@@ -524,6 +530,9 @@ impl PolymarketEconomicsAuthority {
                 .redemption_semantics_source_commit
                 .clone(),
             redemption_rate: rate.to_string(),
+            observed_at_ns,
+            fetched_at_ns,
+            valid_until_ns,
         };
         let encoded = serde_json::to_vec(&proof)
             .context("could not encode Polymarket collateral redemption proof")?;
@@ -537,6 +546,8 @@ impl PolymarketEconomicsAuthority {
                 hex::encode(Sha256::digest(encoded))
             ))?,
             observed_at_ns,
+            fetched_at_ns,
+            valid_until_ns,
         })
     }
 }
@@ -558,6 +569,9 @@ struct CollateralRedemptionProof {
     offramp_code_sha256: String,
     redemption_semantics_source_commit: String,
     redemption_rate: String,
+    observed_at_ns: u64,
+    fetched_at_ns: u64,
+    valid_until_ns: u64,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -656,7 +670,7 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             .get(&self.edge_basis_policy_id)
             .context("Polymarket economics edge-basis policy is missing")?;
         let valuation_observation = self
-            .observe_collateral_redemption()
+            .observe_collateral_redemption(refreshed_at_ns, valid_until_ns)
             .await
             .context("Polymarket collateral redemption authority is unavailable")?;
         Ok(ProviderEconomicsAuthoritySnapshot {

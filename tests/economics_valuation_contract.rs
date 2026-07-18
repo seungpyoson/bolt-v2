@@ -21,6 +21,7 @@ fn leg(from: &str, to: &str, rate: &str) -> ValuationLegEvidence {
         rate: decimal(rate),
         source_snapshot_id: SnapshotId::new(format!("{from}-{to}")).unwrap(),
         observed_at_ns: 90,
+        fetched_at_ns: 95,
         valid_until_ns: 110,
     }
 }
@@ -63,6 +64,8 @@ fn configured_provider_resolves_provider_conversion_then_fresh_market_observatio
                 rate: decimal("1"),
                 snapshot_id: SnapshotId::new("pusd-usdc-contract-100").unwrap(),
                 observed_at_ns: 100,
+                fetched_at_ns: 100,
+                valid_until_ns: 1_000_100,
             },
             AuthoritativeValuationObservation::MarketQuote {
                 client_id: "coinbase-data".to_string(),
@@ -70,6 +73,8 @@ fn configured_provider_resolves_provider_conversion_then_fresh_market_observatio
                 price: decimal("0.99"),
                 snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
                 observed_at_ns: 100,
+                fetched_at_ns: 100,
+                valid_until_ns: 1_000_100,
             },
         ],
     )
@@ -86,6 +91,7 @@ fn configured_provider_resolves_provider_conversion_then_fresh_market_observatio
         .unwrap();
 
     assert_eq!(evidence.normalized_amount, decimal("-1.98"));
+    assert_eq!(evidence.valid_until_ns, Some(1_000_100));
     assert_eq!(
         evidence.source_snapshot_ids,
         vec![
@@ -125,10 +131,48 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
         price: decimal("1"),
         snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
         observed_at_ns: 100,
+        fetched_at_ns: 100,
+        valid_until_ns: 1_000_100,
     };
     assert!(matches!(
         ConfiguredValuationProvider::from_config(&config, &[observation.clone(), observation]),
         Err(EconomicsUnavailable::AmbiguousQuoteAuthority)
+    ));
+}
+
+#[test]
+fn configured_provider_rejects_contradictory_observation_timeline() {
+    let config = ValuationConfig {
+        routes: BTreeMap::from([(
+            "usdc-usd".to_string(),
+            ValuationRouteConfig {
+                from_unit: "USDC".to_string(),
+                to_currency: "USD".to_string(),
+                legs: vec![ValuationLegConfig::MarketQuote {
+                    from_unit: "USDC".to_string(),
+                    to_unit: "USD".to_string(),
+                    valuation_policy: ValuationPolicy::TopOfBookMidpoint,
+                    client_id: "coinbase-data".to_string(),
+                    instrument_id: "USDC-USD.COINBASE".to_string(),
+                    orientation: ValuationOrientation::BaseToQuote,
+                    max_age_ms: 1,
+                }],
+            },
+        )]),
+    };
+    let observation = AuthoritativeValuationObservation::MarketQuote {
+        client_id: "coinbase-data".to_string(),
+        instrument_id: "USDC-USD.COINBASE".to_string(),
+        price: decimal("1"),
+        snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
+        observed_at_ns: 101,
+        fetched_at_ns: 100,
+        valid_until_ns: 1_000_100,
+    };
+
+    assert!(matches!(
+        ConfiguredValuationProvider::from_config(&config, &[observation]),
+        Err(EconomicsUnavailable::InvalidQuoteValidityPolicy)
     ));
 }
 

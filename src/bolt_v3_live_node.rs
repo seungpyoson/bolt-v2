@@ -933,7 +933,7 @@ fn economics_valuation_provider_from_cache(
                 instrument_id,
                 valuation_policy,
                 orientation,
-                ..
+                max_age_ms,
             } = leg
             else {
                 continue;
@@ -980,13 +980,27 @@ fn economics_valuation_provider_from_cache(
                     .and_then(|sum| sum.checked_div(Decimal::TWO))
                     .context("economics valuation midpoint overflow")?,
             };
+            let observed_at_ns = quote.ts_event.as_u64();
+            let fetched_at_ns = quote.ts_init.as_u64();
+            let source_max_age_ns = max_age_ms
+                .checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+                .context("economics valuation maximum age overflows nanoseconds")?;
+            let valid_until_ns = observed_at_ns
+                .checked_add(source_max_age_ns)
+                .context("economics valuation validity deadline overflows")?;
+            anyhow::ensure!(
+                observed_at_ns <= fetched_at_ns && fetched_at_ns <= valid_until_ns,
+                "economics valuation quote timeline is invalid"
+            );
             let snapshot_payload = format!(
-                "{}\0{}\0{}\0{}\0{}",
+                "{}\0{}\0{}\0{}\0{}\0{}\0{}",
                 client_id,
                 instrument_id,
                 quote.bid_price,
                 quote.ask_price,
-                quote.ts_event.as_u64()
+                observed_at_ns,
+                fetched_at_ns,
+                valid_until_ns
             );
             observations.push(
                 crate::bolt_v3_economics_runtime::AuthoritativeValuationObservation::MarketQuote {
@@ -997,7 +1011,9 @@ fn economics_valuation_provider_from_cache(
                         "sha256:{}",
                         hex::encode(Sha256::digest(snapshot_payload.as_bytes()))
                     ))?,
-                    observed_at_ns: quote.ts_event.as_u64(),
+                    observed_at_ns,
+                    fetched_at_ns,
+                    valid_until_ns,
                 },
             );
         }

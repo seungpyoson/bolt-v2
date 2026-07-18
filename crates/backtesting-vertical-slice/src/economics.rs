@@ -71,6 +71,8 @@ pub enum HistoricalValuationObservation {
         price: String,
         snapshot_id: String,
         observed_at_ns: u64,
+        fetched_at_ns: u64,
+        valid_until_ns: u64,
     },
     ProviderConversion {
         source_id: String,
@@ -79,6 +81,21 @@ pub enum HistoricalValuationObservation {
         rate: String,
         snapshot_id: String,
         observed_at_ns: u64,
+        fetched_at_ns: u64,
+        valid_until_ns: u64,
+    },
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum HistoricalValuationAuthorityKey {
+    MarketQuote {
+        client_id: String,
+        instrument_id: String,
+    },
+    ProviderConversion {
+        source_id: String,
+        from_unit: String,
+        to_unit: String,
     },
 }
 
@@ -418,10 +435,15 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
     NativeUnitId::new(snapshot.reporting_unit.clone())?;
     SnapshotId::new(snapshot.snapshot_id.clone())?;
     EdgeBasisPolicyId::new(snapshot.edge_basis.policy_id.clone())?;
+    let mut edge_snapshot_ids = std::collections::BTreeSet::new();
     for snapshot_id in &snapshot.edge_basis.source_snapshot_ids {
+        if !edge_snapshot_ids.insert(snapshot_id.clone()) {
+            return Err(EconomicsUnavailable::InvalidQuoteValidityPolicy);
+        }
         SnapshotId::new(snapshot_id.clone())?;
     }
     let mut source_ids = std::collections::BTreeSet::new();
+    let mut source_snapshot_ids = std::collections::BTreeSet::new();
     for source in &snapshot.source_snapshots {
         if source.source_at_ns > source.fetched_at_ns
             || source.fetched_at_ns > source.valid_until_ns
@@ -429,6 +451,7 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
             || source.fetched_at_ns > snapshot.fetched_at_ns
             || source.valid_until_ns < snapshot.valid_until_ns
             || !source_ids.insert(source.source_id.clone())
+            || !source_snapshot_ids.insert(source.snapshot_id.clone())
             || source.payload_json.trim().is_empty()
         {
             return Err(EconomicsUnavailable::InvalidSourceTimeline {
@@ -437,6 +460,62 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
         }
         SourceId::new(source.source_id.clone())?;
         SnapshotId::new(source.snapshot_id.clone())?;
+    }
+    let mut valuation_authorities = std::collections::BTreeSet::new();
+    let mut valuation_snapshot_ids = std::collections::BTreeSet::new();
+    for observation in &snapshot.valuation_observations {
+        let (authority, snapshot_id, observed_at_ns, fetched_at_ns, valid_until_ns) =
+            match observation {
+                HistoricalValuationObservation::MarketQuote {
+                    client_id,
+                    instrument_id,
+                    snapshot_id,
+                    observed_at_ns,
+                    fetched_at_ns,
+                    valid_until_ns,
+                    ..
+                } => (
+                    HistoricalValuationAuthorityKey::MarketQuote {
+                        client_id: client_id.clone(),
+                        instrument_id: instrument_id.clone(),
+                    },
+                    snapshot_id,
+                    *observed_at_ns,
+                    *fetched_at_ns,
+                    *valid_until_ns,
+                ),
+                HistoricalValuationObservation::ProviderConversion {
+                    source_id,
+                    from_unit,
+                    to_unit,
+                    snapshot_id,
+                    observed_at_ns,
+                    fetched_at_ns,
+                    valid_until_ns,
+                    ..
+                } => (
+                    HistoricalValuationAuthorityKey::ProviderConversion {
+                        source_id: source_id.clone(),
+                        from_unit: from_unit.clone(),
+                        to_unit: to_unit.clone(),
+                    },
+                    snapshot_id,
+                    *observed_at_ns,
+                    *fetched_at_ns,
+                    *valid_until_ns,
+                ),
+            };
+        if observed_at_ns > fetched_at_ns
+            || fetched_at_ns > valid_until_ns
+            || observed_at_ns > snapshot.source_at_ns
+            || fetched_at_ns > snapshot.fetched_at_ns
+            || valid_until_ns < snapshot.valid_until_ns
+            || !valuation_authorities.insert(authority)
+            || !valuation_snapshot_ids.insert(snapshot_id.clone())
+        {
+            return Err(EconomicsUnavailable::InvalidQuoteValidityPolicy);
+        }
+        SnapshotId::new(snapshot_id.clone())?;
     }
     Ok(())
 }
@@ -478,12 +557,16 @@ fn canonical_valuation_observations(
                 price,
                 snapshot_id,
                 observed_at_ns,
+                fetched_at_ns,
+                valid_until_ns,
             } => Ok(AuthoritativeValuationObservation::MarketQuote {
                 client_id: client_id.clone(),
                 instrument_id: instrument_id.clone(),
                 price: decimal(price)?,
                 snapshot_id: SnapshotId::new(snapshot_id.clone())?,
                 observed_at_ns: *observed_at_ns,
+                fetched_at_ns: *fetched_at_ns,
+                valid_until_ns: *valid_until_ns,
             }),
             HistoricalValuationObservation::ProviderConversion {
                 source_id,
@@ -492,6 +575,8 @@ fn canonical_valuation_observations(
                 rate,
                 snapshot_id,
                 observed_at_ns,
+                fetched_at_ns,
+                valid_until_ns,
             } => Ok(AuthoritativeValuationObservation::ProviderConversion {
                 source_id: source_id.clone(),
                 from_unit: NativeUnitId::new(from_unit.clone())?,
@@ -499,6 +584,8 @@ fn canonical_valuation_observations(
                 rate: decimal(rate)?,
                 snapshot_id: SnapshotId::new(snapshot_id.clone())?,
                 observed_at_ns: *observed_at_ns,
+                fetched_at_ns: *fetched_at_ns,
+                valid_until_ns: *valid_until_ns,
             }),
         })
         .collect()

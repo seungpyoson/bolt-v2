@@ -104,6 +104,8 @@ pub enum AuthoritativeValuationObservation {
         price: Decimal,
         snapshot_id: SnapshotId,
         observed_at_ns: u64,
+        fetched_at_ns: u64,
+        valid_until_ns: u64,
     },
     ProviderConversion {
         source_id: String,
@@ -112,6 +114,8 @@ pub enum AuthoritativeValuationObservation {
         rate: Decimal,
         snapshot_id: SnapshotId,
         observed_at_ns: u64,
+        fetched_at_ns: u64,
+        valid_until_ns: u64,
     },
 }
 
@@ -136,13 +140,22 @@ impl ConfiguredValuationProvider {
             let mut legs = Vec::with_capacity(configured.legs.len());
             let mut route_valid_until_ns = u64::MAX;
             for configured_leg in &configured.legs {
-                let (from_unit, to_unit, rate, snapshot_id, observed_at_ns, max_age_ms) =
-                    resolve_valuation_leg(configured_leg, observations)?;
+                let (
+                    from_unit,
+                    to_unit,
+                    rate,
+                    snapshot_id,
+                    observed_at_ns,
+                    fetched_at_ns,
+                    source_valid_until_ns,
+                    max_age_ms,
+                ) = resolve_valuation_leg(configured_leg, observations)?;
                 let max_age_ns = u64::try_from(Duration::from_millis(max_age_ms).as_nanos())
                     .map_err(|_| EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
-                let valid_until_ns = observed_at_ns
+                let configured_valid_until_ns = observed_at_ns
                     .checked_add(max_age_ns)
                     .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+                let valid_until_ns = configured_valid_until_ns.min(source_valid_until_ns);
                 route_valid_until_ns = route_valid_until_ns.min(valid_until_ns);
                 legs.push(crate::economics::ValuationLegEvidence {
                     from_unit,
@@ -150,6 +163,7 @@ impl ConfiguredValuationProvider {
                     rate,
                     source_snapshot_id: snapshot_id,
                     observed_at_ns,
+                    fetched_at_ns,
                     valid_until_ns,
                 });
             }
@@ -168,8 +182,29 @@ impl ConfiguredValuationProvider {
 fn resolve_valuation_leg(
     configured: &ValuationLegConfig,
     observations: &[AuthoritativeValuationObservation],
-) -> Result<(NativeUnitId, NativeUnitId, Decimal, SnapshotId, u64, u64), EconomicsUnavailable> {
-    let (from_unit, to_unit, rate, snapshot_id, observed_at_ns, max_age_ms) = match configured {
+) -> Result<
+    (
+        NativeUnitId,
+        NativeUnitId,
+        Decimal,
+        SnapshotId,
+        u64,
+        u64,
+        u64,
+        u64,
+    ),
+    EconomicsUnavailable,
+> {
+    let (
+        from_unit,
+        to_unit,
+        rate,
+        snapshot_id,
+        observed_at_ns,
+        fetched_at_ns,
+        valid_until_ns,
+        max_age_ms,
+    ) = match configured {
         ValuationLegConfig::MarketQuote {
             from_unit,
             to_unit,
@@ -188,12 +223,20 @@ fn resolve_valuation_leg(
                         price,
                         snapshot_id,
                         observed_at_ns,
+                        fetched_at_ns,
+                        valid_until_ns,
                     } if observed_client == client_id && observed_instrument == instrument_id => {
-                        Some((*price, snapshot_id.clone(), *observed_at_ns))
+                        Some((
+                            *price,
+                            snapshot_id.clone(),
+                            *observed_at_ns,
+                            *fetched_at_ns,
+                            *valid_until_ns,
+                        ))
                     }
                     _ => None,
                 });
-            let (price, snapshot_id, observed_at_ns) = matching
+            let (price, snapshot_id, observed_at_ns, fetched_at_ns, valid_until_ns) = matching
                 .next()
                 .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
             if matching.next().is_some() || price <= Decimal::ZERO {
@@ -211,6 +254,8 @@ fn resolve_valuation_leg(
                 rate,
                 snapshot_id,
                 observed_at_ns,
+                fetched_at_ns,
+                valid_until_ns,
                 *max_age_ms,
             )
         }
@@ -232,15 +277,23 @@ fn resolve_valuation_leg(
                         rate,
                         snapshot_id,
                         observed_at_ns,
+                        fetched_at_ns,
+                        valid_until_ns,
                     } if observed_source == source_id
                         && from_unit == &expected_from
                         && to_unit == &expected_to =>
                     {
-                        Some((*rate, snapshot_id.clone(), *observed_at_ns))
+                        Some((
+                            *rate,
+                            snapshot_id.clone(),
+                            *observed_at_ns,
+                            *fetched_at_ns,
+                            *valid_until_ns,
+                        ))
                     }
                     _ => None,
                 });
-            let (rate, snapshot_id, observed_at_ns) = matching
+            let (rate, snapshot_id, observed_at_ns, fetched_at_ns, valid_until_ns) = matching
                 .next()
                 .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
             if matching.next().is_some() || rate <= Decimal::ZERO {
@@ -252,16 +305,23 @@ fn resolve_valuation_leg(
                 rate,
                 snapshot_id,
                 observed_at_ns,
+                fetched_at_ns,
+                valid_until_ns,
                 *max_age_ms,
             )
         }
     };
+    if observed_at_ns > fetched_at_ns || fetched_at_ns > valid_until_ns {
+        return Err(EconomicsUnavailable::InvalidQuoteValidityPolicy);
+    }
     Ok((
         from_unit,
         to_unit,
         rate,
         snapshot_id,
         observed_at_ns,
+        fetched_at_ns,
+        valid_until_ns,
         max_age_ms,
     ))
 }

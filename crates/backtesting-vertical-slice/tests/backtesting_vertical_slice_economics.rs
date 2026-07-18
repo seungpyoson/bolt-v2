@@ -59,11 +59,13 @@ fn snapshot() -> HistoricalEconomicsSnapshot {
                 source_id: "collateral".to_string(), from_unit: "pUSD".to_string(),
                 to_unit: "USDC".to_string(), rate: "1".to_string(),
                 snapshot_id: "pusd-usdc".to_string(), observed_at_ns: 90,
+                fetched_at_ns: 95, valid_until_ns: 110,
             },
             backtesting_vertical_slice::economics::HistoricalValuationObservation::MarketQuote {
                 client_id: "coinbase_data".to_string(),
                 instrument_id: "USDC-USD.COINBASE".to_string(), price: "1".to_string(),
                 snapshot_id: "usdc-usd".to_string(), observed_at_ns: 90,
+                fetched_at_ns: 95, valid_until_ns: 110,
             },
         ],
     }
@@ -136,6 +138,18 @@ fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
     let mut first = snapshot();
     first.valid_until_ns = 130;
     first.source_snapshots[0].valid_until_ns = first.valid_until_ns;
+    for observation in &mut first.valuation_observations {
+        match observation {
+            backtesting_vertical_slice::economics::HistoricalValuationObservation::MarketQuote {
+                valid_until_ns,
+                ..
+            }
+            | backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderConversion {
+                valid_until_ns,
+                ..
+            } => *valid_until_ns = first.valid_until_ns,
+        }
+    }
     let mut second = first.clone();
     second.snapshot_id = "quote-snapshot-next".to_string();
     second.source_at_ns = 105;
@@ -147,6 +161,18 @@ fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
     second.source_snapshots[0].source_at_ns = second.source_at_ns;
     second.source_snapshots[0].fetched_at_ns = second.fetched_at_ns;
     second.source_snapshots[0].valid_until_ns = second.valid_until_ns;
+    for observation in &mut second.valuation_observations {
+        match observation {
+            backtesting_vertical_slice::economics::HistoricalValuationObservation::MarketQuote {
+                valid_until_ns,
+                ..
+            }
+            | backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderConversion {
+                valid_until_ns,
+                ..
+            } => *valid_until_ns = second.valid_until_ns,
+        }
+    }
     let source = ReplayEconomicsAdmissionSource::from_snapshots(vec![first, second]).unwrap();
 
     assert_eq!(
@@ -185,5 +211,48 @@ fn replay_authority_rejects_mixed_provider_keys() {
     assert!(matches!(
         ReplayEconomicsAdmissionSource::from_snapshots(vec![first, second]),
         Err(bolt_v2::economics::EconomicsUnavailable::AmbiguousQuoteAuthority)
+    ));
+}
+
+#[test]
+fn replay_authority_rejects_future_valuation_observation() {
+    let mut fixture = snapshot();
+    let backtesting_vertical_slice::economics::HistoricalValuationObservation::MarketQuote {
+        observed_at_ns,
+        fetched_at_ns,
+        ..
+    } = &mut fixture.valuation_observations[1]
+    else {
+        panic!("expected market quote fixture")
+    };
+    *observed_at_ns = fixture.source_at_ns + 1;
+    *fetched_at_ns = fixture.fetched_at_ns + 1;
+
+    assert!(matches!(
+        ReplayEconomicsAdmissionSource::from_snapshots(vec![fixture]),
+        Err(bolt_v2::economics::EconomicsUnavailable::InvalidQuoteValidityPolicy)
+    ));
+}
+
+#[test]
+fn replay_authority_rejects_duplicate_valuation_authority() {
+    let mut fixture = snapshot();
+    let duplicate = fixture.valuation_observations[0].clone();
+    fixture.valuation_observations.push(duplicate);
+
+    assert!(matches!(
+        ReplayEconomicsAdmissionSource::from_snapshots(vec![fixture]),
+        Err(bolt_v2::economics::EconomicsUnavailable::InvalidQuoteValidityPolicy)
+    ));
+}
+
+#[test]
+fn replay_authority_rejects_source_outside_snapshot_timeline() {
+    let mut fixture = snapshot();
+    fixture.source_snapshots[0].fetched_at_ns = fixture.fetched_at_ns + 1;
+
+    assert!(matches!(
+        ReplayEconomicsAdmissionSource::from_snapshots(vec![fixture]),
+        Err(bolt_v2::economics::EconomicsUnavailable::InvalidSourceTimeline { .. })
     ));
 }

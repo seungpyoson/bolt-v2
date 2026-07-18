@@ -21379,10 +21379,26 @@ reason = "Stable checked-arithmetic diagnostic; it provides no valuation fallbac
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
-literal = '''"{}\0{}\0{}\0{}\0{}"'''
-context = '''"{}\0{}\0{}\0{}\0{}",'''
+literal = '''"economics valuation maximum age overflows nanoseconds"'''
+context = '''.context("economics valuation maximum age overflows nanoseconds")?;'''
+classification = "diagnostic_template"
+reason = "Stable checked-arithmetic diagnostic for the TOML-owned valuation maximum age; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"economics valuation validity deadline overflows"'''
+context = '''.context("economics valuation validity deadline overflows")?;'''
+classification = "diagnostic_template"
+reason = "Stable checked-arithmetic diagnostic for the evidence validity deadline; it supplies no runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"{}\0{}\0{}\0{}\0{}\0{}\0{}"'''
+context = '''"{}\0{}\0{}\0{}\0{}\0{}\0{}",'''
 classification = "evidence_fingerprint_schema"
-reason = "Versioned, unambiguous field framing for a valuation evidence fingerprint; all field values come from configured routes and authoritative quote ticks."
+reason = "Versioned, unambiguous field framing for a valuation evidence fingerprint, including observed, fetched, and valid-until times; all field values come from configured routes and authoritative quote ticks."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"

@@ -135,7 +135,7 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 - Default to a **draft** PR while iterating. Iterate with targeted checks such as `just rust-probe`; mark the PR ready only when its head is the intended merge candidate. This is a major run-volume lever: draft-stage was ~26% of `managed_heavy` minutes in the slice 2b meter (2374.694 / 9023.518) — an upper bound that mixes historical feedback and full-proof dispatches, i.e. heavy work spent on intermediate commits a later push replaces.
 - Do not push exploratory or fixup commits to a **ready** PR. Each push can re-run heavy advisory CI on the new SHA and a prior result does not prove the new head, so return the PR to draft until the next coherent slice.
 - Treat ready-PR full CI as high-cost evidence for the intended merge candidate, not a debug loop. Use draft iteration runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback.
-- Queue one merge-ready PR at a time with `just merge-queue <pr>`. The command checks exact remote identity and existing native-review mechanics, then posts the configured Mergify command only for `queue_as_one_wave`; split, blocked, or inconclusive results stop there.
+- Queue one merge-ready PR at a time with `just merge-queue <pr>`. The command checks exact remote identity and existing native-review mechanics, then posts the configured Mergify command only for `queue_as_one_wave`; blocked or inconclusive results stop there.
 
 ## Lever Decisions
 

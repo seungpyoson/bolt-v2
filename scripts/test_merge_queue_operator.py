@@ -129,17 +129,14 @@ def run_operator(args: list[str], runner: FakeRunner) -> tuple[int, str, str]:
     return rc, stdout.getvalue(), stderr.getvalue()
 
 
+def ready_payload(pr: int = 1) -> dict[str, object]:
+    return {"verdict": "queue_as_one_wave", "requested_prs": [pr]}
+
+
 def assert_queue_as_one_wave_posts_mergify_comments() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner(
-            {
-                "verdict": "queue_as_one_wave",
-                "batches": [{"prs": [1]}],
-                "summary": "queue one",
-            },
-            0,
-        )
+        runner = FakeRunner(ready_payload(), 0)
         rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
     assert rc == 0, (rc, stdout, stderr)
     assert "queued PR #1" in stdout, stdout
@@ -165,10 +162,7 @@ def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
     try:
         with tempfile.TemporaryDirectory() as tmp:
             config = write_config(pathlib.Path(tmp))
-            runner = FakeRunner(
-                {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]},
-                0,
-            )
+            runner = FakeRunner(ready_payload(), 0)
             rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
     finally:
         if previous_gh_host is None:
@@ -188,6 +182,20 @@ def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
     assert preflight_environment["GIT_CONFIG_GLOBAL"] == os.devnull
     assert preflight_environment["GIT_CONFIG_KEY_0"] == "credential.https://github.com.helper"
     assert preflight_environment["GIT_CONFIG_VALUE_0"] == "!gh auth git-credential"
+    resolution_command, resolution_environment = next(
+        item
+        for item in runner.command_environments
+        if item[0][:4] == ("git", "config", "--local", "--get-all")
+    )
+    assert resolution_command[-1] == "remote.origin.url"
+    assert resolution_environment is not None
+    assert {key for key in resolution_environment if key.startswith("GIT_")} == {
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+    }
     for command, environment in runner.command_environments:
         if command[:2] == ("git", "ls-remote"):
             assert environment == preflight_environment, (command, environment)
@@ -208,7 +216,7 @@ def assert_preflight_and_queue_use_pinned_repository_identity() -> None:
 def assert_alternate_repository_authorities_fail_before_transport() -> None:
     class ResolvedRemoteRunner(FakeRunner):
         def __init__(self, remote_url: str) -> None:
-            super().__init__({"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]}, 0)
+            super().__init__(ready_payload(), 0)
             self.remote_url = remote_url
 
         def __call__(self, command: list[str], **kwargs: object) -> object:
@@ -220,11 +228,12 @@ def assert_alternate_repository_authorities_fail_before_transport() -> None:
     cases = (
         (write_config, {"origin": "../origin.git"}),
         (write_config, {"repository": "example.invalid/example/repo"}),
+        (write_config, {"repository": "github.com/another/repository"}),
     )
     for writer, options in cases:
         with tempfile.TemporaryDirectory() as tmp:
             config = writer(pathlib.Path(tmp), **options)
-            runner = FakeRunner({"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]}, 0)
+            runner = FakeRunner(ready_payload(), 0)
             rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
         assert rc == 4, (options, rc, stdout, stderr)
         assert not any(command[:2] == ("git", "ls-remote") for command in runner.commands)
@@ -236,6 +245,8 @@ def assert_alternate_repository_authorities_fail_before_transport() -> None:
         "git@github.com:example/repo.git",
         "file:///tmp/repo.git",
         "../repo.git",
+        "https://github.com/other/repo.git",
+        "https://example.invalid/repo.git",
         "https://github.com/example/repo.git?access_token=preflight-secret",
     ):
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,51 +278,30 @@ def assert_config_snapshot_is_immutable_across_operator_and_preflight() -> None:
                     assert snapshot.read_text(encoding="utf-8") == original_text
                 return super().__call__(command, **kwargs)
 
-        runner = MutatingConfigRunner(
-            {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}]},
-            0,
-        )
+        runner = MutatingConfigRunner(ready_payload(), 0)
         rc, stdout, stderr = run_operator(["--config", str(config), "1"], runner)
     assert rc == 0, (rc, stdout, stderr)
 
 
-def assert_multi_pr_ready_verdict_does_not_queue() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner(
-            {
-                "verdict": "queue_as_one_wave",
-                "batches": [{"prs": [1, 2]}],
-                "summary": "queue together",
-            },
-            0,
-        )
-        rc, stdout, stderr = run_operator(["--config", str(config), "1", "2"], runner)
-    assert rc == 4, (rc, stdout, stderr)
-    assert "single PR" in stderr, stderr
-    assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
+def assert_multiple_prs_are_rejected_by_parser() -> None:
+    module = load_operator_module()
+    stderr = io.StringIO()
+    try:
+        with redirect_stderr(stderr):
+            module.parser().parse_args(["1", "2"])
+    except SystemExit as exc:
+        assert exc.code == 2, (exc.code, stderr.getvalue())
+    else:
+        raise AssertionError("merge queue operator must accept exactly one PR")
 
 
-def assert_ready_batch_must_be_single_and_match_requested_pr() -> None:
+def assert_ready_payload_must_match_requested_pr() -> None:
     malformed_payloads = {
-        "missing": {"verdict": "queue_as_one_wave", "summary": "missing batch"},
-        "empty": {"verdict": "queue_as_one_wave", "batches": [], "summary": "empty batch"},
-        "multiple": {
-            "verdict": "queue_as_one_wave",
-            "batches": [{"prs": [1]}, {"prs": [2]}],
-            "summary": "multiple batches",
-        },
-        "non-list": {"verdict": "queue_as_one_wave", "batches": {}, "summary": "non-list batches"},
-        "wrong-typed-prs": {
-            "verdict": "queue_as_one_wave",
-            "batches": [{"prs": "1"}],
-            "summary": "wrong-typed PRs",
-        },
-        "mismatched": {
-            "verdict": "queue_as_one_wave",
-            "batches": [{"prs": [2]}],
-            "summary": "mismatched batch",
-        },
+        "missing": {"verdict": "queue_as_one_wave"},
+        "empty": {"verdict": "queue_as_one_wave", "requested_prs": []},
+        "multiple": {"verdict": "queue_as_one_wave", "requested_prs": [1, 2]},
+        "wrong-type": {"verdict": "queue_as_one_wave", "requested_prs": "1"},
+        "mismatched": {"verdict": "queue_as_one_wave", "requested_prs": [2]},
     }
     for label, payload in malformed_payloads.items():
         with tempfile.TemporaryDirectory() as tmp:
@@ -323,35 +313,14 @@ def assert_ready_batch_must_be_single_and_match_requested_pr() -> None:
         assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), (label, runner.commands)
 
 
-def assert_split_advised_prints_subsets_without_queueing() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner(
-            {
-                "verdict": "split_advised",
-                "batches": [{"prs": [1]}, {"prs": [2]}],
-                "summary": "split",
-            },
-            1,
-        )
-        rc, stdout, stderr = run_operator(["--config", str(config), "1", "2"], runner)
-    assert rc == 1, (rc, stdout, stderr)
-    assert "just merge-queue 1" in stdout, stdout
-    assert "just merge-queue 2" in stdout, stdout
-    assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
-
-
 def assert_operator_imports_preflight_verdict_constants() -> None:
     source = SCRIPT_PATH.read_text(encoding="utf-8")
-    required_import = (
-        "from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE, "
-        "VERDICT_SPLIT_ADVISED"
-    )
+    required_import = "from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE"
     if required_import not in source:
         raise AssertionError("merge_queue_operator must import queue verdict constants from merge_queue_preflight")
     forbidden_literals = (
         'QUEUE_READY_VERDICT = "queue_as_one_wave"',
-        'SPLIT_VERDICT = "split_advised"',
+        'VERDICT_SPLIT_ADVISED = "split_advised"',
     )
     leaked = [literal for literal in forbidden_literals if literal in source]
     if leaked:
@@ -434,24 +403,11 @@ def assert_nonzero_preflight_ready_payload_does_not_queue() -> None:
 def assert_dry_run_does_not_queue() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner(
-            {"verdict": "queue_as_one_wave", "batches": [{"prs": [1]}], "summary": "ready"},
-            0,
-        )
+        runner = FakeRunner(ready_payload(), 0)
         rc, stdout, stderr = run_operator(["--config", str(config), "--dry-run", "1"], runner)
     assert rc == 0, (rc, stdout, stderr)
     assert "would queue PR #1" in stdout, stdout
     assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), runner.commands
-
-
-def assert_duplicate_prs_are_rejected_before_preflight() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
-        runner = FakeRunner({"verdict": "queue_as_one_wave", "summary": "ready"}, 0)
-        rc, stdout, stderr = run_operator(["--config", str(config), "1", "1"], runner)
-    assert rc == 4, (rc, stdout, stderr)
-    assert "duplicate PR numbers" in stderr, stderr
-    assert not any("merge_queue_preflight.py" in command[1] for command in runner.commands if len(command) > 1), runner.commands
 
 
 def assert_missing_ref_does_not_queue() -> None:
@@ -541,9 +497,8 @@ def main() -> int:
     assert_preflight_and_queue_use_pinned_repository_identity()
     assert_alternate_repository_authorities_fail_before_transport()
     assert_config_snapshot_is_immutable_across_operator_and_preflight()
-    assert_multi_pr_ready_verdict_does_not_queue()
-    assert_ready_batch_must_be_single_and_match_requested_pr()
-    assert_split_advised_prints_subsets_without_queueing()
+    assert_multiple_prs_are_rejected_by_parser()
+    assert_ready_payload_must_match_requested_pr()
     assert_blocked_verdict_does_not_queue()
     assert_unexpected_success_payload_is_operator_error()
     assert_malformed_config_is_operator_error()
@@ -551,7 +506,6 @@ def main() -> int:
     assert_non_object_preflight_json_does_not_queue()
     assert_nonzero_preflight_ready_payload_does_not_queue()
     assert_dry_run_does_not_queue()
-    assert_duplicate_prs_are_rejected_before_preflight()
     assert_missing_ref_does_not_queue()
     assert_run_command_missing_executable_is_operator_error()
     assert_run_command_timeout_is_operator_error()

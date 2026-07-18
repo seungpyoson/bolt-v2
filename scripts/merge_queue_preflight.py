@@ -18,7 +18,6 @@ import sys
 import tempfile
 import tomllib
 import uuid
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -70,20 +69,15 @@ CONTRACT_STATUS_RANK = {
     STATUS_READY: 2,
 }
 VERDICT_QUEUE_AS_ONE_WAVE = "queue_as_one_wave"
-VERDICT_SPLIT_ADVISED = "split_advised"
 VERDICT_BLOCKED = "blocked"
 VERDICT_INCONCLUSIVE = "inconclusive"
-CONTRACT_READY_WAVE_VERDICTS = {
-    STATUS_READY: VERDICT_QUEUE_AS_ONE_WAVE,
-    VERDICT_SPLIT_ADVISED: VERDICT_SPLIT_ADVISED,
-}
 CONTRACT_STATUS_VERDICTS = {
     STATUS_BLOCKED: VERDICT_BLOCKED,
     STATUS_INCONCLUSIVE: VERDICT_INCONCLUSIVE,
+    STATUS_READY: VERDICT_QUEUE_AS_ONE_WAVE,
 }
 CONTRACT_VERDICT_EXIT_CODES = {
     VERDICT_QUEUE_AS_ONE_WAVE: 0,
-    VERDICT_SPLIT_ADVISED: 1,
     VERDICT_BLOCKED: 2,
     VERDICT_INCONCLUSIVE: 3,
 }
@@ -434,16 +428,6 @@ MERGIFY_CONFIG_VALIDATION_STATES = {
         ".mergify.yml snapshot does not satisfy Mergify config contract",
     ),
 }
-MERGIFY_QUEUE_WAVE_STATUSES = {
-    False: STATUS_READY,
-    True: VERDICT_SPLIT_ADVISED,
-}
-MERGIFY_SPLIT_REASON_CODES = frozenset(
-    {
-        "batch_conflict",
-        "mergify_queue_batch_above_max",
-    }
-)
 BASE_IDENTITY_FINDING_STATES = {
     True: (
         STATUS_READY,
@@ -497,7 +481,6 @@ MERGIFY_CONFIG_FIELD_HANDLING = {
 }
 PREFLIGHT_ARTIFACT_CLASSIFICATIONS = {
     "base_conflict": (LANE_INTEGRATION, "pr", STATUS_BLOCKED),
-    "batch_conflict": (LANE_INTEGRATION, "batch", STATUS_READY),
     "base_mismatch": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
     "head_mismatch": (LANE_IDENTITY, "pr", STATUS_BLOCKED),
     "head_fetch_failed": (LANE_IDENTITY, "pr", STATUS_INCONCLUSIVE),
@@ -541,22 +524,12 @@ class PreflightArgumentParser(argparse.ArgumentParser):
 class ContractEvidence:
     findings: tuple[dict[str, object], ...]
     artifacts: tuple[Mapping[str, object], ...]
-    wave_status: str
 
 
 @dataclasses.dataclass(frozen=True)
 class ExpectedHead:
     pr: int
     sha: str
-
-
-@dataclasses.dataclass(frozen=True)
-class ExpectedHeadMapViolation:
-    prs: tuple[int, ...]
-    message_template: str
-
-    def message(self) -> str:
-        return self.message_template.format(prs=format_pr_numbers(self.prs))
 
 
 class MergifyQueueRuleMatchStatus(enum.Enum):
@@ -809,22 +782,15 @@ def residual_risk_findings() -> tuple[dict[str, object], ...]:
     )
 
 
-def integration_batch_ready_finding(batch: Batch) -> dict[str, object]:
+def integration_pr_ready_finding(pr: int) -> dict[str, object]:
     return {
         "lane": LANE_INTEGRATION,
-        "scope": "batch",
+        "scope": "pr",
         "status": STATUS_READY,
-        "reason_code": "integration_batch_ready",
-        "message": f"batch {batch.index} synthetic merge is conflict-free",
-        "evidence": {
-            "index": batch.index,
-            "prs": list(batch.prs),
-        },
+        "reason_code": "integration_pr_ready",
+        "message": f"PR #{pr} synthetic merge is conflict-free",
+        "evidence": {"pr": pr},
     }
-
-
-def integration_batch_ready_findings(batches: Sequence[Batch]) -> tuple[dict[str, object], ...]:
-    return tuple(integration_batch_ready_finding(batch) for batch in batches)
 
 
 def mergify_config_snapshot_finding(
@@ -990,7 +956,6 @@ def mergify_queue_route_finding(
             "queue_rule": queue_rule,
             "labels": list(labels),
             "queue_conditions": queue_conditions,
-            "max_batch_size": mergify_queue_batch_max(rule),
         },
     }
 
@@ -1011,16 +976,6 @@ def mergify_queue_route_unavailable_finding(
             "labels": list(labels),
         },
     }
-
-
-def mergify_route_queue_groups(route_findings: Sequence[Mapping[str, object]]) -> dict[str, list[int]]:
-    groups: dict[str, list[int]] = {}
-    for finding in route_findings:
-        if finding["reason_code"] != "mergify_queue_route_selected":
-            continue
-        evidence = dict(finding["evidence"])
-        groups.setdefault(str(evidence["queue_rule"]), []).append(int(evidence["pr"]))
-    return groups
 
 
 def mergify_required_reviewer_finding(rule: Mapping[str, object]) -> dict[str, object]:
@@ -1104,7 +1059,10 @@ def selected_mergify_required_reviewer_findings(
     readiness_by_pr = {int(item["pr"]): item for item in readiness}
     queue_findings = tuple(
         mergify_required_reviewer_finding(rules_by_name[queue_rule])
-        for queue_rule in sorted(mergify_route_queue_rules(route_findings))
+        for route_finding in route_findings
+        if route_finding["reason_code"] == "mergify_queue_route_selected"
+        for route_evidence in (dict(route_finding["evidence"]),)
+        for queue_rule in (str(route_evidence["queue_rule"]),)
     )
     identity_findings = tuple(
         mergify_required_reviewer_identity_finding(
@@ -1131,77 +1089,6 @@ def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mappi
     }
 
 
-def mergify_queue_batch_max(rule: Mapping[str, object]) -> int:
-    return int(rule["batch_size"])
-
-
-def mergify_queue_batch_above_max_finding(
-    *,
-    queue_rule: str,
-    prs: Sequence[int],
-    max_batch_size: int,
-) -> dict[str, object]:
-    return {
-        "lane": LANE_MERGIFY_CONFIG,
-        "scope": "queue",
-        "status": STATUS_READY,
-        "reason_code": "mergify_queue_batch_above_max",
-        "message": f"Mergify queue rule {queue_rule} selected {len(prs)} PRs above max batch size {max_batch_size}",
-        "evidence": {
-            "queue_rule": queue_rule,
-            "prs": list(prs),
-            "selected_count": len(prs),
-            "max_batch_size": max_batch_size,
-        },
-    }
-
-
-def mergify_queue_batch_size_findings(
-    *,
-    config: Mapping[str, object],
-    route_findings: Sequence[Mapping[str, object]],
-) -> tuple[dict[str, object], ...]:
-    rules_by_name = mergify_queue_rules_by_name(config)
-    groups = mergify_route_queue_groups(route_findings)
-    findings: list[dict[str, object]] = []
-    for queue_rule, prs in groups.items():
-        rule = rules_by_name[queue_rule]
-        max_batch_size = mergify_queue_batch_max(rule)
-        if len(prs) > max_batch_size:
-            findings.append(
-                mergify_queue_batch_above_max_finding(
-                    queue_rule=queue_rule,
-                    prs=prs,
-                    max_batch_size=max_batch_size,
-                )
-            )
-    return tuple(findings)
-
-
-def mergify_batch_limits(
-    findings: Sequence[Mapping[str, object]],
-) -> dict[int, int]:
-    limits: dict[int, int] = {}
-    for finding in findings:
-        if finding["reason_code"] != "mergify_queue_route_selected":
-            continue
-        evidence = dict(finding["evidence"])
-        limits[int(evidence["pr"])] = int(evidence["max_batch_size"])
-    return limits
-
-
-def batch_max_size(prs: Sequence[int], limits: Mapping[int, int]) -> int | None:
-    candidates = tuple(limits[pr] for pr in prs if pr in limits)
-    if not candidates:
-        return None
-    return min(candidates)
-
-
-def batch_would_exceed_max(prs: Sequence[int], limits: Mapping[int, int]) -> bool:
-    max_size = batch_max_size(prs, limits)
-    return max_size is not None and len(prs) > max_size
-
-
 def available_mergify_queue_route_findings(
     *,
     config: Mapping[str, object],
@@ -1217,7 +1104,7 @@ def available_mergify_queue_route_findings(
     )
 
 
-def available_mergify_config_route_and_batch_findings(
+def available_mergify_config_route_findings(
     *,
     config: Mapping[str, object],
     readiness: Sequence[Mapping[str, object]],
@@ -1230,7 +1117,6 @@ def available_mergify_config_route_and_batch_findings(
             route_findings=route_findings,
             readiness=readiness,
         ),
-        *mergify_queue_batch_size_findings(config=config, route_findings=route_findings),
     )
 
 
@@ -1243,7 +1129,7 @@ def unavailable_mergify_queue_route_findings(
 
 
 MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS = {
-    True: available_mergify_config_route_and_batch_findings,
+    True: available_mergify_config_route_findings,
     False: unavailable_mergify_queue_route_findings,
 }
 
@@ -1285,16 +1171,13 @@ def mergify_config_findings(
     )
 
 
-def contract_result(findings: Sequence[dict[str, object]], *, wave_status: str) -> dict[str, object]:
+def contract_result(findings: Sequence[dict[str, object]]) -> dict[str, object]:
     lane_statuses = {
         lane: contract_lane_status(findings, lane)
         for lane in CONTRACT_LANES
     }
     aggregate_status = min(lane_statuses.values(), key=CONTRACT_STATUS_RANK.__getitem__)
-    verdict = {
-        **CONTRACT_STATUS_VERDICTS,
-        STATUS_READY: CONTRACT_READY_WAVE_VERDICTS[wave_status],
-    }[aggregate_status]
+    verdict = CONTRACT_STATUS_VERDICTS[aggregate_status]
     return {
         "verdict": verdict,
         "exit_code": CONTRACT_VERDICT_EXIT_CODES[verdict],
@@ -1320,38 +1203,13 @@ def evaluate_preflight_contract(evidence: ContractEvidence) -> dict[str, object]
         *evidence.findings,
         *(preflight_artifact_finding(artifact) for artifact in evidence.artifacts),
     )
-    result = contract_result(findings, wave_status=evidence.wave_status)
+    result = contract_result(findings)
     return {
         "verdict": result["verdict"],
         "exit_code": result["exit_code"],
         "lane_statuses": result["lane_statuses"],
         "findings": list(findings),
-        "wave_status": evidence.wave_status,
     }
-
-
-def mergify_route_queue_rules(findings: Sequence[Mapping[str, object]]) -> frozenset[str]:
-    return frozenset(
-        str(dict(finding["evidence"])["queue_rule"])
-        for finding in filter(
-            lambda candidate: candidate["reason_code"] == "mergify_queue_route_selected",
-            findings,
-        )
-    )
-
-
-def mergify_wave_status(
-    findings: Sequence[Mapping[str, object]],
-    artifacts: Sequence[Mapping[str, object]] = (),
-) -> str:
-    split_reasons = frozenset(str(finding["reason_code"]) for finding in findings) | frozenset(
-        str(artifact["type"])
-        for artifact in artifacts
-    )
-    return MERGIFY_QUEUE_WAVE_STATUSES[
-        len(mergify_route_queue_rules(findings)) > 1
-        or bool(MERGIFY_SPLIT_REASON_CODES & split_reasons)
-    ]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1367,7 +1225,6 @@ class CommandResult:
 class PrivateFetchRefs:
     source_repo: pathlib.Path
     git_repo: pathlib.Path
-    source_objects: str
     input_timeout_seconds: int
     namespace: str
     temp_dir: tempfile.TemporaryDirectory
@@ -1395,23 +1252,12 @@ class PrivateFetchRefs:
                     value,
                     timeout_seconds=input_timeout_seconds,
                 )
-            source_objects = git(
-                repo,
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-path",
-                "objects",
-                timeout_seconds=input_timeout_seconds,
-            ).stdout.strip()
-            if not source_objects:
-                raise PreflightError("source Git object directory did not resolve")
         except Exception:
             temp_dir.cleanup()
             raise
         return cls(
             source_repo=repo,
             git_repo=git_repo,
-            source_objects=source_objects,
             input_timeout_seconds=input_timeout_seconds,
             namespace=f"{PREFLIGHT_REF_PREFIX}/{uuid.uuid4().hex}",
             temp_dir=temp_dir,
@@ -1492,12 +1338,6 @@ class PrHead:
 
 
 @dataclasses.dataclass(frozen=True)
-class SyntheticCommit:
-    commit: str
-    prs: tuple[int, ...]
-
-
-@dataclasses.dataclass(frozen=True)
 class ReadinessIssue:
     code: str
     message: str
@@ -1551,20 +1391,6 @@ class DynamicExpectation:
             code=self.code,
             message=self.message.format(actual=actual, expected=expected),
         )
-
-
-@dataclasses.dataclass(frozen=True)
-class Batch:
-    index: int
-    commit: str
-    prs: tuple[int, ...]
-
-    def as_json(self) -> dict[str, object]:
-        return {
-            "index": self.index,
-            "prs": list(self.prs),
-            "status": STATUS_READY,
-        }
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1778,43 +1604,6 @@ def expected_head_sha(value: str) -> ExpectedHead:
     return ExpectedHead(pr=int(parsed.group("pr")), sha=parsed.group("sha"))
 
 
-def format_pr_numbers(values: Sequence[int]) -> str:
-    return ", ".join(f"#{value}" for value in values)
-
-
-def expected_head_map(entries: Sequence[ExpectedHead], requested: Sequence[int]) -> dict[int, str]:
-    counts = Counter(entry.pr for entry in entries)
-    duplicates = tuple(sorted(pr for pr, count in counts.items() if count > 1))
-    expected = {entry.pr: entry.sha for entry in entries}
-    requested_prs = frozenset(requested)
-    expected_prs = frozenset(expected)
-    missing = tuple(sorted(requested_prs - expected_prs))
-    extra = tuple(sorted(expected_prs - requested_prs))
-    violations = tuple(
-        violation
-        for violation in (
-            ExpectedHeadMapViolation(duplicates, "--expected-head-sha repeated for PR {prs}"),
-            ExpectedHeadMapViolation(missing, "--expected-head-sha missing for PR {prs}"),
-            ExpectedHeadMapViolation(extra, "--expected-head-sha supplied for unrequested PR {prs}"),
-        )
-        if violation.prs
-    )
-    if violations:
-        raise PreflightError(violations[0].message())
-    return expected
-
-
-def unique_preserving_order(values: Sequence[int]) -> tuple[int, ...]:
-    seen: set[int] = set()
-    ordered: list[int] = []
-    for value in values:
-        if value in seen:
-            raise PreflightError(f"PR #{value} was provided more than once")
-        seen.add(value)
-        ordered.append(value)
-    return tuple(ordered)
-
-
 def fetch_base(fetch_refs: PrivateFetchRefs, origin: str, base: str) -> str:
     sha = fetch_refs.fetch_sha(origin, f"refs/heads/{base}", f"base-{base}")
     if SHA_RE.fullmatch(sha) is None:
@@ -1919,93 +1708,19 @@ def synthesize_merge(
     repo: pathlib.Path,
     left_commit: str,
     right_commit: str,
-    prs: Sequence[int],
+    pr: int,
     input_timeout_seconds: int,
-) -> SyntheticCommit | MergeResult:
+) -> str | MergeResult:
     merged = merge_tree(repo, left_commit, right_commit, input_timeout_seconds)
     if not merged.clean or merged.tree is None:
         return merged
-    message = "merge queue preflight: " + ",".join(f"#{pr}" for pr in prs)
-    commit = commit_tree(
+    return commit_tree(
         repo,
         merged.tree,
         [left_commit, right_commit],
-        message,
+        f"merge queue preflight: #{pr}",
         input_timeout_seconds,
     )
-    return SyntheticCommit(commit=commit, prs=tuple(prs))
-
-
-def unverified_batches_for_ready_prs(
-    *,
-    repo: pathlib.Path,
-    requested: Sequence[int],
-    blocked_numbers: set[int],
-    heads: Mapping[int, ExpectedHead],
-    base_commits: Mapping[int, SyntheticCommit],
-    batch_max_limits: Mapping[str, int],
-    input_timeout_seconds: int,
-) -> tuple[list[dict[str, object]], list[Batch]]:
-    """Build merge-conflict batches for ready pull requests."""
-    conflicts: list[dict[str, object]] = []
-    batches: list[Batch] = []
-    current: SyntheticCommit | None = None
-    batch_index = 1
-    for pr in requested:
-        if pr in blocked_numbers:
-            continue
-        pr_head = heads[pr]
-        if current is None:
-            current = base_commits[pr]
-            continue
-        candidate_prs = [*current.prs, pr]
-        if batch_would_exceed_max(candidate_prs, batch_max_limits):
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            continue
-        synthetic = synthesize_merge(
-            repo,
-            current.commit,
-            pr_head.sha,
-            candidate_prs,
-            input_timeout_seconds,
-        )
-        if isinstance(synthetic, MergeResult):
-            conflicts.append(
-                {
-                    "pr": pr,
-                    "against_batch": list(current.prs),
-                    "files": list(synthetic.files),
-                    "type": "batch_conflict",
-                }
-            )
-            batches.append(
-                Batch(
-                    index=batch_index,
-                    commit=current.commit,
-                    prs=current.prs,
-                )
-            )
-            batch_index += 1
-            current = base_commits[pr]
-            continue
-        current = synthetic
-    if current is not None:
-        batches.append(
-            Batch(
-                index=batch_index,
-                commit=current.commit,
-                prs=current.prs,
-            )
-        )
-    return conflicts, batches
 
 
 def gh_json(
@@ -2317,7 +2032,6 @@ def unavailable_base_payload(
         ContractEvidence(
             findings=contract_findings,
             artifacts=(),
-            wave_status=mergify_wave_status(contract_findings),
         )
     )
     payload = {
@@ -2331,14 +2045,11 @@ def unavailable_base_payload(
         "readiness": [],
         "metadata_warnings": [],
         "residual_risks": list(RESIDUAL_RISK_REASON_CODES),
-        "batches": [],
         "blocked_prs": [],
-        "conflicts": [],
         "contract_exit_code": contract_evaluation["exit_code"],
         "findings": contract_evaluation["findings"],
         "lane_statuses": contract_evaluation["lane_statuses"],
         "verdict": contract_evaluation["verdict"],
-        "wave_status": contract_evaluation["wave_status"],
     }
     return payload, int(contract_evaluation["exit_code"])
 
@@ -2350,11 +2061,13 @@ def preflight(
     base: str,
     expected_origin_url: str,
     expected_base_sha: str,
-    expected_head_inputs: Sequence[ExpectedHead],
-    pr_numbers: Sequence[int],
+    expected_head: ExpectedHead,
+    pr_number: int,
     input_timeout_seconds: int,
     use_gh: bool,
 ) -> tuple[dict[str, object], int]:
+    if expected_head.pr != pr_number:
+        raise PreflightError("--expected-head-sha must match the requested PR")
     fetch_refs = PrivateFetchRefs.create(repo, input_timeout_seconds)
     try:
         return preflight_with_fetch_refs(
@@ -2362,8 +2075,8 @@ def preflight(
             base=base,
             expected_origin_url=expected_origin_url,
             expected_base_sha=expected_base_sha,
-            expected_head_inputs=expected_head_inputs,
-            pr_numbers=pr_numbers,
+            expected_head=expected_head,
+            pr_number=pr_number,
             input_timeout_seconds=input_timeout_seconds,
             use_gh=use_gh,
             fetch_refs=fetch_refs,
@@ -2378,14 +2091,14 @@ def preflight_with_fetch_refs(
     base: str,
     expected_origin_url: str,
     expected_base_sha: str,
-    expected_head_inputs: Sequence[ExpectedHead],
-    pr_numbers: Sequence[int],
+    expected_head: ExpectedHead,
+    pr_number: int,
     input_timeout_seconds: int,
     use_gh: bool,
     fetch_refs: PrivateFetchRefs,
 ) -> tuple[dict[str, object], int]:
-    requested = unique_preserving_order(pr_numbers)
-    expected_heads = expected_head_map(expected_head_inputs, requested)
+    requested = (pr_number,)
+    expected_heads = {pr_number: expected_head.sha}
     git_repo = fetch_refs.git_repo
     if fetch_refs.fetch_origin(origin) != expected_origin_url:
         raise PreflightError("checkout Git remote does not match configured repository")
@@ -2436,13 +2149,12 @@ def preflight_with_fetch_refs(
         readiness=readiness,
         input_timeout_seconds=input_timeout_seconds,
     )
-    batch_max_limits = mergify_batch_limits(mergify_findings)
-    base_commits: dict[int, SyntheticCommit] = {}
+    integration_ready_prs: list[int] = []
     for pr in requested:
         if pr in blocked_numbers:
             continue
         head = heads[pr]
-        synthetic = synthesize_merge(git_repo, base_sha, head.sha, [pr], input_timeout_seconds)
+        synthetic = synthesize_merge(git_repo, base_sha, head.sha, pr, input_timeout_seconds)
         if isinstance(synthetic, MergeResult):
             blocked_prs.append(
                 {
@@ -2454,16 +2166,7 @@ def preflight_with_fetch_refs(
             )
             blocked_numbers.add(pr)
             continue
-        base_commits[pr] = synthetic
-    conflicts, batches = unverified_batches_for_ready_prs(
-        repo=git_repo,
-        requested=requested,
-        blocked_numbers=blocked_numbers,
-        heads=heads,
-        base_commits=base_commits,
-        batch_max_limits=batch_max_limits,
-        input_timeout_seconds=input_timeout_seconds,
-    )
+        integration_ready_prs.append(pr)
     contract_findings = (
         *base_identity_findings(
             expected_base_sha=expected_base_sha,
@@ -2474,13 +2177,12 @@ def preflight_with_fetch_refs(
         *preflight_mode_findings(use_gh=use_gh),
         *readiness_ready_findings(readiness, related_findings=mergify_findings),
         *residual_risk_findings(),
-        *integration_batch_ready_findings(batches),
+        *(integration_pr_ready_finding(pr) for pr in integration_ready_prs),
     )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
             findings=contract_findings,
-            artifacts=(*blocked_prs, *conflicts),
-            wave_status=mergify_wave_status(contract_findings, (*blocked_prs, *conflicts)),
+            artifacts=tuple(blocked_prs),
         )
     )
     payload = {
@@ -2494,14 +2196,11 @@ def preflight_with_fetch_refs(
         "readiness": readiness,
         "metadata_warnings": metadata_warnings,
         "residual_risks": list(RESIDUAL_RISK_REASON_CODES),
-        "batches": [batch.as_json() for batch in batches],
         "blocked_prs": blocked_prs,
-        "conflicts": conflicts,
         "contract_exit_code": contract_evaluation["exit_code"],
         "findings": contract_evaluation["findings"],
         "lane_statuses": contract_evaluation["lane_statuses"],
         "verdict": contract_evaluation["verdict"],
-        "wave_status": contract_evaluation["wave_status"],
     }
     exit_code = int(contract_evaluation["exit_code"])
     return payload, exit_code
@@ -2511,13 +2210,7 @@ def plain_text(payload: dict[str, object]) -> str:
     lines = [
         f"base: {payload['base']} {payload['base_sha']}",
         "requested PRs: " + ", ".join(f"#{pr}" for pr in payload["requested_prs"]),
-        "recommended batches:",
     ]
-    for batch in payload["batches"]:
-        lines.append("  batch {index}: {prs}".format(
-            index=batch["index"],
-            prs=", ".join(f"#{pr}" for pr in batch["prs"]),
-        ))
     if payload["blocked_prs"]:
         lines.append("blocked PRs:")
         for item in payload["blocked_prs"]:
@@ -2528,13 +2221,6 @@ def plain_text(payload: dict[str, object]) -> str:
         lines.append("metadata warnings:")
         for warning in payload["metadata_warnings"]:
             lines.append(f"  {warning}")
-    if payload["conflicts"]:
-        lines.append("conflicts:")
-        for item in payload["conflicts"]:
-            context = ", ".join(f"#{pr}" for pr in item.get("against_batch", []))
-            lines.append(f"  #{item['pr']} vs [{context}]: {item['type']}")
-            if item.get("files"):
-                lines.append("    files: " + ", ".join(item["files"]))
     lines.append("residual risks:")
     lines.extend(f"  {reason_code}" for reason_code in payload["residual_risks"])
     warnings = [
@@ -2551,9 +2237,9 @@ def plain_text(payload: dict[str, object]) -> str:
 
 def parser() -> argparse.ArgumentParser:
     root = PreflightArgumentParser(prog="merge_queue_preflight.py")
-    root.add_argument("prs", nargs="+", type=positive_pr_number)
+    root.add_argument("pr", type=positive_pr_number)
     root.add_argument("--expected-base-sha", required=True, type=commit_sha)
-    root.add_argument("--expected-head-sha", action="append", required=True, type=expected_head_sha)
+    root.add_argument("--expected-head-sha", required=True, type=expected_head_sha)
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     root.add_argument("--no-gh", action="store_true")
     root.add_argument("--json", action="store_true")
@@ -2572,8 +2258,8 @@ def main(argv: list[str] | None = None) -> int:
             base=config.base,
             expected_origin_url=github_https_remote_url(config.repository),
             expected_base_sha=args.expected_base_sha,
-            expected_head_inputs=args.expected_head_sha,
-            pr_numbers=args.prs,
+            expected_head=args.expected_head_sha,
+            pr_number=args.pr,
             input_timeout_seconds=config.input_timeout_seconds,
             use_gh=not args.no_gh,
         )

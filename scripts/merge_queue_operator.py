@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -29,7 +29,7 @@ from git_remote_utils import (  # noqa: E402
     isolated_git_transport_environment,
     require_remote_name as _require_remote_name,
 )
-from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE, VERDICT_SPLIT_ADVISED  # noqa: E402
+from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE  # noqa: E402
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -221,30 +221,29 @@ def expected_head_arg(pr: int, sha: str) -> str:
 
 def build_preflight_command(
     *,
-    prs: Sequence[int],
+    pr: int,
     config: pathlib.Path,
     expected_base_sha: str,
-    expected_head_shas: dict[int, str],
+    expected_head_sha: str,
 ) -> list[str]:
-    command = [
+    return [
         "python3",
         str(PREFLIGHT_SCRIPT),
-        *(str(pr) for pr in prs),
+        str(pr),
         "--config",
         str(config),
         "--expected-base-sha",
         expected_base_sha,
+        "--expected-head-sha",
+        expected_head_arg(pr, expected_head_sha),
         "--json",
     ]
-    for pr in prs:
-        command.extend(["--expected-head-sha", expected_head_arg(pr, expected_head_shas[pr])])
-    return command
 
 
 def run_preflight(
     *,
     repo: pathlib.Path,
-    prs: Sequence[int],
+    pr: int,
     config: pathlib.Path,
     operator_config: OperatorConfig,
     runner: Runner,
@@ -265,22 +264,19 @@ def run_preflight(
         operator_config.ref_timeout_seconds,
         environment,
     )
-    expected_head_shas = {
-        pr: remote_ref_sha(
-            config.parent,
-            remote_url,
-            f"refs/pull/{pr}/head",
-            runner,
-            operator_config.ref_timeout_seconds,
-            environment,
-        )
-        for pr in prs
-    }
+    expected_head_sha = remote_ref_sha(
+        config.parent,
+        remote_url,
+        f"refs/pull/{pr}/head",
+        runner,
+        operator_config.ref_timeout_seconds,
+        environment,
+    )
     command = build_preflight_command(
-        prs=prs,
+        pr=pr,
         config=config,
         expected_base_sha=expected_base_sha,
-        expected_head_shas=expected_head_shas,
+        expected_head_sha=expected_head_sha,
     )
     result = runner(command, cwd=repo, environment=environment)
     try:
@@ -309,79 +305,40 @@ def queue_pr(
     )
 
 
-def queue_prs(
-    prs: Sequence[int],
-    queue_command: str,
-    queue_repository: str,
-    repo: pathlib.Path,
-    runner: Runner,
-    timeout_seconds: int,
-) -> None:
-    for pr in prs:
-        queue_pr(pr, queue_command, queue_repository, repo, runner, timeout_seconds)
-        print(f"queued PR #{pr}")
-
-
-def print_split_advice(batches: object) -> None:
-    print("merge queue preflight advised splitting the wave:")
-    if not isinstance(batches, list):
-        print("  no size-valid partition was available in the preflight output")
-        return
-    for batch in batches:
-        if not isinstance(batch, dict) or not isinstance(batch.get("prs"), list):
-            continue
-        prs = [str(pr) for pr in batch["prs"]]
-        if prs:
-            print(f"  just merge-queue {' '.join(prs)}")
-
-
 def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> int:
-    if len(set(args.prs)) != len(args.prs):
-        raise OperatorError("duplicate PR numbers are not allowed")
     with immutable_config_snapshot(args.config) as config_path:
         operator_config = load_operator_config(config_path)
         payload, preflight_returncode, queue_repository = run_preflight(
             repo=repo,
-            prs=args.prs,
+            pr=args.pr,
             config=config_path,
             operator_config=operator_config,
             runner=runner,
         )
     verdict = payload.get("verdict")
     if preflight_returncode == 0 and verdict == VERDICT_QUEUE_AS_ONE_WAVE:
-        if len(args.prs) != 1:
-            raise OperatorError("queue_as_one_wave must select a single PR")
-        batches = payload.get("batches")
-        if (
-            not isinstance(batches, list)
-            or len(batches) != 1
-            or not isinstance(batches[0], dict)
-            or batches[0].get("prs") != args.prs
-        ):
-            raise OperatorError("queue_as_one_wave batch must match the requested PR")
+        if payload.get("requested_prs") != [args.pr]:
+            raise OperatorError("preflight result must match the requested PR")
         if args.dry_run:
-            for pr in args.prs:
-                print(f"would queue PR #{pr}")
+            print(f"would queue PR #{args.pr}")
         else:
-            queue_prs(
-                args.prs,
+            queue_pr(
+                args.pr,
                 operator_config.queue_command,
                 queue_repository,
                 repo,
                 runner,
                 operator_config.queue_timeout_seconds,
             )
+            print(f"queued PR #{args.pr}")
         return 0
-    if verdict == VERDICT_SPLIT_ADVISED:
-        print_split_advice(payload.get("batches"))
-    else:
-        print(f"merge queue preflight did not queue: verdict={verdict!r}")
+    print(f"merge queue preflight did not queue: verdict={verdict!r}")
     return preflight_returncode if preflight_returncode != 0 else 4
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="merge_queue_operator.py", allow_abbrev=False)
-    root.add_argument("prs", nargs="+", type=positive_pr_number)
+    root.add_argument("pr", type=positive_pr_number)
     root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     root.add_argument("--dry-run", action="store_true")
     return root

@@ -2,15 +2,15 @@
 
 ## Purpose
 
-`just merge-queue <pr...>` is a narrow admission helper for the Mergify queue. It verifies immutable input identity and the existing pull-request/native-review mechanics needed to route a single PR. It does not execute CI, aggregate CI verdicts, or duplicate GitHub ruleset authority.
+`just merge-queue <pr>` is a narrow admission helper for the Mergify queue. It verifies immutable input identity and the existing pull-request/native-review mechanics needed to route one PR. It does not execute CI, aggregate CI verdicts, or duplicate GitHub ruleset authority.
 
 ## Admission Boundary
 
 An authoritative run verifies:
 
-- the operator supplied the expected base SHA and every selected PR head SHA;
-- the fetched base and PR heads match those expected identities;
-- each PR is open, non-draft, targets the configured base, and is mergeable;
+- the operator supplied the expected base SHA and selected PR head SHA;
+- the fetched base and PR head match those expected identities;
+- the PR is open, non-draft, targets the configured base, and is mergeable;
 - GitHub reports the existing required-reviewer approval state;
 - the `.mergify.yml` blob at the expected base is valid and routes the PR to exactly one supported queue rule;
 - each queue rule requires only the configured reviewer and has `batch_size: 1`;
@@ -39,11 +39,10 @@ CI and source-fence output can support engineering claims, but they are evidence
 
 ## Results
 
-The machine-readable and plain-text outputs use the existing verdicts:
+The machine-readable and plain-text outputs use these verdicts:
 
 - `queue_as_one_wave` / exit `0`: one PR satisfies the admission contract;
-- `split_advised` / exit `1`: the selection cannot be submitted as one single-PR queue operation;
-- `blocked` / exit `2`: a selected PR fails a definitive identity, state, approval, or mergeability requirement;
+- `blocked` / exit `2`: the PR fails a definitive identity, state, approval, or mergeability requirement;
 - `inconclusive` / exit `3`: required metadata or inspection evidence is unavailable or ambiguous;
 - exit `4`: invalid input or internal tool failure.
 

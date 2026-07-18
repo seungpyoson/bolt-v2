@@ -285,6 +285,25 @@ printf 'args=%s\\n' "$*" >> {just_log}
 
 def assert_rust_probe_result_is_advisory() -> None:
     owner = load_owner_module()
+    stale_fragments = (
+        "merge proof",
+        "required PR gate",
+        "merge-queue gate",
+        "verify-remote is final proof",
+        "full CI is proof",
+    )
+    operator_surfaces = (
+        SCRIPT,
+        REPO_ROOT / "AGENTS.md",
+        REPO_ROOT / "docs" / "ci" / "ubicloud-cost-governance.md",
+        REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml",
+    )
+    for path in operator_surfaces:
+        source = path.read_text(encoding="utf-8").lower()
+        if any(fragment.lower() in source for fragment in stale_fragments):
+            raise AssertionError(
+                f"{path.relative_to(REPO_ROOT)} contains stale merge-authority guidance"
+            )
     stdout = io.StringIO()
     run = {
         "databaseId": 1001,

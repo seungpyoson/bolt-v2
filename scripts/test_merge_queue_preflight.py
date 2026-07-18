@@ -46,10 +46,6 @@ EXPECTED_RESIDUAL_RISKS = [
     "max_parallel_checks_cost",
 ]
 EXPECTED_RESIDUAL_RISK_MESSAGES: dict[str, str] = {}
-def mergify_queue_max_batch_size(queue_rule: str) -> int:
-    return ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["batch_size"]
-
-
 def mergify_queue_conditions(queue_rule: str) -> list[str]:
     return list(ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["queue_rules"][queue_rule]["queue_conditions"])
 
@@ -275,7 +271,6 @@ def mergify_queue_route_finding(pr: int, queue_rule: str, labels: list[str], que
             "queue_rule": queue_rule,
             "labels": labels,
             "queue_conditions": queue_conditions,
-            "max_batch_size": mergify_queue_max_batch_size(queue_rule),
         },
     }
 
@@ -295,22 +290,6 @@ def mergify_required_reviewer_finding(
             "queue_rule": queue_rule,
             "reviewers": reviewers,
             "merge_conditions": merge_conditions,
-        },
-    }
-
-
-def mergify_queue_batch_above_max_finding(queue_rule: str, prs: list[int], max_batch_size: int) -> dict[str, object]:
-    return {
-        "lane": "mergify_config",
-        "scope": "queue",
-        "status": "ready",
-        "reason_code": "mergify_queue_batch_above_max",
-        "message": f"Mergify queue rule {queue_rule} selected {len(prs)} PRs above max batch size {max_batch_size}",
-        "evidence": {
-            "queue_rule": queue_rule,
-            "prs": prs,
-            "selected_count": len(prs),
-            "max_batch_size": max_batch_size,
         },
     }
 
@@ -354,20 +333,6 @@ def matching_head_finding(pr: int, head_sha: str) -> dict[str, object]:
             "pr": pr,
             "expected_head_sha": head_sha,
             "actual_head_sha": head_sha,
-        },
-    }
-
-
-def integration_batch_ready_finding(batch: dict[str, object]) -> dict[str, object]:
-    return {
-        "lane": "integration",
-        "scope": "batch",
-        "status": "ready",
-        "reason_code": "integration_batch_ready",
-        "message": f"batch {batch['index']} synthetic merge is conflict-free",
-        "evidence": {
-            "index": batch["index"],
-            "prs": batch["prs"],
         },
     }
 
@@ -446,7 +411,7 @@ def assert_contract_result_reduces_findings_by_table() -> None:
             "evidence": {},
         },
     ]
-    result = module.contract_result(findings, wave_status="ready")
+    result = module.contract_result(findings)
     expected_lane_statuses = {
         "mergify_config": "inconclusive",
         "identity": "inconclusive",
@@ -459,7 +424,7 @@ def assert_contract_result_reduces_findings_by_table() -> None:
         "lane_statuses": expected_lane_statuses,
     }:
         raise AssertionError(result)
-    if module.contract_result([], wave_status="ready") != {
+    if module.contract_result([]) != {
         "verdict": "inconclusive",
         "exit_code": 3,
         "lane_statuses": {
@@ -481,12 +446,9 @@ def assert_contract_result_reduces_findings_by_table() -> None:
         }
         for lane in expected_lane_statuses
     ]
-    ready_result = module.contract_result(ready_findings, wave_status="ready")
+    ready_result = module.contract_result(ready_findings)
     if (ready_result["verdict"], ready_result["exit_code"]) != ("queue_as_one_wave", 0):
         raise AssertionError(ready_result)
-    split_result = module.contract_result(ready_findings, wave_status="split_advised")
-    if (split_result["verdict"], split_result["exit_code"]) != ("split_advised", 1):
-        raise AssertionError(split_result)
 
 
 def assert_preflight_input_timeout_is_config_driven() -> None:
@@ -624,7 +586,6 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
     module = load_preflight_module()
     expected = {
         "base_conflict": ("integration", "pr", "blocked"),
-        "batch_conflict": ("integration", "batch", "ready"),
         "base_mismatch": ("identity", "pr", "inconclusive"),
         "head_mismatch": ("identity", "pr", "blocked"),
         "head_fetch_failed": ("identity", "pr", "inconclusive"),
@@ -639,17 +600,16 @@ def assert_preflight_artifact_classification_is_declarative() -> None:
 def assert_preflight_artifact_finding_uses_classification_table() -> None:
     module = load_preflight_module()
     artifact = {
-        "type": "batch_conflict",
+        "type": "base_conflict",
         "pr": 2,
-        "against_batch": [1],
         "files": ["shared.txt"],
     }
     expected = {
         "lane": "integration",
-        "scope": "batch",
-        "status": "ready",
-        "reason_code": "batch_conflict",
-        "message": "batch_conflict",
+        "scope": "pr",
+        "status": "blocked",
+        "reason_code": "base_conflict",
+        "message": "base_conflict",
         "evidence": artifact,
     }
     finding = module.preflight_artifact_finding(artifact)
@@ -667,7 +627,7 @@ def ready_contract_findings() -> tuple[dict[str, object], ...]:
             "message": "ready",
             "evidence": {},
         }
-        for lane in ("mergify_config", "identity", "readiness", "integration", "verifier")
+        for lane in ("mergify_config", "identity", "readiness", "integration")
     )
 
 
@@ -684,34 +644,24 @@ def assert_contract_evaluator_reduces_normalized_evidence() -> None:
     }
     scenarios = {
         "clean_authoritative": (
-            module.ContractEvidence(findings=ready, artifacts=(), wave_status="ready"),
+            module.ContractEvidence(findings=ready, artifacts=()),
             ("queue_as_one_wave", 0),
         ),
         "no_gh_inconclusive": (
-            module.ContractEvidence(findings=(*ready, no_gh_finding), artifacts=(), wave_status="ready"),
+            module.ContractEvidence(findings=(*ready, no_gh_finding), artifacts=()),
             ("inconclusive", 3),
         ),
         "base_conflict_blocked": (
             module.ContractEvidence(
                 findings=ready,
                 artifacts=({"type": "base_conflict", "pr": 2, "reason": "conflicts with base"},),
-                wave_status="ready",
             ),
             ("blocked", 2),
-        ),
-        "batch_conflict_split_advised": (
-            module.ContractEvidence(
-                findings=ready,
-                artifacts=({"type": "batch_conflict", "pr": 2, "against_batch": [1]},),
-                wave_status="split_advised",
-            ),
-            ("split_advised", 1),
         ),
         "metadata_unavailable_inconclusive": (
             module.ContractEvidence(
                 findings=ready,
                 artifacts=({"type": "metadata_unavailable", "pr": 1, "reason": "gh unavailable"},),
-                wave_status="ready",
             ),
             ("inconclusive", 3),
         ),
@@ -719,7 +669,6 @@ def assert_contract_evaluator_reduces_normalized_evidence() -> None:
             module.ContractEvidence(
                 findings=ready,
                 artifacts=({"type": "base_mismatch", "pr": 1, "reason": "wrong base"},),
-                wave_status="ready",
             ),
             ("inconclusive", 3),
         ),
@@ -972,34 +921,96 @@ def assert_origin_and_base_cli_overrides_are_rejected() -> None:
             raise AssertionError(f"{flag} must not be accepted")
 
 
+def assert_multiple_prs_are_rejected_by_parser() -> None:
+    module = load_preflight_module()
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr):
+            module.parser().parse_args(
+                [
+                    "--expected-base-sha",
+                    "a" * 40,
+                    "--expected-head-sha",
+                    f"1={'b' * 40}",
+                    "1",
+                    "2",
+                ]
+            )
+    except SystemExit as exc:
+        assert_equal(exc.code, 4, "multiple PR parser exit")
+    else:
+        raise AssertionError("merge queue preflight must accept exactly one PR")
+
+
+def assert_mismatched_expected_head_is_rejected_before_git() -> None:
+    module = load_preflight_module()
+    original_create = module.PrivateFetchRefs.create
+
+    def forbidden_create(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("mismatched expected head reached Git setup")
+
+    module.PrivateFetchRefs.create = forbidden_create
+    try:
+        try:
+            module.preflight(
+                repo=REPO_ROOT,
+                origin="origin",
+                base="main",
+                expected_origin_url="https://github.com/seungpyoson/bolt-v2.git",
+                expected_base_sha="a" * 40,
+                expected_head=module.ExpectedHead(pr=2, sha="b" * 40),
+                pr_number=1,
+                input_timeout_seconds=30,
+                use_gh=False,
+            )
+        except module.PreflightError as exc:
+            assert "must match the requested PR" in str(exc), exc
+        else:
+            raise AssertionError("mismatched expected head must fail closed")
+    finally:
+        module.PrivateFetchRefs.create = original_create
+
+
 def assert_checkout_remote_must_match_configured_repository() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
         head = fixture.make_pr(1, {"one.txt": "one\n"})
-        env = os.environ.copy()
-        env["PATH"] = env.get("PREFLIGHT_TEST_BASE_PATH", env["PATH"])
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_PATH),
-                "--expected-base-sha",
-                fixture.base,
-                "--expected-head-sha",
-                f"1={head}",
-                "--no-gh",
-                "--json",
-                "1",
-            ],
-            cwd=fixture.repo,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        local_path_environment = os.environ.copy()
+        local_path_environment["PATH"] = local_path_environment.get(
+            "PREFLIGHT_TEST_BASE_PATH",
+            local_path_environment["PATH"],
         )
-        assert_equal(result.returncode, 4, "noncanonical checkout remote exit")
-        if "does not match configured repository" not in result.stderr:
-            raise AssertionError(result.stderr)
+        environments = {
+            "local path": local_path_environment,
+            "canonical wrong repository": preflight_transport_environment(
+                fixture.repo,
+                fixture.remote,
+                remote_url="https://github.com/other/repo.git",
+            ),
+        }
+        for label, environment in environments.items():
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--expected-base-sha",
+                    fixture.base,
+                    "--expected-head-sha",
+                    f"1={head}",
+                    "--no-gh",
+                    "--json",
+                    "1",
+                ],
+                cwd=fixture.repo,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            assert_equal(result.returncode, 4, f"{label} checkout remote exit")
+            if "does not match configured repository" not in result.stderr:
+                raise AssertionError((label, result.stderr))
 
 
 def assert_isolated_transport_environment_discards_ambient_git_config() -> None:
@@ -1445,7 +1456,7 @@ def assert_unsupported_mergify_queue_condition_does_not_match() -> None:
 
 def assert_unsupported_mergify_queue_condition_route_is_inconclusive() -> None:
     module = load_preflight_module()
-    findings = module.available_mergify_config_route_and_batch_findings(
+    findings = module.available_mergify_config_route_findings(
         config={
             "queue_rules": [
                 {
@@ -1500,65 +1511,32 @@ def assert_mergify_queue_routing_uses_pr_labels() -> None:
                 2: approved_pr_view(default_head),
             },
         )
-        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
-        assert_equal(result.returncode, 1, "queue routing rc")
-        payload = parse_json(result.stdout)
-        assert readiness_ready_finding(1, hotfix_head) in payload["findings"], (
-            payload["findings"]
+        cases = (
+            (1, hotfix_head, "hotfix", ["hotfix"]),
+            (2, default_head, "default", []),
         )
-        assert readiness_ready_finding(2, default_head) in payload["findings"], (
-            payload["findings"]
-        )
-        assert mergify_queue_route_finding(1, "hotfix", ["hotfix"], mergify_queue_conditions("hotfix")) in payload["findings"], (
-            payload["findings"]
-        )
-        assert mergify_queue_route_finding(2, "default", [], mergify_queue_conditions("default")) in payload["findings"], payload["findings"]
-        assert mergify_required_reviewer_finding(
-            "hotfix",
-            [mergify_required_reviewer()],
-            mergify_required_merge_conditions(),
-        ) in payload["findings"], payload["findings"]
-        assert mergify_required_reviewer_finding(
-            "default",
-            [mergify_required_reviewer()],
-            mergify_required_merge_conditions(),
-        ) in payload["findings"], payload["findings"]
-        assert_equal(
-            [batch["prs"] for batch in payload["batches"]],
-            [[1], [2]],
-            "mixed queue size-valid batches",
-        )
-        assert_equal(payload["wave_status"], "split_advised", "mixed queue wave status")
-
-
-def assert_default_queue_above_max_is_split_advised() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = pathlib.Path(tmp)
-        fixture = GitFixture(root)
-        heads = {
-            pr: fixture.make_pr(pr, {f"default-{pr}.txt": f"default {pr}\n"})
-            for pr in range(1, 12)
-        }
-        bin_dir = write_fake_gh(
-            root,
-            views={pr: approved_pr_view(head) for pr, head in heads.items()},
-        )
-        result = run_preflight_with_gh(
-            fixture.repo,
-            fixture.remote,
-            bin_dir,
-            *(str(pr) for pr in heads),
-        )
-        assert_equal(result.returncode, 1, "default queue above max rc")
-        payload = parse_json(result.stdout)
-        assert_equal(payload["wave_status"], "split_advised", "default queue above max wave status")
-        max_batch_size = mergify_queue_max_batch_size("default")
-        assert_equal(
-            [batch["prs"] for batch in payload["batches"]],
-            [[pr] for pr in range(1, 12)],
-            "default queue above max size-valid batches",
-        )
-        assert mergify_queue_batch_above_max_finding("default", list(heads), max_batch_size) in payload["findings"], payload["findings"]
+        for pr, head, queue_rule, labels in cases:
+            result = run_preflight_with_gh(
+                fixture.repo,
+                fixture.remote,
+                bin_dir,
+                str(pr),
+            )
+            assert_equal(result.returncode, 0, f"{queue_rule} routing rc")
+            payload = parse_json(result.stdout)
+            assert readiness_ready_finding(pr, head) in payload["findings"], payload["findings"]
+            assert mergify_queue_route_finding(
+                pr,
+                queue_rule,
+                labels,
+                mergify_queue_conditions(queue_rule),
+            ) in payload["findings"], payload["findings"]
+            assert mergify_required_reviewer_finding(
+                queue_rule,
+                [mergify_required_reviewer()],
+                mergify_required_merge_conditions(),
+            ) in payload["findings"], payload["findings"]
+            assert_equal(payload["requested_prs"], [pr], f"{queue_rule} requested PR")
 
 
 def assert_invalid_mergify_config_does_not_route() -> None:
@@ -1682,13 +1660,11 @@ def assert_stale_expected_head_sha_blocks_pr() -> None:
         assert stale_head_finding(1, stale_head, actual_head) in payload["findings"], payload["findings"]
         assert_equal(payload["lane_statuses"]["identity"], "blocked", "stale head identity lane")
         assert_equal(payload["blocked_prs"][0]["type"], "head_mismatch", "stale head blocked type")
-        assert_equal(payload["batches"], [], "stale head batches")
 
 
 def assert_pr_that_conflicts_with_base_is_blocked() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
-        fixture.make_pr(1, {"one.txt": "one\n"})
         fixture.make_pr(2, {"shared.txt": "stale branch change\n"})
         git(fixture.repo, "checkout", "main")
         write(fixture.repo / "shared.txt", "new main\n")
@@ -1698,7 +1674,6 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
         rc, stdout, _ = run_preflight(
             fixture.repo,
             fixture.remote,
-            "1",
             "2",
             expect_success=False,
         )
@@ -1714,13 +1689,11 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
                 "type": "base_conflict",
             }
         ]
-        assert_equal([batch["prs"] for batch in payload["batches"]], [[1]], "base conflict batches")
         assert_equal(blocked, expected_blocked, "base conflict blocked_prs")
         assert_equal(
             payload["findings"],
             [
                 matching_base_finding(payload["base_sha"]),
-                matching_head_finding(1, payload["pr_heads"]["1"]),
                 matching_head_finding(2, payload["pr_heads"]["2"]),
                 mergify_config_finding(
                     payload["base_sha"],
@@ -1732,7 +1705,6 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
                 ),
                 no_gh_finding(),
                 *residual_risk_findings(),
-                integration_batch_ready_finding(payload["batches"][0]),
                 {
                     "lane": "integration",
                     "scope": "pr",
@@ -1814,29 +1786,24 @@ def assert_selected_mergify_reviewer_must_approve_at_runtime() -> None:
         assert_equal(payload["lane_statuses"]["readiness"], "blocked", "required reviewer lane")
 
 
-def assert_partial_gh_metadata_failure_preserves_other_readiness() -> None:
+def assert_gh_metadata_failure_is_inconclusive() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        head = fixture.make_pr(1, {"one.txt": "one\n"})
         fixture.make_pr(2, {"two.txt": "two\n"})
         bin_dir = write_fake_gh(
             root,
-            views={1: approved_pr_view(head)},
+            views={},
             failed_views={2: "simulated metadata failure"},
         )
-        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1", "2")
-        assert_equal(result.returncode, 3, "partial metadata failure rc")
+        result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "2")
+        assert_equal(result.returncode, 3, "metadata failure rc")
         payload = parse_json(result.stdout)
         readiness = {item["pr"]: item for item in payload["readiness"]}
-        if "metadata" not in readiness[1]:
-            raise AssertionError(payload)
         if readiness[2].get("metadata_unavailable") is not True:
             raise AssertionError(payload)
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 2 or blocked[0]["type"] != "metadata_unavailable":
-            raise AssertionError(payload)
-        if [batch["prs"] for batch in payload["batches"]] != [[1]]:
             raise AssertionError(payload)
         warnings = payload.get("metadata_warnings")
         if not isinstance(warnings, list) or "PR #2" not in warnings[0]:
@@ -1847,14 +1814,10 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         fixture = GitFixture(root)
-        head = fixture.make_pr(1, {"one.txt": "one\n"})
         missing_head = "1" * 40
         bin_dir = write_fake_gh(
             root,
-            views={
-                1: approved_pr_view(head),
-                2: approved_pr_view(missing_head),
-            },
+            views={2: approved_pr_view(missing_head)},
         )
         command = [
             sys.executable,
@@ -1862,11 +1825,8 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
             "--expected-base-sha",
             fixture.base,
             "--expected-head-sha",
-            f"1={head}",
-            "--expected-head-sha",
             f"2={missing_head}",
             "--json",
-            "1",
             "2",
         ]
         env = preflight_transport_environment(fixture.repo, fixture.remote)
@@ -1890,8 +1850,6 @@ def assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error() -> Non
             "PR #2 head ref was not found; ensure the PR exists and has a fetchable head",
             "missing fetch reason",
         )
-        if [batch["prs"] for batch in payload["batches"]] != [[1]]:
-            raise AssertionError(payload)
         assert_equal(payload["lane_statuses"]["identity"], "inconclusive", "missing fetch identity lane")
         assert_equal((payload["verdict"], payload["contract_exit_code"]), ("inconclusive", 3), "missing fetch contract")
 
@@ -1996,6 +1954,34 @@ def assert_missing_expected_head_sha_is_rejected() -> None:
         assert "the following arguments are required: --expected-head-sha" in result.stderr, result.stderr
 
 
+def assert_unexpected_exception_is_a_usage_error() -> None:
+    module = load_preflight_module()
+    original_preflight = module.preflight
+
+    def fail_preflight(**_kwargs: object) -> tuple[dict[str, object], int]:
+        raise RuntimeError("simulated internal failure")
+
+    module.preflight = fail_preflight
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = module.main(
+                [
+                    "--expected-base-sha",
+                    "a" * 40,
+                    "--expected-head-sha",
+                    f"1={'b' * 40}",
+                    "1",
+                ]
+            )
+    finally:
+        module.preflight = original_preflight
+    assert_equal(rc, 4, "unexpected exception rc")
+    assert "internal preflight failure" in stderr.getvalue(), stderr.getvalue()
+    assert "split" not in stdout.getvalue().lower(), stdout.getvalue()
+
+
 def assert_missing_gh_reports_inconclusive_metadata() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -2038,8 +2024,6 @@ def assert_missing_gh_reports_inconclusive_metadata() -> None:
         blocked = payload["blocked_prs"]
         if len(blocked) != 1 or blocked[0]["pr"] != 1 or blocked[0]["type"] != "metadata_unavailable":
             raise AssertionError(payload)
-        if payload["batches"] != []:
-            raise AssertionError(payload["batches"])
 
 
 def mergify_scalar_line(indent: str, key: str, value: object) -> str:
@@ -2519,6 +2503,8 @@ def main() -> int:
     assert_queue_ci_and_verifier_flags_are_removed()
     assert_preflight_config_is_identity_only()
     assert_origin_and_base_cli_overrides_are_rejected()
+    assert_multiple_prs_are_rejected_by_parser()
+    assert_mismatched_expected_head_is_rejected_before_git()
     assert_checkout_remote_must_match_configured_repository()
     assert_isolated_transport_environment_discards_ambient_git_config()
     assert_private_fetch_repo_ignores_ambient_git_template()
@@ -2549,7 +2535,6 @@ def main() -> int:
     assert_unsupported_mergify_queue_condition_does_not_match()
     assert_unsupported_mergify_queue_condition_route_is_inconclusive()
     assert_mergify_queue_routing_uses_pr_labels()
-    assert_default_queue_above_max_is_split_advised()
     assert_invalid_mergify_config_does_not_route()
     assert_stale_base_sha_is_inconclusive()
     assert_unavailable_base_ref_is_inconclusive()
@@ -2558,12 +2543,13 @@ def main() -> int:
     assert_head_oid_mismatch_blocks_pr()
     assert_wrong_base_ref_is_inconclusive()
     assert_selected_mergify_reviewer_must_approve_at_runtime()
-    assert_partial_gh_metadata_failure_preserves_other_readiness()
+    assert_gh_metadata_failure_is_inconclusive()
     assert_fetch_failure_after_readiness_is_inconclusive_not_tool_error()
     assert_non_missing_head_fetch_failure_is_inspection_error()
     assert_invalid_pr_input_is_rejected()
     assert_missing_expected_base_sha_is_rejected()
     assert_missing_expected_head_sha_is_rejected()
+    assert_unexpected_exception_is_a_usage_error()
     assert_missing_gh_reports_inconclusive_metadata()
     print("OK: merge_queue_preflight tests passed.")
     return 0

@@ -117,6 +117,16 @@ impl ReplayEconomicsAdmissionSource {
         if snapshots.is_empty() {
             return Err(EconomicsUnavailable::MissingQuoteAuthority);
         }
+        let authority = &snapshots[0];
+        if snapshots.iter().any(|snapshot| {
+            snapshot.provider_key != authority.provider_key
+                || snapshot.execution_client_id != authority.execution_client_id
+                || snapshot.account_id != authority.account_id
+                || snapshot.reporting_policy_id != authority.reporting_policy_id
+                || snapshot.reporting_unit != authority.reporting_unit
+        }) {
+            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+        }
         let mut resting_order_refresh_margin_ns = None;
         for snapshot in &snapshots {
             validate_snapshot(snapshot)?;
@@ -133,16 +143,6 @@ impl ReplayEconomicsAdmissionSource {
                 Some(_) => {}
                 None => resting_order_refresh_margin_ns = Some(margin_ns),
             }
-        }
-        let authority = &snapshots[0];
-        if snapshots.iter().any(|snapshot| {
-            snapshot.provider_key != authority.provider_key
-                || snapshot.execution_client_id != authority.execution_client_id
-                || snapshot.account_id != authority.account_id
-                || snapshot.reporting_policy_id != authority.reporting_policy_id
-                || snapshot.reporting_unit != authority.reporting_unit
-        }) {
-            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
         Ok(Self {
             snapshots,

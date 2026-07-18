@@ -405,6 +405,7 @@ impl HyperliquidUserFeesSnapshot {
                     || volume.user_cross < Decimal::ZERO
                     || volume.user_add < Decimal::ZERO
                     || volume.exchange < Decimal::ZERO
+                    || volume.user_add > volume.exchange
             })
             || !valid_fee_schedule(&wire, eligible_volume)
         {
@@ -569,6 +570,12 @@ fn valid_fee_schedule(
                 && current.spot_cross <= previous.spot_cross
                 && current.spot_add <= previous.spot_add
         });
+    let first_vip_tier_within_base = schedule.tiers.vip.first().is_none_or(|tier| {
+        tier.cross <= schedule.cross
+            && tier.add <= schedule.add
+            && tier.spot_cross <= schedule.spot_cross
+            && tier.spot_add <= schedule.spot_add
+    });
     let maker_tiers_ordered = schedule
         .tiers
         .mm
@@ -580,20 +587,35 @@ fn valid_fee_schedule(
             current.maker_fraction_cutoff > previous.maker_fraction_cutoff
                 && current.add < previous.add
         });
-    let tier_rates_valid =
-        vip_tiers_ordered
-            && maker_tiers_ordered
-            && schedule.tiers.vip.iter().all(|tier| {
-                tier.ntl_cutoff >= Decimal::ZERO
-                    && tier.cross >= Decimal::ZERO
-                    && tier.add >= Decimal::ZERO
-                    && tier.spot_cross >= Decimal::ZERO
-                    && tier.spot_add >= Decimal::ZERO
-            })
-            && schedule.tiers.mm.iter().all(|tier| {
-                tier.maker_fraction_cutoff >= Decimal::ZERO && tier.add <= schedule.add
-            });
+    let tier_rates_valid = first_vip_tier_within_base
+        && vip_tiers_ordered
+        && maker_tiers_ordered
+        && schedule.tiers.vip.iter().all(|tier| {
+            tier.ntl_cutoff >= Decimal::ZERO
+                && tier.cross >= Decimal::ZERO
+                && tier.add >= Decimal::ZERO
+                && tier.spot_cross >= Decimal::ZERO
+                && tier.spot_add >= Decimal::ZERO
+        })
+        && schedule
+            .tiers
+            .mm
+            .iter()
+            .all(|tier| unit_interval(tier.maker_fraction_cutoff) && tier.add <= schedule.add);
+    let staking_tiers_ordered = schedule.staking_discount_tiers.first().is_some_and(|tier| {
+        tier.bps_of_max_supply == Decimal::ZERO && tier.discount == Decimal::ZERO
+    }) && schedule
+        .staking_discount_tiers
+        .windows(ADJACENT_DATE_PAIR_SIZE)
+        .all(|pair| {
+            let [previous, current] = pair else {
+                return false;
+            };
+            current.bps_of_max_supply > previous.bps_of_max_supply
+                && current.discount >= previous.discount
+        });
     let staking_valid = !schedule.staking_discount_tiers.is_empty()
+        && staking_tiers_ordered
         && schedule
             .staking_discount_tiers
             .iter()

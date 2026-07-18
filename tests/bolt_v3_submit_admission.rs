@@ -1007,15 +1007,25 @@ fn submit_request_with_kind_policy_and_exit_proof(
     lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
 ) -> BoltV3SubmitAdmissionRequest {
-    let (order_side, order_quantity) = match intent_kind {
-        BoltV3SubmitIntentKind::RiskReducingExit => (OrderSide::Sell, Decimal::new(264, 2)),
-        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => {
-            (OrderSide::Buy, Decimal::new(1, 0))
-        }
-        BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
+    let (order_side, order_quantity, economics_admission) = match intent_kind {
+        BoltV3SubmitIntentKind::RiskReducingExit => (
+            OrderSide::Sell,
+            Decimal::new(264, 2),
+            support::sample_risk_reduction_economics_admission(notional),
+        ),
+        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => (
+            OrderSide::Buy,
+            Decimal::new(1, 0),
+            support::sample_economics_admission(notional),
+        ),
+        BoltV3SubmitIntentKind::KillSwitchForcedReduction => (
+            OrderSide::Sell,
+            Decimal::new(1, 0),
+            support::sample_risk_reduction_economics_admission(notional),
+        ),
     };
     BoltV3SubmitAdmissionRequest {
-        economics_admission: support::sample_economics_admission(notional),
+        economics_admission,
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),

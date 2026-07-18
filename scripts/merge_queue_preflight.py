@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight candidate PR waves before queueing them through Mergify."""
+"""Preflight one candidate PR before queueing it through Mergify."""
 
 from __future__ import annotations
 
@@ -702,20 +702,16 @@ HEAD_IDENTITY_FINDING_BUILDERS = {
 
 def head_identity_findings(
     *,
-    expected_heads: Mapping[int, str],
-    actual_heads: Mapping[int, PrHead],
+    pr: int,
+    expected_head_sha: str,
+    actual_head: PrHead | None,
 ) -> tuple[dict[str, object], ...]:
-    return tuple(
-        finding
-        for pr, actual_head in actual_heads.items()
-        for expected_head_sha in (expected_heads[pr],)
-        for finding in HEAD_IDENTITY_FINDING_BUILDERS[
-            expected_head_sha == actual_head.sha
-        ](
-            pr=pr,
-            expected_head_sha=expected_head_sha,
-            actual_head_sha=actual_head.sha,
-        )
+    if actual_head is None:
+        return ()
+    return HEAD_IDENTITY_FINDING_BUILDERS[expected_head_sha == actual_head.sha](
+        pr=pr,
+        expected_head_sha=expected_head_sha,
+        actual_head_sha=actual_head.sha,
     )
 
 
@@ -751,21 +747,19 @@ HEAD_IDENTITY_BLOCK_BUILDERS = {
 
 def head_identity_blocks(
     *,
-    expected_heads: Mapping[int, str],
-    actual_heads: Mapping[int, PrHead],
+    pr: int,
+    expected_head_sha: str,
+    actual_head: PrHead | None,
 ) -> list[dict[str, object]]:
-    return [
-        block
-        for pr, actual_head in actual_heads.items()
-        for expected_head_sha in (expected_heads[pr],)
-        for block in HEAD_IDENTITY_BLOCK_BUILDERS[
-            expected_head_sha == actual_head.sha
-        ](
+    if actual_head is None:
+        return []
+    return list(
+        HEAD_IDENTITY_BLOCK_BUILDERS[expected_head_sha == actual_head.sha](
             pr=pr,
             expected_head_sha=expected_head_sha,
             actual_head_sha=actual_head.sha,
         )
-    ]
+    )
 
 
 def residual_risk_findings() -> tuple[dict[str, object], ...]:
@@ -1053,10 +1047,9 @@ def selected_mergify_required_reviewer_findings(
     *,
     config: Mapping[str, object],
     route_findings: Sequence[Mapping[str, object]],
-    readiness: Sequence[Mapping[str, object]],
+    readiness: Mapping[str, object],
 ) -> tuple[dict[str, object], ...]:
     rules_by_name = mergify_queue_rules_by_name(config)
-    readiness_by_pr = {int(item["pr"]): item for item in readiness}
     queue_findings = tuple(
         mergify_required_reviewer_finding(rules_by_name[queue_rule])
         for route_finding in route_findings
@@ -1071,7 +1064,7 @@ def selected_mergify_required_reviewer_findings(
             required_reviewers=MERGIFY_REQUIRED_REVIEWER_RE.findall(
                 "\n".join(str(condition) for condition in tuple(rules_by_name[queue_rule]["merge_conditions"]))
             ),
-            approved=approved_reviewers(readiness_by_pr[pr]),
+            approved=approved_reviewers(readiness),
         )
         for route_finding in route_findings
         if route_finding["reason_code"] == "mergify_queue_route_selected"
@@ -1092,22 +1085,24 @@ def mergify_queue_rules_by_name(config: Mapping[str, object]) -> dict[str, Mappi
 def available_mergify_queue_route_findings(
     *,
     config: Mapping[str, object],
-    readiness: Sequence[Mapping[str, object]],
+    readiness: Mapping[str, object],
 ) -> tuple[dict[str, object], ...]:
-    return tuple(
-        mergify_queue_route_finding(item, rule, labels)
+    if "metadata" not in readiness:
+        return ()
+    labels = readiness_label_names(readiness)
+    rule = selected_mergify_queue_rule(config, labels)
+    finding = (
+        mergify_queue_route_finding(readiness, rule, labels)
         if rule is not None
-        else mergify_queue_route_unavailable_finding(item, labels)
-        for item in filter(lambda candidate: "metadata" in candidate, readiness)
-        for labels in (readiness_label_names(item),)
-        for rule in (selected_mergify_queue_rule(config, labels),)
+        else mergify_queue_route_unavailable_finding(readiness, labels)
     )
+    return (finding,)
 
 
 def available_mergify_config_route_findings(
     *,
     config: Mapping[str, object],
-    readiness: Sequence[Mapping[str, object]],
+    readiness: Mapping[str, object],
 ) -> tuple[dict[str, object], ...]:
     route_findings = available_mergify_queue_route_findings(config=config, readiness=readiness)
     return (
@@ -1123,7 +1118,7 @@ def available_mergify_config_route_findings(
 def unavailable_mergify_queue_route_findings(
     *,
     config: object,
-    readiness: Sequence[Mapping[str, object]],
+    readiness: Mapping[str, object],
 ) -> tuple[dict[str, object], ...]:
     return ()
 
@@ -1138,7 +1133,7 @@ def mergify_config_findings(
     *,
     repo: pathlib.Path,
     base_sha: str,
-    readiness: Sequence[Mapping[str, object]],
+    readiness: Mapping[str, object],
     input_timeout_seconds: int,
 ) -> tuple[dict[str, object], ...]:
     snapshot = mergify_config_snapshot_finding(
@@ -1806,103 +1801,83 @@ def pr_readiness(
     }
 
 
-def readiness_for_wave(
-    pr_numbers: Sequence[int],
+def readiness_for_pr(
+    pr_number: int,
     *,
     use_gh: bool,
     base: str,
     input_timeout_seconds: int,
-) -> tuple[list[dict[str, object]], list[str]]:
+) -> tuple[dict[str, object], list[str]]:
     if not use_gh:
-        return [
-            pr_readiness(pr, use_gh=False, input_timeout_seconds=input_timeout_seconds)
-            for pr in pr_numbers
-        ], []
-    readiness: list[dict[str, object]] = []
-    metadata_warnings: list[str] = []
-    for pr in pr_numbers:
-        try:
-            readiness.append(
-                pr_readiness(
-                    pr,
-                    use_gh=True,
-                    input_timeout_seconds=input_timeout_seconds,
-                    expected_base=base,
-                )
-            )
-        except PreflightError as exc:
-            warning = f"GitHub metadata unavailable for PR #{pr}; readiness checks skipped: {exc}"
-            metadata_warnings.append(warning)
-            readiness.append(
-                {
-                    "pr": pr,
-                    "warnings": [],
-                    "warning_details": [],
-                    "metadata_unavailable": True,
-                    "metadata_error": str(exc),
-                }
-            )
-    return readiness, metadata_warnings
+        return pr_readiness(
+            pr_number,
+            use_gh=False,
+            input_timeout_seconds=input_timeout_seconds,
+        ), []
+    try:
+        return pr_readiness(
+            pr_number,
+            use_gh=True,
+            input_timeout_seconds=input_timeout_seconds,
+            expected_base=base,
+        ), []
+    except PreflightError as exc:
+        warning = f"GitHub metadata unavailable for PR #{pr_number}; readiness checks skipped: {exc}"
+        return {
+            "pr": pr_number,
+            "warnings": [],
+            "warning_details": [],
+            "metadata_unavailable": True,
+            "metadata_error": str(exc),
+        }, [warning]
 
 
-def readiness_with_fetched_heads(
-    readiness: Sequence[dict[str, object]],
+def readiness_with_fetched_head(
+    readiness: dict[str, object],
     *,
     base: str,
-    heads: Mapping[int, PrHead],
-) -> list[dict[str, object]]:
-    updated: list[dict[str, object]] = []
-    for item in readiness:
-        pr = int(item["pr"])
-        head = heads.get(pr)
-        metadata = item.get("metadata")
-        if head is None or not isinstance(metadata, dict):
-            updated.append(item)
-            continue
-        issues = readiness_issues(
-            metadata,
-            expected_base=base,
-            fetched_head=head.sha,
-        )
-        updated.append(
-            {
-                **item,
-                "warnings": [issue.message for issue in issues],
-                "warning_details": [issue.as_json() for issue in issues],
-            }
-        )
-    return updated
+    head: PrHead | None,
+) -> dict[str, object]:
+    metadata = readiness.get("metadata")
+    if head is None or not isinstance(metadata, dict):
+        return readiness
+    issues = readiness_issues(
+        metadata,
+        expected_base=base,
+        fetched_head=head.sha,
+    )
+    return {
+        **readiness,
+        "warnings": [issue.message for issue in issues],
+        "warning_details": [issue.as_json() for issue in issues],
+    }
 
 
-def fetch_available_pr_heads(
+def fetch_available_pr_head(
     *,
     fetch_refs: PrivateFetchRefs,
     origin: str,
-    requested: Sequence[int],
-    blocked_numbers: set[int],
-) -> tuple[dict[int, PrHead], list[dict[str, object]]]:
-    heads: dict[int, PrHead] = {}
-    blocks: list[dict[str, object]] = []
+    pr: int,
+    blocked: bool,
+) -> tuple[PrHead | None, list[dict[str, object]]]:
+    if blocked:
+        return None, []
     missing_head_prefix = "PR #"
     missing_head_suffix = "head ref was not found"
-    for pr in requested:
-        if pr in blocked_numbers:
-            continue
-        try:
-            heads[pr] = fetch_pr_head(fetch_refs, origin, pr)
-        except PreflightError as exc:
-            reason = str(exc)
-            block_type = "head_unavailable"
-            if not (reason.startswith(missing_head_prefix) and missing_head_suffix in reason):
-                block_type = "head_fetch_failed"
-            blocks.append(
-                {
-                    "pr": pr,
-                    "reason": reason,
-                    "type": block_type,
-                }
-            )
-    return heads, blocks
+    try:
+        return fetch_pr_head(fetch_refs, origin, pr), []
+    except PreflightError as exc:
+        reason = str(exc)
+        block_type = "head_unavailable"
+        if not (reason.startswith(missing_head_prefix) and missing_head_suffix in reason):
+            block_type = "head_fetch_failed"
+        return None, [
+            {
+                "pr": pr,
+                "reason": reason,
+                "type": block_type,
+            }
+        ]
 
 
 def metadata_unavailable_block(readiness: dict[str, object]) -> dict[str, object] | None:
@@ -1938,15 +1913,12 @@ READINESS_BLOCK_CLASSIFIERS = (
 )
 
 
-def readiness_blocks(readiness: Sequence[dict[str, object]]) -> list[dict[str, object]]:
-    blocks: list[dict[str, object]] = []
-    for item in readiness:
-        blocks.extend(
-            block
-            for classifier in READINESS_BLOCK_CLASSIFIERS
-            if (block := classifier(item)) is not None
-        )
-    return blocks
+def readiness_blocks(readiness: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        block
+        for classifier in READINESS_BLOCK_CLASSIFIERS
+        if (block := classifier(readiness)) is not None
+    ]
 
 
 def available_readiness_ready_findings(item: Mapping[str, object]) -> tuple[dict[str, object], ...]:
@@ -1980,42 +1952,39 @@ READINESS_READY_FINDING_BUILDERS = {
 }
 
 
-def non_ready_readiness_prs(findings: Sequence[Mapping[str, object]]) -> frozenset[int]:
-    prs: set[int] = set()
-    for finding in findings:
-        if finding["lane"] != LANE_READINESS or finding["scope"] != "pr":
-            continue
-        if finding["status"] == STATUS_READY:
-            continue
-        evidence = finding.get("evidence")
-        if not isinstance(evidence, Mapping) or "pr" not in evidence:
-            continue
-        prs.add(int(evidence["pr"]))
-    return frozenset(prs)
+def has_non_ready_readiness_finding(
+    pr: int,
+    findings: Sequence[Mapping[str, object]],
+) -> bool:
+    return any(
+        finding["lane"] == LANE_READINESS
+        and finding["scope"] == "pr"
+        and finding["status"] != STATUS_READY
+        and isinstance((evidence := finding.get("evidence")), Mapping)
+        and evidence.get("pr") == pr
+        for finding in findings
+    )
 
 
 def readiness_ready_findings(
-    readiness: Sequence[Mapping[str, object]],
+    readiness: Mapping[str, object],
     *,
     related_findings: Sequence[Mapping[str, object]] = (),
 ) -> tuple[dict[str, object], ...]:
-    suppressed_prs = non_ready_readiness_prs(related_findings)
-    return tuple(
-        finding
-        for item in readiness
-        if int(item["pr"]) not in suppressed_prs
-        for finding in READINESS_READY_FINDING_BUILDERS[
-            "metadata" in item and not tuple(item["warning_details"])
-        ](item)
-    )
+    pr = int(readiness["pr"])
+    if has_non_ready_readiness_finding(pr, related_findings):
+        return ()
+    return READINESS_READY_FINDING_BUILDERS[
+        "metadata" in readiness and not tuple(readiness["warning_details"])
+    ](readiness)
 
 
 def unavailable_base_payload(
     *,
     base: str,
     expected_base_sha: str,
-    expected_heads: Mapping[int, str],
-    requested: Sequence[int],
+    expected_head: ExpectedHead,
+    pr_number: int,
     use_gh: bool,
     reason: str,
 ) -> tuple[dict[str, object], int]:
@@ -2039,8 +2008,8 @@ def unavailable_base_payload(
         "base_sha": expected_base_sha,
         "actual_base_sha": None,
         "expected_base_sha": expected_base_sha,
-        "expected_pr_heads": {str(number): sha for number, sha in expected_heads.items()},
-        "requested_prs": list(requested),
+        "expected_pr_heads": {str(pr_number): expected_head.sha},
+        "requested_prs": [pr_number],
         "pr_heads": {},
         "readiness": [],
         "metadata_warnings": [],
@@ -2097,8 +2066,6 @@ def preflight_with_fetch_refs(
     use_gh: bool,
     fetch_refs: PrivateFetchRefs,
 ) -> tuple[dict[str, object], int]:
-    requested = (pr_number,)
-    expected_heads = {pr_number: expected_head.sha}
     git_repo = fetch_refs.git_repo
     if fetch_refs.fetch_origin(origin) != expected_origin_url:
         raise PreflightError("checkout Git remote does not match configured repository")
@@ -2108,76 +2075,83 @@ def preflight_with_fetch_refs(
         return unavailable_base_payload(
             base=base,
             expected_base_sha=expected_base_sha,
-            expected_heads=expected_heads,
-            requested=requested,
+            expected_head=expected_head,
+            pr_number=pr_number,
             use_gh=use_gh,
             reason=str(exc),
         )
     base_sha = expected_base_sha
-    readiness, metadata_warnings = readiness_for_wave(
-        requested,
+    readiness, metadata_warnings = readiness_for_pr(
+        pr_number,
         use_gh=use_gh,
         base=base,
         input_timeout_seconds=input_timeout_seconds,
     )
     initial_readiness_blocks = readiness_blocks(readiness)
-    initial_blocked_numbers = {
-        int(block["pr"])
-        for block in initial_readiness_blocks
-        if PREFLIGHT_ARTIFACT_CLASSIFICATIONS[str(block["type"])][2] == STATUS_BLOCKED
-    }
-    heads, head_fetch_blocks = fetch_available_pr_heads(
+    head, head_fetch_blocks = fetch_available_pr_head(
         fetch_refs=fetch_refs,
         origin=origin,
-        requested=requested,
-        blocked_numbers=initial_blocked_numbers,
+        pr=pr_number,
+        blocked=any(
+            PREFLIGHT_ARTIFACT_CLASSIFICATIONS[str(block["type"])][2] == STATUS_BLOCKED
+            for block in initial_readiness_blocks
+        ),
     )
-    readiness = readiness_with_fetched_heads(
+    readiness = readiness_with_fetched_head(
         readiness,
         base=base,
-        heads=heads,
+        head=head,
     )
     blocked_prs = [
         *head_fetch_blocks,
-        *head_identity_blocks(expected_heads=expected_heads, actual_heads=heads),
+        *head_identity_blocks(
+            pr=pr_number,
+            expected_head_sha=expected_head.sha,
+            actual_head=head,
+        ),
         *readiness_blocks(readiness),
     ]
-    blocked_numbers = {int(block["pr"]) for block in blocked_prs}
     mergify_findings = mergify_config_findings(
         repo=git_repo,
         base_sha=base_sha,
         readiness=readiness,
         input_timeout_seconds=input_timeout_seconds,
     )
-    integration_ready_prs: list[int] = []
-    for pr in requested:
-        if pr in blocked_numbers:
-            continue
-        head = heads[pr]
-        synthetic = synthesize_merge(git_repo, base_sha, head.sha, pr, input_timeout_seconds)
+    integration_finding: dict[str, object] | None = None
+    if not blocked_prs and head is not None:
+        synthetic = synthesize_merge(
+            git_repo,
+            base_sha,
+            head.sha,
+            pr_number,
+            input_timeout_seconds,
+        )
         if isinstance(synthetic, MergeResult):
             blocked_prs.append(
                 {
-                    "pr": pr,
+                    "pr": pr_number,
                     "reason": "conflicts with base",
                     "files": list(synthetic.files),
                     "type": "base_conflict",
                 }
             )
-            blocked_numbers.add(pr)
-            continue
-        integration_ready_prs.append(pr)
+        else:
+            integration_finding = integration_pr_ready_finding(pr_number)
     contract_findings = (
         *base_identity_findings(
             expected_base_sha=expected_base_sha,
             actual_base_sha=actual_base_sha,
         ),
-        *head_identity_findings(expected_heads=expected_heads, actual_heads=heads),
+        *head_identity_findings(
+            pr=pr_number,
+            expected_head_sha=expected_head.sha,
+            actual_head=head,
+        ),
         *mergify_findings,
         *preflight_mode_findings(use_gh=use_gh),
         *readiness_ready_findings(readiness, related_findings=mergify_findings),
         *residual_risk_findings(),
-        *(integration_pr_ready_finding(pr) for pr in integration_ready_prs),
+        *(() if integration_finding is None else (integration_finding,)),
     )
     contract_evaluation = evaluate_preflight_contract(
         ContractEvidence(
@@ -2190,10 +2164,10 @@ def preflight_with_fetch_refs(
         "base_sha": base_sha,
         "actual_base_sha": actual_base_sha,
         "expected_base_sha": expected_base_sha,
-        "expected_pr_heads": {str(number): sha for number, sha in expected_heads.items()},
-        "requested_prs": list(requested),
-        "pr_heads": {str(number): head.sha for number, head in heads.items()},
-        "readiness": readiness,
+        "expected_pr_heads": {str(pr_number): expected_head.sha},
+        "requested_prs": [pr_number],
+        "pr_heads": {} if head is None else {str(pr_number): head.sha},
+        "readiness": [readiness],
         "metadata_warnings": metadata_warnings,
         "residual_risks": list(RESIDUAL_RISK_REASON_CODES),
         "blocked_prs": blocked_prs,

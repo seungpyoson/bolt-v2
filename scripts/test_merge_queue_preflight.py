@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -852,6 +853,11 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
     for queue_name, queue in expectations["queue_rules"].items():
         assert_equal(queue["batch_size"], 1, f"{queue_name} single-PR batch")
         assert_equal(
+            queue["batch_max_failure_resolution_attempts"],
+            0,
+            f"{queue_name} failure-resolution retries disabled",
+        )
+        assert_equal(
             queue["branch_protection_injection_mode"],
             "none",
             f"{queue_name} branch-protection injection",
@@ -866,6 +872,76 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
         2,
         "reviewer-only merge conditions",
     )
+
+
+def assert_preflight_single_pr_internals_are_scalar() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    core = functions["preflight_with_fetch_refs"]
+    core_names = {node.id for node in ast.walk(core) if isinstance(node, ast.Name)}
+    forbidden_state_names = {
+        "requested",
+        "expected_heads",
+        "heads",
+        "integration_ready_prs",
+        "integration_findings",
+    }
+    leaked_state = sorted(core_names & forbidden_state_names)
+    if leaked_state:
+        raise AssertionError(f"single-PR core retains collection admission state: {leaked_state}")
+    if any(isinstance(node, (ast.For, ast.AsyncFor)) for node in ast.walk(core)):
+        raise AssertionError("single-PR core must not iterate candidate PRs")
+    annotations = {
+        node.target.id: ast.unparse(node.annotation)
+        for node in ast.walk(core)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert_equal(
+        annotations.get("integration_finding"),
+        "dict[str, object] | None",
+        "scalar integration finding",
+    )
+    scalar_parameters = {
+        "readiness_for_pr": {"pr_number": "int"},
+        "fetch_available_pr_head": {"pr": "int", "blocked": "bool"},
+        "head_identity_findings": {"pr": "int", "actual_head": "PrHead | None"},
+        "head_identity_blocks": {"pr": "int", "actual_head": "PrHead | None"},
+    }
+    for function_name, expected_parameters in scalar_parameters.items():
+        function = functions[function_name]
+        parameters = {
+            argument.arg: ast.unparse(argument.annotation)
+            for argument in (*function.args.args, *function.args.kwonlyargs)
+            if argument.annotation is not None
+        }
+        for parameter, annotation in expected_parameters.items():
+            assert_equal(
+                parameters.get(parameter),
+                annotation,
+                f"{function_name} scalar {parameter}",
+            )
+    forbidden_fragments = (
+        "Preflight candidate PR waves",
+        "def readiness_for_wave(",
+        "def fetch_available_pr_heads(",
+        "expected_heads: Mapping[int, str]",
+        "actual_heads: Mapping[int, PrHead]",
+        "for pr in requested:",
+        "integration_ready_prs",
+    )
+    leaked = [fragment for fragment in forbidden_fragments if fragment in source]
+    if leaked:
+        raise AssertionError(f"single-PR preflight retains plural admission structure: {leaked}")
+    evidence = (REPO_ROOT / "docs" / "ci" / "merge-queue-evidence.md").read_text(
+        encoding="utf-8"
+    )
+    if "A split, blocked" in evidence:
+        raise AssertionError("merge-queue evidence retains retired split terminology")
 
 
 def assert_queue_ci_and_verifier_flags_are_removed() -> None:
@@ -1475,12 +1551,10 @@ def assert_unsupported_mergify_queue_condition_route_is_inconclusive() -> None:
                 }
             ]
         },
-        readiness=[
-            {
-                "pr": 1,
-                "metadata": {"labels": []},
-            }
-        ],
+        readiness={
+            "pr": 1,
+            "metadata": {"labels": []},
+        },
     )
     assert_equal(
         findings,
@@ -1862,15 +1936,15 @@ def assert_non_missing_head_fetch_failure_is_inspection_error() -> None:
         fixture.make_pr(1, {"one.txt": "one\n"})
         fetch_refs = module.PrivateFetchRefs.create(fixture.repo, 30)
         try:
-            heads, blocks = module.fetch_available_pr_heads(
+            head, blocks = module.fetch_available_pr_head(
                 fetch_refs=fetch_refs,
                 origin=str(root / "not-a-remote.git"),
-                requested=(1,),
-                blocked_numbers=set(),
+                pr=1,
+                blocked=False,
             )
         finally:
             fetch_refs.cleanup()
-        assert_equal(heads, {}, "inspection error heads")
+        assert_equal(head, None, "inspection error head")
         if len(blocks) != 1 or blocks[0]["pr"] != 1 or blocks[0]["type"] != "head_fetch_failed":
             raise AssertionError(blocks)
         if "head ref was not found" in str(blocks[0]["reason"]):
@@ -2334,7 +2408,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
             f"hotfix batch_max_wait_time must be {hotfix_queue['batch_max_wait_time']}",
         ),
         (
-            "hotfix failure split enabled",
+            "hotfix failure resolution enabled",
             replace_once(
                 mergify_config,
                 mergify_scalar_line(
@@ -2345,13 +2419,13 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 mergify_scalar_line(
                     "    ",
                     "batch_max_failure_resolution_attempts",
-                    default_queue["batch_max_failure_resolution_attempts"],
+                    1,
                 ),
             ),
             f"hotfix batch_max_failure_resolution_attempts must be {hotfix_queue['batch_max_failure_resolution_attempts']}",
         ),
         (
-            "default failure split disabled",
+            "default failure resolution enabled",
             replace_once_after(
                 mergify_config,
                 "  - name: default\n",
@@ -2363,7 +2437,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 mergify_scalar_line(
                     "    ",
                     "batch_max_failure_resolution_attempts",
-                    hotfix_queue["batch_max_failure_resolution_attempts"],
+                    1,
                 ),
             ),
             f"default batch_max_failure_resolution_attempts must be {default_queue['batch_max_failure_resolution_attempts']}",
@@ -2500,6 +2574,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
 def main() -> int:
     assert_advisory_check_matrix_does_not_affect_admission()
     assert_post_cutover_mergify_contract_is_review_only_and_single_pr()
+    assert_preflight_single_pr_internals_are_scalar()
     assert_queue_ci_and_verifier_flags_are_removed()
     assert_preflight_config_is_identity_only()
     assert_origin_and_base_cli_overrides_are_rejected()

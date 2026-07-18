@@ -1802,7 +1802,7 @@ MERGIFY_CONFIG_EXPECTATIONS = {
             "branch_protection_injection_mode": "none",
             "batch_size": 1,
             "batch_max_wait_time": "5 minutes",
-            "batch_max_failure_resolution_attempts": 3,
+            "batch_max_failure_resolution_attempts": 0,
             "checks_timeout": "150 minutes",
             "draft_bot_account": None,
             "merge_method": "squash",

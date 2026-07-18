@@ -4,8 +4,8 @@ use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,
         AuthoritativeEdgeBasis, BoltV3EconomicsRuntime, ConfiguredEconomicsAdmissionSource,
-        ConfiguredEconomicsSourcePolicy, EconomicsAdmissionIntent, EconomicsAdmissionQuoteIntent,
-        EconomicsAdmissionSource, EconomicsOrderBinding,
+        ConfiguredEconomicsSourcePolicy, EconomicsAdmissionIntent, EconomicsAdmissionPurpose,
+        EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource, EconomicsOrderBinding,
     },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, FormulaId,
@@ -128,6 +128,7 @@ fn configured_source_resolves_the_one_published_surface_for_an_instrument() {
 fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
     EconomicsAdmissionIntent {
         order_binding: test_order_binding(),
+        purpose: EconomicsAdmissionPurpose::TradingEdge,
         edge_basis: EdgeBasisEvidence {
             policy_id: request.edge_basis_policy_id.clone(),
             resolver_id: FormulaId::new("fixture-resolver").unwrap(),
@@ -259,6 +260,7 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
         .quote_admission(EconomicsAdmissionQuoteIntent {
             request,
             order_binding: test_order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })
@@ -338,6 +340,7 @@ fn configured_source_rejects_substrate_and_adapter_edge_basis_disagreement() {
         .quote_admission(EconomicsAdmissionQuoteIntent {
             request,
             order_binding: test_order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })
@@ -388,6 +391,7 @@ fn assert_configured_source_rejects_stale_dependencies(policy: ConfiguredEconomi
         .quote_admission(EconomicsAdmissionQuoteIntent {
             request,
             order_binding: test_order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })
@@ -470,6 +474,7 @@ fn configured_source_rejects_maker_quote_shorter_than_resting_margin() {
         .quote_admission(EconomicsAdmissionQuoteIntent {
             request,
             order_binding: test_order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
             base_reservation_notional: decimal("5"),
         })
@@ -504,6 +509,41 @@ fn non_positive_core_net_edge_cannot_create_admission() {
         runtime.quote_admission(admission_intent),
         Err(EconomicsUnavailable::NonPositiveNetEdge)
     );
+}
+
+#[test]
+fn risk_reduction_admission_retains_non_positive_edge_and_debit_reservation() {
+    let request = canonical_fixture_request();
+    let component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    let authority = component.source.clone();
+    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
+        Arc::new(FixedVenue(VenueQuoteEstimate {
+            authority,
+            dependency_sources: Vec::new(),
+            components: vec![component],
+        })),
+        10,
+    )
+    .unwrap();
+    let mut admission_intent = intent(request);
+    admission_intent.purpose = EconomicsAdmissionPurpose::RiskReduction;
+    admission_intent.gross_expected_value = decimal("0.25");
+
+    let admission = runtime
+        .quote_admission(admission_intent)
+        .expect("risk reduction must retain a fresh loss-making quote");
+
+    assert_eq!(
+        admission.purpose(),
+        EconomicsAdmissionPurpose::RiskReduction
+    );
+    assert_eq!(admission.net_edge().core_net_edge(), decimal("0"));
+    assert_eq!(admission.debit_reservation(), decimal("0.25"));
 }
 
 #[test]

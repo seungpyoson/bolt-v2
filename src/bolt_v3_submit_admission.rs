@@ -23,7 +23,7 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3SubmitReservationMetadataEvidence, EpisodeFirstNs, compiled_order_price_source,
     evict_oldest_episodes_over_cap, loss_snapshot_source_to_evidence,
 };
-use crate::bolt_v3_economics_runtime::EconomicsAdmission;
+use crate::bolt_v3_economics_runtime::{EconomicsAdmission, EconomicsAdmissionPurpose};
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotDiagnostics,
@@ -2256,6 +2256,12 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
+        if request.economics_admission.purpose() != economics_purpose(request.intent_kind) {
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch,
+                now_ns,
+            );
+        }
         if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 Self::evaluate_kill_switch_forced_reduction(inner, request),
@@ -3180,6 +3186,14 @@ pub fn build_submit_admission_request_from_order(
 ) -> anyhow::Result<BoltV3SubmitAdmissionRequest> {
     let client_order_id = input.order.client_order_id().to_string();
     let facts = order_economics_facts(&input)?;
+    let intent_kind = match input.intent.intent_kind {
+        BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+        BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+    };
+    anyhow::ensure!(
+        economics_admission.purpose() == economics_purpose(intent_kind),
+        "bolt-v3 economics admission purpose does not match final order intent"
+    );
     let price = facts.price;
     let quantity = facts.quantity;
     let quote_request = economics_admission.request();
@@ -3248,10 +3262,6 @@ pub fn build_submit_admission_request_from_order(
         "bolt-v3 economics admission base reservation does not match final order"
     );
     let notional = economics_admission.reservation_notional();
-    let intent_kind = match input.intent.intent_kind {
-        BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
-        BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
-    };
     let risk_reducing_exit_proof =
         if matches!(intent_kind, BoltV3SubmitIntentKind::RiskReducingExit) {
             input
@@ -3283,6 +3293,18 @@ pub fn build_submit_admission_request_from_order(
         admission_evidence: None,
         economics_admission,
     })
+}
+
+fn economics_purpose(intent_kind: BoltV3SubmitIntentKind) -> EconomicsAdmissionPurpose {
+    match intent_kind {
+        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => {
+            EconomicsAdmissionPurpose::TradingEdge
+        }
+        BoltV3SubmitIntentKind::RiskReducingExit
+        | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+            EconomicsAdmissionPurpose::RiskReduction
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

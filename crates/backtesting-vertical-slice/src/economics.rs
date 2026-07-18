@@ -270,6 +270,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         .quote_admission(EconomicsAdmissionIntent {
             request: intent.request,
             order_binding: intent.order_binding,
+            purpose: intent.purpose,
             gross_expected_value: intent.gross_expected_value,
             edge_basis,
             valuation_provider,

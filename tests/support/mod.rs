@@ -124,6 +124,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 },
                 request: intent.request,
                 order_binding: intent.order_binding,
+                purpose: intent.purpose,
                 gross_expected_value: intent.gross_expected_value,
                 valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(
                 ),
@@ -189,6 +190,21 @@ pub fn sample_economics_admission(
         "test-core-credit",
         "test-credit-formula",
         u64::MAX,
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionPurpose::TradingEdge,
+    )
+}
+
+pub fn sample_risk_reduction_economics_admission(
+    base_reservation_notional: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    sample_economics_admission_with_component(
+        base_reservation_notional,
+        bolt_v2::economics::EconomicClass::Credit,
+        rust_decimal::Decimal::ONE,
+        "test-core-credit",
+        "test-credit-formula",
+        u64::MAX,
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionPurpose::RiskReduction,
     )
 }
 
@@ -202,6 +218,7 @@ pub fn sample_expired_economics_admission(
         "test-core-credit",
         "test-credit-formula",
         2,
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionPurpose::TradingEdge,
     )
 }
 
@@ -216,6 +233,7 @@ pub fn sample_economics_admission_with_debit(
         "test-core-debit",
         "test-debit-formula",
         u64::MAX,
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionPurpose::TradingEdge,
     )
 }
 
@@ -226,6 +244,7 @@ fn sample_economics_admission_with_component(
     component_id: &str,
     formula_id: &str,
     valid_until_ns: u64,
+    purpose: bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionPurpose,
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     use bolt_v2::economics::*;
     use rust_decimal::Decimal;
@@ -307,6 +326,7 @@ fn sample_economics_admission_with_component(
             order_binding: bolt_v2::bolt_v3_economics_runtime::EconomicsOrderBinding::from_sha256(
                 <sha2::Sha256 as sha2::Digest>::digest(b"test-order-binding"),
             ),
+            purpose,
             gross_expected_value: Decimal::ONE,
             edge_basis: EdgeBasisEvidence {
                 policy_id: EdgeBasisPolicyId::new("test-edge-policy")

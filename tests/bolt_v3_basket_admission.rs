@@ -1047,7 +1047,7 @@ fn risk_reducing_claim(
     proof: BoltV3RiskReducingExitProof,
 ) -> BoltV3BasketSubmitSlotClaim {
     BoltV3BasketSubmitSlotClaim {
-        economics_admission: support::sample_economics_admission(dec!(0.9)),
+        economics_admission: support::sample_risk_reduction_economics_admission(dec!(0.9)),
         client_order_id: format!("{}-exit-order", leg.leg_id),
         instrument_id: leg.instrument_id.to_string(),
         order_side: OrderSide::Sell,

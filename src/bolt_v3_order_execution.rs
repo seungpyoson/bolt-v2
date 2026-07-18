@@ -28,7 +28,8 @@ use crate::{
     },
     bolt_v3_economics_config::EconomicsRoutingAttachmentPolicy,
     bolt_v3_economics_runtime::{
-        EconomicsAdmission, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
+        EconomicsAdmission, EconomicsAdmissionPurpose, EconomicsAdmissionQuoteIntent,
+        EconomicsAdmissionSource,
     },
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
@@ -253,6 +254,10 @@ impl BoltV3OrderRoutingHandle {
                 order_binding: economics_order_binding(intent.request.order).map_err(|error| {
                     anyhow::anyhow!("economics order binding failed: {error:?}")
                 })?,
+                purpose: match intent.request.intent.intent_kind {
+                    BoltV3OrderIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
+                    BoltV3OrderIntentKind::Exit => EconomicsAdmissionPurpose::RiskReduction,
+                },
                 gross_expected_value: intent.gross_expected_value,
                 base_reservation_notional: facts.base_reservation_notional,
             })
@@ -2731,7 +2736,7 @@ mod tests {
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
             economics_admission:
-                crate::bolt_v3_economics_runtime::test_economics_admission_with_binding(
+                crate::bolt_v3_economics_runtime::test_risk_reduction_economics_admission_with_binding(
                     notional,
                     economics_order_binding(order).expect("test order binding should serialize"),
                 ),

@@ -309,9 +309,10 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         .expect("position quantity should convert to decimal");
     rejecting_submit_admission
         .admit(&BoltV3SubmitAdmissionRequest {
-            economics_admission: crate::bolt_v3_economics_runtime::test_economics_admission(
-                Decimal::ONE,
-            ),
+            economics_admission:
+                crate::bolt_v3_economics_runtime::test_risk_reduction_economics_admission(
+                    Decimal::ONE,
+                ),
             strategy_id: strategy.config.strategy_id.clone(),
             execution_client_id: strategy.config.client_id.clone(),
             client_order_id: "EXIT-SLOT-ALREADY-USED".to_string(),

@@ -303,6 +303,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
             },
             request: intent.request,
             order_binding: intent.order_binding,
+            purpose: intent.purpose,
             gross_expected_value: intent.gross_expected_value,
             valuation_provider: crate::bolt_v3_economics_runtime::identity_valuation_provider(),
             base_reservation_notional: intent.base_reservation_notional,

@@ -2372,6 +2372,8 @@ mod tests {
             valid_until_ns: u64::MAX,
             edge_basis: crate::economics::HistoricalEdgeBasisEvidence {
                 policy_id: "test-edge-policy".to_string(),
+                resolver_id: "test-edge-resolver".to_string(),
+                product_metadata_source: "test-product-metadata".to_string(),
                 policy_version: 1,
                 normalized_amount: "1".to_string(),
                 source_snapshot_ids: vec!["test-edge-snapshot".to_string()],

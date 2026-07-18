@@ -37,6 +37,8 @@ pub struct HistoricalEconomicsSnapshot {
 #[serde(deny_unknown_fields)]
 pub struct HistoricalEdgeBasisEvidence {
     pub policy_id: String,
+    pub resolver_id: String,
+    pub product_metadata_source: String,
     pub policy_version: u64,
     pub normalized_amount: String,
     pub source_snapshot_ids: Vec<String>,
@@ -269,6 +271,10 @@ impl ReplayEconomicsAdapter {
         }
         Ok(EdgeBasisEvidence {
             policy_id: EdgeBasisPolicyId::new(self.snapshot.edge_basis.policy_id.clone())?,
+            resolver_id: FormulaId::new(self.snapshot.edge_basis.resolver_id.clone())?,
+            product_metadata_source: SourceId::new(
+                self.snapshot.edge_basis.product_metadata_source.clone(),
+            )?,
             policy_version: self.snapshot.edge_basis.policy_version,
             normalized_amount: decimal(&self.snapshot.edge_basis.normalized_amount)?,
             scope: EconomicScope::Decision {
@@ -287,6 +293,18 @@ impl ReplayEconomicsAdapter {
 }
 
 impl VenueEconomicsAdapter for ReplayEconomicsAdapter {
+    fn resolve_edge_basis(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<bolt_v2::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
+        let evidence = self.edge_basis(request)?;
+        Ok(bolt_v2::economics::ResolvedEdgeBasis {
+            normalized_amount: evidence.normalized_amount,
+            source_snapshot_ids: evidence.source_snapshot_ids,
+            valid_until_ns: evidence.valid_until_ns,
+        })
+    }
+
     fn quote(
         &self,
         request: &EconomicQuoteRequest,

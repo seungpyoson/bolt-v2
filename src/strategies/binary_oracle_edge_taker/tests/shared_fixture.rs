@@ -273,6 +273,8 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
         .quote_admission(crate::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),
+                resolver_id: FormulaId::new("test-edge-resolver")?,
+                product_metadata_source: SourceId::new("test-product-metadata")?,
                 policy_version: 1,
                 normalized_amount: intent.base_reservation_notional,
                 scope: EconomicScope::Decision {
@@ -295,6 +297,24 @@ struct RecordingEconomicsAdapterFixture {
 }
 
 impl crate::economics::VenueEconomicsAdapter for RecordingEconomicsAdapterFixture {
+    fn resolve_edge_basis(
+        &self,
+        request: &crate::economics::EconomicQuoteRequest,
+    ) -> std::result::Result<
+        crate::economics::ResolvedEdgeBasis,
+        crate::economics::EconomicsUnavailable,
+    > {
+        Ok(crate::economics::ResolvedEdgeBasis {
+            normalized_amount: request
+                .planned_fill_legs
+                .iter()
+                .map(|leg| leg.price * leg.quantity)
+                .sum(),
+            source_snapshot_ids: vec![self.estimate.authority.snapshot_id.clone()],
+            valid_until_ns: self.estimate.authority.valid_until_ns,
+        })
+    }
+
     fn quote(
         &self,
         _request: &crate::economics::EconomicQuoteRequest,

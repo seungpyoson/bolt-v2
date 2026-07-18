@@ -98,6 +98,8 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
             bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
                 edge_basis: EdgeBasisEvidence {
                     policy_id: intent.request.edge_basis_policy_id.clone(),
+                    resolver_id: FormulaId::new("test-edge-resolver")?,
+                    product_metadata_source: SourceId::new("test-product-metadata")?,
                     policy_version: 1,
                     normalized_amount: intent.base_reservation_notional,
                     scope: EconomicScope::Decision {
@@ -277,6 +279,10 @@ fn sample_economics_admission_with_component(
             edge_basis: EdgeBasisEvidence {
                 policy_id: EdgeBasisPolicyId::new("test-edge-policy")
                     .expect("valid test edge policy id"),
+                resolver_id: FormulaId::new("test-edge-resolver")
+                    .expect("valid test edge resolver id"),
+                product_metadata_source: SourceId::new("test-product-metadata")
+                    .expect("valid test product metadata source"),
                 policy_version: 1,
                 normalized_amount: base_reservation_notional,
                 scope: EconomicScope::Decision {

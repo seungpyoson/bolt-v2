@@ -781,11 +781,12 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
             product_surface_id: self.product_surface_id.clone(),
             adapter: Arc::new(adapter),
             edge_basis: AuthoritativeEdgeBasis {
+                resolver_id: FormulaId::new(edge_policy.resolver_id.clone())?,
+                product_metadata_source: SourceId::new(
+                    edge_policy.product_metadata_source.clone(),
+                )?,
                 policy_version: edge_policy.policy_version,
-                source_snapshot_ids: vec![
-                    SnapshotId::new(user_snapshot_id)?,
-                    SnapshotId::new(product_snapshot_id)?,
-                ],
+                source_snapshot_ids: vec![SnapshotId::new(product_snapshot_id)?],
                 valid_until_ns,
             },
             valuation_observations: Vec::new(),
@@ -1274,6 +1275,26 @@ fn validate_authority_snapshots(
 }
 
 impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
+    fn resolve_edge_basis(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
+        self.validate_request(request).map_err(|_| {
+            EconomicsUnavailable::ProviderQuoteUnavailable {
+                source_id: self.config.source_id.clone(),
+            }
+        })?;
+        Ok(crate::economics::ResolvedEdgeBasis {
+            normalized_amount: self.notional(request).map_err(|_| {
+                EconomicsUnavailable::ProviderQuoteUnavailable {
+                    source_id: self.config.source_id.clone(),
+                }
+            })?,
+            source_snapshot_ids: vec![SnapshotId::new(self.product.snapshot_id.clone())?],
+            valid_until_ns: self.product.valid_until_ns,
+        })
+    }
+
     fn quote(
         &self,
         request: &EconomicQuoteRequest,

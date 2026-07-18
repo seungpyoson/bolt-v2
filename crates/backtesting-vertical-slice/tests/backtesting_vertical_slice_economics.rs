@@ -27,6 +27,8 @@ fn snapshot() -> HistoricalEconomicsSnapshot {
         valid_until_ns: 110,
         edge_basis: HistoricalEdgeBasisEvidence {
             policy_id: "edge-policy".to_string(),
+            resolver_id: "edge-resolver".to_string(),
+            product_metadata_source: "product-metadata".to_string(),
             policy_version: 1,
             normalized_amount: "5".to_string(),
             source_snapshot_ids: vec!["basis-snapshot".to_string()],

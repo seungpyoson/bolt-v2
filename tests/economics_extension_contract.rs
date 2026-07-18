@@ -1,8 +1,8 @@
 use bolt_v2::economics::{
     AdmissionTreatment, EconomicClass, EconomicComponentId, EconomicKind, EconomicQuoteRequest,
     EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
-    SignedNativeEffect, SnapshotId, SourceId, SourceValidity, VenueEconomicsAdapter,
-    VenueQuoteEstimate, validate_and_aggregate_quote,
+    ResolvedEdgeBasis, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+    VenueEconomicsAdapter, VenueQuoteEstimate, validate_and_aggregate_quote,
 };
 
 use super::economics_support::{canonical_fixture_request, decimal, native_unit};
@@ -10,6 +10,21 @@ use super::economics_support::{canonical_fixture_request, decimal, native_unit};
 struct SyntheticVenue;
 
 impl VenueEconomicsAdapter for SyntheticVenue {
+    fn resolve_edge_basis(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
+        Ok(ResolvedEdgeBasis {
+            normalized_amount: request
+                .planned_fill_legs
+                .iter()
+                .map(|leg| leg.price * leg.quantity)
+                .sum(),
+            source_snapshot_ids: vec![SnapshotId::new("synthetic-snapshot")?],
+            valid_until_ns: request.requested_at_ns + 10,
+        })
+    }
+
     fn quote(
         &self,
         request: &EconomicQuoteRequest,

@@ -8,8 +8,9 @@ use bolt_v2::{
         EconomicsAdmissionSource, EconomicsOrderBinding,
     },
     economics::{
-        EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence,
-        ProductSurfaceId, SnapshotId, VenueEconomicsAdapter, VenueQuoteEstimate,
+        EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, FormulaId,
+        ProductSurfaceId, ResolvedEdgeBasis, SnapshotId, SourceId, VenueEconomicsAdapter,
+        VenueQuoteEstimate,
     },
 };
 
@@ -18,6 +19,43 @@ use super::economics_support::{canonical_fixture_request, decimal, estimated_com
 struct FixedVenue(VenueQuoteEstimate);
 
 impl VenueEconomicsAdapter for FixedVenue {
+    fn resolve_edge_basis(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
+        Ok(ResolvedEdgeBasis {
+            normalized_amount: request
+                .planned_fill_legs
+                .iter()
+                .map(|leg| leg.price * leg.quantity)
+                .sum(),
+            source_snapshot_ids: vec![SnapshotId::new("basis-snapshot")?],
+            valid_until_ns: request.requested_at_ns + 5,
+        })
+    }
+
+    fn quote(
+        &self,
+        _request: &EconomicQuoteRequest,
+    ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
+        Ok(self.0.clone())
+    }
+}
+
+struct MismatchedBasisVenue(VenueQuoteEstimate);
+
+impl VenueEconomicsAdapter for MismatchedBasisVenue {
+    fn resolve_edge_basis(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
+        Ok(ResolvedEdgeBasis {
+            normalized_amount: decimal("4.99"),
+            source_snapshot_ids: vec![SnapshotId::new("basis-snapshot")?],
+            valid_until_ns: request.requested_at_ns + 5,
+        })
+    }
+
     fn quote(
         &self,
         _request: &EconomicQuoteRequest,
@@ -50,6 +88,8 @@ fn configured_source_resolves_the_one_published_surface_for_an_instrument() {
                     components: vec![component],
                 })),
                 edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+                    product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
                     policy_version: 1,
                     source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
                     valid_until_ns: request.requested_at_ns + 5,
@@ -90,6 +130,8 @@ fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
         order_binding: test_order_binding(),
         edge_basis: EdgeBasisEvidence {
             policy_id: request.edge_basis_policy_id.clone(),
+            resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+            product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
             policy_version: 1,
             normalized_amount: decimal("5"),
             scope: EconomicScope::Decision {
@@ -190,6 +232,8 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
                     components: vec![component],
                 })),
                 edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+                    product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
                     policy_version: 1,
                     source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
                     valid_until_ns: request.requested_at_ns + 5,
@@ -231,6 +275,65 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
     );
 }
 
+#[test]
+fn configured_source_rejects_substrate_and_adapter_edge_basis_disagreement() {
+    let request = canonical_fixture_request();
+    let component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    let inputs = AuthoritativeEconomicsInputStore::default();
+    inputs
+        .publish(
+            request.execution_client_id.as_str(),
+            request.instrument_id.as_str(),
+            request.product_surface_id.as_str(),
+            AuthoritativeEconomicsQuoteDependencies {
+                provider_key: "configured-provider".to_string(),
+                refreshed_at_ns: request.requested_at_ns,
+                adapter: Arc::new(MismatchedBasisVenue(VenueQuoteEstimate {
+                    authority: component.source.clone(),
+                    dependency_sources: Vec::new(),
+                    components: vec![component],
+                })),
+                edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+                    product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
+                    policy_version: 1,
+                    source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
+                    valid_until_ns: request.requested_at_ns + 5,
+                },
+                valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(
+                ),
+            },
+        )
+        .unwrap();
+    let source = ConfiguredEconomicsAdmissionSource::new(
+        "configured-provider",
+        inputs,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: 5,
+            quote_max_age_ns: 5,
+            quote_validity_ns: 5,
+            resting_order_refresh_margin_ns: 1,
+        },
+    )
+    .unwrap();
+
+    let error = source
+        .quote_admission(EconomicsAdmissionQuoteIntent {
+            request,
+            order_binding: test_order_binding(),
+            gross_expected_value: decimal("2"),
+            base_reservation_notional: decimal("5"),
+        })
+        .expect_err("basis disagreement must fail closed");
+
+    assert_eq!(error, EconomicsUnavailable::InvalidEdgeBasis);
+}
+
 fn assert_configured_source_rejects_stale_dependencies(policy: ConfiguredEconomicsSourcePolicy) {
     let request = canonical_fixture_request();
     let component = estimated_component(
@@ -255,6 +358,8 @@ fn assert_configured_source_rejects_stale_dependencies(policy: ConfiguredEconomi
                     components: vec![component],
                 })),
                 edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+                    product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
                     policy_version: 1,
                     source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
                     valid_until_ns: request.requested_at_ns + 5,
@@ -326,6 +431,8 @@ fn configured_source_rejects_maker_quote_shorter_than_resting_margin() {
                     components: vec![component],
                 })),
                 edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+                    product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
                     policy_version: 1,
                     source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
                     valid_until_ns: request.requested_at_ns + 5,

@@ -298,6 +298,8 @@ pub fn identity_valuation_provider() -> Arc<dyn ValuationProvider> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoritativeEdgeBasis {
+    pub resolver_id: crate::economics::FormulaId,
+    pub product_metadata_source: crate::economics::SourceId,
     pub policy_version: u64,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valid_until_ns: u64,
@@ -476,15 +478,27 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         let requested_at_ns = intent.request.requested_at_ns;
         let requires_resting_margin = intent.request.liquidity_role
             == crate::economics::LiquidityRoleAssumption::GuaranteedMaker;
+        let resolved_edge_basis = dependencies.adapter.resolve_edge_basis(&intent.request)?;
+        if resolved_edge_basis.normalized_amount != intent.base_reservation_notional
+            || resolved_edge_basis.source_snapshot_ids.is_empty()
+            || resolved_edge_basis.source_snapshot_ids
+                != dependencies.edge_basis.source_snapshot_ids
+        {
+            return Err(EconomicsUnavailable::InvalidEdgeBasis);
+        }
         let edge_basis = EdgeBasisEvidence {
             policy_id: intent.request.edge_basis_policy_id.clone(),
+            resolver_id: dependencies.edge_basis.resolver_id,
+            product_metadata_source: dependencies.edge_basis.product_metadata_source,
             policy_version: dependencies.edge_basis.policy_version,
-            normalized_amount: intent.base_reservation_notional,
+            normalized_amount: resolved_edge_basis.normalized_amount,
             scope: crate::economics::EconomicScope::Decision {
                 decision_correlation_id: intent.request.decision_correlation_id.clone(),
             },
-            source_snapshot_ids: dependencies.edge_basis.source_snapshot_ids,
-            valid_until_ns: dependencies.edge_basis.valid_until_ns,
+            source_snapshot_ids: resolved_edge_basis.source_snapshot_ids,
+            valid_until_ns: resolved_edge_basis
+                .valid_until_ns
+                .min(dependencies.edge_basis.valid_until_ns),
         };
         let admission = BoltV3EconomicsRuntime::from_offline_adapter(
             dependencies.adapter,
@@ -697,6 +711,21 @@ pub(crate) fn test_economics_admission_with_binding(
     struct TestAdapter(VenueQuoteEstimate);
 
     impl VenueEconomicsAdapter for TestAdapter {
+        fn resolve_edge_basis(
+            &self,
+            request: &EconomicQuoteRequest,
+        ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
+            Ok(crate::economics::ResolvedEdgeBasis {
+                normalized_amount: request
+                    .planned_fill_legs
+                    .iter()
+                    .map(|leg| leg.price * leg.quantity)
+                    .sum(),
+                source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
+                valid_until_ns: self.0.authority.valid_until_ns,
+            })
+        }
+
         fn quote(
             &self,
             _request: &EconomicQuoteRequest,
@@ -776,6 +805,9 @@ pub(crate) fn test_economics_admission_with_binding(
         edge_basis: EdgeBasisEvidence {
             policy_id: EdgeBasisPolicyId::new("test-edge-policy")
                 .expect("valid test edge policy id"),
+            resolver_id: FormulaId::new("test-edge-resolver").expect("valid test edge resolver id"),
+            product_metadata_source: SourceId::new("test-product-metadata")
+                .expect("valid test product metadata source"),
             policy_version: 1,
             normalized_amount: base_reservation_notional,
             scope: EconomicScope::Decision {
@@ -809,6 +841,21 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
         struct TestAdapter(VenueQuoteEstimate);
 
         impl VenueEconomicsAdapter for TestAdapter {
+            fn resolve_edge_basis(
+                &self,
+                request: &EconomicQuoteRequest,
+            ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
+                Ok(crate::economics::ResolvedEdgeBasis {
+                    normalized_amount: request
+                        .planned_fill_legs
+                        .iter()
+                        .map(|leg| leg.price * leg.quantity)
+                        .sum(),
+                    source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
+                    valid_until_ns: self.0.authority.valid_until_ns,
+                })
+            }
+
             fn quote(
                 &self,
                 _request: &EconomicQuoteRequest,
@@ -856,6 +903,8 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
         .quote_admission(EconomicsAdmissionIntent {
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),
+                resolver_id: FormulaId::new("test-edge-resolver")?,
+                product_metadata_source: SourceId::new("test-product-metadata")?,
                 policy_version: 1,
                 normalized_amount: intent.base_reservation_notional,
                 scope: EconomicScope::Decision {

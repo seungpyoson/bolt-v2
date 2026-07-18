@@ -562,6 +562,10 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             product_surface_id: self.product_surface_id.clone(),
             adapter: Arc::new(adapter),
             edge_basis: AuthoritativeEdgeBasis {
+                resolver_id: FormulaId::new(edge_policy.resolver_id.clone())?,
+                product_metadata_source: SourceId::new(
+                    edge_policy.product_metadata_source.clone(),
+                )?,
                 policy_version: edge_policy.policy_version,
                 source_snapshot_ids: vec![SnapshotId::new(snapshot_id)?],
                 valid_until_ns,
@@ -773,6 +777,38 @@ impl PolymarketEconomicsAdapter {
 }
 
 impl VenueEconomicsAdapter for PolymarketEconomicsAdapter {
+    fn resolve_edge_basis(
+        &self,
+        request: &EconomicQuoteRequest,
+    ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
+        self.validate_snapshot(request).map_err(|_| {
+            EconomicsUnavailable::ProviderQuoteUnavailable {
+                source_id: self.config.source_id.clone(),
+            }
+        })?;
+        let normalized_amount =
+            request
+                .planned_fill_legs
+                .iter()
+                .try_fold(Decimal::ZERO, |total, leg| {
+                    if leg.price <= Decimal::ZERO || leg.quantity <= Decimal::ZERO {
+                        return Err(EconomicsUnavailable::InvalidEdgeBasis);
+                    }
+                    total
+                        .checked_add(
+                            leg.price
+                                .checked_mul(leg.quantity)
+                                .ok_or(EconomicsUnavailable::InvalidEdgeBasis)?,
+                        )
+                        .ok_or(EconomicsUnavailable::InvalidEdgeBasis)
+                })?;
+        Ok(crate::economics::ResolvedEdgeBasis {
+            normalized_amount,
+            source_snapshot_ids: vec![SnapshotId::new(self.snapshot.snapshot_id.clone())?],
+            valid_until_ns: self.snapshot.valid_until_ns,
+        })
+    }
+
     fn quote(
         &self,
         request: &EconomicQuoteRequest,

@@ -390,9 +390,18 @@ pub struct EconomicQuoteRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EdgeBasisEvidence {
     pub policy_id: EdgeBasisPolicyId,
+    pub resolver_id: FormulaId,
+    pub product_metadata_source: SourceId,
     pub policy_version: u64,
     pub normalized_amount: Decimal,
     pub scope: EconomicScope,
+    pub source_snapshot_ids: Vec<SnapshotId>,
+    pub valid_until_ns: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedEdgeBasis {
+    pub normalized_amount: Decimal,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valid_until_ns: u64,
 }

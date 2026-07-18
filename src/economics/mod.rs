@@ -18,7 +18,7 @@ pub use types::{
     ExecutionKind, FillId, FormulaId, IncentiveKind, InstrumentId, InventoryApplication,
     LifecycleKind, LifecyclePath, LiquidityRoleAssumption, MarketId, NativeUnitId, NetEdgeQuote,
     OrderId, OrderSide, PlannedFillLeg, PositionContext, PositionId, PositionSide,
-    ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingAttachment,
+    ProductSurfaceId, ReportingPolicyId, ResolvedEdgeBasis, RiskBoundAuthority, RoutingAttachment,
     RoutingAttachmentId, RoutingContext, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
     TransferKind, ValuationEvidence, ValuationLegEvidence, ValuationRequest, ValuationRoute,
     ValuationRouteId, VenueQuoteEstimate, basis_points_to_fraction,

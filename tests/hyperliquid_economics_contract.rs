@@ -208,6 +208,25 @@ fn product(
     .unwrap()
 }
 
+fn product_with_carry(point_rate: &str, bound_rate: &str) -> HyperliquidProductEconomicsSnapshot {
+    HyperliquidProductEconomicsSnapshot::from_json(&format!(
+        r#"{{
+            "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
+            "validUntilNs":110,"productKind":"perp","stablePair":false,
+            "baseUnit":"BTC","quoteUnit":"USDC",
+            "alignedQuoteOrCollateral":false,"hip3":false,"deployerScale":0,
+            "growthMode":false,"builderProfileId":"builder-profile",
+            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "spotDustAuthorityComplete":false,
+            "carryOraclePrice":100,
+            "carryPointRatePerInterval":{point_rate},
+            "carryDebitRateBoundPerInterval":{bound_rate},
+            "carryNextFundingAtNs":500
+        }}"#
+    ))
+    .unwrap()
+}
+
 fn perp_request() -> bolt_v2::economics::EconomicQuoteRequest {
     let mut request = canonical_fixture_request();
     request.position = Some(PositionContext {
@@ -479,6 +498,58 @@ fn funding_bound_counts_intersected_events_at_the_exact_boundary() {
         decimal("-30")
     );
     assert!(carry.point_estimate.effect().is_some());
+}
+
+#[test]
+fn funding_sign_matrix_matches_long_and_short_cash_directions() {
+    for (side, point_rate, expected_point) in [
+        (PositionSide::Long, "0.001", "-10"),
+        (PositionSide::Long, "-0.001", "10"),
+        (PositionSide::Short, "0.001", "10"),
+        (PositionSide::Short, "-0.001", "-10"),
+    ] {
+        let adapter = HyperliquidEconomicsAdapter::try_new(
+            config(),
+            user_fees("0"),
+            product_with_carry(point_rate, "0.002"),
+        )
+        .unwrap();
+        let mut request = perp_request();
+        request.position.as_mut().unwrap().side = side;
+        request.position.as_mut().unwrap().holding_horizon_ns = 400;
+
+        let components = adapter.quote_components(&request).unwrap();
+        let carry = components
+            .iter()
+            .find(|component| component.component_id.as_str() == "funding-carry")
+            .unwrap();
+        assert_eq!(
+            carry.point_estimate.effect().unwrap().amount(),
+            decimal(expected_point),
+            "unexpected funding cash direction for {side:?} at rate {point_rate}"
+        );
+        assert_eq!(
+            carry.debit_risk_bound.as_ref().unwrap().amount(),
+            decimal("-30")
+        );
+    }
+}
+
+#[test]
+fn current_adverse_funding_projection_above_governed_bound_blocks_quote() {
+    let adapter = HyperliquidEconomicsAdapter::try_new(
+        config(),
+        user_fees("0"),
+        product_with_carry("0.01", "0.002"),
+    )
+    .unwrap();
+    let mut request = perp_request();
+    request.position.as_mut().unwrap().holding_horizon_ns = 400;
+
+    assert_eq!(
+        adapter.quote_components(&request),
+        Err(HyperliquidEconomicsError::InvalidCarryBound)
+    );
 }
 
 #[test]

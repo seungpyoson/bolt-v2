@@ -3,13 +3,18 @@ use backtesting_vertical_slice::economics::{
     ReplayEconomicsAdapter, ReplayEconomicsAdmissionSource, ReplayQuoteIntent,
     canonical_quote_request_from_replay,
 };
-use bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource;
+use bolt_v2::bolt_v3_economics_runtime::{
+    AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,
+    AuthoritativeEdgeBasis, ConfiguredEconomicsAdmissionSource, ConfiguredEconomicsSourcePolicy,
+    EconomicsAdmissionPurpose, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
+    EconomicsOrderBinding, identity_valuation_provider,
+};
 use bolt_v2::economics::{
-    ExecutionClientId, InstrumentId, LiquidityRoleAssumption, OrderSide, PlannedFillLeg,
-    ProductSurfaceId, VenueEconomicsAdapter,
+    ExecutionClientId, FormulaId, InstrumentId, LiquidityRoleAssumption, OrderSide, PlannedFillLeg,
+    ProductSurfaceId, ReservationBasis, SnapshotId, SourceId, VenueEconomicsAdapter,
 };
 use rust_decimal::Decimal;
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 fn dec(value: &str) -> Decimal {
     Decimal::from_str(value).expect("fixture decimal")
@@ -131,6 +136,74 @@ fn historical_fee_free_snapshot_is_valid() {
     let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("fee-free snapshot");
 
     assert!(adapter.quote(&request(100)).unwrap().components.is_empty());
+}
+
+#[test]
+fn production_and_replay_sources_produce_identical_sealed_admission() {
+    let mut fixture = snapshot();
+    fixture.reporting_unit = "pUSD".to_string();
+    let request = {
+        let mut request = request(100);
+        request.reporting_unit = bolt_v2::economics::NativeUnitId::new("pUSD").unwrap();
+        request
+    };
+    let replay = ReplayEconomicsAdmissionSource::from_snapshots(vec![fixture.clone()]).unwrap();
+    let inputs = AuthoritativeEconomicsInputStore::default();
+    inputs
+        .publish(
+            &fixture.execution_client_id,
+            &fixture.instrument_id,
+            &fixture.product_surface_id,
+            AuthoritativeEconomicsQuoteDependencies {
+                provider_key: fixture.provider_key.clone(),
+                refreshed_at_ns: fixture.fetched_at_ns,
+                adapter: Arc::new(ReplayEconomicsAdapter::from_snapshot(fixture.clone()).unwrap()),
+                edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new(fixture.edge_basis.resolver_id.clone()).unwrap(),
+                    product_metadata_source: SourceId::new(
+                        fixture.edge_basis.product_metadata_source.clone(),
+                    )
+                    .unwrap(),
+                    policy_version: fixture.edge_basis.policy_version,
+                    source_snapshot_ids: fixture
+                        .edge_basis
+                        .source_snapshot_ids
+                        .iter()
+                        .cloned()
+                        .map(SnapshotId::new)
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap(),
+                    valid_until_ns: fixture.edge_basis.valid_until_ns,
+                },
+                valuation_provider: identity_valuation_provider(),
+            },
+        )
+        .unwrap();
+    let production = ConfiguredEconomicsAdmissionSource::new(
+        &fixture.provider_key,
+        inputs,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: 30_000_000_000,
+            quote_max_age_ns: 60_000_000_000,
+            quote_validity_ns: 30_000_000_000,
+            resting_order_refresh_margin_ns: 5_000_000_000,
+        },
+    )
+    .unwrap();
+    let order_binding =
+        EconomicsOrderBinding::from_sha256(<sha2::Sha256 as sha2::Digest>::digest(b"parity-order"));
+    let make_intent = || EconomicsAdmissionQuoteIntent {
+        request: request.clone(),
+        order_binding: order_binding.clone(),
+        purpose: EconomicsAdmissionPurpose::TradingEdge,
+        gross_expected_value: dec("10"),
+        reservation_basis: ReservationBasis::new(dec("5.50")).unwrap(),
+    };
+
+    assert_eq!(
+        production.quote_admission(make_intent()).unwrap(),
+        replay.quote_admission(make_intent()).unwrap()
+    );
 }
 
 #[test]

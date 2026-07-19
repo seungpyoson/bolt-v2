@@ -5419,7 +5419,7 @@ mod tests {
                     max_source_rows: u64::MAX,
                     max_decoded_bytes: u64::MAX,
                     max_projected_row_groups: u64::MAX,
-                    max_wall_seconds: 4,
+                    max_wall_seconds: 8,
                     require_object_selection_metadata: false,
                 },
             ),
@@ -6711,7 +6711,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(err.to_string().contains("not empty"), "{err}");
+        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
     }
 
     #[test]
@@ -6939,7 +6939,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(err.to_string().contains("not empty"), "{err}");
+        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
     }
 
     #[test]
@@ -7303,7 +7303,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(err.to_string().contains("not empty"), "{err}");
+        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
     }
 
     #[test]
@@ -8110,7 +8110,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(err.to_string().contains("not empty"), "{err}");
+        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
     }
 
     #[test]

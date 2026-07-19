@@ -5006,7 +5006,11 @@ enum ControlEnvelopeIdentity {
 #[derive(Debug)]
 enum PlannedControlPath {
     Resolved(PathBuf),
-    Rejected(String),
+    Rejected {
+        error: String,
+        expected_bytes: u64,
+        expected_sha256: String,
+    },
 }
 
 #[derive(Debug)]
@@ -5027,8 +5031,12 @@ impl SelectedControlInputEnvelope {
             )
         })? {
             PlannedControlPath::Resolved(path) => Ok(path),
-            PlannedControlPath::Rejected(error) => bail!(
-                "pack record {} (operator_run_id {}) pinned artifact {role} path was rejected during frozen envelope preflight: {error}",
+            PlannedControlPath::Rejected {
+                error,
+                expected_bytes,
+                expected_sha256,
+            } => bail!(
+                "pack record {} (operator_run_id {}) pinned artifact {role} path was rejected during frozen envelope preflight; expected {expected_bytes} bytes with sha256 {expected_sha256}: {error}",
                 record.sequence,
                 record.operator_run_id
             ),
@@ -5122,7 +5130,11 @@ fn validate_selected_control_input_envelope(
                 // the retained byte caches.
                 Err(error) => (
                     ControlEnvelopeIdentity::UnresolvedDeclared(pin.declared_path.to_path_buf()),
-                    PlannedControlPath::Rejected(format!("{error:#}")),
+                    PlannedControlPath::Rejected {
+                        error: format!("{error:#}"),
+                        expected_bytes: pin.expected_bytes,
+                        expected_sha256: pin.expected_sha256.to_string(),
+                    },
                 ),
             };
             ensure!(
@@ -5396,12 +5408,13 @@ fn verify_pack_control_artifact(
         })?;
         ensure!(
             identity.byte_len == pin.expected_bytes,
-            "pack record {} (operator_run_id {}) pinned artifact {} length mismatch at {}: expected {}, got {}",
+            "pack record {} (operator_run_id {}) pinned artifact {} length mismatch at {}: expected {} bytes with sha256 {}, got {} bytes",
             record.sequence,
             record.operator_run_id,
             pin.role,
             resolved_path.display(),
             pin.expected_bytes,
+            pin.expected_sha256,
             identity.byte_len
         );
         let bytes = read_exact_pinned_file(&mut file, &resolved_path, pin.expected_bytes)?;

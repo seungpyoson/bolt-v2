@@ -395,7 +395,7 @@ fn projection_refuses_dirty_catalog_root() {
     let err =
         project_canonical_bars_to_catalog(&table, &spec(), dir.path(), &test_catalog_encoding())
             .expect_err("dirty catalog root must be refused");
-    assert!(err.to_string().contains("not empty"), "{err}");
+    assert!(format!("{err:#}").contains("not empty"), "{err:#}");
 }
 
 #[test]

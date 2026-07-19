@@ -1377,10 +1377,8 @@ fn parallel_duplicate_sha_records_archive_independent_attempt_evidence() {
 fn prepare_batch_rejects_tampered_run_spec_before_external_work() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
-    let expected_sha256 = sha256_hex(&fs::read(&fixture.run_spec_path).expect("read run spec"));
-    fs::write(&fixture.run_spec_path, "run_id = \"tampered\"\n").expect("tamper run spec");
-    let actual_sha256 =
-        sha256_hex(&fs::read(&fixture.run_spec_path).expect("read tampered run spec"));
+    let (expected_sha256, actual_sha256) =
+        tamper_file_preserving_length(&fixture.run_spec_path);
 
     let error = pack_preflight_error_before_external_work(&fixture);
 
@@ -1397,13 +1395,8 @@ fn prepare_batch_rejects_tampered_run_spec_before_external_work() {
 fn prepare_batch_rejects_tampered_accepted_tranche_before_external_work() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
-    let expected_sha256 =
-        sha256_hex(&fs::read(&fixture.accepted_tranche_path).expect("read accepted tranche"));
-    fs::write(&fixture.accepted_tranche_path, "{\"tampered\":true}\n")
-        .expect("tamper accepted tranche");
-    let actual_sha256 = sha256_hex(
-        &fs::read(&fixture.accepted_tranche_path).expect("read tampered accepted tranche"),
-    );
+    let (expected_sha256, actual_sha256) =
+        tamper_file_preserving_length(&fixture.accepted_tranche_path);
 
     let error = pack_preflight_error_before_external_work(&fixture);
 
@@ -1420,12 +1413,8 @@ fn prepare_batch_rejects_tampered_accepted_tranche_before_external_work() {
 fn prepare_batch_rejects_tampered_execution_plan_before_external_work() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
-    let expected_sha256 =
-        sha256_hex(&fs::read(&fixture.execution_plan_path).expect("read execution plan"));
-    fs::write(&fixture.execution_plan_path, "{\"tampered\":true}\n")
-        .expect("tamper execution plan");
-    let actual_sha256 =
-        sha256_hex(&fs::read(&fixture.execution_plan_path).expect("read tampered execution plan"));
+    let (expected_sha256, actual_sha256) =
+        tamper_file_preserving_length(&fixture.execution_plan_path);
 
     let error = pack_preflight_error_before_external_work(&fixture);
 
@@ -1442,13 +1431,8 @@ fn prepare_batch_rejects_tampered_execution_plan_before_external_work() {
 fn prepare_batch_rejects_tampered_source_bindings_before_parsing_or_external_work() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fixture = write_valid_single_record_pack(temp_dir.path());
-    let expected_sha256 =
-        sha256_hex(&fs::read(&fixture.source_bindings_path).expect("read source bindings"));
-    fs::write(&fixture.source_bindings_path, b"not = [valid toml")
-        .expect("tamper source bindings with invalid TOML");
-    let actual_sha256 = sha256_hex(
-        &fs::read(&fixture.source_bindings_path).expect("read tampered source bindings"),
-    );
+    let (expected_sha256, actual_sha256) =
+        tamper_file_preserving_length(&fixture.source_bindings_path);
 
     let error = pack_preflight_error_before_external_work(&fixture);
 
@@ -1536,6 +1520,12 @@ fn operator_uses_verified_source_registry_when_registry_path_changes_during_fetc
             run_spec.source_bindings_path = registry_identity;
             run_spec.source_proof.source_binding = distinct_source_binding.to_string();
             run_spec.manifest.venue_binding_key = distinct_source_binding.to_string();
+            let catalog_dispatch = run_spec
+                .catalog_dispatch
+                .as_mut()
+                .expect("run spec catalog dispatch");
+            assert_eq!(catalog_dispatch.bindings.len(), 1);
+            catalog_dispatch.bindings[0].source_binding = distinct_source_binding.to_string();
             accepted_tranche.source_binding = distinct_source_binding.to_string();
         },
     );
@@ -3536,6 +3526,19 @@ fn assert_control_artifact_mismatch(
         error.contains(actual_sha256),
         "error names actual digest: {error}"
     );
+}
+
+fn tamper_file_preserving_length(path: &Path) -> (String, String) {
+    let mut bytes = fs::read(path).expect("read pinned control artifact");
+    let expected_sha256 = sha256_hex(&bytes);
+    let first = bytes
+        .first_mut()
+        .expect("pinned control artifact must not be empty");
+    *first ^= 1;
+    fs::write(path, &bytes).expect("tamper pinned control artifact without changing its length");
+    let actual_sha256 = sha256_hex(&bytes);
+    assert_ne!(expected_sha256, actual_sha256);
+    (expected_sha256, actual_sha256)
 }
 
 fn write_two_record_pack(

@@ -7289,7 +7289,7 @@ mod tests {
         let ordering_error = validate_worker_request_manifest(&manifest)
             .expect_err("non-increasing worker deadline must fail closed");
         assert!(
-            ordering_error.to_string().contains("later than started_at"),
+            format!("{ordering_error:#}").contains("later than started_at"),
             "{ordering_error:#}"
         );
 
@@ -7298,7 +7298,7 @@ mod tests {
         let precision_error = validate_worker_request_manifest(&manifest)
             .expect_err("out-of-range worker deadline nanoseconds must fail closed");
         assert!(
-            precision_error.to_string().contains("nanoseconds"),
+            format!("{precision_error:#}").contains("nanoseconds"),
             "{precision_error:#}"
         );
     }

@@ -507,7 +507,7 @@ fn projection_refuses_dirty_catalog_root() {
         &test_catalog_encoding(),
     )
     .expect_err("dirty catalog root must be refused");
-    assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+    assert!(format!("{err:#}").contains("unexpected entry"), "{err:#}");
 }
 
 #[test]

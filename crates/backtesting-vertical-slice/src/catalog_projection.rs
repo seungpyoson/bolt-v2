@@ -6711,7 +6711,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+        assert!(format!("{err:#}").contains("unexpected entry"), "{err:#}");
     }
 
     #[test]
@@ -6939,7 +6939,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+        assert!(format!("{err:#}").contains("unexpected entry"), "{err:#}");
     }
 
     #[test]
@@ -7303,7 +7303,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+        assert!(format!("{err:#}").contains("unexpected entry"), "{err:#}");
     }
 
     #[test]
@@ -8110,7 +8110,7 @@ max_notional = "200000"
             &test_catalog_encoding(),
         )
         .expect_err("dirty catalog root must be refused");
-        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+        assert!(format!("{err:#}").contains("unexpected entry"), "{err:#}");
     }
 
     #[test]

@@ -1190,6 +1190,7 @@ fn remove_identity_owned_entry_at_guarded(
         display_path.display()
     );
     if identity.is_dir {
+        make_identity_owned_cleanup_directory_accessible(&entry, &identity, display_path)?;
         loop {
             let mut selected = None;
             for_each_directory_component(&entry, |child| {
@@ -1280,6 +1281,30 @@ struct OwnedTempCleanupProgress {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn make_identity_owned_cleanup_directory_accessible(
+    directory: &File,
+    identity: &EntryIdentity,
+    display_path: &Path,
+) -> Result<()> {
+    if identity.mode & 0o700 == 0o700 {
+        return Ok(());
+    }
+    let cleanup_mode = (identity.mode & 0o777) | 0o700;
+    // SAFETY: the descriptor names the owner-verified directory that is being
+    // compacted inside the identity-owned temporary tree. Cleanup needs owner
+    // read/write/search permission to enumerate and unlink its children.
+    if unsafe { libc::fchmod(directory.as_raw_fd(), cleanup_mode as libc::mode_t) } != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "make identity-owned cleanup directory accessible {}",
+                display_path.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 impl OwnedTempCleanupProgress {
     fn enter(&mut self, depth: u64) -> Result<()> {
         ensure!(
@@ -1335,6 +1360,7 @@ fn remove_identity_owned_entry_at_bounded(
         display_path.display()
     );
     if identity.is_dir {
+        make_identity_owned_cleanup_directory_accessible(&entry, &identity, display_path)?;
         loop {
             let mut selected = None;
             for_each_directory_component(&entry, |child| {

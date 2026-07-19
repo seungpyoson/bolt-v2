@@ -916,6 +916,32 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
 }
 
 #[test]
+fn reference_health_run_depends_on_a_narrow_runtime_seam() {
+    let tokens = source_tokens("src/bolt_v3_reference_price_health.rs");
+    let body = item_body_tokens(&tokens, &["struct", "ReferenceCurrentPriceHealthRun"])
+        .expect("reference health run struct should exist");
+    assert!(
+        contains_sequence(
+            body,
+            &[
+                "runtime",
+                ":",
+                "Box",
+                "<",
+                "dyn",
+                "ReferenceCurrentPriceHealthRuntime",
+                ">",
+            ]
+        ),
+        "reference health run must own the narrow runtime seam"
+    );
+    assert!(
+        !contains_sequence(body, &["BoltV3LiveNodeRuntime"]),
+        "reference health run must not store the concrete live-node runtime"
+    );
+}
+
+#[test]
 fn every_archetype_has_one_capability_declaration_and_preparation_path() {
     for relative in ARCHETYPES {
         let tokens = source_tokens(relative);

@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Result;
+use futures_util::future::{FutureExt, LocalBoxFuture};
 use nautilus_common::msgbus::{
     self, MStr, Pattern, ShareableMessageHandler, switchboard::get_custom_topic,
 };
@@ -13,7 +14,7 @@ use nautilus_core::Params;
 use nautilus_live::node::LiveNodeHandle;
 use nautilus_model::{
     data::{CustomData, DataType},
-    identifiers::ClientId,
+    identifiers::{ClientId, StrategyId},
 };
 use serde::Serialize;
 
@@ -109,10 +110,102 @@ impl ReferenceCurrentPriceHealthReport {
     }
 }
 
+trait ReferenceCurrentPriceHealthRuntime {
+    fn registered_data_client_ids(&self) -> Vec<ClientId>;
+    fn registered_exec_client_ids(&self) -> Vec<ClientId>;
+    fn registered_strategy_ids(&self) -> Vec<StrategyId>;
+    fn subscribe_custom_data(
+        &mut self,
+        client_id: ClientId,
+        data_type: DataType,
+        params: Params,
+    ) -> Result<()>;
+    fn unsubscribe_custom_data(&mut self, client_id: ClientId, data_type: DataType, params: Params);
+    fn handle(&self) -> LiveNodeHandle;
+    fn run_until_stop_or_timeout(
+        &mut self,
+        run_timeout: Duration,
+        stop_timeout: Duration,
+    ) -> LocalBoxFuture<'_, Result<bool>>;
+
+    #[cfg(test)]
+    fn as_live_node_runtime(&self) -> &BoltV3LiveNodeRuntime;
+}
+
+impl ReferenceCurrentPriceHealthRuntime for BoltV3LiveNodeRuntime {
+    fn registered_data_client_ids(&self) -> Vec<ClientId> {
+        BoltV3LiveNodeRuntime::registered_data_client_ids(self)
+    }
+
+    fn registered_exec_client_ids(&self) -> Vec<ClientId> {
+        BoltV3LiveNodeRuntime::registered_exec_client_ids(self)
+    }
+
+    fn registered_strategy_ids(&self) -> Vec<StrategyId> {
+        BoltV3LiveNodeRuntime::registered_strategy_ids(self)
+    }
+
+    fn subscribe_custom_data(
+        &mut self,
+        client_id: ClientId,
+        data_type: DataType,
+        params: Params,
+    ) -> Result<()> {
+        BoltV3LiveNodeRuntime::subscribe_strategy_free_custom_data(
+            self, client_id, data_type, params,
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    fn unsubscribe_custom_data(
+        &mut self,
+        client_id: ClientId,
+        data_type: DataType,
+        params: Params,
+    ) {
+        BoltV3LiveNodeRuntime::unsubscribe_strategy_free_custom_data(
+            self, client_id, data_type, params,
+        );
+    }
+
+    fn handle(&self) -> LiveNodeHandle {
+        BoltV3LiveNodeRuntime::handle(self)
+    }
+
+    fn run_until_stop_or_timeout(
+        &mut self,
+        run_timeout: Duration,
+        stop_timeout: Duration,
+    ) -> LocalBoxFuture<'_, Result<bool>> {
+        async move {
+            BoltV3LiveNodeRuntime::run_strategy_free_until_stop_or_timeout(
+                self,
+                run_timeout,
+                stop_timeout,
+            )
+            .await
+            .map_err(anyhow::Error::from)
+        }
+        .boxed_local()
+    }
+
+    #[cfg(test)]
+    fn as_live_node_runtime(&self) -> &BoltV3LiveNodeRuntime {
+        self
+    }
+}
+
 pub struct ReferenceCurrentPriceHealthRun {
     plan: ReferenceCurrentPriceHealthPlan,
-    runtime: BoltV3LiveNodeRuntime,
+    runtime: Box<dyn ReferenceCurrentPriceHealthRuntime>,
     loaded: LoadedBoltV3Config,
+}
+
+#[cfg(test)]
+impl ReferenceCurrentPriceHealthRun {
+    fn live_node_runtime(&self) -> &BoltV3LiveNodeRuntime {
+        self.runtime.as_live_node_runtime()
+    }
 }
 
 pub fn reference_current_price_health_plan(
@@ -182,7 +275,7 @@ pub fn prepare_reference_current_price_health_run(
 
     Ok(ReferenceCurrentPriceHealthRun {
         plan,
-        runtime,
+        runtime: Box::new(runtime),
         loaded: loaded.clone(),
     })
 }
@@ -200,7 +293,7 @@ pub fn prepare_reference_current_price_health_run_with_resolved(
 
     Ok(ReferenceCurrentPriceHealthRun {
         plan,
-        runtime,
+        runtime: Box::new(runtime),
         loaded: loaded.clone(),
     })
 }
@@ -255,13 +348,13 @@ pub async fn run_prepared_reference_current_price_health(
     let subscriptions = reference_current_price_health_subscriptions(&health_run.plan)?;
     let mut subscribed: Vec<&ReferenceCurrentPriceHealthSubscription> = Vec::new();
     for subscription in &subscriptions {
-        if let Err(error) = health_run.runtime.subscribe_strategy_free_custom_data(
+        if let Err(error) = health_run.runtime.subscribe_custom_data(
             subscription.client_id,
             subscription.data_type.clone(),
             subscription.params.clone(),
         ) {
             for previous in subscribed.iter().rev() {
-                health_run.runtime.unsubscribe_strategy_free_custom_data(
+                health_run.runtime.unsubscribe_custom_data(
                     previous.client_id,
                     previous.data_type.clone(),
                     previous.params.clone(),
@@ -276,14 +369,14 @@ pub async fn run_prepared_reference_current_price_health(
         ReferenceCurrentPriceHealthObserver::register(&subscriptions, health_run.runtime.handle());
     let run_result = health_run
         .runtime
-        .run_strategy_free_until_stop_or_timeout(
+        .run_until_stop_or_timeout(
             reference_current_price_health_run_timeout(&health_run.loaded, &health_run.plan)?,
             reference_current_price_health_stop_timeout(&health_run.loaded)?,
         )
         .await;
 
     for subscription in subscribed.iter().rev() {
-        health_run.runtime.unsubscribe_strategy_free_custom_data(
+        health_run.runtime.unsubscribe_custom_data(
             subscription.client_id,
             subscription.data_type.clone(),
             subscription.params.clone(),
@@ -1505,25 +1598,18 @@ configured_source_param = "configured-value"
             health_run.runtime.registered_strategy_ids().is_empty(),
             "health must clear strategies from the prepared transport runtime"
         );
-        assert!(!health_run.runtime.has_iv_runtime());
-        assert!(!health_run.runtime.has_iv_event_bindings());
-        assert!(!health_run.runtime.loss_governor_configured());
-        assert!(!health_run.runtime.loss_governor_runtime_feed_configured());
-        assert!(!health_run.runtime.capital_admission_configured());
-        assert!(
-            !health_run
-                .runtime
-                .capital_admission_runtime_feed_configured()
-        );
-        assert!(!health_run.runtime.venue_truth_runtime_configured());
-        assert!(!health_run.runtime.order_reject_observer_feed_configured());
-        assert!(!health_run.runtime.kill_switch_loss_protection_configured());
-        assert!(
-            !health_run
-                .runtime
-                .capital_admission_venue_spendability_source_configured()
-        );
-        assert!(!health_run.runtime.submit_reservation_recovery_configured());
+        let live_runtime = health_run.live_node_runtime();
+        assert!(!live_runtime.has_iv_runtime());
+        assert!(!live_runtime.has_iv_event_bindings());
+        assert!(!live_runtime.loss_governor_configured());
+        assert!(!live_runtime.loss_governor_runtime_feed_configured());
+        assert!(!live_runtime.capital_admission_configured());
+        assert!(!live_runtime.capital_admission_runtime_feed_configured());
+        assert!(!live_runtime.venue_truth_runtime_configured());
+        assert!(!live_runtime.order_reject_observer_feed_configured());
+        assert!(!live_runtime.kill_switch_loss_protection_configured());
+        assert!(!live_runtime.capital_admission_venue_spendability_source_configured());
+        assert!(!live_runtime.submit_reservation_recovery_configured());
     }
 
     #[test]
@@ -1576,7 +1662,7 @@ configured_source_param = "configured-value"
             "health must prepare exactly plan.client_keys data clients"
         );
         assert!(
-            !health_run.runtime.has_iv_runtime(),
+            !health_run.live_node_runtime().has_iv_runtime(),
             "reference health must not configure IV runtime"
         );
     }
@@ -1606,7 +1692,9 @@ configured_source_param = "configured-value"
             "health must prepare exactly plan.client_keys data clients"
         );
         assert!(
-            !health_run.runtime.capital_admission_configured(),
+            !health_run
+                .live_node_runtime()
+                .capital_admission_configured(),
             "reference health must not configure capital admission"
         );
     }

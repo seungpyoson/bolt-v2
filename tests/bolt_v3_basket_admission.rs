@@ -598,6 +598,51 @@ fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape(
 }
 
 #[test]
+fn basket_rejection_preserves_later_leg_error_when_evidence_write_fails() {
+    let writer = Arc::new(RecordingBasketDecisionWriter {
+        fail_basket_admission_decision: AtomicBool::new(true),
+        ..Default::default()
+    });
+    let submit_gate = capital_admission_submit_state(writer);
+    let group = fixture_group();
+    let mut claims = entry_claims(&group, dec!(0.9));
+    attach_capital_admission(&mut claims);
+    seed_capital_admission_for_claims(&submit_gate, &claims);
+    claims[1]
+        .admission_evidence
+        .as_mut()
+        .expect("fixture should carry capital admission")
+        .quantity = dec!(0.5);
+
+    let rejected = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("shape-mismatch-evidence-failure", &group),
+        )
+        .expect_err("basket rejection evidence failure must not hide the leg rejection");
+
+    assert_eq!(
+        rejected,
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: bolt_v2::bolt_v3_submit_admission::BoltV3CapitalAdmissionRejectReason::OrderShapeMismatch,
+        }
+    );
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+    assert_eq!(
+        submit_gate.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    for claim in &claims {
+        assert!(
+            !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
+            "an evidence failure must not retain basket reservation {}",
+            claim.client_order_id
+        );
+    }
+}
+
+#[test]
 fn dropped_capital_admission_basket_submit_permit_rolls_back_all_leg_reservations() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let submit_gate = capital_admission_submit_state(writer.clone());
@@ -743,6 +788,7 @@ struct RecordingBasketDecisionWriter {
     admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
     basket_admission_decisions: Mutex<Vec<BoltV3BasketAdmissionDecisionEvidence>>,
     submit_reservation_metadata: Mutex<Vec<BoltV3SubmitReservationMetadataEvidence>>,
+    fail_basket_admission_decision: AtomicBool,
     fail_submit_reservation_metadata: AtomicBool,
 }
 
@@ -789,6 +835,9 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         &self,
         decision: &BoltV3BasketAdmissionDecisionEvidence,
     ) -> anyhow::Result<()> {
+        if self.fail_basket_admission_decision.load(Ordering::SeqCst) {
+            anyhow::bail!("basket admission decision write failed");
+        }
         self.basket_admission_decisions
             .lock()
             .expect("basket admission decisions mutex should not be poisoned")

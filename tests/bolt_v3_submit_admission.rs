@@ -3430,6 +3430,26 @@ fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_cou
 }
 
 #[test]
+fn rejected_admission_preserves_primary_error_when_evidence_write_fails() {
+    let admission = limited_admission_with_writer(
+        Arc::new(FailingDecisionEvidenceWriter),
+        1,
+        Decimal::new(1, 0),
+    );
+
+    let error = admission
+        .admit(&submit_request(Decimal::ZERO))
+        .expect_err("a rejected admission must preserve its typed rejection");
+
+    assert_eq!(error, BoltV3SubmitAdmissionError::NonPositiveNotional);
+    assert_eq!(
+        admission.admitted_order_count(),
+        0,
+        "the evidence failure must not change rejected-admission capacity"
+    );
+}
+
+#[test]
 fn admit_serializes_while_admission_evidence_is_in_flight() {
     let writer = Arc::new(BlockingFirstAdmissionDecisionWriter::default());
     let admission = Arc::new(limited_admission_with_writer(

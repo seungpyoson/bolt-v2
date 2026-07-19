@@ -20,8 +20,9 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
     BoltV3OrderRejectReason, BoltV3RecoveredSubmitReservationEvidence, BoltV3RejectSource,
     BoltV3StaleLossReason, BoltV3SubmitReservationFillEvidence,
-    BoltV3SubmitReservationMetadataEvidence, EpisodeFirstNs, compiled_order_price_source,
-    evict_oldest_episodes_over_cap, loss_snapshot_source_to_evidence,
+    BoltV3SubmitReservationMetadataEvidence, EpisodeFirstNs, RiskDirection,
+    compiled_order_price_source, evict_oldest_episodes_over_cap, loss_snapshot_source_to_evidence,
+    record_decision,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
@@ -1573,13 +1574,9 @@ impl BoltV3SubmitAdmissionState {
                         rollback_capital_admission_reservation(&mut inner, rollback);
                     }
                     evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                    if let Err(evidence_err) =
+                    let _ = record_decision(RiskDirection::Neutral, || {
                         self.record_admission_decision(request, &evaluation, now_ns)
-                    {
-                        return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                            reason: format!("{evidence_err:#}"),
-                        });
-                    }
+                    });
                     return Err(err);
                 }
             };
@@ -1613,7 +1610,14 @@ impl BoltV3SubmitAdmissionState {
                 reason: format!("{err:#}"),
             });
         }
-        if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
+        let record_result = if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
+            self.record_admission_decision(request, &evaluation, now_ns)
+        } else {
+            record_decision(RiskDirection::Neutral, || {
+                self.record_admission_decision(request, &evaluation, now_ns)
+            })
+        };
+        if let Err(err) = record_result {
             if let Some(rollback) = evaluation.rollback.as_ref() {
                 rollback_capital_admission_reservation(&mut inner, rollback);
             }
@@ -2122,26 +2126,30 @@ impl BoltV3SubmitAdmissionState {
         evidence.outcome = basket_outcome_from_submit_outcome(outcome.clone());
 
         if outcome != BoltV3AdmissionOutcome::Admitted {
-            if let Err(err) = self
-                .decision_evidence
-                .record_basket_admission_decision(&evidence)
-            {
-                rollback_capital_admission_reservations(&mut inner, &rollbacks);
-                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                    reason: format!("{err:#}"),
-                });
-            }
-            rollback_capital_admission_reservations(&mut inner, &rollbacks);
-            if let (Some(request), Some(evaluation)) =
+            let primary_error = if let (Some(request), Some(evaluation)) =
                 (rejected_request.as_ref(), rejected_evaluation.as_ref())
             {
-                Self::admission_result(&inner, request, evaluation)?;
-            }
-            return Err(submit_admission_error_from_outcome(
-                outcome,
-                inner.kill_switch_state.kind(),
-                rejected_intent,
-            ));
+                match Self::admission_result(&inner, request, evaluation) {
+                    Ok(()) => submit_admission_error_from_outcome(
+                        BoltV3AdmissionOutcome::Admitted,
+                        inner.kill_switch_state.kind(),
+                        rejected_intent,
+                    ),
+                    Err(err) => err,
+                }
+            } else {
+                submit_admission_error_from_outcome(
+                    outcome,
+                    inner.kill_switch_state.kind(),
+                    rejected_intent,
+                )
+            };
+            rollback_capital_admission_reservations(&mut inner, &rollbacks);
+            let _ = record_decision(RiskDirection::Neutral, || {
+                self.decision_evidence
+                    .record_basket_admission_decision(&evidence)
+            });
+            return Err(primary_error);
         }
 
         let Some((claim_count, forced_reduction_count)) = counter_increments else {
@@ -2168,16 +2176,11 @@ impl BoltV3SubmitAdmissionState {
                 evidence.outcome = basket_outcome_from_submit_outcome(
                     BoltV3AdmissionOutcome::RejectedCountCapExhausted,
                 );
-                if let Err(evidence_err) = self
-                    .decision_evidence
-                    .record_basket_admission_decision(&evidence)
-                {
-                    rollback_capital_admission_reservations(&mut inner, &rollbacks);
-                    return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                        reason: format!("{evidence_err:#}"),
-                    });
-                }
                 rollback_capital_admission_reservations(&mut inner, &rollbacks);
+                let _ = record_decision(RiskDirection::Neutral, || {
+                    self.decision_evidence
+                        .record_basket_admission_decision(&evidence)
+                });
                 return Err(err);
             }
         };

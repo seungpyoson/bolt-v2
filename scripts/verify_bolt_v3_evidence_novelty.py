@@ -10,11 +10,14 @@ import sys
 import tomllib
 from dataclasses import dataclass
 
+from rust_source_scanner import strip_rust_comments_and_literals
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REGISTRY_PATH = pathlib.Path("config/evidence-novelty.toml")
 GENERATED_PATH = pathlib.Path("src/bolt_v3_evidence_novelty/generated.rs")
 PRODUCER_PATH = pathlib.Path("src/strategies/binary_oracle_edge_taker/mod.rs")
+ENTRY_DECISION_PATH = pathlib.Path("src/strategies/binary_oracle_edge_taker/entry_decision.rs")
 
 
 @dataclass(frozen=True)
@@ -215,8 +218,11 @@ def repository_errors(root: pathlib.Path) -> list[str]:
         if actual != expected:
             errors.append("generated novelty Rust is stale; run verifier with --write")
 
+    producer: str | None = None
     try:
-        producer = (root / PRODUCER_PATH).read_text(encoding="utf-8")
+        producer = strip_rust_comments_and_literals(
+            (root / PRODUCER_PATH).read_text(encoding="utf-8")
+        )
     except OSError as error:
         errors.append(str(error))
     else:
@@ -226,6 +232,28 @@ def repository_errors(root: pathlib.Path) -> list[str]:
             errors.append(
                 "producer canonical-state references must exactly match registry: "
                 f"missing={sorted(registered - referenced)} unknown={sorted(referenced - registered)}"
+            )
+
+    try:
+        entry_decision = strip_rust_comments_and_literals(
+            (root / ENTRY_DECISION_PATH).read_text(encoding="utf-8")
+        )
+    except OSError as error:
+        errors.append(str(error))
+    else:
+        if producer is None:
+            return errors
+        defined_reasons = set(
+            re.findall(r"\bconst\s+(ENTRY_BLOCK_REASON_[A-Z0-9_]+)\s*:", producer)
+        )
+        mapped_reasons = set(
+            re.findall(r"^\s*(ENTRY_BLOCK_REASON_[A-Z0-9_]+)\s*=>", entry_decision, re.MULTILINE)
+        )
+        if defined_reasons != mapped_reasons:
+            errors.append(
+                "entry-skip reason mappings must exactly cover runtime entry-block reasons: "
+                f"missing={sorted(defined_reasons - mapped_reasons)} "
+                f"unknown={sorted(mapped_reasons - defined_reasons)}"
             )
     return errors
 

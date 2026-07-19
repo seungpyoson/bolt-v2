@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import shutil
 import tempfile
 
 import verify_bolt_v3_evidence_novelty as verifier
@@ -55,6 +56,56 @@ def test_fresh_render_is_byte_exact() -> None:
     registry = verifier.load_registry(verifier.REPO_ROOT / verifier.REGISTRY_PATH)
     actual = (verifier.REPO_ROOT / verifier.GENERATED_PATH).read_text(encoding="utf-8")
     assert verifier.render_registry(registry) == actual
+
+
+def test_comments_and_literals_cannot_fake_registered_producer_states() -> None:
+    variant = "EntrySkipStrategyCoreNotRegistered"
+    canonical_reference = f"EvidenceCanonicalState::{variant}"
+    for phantom in (f"// {canonical_reference}\n", f'const PHANTOM: &str = "{canonical_reference}";\n'):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            for relative in (
+                verifier.REGISTRY_PATH,
+                verifier.GENERATED_PATH,
+                verifier.PRODUCER_PATH,
+                verifier.ENTRY_DECISION_PATH,
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(verifier.REPO_ROOT / relative, destination)
+            producer_path = root / verifier.PRODUCER_PATH
+            producer = producer_path.read_text(encoding="utf-8")
+            producer = producer.replace(canonical_reference, "", 1) + phantom
+            producer_path.write_text(producer, encoding="utf-8")
+            errors = verifier.repository_errors(root)
+            assert any(variant in error and "missing=" in error for error in errors), errors
+
+
+def test_every_runtime_entry_block_reason_requires_a_mapping() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        root = pathlib.Path(scratch)
+        for relative in (
+            verifier.REGISTRY_PATH,
+            verifier.GENERATED_PATH,
+            verifier.PRODUCER_PATH,
+            verifier.ENTRY_DECISION_PATH,
+        ):
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(verifier.REPO_ROOT / relative, destination)
+        mapping_path = root / verifier.ENTRY_DECISION_PATH
+        mapping = mapping_path.read_text(encoding="utf-8")
+        mapping = mapping.replace(
+            "        ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED => {",
+            "        _REMOVED_ENTRY_BLOCK_REASON => {",
+            1,
+        )
+        mapping_path.write_text(mapping, encoding="utf-8")
+        errors = verifier.repository_errors(root)
+        assert any(
+            "ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED" in error and "missing=" in error
+            for error in errors
+        ), errors
 
 
 if __name__ == "__main__":

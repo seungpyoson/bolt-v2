@@ -211,6 +211,22 @@ allocation = "strategy_input_pricing_blocker"
 id = 165
 
 [[state]]
+rust_variant = "EntrySkipEntryQuoteNotionalBelowVenueMinimum"
+owner = "EntrySkip"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_quote_notional_below_venue_minimum"
+allocation = "strategy_input_pricing_blocker"
+id = 166
+
+[[state]]
+rust_variant = "EntrySkipEntryQuoteNotionalMinimumUnmodeled"
+owner = "EntrySkip"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_quote_notional_minimum_unmodeled"
+allocation = "strategy_input_pricing_blocker"
+id = 167
+
+[[state]]
 rust_variant = "EntrySkipQuantityNotPositive"
 owner = "EntrySkip"
 producer_kind = "entry_skip"
@@ -249,3 +265,27 @@ producer_kind = "entry_skip"
 semantic_state = "entry_skip.one_position_invariant_violation"
 allocation = "strategy_input_pricing_blocker"
 id = 172
+
+[[state]]
+rust_variant = "EntrySkipEntryMalformedRejected"
+owner = "EntrySkip"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_malformed_rejected"
+allocation = "strategy_input_pricing_blocker"
+id = 173
+
+[[state]]
+rust_variant = "EntrySkipEntryBalanceRejected"
+owner = "EntrySkip"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_balance_rejected"
+allocation = "strategy_input_pricing_blocker"
+id = 174
+
+[[state]]
+rust_variant = "EntrySkipEntryUnfillableRejectedUnchangedBook"
+owner = "EntrySkip"
+producer_kind = "entry_skip"
+semantic_state = "entry_skip.entry_unfillable_rejected_unchanged_book"
+allocation = "strategy_input_pricing_blocker"
+id = 175

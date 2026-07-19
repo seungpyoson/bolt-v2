@@ -580,6 +580,12 @@ fn entry_skip_canonical_state(
         BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => {
             EvidenceCanonicalState::EntrySkipLimitNotionalExceedsSizedNotional
         }
+        BoltV3EntrySkipReasonCategory::EntryQuoteNotionalBelowVenueMinimum => {
+            EvidenceCanonicalState::EntrySkipEntryQuoteNotionalBelowVenueMinimum
+        }
+        BoltV3EntrySkipReasonCategory::EntryQuoteNotionalMinimumUnmodeled => {
+            EvidenceCanonicalState::EntrySkipEntryQuoteNotionalMinimumUnmodeled
+        }
         BoltV3EntrySkipReasonCategory::QuantityNotPositive => {
             EvidenceCanonicalState::EntrySkipQuantityNotPositive
         }
@@ -594,6 +600,15 @@ fn entry_skip_canonical_state(
         }
         BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => {
             EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation
+        }
+        BoltV3EntrySkipReasonCategory::EntryMalformedRejected => {
+            EvidenceCanonicalState::EntrySkipEntryMalformedRejected
+        }
+        BoltV3EntrySkipReasonCategory::EntryBalanceRejected => {
+            EvidenceCanonicalState::EntrySkipEntryBalanceRejected
+        }
+        BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook => {
+            EvidenceCanonicalState::EntrySkipEntryUnfillableRejectedUnchangedBook
         }
         BoltV3EntrySkipReasonCategory::Unclassified => {
             anyhow::bail!("unregistered entry-skip semantic state")
@@ -4077,36 +4092,12 @@ impl BinaryOracleEdgeTaker {
         reason_category: BoltV3EntrySkipReasonCategory,
         unclassified_context: Option<String>,
     ) -> Result<bool> {
-        let episode = match self.evidence_episode_id() {
-            Ok(episode) => episode,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker rejected entry-skip without stable evidence episode: strategy_id={} error={error:#}",
-                    self.config.strategy_id
-                );
-                return Ok(false);
-            }
-        };
-        let state = match entry_skip_canonical_state(reason_category) {
-            Ok(state) => state,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker rejected entry-skip semantic state: strategy_id={} error={error:#}",
-                    self.config.strategy_id
-                );
-                return Ok(false);
-            }
-        };
+        let episode = self.evidence_episode_id()?;
+        let state = entry_skip_canonical_state(reason_category)?;
         match self.entry_skip_novelty.claim_once(&episode, state) {
             Ok(true) => {}
             Ok(false) => return Ok(false),
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker rejected entry-skip semantic state: strategy_id={} error={error:#}",
-                    self.config.strategy_id
-                );
-                return Ok(false);
-            }
+            Err(error) => return Err(error),
         }
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
         let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
@@ -4142,13 +4133,8 @@ impl BinaryOracleEdgeTaker {
         decision: &EntrySubmissionDecision,
         reason: &'static str,
     ) -> Result<()> {
-        let Some(reason_category) = entry_skip_reason_category_from_str(reason) else {
-            log::error!(
-                "binary_oracle_edge_taker rejected unregistered entry-skip reason: strategy_id={} reason={reason}",
-                self.config.strategy_id
-            );
-            return Ok(());
-        };
+        let reason_category = entry_skip_reason_category_from_str(reason)
+            .ok_or_else(|| anyhow::anyhow!("unregistered entry-skip reason: {reason}"))?;
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.
         if self.record_entry_skip_once(now_ms, decision, reason_category, None)? {
             log::warn!(

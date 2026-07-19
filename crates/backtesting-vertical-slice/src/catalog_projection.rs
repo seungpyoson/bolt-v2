@@ -2066,7 +2066,7 @@ fn with_clean_catalog_root_guarded<T>(
         DirectoryStageOutcome::NotStaged(error)
             if error.kind() == std::io::ErrorKind::AlreadyExists =>
         {
-            validate_existing_directory_manifest_identical_guarded(
+            let validation = validate_existing_directory_manifest_identical_guarded(
                 &manifest,
                 &final_data_root,
                 work_budget,
@@ -2077,9 +2077,18 @@ fn with_clean_catalog_root_guarded<T>(
                     "existing catalog data root {} differs from the deterministic retry",
                     final_data_root.as_path().display()
                 )
-            })?;
-            validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)?;
-            finish_catalog_candidate(&temp_capability, value, work_budget)
+            })
+            .and_then(|()| {
+                validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)
+            });
+            match validation {
+                Ok(()) => finish_catalog_candidate(&temp_capability, value, work_budget),
+                Err(error) => Err(cleanup_owned_catalog_temp(
+                    &temp_capability,
+                    error,
+                    work_budget,
+                )),
+            }
         }
         DirectoryStageOutcome::NotStaged(error) => Err(cleanup_owned_catalog_temp(
             &temp_capability,
@@ -2090,7 +2099,7 @@ fn with_clean_catalog_root_guarded<T>(
             work_budget,
         )),
         DirectoryStageOutcome::Staged => {
-            validate_staged_directory_manifest_guarded(
+            let validation = validate_staged_directory_manifest_guarded(
                 &manifest,
                 &final_data_root,
                 work_budget,
@@ -2101,9 +2110,18 @@ fn with_clean_catalog_root_guarded<T>(
                     "catalog data root was staged at {} but exact validation failed; no reader authority was granted",
                     final_data_root.as_path().display()
                 )
-            })?;
-            validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)?;
-            finish_catalog_candidate(&temp_capability, value, work_budget)
+            })
+            .and_then(|()| {
+                validate_catalog_publication_root_shape_guarded(catalog_root, true, work_budget)
+            });
+            match validation {
+                Ok(()) => finish_catalog_candidate(&temp_capability, value, work_budget),
+                Err(error) => Err(cleanup_owned_catalog_temp(
+                    &temp_capability,
+                    error,
+                    work_budget,
+                )),
+            }
         }
     }
 }

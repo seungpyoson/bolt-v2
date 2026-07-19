@@ -1041,7 +1041,7 @@ fn assert_current_terminal_failure_stops_without_refetch(
     .expect_err("invalid current remote authority must hard-stop");
 
     assert!(
-        error.to_string().contains("committed-indeterminate"),
+        format!("{error:#}").contains("committed-indeterminate"),
         "{error:#}"
     );
     assert!(format!("{error:#}").contains(expected_detail), "{error:#}");
@@ -1293,17 +1293,16 @@ fn parallel_continue_on_error_collects_failures() {
 }
 
 #[test]
-fn parallel_duplicate_sha_records_fetch_origin_then_reject_conflicting_evidence() {
+fn parallel_duplicate_sha_records_archive_independent_attempt_evidence() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let run_spec_path = temp_dir.path().join("run-spec.toml");
     let execution_plan_path = temp_dir.path().join("execution-plan.json");
     fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
     fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
-    // Sequences 0 and 1 pin IDENTICAL bytes — records are not deduplicated by
-    // sha, so both map to the same evidence path. A corrupt entry is planted
-    // under that shared sha before the run. Both records must still fetch the
-    // provider first, then reject the conflicting immutable evidence path.
+    // Sequences 0 and 1 pin identical bytes. Records are not deduplicated by
+    // SHA: every origin fetch receives its own fresh attempt namespace and
+    // archives independently beneath that namespace.
     let shared_bytes = b"shared synthetic object".to_vec();
     let objects = vec![
         (0u64, shared_bytes.clone()),
@@ -1315,9 +1314,7 @@ fn parallel_duplicate_sha_records_fetch_origin_then_reject_conflicting_evidence(
     write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
 
     let cache_dir = temp_dir.path().join("object-cache");
-    fs::create_dir_all(&cache_dir).expect("create cache dir");
     let shared_sha = sha256_hex(&shared_bytes);
-    fs::write(cache_dir.join(&shared_sha), b"corrupt cached payload").expect("plant corrupt entry");
 
     let output_dir = temp_dir.path().join("batch-output");
     let fetch_calls = std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -1345,28 +1342,14 @@ fn parallel_duplicate_sha_records_fetch_origin_then_reject_conflicting_evidence(
         },
         || Ok(ConcurrencyRunner::new(None)),
     )
-    .expect("continue-on-error records corrupt occupied cache failures");
+    .expect("fresh attempt evidence archives independently");
 
     assert_eq!(
         report.status,
-        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+        SourceUniverseBatchExecutionReportStatus::Completed
     );
-    assert_eq!(report.completed_record_count, 2);
-    assert_eq!(report.failed_record_count, 2);
-    assert_eq!(
-        report
-            .failures
-            .iter()
-            .map(|failure| failure.sequence)
-            .collect::<Vec<_>>(),
-        vec![0, 1]
-    );
-    assert!(report.failures.iter().all(|failure| {
-        failure.failure_stage == "fetch"
-            && failure
-                .error
-                .contains("create or verify immutable source-object evidence")
-    }));
+    assert_eq!(report.completed_record_count, 4);
+    assert_eq!(report.failed_record_count, 0);
     let mut fetch_calls = fetch_calls.lock().expect("fetch call log").clone();
     fetch_calls.sort_unstable();
     assert_eq!(
@@ -1374,11 +1357,20 @@ fn parallel_duplicate_sha_records_fetch_origin_then_reject_conflicting_evidence(
         vec![0, 1, 2, 3],
         "every selected record must call its configured origin before archiving"
     );
+    let attempts = fs::read_dir(&cache_dir)
+        .expect("read attempt evidence root")
+        .collect::<std::io::Result<Vec<_>>>()
+        .expect("collect attempt evidence directories");
     assert_eq!(
-        fs::read(cache_dir.join(&shared_sha)).expect("read retained corrupt entry"),
-        b"corrupt cached payload",
-        "runtime must retain rather than repair an occupied corrupt entry"
+        attempts.len(),
+        4,
+        "every selected record must retain one independent evidence attempt"
     );
+    let shared_evidence_count = attempts
+        .iter()
+        .filter(|attempt| attempt.path().join(&shared_sha).is_file())
+        .count();
+    assert_eq!(shared_evidence_count, 2);
 }
 
 #[test]
@@ -2732,9 +2724,7 @@ fn factory_entry_rejects_current_terminal_without_constructing_fetcher() {
     .expect_err("current terminal must fail fresh-only execution");
 
     assert!(
-        error
-            .to_string()
-            .contains("refuses existing completion object"),
+        format!("{error:#}").contains("refuses existing completion object"),
         "{error:#}"
     );
     assert_eq!(fetcher_factory_calls.load(Ordering::SeqCst), 0);
@@ -2881,12 +2871,19 @@ impl SourceUniverseObjectFetcher for FreshDiscoveryScratchDuringFetchFetcher {
             scratch.is_dir(),
             "the fresh discovery scratch must be a directory"
         );
+        let scratch_entries = fs::read_dir(&scratch)
+            .expect("read fresh discovery scratch")
+            .collect::<std::io::Result<Vec<_>>>()
+            .expect("collect fresh discovery scratch entries");
+        assert_eq!(scratch_entries.len(), 1);
         assert_eq!(
-            fs::read_dir(&scratch)
-                .expect("read fresh discovery scratch")
-                .count(),
-            0,
-            "no candidate or terminal artifact may exist before fetch completes"
+            scratch_entries[0].file_name(),
+            SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_FILE,
+            "only the lifecycle receipt may exist before fetch completes"
+        );
+        assert_eq!(
+            fs::read(scratch_entries[0].path()).expect("read record-attempt lifecycle receipt"),
+            SOURCE_UNIVERSE_RECORD_ATTEMPT_RECEIPT_BYTES
         );
         VerifiedSourceObject::verify(record, self.object_bytes.clone(), work_budget)
     }

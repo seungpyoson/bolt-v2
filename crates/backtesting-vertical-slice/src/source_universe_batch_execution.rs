@@ -4706,10 +4706,27 @@ fn resolve_selected_control_preflight_output_component(
     output_root: &Path,
     operator_run_id: &str,
 ) -> Result<PathBuf> {
-    if output_root.exists() {
-        return resolve_contained_output_component(output_root, operator_run_id);
-    }
     validate_portable_path_component("operator_run_id", operator_run_id)?;
+    if output_root.exists() {
+        let metadata = fs::symlink_metadata(output_root).with_context(|| {
+            format!(
+                "inspect existing batch output directory {}",
+                output_root.display()
+            )
+        })?;
+        ensure!(
+            metadata.file_type().is_dir(),
+            "batch output directory {} must be a real directory",
+            output_root.display()
+        );
+        let canonical_root = output_root.canonicalize().with_context(|| {
+            format!(
+                "canonicalize existing batch output directory {}",
+                output_root.display()
+            )
+        })?;
+        return Ok(canonical_root.join(operator_run_id));
+    }
     let planned_root = resolve_planned_write_path(output_root).with_context(|| {
         format!(
             "resolve prospective batch output root {}",

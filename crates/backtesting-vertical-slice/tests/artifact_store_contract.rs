@@ -4411,6 +4411,13 @@ async fn conversion_generations_publish_and_discover_independent_terminal_keys()
     fs::copy(&generation_b.source_bindings_path, &bindings_b)
         .expect("copy identical generation-B source bindings");
     generation_b.source_bindings_path = bindings_b;
+    generation_b
+        .catalog_dispatch
+        .as_mut()
+        .expect("generation-B catalog dispatch")
+        .bindings[0]
+        .catalog_projection_id
+        .push_str("-generation-b");
     bind_conversion_generation(&mut generation_b);
 
     assert_ne!(

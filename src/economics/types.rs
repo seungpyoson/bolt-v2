@@ -353,6 +353,64 @@ pub struct PlannedFillLeg {
     pub quantity: Decimal,
 }
 
+macro_rules! economic_amount {
+    ($name:ident, $minimum:expr) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct $name(Decimal);
+
+        impl $name {
+            pub fn new(amount: Decimal) -> Result<Self, EconomicsUnavailable> {
+                if amount < $minimum {
+                    return Err(EconomicsUnavailable::InvalidDecimal);
+                }
+                Ok(Self(amount))
+            }
+
+            pub const fn amount(self) -> Decimal {
+                self.0
+            }
+        }
+    };
+}
+
+economic_amount!(PlannedFillNotional, Decimal::ZERO);
+economic_amount!(ReservationBasis, Decimal::ZERO);
+economic_amount!(GuaranteedDebit, Decimal::ZERO);
+economic_amount!(FullReservationLiability, Decimal::ZERO);
+economic_amount!(EdgeBasisAmount, Decimal::ZERO);
+
+impl PlannedFillNotional {
+    pub fn from_legs(legs: &[PlannedFillLeg]) -> Result<Self, EconomicsUnavailable> {
+        if legs.is_empty() {
+            return Err(EconomicsUnavailable::InvalidPlannedFill);
+        }
+        let amount = legs.iter().try_fold(Decimal::ZERO, |total, leg| {
+            if leg.price <= Decimal::ZERO || leg.quantity <= Decimal::ZERO {
+                return None;
+            }
+            total.checked_add(leg.price.checked_mul(leg.quantity)?)
+        });
+        let amount = amount.ok_or(EconomicsUnavailable::InvalidPlannedFill)?;
+        if amount <= Decimal::ZERO {
+            return Err(EconomicsUnavailable::InvalidPlannedFill);
+        }
+        Ok(Self(amount))
+    }
+}
+
+impl FullReservationLiability {
+    pub fn from_parts(
+        basis: ReservationBasis,
+        debit: GuaranteedDebit,
+    ) -> Result<Self, EconomicsUnavailable> {
+        let amount = basis
+            .amount()
+            .checked_add(debit.amount())
+            .ok_or(EconomicsUnavailable::InvalidDecimal)?;
+        Ok(Self(amount))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RoutingContext {
     pub attached_charge: Option<RoutingAttachment>,

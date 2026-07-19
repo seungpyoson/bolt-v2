@@ -252,24 +252,10 @@ impl BoltV3BasketAdmissionState {
         if request.retry_count > self.limits.max_retry_count {
             return Err(BoltV3BasketAdmissionError::RetryBudgetExceeded);
         }
-        if request.scanner_evidence.total_adjusted_cost <= Decimal::ZERO
-            || request.submit_claims.is_empty()
-        {
+        if request.submit_claims.is_empty() {
             return Err(BoltV3BasketAdmissionError::NonPositiveCandidateCost);
-        }
-        if request.scanner_evidence.total_adjusted_cost > self.limits.max_basket_notional {
-            return Err(BoltV3BasketAdmissionError::BasketNotionalCapExceeded);
         }
         self.validate_submit_claims_match_scanned_legs(request)?;
-        if !request.scanner_evidence.admissible || request.scanner_evidence.block_reason.is_some() {
-            return Err(BoltV3BasketAdmissionError::NonPositiveCandidateCost);
-        }
-        if request.scanner_evidence.absolute_edge <= Decimal::ZERO {
-            return Err(BoltV3BasketAdmissionError::NonPositiveEdge);
-        }
-        if request.scanner_evidence.edge_bps < self.limits.min_edge_bps {
-            return Err(BoltV3BasketAdmissionError::EdgeThreshold);
-        }
         if request.scanner_evidence.leg_costs.iter().any(|leg| {
             !outcome_group_observation_is_fresh(
                 request.now_unix_ms,
@@ -300,7 +286,7 @@ impl BoltV3BasketAdmissionState {
             return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
         }
 
-        let mut scanned_notional_by_instrument = BTreeMap::new();
+        let mut scanned_leg_by_instrument = BTreeMap::new();
         for leg in &request.scanner_evidence.leg_costs {
             if !request
                 .group
@@ -310,34 +296,42 @@ impl BoltV3BasketAdmissionState {
             {
                 return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
             }
-            if scanned_notional_by_instrument
-                .insert(leg.instrument_id.to_string(), leg.total_adjusted_cost)
+            if scanned_leg_by_instrument
+                .insert(leg.instrument_id.to_string(), leg)
                 .is_some()
             {
                 return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
             }
         }
 
-        let mut total_claim_notional = Decimal::ZERO;
+        let mut total_claim_liability = Decimal::ZERO;
         for claim in &request.submit_claims {
-            let Some(scanned_notional) =
-                scanned_notional_by_instrument.remove(claim.instrument_id.as_str())
+            let Some(scanned_leg) = scanned_leg_by_instrument.remove(claim.instrument_id.as_str())
             else {
                 return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
             };
-            let claim_notional = claim.economics_admission.base_reservation_notional();
-            if claim_notional <= Decimal::ZERO || claim_notional > scanned_notional {
+            if claim.order_side != scanned_leg.order_side
+                || claim.order_quantity != scanned_leg.executable_quantity
+            {
                 return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
             }
-            total_claim_notional = total_claim_notional
-                .checked_add(claim_notional)
+            total_claim_liability = total_claim_liability
+                .checked_add(
+                    claim
+                        .economics_admission
+                        .full_reservation_liability()
+                        .amount(),
+                )
                 .ok_or(BoltV3BasketAdmissionError::BasketNotionalCapExceeded)?;
         }
 
-        if !scanned_notional_by_instrument.is_empty() {
+        if !scanned_leg_by_instrument.is_empty() {
             return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
         }
-        if total_claim_notional > self.limits.max_basket_notional {
+        if total_claim_liability <= Decimal::ZERO {
+            return Err(BoltV3BasketAdmissionError::NonPositiveCandidateCost);
+        }
+        if total_claim_liability > self.limits.max_basket_notional {
             return Err(BoltV3BasketAdmissionError::BasketNotionalCapExceeded);
         }
         Ok(())
@@ -365,7 +359,18 @@ impl BoltV3BasketAdmissionState {
             BoltV3BasketReservation {
                 strategy_id: request.strategy_id.to_string(),
                 group_id: request.group.group_id.clone(),
-                total_notional: request.scanner_evidence.total_adjusted_cost,
+                total_notional: request
+                    .submit_claims
+                    .iter()
+                    .try_fold(Decimal::ZERO, |total, claim| {
+                        total.checked_add(
+                            claim
+                                .economics_admission
+                                .full_reservation_liability()
+                                .amount(),
+                        )
+                    })
+                    .ok_or(BoltV3BasketAdmissionError::BasketNotionalCapExceeded)?,
                 release_on_drop: true,
             },
         );

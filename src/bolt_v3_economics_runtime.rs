@@ -13,10 +13,11 @@ use rust_decimal::Decimal;
 use sha2::Digest;
 
 use crate::economics::{
-    EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence,
-    LiquidityRoleAssumption, NativeUnitId, NetEdgeQuote, SignedNativeEffect, SnapshotId,
-    ValuationProvider, ValuationRequest, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter,
-    fold_net_edge, validate_and_aggregate_quote, value_with_route,
+    EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisAmount, EdgeBasisEvidence,
+    FullReservationLiability, GuaranteedDebit, LiquidityRoleAssumption, NativeUnitId, NetEdgeQuote,
+    PlannedFillNotional, ReservationBasis, SignedNativeEffect, SnapshotId, ValuationProvider,
+    ValuationRequest, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
+    validate_and_aggregate_quote, value_with_route,
 };
 
 use crate::bolt_v3_economics_config::{ValuationConfig, ValuationLegConfig, ValuationOrientation};
@@ -28,7 +29,8 @@ pub struct EconomicsAdmissionIntent {
     pub gross_expected_value: Decimal,
     pub edge_basis: EdgeBasisEvidence,
     pub valuation_provider: Arc<dyn ValuationProvider>,
-    pub base_reservation_notional: Decimal,
+    pub reservation_basis: ReservationBasis,
+    pub authority_refreshed_at_ns: u64,
 }
 
 pub struct EconomicsAdmissionQuoteIntent {
@@ -36,7 +38,7 @@ pub struct EconomicsAdmissionQuoteIntent {
     pub order_binding: EconomicsOrderBinding,
     pub purpose: EconomicsAdmissionPurpose,
     pub gross_expected_value: Decimal,
-    pub base_reservation_notional: Decimal,
+    pub reservation_basis: ReservationBasis,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -604,32 +606,8 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         if dependencies.provider_key != self.provider_key {
             return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
-        let refresh_deadline_ns = dependencies
-            .refreshed_at_ns
-            .checked_add(self.policy.quote_refresh_ns)
-            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
-        let maximum_age_deadline_ns = dependencies
-            .refreshed_at_ns
-            .checked_add(self.policy.quote_max_age_ns)
-            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
-        if dependencies.refreshed_at_ns > intent.request.requested_at_ns {
-            return Err(EconomicsUnavailable::InvalidSourceTimeline {
-                source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
-            });
-        }
-        if intent.request.requested_at_ns > refresh_deadline_ns
-            || intent.request.requested_at_ns > maximum_age_deadline_ns
-        {
-            return Err(EconomicsUnavailable::StaleSource {
-                source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
-            });
-        }
-        let requested_at_ns = intent.request.requested_at_ns;
-        let requires_resting_margin = intent.request.liquidity_role
-            == crate::economics::LiquidityRoleAssumption::GuaranteedMaker;
         let resolved_edge_basis = dependencies.adapter.resolve_edge_basis(&intent.request)?;
-        if resolved_edge_basis.normalized_amount != intent.base_reservation_notional
-            || resolved_edge_basis.source_snapshot_ids.is_empty()
+        if resolved_edge_basis.source_snapshot_ids.is_empty()
             || resolved_edge_basis.source_snapshot_ids
                 != dependencies.edge_basis.source_snapshot_ids
         {
@@ -649,30 +627,18 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
                 .valid_until_ns
                 .min(dependencies.edge_basis.valid_until_ns),
         };
-        let admission = BoltV3EconomicsRuntime::from_offline_adapter(
-            dependencies.adapter,
-            self.policy.quote_validity_ns,
-        )?
-        .quote_admission(EconomicsAdmissionIntent {
-            request: intent.request,
-            order_binding: intent.order_binding,
-            purpose: intent.purpose,
-            gross_expected_value: intent.gross_expected_value,
-            edge_basis,
-            valuation_provider: dependencies.valuation_provider,
-            base_reservation_notional: intent.base_reservation_notional,
-        })?;
-        if requires_resting_margin {
-            let required_valid_until_ns = requested_at_ns
-                .checked_add(self.policy.resting_order_refresh_margin_ns)
-                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
-            if admission.quote().valid_until_ns() < required_valid_until_ns {
-                return Err(EconomicsUnavailable::StaleSource {
-                    source_id: crate::economics::SourceId::new(self.provider_key.clone())?,
-                });
-            }
-        }
-        Ok(admission)
+        BoltV3EconomicsRuntime::try_new(dependencies.adapter, self.policy)?.quote_admission(
+            EconomicsAdmissionIntent {
+                request: intent.request,
+                order_binding: intent.order_binding,
+                purpose: intent.purpose,
+                gross_expected_value: intent.gross_expected_value,
+                edge_basis,
+                valuation_provider: dependencies.valuation_provider,
+                reservation_basis: intent.reservation_basis,
+                authority_refreshed_at_ns: dependencies.refreshed_at_ns,
+            },
+        )
     }
 }
 
@@ -683,8 +649,10 @@ pub struct EconomicsAdmission {
     purpose: EconomicsAdmissionPurpose,
     quote: EconomicQuote,
     net_edge: NetEdgeQuote,
-    base_reservation_notional: Decimal,
-    reservation_notional: Decimal,
+    planned_fill_notional: PlannedFillNotional,
+    reservation_basis: ReservationBasis,
+    guaranteed_debit: GuaranteedDebit,
+    full_reservation_liability: FullReservationLiability,
     source_snapshot_ids: Vec<SnapshotId>,
 }
 
@@ -709,16 +677,20 @@ impl EconomicsAdmission {
         &self.net_edge
     }
 
-    pub fn reservation_notional(&self) -> Decimal {
-        self.reservation_notional
+    pub fn planned_fill_notional(&self) -> PlannedFillNotional {
+        self.planned_fill_notional
     }
 
-    pub fn base_reservation_notional(&self) -> Decimal {
-        self.base_reservation_notional
+    pub fn reservation_basis(&self) -> ReservationBasis {
+        self.reservation_basis
     }
 
-    pub fn debit_reservation(&self) -> Decimal {
-        self.reservation_notional - self.base_reservation_notional
+    pub fn guaranteed_debit(&self) -> GuaranteedDebit {
+        self.guaranteed_debit
+    }
+
+    pub fn full_reservation_liability(&self) -> FullReservationLiability {
+        self.full_reservation_liability
     }
 
     pub fn source_snapshot_ids(&self) -> &[SnapshotId] {
@@ -795,13 +767,18 @@ pub fn refresh_resting_order_economics(
             RestingOrderEconomicsCancelReason::InvalidState,
         );
     }
-    let Some(base_reservation_notional) = prior_leg.price.checked_mul(remaining_quantity) else {
+    let Some(reservation_basis_amount) = prior_leg.price.checked_mul(remaining_quantity) else {
         return RestingOrderEconomicsRefresh::CancelRequired(
             RestingOrderEconomicsCancelReason::InvalidState,
         );
     };
-    if base_reservation_notional <= Decimal::ZERO
-        || prior.base_reservation_notional <= Decimal::ZERO
+    let Ok(reservation_basis) = ReservationBasis::new(reservation_basis_amount) else {
+        return RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::InvalidState,
+        );
+    };
+    if reservation_basis.amount() <= Decimal::ZERO
+        || prior.planned_fill_notional.amount() <= Decimal::ZERO
     {
         return RestingOrderEconomicsRefresh::CancelRequired(
             RestingOrderEconomicsCancelReason::InvalidState,
@@ -810,8 +787,8 @@ pub fn refresh_resting_order_economics(
     let Some(gross_expected_value) = prior
         .net_edge
         .gross_expected_value()
-        .checked_mul(base_reservation_notional)
-        .and_then(|value| value.checked_div(prior.base_reservation_notional))
+        .checked_mul(reservation_basis.amount())
+        .and_then(|value| value.checked_div(prior.planned_fill_notional.amount()))
     else {
         return RestingOrderEconomicsRefresh::CancelRequired(
             RestingOrderEconomicsCancelReason::InvalidState,
@@ -832,7 +809,7 @@ pub fn refresh_resting_order_economics(
             .for_resting_remainder(remaining_quantity, now_ns),
         purpose: prior.purpose,
         gross_expected_value,
-        base_reservation_notional,
+        reservation_basis,
     }) {
         Ok(admission) => admission,
         Err(_) => {
@@ -938,21 +915,21 @@ fn resting_economic_terms_match(
                     && before.calculation_factors == after.calculation_factors
                     && point_estimate_matches(
                         &before.point_estimate,
-                        prior.base_reservation_notional,
+                        prior.planned_fill_notional.amount(),
                         &after.point_estimate,
-                        refreshed.base_reservation_notional,
+                        refreshed.planned_fill_notional.amount(),
                     )
                     && optional_effect_matches(
                         before.debit_risk_bound.as_ref(),
-                        prior.base_reservation_notional,
+                        prior.planned_fill_notional.amount(),
                         after.debit_risk_bound.as_ref(),
-                        refreshed.base_reservation_notional,
+                        refreshed.planned_fill_notional.amount(),
                     )
                     && valuation_matches(
                         before.normalized.as_ref(),
-                        prior.base_reservation_notional,
+                        prior.planned_fill_notional.amount(),
                         after.normalized.as_ref(),
-                        refreshed.base_reservation_notional,
+                        refreshed.planned_fill_notional.amount(),
                     )
             });
     let prior_basis = prior.net_edge.basis();
@@ -964,20 +941,21 @@ fn resting_economic_terms_match(
         && prior_basis.scope == refreshed_basis.scope
         && prior_basis
             .normalized_amount
-            .checked_div(prior.base_reservation_notional)
+            .checked_div(prior.planned_fill_notional.amount())
             == refreshed_basis
                 .normalized_amount
-                .checked_div(refreshed.base_reservation_notional);
+                .checked_div(refreshed.planned_fill_notional.amount());
     let normalized_core = |admission: &EconomicsAdmission| {
         admission
             .quote
             .core_total()
-            .checked_div(admission.base_reservation_notional)
+            .checked_div(admission.planned_fill_notional.amount())
     };
     let normalized_debit = |admission: &EconomicsAdmission| {
         admission
-            .debit_reservation()
-            .checked_div(admission.base_reservation_notional)
+            .guaranteed_debit
+            .amount()
+            .checked_div(admission.planned_fill_notional.amount())
     };
     same_components
         && same_basis_authority
@@ -987,31 +965,57 @@ fn resting_economic_terms_match(
 
 pub struct BoltV3EconomicsRuntime {
     adapter: Arc<dyn VenueEconomicsAdapter>,
-    quote_validity_ns: u64,
+    policy: ConfiguredEconomicsSourcePolicy,
 }
 
 impl BoltV3EconomicsRuntime {
-    pub fn from_offline_adapter(
+    pub fn try_new(
         adapter: Arc<dyn VenueEconomicsAdapter>,
-        quote_validity_ns: u64,
+        policy: ConfiguredEconomicsSourcePolicy,
     ) -> Result<Self, EconomicsUnavailable> {
-        if quote_validity_ns == 0 {
+        if policy.quote_refresh_ns == 0
+            || policy.quote_max_age_ns == 0
+            || policy.quote_validity_ns == 0
+            || policy.resting_order_refresh_margin_ns == 0
+            || policy.resting_order_refresh_margin_ns >= policy.quote_validity_ns
+        {
             return Err(EconomicsUnavailable::InvalidQuoteValidityPolicy);
         }
-        Ok(Self {
-            adapter,
-            quote_validity_ns,
-        })
+        Ok(Self { adapter, policy })
     }
 
     pub fn quote_admission(
         &self,
         intent: EconomicsAdmissionIntent,
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
-        if intent.base_reservation_notional <= Decimal::ZERO {
-            return Err(EconomicsUnavailable::InvalidPlannedFill);
-        }
+        let planned_fill_notional =
+            PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
         let estimate = self.adapter.quote(&intent.request)?;
+        let authority_source_id = estimate.authority.source_id.clone();
+        let refresh_deadline_ns = intent
+            .authority_refreshed_at_ns
+            .checked_add(self.policy.quote_refresh_ns)
+            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+        let maximum_age_deadline_ns = intent
+            .authority_refreshed_at_ns
+            .checked_add(self.policy.quote_max_age_ns)
+            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+        if intent.authority_refreshed_at_ns > intent.request.requested_at_ns {
+            return Err(EconomicsUnavailable::InvalidSourceTimeline {
+                source_id: authority_source_id.clone(),
+            });
+        }
+        if intent.request.requested_at_ns > refresh_deadline_ns
+            || intent.request.requested_at_ns > maximum_age_deadline_ns
+        {
+            return Err(EconomicsUnavailable::StaleSource {
+                source_id: authority_source_id.clone(),
+            });
+        }
+        let edge_basis_amount = EdgeBasisAmount::new(intent.edge_basis.normalized_amount)?;
+        if edge_basis_amount.amount() != planned_fill_notional.amount() {
+            return Err(EconomicsUnavailable::InvalidEdgeBasis);
+        }
         let authority_snapshot_id = estimate.authority.snapshot_id.clone();
         let dependency_snapshot_ids = estimate
             .dependency_sources
@@ -1025,6 +1029,9 @@ impl BoltV3EconomicsRuntime {
         };
         let mut valuations = Vec::new();
         for component in &estimate.components {
+            if component.admission_treatment == crate::economics::AdmissionTreatment::ForecastOnly {
+                continue;
+            }
             if let Some(point_effect) = component.point_estimate.effect() {
                 push_valuation(
                     &mut valuations,
@@ -1046,17 +1053,30 @@ impl BoltV3EconomicsRuntime {
         let configured_valid_until_ns = intent
             .request
             .requested_at_ns
-            .checked_add(self.quote_validity_ns)
+            .checked_add(self.policy.quote_validity_ns)
             .ok_or(EconomicsUnavailable::InvalidPlannedFill)?;
         quote.cap_valid_until_ns(configured_valid_until_ns);
+        if intent.request.liquidity_role == LiquidityRoleAssumption::GuaranteedMaker {
+            let required_valid_until_ns = intent
+                .request
+                .requested_at_ns
+                .checked_add(self.policy.resting_order_refresh_margin_ns)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
+            if quote.valid_until_ns() < required_valid_until_ns {
+                return Err(EconomicsUnavailable::StaleSource {
+                    source_id: authority_source_id,
+                });
+            }
+        }
         let net_edge = fold_net_edge(intent.gross_expected_value, &quote, intent.edge_basis)?;
         if intent.purpose == EconomicsAdmissionPurpose::TradingEdge
             && net_edge.core_net_edge() <= Decimal::ZERO
         {
             return Err(EconomicsUnavailable::NonPositiveNetEdge);
         }
-        let debit_reservation = (-quote.core_total()).max(Decimal::ZERO);
-        let reservation_notional = intent.base_reservation_notional + debit_reservation;
+        let guaranteed_debit = GuaranteedDebit::new((-quote.core_total()).max(Decimal::ZERO))?;
+        let full_reservation_liability =
+            FullReservationLiability::from_parts(intent.reservation_basis, guaranteed_debit)?;
         let mut source_snapshot_ids = vec![authority_snapshot_id];
         source_snapshot_ids.extend(dependency_snapshot_ids);
         source_snapshot_ids.extend(
@@ -1080,8 +1100,10 @@ impl BoltV3EconomicsRuntime {
             purpose: intent.purpose,
             quote,
             net_edge,
-            base_reservation_notional: intent.base_reservation_notional,
-            reservation_notional,
+            planned_fill_notional,
+            reservation_basis: intent.reservation_basis,
+            guaranteed_debit,
+            full_reservation_liability,
             source_snapshot_ids,
         })
     }
@@ -1100,6 +1122,22 @@ fn push_valuation(
     }
     valuations.push(provider.value(effect, request)?);
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn test_economics_runtime(
+    adapter: Arc<dyn VenueEconomicsAdapter>,
+    quote_validity_ns: u64,
+) -> Result<BoltV3EconomicsRuntime, EconomicsUnavailable> {
+    BoltV3EconomicsRuntime::try_new(
+        adapter,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: quote_validity_ns,
+            quote_max_age_ns: quote_validity_ns,
+            quote_validity_ns,
+            resting_order_refresh_margin_ns: u64::from(true),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1266,34 +1304,34 @@ fn test_economics_admission_with_binding_and_purpose(
             normalized: None,
         }],
     });
-    BoltV3EconomicsRuntime::from_offline_adapter(
-        Arc::new(adapter),
-        valid_until_ns - requested_at_ns,
-    )
-    .expect("test economics runtime policy should be valid")
-    .quote_admission(EconomicsAdmissionIntent {
-        request,
-        order_binding,
-        purpose,
-        gross_expected_value: Decimal::ONE,
-        edge_basis: EdgeBasisEvidence {
-            policy_id: EdgeBasisPolicyId::new("test-edge-policy")
-                .expect("valid test edge policy id"),
-            resolver_id: FormulaId::new("test-edge-resolver").expect("valid test edge resolver id"),
-            product_metadata_source: SourceId::new("test-product-metadata")
-                .expect("valid test product metadata source"),
-            policy_version: 1,
-            normalized_amount: base_reservation_notional,
-            scope: EconomicScope::Decision {
-                decision_correlation_id,
+    test_economics_runtime(Arc::new(adapter), valid_until_ns - requested_at_ns)
+        .expect("test economics runtime policy should be valid")
+        .quote_admission(EconomicsAdmissionIntent {
+            authority_refreshed_at_ns: requested_at_ns,
+            request,
+            order_binding,
+            purpose,
+            gross_expected_value: Decimal::ONE,
+            edge_basis: EdgeBasisEvidence {
+                policy_id: EdgeBasisPolicyId::new("test-edge-policy")
+                    .expect("valid test edge policy id"),
+                resolver_id: FormulaId::new("test-edge-resolver")
+                    .expect("valid test edge resolver id"),
+                product_metadata_source: SourceId::new("test-product-metadata")
+                    .expect("valid test product metadata source"),
+                policy_version: 1,
+                normalized_amount: base_reservation_notional,
+                scope: EconomicScope::Decision {
+                    decision_correlation_id,
+                },
+                source_snapshot_ids: vec![source.snapshot_id],
+                valid_until_ns,
             },
-            source_snapshot_ids: vec![source.snapshot_id],
-            valid_until_ns,
-        },
-        valuation_provider: identity_valuation_provider(),
-        base_reservation_notional,
-    })
-    .expect("test economics admission should quote")
+            valuation_provider: identity_valuation_provider(),
+            reservation_basis: ReservationBasis::new(base_reservation_notional)
+                .expect("test reservation basis should be valid"),
+        })
+        .expect("test economics admission should quote")
 }
 
 #[cfg(test)]
@@ -1399,19 +1437,23 @@ mod test_economics_admission_source_support {
                 normalized: None,
             }],
         });
-        BoltV3EconomicsRuntime::from_offline_adapter(
+        test_economics_runtime(
             Arc::new(adapter),
             valid_until_ns
                 .checked_sub(intent.request.requested_at_ns)
                 .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
         )?
         .quote_admission(EconomicsAdmissionIntent {
+            authority_refreshed_at_ns: intent.request.requested_at_ns,
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),
                 resolver_id: FormulaId::new("test-edge-resolver")?,
                 product_metadata_source: SourceId::new("test-product-metadata")?,
                 policy_version: 1,
-                normalized_amount: intent.base_reservation_notional,
+                normalized_amount: PlannedFillNotional::from_legs(
+                    &intent.request.planned_fill_legs,
+                )?
+                .amount(),
                 scope: EconomicScope::Decision {
                     decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
@@ -1423,7 +1465,7 @@ mod test_economics_admission_source_support {
             purpose: intent.purpose,
             gross_expected_value: intent.gross_expected_value,
             valuation_provider: identity_valuation_provider(),
-            base_reservation_notional: intent.base_reservation_notional,
+            reservation_basis: intent.reservation_basis,
         })
     }
 }

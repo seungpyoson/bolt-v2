@@ -1462,7 +1462,6 @@ fn sample_submit_request() -> BoltV3SubmitAdmissionRequest {
         execution_client_id: "exec-poly".to_string(),
         client_order_id: "COID-NEW".to_string(),
         instrument_id: "YES.POLYMARKET".to_string(),
-        notional: Decimal::ONE,
         order_side: OrderSide::Buy,
         order_quantity: dec("1.0"),
         intent_kind: BoltV3SubmitIntentKind::Entry,

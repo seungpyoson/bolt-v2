@@ -2367,7 +2367,6 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
     let mut third_request = capital_admission_submit_request("client-order-3");
     third_request.economics_admission =
         support::sample_economics_admission_with_debit(Decimal::new(4, 1), Decimal::new(3, 1));
-    third_request.notional = Decimal::new(7, 1);
     third_request.order_quantity = Decimal::new(1, 0);
     third_request
         .admission_evidence
@@ -3045,7 +3044,6 @@ fn capital_admission_submit_request(client_order_id: &str) -> BoltV3SubmitAdmiss
         execution_client_id: "execution-client-a".to_string(),
         client_order_id: client_order_id.to_string(),
         instrument_id: "instrument-yes.VENUE-A".to_string(),
-        notional: Decimal::new(43, 1),
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(10, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
@@ -3093,7 +3091,6 @@ fn forced_reduction_submit_request(
         Decimal::new(4, 0),
         Decimal::ONE,
     );
-    request.notional = Decimal::new(5, 0);
     request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
     request.lifecycle_policy = BoltV3SubmitLifecyclePolicy::new(false);
     request.risk_reducing_exit_proof = None;
@@ -3118,7 +3115,6 @@ fn risk_reducing_exit_submit_request(client_order_id: &str) -> BoltV3SubmitAdmis
         Decimal::new(4, 0),
         Decimal::new(3, 1),
     );
-    request.notional = Decimal::new(43, 1);
     request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
     request.risk_reducing_exit_proof = Some(BoltV3RiskReducingExitProof {
         position_id: "position-1".to_string(),

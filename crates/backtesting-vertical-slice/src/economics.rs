@@ -2,8 +2,8 @@ use std::{str::FromStr, sync::Arc};
 
 use bolt_v2::bolt_v3_economics_runtime::{
     AuthoritativeValuationObservation, BoltV3EconomicsRuntime, ConfiguredValuationProvider,
-    EconomicsAdmission, EconomicsAdmissionIntent, EconomicsAdmissionQuoteIntent,
-    EconomicsAdmissionSource,
+    ConfiguredEconomicsSourcePolicy, EconomicsAdmission, EconomicsAdmissionIntent,
+    EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
 };
 use bolt_v2::bolt_v3_providers::{
     OfflineEconomicsAdapterBuildContext, OfflineEconomicsSnapshotInput,
@@ -282,23 +282,37 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
             &adapter.economics.valuation,
             &observations,
         )?);
-        let quote_validity_ns = snapshot
-            .valid_until_ns
-            .checked_sub(intent.request.requested_at_ns)
-            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
-        BoltV3EconomicsRuntime::from_offline_adapter(
-            std::sync::Arc::new(adapter),
-            quote_validity_ns,
-        )?
-        .quote_admission(EconomicsAdmissionIntent {
-            request: intent.request,
-            order_binding: intent.order_binding,
-            purpose: intent.purpose,
-            gross_expected_value: intent.gross_expected_value,
-            edge_basis,
-            valuation_provider,
-            base_reservation_notional: intent.base_reservation_notional,
-        })
+        let seconds_to_ns = |seconds: u64| {
+            seconds
+                .checked_mul(1_000_000_000)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)
+        };
+        let millis_to_ns = |millis: u64| {
+            millis
+                .checked_mul(1_000_000)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)
+        };
+        let policy = ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: seconds_to_ns(adapter.economics.quote_refresh_secs)?,
+            quote_max_age_ns: seconds_to_ns(adapter.economics.quote_max_age_secs)?,
+            quote_validity_ns: millis_to_ns(adapter.economics.quote_validity_ms)?,
+            resting_order_refresh_margin_ns: millis_to_ns(
+                adapter.economics.resting_order_refresh_margin_ms,
+            )?,
+        };
+        let authority_refreshed_at_ns = snapshot.fetched_at_ns;
+        BoltV3EconomicsRuntime::try_new(std::sync::Arc::new(adapter), policy)?.quote_admission(
+            EconomicsAdmissionIntent {
+                request: intent.request,
+                order_binding: intent.order_binding,
+                purpose: intent.purpose,
+                gross_expected_value: intent.gross_expected_value,
+                edge_basis,
+                valuation_provider,
+                reservation_basis: intent.reservation_basis,
+                authority_refreshed_at_ns,
+            },
+        )
     }
 }
 

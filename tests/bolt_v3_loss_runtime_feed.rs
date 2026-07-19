@@ -1235,7 +1235,6 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         execution_client_id: "execution-client-a".to_string(),
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
-        notional,
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(1, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,

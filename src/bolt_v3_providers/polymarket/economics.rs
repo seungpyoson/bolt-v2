@@ -777,7 +777,7 @@ impl PolymarketEconomicsAdapter {
             snapshot.taker_base_fee,
         ) {
             (None, None, None) => PlatformQuotePlan::FeeFree,
-            (Some(descriptor), Some(_), Some(_)) if !matches!(descriptor.e, 1 | 2) => {
+            (Some(descriptor), Some(_), Some(_)) if descriptor.e != 1 => {
                 return Err(PolymarketEconomicsError::UnsupportedExponent);
             }
             (Some(descriptor), Some(_), Some(_)) if descriptor.r < Decimal::ZERO => {
@@ -890,13 +890,9 @@ impl PolymarketEconomicsAdapter {
                     .price
                     .checked_mul(Decimal::ONE - leg.price)
                     .ok_or(PolymarketEconomicsError::InvalidRate)?;
-                let price_shape = match exponent {
-                    1 => price_shape,
-                    2 => price_shape
-                        .checked_mul(price_shape)
-                        .ok_or(PolymarketEconomicsError::InvalidRate)?,
-                    _ => return Err(PolymarketEconomicsError::UnsupportedExponent),
-                };
+                if exponent != 1 {
+                    return Err(PolymarketEconomicsError::UnsupportedExponent);
+                }
                 let fee = leg
                     .quantity
                     .checked_mul(rate)

@@ -1,5 +1,7 @@
 use rust_decimal::Decimal;
 
+use crate::economics::FullReservationLiability;
+
 use crate::bolt_v3_capital_admission_state::{
     CapitalAdmissionStateError, CapitalAdmissionStateEvidence, CapitalAdmissionStateEvidenceKind,
     NtDerivedCapitalAdmissionState, validate_nt_derived_capital_admission_state,
@@ -26,7 +28,7 @@ pub struct CapitalAdmissionRequest {
     pub side: IntentSide,
     pub quantity: Decimal,
     pub limit_price: Decimal,
-    pub economics_debit_liability: Decimal,
+    pub full_reservation_liability: FullReservationLiability,
     pub order_kind: IntentOrderKind,
     pub liquidity: IntentLiquidity,
     pub quote_set_id: Option<String>,
@@ -85,7 +87,6 @@ pub struct LiabilityQuote {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiabilityError {
     MissingMarketState,
-    InvalidEconomicsDebit,
     InvalidIntentPrice,
     InvalidIntentQuantity,
     MissingQuoteSetId,
@@ -660,16 +661,7 @@ impl PredictionMarketBinaryLiabilityCalculator {
         let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = state;
         validate_request(request)?;
         validate_liquidity(request)?;
-        let base_liability = match request.side {
-            IntentSide::Buy => request
-                .quantity
-                .checked_mul(request.limit_price)
-                .ok_or(LiabilityError::ArithmeticOverflow)?,
-            IntentSide::Sell => Decimal::ZERO,
-        };
-        let liability = base_liability
-            .checked_add(request.economics_debit_liability)
-            .ok_or(LiabilityError::ArithmeticOverflow)?;
+        let liability = request.full_reservation_liability.amount();
 
         match request.side {
             IntentSide::Buy => {
@@ -711,9 +703,6 @@ fn validate_request(request: &CapitalAdmissionRequest) -> Result<(), LiabilityEr
     if request.limit_price < Decimal::ZERO || request.limit_price > Decimal::ONE {
         return Err(LiabilityError::InvalidIntentPrice);
     }
-    if request.economics_debit_liability < Decimal::ZERO {
-        return Err(LiabilityError::InvalidEconomicsDebit);
-    }
     Ok(())
 }
 
@@ -747,9 +736,10 @@ mod tests {
         CapitalAdmissionEvidenceKind, CapitalAdmissionGate, CapitalAdmissionGateInputs,
         CapitalAdmissionInputs, CapitalAdmissionLifecycleAction, CapitalAdmissionLifecycleKind,
         CapitalAdmissionLifecycleUpdate, CapitalAdmissionPolicy, CapitalAdmissionReason,
-        CapitalAdmissionRequest, IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
-        PredictionMarketAdmissionSnapshot, PredictionMarketBinaryLiabilityCalculator,
-        ProductAdmissionSnapshot, ProductKind, evaluate_capital_admission,
+        CapitalAdmissionRequest, FullReservationLiability, IntentLiquidity, IntentOrderKind,
+        IntentSide, LiabilityError, PredictionMarketAdmissionSnapshot,
+        PredictionMarketBinaryLiabilityCalculator, ProductAdmissionSnapshot, ProductKind,
+        evaluate_capital_admission,
     };
 
     fn policy() -> CapitalAdmissionPolicy {
@@ -768,7 +758,11 @@ mod tests {
             side,
             quantity: Decimal::new(10, 0),
             limit_price: Decimal::new(40, 2),
-            economics_debit_liability: Decimal::new(30, 2),
+            full_reservation_liability: FullReservationLiability::new(match side {
+                IntentSide::Buy => Decimal::new(430, 2),
+                IntentSide::Sell => Decimal::new(30, 2),
+            })
+            .expect("test liability should be valid"),
             order_kind: IntentOrderKind::Limit,
             liquidity,
             quote_set_id: None,
@@ -960,14 +954,7 @@ mod tests {
         assert_eq!(sell.calculated_liability, Decimal::new(30, 2));
         assert_eq!(sell.reserved_liability, Decimal::new(30, 2));
 
-        let mut invalid_economics_debit = request(IntentSide::Buy, IntentLiquidity::Taker);
-        invalid_economics_debit.economics_debit_liability = Decimal::NEGATIVE_ONE;
-        assert_eq!(
-            calculator
-                .worst_case_liability(&invalid_economics_debit, &state(),)
-                .expect_err("negative economics debit must fail closed"),
-            LiabilityError::InvalidEconomicsDebit
-        );
+        assert!(FullReservationLiability::new(Decimal::NEGATIVE_ONE).is_err());
 
         assert_eq!(
             calculator
@@ -977,23 +964,6 @@ mod tests {
                 )
                 .expect_err("resting maker intent must identify its quote set"),
             LiabilityError::MissingQuoteSetId
-        );
-    }
-
-    #[test]
-    fn prediction_market_binary_liability_overflow_rejects_fail_closed() {
-        let calculator = PredictionMarketBinaryLiabilityCalculator;
-        let mut overflow_request = request(IntentSide::Buy, IntentLiquidity::Taker);
-        overflow_request.economics_debit_liability = Decimal::MAX;
-        let mut overflow_state = state();
-        let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = &mut overflow_state;
-        snapshot.collateral_allowance = Decimal::MAX;
-
-        assert_eq!(
-            calculator
-                .worst_case_liability(&overflow_request, &overflow_state,)
-                .expect_err("overflowing liability arithmetic must fail closed"),
-            LiabilityError::ArithmeticOverflow
         );
     }
 

@@ -317,7 +317,6 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
             execution_client_id: strategy.config.client_id.clone(),
             client_order_id: "EXIT-SLOT-ALREADY-USED".to_string(),
             instrument_id: managed_position.position.instrument_id.to_string(),
-            notional: Decimal::new(1, 0),
             order_side: exit_order_side,
             order_quantity: exit_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,

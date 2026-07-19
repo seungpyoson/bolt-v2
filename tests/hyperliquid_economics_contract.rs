@@ -108,6 +108,11 @@ fn user_fees_with_discounts(
     spot_taker_rate: &str,
     spot_maker_rate: &str,
 ) -> HyperliquidUserFeesSnapshot {
+    let active_stake = if staking_discount == "0" {
+        "0"
+    } else {
+        "4.7577998927"
+    };
     let (base_maker_rate, maker_volume, maker_tiers) = if maker_rate.starts_with('-') {
         (
             "0.00015",
@@ -147,7 +152,12 @@ fn user_fees_with_discounts(
                     "referralDiscount":"0.04",
                     "stakingDiscountTiers":[
                         {{"bpsOfMaxSupply":"0","discount":"0"}},
-                        {{"bpsOfMaxSupply":"4.7577998927","discount":"{staking_discount}"}}
+                        {{"bpsOfMaxSupply":"0.0001","discount":"0.05"}},
+                        {{"bpsOfMaxSupply":"0.001","discount":"0.1"}},
+                        {{"bpsOfMaxSupply":"0.01","discount":"0.15"}},
+                        {{"bpsOfMaxSupply":"0.1","discount":"0.2"}},
+                        {{"bpsOfMaxSupply":"1.0","discount":"0.3"}},
+                        {{"bpsOfMaxSupply":"5.0","discount":"0.4"}}
                     ]
                 }},
                 "userCrossRate":"{perp_taker_rate}",
@@ -163,7 +173,7 @@ fn user_fees_with_discounts(
                     "stakingUser":"0x54c049d9c7d3c92c2462bf3d28e083f3d6805061"
                 }},
                 "activeStakingDiscount":{{
-                    "bpsOfMaxSupply":"4.7577998927",
+                    "bpsOfMaxSupply":"{active_stake}",
                     "discount":"{staking_discount}"
                 }}
             }}"#
@@ -844,7 +854,12 @@ fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
             "referralDiscount": "0.04",
             "stakingDiscountTiers": [
                 {"bpsOfMaxSupply": "0", "discount": "0"},
-                {"bpsOfMaxSupply": "4.7577998927", "discount": "0.3"}
+                {"bpsOfMaxSupply": "0.0001", "discount": "0.05"},
+                {"bpsOfMaxSupply": "0.001", "discount": "0.1"},
+                {"bpsOfMaxSupply": "0.01", "discount": "0.15"},
+                {"bpsOfMaxSupply": "0.1", "discount": "0.2"},
+                {"bpsOfMaxSupply": "1.0", "discount": "0.3"},
+                {"bpsOfMaxSupply": "5.0", "discount": "0.4"}
             ]
         },
         "userCrossRate": "0.000314",

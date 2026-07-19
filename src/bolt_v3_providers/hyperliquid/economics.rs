@@ -617,16 +617,19 @@ fn valid_fee_schedule(
             current.bps_of_max_supply > previous.bps_of_max_supply
                 && current.discount >= previous.discount
         });
+    let resolved_staking_discount = schedule
+        .staking_discount_tiers
+        .iter()
+        .rev()
+        .find(|tier| tier.bps_of_max_supply <= wire.active_staking_discount.bps_of_max_supply);
     let staking_valid = !schedule.staking_discount_tiers.is_empty()
         && staking_tiers_ordered
         && schedule
             .staking_discount_tiers
             .iter()
             .all(|tier| tier.bps_of_max_supply >= Decimal::ZERO && unit_interval(tier.discount))
-        && schedule
-            .staking_discount_tiers
-            .iter()
-            .any(|tier| tier == &wire.active_staking_discount);
+        && resolved_staking_discount
+            .is_some_and(|tier| tier.discount == wire.active_staking_discount.discount);
     let staking_link_valid = wire
         .staking_link
         .as_ref()

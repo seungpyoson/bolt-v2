@@ -1685,7 +1685,11 @@ impl BoltV3SubmitAdmissionState {
             execution_client_id: request.execution_client_id.clone(),
             client_order_id: request.client_order_id.clone(),
             instrument_id: request.instrument_id.clone(),
-            notional: request.notional.to_string(),
+            notional: request
+                .economics_admission
+                .full_reservation_liability()
+                .amount()
+                .to_string(),
             economics_quote_id: request
                 .economics_admission
                 .quote()
@@ -2259,12 +2263,6 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
-        if request.notional != request.economics_admission.reservation_notional() {
-            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch,
-                now_ns,
-            );
-        }
         if request.economics_admission.purpose() != economics_purpose(request.intent_kind) {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedEconomicsOrderMismatch,
@@ -2323,7 +2321,11 @@ impl BoltV3SubmitAdmissionState {
             }
             inner.loss_halt_episodes.clear();
         }
-        if request.notional <= Decimal::ZERO {
+        let full_reservation_liability = request
+            .economics_admission
+            .full_reservation_liability()
+            .amount();
+        if full_reservation_liability <= Decimal::ZERO {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
                 now_ns,
@@ -2334,7 +2336,7 @@ impl BoltV3SubmitAdmissionState {
             .live_submit_approval_limits
             .get(&request.execution_client_id)
         {
-            if request.notional > limits.max_order_notional {
+            if full_reservation_liability > limits.max_order_notional {
                 return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                     BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
                     now_ns,
@@ -2430,10 +2432,14 @@ impl BoltV3SubmitAdmissionState {
         // The action binding is enforced when the flatten planner constructs the
         // forced-reduction claim, and the strategy/policy fence confines claim
         // construction to that owning path.
-        if request.notional <= Decimal::ZERO {
+        let full_reservation_liability = request
+            .economics_admission
+            .full_reservation_liability()
+            .amount();
+        if full_reservation_liability <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
         }
-        if request.notional > policy.max_notional_per_order() {
+        if full_reservation_liability > policy.max_notional_per_order() {
             return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
         }
         if inner
@@ -2893,7 +2899,6 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub execution_client_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
-    pub notional: Decimal,
     pub order_side: OrderSide,
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
@@ -3037,7 +3042,6 @@ fn basket_submit_request(
         execution_client_id: execution_client_id.to_string(),
         client_order_id: claim.client_order_id.clone(),
         instrument_id: claim.instrument_id.clone(),
-        notional: claim.economics_admission.reservation_notional(),
         order_side: claim.order_side,
         order_quantity: claim.order_quantity,
         intent_kind: claim.intent_kind,
@@ -3108,7 +3112,7 @@ pub struct BoltV3OrderEconomicsFacts {
     pub price: Decimal,
     pub quantity: Decimal,
     pub planned_fill_quantity: Decimal,
-    pub base_reservation_notional: Decimal,
+    pub reservation_basis: crate::economics::ReservationBasis,
 }
 
 pub fn order_economics_facts(
@@ -3142,7 +3146,7 @@ pub fn order_economics_facts(
     })?;
     let (quote_quantity_last_price, quote_quantity_reference_price) =
         input.valuation.prices_for_order(input.order);
-    let base_reservation_notional = if input.order.is_quote_quantity() {
+    let reservation_basis_amount = if input.order.is_quote_quantity() {
         let instrument = input.valuation.instrument.with_context(|| {
             format!(
                 "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
@@ -3201,7 +3205,8 @@ pub fn order_economics_facts(
         price,
         quantity,
         planned_fill_quantity,
-        base_reservation_notional,
+        reservation_basis: crate::economics::ReservationBasis::new(reservation_basis_amount)
+            .map_err(|error| anyhow::anyhow!("invalid reservation basis: {error:?}"))?,
     })
 }
 
@@ -3245,18 +3250,7 @@ pub fn build_submit_admission_request_from_order(
         quote_request.order_side == expected_side,
         "bolt-v3 economics admission side does not match final order"
     );
-    if input.order.is_quote_quantity() {
-        let planned_fill_notional = quote_request
-            .planned_fill_legs
-            .iter()
-            .try_fold(Decimal::ZERO, |total, leg| {
-                total.checked_add(leg.price.checked_mul(leg.quantity)?)
-            });
-        anyhow::ensure!(
-            planned_fill_notional == Some(facts.quantity),
-            "bolt-v3 economics admission planned fill does not match final quote quantity"
-        );
-    } else {
+    if !input.order.is_quote_quantity() {
         let planned_fill_quantity = quote_request
             .planned_fill_legs
             .iter()
@@ -3283,10 +3277,9 @@ pub fn build_submit_admission_request_from_order(
         );
     }
     anyhow::ensure!(
-        economics_admission.base_reservation_notional() == facts.base_reservation_notional,
+        economics_admission.reservation_basis() == facts.reservation_basis,
         "bolt-v3 economics admission base reservation does not match final order"
     );
-    let notional = economics_admission.reservation_notional();
     let risk_reducing_exit_proof =
         if matches!(intent_kind, BoltV3SubmitIntentKind::RiskReducingExit) {
             input
@@ -3308,7 +3301,6 @@ pub fn build_submit_admission_request_from_order(
         execution_client_id: input.execution_client_id.to_string(),
         client_order_id,
         instrument_id: input.order.instrument_id().to_string(),
-        notional,
         order_side: input.order.order_side(),
         order_quantity: quantity,
         intent_kind,
@@ -3831,7 +3823,7 @@ fn evaluate_capital_admission_submit(
         side: evidence.side.to_capital_admission(),
         quantity: evidence.quantity,
         limit_price: evidence.effective_price,
-        economics_debit_liability: request.economics_admission.debit_reservation(),
+        full_reservation_liability: request.economics_admission.full_reservation_liability(),
         order_kind: evidence.order_kind.to_capital_admission(),
         liquidity: evidence.liquidity.to_capital_admission(),
         quote_set_id: evidence.quote_set_id.clone(),
@@ -3864,7 +3856,7 @@ fn evaluate_capital_admission_submit(
     let reserved_liability = decision
         .reserved_liability
         .expect("accepted capital admission decision should carry liability");
-    let additive_liability = request.economics_admission.debit_reservation();
+    let additive_liability = request.economics_admission.guaranteed_debit().amount();
     let liability_factor = match evidence.side.to_capital_admission() {
         IntentSide::Buy => evidence.effective_price,
         IntentSide::Sell => Decimal::ZERO,
@@ -4500,7 +4492,6 @@ mod loss_governor_halt_evidence_tests {
             execution_client_id: "execution-client-loss-halt".to_string(),
             client_order_id,
             instrument_id: "instrument-loss-halt-yes".to_string(),
-            notional: Decimal::ONE,
             order_side: OrderSide::Buy,
             order_quantity: Decimal::ONE,
             intent_kind: BoltV3SubmitIntentKind::Entry,
@@ -4617,7 +4608,7 @@ mod loss_governor_halt_evidence_tests {
             "strategy-poisoned-rejected-episode".to_string(),
             "client-order-poisoned-rejected-episode".to_string(),
         );
-        request.notional = Decimal::ZERO;
+        request.order_quantity = Decimal::ZERO;
         let routing_admission = BoltV3SubmitAdmissionState::new(Arc::new(
             FailingLossGovernorHaltEvidenceWriter::default(),
         ));
@@ -4626,7 +4617,7 @@ mod loss_governor_halt_evidence_tests {
                 routing_admission.admit_at(&request, 1_000),
                 Err(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)
             ),
-            "post-quote notional mutation must route through economics/order mismatch rejection"
+            "post-quote quantity mutation must route through economics/order mismatch rejection"
         );
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             admission.poison_reject_episodes_for_test();

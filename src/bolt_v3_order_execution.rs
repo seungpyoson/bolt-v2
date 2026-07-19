@@ -532,7 +532,7 @@ impl BoltV3OrderRoutingHandle {
                     BoltV3OrderIntentKind::Exit => EconomicsAdmissionPurpose::RiskReduction,
                 },
                 gross_expected_value: intent.gross_expected_value,
-                base_reservation_notional: facts.base_reservation_notional,
+                reservation_basis: facts.reservation_basis,
             })
             .map_err(Into::into)
     }
@@ -1037,22 +1037,6 @@ fn clamp_risk_reducing_exit_to_venue_position(
     order.set_quantity(clamped_quantity);
     order.set_leaves_qty(clamped_quantity);
     request.order_quantity = submitted_quantity;
-    request.notional = match request
-        .notional
-        .checked_mul(submitted_quantity)
-        .and_then(|notional| notional.checked_div(original_order_quantity))
-    {
-        Some(notional) => notional,
-        None => {
-            return Err(rejected_exit_clamp(
-                intent,
-                anyhow::anyhow!(
-                    "risk-reducing exit clamped notional could not be derived: instrument_id={}",
-                    request.instrument_id
-                ),
-            ));
-        }
-    };
     if let Some(proof) = request.risk_reducing_exit_proof.as_mut() {
         proof.position_quantity = venue_position;
         proof.exit_quantity = submitted_quantity;
@@ -2813,7 +2797,14 @@ mod tests {
         );
         assert_eq!(order.quantity(), Quantity::new(3.0, 2));
         assert_eq!(request.order_quantity, Decimal::new(3, 0));
-        assert_eq!(request.notional, Decimal::new(15, 1));
+        assert_eq!(
+            request
+                .economics_admission
+                .full_reservation_liability()
+                .amount(),
+            Decimal::new(25, 1),
+            "a clamp cannot rewrite sealed economics"
+        );
         assert_eq!(
             request
                 .admission_evidence
@@ -3402,7 +3393,6 @@ mod tests {
             execution_client_id: "execution_client".to_string(),
             client_order_id: order.client_order_id().to_string(),
             instrument_id: order.instrument_id().to_string(),
-            notional,
             order_side: OrderSide::Buy,
             order_quantity: Decimal::new(1, 0),
             intent_kind: BoltV3SubmitIntentKind::Entry,
@@ -3448,7 +3438,6 @@ mod tests {
             execution_client_id: "execution_client".to_string(),
             client_order_id: order.client_order_id().to_string(),
             instrument_id: order.instrument_id().to_string(),
-            notional: Decimal::new(25, 1),
             order_side: OrderSide::Sell,
             order_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,

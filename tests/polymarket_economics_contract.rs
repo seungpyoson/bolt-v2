@@ -154,16 +154,11 @@ fn unsupported_descriptor_and_projection_disagreement_fail_closed() {
 }
 
 #[test]
-fn documented_exponent_two_descriptor_applies_the_exponent_to_the_price_shape() {
-    let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 2), None).unwrap();
-    let mut request = canonical_fixture_request();
-    request.planned_fill_legs[0].quantity = decimal("100");
-
-    let components = adapter.quote_components(&request).unwrap();
-    assert_eq!(
-        components[0].point_estimate.effect().unwrap().amount(),
-        decimal("-0.43750")
-    );
+fn exponent_two_blocks_until_governed_settlement_evidence_exists() {
+    assert!(matches!(
+        PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 2), None),
+        Err(PolymarketEconomicsError::UnsupportedExponent)
+    ));
 }
 
 #[test]

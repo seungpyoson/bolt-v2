@@ -182,7 +182,10 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
     assert_eq!(request.client_order_id, "O-19700101-000000-001-A9-1");
     assert_eq!(request.instrument_id, "INSTRUMENT.SOURCE");
     assert_eq!(
-        request.notional,
+        request
+            .economics_admission
+            .full_reservation_liability()
+            .amount(),
         Decimal::from_str_exact("1.0000").expect("expected decimal should parse")
     );
     assert_eq!(request.order_side, OrderSide::Buy);
@@ -471,7 +474,10 @@ fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
 
     assert_eq!(request.execution_client_id, "hyperliquid_perps");
     assert_eq!(
-        request.notional,
+        request
+            .economics_admission
+            .full_reservation_liability()
+            .amount(),
         Decimal::from_str_exact("2.0000").expect("expected decimal should parse")
     );
 }
@@ -789,21 +795,8 @@ fn notional_equal_to_cap_is_admitted() {
 }
 
 #[test]
-fn post_quote_zero_notional_mutation_rejects_before_nt_submit_without_consuming_count() {
-    let admission = limited_admission(1, Decimal::new(1, 0));
-    let mut request = submit_request(Decimal::ONE);
-    request.notional = Decimal::ZERO;
-
-    let result = admission.admit(&request);
-    let nt_submit_called = result.is_ok();
-    let error = result.expect_err("post-quote zero-notional mutation must reject");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::EconomicsOrderMismatch
-    ));
-    assert_eq!(admission.admitted_order_count(), 0);
-    assert!(!nt_submit_called, "NT submit must not be reached");
+fn negative_full_liability_cannot_cross_the_typed_boundary() {
+    assert!(bolt_v2::economics::FullReservationLiability::new(Decimal::NEGATIVE_ONE).is_err());
 }
 
 #[test]
@@ -1112,7 +1105,6 @@ fn submit_request_with_kind_policy_and_exit_proof(
         execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
-        notional,
         order_side,
         order_quantity,
         intent_kind,
@@ -1988,7 +1980,14 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
     );
     assert_eq!(decisions[0].client_order_id, request.client_order_id);
     assert_eq!(decisions[0].instrument_id, request.instrument_id);
-    assert_eq!(decisions[0].notional, request.notional.to_string());
+    assert_eq!(
+        decisions[0].notional,
+        request
+            .economics_admission
+            .full_reservation_liability()
+            .amount()
+            .to_string()
+    );
     assert_eq!(decisions[0].intent_kind, request.intent_kind);
 }
 
@@ -2968,11 +2967,11 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
         .admit(&submit_request(Decimal::new(1, 0)))
         .expect("first valid submit should admit")
         .commit_submitted();
-    let mut zero_notional_request = submit_request(Decimal::ONE);
-    zero_notional_request.notional = Decimal::ZERO;
+    let mut mismatched_purpose_request = submit_request(Decimal::ONE);
+    mismatched_purpose_request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
     admission
-        .admit(&zero_notional_request)
-        .expect_err("zero notional must reject");
+        .admit(&mismatched_purpose_request)
+        .expect_err("purpose mismatch must reject");
     admission
         .admit(&submit_request(Decimal::new(2, 0)))
         .expect_err("over-cap notional must reject");

@@ -21,30 +21,6 @@ classification = "economics_basis_point_unit_coefficient"
 reason = "The unit coefficient constructs one basis point at the fixture-fenced protocol decimal scale; it is a mathematical unit identity, not a configurable venue rate."
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket/economics.rs"
-kind = "number"
-literal = '''1'''
-context = '''1 => price_shape,'''
-classification = "polymarket_supported_fee_descriptor_exponent"
-reason = "Versioned wire exponent one is present in the governed live fee-bearing capture and selects the corresponding price-shape operation; every unrecognized exponent fails closed."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/economics.rs"
-kind = "number"
-literal = '''2'''
-context = '''(Some(descriptor), Some(_), Some(_)) if !matches!(descriptor.e, 1 | 2) => {'''
-classification = "polymarket_supported_fee_descriptor_exponent"
-reason = "The official market-info schema publishes exponent two; the closed supported wire set is fixture-fenced and all other exponents fail closed."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/economics.rs"
-kind = "number"
-literal = '''2'''
-context = '''2 => price_shape'''
-classification = "polymarket_supported_fee_descriptor_exponent"
-reason = "Versioned wire exponent two applies the documented second power to the price-shape term; it is a schema operation rather than operator policy."
-
-[[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
 literal = '''"standard_perps"'''

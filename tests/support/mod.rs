@@ -37,6 +37,24 @@ const TEST_DELAY_POST_STOP_SECS: u64 = 0;
 const TEST_RESTING_ORDER_REFRESH_MARGIN_NS: u64 = 60_000_000_000;
 const TEST_TRADER_ID: &str = "TESTER-001";
 
+fn sample_economics_runtime(
+    adapter: Arc<dyn bolt_v2::economics::VenueEconomicsAdapter>,
+    quote_validity_ns: u64,
+) -> Result<
+    bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime,
+    bolt_v2::economics::EconomicsUnavailable,
+> {
+    bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::try_new(
+        adapter,
+        bolt_v2::bolt_v3_economics_runtime::ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: quote_validity_ns,
+            quote_max_age_ns: quote_validity_ns,
+            quote_validity_ns,
+            resting_order_refresh_margin_ns: 1,
+        },
+    )
+}
+
 #[derive(Clone)]
 struct SampleEconomicsAdapter {
     estimate: bolt_v2::economics::VenueQuoteEstimate,
@@ -107,7 +125,8 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 }],
             },
         };
-        bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(
+        let authority_refreshed_at_ns = intent.request.requested_at_ns;
+        sample_economics_runtime(
             Arc::new(adapter),
             valid_until_ns
                 .checked_sub(intent.request.requested_at_ns)
@@ -120,7 +139,10 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     resolver_id: FormulaId::new("test-edge-resolver")?,
                     product_metadata_source: SourceId::new("test-product-metadata")?,
                     policy_version: 1,
-                    normalized_amount: intent.base_reservation_notional,
+                    normalized_amount: bolt_v2::economics::PlannedFillNotional::from_legs(
+                        &intent.request.planned_fill_legs,
+                    )?
+                    .amount(),
                     scope: EconomicScope::Decision {
                         decision_correlation_id: intent.request.decision_correlation_id.clone(),
                     },
@@ -133,7 +155,8 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 gross_expected_value: intent.gross_expected_value,
                 valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(
                 ),
-                base_reservation_notional: intent.base_reservation_notional,
+                reservation_basis: intent.reservation_basis,
+                authority_refreshed_at_ns,
             },
         )
     }
@@ -333,7 +356,7 @@ fn sample_economics_admission_with_component(
             }],
         },
     };
-    bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(
+    sample_economics_runtime(
         Arc::new(adapter),
         valid_until_ns
             .checked_sub(requested_at_ns)
@@ -364,7 +387,9 @@ fn sample_economics_admission_with_component(
                 valid_until_ns,
             },
             valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(),
-            base_reservation_notional,
+            reservation_basis: ReservationBasis::new(base_reservation_notional)
+                .expect("valid test reservation basis"),
+            authority_refreshed_at_ns: requested_at_ns,
         },
     )
     .expect("sample economics admission should quote")

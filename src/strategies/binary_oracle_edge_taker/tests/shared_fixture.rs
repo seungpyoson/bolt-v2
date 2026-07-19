@@ -289,19 +289,23 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 }],
             },
         };
-        crate::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::from_offline_adapter(
+        crate::bolt_v3_economics_runtime::test_economics_runtime(
             Arc::new(adapter),
             valid_until_ns
                 .checked_sub(intent.request.requested_at_ns)
                 .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
         )?
         .quote_admission(crate::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
+            authority_refreshed_at_ns: intent.request.requested_at_ns,
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),
                 resolver_id: FormulaId::new("test-edge-resolver")?,
                 product_metadata_source: SourceId::new("test-product-metadata")?,
                 policy_version: 1,
-                normalized_amount: intent.base_reservation_notional,
+                normalized_amount: crate::economics::PlannedFillNotional::from_legs(
+                    &intent.request.planned_fill_legs,
+                )?
+                .amount(),
                 scope: EconomicScope::Decision {
                     decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
@@ -313,7 +317,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
             purpose: intent.purpose,
             gross_expected_value: intent.gross_expected_value,
             valuation_provider: crate::bolt_v3_economics_runtime::identity_valuation_provider(),
-            base_reservation_notional: intent.base_reservation_notional,
+            reservation_basis: intent.reservation_basis,
         })
     }
 }

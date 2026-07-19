@@ -9,8 +9,8 @@ use bolt_v2::{
     },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, FormulaId,
-        ProductSurfaceId, ResolvedEdgeBasis, SnapshotId, SourceId, VenueEconomicsAdapter,
-        VenueQuoteEstimate,
+        ProductSurfaceId, ReservationBasis, ResolvedEdgeBasis, SnapshotId, SourceId,
+        VenueEconomicsAdapter, VenueQuoteEstimate,
     },
 };
 
@@ -126,6 +126,7 @@ fn configured_source_resolves_the_one_published_surface_for_an_instrument() {
 }
 
 fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
+    let authority_refreshed_at_ns = request.requested_at_ns;
     EconomicsAdmissionIntent {
         order_binding: test_order_binding(),
         purpose: EconomicsAdmissionPurpose::TradingEdge,
@@ -144,8 +145,22 @@ fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
         request,
         gross_expected_value: decimal("2"),
         valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(),
-        base_reservation_notional: decimal("5"),
+        reservation_basis: ReservationBasis::new(decimal("5")).expect("valid basis"),
+        authority_refreshed_at_ns,
     }
+}
+
+fn runtime(estimate: VenueQuoteEstimate, quote_validity_ns: u64) -> BoltV3EconomicsRuntime {
+    BoltV3EconomicsRuntime::try_new(
+        Arc::new(FixedVenue(estimate)),
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: quote_validity_ns,
+            quote_max_age_ns: quote_validity_ns,
+            quote_validity_ns,
+            resting_order_refresh_margin_ns: 1,
+        },
+    )
+    .expect("valid test economics policy")
 }
 
 fn test_order_binding() -> EconomicsOrderBinding {
@@ -164,17 +179,19 @@ fn quote_admission_reserves_authoritative_debits_once() {
         None,
     );
     let authority = component.source.clone();
-    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
-        Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = runtime(
+        VenueQuoteEstimate {
             authority,
             dependency_sources: Vec::new(),
             components: vec![component],
-        })),
+        },
         10,
-    )
-    .unwrap();
+    );
     let admission = runtime.quote_admission(intent(request)).unwrap();
-    assert_eq!(admission.reservation_notional(), decimal("5.25"));
+    assert_eq!(
+        admission.full_reservation_liability().amount(),
+        decimal("5.25")
+    );
     assert_eq!(admission.net_edge().core_net_edge(), decimal("1.75"));
     assert!(
         admission
@@ -193,15 +210,14 @@ fn configured_quote_validity_caps_authoritative_source_window() {
         None,
     );
     let authority = component.source.clone();
-    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
-        Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = runtime(
+        VenueQuoteEstimate {
             authority,
             dependency_sources: Vec::new(),
             components: vec![component],
-        })),
+        },
         5,
-    )
-    .unwrap();
+    );
 
     let admission = runtime.quote_admission(intent(request)).unwrap();
 
@@ -262,12 +278,15 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
             order_binding: test_order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
-            base_reservation_notional: decimal("5"),
+            reservation_basis: ReservationBasis::new(decimal("5")).expect("valid basis"),
         })
         .expect("exact authoritative dependencies should quote");
 
     assert_eq!(admission.quote().valid_until_ns(), 105);
-    assert_eq!(admission.reservation_notional(), decimal("5.25"));
+    assert_eq!(
+        admission.full_reservation_liability().amount(),
+        decimal("5.25")
+    );
     assert_eq!(admission.net_edge().basis().normalized_amount, decimal("5"));
     assert_eq!(
         admission.net_edge().basis().resolver_id.as_str(),
@@ -342,14 +361,18 @@ fn configured_source_keeps_planned_edge_basis_distinct_from_reservation_basis() 
             order_binding: test_order_binding(),
             purpose: EconomicsAdmissionPurpose::RiskReduction,
             gross_expected_value: decimal("2"),
-            base_reservation_notional: decimal("5.50"),
+            reservation_basis: ReservationBasis::new(decimal("5.50")).expect("valid basis"),
         })
         .expect("planned execution value and reservation basis are distinct facts");
 
     assert_eq!(admission.net_edge().basis().normalized_amount, decimal("5"));
-    assert_eq!(admission.base_reservation_notional(), decimal("5.50"));
-    assert_eq!(admission.debit_reservation(), decimal("0.25"));
-    assert_eq!(admission.reservation_notional(), decimal("5.75"));
+    assert_eq!(admission.planned_fill_notional().amount(), decimal("5"));
+    assert_eq!(admission.reservation_basis().amount(), decimal("5.50"));
+    assert_eq!(admission.guaranteed_debit().amount(), decimal("0.25"));
+    assert_eq!(
+        admission.full_reservation_liability().amount(),
+        decimal("5.75")
+    );
 }
 
 #[test]
@@ -405,7 +428,7 @@ fn configured_source_rejects_substrate_and_adapter_edge_basis_disagreement() {
             order_binding: test_order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
-            base_reservation_notional: decimal("5"),
+            reservation_basis: ReservationBasis::new(decimal("5")).expect("valid basis"),
         })
         .expect_err("basis disagreement must fail closed");
 
@@ -456,7 +479,7 @@ fn assert_configured_source_rejects_stale_dependencies(policy: ConfiguredEconomi
             order_binding: test_order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
-            base_reservation_notional: decimal("5"),
+            reservation_basis: ReservationBasis::new(decimal("5")).expect("valid basis"),
         })
         .expect_err("expired source deadline must fail closed");
 
@@ -539,7 +562,7 @@ fn configured_source_rejects_maker_quote_shorter_than_resting_margin() {
             order_binding: test_order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: decimal("2"),
-            base_reservation_notional: decimal("5"),
+            reservation_basis: ReservationBasis::new(decimal("5")).expect("valid basis"),
         })
         .expect_err("maker quote shorter than resting margin must fail closed");
 
@@ -556,15 +579,14 @@ fn non_positive_core_net_edge_cannot_create_admission() {
         None,
     );
     let authority = component.source.clone();
-    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
-        Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = runtime(
+        VenueQuoteEstimate {
             authority,
             dependency_sources: Vec::new(),
             components: vec![component],
-        })),
+        },
         10,
-    )
-    .unwrap();
+    );
     let mut admission_intent = intent(request);
     admission_intent.gross_expected_value = decimal("0.25");
 
@@ -584,15 +606,14 @@ fn risk_reduction_admission_retains_non_positive_edge_and_debit_reservation() {
         None,
     );
     let authority = component.source.clone();
-    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
-        Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = runtime(
+        VenueQuoteEstimate {
             authority,
             dependency_sources: Vec::new(),
             components: vec![component],
-        })),
+        },
         10,
-    )
-    .unwrap();
+    );
     let mut admission_intent = intent(request);
     admission_intent.purpose = EconomicsAdmissionPurpose::RiskReduction;
     admission_intent.gross_expected_value = decimal("0.25");
@@ -606,7 +627,7 @@ fn risk_reduction_admission_retains_non_positive_edge_and_debit_reservation() {
         EconomicsAdmissionPurpose::RiskReduction
     );
     assert_eq!(admission.net_edge().core_net_edge(), decimal("0"));
-    assert_eq!(admission.debit_reservation(), decimal("0.25"));
+    assert_eq!(admission.guaranteed_debit().amount(), decimal("0.25"));
 }
 
 #[test]
@@ -620,15 +641,14 @@ fn stale_authority_cannot_create_admission() {
     );
     let mut authority = component.source.clone();
     authority.valid_until_ns = 99;
-    let runtime = BoltV3EconomicsRuntime::from_offline_adapter(
-        Arc::new(FixedVenue(VenueQuoteEstimate {
+    let runtime = runtime(
+        VenueQuoteEstimate {
             authority,
             dependency_sources: Vec::new(),
             components: vec![component],
-        })),
+        },
         10,
-    )
-    .unwrap();
+    );
     assert!(matches!(
         runtime.quote_admission(intent(request)),
         Err(EconomicsUnavailable::StaleSource { .. })

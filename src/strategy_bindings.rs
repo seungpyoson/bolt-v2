@@ -1,8 +1,8 @@
-//! Production strategy-archetype binding lists, assembled in a NON-scanned
-//! crate-root module so it may name both the shared-layer (`crate::bolt_v3_*`)
-//! and strategy-layer (`crate::strategies::*`) bindings without violating the
-//! dependency-direction fence (forbidden root is `strategies`, not this module)
-//! and without growing `FINDING_ALLOWANCES`.
+//! Production strategy-archetype binding lists, assembled in a crate-root module
+//! outside the Python dependency fence so it may name both the shared layer
+//! (`crate::bolt_v3_*`) and strategy layer (`crate::strategies::*`) without
+//! growing `FINDING_ALLOWANCES`. Its public export surface is separately pinned
+//! by the Rust strategy-substrate structure gate to these two production lists.
 //!
 //! These lists were previously the `RUNTIME_BINDINGS` / `VALIDATION_BINDINGS`
 //! production constants inside the scanned `crate::bolt_v3_archetypes` module.

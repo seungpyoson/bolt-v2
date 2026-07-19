@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 #[path = "support/rust_source_tokens.rs"]
 mod rust_source_tokens;
@@ -390,9 +393,18 @@ fn workspace_crate_files() -> Vec<PathBuf> {
 
 fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
     let actual = texts(tokens);
-    for start in 0..actual.len().saturating_sub(4) {
-        if actual[start..start + 4] == ["strategies", "::", "registry", "::"] {
-            if actual.get(start + 4) == Some(&type_name) {
+    for start in 0..actual.len().saturating_sub(2) {
+        if actual[start..start + 3] == ["strategies", "::", "registry"] {
+            if matches!(
+                actual.get(start + 3),
+                None | Some(&";") | Some(&",") | Some(&"}") | Some(&"as")
+            ) {
+                return true;
+            }
+            if actual.get(start + 3) != Some(&"::") {
+                continue;
+            }
+            if matches!(actual.get(start + 4), Some(name) if *name == type_name || *name == "*") {
                 return true;
             }
             if use_tree_contains_at_depth(&actual, start + 4, type_name) {
@@ -406,13 +418,21 @@ fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
                 match actual[cursor] {
                     "{" => depth += 1,
                     "}" => depth -= 1,
-                    "registry"
-                        if depth == 1
-                            && actual.get(cursor + 1) == Some(&"::")
-                            && is_use_tree_segment_start(&actual, cursor) =>
-                    {
-                        if actual.get(cursor + 2) == Some(&type_name)
-                            || use_tree_contains_at_depth(&actual, cursor + 2, type_name)
+                    "registry" if depth == 1 && is_use_tree_segment_start(&actual, cursor) => {
+                        if matches!(
+                            actual.get(cursor + 1),
+                            None | Some(&";") | Some(&",") | Some(&"}") | Some(&"as")
+                        ) {
+                            return true;
+                        }
+                        if actual.get(cursor + 1) != Some(&"::") {
+                            cursor += 1;
+                            continue;
+                        }
+                        if matches!(
+                            actual.get(cursor + 2),
+                            Some(name) if *name == type_name || *name == "*"
+                        ) || use_tree_contains_at_depth(&actual, cursor + 2, type_name)
                         {
                             return true;
                         }
@@ -437,7 +457,7 @@ fn use_tree_contains_at_depth(actual: &[&str], open_brace: usize, type_name: &st
             "{" => depth += 1,
             "}" => depth -= 1,
             name if depth == 1
-                && name == type_name
+                && (name == type_name || name == "*" || name == "self")
                 && is_use_tree_segment_start(actual, cursor) =>
             {
                 return true;
@@ -460,18 +480,19 @@ fn relative(path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
-    let mut public = Vec::new();
+fn public_declarations(tokens: &[Token]) -> Vec<Vec<&str>> {
+    let mut declarations = Vec::new();
     for (start, token) in tokens.iter().enumerate() {
         if token.text != "pub" {
             continue;
         }
+        let mut declaration = Vec::new();
         let mut cursor = start;
         let mut parentheses = 0usize;
         let mut brackets = 0usize;
         let mut angles = 0usize;
         while let Some(current) = tokens.get(cursor) {
-            public.push(current.text.as_str());
+            declaration.push(current.text.as_str());
             match current.text.as_str() {
                 "(" => parentheses += 1,
                 ")" => parentheses = parentheses.saturating_sub(1),
@@ -484,8 +505,73 @@ fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
             }
             cursor += 1;
         }
+        declarations.push(declaration);
     }
-    public
+    declarations
+}
+
+fn public_declaration_tokens(tokens: &[Token]) -> Vec<&str> {
+    public_declarations(tokens).into_iter().flatten().collect()
+}
+
+fn normalized_public_declarations(tokens: &[Token]) -> Vec<String> {
+    public_declarations(tokens)
+        .into_iter()
+        .map(|declaration| declaration.join(" "))
+        .collect()
+}
+
+fn forbidden_aliases_across_sources(
+    sources: &[Vec<Token>],
+    forbidden: &[&str],
+) -> BTreeMap<String, String> {
+    let mut aliases = forbidden
+        .iter()
+        .map(|name| ((*name).to_string(), (*name).to_string()))
+        .collect::<BTreeMap<_, _>>();
+
+    loop {
+        let mut discovered = Vec::new();
+        for tokens in sources {
+            for window in tokens.windows(3) {
+                if window[1].text == "as"
+                    && window[2].text != "_"
+                    && let Some(root) = aliases.get(&window[0].text)
+                {
+                    discovered.push((window[2].text.clone(), root.clone()));
+                }
+            }
+            for (index, token) in tokens.iter().enumerate() {
+                if token.text != "type" {
+                    continue;
+                }
+                let Some(alias) = tokens.get(index + 1) else {
+                    continue;
+                };
+                let Some(statement) = tokens.get(index + 2..) else {
+                    continue;
+                };
+                let Some(end_offset) = statement.iter().position(|token| token.text == ";") else {
+                    continue;
+                };
+                let statement = &statement[..end_offset];
+                let Some(equals) = statement.iter().position(|token| token.text == "=") else {
+                    continue;
+                };
+                if let Some(root) = statement[equals + 1..]
+                    .iter()
+                    .find_map(|token| aliases.get(&token.text))
+                {
+                    discovered.push((alias.text.clone(), root.clone()));
+                }
+            }
+        }
+        let previous_len = aliases.len();
+        aliases.extend(discovered);
+        if aliases.len() == previous_len {
+            return aliases;
+        }
+    }
 }
 
 #[test]
@@ -534,6 +620,129 @@ fn retired_registry_matcher_covers_direct_and_grouped_paths_only() {
         "use other::registry::{FeeProvider}; use bolt_v2::strategies::production_strategy_registry; use bolt_v2::strategies::registry::{nested::FeeProvider}; use bolt_v2::strategies::{nested::{registry::FeeProvider}};",
     );
     assert!(!references_retired_registry_type(&unrelated, "FeeProvider"));
+}
+
+#[test]
+fn retired_registry_matcher_covers_wildcard_and_reexport_paths() {
+    for source in [
+        "use bolt_v2::strategies::registry::*;",
+        "use bolt_v2::strategies::{registry::*};",
+        "pub use bolt_v2::strategies::registry::FeeProvider;",
+        "pub use bolt_v2::strategies::registry::FeeProvider as SharedFeeProvider;",
+        "pub use bolt_v2::strategies::registry::*;",
+        "pub use bolt_v2::strategies::registry as retired_registry;",
+        "pub use bolt_v2::strategies::{registry as retired_registry};",
+    ] {
+        assert!(references_retired_registry_type(
+            &tokenize(source),
+            "FeeProvider"
+        ));
+    }
+    for source in [
+        "use other::strategies::registry::*;",
+        "pub use bolt_v2::strategies::registry::nested::*;",
+        "pub use bolt_v2::strategies::{nested::registry};",
+    ] {
+        assert!(!references_retired_registry_type(
+            &tokenize(source),
+            "FeeProvider"
+        ));
+    }
+}
+
+#[test]
+fn strategy_bindings_exports_only_the_two_neutral_production_lists() {
+    let source = std::fs::read_to_string(repo_path("src/strategy_bindings.rs"))
+        .expect("strategy bindings should be readable");
+    let tokens = production_tokens(&source);
+    assert_eq!(
+        normalized_public_declarations(&tokens),
+        vec![
+            "pub fn production_runtime_bindings ( ) - > & [ StrategyRuntimeBinding ] {".to_string(),
+            "pub fn production_validation_bindings ( ) - > & [ ArchetypeValidationBinding ] {"
+                .to_string(),
+        ],
+        "strategy_bindings must expose exactly the two neutral production lists"
+    );
+
+    let imports: &[&[&str]] = &[
+        &[
+            "use",
+            "crate",
+            "::",
+            "bolt_v3_archetypes",
+            "::",
+            "ArchetypeValidationBinding",
+            ";",
+        ],
+        &[
+            "use",
+            "crate",
+            "::",
+            "bolt_v3_strategy_registration",
+            "::",
+            "StrategyRuntimeBinding",
+            ";",
+        ],
+        &[
+            "use",
+            "crate",
+            "::",
+            "strategies",
+            "::",
+            "{",
+            "binary_oracle_edge_taker",
+            ",",
+            "binary_oracle_maker",
+            ",",
+            "complete_set_arbitrage",
+            "}",
+            ";",
+        ],
+    ];
+    for exact in imports {
+        assert_eq!(
+            count_sequence(&tokens, exact),
+            1,
+            "strategy_bindings import provenance differs: {}",
+            exact.join("")
+        );
+    }
+    let actual = texts(&tokens);
+    assert_eq!(
+        actual.iter().filter(|token| **token == "use").count(),
+        imports.len(),
+        "strategy_bindings must not add an attributed or alternate import"
+    );
+    for forbidden in ["#", "!", "include", "macro", "macro_rules", "macro_export"] {
+        assert!(
+            !actual.contains(&forbidden),
+            "strategy_bindings production surface contains `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn public_api_forbidden_type_aliases_cannot_launder_handle_types() {
+    let sources = vec![
+        tokenize("pub type NeutralHandle = LiveNodeHandle;"),
+        tokenize("type SecondAlias = NeutralHandle;"),
+        tokenize("pub fn leak() -> SecondAlias { loop {} }"),
+    ];
+    let aliases = forbidden_aliases_across_sources(&sources, &["LiveNodeHandle"]);
+    assert_eq!(
+        aliases.get("NeutralHandle").map(String::as_str),
+        Some("LiveNodeHandle")
+    );
+    assert_eq!(
+        aliases.get("SecondAlias").map(String::as_str),
+        Some("LiveNodeHandle")
+    );
+    let public = public_declaration_tokens(&sources[2]);
+    assert!(
+        aliases.keys().any(|alias| public.contains(&alias.as_str())),
+        "transitive forbidden alias should remain visible to the public-API scan"
+    );
 }
 
 #[test]
@@ -724,6 +933,37 @@ fn every_archetype_uses_the_shared_build_context_without_inlining_provider_looku
 }
 
 #[test]
+fn production_archetypes_use_the_neutral_venue_accessor() {
+    let registration = source_tokens("src/bolt_v3_strategy_registration.rs");
+    let accessor = item_body_tokens(&registration, &["fn", "venue_for_client"])
+        .expect("neutral venue accessor should exist");
+    assert_eq!(
+        count_sequence(accessor, &["root", ".", "clients", ".", "get", "("]),
+        1,
+        "venue_for_client must remain the single direct venue lookup"
+    );
+
+    let mut production_calls = 0usize;
+    for relative in ARCHETYPES {
+        let source = std::fs::read_to_string(repo_path(relative))
+            .expect("production archetype should be readable");
+        let tokens = production_tokens(&source);
+        assert_eq!(
+            count_sequence(&tokens, &["clients", ".", "get", "("]),
+            0,
+            "{relative} must not bypass venue_for_client"
+        );
+        production_calls += count_sequence(&tokens, &["venue_for_client", "("]);
+    }
+    assert!(
+        production_calls > 0,
+        "production archetypes must positively use venue_for_client"
+    );
+}
+
+// Secondary defense in depth. The authoritative dependency-direction policy is
+// scripts/verify_bolt_v3_dependency_direction.py, which resolves Rust paths.
+#[test]
 fn production_bolt_v3_modules_do_not_reference_the_strategy_layer() {
     let mut violations = Vec::new();
     for path in production_bolt_v3_files() {
@@ -899,20 +1139,37 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
         "OrderCache",
         "PositionCache",
     ];
-    for relative in [
-        "src/bolt_v3_settlement_booking.rs",
-        "src/bolt_v3_runtime_reconcile.rs",
-        "src/bolt_v3_reference_price_health.rs",
-    ] {
-        let tokens = source_tokens(relative);
+    let crate_sources = rust_files_below(&repo_path("src"))
+        .into_iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path).expect("crate source should be readable");
+            tokenize(&source)
+        })
+        .collect::<Vec<_>>();
+    let aliases = forbidden_aliases_across_sources(&crate_sources, &forbidden);
+    let mut scanned = Vec::new();
+    for path in production_bolt_v3_files() {
+        let relative = relative(&path);
+        if relative == "src/bolt_v3_live_node.rs" || relative.starts_with("src/bolt_v3_live_node/")
+        {
+            continue;
+        }
+        let source =
+            std::fs::read_to_string(&path).expect("shared runtime source should be readable");
+        let tokens = production_tokens(&source);
         let public = public_declaration_tokens(&tokens);
-        for name in forbidden {
+        for (alias, root) in &aliases {
             assert!(
-                !public.contains(&name),
-                "{relative} public API exposes forbidden private/handle type `{name}`"
+                !public.contains(&alias.as_str()),
+                "{relative} public API exposes forbidden private/handle type `{root}` through `{alias}`"
             );
         }
+        scanned.push(relative);
     }
+    assert!(
+        scanned.contains(&"src/bolt_v3_submit_admission.rs".to_string()),
+        "shared public-API scan must cover submit admission"
+    );
 }
 
 #[test]
@@ -960,4 +1217,5 @@ fn dependency_allowance_is_empty_and_shrink_only_gate_remains_wired() {
     assert!(runner.contains("scripts_dir.glob(\"verify_*.py\")"));
     assert!(dependency_fence.contains("enforce_shrink_only = argv is None"));
     assert!(dependency_fence.contains("return check_allowlist_shrink_only()"));
+    assert!(dependency_fence.contains("The enforced `FINDING_ALLOWANCES` set is empty"));
 }

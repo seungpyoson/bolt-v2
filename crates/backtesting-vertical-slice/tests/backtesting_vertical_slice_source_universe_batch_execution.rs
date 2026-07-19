@@ -191,9 +191,8 @@ fn control_hash_mismatch_rejects_before_fetch_or_output_creation() {
     .expect_err("tampered control must reject before fetch");
 
     assert!(
-        error
-            .to_string()
-            .contains("pinned run_spec sha256 mismatch")
+        format!("{error:#}").contains("pinned run_spec sha256 mismatch"),
+        "full error chain must identify the rejected control: {error:#}"
     );
     assert!(
         !output_dir.exists(),

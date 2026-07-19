@@ -8,100 +8,39 @@ use std::{
     time::Duration,
 };
 
+use backtesting_vertical_slice::backfill_accepted_tranche::{
+    BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION, BackfillAcceptedTrancheManifest,
+    BackfillAcceptedTrancheObject, BackfillAcceptedTrancheStatus,
+};
+use backtesting_vertical_slice::backfill_execution_plan::{
+    BackfillExecutionPlan, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
+    evaluate_backfill_execution_plan,
+};
+use backtesting_vertical_slice::operator::{RunSpec, RunSpecInstrumentIdentities};
 use backtesting_vertical_slice::source_universe_batch_execution::{
     CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
     SourceUniverseAdmittedControls, SourceUniverseBatchExecutionConfig,
     SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
-    SourceUniverseBatchExecutionRunOutput, SourceUniverseObjectFetcher,
-    SourceUniverseOperatorRunner, execute_source_universe_batch,
+    SourceUniverseBatchExecutionRunOutput, SourceUniverseControlAdmissionPolicy,
+    SourceUniverseObjectFetcher, SourceUniverseOperatorRunner, execute_source_universe_batch,
     execute_source_universe_batch_with_config, execute_source_universe_batch_with_factories,
-    write_source_universe_batch_execution_report,
+    load_source_universe_control_admission_policy, write_source_universe_batch_execution_report,
 };
-use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord;
+use backtesting_vertical_slice::source_universe_execution_pack::{
+    SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
+    SourceUniverseExecutionPackStatus,
+};
 
 #[test]
 fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let accepted_tranche_path = temp_dir.path().join("accepted-tranche.json");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
     let output_dir = temp_dir.path().join("batch-output");
     let object_bytes = b"accepted object bytes";
-    let object_sha256 = sha256_hex(object_bytes);
-
-    let run_spec_bytes = b"run_id = \"synthetic-run\"\n";
-    let accepted_tranche_bytes = b"{}\n";
-    let execution_plan_bytes = b"{}\n";
-    fs::write(&run_spec_path, run_spec_bytes).expect("write run spec");
-    fs::write(&accepted_tranche_path, accepted_tranche_bytes).expect("write accepted tranche");
-    fs::write(&execution_plan_path, execution_plan_bytes).expect("write execution plan");
-    fs::write(
-        &pack_path,
-        format!(
-            r#"{{
-  "schema_version": "source-universe-execution-pack.v1",
-  "pack_id": "source-universe-execution-pack-synthetic",
-  "status": "ready",
-  "work_order_id": "source-universe-conversion-work-order-synthetic",
-  "input_id": "source-universe-operator-inputs-synthetic",
-  "gate_id": "source-universe-object-gates-synthetic",
-  "conversion_run_plan_id": "source-universe-conversion-run-plan-synthetic",
-  "universe_id": "backfill-source-universe-synthetic",
-  "venue": "bybit",
-  "source": "public_archive",
-  "family": "tick_trades",
-  "table_family": "trades",
-  "planned_object_count": 1,
-  "executable_record_count": 1,
-  "withheld_record_count": 0,
-  "selected_record_count": 1,
-  "materialized_record_count": 1,
-  "skipped_executable_record_count": 0,
-  "executable_source_bytes": {object_bytes_len},
-  "materialized_source_bytes": {object_bytes_len},
-  "artifact_refs": [],
-  "records": [
-    {{
-      "sequence": 0,
-      "work_item_id": "synthetic-work-item",
-      "operator_run_id": "source-universe-operator-run-synthetic-00000",
-      "source_binding": "bybit-spot-tick-trades",
-      "category": "spot",
-      "symbol": "BTCUSDT",
-      "archive_date": "2026-03-01",
-      "source_uri": "s3://bolt-parquet/raw/synthetic.csv.gz",
-      "source_url": "https://public.bybit.example/BTCUSDT2026-03-01.csv.gz",
-      "selected_object_sha256": "{object_sha256}",
-      "selected_object_bytes": {object_bytes_len},
-      "source_proof_id": "source-proof-synthetic",
-      "source_proof_version": 1,
-      "accepted_tranche_id": "accepted-tranche-synthetic",
-      "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/synthetic",
-      "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "{run_spec_sha256}",
-      "accepted_tranche_path": "{accepted_tranche_path}",
-      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
-      "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "{execution_plan_sha256}"
-    }}
-  ],
-  "blocking_reasons": []
-}}"#,
-            object_bytes_len = object_bytes.len(),
-            object_sha256 = object_sha256,
-            run_spec_path = run_spec_path.display(),
-            run_spec_sha256 = sha256_hex(run_spec_bytes),
-            accepted_tranche_path = accepted_tranche_path.display(),
-            accepted_tranche_sha256 = sha256_hex(accepted_tranche_bytes),
-            execution_plan_path = execution_plan_path.display(),
-            execution_plan_sha256 = sha256_hex(execution_plan_bytes),
-        ),
-    )
-    .expect("write pack");
+    let (pack_path, run_spec_path, accepted_tranche_path, execution_plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.to_vec())]);
 
     let mut fetcher = StaticFetcher {
-        expected_source_url: "https://public.bybit.example/BTCUSDT2026-03-01.csv.gz".to_string(),
+        expected_source_url: "https://public.synthetic.example/object-0.csv.gz".to_string(),
         object_bytes: object_bytes.to_vec(),
         calls: 0,
     };
@@ -112,6 +51,7 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
         &pack_path,
         &output_dir,
         Some(1),
+        test_control_admission_policy(temp_dir.path()),
         &mut fetcher,
         &mut runner,
     )
@@ -164,20 +104,10 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
 #[test]
 fn control_hash_mismatch_rejects_before_fetch_or_output_creation() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
     let output_dir = temp_dir.path().join("batch-output");
     let object_bytes = b"accepted object bytes";
-
-    fs::write(&run_spec_path, "run_id = \"admitted\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-    write_n_record_pack(
-        &pack_path,
-        &run_spec_path,
-        &execution_plan_path,
-        &[(0, object_bytes.to_vec())],
-    );
+    let (pack_path, run_spec_path, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.to_vec())]);
     fs::write(&run_spec_path, "run_id = \"tampered\"\n").expect("tamper run spec");
 
     let error = execute_source_universe_batch(
@@ -185,6 +115,7 @@ fn control_hash_mismatch_rejects_before_fetch_or_output_creation() {
         &pack_path,
         &output_dir,
         Some(1),
+        test_control_admission_policy(temp_dir.path()),
         &mut NeverFetcher,
         &mut RecordingRunner::default(),
     )
@@ -241,7 +172,7 @@ fn missing_control_file_rejects_before_fetch_or_output_creation() {
     assert_control_admission_rejects_before_side_effects(
         &pack_path,
         &temp_dir.path().join("batch-output"),
-        "inspect pinned execution_plan",
+        "open pinned execution_plan",
     );
 }
 
@@ -267,9 +198,19 @@ fn duplicate_selected_sequence_rejects_before_fetch_or_output_creation() {
         temp_dir.path(),
         &[
             (0, b"first accepted object bytes".to_vec()),
-            (0, b"second accepted object bytes".to_vec()),
+            (1, b"second accepted object bytes".to_vec()),
         ],
     );
+    let mut pack: serde_json::Value = serde_json::from_slice(
+        &fs::read(&pack_path).expect("read execution pack for duplicate mutation"),
+    )
+    .expect("parse execution pack for duplicate mutation");
+    pack["records"][1]["sequence"] = serde_json::json!(0);
+    fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize duplicate execution pack"),
+    )
+    .expect("write duplicate execution pack");
 
     assert_control_admission_rejects_before_side_effects(
         &pack_path,
@@ -281,7 +222,7 @@ fn duplicate_selected_sequence_rejects_before_fetch_or_output_creation() {
 #[test]
 fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
     struct MutatingFetcher {
-        run_spec_path: std::path::PathBuf,
+        control_paths: Vec<PathBuf>,
         object_bytes: Vec<u8>,
     }
 
@@ -290,33 +231,25 @@ fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
             &mut self,
             _record: &SourceUniverseExecutionPackRecord,
         ) -> anyhow::Result<Vec<u8>> {
-            fs::write(
-                &self.run_spec_path,
-                "run_id = \"changed-after-admission\"\n",
-            )?;
+            for path in &self.control_paths {
+                fs::write(path, b"changed-after-admission")?;
+            }
             Ok(self.object_bytes.clone())
         }
     }
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
     let output_dir = temp_dir.path().join("batch-output");
-    let admitted_run_spec = b"run_id = \"admitted\"\n";
     let object_bytes = b"accepted object bytes";
-
-    fs::write(&run_spec_path, admitted_run_spec).expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-    write_n_record_pack(
-        &pack_path,
-        &run_spec_path,
-        &execution_plan_path,
-        &[(0, object_bytes.to_vec())],
-    );
+    let (pack_path, run_spec_path, accepted_tranche_path, execution_plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.to_vec())]);
+    let admitted_run_spec = fs::read(&run_spec_path).expect("read admitted run spec");
+    let admitted_tranche =
+        fs::read(&accepted_tranche_path).expect("read admitted accepted tranche");
+    let admitted_plan = fs::read(&execution_plan_path).expect("read admitted execution plan");
 
     let mut fetcher = MutatingFetcher {
-        run_spec_path,
+        control_paths: vec![run_spec_path, accepted_tranche_path, execution_plan_path],
         object_bytes: object_bytes.to_vec(),
     };
     let mut runner = RecordingRunner::default();
@@ -325,33 +258,634 @@ fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
         &pack_path,
         &output_dir,
         Some(1),
+        test_control_admission_policy(temp_dir.path()),
         &mut fetcher,
         &mut runner,
     )
     .expect("batch uses admitted control snapshot");
 
     assert_eq!(runner.calls[0].run_spec_bytes, admitted_run_spec);
+    assert_eq!(runner.calls[0].accepted_tranche_bytes, admitted_tranche);
+    assert_eq!(runner.calls[0].execution_plan_bytes, admitted_plan);
+}
+
+#[test]
+fn cross_binding_rejects_a_hash_valid_splice_before_side_effects() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        temp_dir.path(),
+        &[
+            (0, b"first accepted object bytes".to_vec()),
+            (1, b"second accepted object bytes".to_vec()),
+        ],
+    );
+    let mut pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&pack_path).expect("read execution pack for splice"))
+            .expect("parse execution pack for splice");
+    let spliced_run_spec_path = pack.records[1].run_spec_path.clone();
+    let spliced_run_spec_sha256 = pack.records[1].run_spec_sha256.clone();
+    pack.records[0].run_spec_path = spliced_run_spec_path;
+    pack.records[0].run_spec_sha256 = spliced_run_spec_sha256;
+    fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize spliced execution pack"),
+    )
+    .expect("write spliced execution pack");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "execution_plan does not match the admitted run_spec and accepted_tranche",
+    );
+}
+
+#[test]
+fn record_and_pack_identity_mismatches_reject_before_side_effects() {
+    let cases = [
+        (
+            "/records/0/operator_run_id",
+            serde_json::json!("different-operator-run"),
+            "operator_run_id mismatch",
+        ),
+        (
+            "/records/0/accepted_tranche_id",
+            serde_json::json!("different-tranche"),
+            "accepted_tranche_id mismatch",
+        ),
+        (
+            "/records/0/source_proof_id",
+            serde_json::json!("different-proof"),
+            "source proof identity mismatch",
+        ),
+        (
+            "/records/0/source_binding",
+            serde_json::json!("different-binding"),
+            "source_binding mismatch",
+        ),
+        (
+            "/records/0/output_prefix",
+            serde_json::json!("s3://different/output"),
+            "output_prefix mismatch",
+        ),
+        (
+            "/records/0/category",
+            serde_json::json!("different-category"),
+            "category mismatch",
+        ),
+        (
+            "/records/0/symbol",
+            serde_json::json!("DIFFERENT-SYMBOL"),
+            "symbol mismatch",
+        ),
+        (
+            "/records/0/selected_object_sha256",
+            serde_json::json!("b".repeat(64)),
+            "selected_object_sha256 mismatch",
+        ),
+        (
+            "/records/0/selected_object_bytes",
+            serde_json::json!(999),
+            "selected_object_bytes mismatch",
+        ),
+        (
+            "/records/0/source_uri",
+            serde_json::json!("s3://different/object"),
+            "source_uri mismatch",
+        ),
+        (
+            "/records/0/source_url",
+            serde_json::json!("https://different.invalid/object"),
+            "source_url mismatch",
+        ),
+        (
+            "/records/0/archive_date",
+            serde_json::json!("2026-04-01"),
+            "archive_date mismatch",
+        ),
+        (
+            "/venue",
+            serde_json::json!("different-neutral-venue"),
+            "venue mismatch",
+        ),
+        (
+            "/table_family",
+            serde_json::json!("different-table-family"),
+            "table_family mismatch",
+        ),
+    ];
+
+    for (pointer, replacement, expected_error) in cases {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (pack_path, _, _, _) = write_control_admission_fixture(
+            temp_dir.path(),
+            &[(0, b"accepted object bytes".to_vec())],
+        );
+        let mut pack: serde_json::Value = serde_json::from_slice(
+            &fs::read(&pack_path).expect("read execution pack for identity mutation"),
+        )
+        .expect("parse execution pack for identity mutation");
+        *pack
+            .pointer_mut(pointer)
+            .expect("identity mutation pointer must exist") = replacement;
+        fs::write(
+            &pack_path,
+            serde_json::to_vec_pretty(&pack).expect("serialize identity-mutated pack"),
+        )
+        .expect("write identity-mutated pack");
+
+        assert_control_admission_rejects_before_side_effects(
+            &pack_path,
+            &temp_dir.path().join("batch-output"),
+            expected_error,
+        );
+    }
+}
+
+#[test]
+fn missing_identities_in_each_control_reject_before_side_effects() {
+    for role in ["run_spec", "accepted_tranche", "execution_plan"] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (pack_path, run_spec_path, tranche_path, plan_path) = write_control_admission_fixture(
+            temp_dir.path(),
+            &[(0, b"accepted object bytes".to_vec())],
+        );
+        let (path, bytes, pin_field, expected_error) = match role {
+            "run_spec" => {
+                let mut value: toml::Value = toml::from_slice(
+                    &fs::read(&run_spec_path).expect("read run spec for missing identity"),
+                )
+                .expect("parse run spec for missing identity");
+                value
+                    .get_mut("manifest")
+                    .and_then(toml::Value::as_table_mut)
+                    .expect("run spec manifest table")
+                    .remove("run_id");
+                (
+                    run_spec_path,
+                    toml::to_string_pretty(&value)
+                        .expect("serialize run spec without run_id")
+                        .into_bytes(),
+                    "run_spec_sha256",
+                    "run_id",
+                )
+            }
+            "accepted_tranche" => {
+                let mut value: serde_json::Value = serde_json::from_slice(
+                    &fs::read(&tranche_path).expect("read tranche for missing identity"),
+                )
+                .expect("parse tranche for missing identity");
+                value
+                    .as_object_mut()
+                    .expect("tranche object")
+                    .remove("tranche_id");
+                (
+                    tranche_path,
+                    serde_json::to_vec_pretty(&value)
+                        .expect("serialize tranche without tranche_id"),
+                    "accepted_tranche_sha256",
+                    "tranche_id",
+                )
+            }
+            "execution_plan" => {
+                let mut value: serde_json::Value = serde_json::from_slice(
+                    &fs::read(&plan_path).expect("read plan for missing identity"),
+                )
+                .expect("parse plan for missing identity");
+                value
+                    .as_object_mut()
+                    .expect("plan object")
+                    .remove("operator_run_id");
+                (
+                    plan_path,
+                    serde_json::to_vec_pretty(&value)
+                        .expect("serialize plan without operator_run_id"),
+                    "execution_plan_sha256",
+                    "operator_run_id",
+                )
+            }
+            _ => unreachable!(),
+        };
+        fs::write(&path, &bytes).expect("write control without identity");
+        let mut pack: serde_json::Value =
+            serde_json::from_slice(&fs::read(&pack_path).expect("read pack for control repin"))
+                .expect("parse pack for control repin");
+        pack["records"][0][pin_field] = serde_json::json!(sha256_hex(&bytes));
+        fs::write(
+            &pack_path,
+            serde_json::to_vec_pretty(&pack).expect("serialize repinned pack"),
+        )
+        .expect("write repinned pack");
+
+        assert_control_admission_rejects_before_side_effects(
+            &pack_path,
+            &temp_dir.path().join("batch-output"),
+            expected_error,
+        );
+    }
+}
+
+#[test]
+fn malformed_bytes_in_each_control_reject_before_side_effects() {
+    for (role, malformed, expected_error) in [
+        ("run_spec", b"not = [valid toml".as_slice(), "run_spec TOML"),
+        ("accepted_tranche", b"{".as_slice(), "accepted_tranche JSON"),
+        ("execution_plan", b"[".as_slice(), "execution_plan JSON"),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (pack_path, run_spec_path, tranche_path, plan_path) = write_control_admission_fixture(
+            temp_dir.path(),
+            &[(0, b"accepted object bytes".to_vec())],
+        );
+        let (path, pin_field) = match role {
+            "run_spec" => (run_spec_path, "run_spec_sha256"),
+            "accepted_tranche" => (tranche_path, "accepted_tranche_sha256"),
+            "execution_plan" => (plan_path, "execution_plan_sha256"),
+            _ => unreachable!(),
+        };
+        fs::write(&path, malformed).expect("write malformed control");
+        let mut pack: serde_json::Value = serde_json::from_slice(
+            &fs::read(&pack_path).expect("read pack for malformed control repin"),
+        )
+        .expect("parse pack for malformed control repin");
+        pack["records"][0][pin_field] = serde_json::json!(sha256_hex(malformed));
+        fs::write(
+            &pack_path,
+            serde_json::to_vec_pretty(&pack).expect("serialize malformed-control pack"),
+        )
+        .expect("write malformed-control pack");
+
+        assert_control_admission_rejects_before_side_effects(
+            &pack_path,
+            &temp_dir.path().join("batch-output"),
+            expected_error,
+        );
+    }
+}
+
+#[test]
+fn internally_drifted_execution_plan_rejects_after_repinning() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, execution_plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let mut plan: BackfillExecutionPlan = serde_json::from_slice(
+        &fs::read(&execution_plan_path).expect("read execution plan for drift"),
+    )
+    .expect("parse execution plan for drift");
+    plan.accepted_bytes = plan
+        .accepted_bytes
+        .checked_add(1)
+        .expect("accepted bytes add");
+    let plan_bytes = serde_json::to_vec_pretty(&plan).expect("serialize drifted plan");
+    fs::write(&execution_plan_path, &plan_bytes).expect("write drifted plan");
+    let mut pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&pack_path).expect("read pack for plan repin"))
+            .expect("parse pack for plan repin");
+    pack.records[0].execution_plan_sha256 = sha256_hex(&plan_bytes);
+    fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize plan-repinned pack"),
+    )
+    .expect("write plan-repinned pack");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "execution_plan does not match the admitted run_spec and accepted_tranche",
+    );
+}
+
+#[test]
+fn venue_identity_is_bound_opaquely_without_venue_enumeration() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![(0, b"accepted object bytes".to_vec())];
+    let (pack_path, run_spec_path, _, execution_plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &objects);
+    let mut run_spec: RunSpec =
+        toml::from_slice(&fs::read(&run_spec_path).expect("read run spec for venue mutation"))
+            .expect("parse run spec for venue mutation");
+    run_spec.source_proof.venue = "second-neutral-venue".to_string();
+    let run_spec_bytes = toml::to_string_pretty(&run_spec)
+        .expect("serialize venue-mutated run spec")
+        .into_bytes();
+    fs::write(&run_spec_path, &run_spec_bytes).expect("write venue-mutated run spec");
+    let run_spec_sha256 = sha256_hex(&run_spec_bytes);
+    let mut plan: BackfillExecutionPlan = serde_json::from_slice(
+        &fs::read(&execution_plan_path).expect("read plan for run-spec repin"),
+    )
+    .expect("parse plan for run-spec repin");
+    plan.run_spec_hash.clone_from(&run_spec_sha256);
+    let plan_bytes = serde_json::to_vec_pretty(&plan).expect("serialize run-spec-repinned plan");
+    fs::write(&execution_plan_path, &plan_bytes).expect("write run-spec-repinned plan");
+    let mut pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&pack_path).expect("read pack for venue repin"))
+            .expect("parse pack for venue repin");
+    pack.venue = "second-neutral-venue".to_string();
+    pack.records[0].run_spec_sha256 = run_spec_sha256;
+    pack.records[0].execution_plan_sha256 = sha256_hex(&plan_bytes);
+    fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize venue-repinned pack"),
+    )
+    .expect("write venue-repinned pack");
+
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    execute_source_universe_batch(
+        "source-universe-batch-second-neutral-venue",
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        None,
+        test_control_admission_policy(temp_dir.path()),
+        &mut fetcher,
+        &mut RecordingRunner::default(),
+    )
+    .expect("a second opaque venue identity follows the same admission path");
+}
+
+#[test]
+fn admission_rejection_leaves_preexisting_output_unchanged() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let mut pack: serde_json::Value =
+        serde_json::from_slice(&fs::read(&pack_path).expect("read pack for mismatch"))
+            .expect("parse pack for mismatch");
+    pack["records"][0]["operator_run_id"] = serde_json::json!("different-run");
+    fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize mismatched pack"),
+    )
+    .expect("write mismatched pack");
+    let output_dir = temp_dir.path().join("preexisting-output");
+    fs::create_dir_all(&output_dir).expect("create preexisting output");
+    let sentinel_path = output_dir.join("sentinel");
+    fs::write(&sentinel_path, b"unchanged").expect("write output sentinel");
+    let mut runner = RecordingRunner::default();
+
+    execute_source_universe_batch(
+        "source-universe-batch-preexisting-output",
+        &pack_path,
+        &output_dir,
+        None,
+        test_control_admission_policy(temp_dir.path()),
+        &mut NeverFetcher,
+        &mut runner,
+    )
+    .expect_err("identity mismatch must reject before output mutation");
+    assert_eq!(
+        fs::read(&sentinel_path).expect("read unchanged sentinel"),
+        b"unchanged"
+    );
+    assert!(
+        !output_dir
+            .join("source-universe-batch-execution-report.json")
+            .exists()
+    );
+    assert!(runner.calls.is_empty());
+}
+
+#[test]
+fn control_and_batch_byte_ceilings_enforce_exact_boundaries() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let objects = vec![(0, b"accepted object bytes".to_vec())];
+    let (pack_path, run_spec_path, tranche_path, plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &objects);
+    let run_bytes = u64::try_from(fs::read(&run_spec_path).expect("read run spec").len())
+        .expect("run-spec length fits u64");
+    let tranche_bytes = u64::try_from(fs::read(&tranche_path).expect("read tranche").len())
+        .expect("tranche length fits u64");
+    let plan_bytes = u64::try_from(fs::read(&plan_path).expect("read plan").len())
+        .expect("plan length fits u64");
+    let total_bytes = run_bytes
+        .checked_add(tranche_bytes)
+        .and_then(|total| total.checked_add(plan_bytes))
+        .expect("control total fits u64");
+    let exact_policy = test_control_admission_policy_with_limits(
+        temp_dir.path(),
+        run_bytes,
+        tranche_bytes,
+        plan_bytes,
+        total_bytes,
+    );
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let mut runner = RecordingRunner::default();
+    execute_source_universe_batch(
+        "source-universe-batch-exact-control-limits",
+        &pack_path,
+        &temp_dir.path().join("exact-output"),
+        None,
+        exact_policy,
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("exact control and total ceilings admit");
+
+    for (role, limits) in [
+        (
+            "run_spec",
+            (run_bytes - 1, tranche_bytes, plan_bytes, total_bytes),
+        ),
+        (
+            "accepted_tranche",
+            (run_bytes, tranche_bytes - 1, plan_bytes, total_bytes),
+        ),
+        (
+            "execution_plan",
+            (run_bytes, tranche_bytes, plan_bytes - 1, total_bytes),
+        ),
+    ] {
+        let policy = test_control_admission_policy_with_limits(
+            temp_dir.path(),
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+        );
+        assert_control_admission_rejects_with_policy(
+            &pack_path,
+            &temp_dir.path().join(format!("over-{role}-output")),
+            policy,
+            "exceeds configured byte limit",
+        );
+    }
+
+    let aggregate_temp = tempfile::tempdir().expect("aggregate temp dir");
+    let aggregate_objects = vec![
+        (0, b"first accepted object bytes".to_vec()),
+        (1, b"second accepted object bytes".to_vec()),
+    ];
+    let aggregate_pack_path = aggregate_temp
+        .path()
+        .join("source-universe-execution-pack.json");
+    write_n_record_pack(&aggregate_pack_path, &aggregate_objects);
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&aggregate_pack_path).expect("read aggregate pack"))
+            .expect("parse aggregate pack");
+    let mut role_max = [0_u64; 3];
+    let mut aggregate_total = 0_u64;
+    for record in &pack.records {
+        for (index, path) in record.artifact_paths().into_iter().enumerate() {
+            let length = fs::metadata(path).expect("control metadata").len();
+            role_max[index] = role_max[index].max(length);
+            aggregate_total = aggregate_total
+                .checked_add(length)
+                .expect("aggregate control bytes fit u64");
+        }
+    }
+    let aggregate_policy = test_control_admission_policy_with_limits(
+        aggregate_temp.path(),
+        role_max[0],
+        role_max[1],
+        role_max[2],
+        aggregate_total,
+    );
+    let mut aggregate_fetcher = SequencedFetcher::from_objects(&aggregate_objects);
+    execute_source_universe_batch(
+        "source-universe-batch-exact-aggregate-limit",
+        &aggregate_pack_path,
+        &aggregate_temp.path().join("exact-aggregate-output"),
+        None,
+        aggregate_policy,
+        &mut aggregate_fetcher,
+        &mut RecordingRunner::default(),
+    )
+    .expect("exact batch aggregate ceiling admits");
+    let over_policy = test_control_admission_policy_with_limits(
+        aggregate_temp.path(),
+        role_max[0],
+        role_max[1],
+        role_max[2],
+        aggregate_total - 1,
+    );
+    assert_control_admission_rejects_with_policy(
+        &aggregate_pack_path,
+        &aggregate_temp.path().join("over-aggregate-output"),
+        over_policy,
+        "exceed configured max_total_control_bytes",
+    );
+}
+
+#[test]
+fn malformed_control_policies_fail_closed() {
+    let cases = [
+        (
+            "missing-key",
+            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\n",
+        ),
+        (
+            "unknown-key",
+            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\nextra = 1\n",
+        ),
+        (
+            "zero",
+            "[control_admission]\nmax_run_spec_bytes = 0\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+        ),
+        (
+            "malformed",
+            "[control_admission]\nmax_run_spec_bytes = \"large\"\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+        ),
+        (
+            "negative",
+            "[control_admission]\nmax_run_spec_bytes = -1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+        ),
+        (
+            "out-of-range",
+            "[control_admission]\nmax_run_spec_bytes = 999999999999999999999999\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+        ),
+        (
+            "contradictory",
+            "[control_admission]\nmax_run_spec_bytes = 2\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+        ),
+    ];
+    for (name, toml) in cases {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let policy_path = temp_dir.path().join(format!("{name}.toml"));
+        fs::write(&policy_path, toml).expect("write malformed policy");
+        load_source_universe_control_admission_policy(&policy_path)
+            .expect_err("malformed policy must reject");
+    }
+}
+
+#[test]
+fn parallel_and_resume_paths_cannot_bypass_cross_binding() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        temp_dir.path(),
+        &[
+            (0, b"first accepted object bytes".to_vec()),
+            (1, b"second accepted object bytes".to_vec()),
+        ],
+    );
+    let mut pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&pack_path).expect("read execution pack for splice"))
+            .expect("parse execution pack for splice");
+    let spliced_run_spec_path = pack.records[1].run_spec_path.clone();
+    let spliced_run_spec_sha256 = pack.records[1].run_spec_sha256.clone();
+    pack.records[0].run_spec_path = spliced_run_spec_path;
+    pack.records[0].run_spec_sha256 = spliced_run_spec_sha256;
+    fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize spliced execution pack"),
+    )
+    .expect("write spliced execution pack");
+
+    let parallel_output = temp_dir.path().join("parallel-output");
+    let parallel_error = execute_source_universe_batch_with_factories(
+        "source-universe-batch-parallel-admission",
+        &pack_path,
+        &parallel_output,
+        SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: Some(2),
+            resume_report: None,
+        },
+        || Ok(NeverFetcher),
+        || Ok(RecordingRunner::default()),
+    )
+    .expect_err("parallel path must reject the splice at admission");
+    assert!(
+        format!("{parallel_error:#}").contains("execution_plan does not match"),
+        "parallel error must identify cross-binding: {parallel_error:#}"
+    );
+    assert!(!parallel_output.exists());
+
+    let resume_output = temp_dir.path().join("resume-output");
+    let mut runner = RecordingRunner::default();
+    let resume_error = execute_source_universe_batch_with_config(
+        "source-universe-batch-resume-admission",
+        &pack_path,
+        &resume_output,
+        SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(temp_dir.path().join("unread-resume-report.json")),
+        },
+        &mut NeverFetcher,
+        &mut runner,
+    )
+    .expect_err("resume path must reject the splice before reading resume state");
+    assert!(
+        format!("{resume_error:#}").contains("execution_plan does not match"),
+        "resume error must identify cross-binding: {resume_error:#}"
+    );
+    assert!(!resume_output.exists());
+    assert!(runner.calls.is_empty());
 }
 
 #[test]
 fn source_universe_batch_execution_respects_start_sequence() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
     let output_dir = temp_dir.path().join("batch-output");
     let first_object_bytes = b"first accepted object bytes";
     let second_object_bytes = b"second accepted object bytes";
 
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-    write_two_record_pack(
-        &pack_path,
-        &run_spec_path,
-        &execution_plan_path,
-        first_object_bytes,
-        second_object_bytes,
-    );
+    write_two_record_pack(&pack_path, first_object_bytes, second_object_bytes);
 
     let mut fetcher = SequencedFetcher::from_objects(&[(1, second_object_bytes.to_vec())]);
     let mut runner = RecordingRunner::default();
@@ -361,6 +895,7 @@ fn source_universe_batch_execution_respects_start_sequence() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: Some(1),
             record_limit: Some(1),
             continue_on_error: false,
@@ -392,21 +927,11 @@ fn source_universe_batch_execution_respects_start_sequence() {
 fn source_universe_batch_execution_can_continue_after_record_failure() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
     let output_dir = temp_dir.path().join("batch-output");
     let first_object_bytes = b"first accepted object bytes";
     let second_object_bytes = b"second accepted object bytes";
 
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-    write_two_record_pack(
-        &pack_path,
-        &run_spec_path,
-        &execution_plan_path,
-        first_object_bytes,
-        second_object_bytes,
-    );
+    write_two_record_pack(&pack_path, first_object_bytes, second_object_bytes);
 
     let mut fetcher = SequencedFetcher::from_objects(&[
         (0, b"wrong bytes".to_vec()),
@@ -419,6 +944,7 @@ fn source_universe_batch_execution_can_continue_after_record_failure() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: true,
@@ -554,17 +1080,13 @@ fn caching_fetcher_unverified_inner_bytes_never_enter_cache() {
 #[test]
 fn resume_carries_forward_prior_clean_record_without_refetch() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects = vec![
         (0u64, b"synthetic object zero".to_vec()),
         (1u64, b"synthetic object one".to_vec()),
     ];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     // First run covers ONLY sequence 0 (record_limit = 1), so the prior report
     // we resume from is a genuine partial: sequence 0 succeeded, sequence 1 was
@@ -579,6 +1101,7 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         &pack_path,
         &first_output,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
@@ -633,6 +1156,7 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         &pack_path,
         &second_output,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: false,
@@ -677,14 +1201,10 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
 #[test]
 fn resume_sha_mismatch_reprocesses_the_record() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects = vec![(0u64, b"synthetic object zero".to_vec())];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     // Prior report claims a different sha for sequence 0 (pack regenerated).
     let prior_report = SourceUniverseBatchExecutionReport {
@@ -720,6 +1240,7 @@ fn resume_sha_mismatch_reprocesses_the_record() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
@@ -743,14 +1264,10 @@ fn resume_sha_mismatch_reprocesses_the_record() {
 #[test]
 fn resume_pack_id_mismatch_fails_loud() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects = vec![(0u64, b"synthetic object zero".to_vec())];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     let prior_report = SourceUniverseBatchExecutionReport {
         schema_version:
@@ -784,6 +1301,7 @@ fn resume_pack_id_mismatch_fails_loud() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
@@ -803,14 +1321,10 @@ fn resume_pack_id_mismatch_fails_loud() {
 #[test]
 fn resume_does_not_carry_forward_prior_failure_entries() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects = vec![(0u64, b"synthetic object zero".to_vec())];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     // Prior report has sequence 0 ONLY as a failure entry, not a success.
     let prior_report = SourceUniverseBatchExecutionReport {
@@ -846,6 +1360,7 @@ fn resume_does_not_carry_forward_prior_failure_entries() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
@@ -871,10 +1386,6 @@ fn resume_does_not_carry_forward_prior_failure_entries() {
 #[test]
 fn parallel_overlaps_and_matches_serial_report() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects: Vec<(u64, Vec<u8>)> = (0..8u64)
         .map(|sequence| {
@@ -885,7 +1396,7 @@ fn parallel_overlaps_and_matches_serial_report() {
         })
         .collect();
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     // Serial baseline.
     let serial_output = temp_dir.path().join("batch-output-serial");
@@ -895,6 +1406,7 @@ fn parallel_overlaps_and_matches_serial_report() {
         &pack_path,
         &serial_output,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(8),
             continue_on_error: false,
@@ -919,6 +1431,7 @@ fn parallel_overlaps_and_matches_serial_report() {
         &pack_path,
         &parallel_output,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(8),
             continue_on_error: false,
@@ -1011,10 +1524,6 @@ fn parallel_overlaps_and_matches_serial_report() {
 #[test]
 fn parallel_stop_on_error_returns_lowest_sequence_error() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects: Vec<(u64, Vec<u8>)> = (0..6u64)
         .map(|sequence| {
@@ -1025,7 +1534,7 @@ fn parallel_stop_on_error_returns_lowest_sequence_error() {
         })
         .collect();
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     // Fail sequences 2 and 4 in the runner; lowest-sequence error (2) must surface.
     let output_dir = temp_dir.path().join("batch-output");
@@ -1034,6 +1543,7 @@ fn parallel_stop_on_error_returns_lowest_sequence_error() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(6),
             continue_on_error: false,
@@ -1056,10 +1566,6 @@ fn parallel_stop_on_error_returns_lowest_sequence_error() {
 #[test]
 fn parallel_continue_on_error_collects_failures() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects: Vec<(u64, Vec<u8>)> = (0..6u64)
         .map(|sequence| {
@@ -1070,7 +1576,7 @@ fn parallel_continue_on_error_collects_failures() {
         })
         .collect();
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     let output_dir = temp_dir.path().join("batch-output");
     let report = execute_source_universe_batch_with_factories(
@@ -1078,6 +1584,7 @@ fn parallel_continue_on_error_collects_failures() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(6),
             continue_on_error: true,
@@ -1111,10 +1618,6 @@ fn parallel_continue_on_error_collects_failures() {
 #[test]
 fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     // Sequences 0 and 1 pin IDENTICAL bytes — records are not deduplicated by
     // sha, so both map to the same cache entry path. A corrupt entry is
@@ -1128,7 +1631,7 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
         (3u64, b"synthetic object three".to_vec()),
     ];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     let cache_dir = temp_dir.path().join("object-cache");
     fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -1141,6 +1644,7 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(4),
             continue_on_error: false,
@@ -1177,17 +1681,13 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
 #[test]
 fn resume_into_same_output_dir_fails_loud_before_any_fetch() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects = vec![
         (0u64, b"synthetic object zero".to_vec()),
         (1u64, b"synthetic object one".to_vec()),
     ];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     // Prior partial run writes its report into output_dir.
     let output_dir = temp_dir.path().join("batch-output");
@@ -1198,6 +1698,7 @@ fn resume_into_same_output_dir_fails_loud_before_any_fetch() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
@@ -1222,6 +1723,7 @@ fn resume_into_same_output_dir_fails_loud_before_any_fetch() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(2),
             continue_on_error: false,
@@ -1249,18 +1751,9 @@ fn resume_into_same_output_dir_fails_loud_before_any_fetch() {
 #[test]
 fn prepare_batch_rejects_parent_dir_traversal_sha256() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_pack_with_sha256(
-        &pack_path,
-        &run_spec_path,
-        &execution_plan_path,
-        "../etc/passwd",
-    );
+    write_pack_with_sha256(&pack_path, "../etc/passwd");
 
     let output_dir = temp_dir.path().join("batch-output");
     let mut fetcher = NeverFetcher;
@@ -1270,6 +1763,7 @@ fn prepare_batch_rejects_parent_dir_traversal_sha256() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: None,
             continue_on_error: false,
@@ -1295,18 +1789,9 @@ fn prepare_batch_rejects_parent_dir_traversal_sha256() {
 #[test]
 fn prepare_batch_rejects_absolute_path_sha256() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_pack_with_sha256(
-        &pack_path,
-        &run_spec_path,
-        &execution_plan_path,
-        "/etc/shadow",
-    );
+    write_pack_with_sha256(&pack_path, "/etc/shadow");
 
     let output_dir = temp_dir.path().join("batch-output");
     let mut fetcher = NeverFetcher;
@@ -1316,6 +1801,7 @@ fn prepare_batch_rejects_absolute_path_sha256() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: None,
             continue_on_error: false,
@@ -1339,20 +1825,11 @@ fn prepare_batch_rejects_absolute_path_sha256() {
 #[test]
 fn prepare_batch_rejects_uppercase_hex_sha256() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     // 64 chars but uppercase — valid hex encoding but not lowercase sha256.
     let uppercase_sha = "A".repeat(64);
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_pack_with_sha256(
-        &pack_path,
-        &run_spec_path,
-        &execution_plan_path,
-        &uppercase_sha,
-    );
+    write_pack_with_sha256(&pack_path, &uppercase_sha);
 
     let output_dir = temp_dir.path().join("batch-output");
     let mut fetcher = NeverFetcher;
@@ -1362,6 +1839,7 @@ fn prepare_batch_rejects_uppercase_hex_sha256() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: None,
             continue_on_error: false,
@@ -1383,14 +1861,10 @@ fn prepare_batch_rejects_uppercase_hex_sha256() {
 #[test]
 fn prepare_batch_rejects_short_hex_sha256() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let short_sha = "a".repeat(63);
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_pack_with_sha256(&pack_path, &run_spec_path, &execution_plan_path, &short_sha);
+    write_pack_with_sha256(&pack_path, &short_sha);
 
     let output_dir = temp_dir.path().join("batch-output");
     let mut fetcher = NeverFetcher;
@@ -1400,6 +1874,7 @@ fn prepare_batch_rejects_short_hex_sha256() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: None,
             continue_on_error: false,
@@ -1422,14 +1897,10 @@ fn prepare_batch_rejects_short_hex_sha256() {
 #[test]
 fn resume_schema_version_mismatch_fails_loud() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects = vec![(0u64, b"synthetic object zero".to_vec())];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     let prior_report = SourceUniverseBatchExecutionReport {
         schema_version: "wrong-schema-version.v0".to_string(),
@@ -1464,6 +1935,7 @@ fn resume_schema_version_mismatch_fails_loud() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: Some(1),
             continue_on_error: false,
@@ -1485,14 +1957,10 @@ fn resume_schema_version_mismatch_fails_loud() {
 #[test]
 fn prepare_batch_rejects_zero_max_concurrent_records() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let run_spec_path = temp_dir.path().join("run-spec.toml");
-    let execution_plan_path = temp_dir.path().join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects = vec![(0u64, b"synthetic object zero".to_vec())];
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+    write_n_record_pack(&pack_path, &objects);
 
     let output_dir = temp_dir.path().join("batch-output");
     let mut fetcher = SequencedFetcher::from_objects(&objects);
@@ -1502,6 +1970,7 @@ fn prepare_batch_rejects_zero_max_concurrent_records() {
         &pack_path,
         &output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
             start_sequence: None,
             record_limit: None,
             continue_on_error: false,
@@ -1589,9 +2058,9 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
         self.calls.push(RunCall {
             operator_run_id: record.operator_run_id.clone(),
             object_bytes: object_bytes.to_vec(),
-            run_spec_bytes: controls.run_spec_bytes.to_vec(),
-            accepted_tranche_bytes: controls.accepted_tranche_bytes.to_vec(),
-            execution_plan_bytes: controls.execution_plan_bytes.to_vec(),
+            run_spec_bytes: controls.run_spec_bytes().to_vec(),
+            accepted_tranche_bytes: controls.accepted_tranche_bytes().to_vec(),
+            execution_plan_bytes: controls.execution_plan_bytes().to_vec(),
             output_dir: output_dir.to_path_buf(),
         });
         Ok(SourceUniverseBatchExecutionRunOutput {
@@ -1652,17 +2121,9 @@ fn copy_dir_all(src: &Path, dst: &Path) {
     }
 }
 
-fn write_two_record_pack(
-    pack_path: &Path,
-    run_spec_path: &Path,
-    execution_plan_path: &Path,
-    first_object_bytes: &[u8],
-    second_object_bytes: &[u8],
-) {
+fn write_two_record_pack(pack_path: &Path, first_object_bytes: &[u8], second_object_bytes: &[u8]) {
     write_n_record_pack(
         pack_path,
-        run_spec_path,
-        execution_plan_path,
         &[
             (0, first_object_bytes.to_vec()),
             (1, second_object_bytes.to_vec()),
@@ -1675,12 +2136,9 @@ fn write_control_admission_fixture(
     objects: &[(u64, Vec<u8>)],
 ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let pack_path = root.join("source-universe-execution-pack.json");
-    let run_spec_path = root.join("run-spec.toml");
-    let accepted_tranche_path = root.join("accepted-tranche.json");
-    let execution_plan_path = root.join("execution-plan.json");
-    fs::write(&run_spec_path, "run_id = \"admitted\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
-    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, objects);
+    write_n_record_pack(&pack_path, objects);
+    let (run_spec_path, accepted_tranche_path, execution_plan_path) =
+        synthetic_control_paths(root, objects[0].0);
     (
         pack_path,
         run_spec_path,
@@ -1694,12 +2152,27 @@ fn assert_control_admission_rejects_before_side_effects(
     output_dir: &Path,
     expected_error: &str,
 ) {
+    let policy = test_control_admission_policy(
+        pack_path
+            .parent()
+            .expect("execution pack parent for policy"),
+    );
+    assert_control_admission_rejects_with_policy(pack_path, output_dir, policy, expected_error);
+}
+
+fn assert_control_admission_rejects_with_policy(
+    pack_path: &Path,
+    output_dir: &Path,
+    policy: SourceUniverseControlAdmissionPolicy,
+    expected_error: &str,
+) {
     let mut runner = RecordingRunner::default();
     let error = execute_source_universe_batch(
         "source-universe-batch-synthetic",
         pack_path,
         output_dir,
         None,
+        policy,
         &mut NeverFetcher,
         &mut runner,
     )
@@ -1722,101 +2195,248 @@ fn synthetic_symbol(sequence: u64) -> String {
     format!("SYNTHETIC-{letter}{letter}{letter}")
 }
 
-fn write_n_record_pack(
-    pack_path: &Path,
-    run_spec_path: &Path,
-    execution_plan_path: &Path,
-    objects: &[(u64, Vec<u8>)],
-) {
-    let accepted_tranche_path = pack_path
-        .parent()
-        .expect("pack parent")
-        .join("accepted-tranche.json");
-    if !accepted_tranche_path.exists() {
-        fs::write(&accepted_tranche_path, "{}\n").expect("write accepted tranche");
-    }
-    let run_spec_bytes = fs::read(run_spec_path).expect("read run spec for pin");
-    let accepted_tranche_bytes =
-        fs::read(&accepted_tranche_path).expect("read accepted tranche for pin");
-    let execution_plan_bytes = fs::read(execution_plan_path).expect("read execution plan for pin");
-    let run_spec_sha256 = sha256_hex(&run_spec_bytes);
-    let accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
-    let execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
-    let record_count = objects.len() as u64;
-    let total_object_bytes_len: usize = objects.iter().map(|(_, bytes)| bytes.len()).sum();
+fn write_n_record_pack(pack_path: &Path, objects: &[(u64, Vec<u8>)]) {
+    let root = pack_path.parent().expect("pack parent");
+    let record_count = u64::try_from(objects.len()).expect("record count fits u64");
+    let total_object_bytes_len = objects
+        .iter()
+        .try_fold(0_u64, |total, (_, bytes)| {
+            total.checked_add(u64::try_from(bytes.len()).expect("object length fits u64"))
+        })
+        .expect("total object bytes fit u64");
     let records = objects
         .iter()
-        .map(|(sequence, bytes)| {
-            format!(
-                r#"    {{
-      "sequence": {sequence},
-      "work_item_id": "synthetic-work-item-{sequence}",
-      "operator_run_id": "source-universe-operator-run-synthetic-{sequence:05}",
-      "source_binding": "synthetic-spot-tick-trades",
-      "category": "spot",
-      "symbol": "{symbol}",
-      "archive_date": "2026-03-01",
-      "source_uri": "s3://synthetic-bucket/raw/synthetic-{sequence}.csv.gz",
-      "source_url": "https://public.synthetic.example/object-{sequence}.csv.gz",
-      "selected_object_sha256": "{sha256}",
-      "selected_object_bytes": {bytes_len},
-      "source_proof_id": "source-proof-synthetic",
-      "source_proof_version": 1,
-      "accepted_tranche_id": "accepted-tranche-synthetic-{sequence}",
-      "output_prefix": "s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-{sequence}",
-      "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "{run_spec_sha256}",
-      "accepted_tranche_path": "{accepted_tranche_path}",
-      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
-      "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "{execution_plan_sha256}"
-    }}"#,
-                symbol = synthetic_symbol(*sequence),
-                sha256 = sha256_hex(bytes),
-                bytes_len = bytes.len(),
-                run_spec_path = run_spec_path.display(),
-                run_spec_sha256 = run_spec_sha256,
-                accepted_tranche_path = accepted_tranche_path.display(),
-                accepted_tranche_sha256 = accepted_tranche_sha256,
-                execution_plan_path = execution_plan_path.display(),
-                execution_plan_sha256 = execution_plan_sha256,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",\n");
+        .map(|(sequence, bytes)| write_synthetic_controls(root, *sequence, bytes))
+        .collect::<Vec<_>>();
+
+    let mut pack = committed_execution_pack_template();
+    pack.pack_id = "source-universe-execution-pack-synthetic".to_string();
+    pack.status = SourceUniverseExecutionPackStatus::Ready;
+    pack.work_order_id = "source-universe-conversion-work-order-synthetic".to_string();
+    pack.input_id = "source-universe-operator-inputs-synthetic".to_string();
+    pack.gate_id = "source-universe-object-gates-synthetic".to_string();
+    pack.conversion_run_plan_id = "source-universe-conversion-run-plan-synthetic".to_string();
+    pack.universe_id = "backfill-source-universe-synthetic".to_string();
+    pack.venue = "synthetic-venue".to_string();
+    pack.source = "public_archive".to_string();
+    pack.family = "tick_trades".to_string();
+    pack.table_family = "trades".to_string();
+    pack.planned_object_count = record_count;
+    pack.executable_record_count = record_count;
+    pack.withheld_record_count = 0;
+    pack.selected_record_count = record_count;
+    pack.materialized_record_count = record_count;
+    pack.skipped_executable_record_count = 0;
+    pack.executable_source_bytes = total_object_bytes_len;
+    pack.materialized_source_bytes = total_object_bytes_len;
+    pack.artifact_refs.clear();
+    pack.records = records;
+    pack.blocking_reasons.clear();
     fs::write(
         pack_path,
-        format!(
-            r#"{{
-  "schema_version": "source-universe-execution-pack.v1",
-  "pack_id": "source-universe-execution-pack-synthetic",
-  "status": "ready",
-  "work_order_id": "source-universe-conversion-work-order-synthetic",
-  "input_id": "source-universe-operator-inputs-synthetic",
-  "gate_id": "source-universe-object-gates-synthetic",
-  "conversion_run_plan_id": "source-universe-conversion-run-plan-synthetic",
-  "universe_id": "backfill-source-universe-synthetic",
-  "venue": "synthetic-venue",
-  "source": "public_archive",
-  "family": "tick_trades",
-  "table_family": "trades",
-  "planned_object_count": {record_count},
-  "executable_record_count": {record_count},
-  "withheld_record_count": 0,
-  "selected_record_count": {record_count},
-  "materialized_record_count": {record_count},
-  "skipped_executable_record_count": 0,
-  "executable_source_bytes": {total_object_bytes_len},
-  "materialized_source_bytes": {total_object_bytes_len},
-  "artifact_refs": [],
-  "records": [
-{records}
-  ],
-  "blocking_reasons": []
-}}"#,
-        ),
+        serde_json::to_vec_pretty(&pack).expect("serialize pack"),
     )
     .expect("write n-record pack");
+}
+
+fn synthetic_control_paths(root: &Path, sequence: u64) -> (PathBuf, PathBuf, PathBuf) {
+    (
+        root.join(format!("run-spec-{sequence}.toml")),
+        root.join(format!("accepted-tranche-{sequence}.json")),
+        root.join(format!("execution-plan-{sequence}.json")),
+    )
+}
+
+fn committed_execution_pack_template() -> SourceUniverseExecutionPack {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root")
+        .join(
+            "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/\
+             binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/\
+             source-universe-execution-pack.json",
+        );
+    serde_json::from_slice(&fs::read(path).expect("read committed execution-pack template"))
+        .expect("parse committed execution-pack template")
+}
+
+fn committed_control_templates() -> (
+    RunSpec,
+    BackfillAcceptedTrancheManifest,
+    BackfillExecutionPlan,
+) {
+    let pack = committed_execution_pack_template();
+    let record = pack.records.first().expect("committed pack record");
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root");
+    let run_spec_text = fs::read_to_string(repo_root.join(&record.run_spec_path))
+        .expect("read committed run-spec template");
+    let run_spec = toml::from_str(&run_spec_text).expect("parse committed run-spec template");
+    let tranche = serde_json::from_slice(
+        &fs::read(repo_root.join(&record.accepted_tranche_path))
+            .expect("read committed accepted-tranche template"),
+    )
+    .expect("parse committed accepted-tranche template");
+    let plan = serde_json::from_slice(
+        &fs::read(repo_root.join(&record.execution_plan_path))
+            .expect("read committed execution-plan template"),
+    )
+    .expect("parse committed execution-plan template");
+    (run_spec, tranche, plan)
+}
+
+fn write_synthetic_controls(
+    root: &Path,
+    sequence: u64,
+    object_bytes: &[u8],
+) -> SourceUniverseExecutionPackRecord {
+    let (mut run_spec, mut tranche, plan_template) = committed_control_templates();
+    let operator_run_id = format!("source-universe-operator-run-synthetic-{sequence:05}");
+    let tranche_id = format!("accepted-tranche-synthetic-{sequence}");
+    let symbol = synthetic_symbol(sequence);
+    let object_sha256 = sha256_hex(object_bytes);
+    let object_bytes_len = u64::try_from(object_bytes.len()).expect("object bytes fit u64");
+    let source_uri = format!("s3://synthetic-bucket/raw/synthetic-{sequence}.csv.gz");
+    let source_url = format!("https://public.synthetic.example/object-{sequence}.csv.gz");
+    let output_prefix =
+        format!("s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-{sequence}");
+
+    run_spec.manifest.run_id.clone_from(&operator_run_id);
+    run_spec.manifest.output_prefix.clone_from(&output_prefix);
+    run_spec.manifest.source_proof_id = "source-proof-synthetic".to_string();
+    run_spec.manifest.source_proof_version = 1;
+    run_spec.manifest.venue_binding_key = "synthetic-spot-tick-trades".to_string();
+    run_spec.source_proof.source_proof_id = "source-proof-synthetic".to_string();
+    run_spec.source_proof.source_proof_version = 1;
+    run_spec.source_proof.source_binding = "synthetic-spot-tick-trades".to_string();
+    run_spec.source_proof.venue = "synthetic-venue".to_string();
+    run_spec.source_proof.product_category = "spot".to_string();
+    run_spec.source_proof.table_family = "trades".to_string();
+    run_spec.source_proof.raw_sample_uri.clone_from(&source_uri);
+    run_spec
+        .source_proof
+        .raw_sample_hash
+        .clone_from(&object_sha256);
+    run_spec.accepted_object.s3_uri.clone_from(&source_uri);
+    run_spec.accepted_object.source_url.clone_from(&source_url);
+    run_spec.accepted_object.sha256.clone_from(&object_sha256);
+    run_spec.accepted_object.bytes = object_bytes_len;
+    run_spec.accepted_object.archive_date = "2026-03-01".to_string();
+    run_spec.converter.raw_payload.max_object_bytes = object_bytes_len;
+    match &mut run_spec.identity {
+        RunSpecInstrumentIdentities::Single(identity) => {
+            identity.instrument_id.clone_from(&symbol);
+            identity.venue_symbol.clone_from(&symbol);
+        }
+        RunSpecInstrumentIdentities::Keyed(_) => panic!("committed run-spec must be single"),
+    }
+
+    let tranche_object = BackfillAcceptedTrancheObject {
+        s3_uri: source_uri.clone(),
+        source_url: source_url.clone(),
+        sha256: object_sha256.clone(),
+        bytes: object_bytes_len,
+        archive_date: "2026-03-01".to_string(),
+        source_row_groups: Vec::new(),
+        predicate_ref: None,
+    };
+    tranche.schema_version = BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION.to_string();
+    tranche.tranche_id.clone_from(&tranche_id);
+    tranche.status = BackfillAcceptedTrancheStatus::Accepted;
+    tranche.source_proof_id = "source-proof-synthetic".to_string();
+    tranche.source_proof_version = 1;
+    tranche.source_binding = "synthetic-spot-tick-trades".to_string();
+    tranche.table_family = "trades".to_string();
+    tranche.source_usage_scope = run_spec.source_proof.usage_scope;
+    tranche.object_count = 1;
+    tranche.accepted_bytes = object_bytes_len;
+    tranche.objects = vec![tranche_object];
+    tranche.blocking_issues.clear();
+
+    let run_spec_bytes = toml::to_string_pretty(&run_spec)
+        .expect("serialize synthetic run-spec")
+        .into_bytes();
+    let accepted_tranche_bytes =
+        serde_json::to_vec_pretty(&tranche).expect("serialize synthetic accepted tranche");
+    let run_spec_sha256 = sha256_hex(&run_spec_bytes);
+    let accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
+    let execution_plan = evaluate_backfill_execution_plan(
+        format!("{operator_run_id}:execution-plan"),
+        accepted_tranche_sha256.clone(),
+        &tranche,
+        run_spec_sha256.clone(),
+        &BackfillExecutionRunBinding::from_run_spec(&run_spec),
+        BackfillExecutionWorkBudget {
+            max_source_rows: plan_template.max_source_rows,
+            max_projected_row_groups: plan_template.max_projected_row_groups,
+            max_wall_seconds: plan_template.max_wall_seconds,
+            require_object_selection_metadata: false,
+        },
+    );
+    let execution_plan_bytes =
+        serde_json::to_vec_pretty(&execution_plan).expect("serialize synthetic execution plan");
+    let (run_spec_path, accepted_tranche_path, execution_plan_path) =
+        synthetic_control_paths(root, sequence);
+    fs::write(&run_spec_path, &run_spec_bytes).expect("write synthetic run spec");
+    fs::write(&accepted_tranche_path, &accepted_tranche_bytes)
+        .expect("write synthetic accepted tranche");
+    fs::write(&execution_plan_path, &execution_plan_bytes).expect("write synthetic execution plan");
+
+    SourceUniverseExecutionPackRecord {
+        sequence,
+        work_item_id: format!("synthetic-work-item-{sequence}"),
+        operator_run_id,
+        source_binding: "synthetic-spot-tick-trades".to_string(),
+        category: "spot".to_string(),
+        symbol,
+        archive_date: "2026-03-01".to_string(),
+        source_uri,
+        source_url,
+        selected_object_sha256: object_sha256,
+        selected_object_bytes: object_bytes_len,
+        source_proof_id: "source-proof-synthetic".to_string(),
+        source_proof_version: 1,
+        accepted_tranche_id: tranche_id,
+        output_prefix,
+        run_spec_path,
+        run_spec_sha256,
+        accepted_tranche_path,
+        accepted_tranche_sha256,
+        execution_plan_path,
+        execution_plan_sha256: sha256_hex(&execution_plan_bytes),
+    }
+}
+
+fn test_control_admission_policy(root: &Path) -> SourceUniverseControlAdmissionPolicy {
+    test_control_admission_policy_with_limits(root, 1_000_000, 1_000_000, 1_000_000, 10_000_000)
+}
+
+fn test_control_admission_policy_with_limits(
+    root: &Path,
+    max_run_spec_bytes: u64,
+    max_accepted_tranche_bytes: u64,
+    max_execution_plan_bytes: u64,
+    max_total_control_bytes: u64,
+) -> SourceUniverseControlAdmissionPolicy {
+    let path = root.join(format!(
+        "control-admission-{max_run_spec_bytes}-{max_accepted_tranche_bytes}-{max_execution_plan_bytes}-{max_total_control_bytes}.toml"
+    ));
+    fs::write(
+        &path,
+        format!(
+            "[control_admission]\n\
+             max_run_spec_bytes = {max_run_spec_bytes}\n\
+             max_accepted_tranche_bytes = {max_accepted_tranche_bytes}\n\
+             max_execution_plan_bytes = {max_execution_plan_bytes}\n\
+             max_total_control_bytes = {max_total_control_bytes}\n"
+        ),
+    )
+    .expect("write test control-admission policy");
+    load_source_universe_control_admission_policy(&path)
+        .expect("load test control-admission policy")
 }
 
 /// Build a synthetic execution-pack record with the pinned sha/length for the
@@ -2015,12 +2635,7 @@ impl SourceUniverseObjectFetcher for NeverFetcher {
 /// Write a single-record pack whose `selected_object_sha256` is set to the
 /// given literal string (without computing a real digest). Used by the
 /// sha256-field rejection tests to inject invalid values.
-fn write_pack_with_sha256(
-    pack_path: &Path,
-    run_spec_path: &Path,
-    execution_plan_path: &Path,
-    sha256_literal: &str,
-) {
+fn write_pack_with_sha256(pack_path: &Path, sha256_literal: &str) {
     // Use a placeholder byte count; validation rejects the sha256 field before
     // byte-count checks are ever reached.
     fs::write(
@@ -2065,18 +2680,16 @@ fn write_pack_with_sha256(
       "source_proof_version": 1,
       "accepted_tranche_id": "accepted-tranche-synthetic-0",
       "output_prefix": "s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-0",
-      "run_spec_path": "{run_spec_path}",
+      "run_spec_path": "run-spec.toml",
       "run_spec_sha256": "run-spec-sha",
       "accepted_tranche_path": "accepted-tranche.json",
       "accepted_tranche_sha256": "accepted-tranche-sha",
-      "execution_plan_path": "{execution_plan_path}",
+      "execution_plan_path": "execution-plan.json",
       "execution_plan_sha256": "execution-plan-sha"
     }}
   ],
   "blocking_reasons": []
 }}"#,
-            run_spec_path = run_spec_path.display(),
-            execution_plan_path = execution_plan_path.display(),
         ),
     )
     .expect("write pack with literal sha256");

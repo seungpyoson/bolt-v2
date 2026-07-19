@@ -5,7 +5,8 @@ use backtesting_vertical_slice::source_universe_batch_execution::{
     CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
     LocalSourceUniverseOperatorRunner, SourceUniverseBatchExecutionConfig,
     SourceUniverseBatchExecutionReportStatus, SourceUniverseObjectFetcher,
-    execute_source_universe_batch_with_factories, write_source_universe_batch_execution_report,
+    execute_source_universe_batch_with_factories, load_source_universe_control_admission_policy,
+    write_source_universe_batch_execution_report,
 };
 use clap::Parser;
 
@@ -25,6 +26,8 @@ struct Cli {
     execution_pack: PathBuf,
     #[arg(long)]
     output_dir: PathBuf,
+    #[arg(long)]
+    control_policy: PathBuf,
     #[arg(long)]
     start_sequence: Option<u64>,
     #[arg(long)]
@@ -71,6 +74,7 @@ impl SourceUniverseObjectFetcher for BatchWorkerFetcher {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let control_admission = load_source_universe_control_admission_policy(&cli.control_policy)?;
     let fetch_timeout_seconds = cli.fetch_timeout_seconds;
     let http_user_agent = cli.http_user_agent.clone();
     let object_cache_dir = cli.object_cache_dir.clone();
@@ -95,6 +99,7 @@ fn main() -> Result<()> {
         &cli.execution_pack,
         &cli.output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission,
             start_sequence: cli.start_sequence,
             record_limit: cli.record_limit,
             continue_on_error: cli.continue_on_error,
@@ -157,8 +162,24 @@ fn partial_failure_exit_code(
 
 #[cfg(test)]
 mod tests {
-    use super::{EXIT_PARTIAL_FAILURE, partial_failure_exit_code};
+    use super::{Cli, EXIT_PARTIAL_FAILURE, partial_failure_exit_code};
     use backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionReportStatus;
+    use clap::Parser;
+
+    #[test]
+    fn control_policy_is_a_required_cli_argument() {
+        let error = Cli::try_parse_from([
+            "source-universe-batch-execution",
+            "--batch-id",
+            "batch",
+            "--execution-pack",
+            "pack.json",
+            "--output-dir",
+            "output",
+        ])
+        .expect_err("missing --control-policy must fail CLI parsing");
+        assert!(error.to_string().contains("--control-policy"));
+    }
 
     #[test]
     fn completed_report_exits_clean() {

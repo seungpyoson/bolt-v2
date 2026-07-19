@@ -7,7 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, File},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -21,7 +21,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::atomic_artifact_write::atomic_write;
+use crate::backfill_accepted_tranche::{
+    BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION, BackfillAcceptedTrancheManifest,
+    BackfillAcceptedTrancheStatus,
+};
+use crate::backfill_execution_plan::{
+    BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
+    BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
+};
 use crate::catalog_projection::logical_catalog_hash;
+use crate::io_safety::{ByteLimit, read_to_vec_with_limit};
 use crate::path_resolution::resolve_existing_path;
 use crate::{
     operator::{CATALOG_DIR, RunSpec, run_from_run_spec},
@@ -56,9 +65,125 @@ pub trait SourceUniverseOperatorRunner {
 /// pack's paths, so later filesystem changes cannot alter the admitted run.
 #[derive(Debug, Clone)]
 pub struct SourceUniverseAdmittedControls {
-    pub run_spec_bytes: Arc<[u8]>,
-    pub accepted_tranche_bytes: Arc<[u8]>,
-    pub execution_plan_bytes: Arc<[u8]>,
+    run_spec_bytes: Arc<[u8]>,
+    accepted_tranche_bytes: Arc<[u8]>,
+    execution_plan_bytes: Arc<[u8]>,
+    run_spec: Arc<RunSpec>,
+}
+
+impl SourceUniverseAdmittedControls {
+    #[must_use]
+    pub fn run_spec_bytes(&self) -> &[u8] {
+        &self.run_spec_bytes
+    }
+
+    #[must_use]
+    pub fn accepted_tranche_bytes(&self) -> &[u8] {
+        &self.accepted_tranche_bytes
+    }
+
+    #[must_use]
+    pub fn execution_plan_bytes(&self) -> &[u8] {
+        &self.execution_plan_bytes
+    }
+
+    #[must_use]
+    pub fn run_spec(&self) -> &RunSpec {
+        &self.run_spec
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceUniverseControlAdmissionPolicy {
+    max_run_spec_bytes: ByteLimit,
+    max_accepted_tranche_bytes: ByteLimit,
+    max_execution_plan_bytes: ByteLimit,
+    max_total_control_bytes: ByteLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceUniverseControlAdmissionPolicySpec {
+    max_run_spec_bytes: u64,
+    max_accepted_tranche_bytes: u64,
+    max_execution_plan_bytes: u64,
+    max_total_control_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceUniverseControlAdmissionPolicyFile {
+    control_admission: SourceUniverseControlAdmissionPolicySpec,
+}
+
+impl SourceUniverseControlAdmissionPolicy {
+    fn from_spec(spec: SourceUniverseControlAdmissionPolicySpec) -> Result<Self> {
+        for (name, value) in [
+            ("max_run_spec_bytes", spec.max_run_spec_bytes),
+            (
+                "max_accepted_tranche_bytes",
+                spec.max_accepted_tranche_bytes,
+            ),
+            ("max_execution_plan_bytes", spec.max_execution_plan_bytes),
+            ("max_total_control_bytes", spec.max_total_control_bytes),
+        ] {
+            usize::try_from(value).with_context(|| {
+                format!("control admission {name} is not representable as usize")
+            })?;
+        }
+
+        let policy = Self {
+            max_run_spec_bytes: ByteLimit::new(spec.max_run_spec_bytes)
+                .context("control admission max_run_spec_bytes")?,
+            max_accepted_tranche_bytes: ByteLimit::new(spec.max_accepted_tranche_bytes)
+                .context("control admission max_accepted_tranche_bytes")?,
+            max_execution_plan_bytes: ByteLimit::new(spec.max_execution_plan_bytes)
+                .context("control admission max_execution_plan_bytes")?,
+            max_total_control_bytes: ByteLimit::new(spec.max_total_control_bytes)
+                .context("control admission max_total_control_bytes")?,
+        };
+        for (name, individual) in [
+            ("max_run_spec_bytes", policy.max_run_spec_bytes),
+            (
+                "max_accepted_tranche_bytes",
+                policy.max_accepted_tranche_bytes,
+            ),
+            ("max_execution_plan_bytes", policy.max_execution_plan_bytes),
+        ] {
+            ensure!(
+                policy.max_total_control_bytes.max_bytes() >= individual.max_bytes(),
+                "control admission max_total_control_bytes {} is less than {name} {}; \
+                 the individual ceiling would be unreachable",
+                policy.max_total_control_bytes.max_bytes(),
+                individual.max_bytes()
+            );
+        }
+        Ok(policy)
+    }
+}
+
+pub fn load_source_universe_control_admission_policy(
+    policy_path: &Path,
+) -> Result<SourceUniverseControlAdmissionPolicy> {
+    let bytes = fs::read(policy_path).with_context(|| {
+        format!(
+            "read source-universe control admission policy {}",
+            policy_path.display()
+        )
+    })?;
+    let file: SourceUniverseControlAdmissionPolicyFile =
+        toml::from_slice(&bytes).with_context(|| {
+            format!(
+                "parse source-universe control admission policy TOML {}",
+                policy_path.display()
+            )
+        })?;
+    SourceUniverseControlAdmissionPolicy::from_spec(file.control_admission).with_context(|| {
+        format!(
+            "validate source-universe control admission policy {}",
+            policy_path.display()
+        )
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,15 +195,16 @@ pub struct SourceUniverseBatchExecutionRunOutput {
 
 /// Tuning for a source-universe batch execution run.
 ///
-/// Every field beyond the original three is opt-in: the defaults
-/// (`max_concurrent_records: None`, `resume_report: None`) preserve the
-/// original serial, non-resuming scheduling behavior. Object caching is
+/// Scheduling fields remain optional, but control admission policy is required
+/// so no execution entry point can silently use a hidden byte limit. Object caching is
 /// deliberately NOT a config field: the one way to enable it is wrapping the
 /// fetcher in [`CachingSourceUniverseObjectFetcher`] (the CLI does this for
 /// `--object-cache-dir`), so a cache can never be requested without taking
 /// effect.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceUniverseBatchExecutionConfig {
+    /// Trusted TOML policy governing control reads and retained control bytes.
+    pub control_admission: SourceUniverseControlAdmissionPolicy,
     /// Lowest pack sequence to execute (inclusive). `None` starts at the first.
     pub start_sequence: Option<u64>,
     /// Maximum number of selected records to execute. `None` means unbounded.
@@ -328,11 +454,7 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
         controls: &SourceUniverseAdmittedControls,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
-        let run_spec_text = std::str::from_utf8(&controls.run_spec_bytes)
-            .context("decode admitted run-spec as UTF-8")?;
-        let run_spec: RunSpec =
-            toml::from_str(run_spec_text).context("parse admitted run-spec TOML")?;
-        let artifacts = run_from_run_spec(&run_spec, object_bytes, output_dir)?;
+        let artifacts = run_from_run_spec(controls.run_spec(), object_bytes, output_dir)?;
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: artifacts.output.canonical_table.rows.len() as u64,
             nt_catalog_rows: artifacts.output.read_back_count as u64,
@@ -346,6 +468,7 @@ pub fn execute_source_universe_batch<F, R>(
     execution_pack_path: &Path,
     output_dir: &Path,
     record_limit: Option<u64>,
+    control_admission: SourceUniverseControlAdmissionPolicy,
     fetcher: &mut F,
     runner: &mut R,
 ) -> Result<SourceUniverseBatchExecutionReport>
@@ -358,8 +481,12 @@ where
         execution_pack_path,
         output_dir,
         SourceUniverseBatchExecutionConfig {
+            control_admission,
+            start_sequence: None,
             record_limit,
-            ..SourceUniverseBatchExecutionConfig::default()
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
         },
         fetcher,
         runner,
@@ -602,6 +729,7 @@ fn prepare_batch(
         .unwrap_or(usize::MAX);
 
     let mut admitted_controls = BTreeMap::new();
+    let mut total_control_bytes = 0_u64;
     for record in pack
         .records
         .iter()
@@ -612,12 +740,32 @@ fn prepare_batch(
         })
         .take(record_limit)
     {
-        let controls = admit_record_controls(&pack_base_dir, record).with_context(|| {
+        let controls =
+            admit_record_controls(&pack, &pack_base_dir, record, &config.control_admission)
+                .with_context(|| {
+                    format!(
+                        "admit controls for pack record {} ({})",
+                        record.sequence, record.operator_run_id
+                    )
+                })?;
+        let record_control_bytes = controls.total_bytes().with_context(|| {
             format!(
-                "admit controls for pack record {} ({})",
+                "sum admitted control bytes for pack record {} ({})",
                 record.sequence, record.operator_run_id
             )
         })?;
+        total_control_bytes = total_control_bytes
+            .checked_add(record_control_bytes)
+            .context("batch admitted control byte total overflow")?;
+        ensure!(
+            total_control_bytes <= config.control_admission.max_total_control_bytes.max_bytes(),
+            "batch admitted control bytes {} exceed configured max_total_control_bytes {} \
+             at pack record {} ({})",
+            total_control_bytes,
+            config.control_admission.max_total_control_bytes.max_bytes(),
+            record.sequence,
+            record.operator_run_id
+        );
         ensure!(
             admitted_controls
                 .insert(record.sequence, controls)
@@ -693,31 +841,61 @@ impl OwnedBatchPlan {
 }
 
 fn admit_record_controls(
+    pack: &SourceUniverseExecutionPack,
     pack_base_dir: &Path,
     record: &SourceUniverseExecutionPackRecord,
+    policy: &SourceUniverseControlAdmissionPolicy,
 ) -> Result<SourceUniverseAdmittedControls> {
+    let run_spec_bytes = read_pinned_control(
+        pack_base_dir,
+        record,
+        "run_spec",
+        &record.run_spec_path,
+        &record.run_spec_sha256,
+        policy.max_run_spec_bytes,
+    )?;
+    let accepted_tranche_bytes = read_pinned_control(
+        pack_base_dir,
+        record,
+        "accepted_tranche",
+        &record.accepted_tranche_path,
+        &record.accepted_tranche_sha256,
+        policy.max_accepted_tranche_bytes,
+    )?;
+    let execution_plan_bytes = read_pinned_control(
+        pack_base_dir,
+        record,
+        "execution_plan",
+        &record.execution_plan_path,
+        &record.execution_plan_sha256,
+        policy.max_execution_plan_bytes,
+    )?;
+
+    let run_spec_text =
+        std::str::from_utf8(&run_spec_bytes).context("decode admitted run_spec as UTF-8")?;
+    let run_spec: RunSpec =
+        toml::from_str(run_spec_text).context("parse admitted run_spec TOML")?;
+    let accepted_tranche: BackfillAcceptedTrancheManifest =
+        serde_json::from_slice(&accepted_tranche_bytes)
+            .context("parse admitted accepted_tranche JSON")?;
+    let execution_plan: BackfillExecutionPlan = serde_json::from_slice(&execution_plan_bytes)
+        .context("parse admitted execution_plan JSON")?;
+
+    validate_admitted_control_binding(
+        pack,
+        record,
+        &run_spec,
+        &accepted_tranche,
+        &execution_plan,
+        &run_spec_bytes,
+        &accepted_tranche_bytes,
+    )?;
+
     Ok(SourceUniverseAdmittedControls {
-        run_spec_bytes: read_pinned_control(
-            pack_base_dir,
-            record,
-            "run_spec",
-            &record.run_spec_path,
-            &record.run_spec_sha256,
-        )?,
-        accepted_tranche_bytes: read_pinned_control(
-            pack_base_dir,
-            record,
-            "accepted_tranche",
-            &record.accepted_tranche_path,
-            &record.accepted_tranche_sha256,
-        )?,
-        execution_plan_bytes: read_pinned_control(
-            pack_base_dir,
-            record,
-            "execution_plan",
-            &record.execution_plan_path,
-            &record.execution_plan_sha256,
-        )?,
+        run_spec_bytes,
+        accepted_tranche_bytes,
+        execution_plan_bytes,
+        run_spec: Arc::new(run_spec),
     })
 }
 
@@ -727,19 +905,26 @@ fn read_pinned_control(
     role: &str,
     declared_path: &Path,
     expected_sha256: &str,
+    limit: ByteLimit,
 ) -> Result<Arc<[u8]>> {
     validate_sha256_hex(expected_sha256)
         .with_context(|| format!("pack record {} has invalid {role}_sha256", record.sequence))?;
     let resolved_path = resolve_existing_path(pack_base_dir, declared_path);
-    let metadata = fs::metadata(&resolved_path)
+    let file = File::open(&resolved_path)
+        .with_context(|| format!("open pinned {role} {}", resolved_path.display()))?;
+    let metadata = file
+        .metadata()
         .with_context(|| format!("inspect pinned {role} {}", resolved_path.display()))?;
     ensure!(
         metadata.is_file(),
         "pinned {role} {} is not a regular file",
         resolved_path.display()
     );
-    let bytes = fs::read(&resolved_path)
-        .with_context(|| format!("read pinned {role} {}", resolved_path.display()))?;
+    let bytes = read_to_vec_with_limit(
+        file,
+        limit,
+        format!("read pinned {role} {}", resolved_path.display()),
+    )?;
     let actual_sha256 = hex::encode(Sha256::digest(&bytes));
     ensure!(
         actual_sha256 == expected_sha256,
@@ -749,6 +934,154 @@ fn read_pinned_control(
         actual_sha256
     );
     Ok(Arc::from(bytes))
+}
+
+fn validate_admitted_control_binding(
+    pack: &SourceUniverseExecutionPack,
+    record: &SourceUniverseExecutionPackRecord,
+    run_spec: &RunSpec,
+    accepted_tranche: &BackfillAcceptedTrancheManifest,
+    execution_plan: &BackfillExecutionPlan,
+    run_spec_bytes: &[u8],
+    accepted_tranche_bytes: &[u8],
+) -> Result<()> {
+    ensure!(
+        accepted_tranche.schema_version == BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
+        "accepted_tranche schema_version mismatch: expected {}, got {}",
+        BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
+        accepted_tranche.schema_version
+    );
+    ensure!(
+        accepted_tranche.status == BackfillAcceptedTrancheStatus::Accepted,
+        "accepted_tranche status must be accepted"
+    );
+    ensure!(
+        execution_plan.status == BackfillExecutionPlanStatus::Ready,
+        "execution_plan status must be ready"
+    );
+
+    let run_spec_sha256 = hex::encode(Sha256::digest(run_spec_bytes));
+    let accepted_tranche_sha256 = hex::encode(Sha256::digest(accepted_tranche_bytes));
+    let expected_plan = evaluate_backfill_execution_plan(
+        execution_plan.plan_id.clone(),
+        accepted_tranche_sha256.clone(),
+        accepted_tranche,
+        run_spec_sha256.clone(),
+        &BackfillExecutionRunBinding::from_run_spec(run_spec),
+        BackfillExecutionWorkBudget {
+            max_source_rows: execution_plan.max_source_rows,
+            max_projected_row_groups: execution_plan.max_projected_row_groups,
+            max_wall_seconds: execution_plan.max_wall_seconds,
+            require_object_selection_metadata: execution_plan.require_object_selection_metadata,
+        },
+    );
+    ensure!(
+        execution_plan == &expected_plan,
+        "execution_plan does not match the admitted run_spec and accepted_tranche"
+    );
+
+    ensure!(
+        !record.operator_run_id.trim().is_empty(),
+        "pack record operator_run_id must not be empty"
+    );
+    ensure!(
+        !record.accepted_tranche_id.trim().is_empty(),
+        "pack record accepted_tranche_id must not be empty"
+    );
+    ensure!(
+        execution_plan.operator_run_id == record.operator_run_id
+            && run_spec.manifest.run_id == record.operator_run_id,
+        "operator_run_id mismatch across pack record, run_spec, and execution_plan"
+    );
+    ensure!(
+        accepted_tranche.tranche_id == record.accepted_tranche_id
+            && execution_plan.accepted_tranche_id == record.accepted_tranche_id,
+        "accepted_tranche_id mismatch across pack record, accepted_tranche, and execution_plan"
+    );
+    ensure!(
+        execution_plan.run_spec_hash == run_spec_sha256,
+        "execution_plan run_spec_hash does not bind the admitted run_spec bytes"
+    );
+    ensure!(
+        execution_plan.accepted_tranche_manifest_hash == accepted_tranche_sha256,
+        "execution_plan accepted_tranche_manifest_hash does not bind the admitted accepted_tranche bytes"
+    );
+    ensure!(
+        execution_plan.source_proof_id == record.source_proof_id
+            && execution_plan.source_proof_version == record.source_proof_version,
+        "source proof identity mismatch between pack record and admitted controls"
+    );
+    ensure!(
+        execution_plan.source_binding == record.source_binding,
+        "source_binding mismatch between pack record and admitted controls"
+    );
+    ensure!(
+        execution_plan.output_prefix == record.output_prefix,
+        "output_prefix mismatch between pack record and admitted controls"
+    );
+    ensure!(
+        run_spec.source_proof.venue == pack.venue,
+        "venue mismatch between execution pack and admitted run_spec source proof"
+    );
+    ensure!(
+        execution_plan.table_family == pack.table_family,
+        "table_family mismatch between execution pack and admitted controls"
+    );
+    ensure!(
+        run_spec.source_proof.product_category == record.category,
+        "category mismatch between pack record and admitted run_spec source proof"
+    );
+    let identity = run_spec
+        .identity
+        .single()
+        .context("admitted run_spec identity must be single-instrument")?;
+    ensure!(
+        identity.instrument_id == record.symbol && identity.venue_symbol == record.symbol,
+        "symbol mismatch between pack record and admitted run_spec identity"
+    );
+
+    let object = execution_plan
+        .objects
+        .first()
+        .context("ready execution_plan must contain exactly one object")?;
+    ensure!(
+        object.sha256 == record.selected_object_sha256,
+        "selected_object_sha256 mismatch between pack record and admitted controls"
+    );
+    ensure!(
+        object.bytes == record.selected_object_bytes,
+        "selected_object_bytes mismatch between pack record and admitted controls"
+    );
+    ensure!(
+        object.s3_uri == record.source_uri,
+        "source_uri mismatch between pack record and admitted controls"
+    );
+    ensure!(
+        object.source_url == record.source_url,
+        "source_url mismatch between pack record and admitted controls"
+    );
+    ensure!(
+        object.archive_date == record.archive_date,
+        "archive_date mismatch between pack record and admitted controls"
+    );
+    Ok(())
+}
+
+impl SourceUniverseAdmittedControls {
+    fn total_bytes(&self) -> Result<u64> {
+        [
+            self.run_spec_bytes.len(),
+            self.accepted_tranche_bytes.len(),
+            self.execution_plan_bytes.len(),
+        ]
+        .into_iter()
+        .try_fold(0_u64, |total, length| {
+            let length = u64::try_from(length).context("control byte length exceeds u64")?;
+            total
+                .checked_add(length)
+                .context("record control byte total overflow")
+        })
+    }
 }
 
 /// Re-prove a carried record's prior OUTPUT before it is reused on resume.
@@ -1112,6 +1445,21 @@ mod tests {
             .to_string()
     }
 
+    fn committed_run_spec() -> Arc<RunSpec> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root")
+            .join(
+                "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/\
+                 binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/runs/\
+                 00000-source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00000/\
+                 run-spec.toml",
+            );
+        let text = fs::read_to_string(path).expect("read committed run spec");
+        Arc::new(toml::from_str(&text).expect("parse committed run spec"))
+    }
+
     /// Recursively copy `src` into `dst`, used to plant the committed reference
     /// catalog under a temp record `output_dir` so it can be deleted/corrupted
     /// without touching the committed fixture.
@@ -1208,6 +1556,7 @@ mod tests {
                 run_spec_bytes: Arc::from([]),
                 accepted_tranche_bytes: Arc::from([]),
                 execution_plan_bytes: Arc::from([]),
+                run_spec: committed_run_spec(),
             },
         )]);
         OwnedBatchPlan {

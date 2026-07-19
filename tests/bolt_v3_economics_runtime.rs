@@ -290,6 +290,69 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
 }
 
 #[test]
+fn configured_source_keeps_planned_edge_basis_distinct_from_reservation_basis() {
+    let request = canonical_fixture_request();
+    let component = estimated_component(
+        "charge",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    let inputs = AuthoritativeEconomicsInputStore::default();
+    inputs
+        .publish(
+            request.execution_client_id.as_str(),
+            request.instrument_id.as_str(),
+            request.product_surface_id.as_str(),
+            AuthoritativeEconomicsQuoteDependencies {
+                provider_key: "configured-provider".to_string(),
+                refreshed_at_ns: request.requested_at_ns,
+                adapter: Arc::new(FixedVenue(VenueQuoteEstimate {
+                    authority: component.source.clone(),
+                    dependency_sources: Vec::new(),
+                    components: vec![component],
+                })),
+                edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+                    product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
+                    policy_version: 1,
+                    source_snapshot_ids: vec![SnapshotId::new("basis-snapshot").unwrap()],
+                    valid_until_ns: request.requested_at_ns + 5,
+                },
+                valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(
+                ),
+            },
+        )
+        .unwrap();
+    let source = ConfiguredEconomicsAdmissionSource::new(
+        "configured-provider",
+        inputs,
+        ConfiguredEconomicsSourcePolicy {
+            quote_refresh_ns: 5,
+            quote_max_age_ns: 5,
+            quote_validity_ns: 5,
+            resting_order_refresh_margin_ns: 1,
+        },
+    )
+    .unwrap();
+
+    let admission = source
+        .quote_admission(EconomicsAdmissionQuoteIntent {
+            request,
+            order_binding: test_order_binding(),
+            purpose: EconomicsAdmissionPurpose::RiskReduction,
+            gross_expected_value: decimal("2"),
+            base_reservation_notional: decimal("5.50"),
+        })
+        .expect("planned execution value and reservation basis are distinct facts");
+
+    assert_eq!(admission.net_edge().basis().normalized_amount, decimal("5"));
+    assert_eq!(admission.base_reservation_notional(), decimal("5.50"));
+    assert_eq!(admission.debit_reservation(), decimal("0.25"));
+    assert_eq!(admission.reservation_notional(), decimal("5.75"));
+}
+
+#[test]
 fn configured_source_rejects_substrate_and_adapter_edge_basis_disagreement() {
     let request = canonical_fixture_request();
     let component = estimated_component(

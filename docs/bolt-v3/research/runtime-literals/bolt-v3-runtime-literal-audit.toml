@@ -71,22 +71,6 @@ reason = "Versioned provider API source discriminator validated against mandator
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"builder_approval"'''
-context = '''"builder_approval".to_string(),'''
-classification = "hyperliquid_economics_source_schema_key"
-reason = "Stable provider-owned TOML field identity for the account-scoped builder approval authority."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"max_builder_fee"'''
-context = '''"max_builder_fee".to_string(),'''
-classification = "hyperliquid_economics_source_discriminator"
-reason = "Versioned provider API source discriminator validated against mandatory TOML to prevent an implicit builder-fee authority."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
 literal = '''"funding"'''
 context = '''"funding".to_string(),'''
 classification = "hyperliquid_economics_source_schema_key"

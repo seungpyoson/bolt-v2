@@ -59,7 +59,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
@@ -236,7 +235,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
@@ -404,7 +402,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
@@ -601,7 +598,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
@@ -769,7 +765,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
@@ -927,7 +922,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
@@ -1083,7 +1077,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
@@ -1239,7 +1232,6 @@ carry_surfaces = []
 
 [execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]

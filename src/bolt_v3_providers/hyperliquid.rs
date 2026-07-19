@@ -783,10 +783,6 @@ fn validate_quote_economics_policy(
     let expected_sources = BTreeMap::from([
         ("account_fees".to_string(), "user_fees".to_string()),
         (
-            "builder_approval".to_string(),
-            "max_builder_fee".to_string(),
-        ),
-        (
             "funding".to_string(),
             "user_funding_stream_and_history".to_string(),
         ),

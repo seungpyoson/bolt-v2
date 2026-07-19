@@ -623,7 +623,6 @@ carry_surfaces = ["standard_perps"]
 
 [clients.hyperliquid_execution.execution.economics.sources]
 account_fees = "user_fees"
-builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [clients.hyperliquid_execution.execution.economics.formula]

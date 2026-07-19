@@ -1256,7 +1256,7 @@ BVS_PARTITION_FAILURE_WRAPPER = (
     "            rc=\"${PIPESTATUS[0]}\"\n"
     "            set -e\n"
 )
-BVS_TEST_ARCHIVE_JOB_SHA256 = "4644c3dd2ae81d4a7d5fe2cec0a678566407fe79f795449f4a08546adbe5b727"
+BVS_TEST_ARCHIVE_JOB_SHA256 = "97dd01389c950340146a664df7d719e12f2eb9955c9720b3efbe644d2c36334f"
 BVS_MINIO_SETUP_ACTION = "./.github/actions/setup-bvs-minio-s3-smoke"
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"

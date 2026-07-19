@@ -578,7 +578,22 @@ jobs:
           mkdir -p "$(dirname "$BVS_NEXTEST_ARCHIVE_PATH")"
           mapfile -t archive_args < <(python3 scripts/rust_test_targets.py archive-args --crate crates/backtesting-vertical-slice)
           printf 'BVS archive args: %s\n' "${archive_args[*]}"
-          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}"
+          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH" "${archive_args[@]}" &
+          archive_pid="$!"
+          trap 'if kill -0 "$archive_pid" 2>/dev/null; then kill "$archive_pid"; fi' EXIT
+          while sleep 60; do
+            if ! kill -0 "$archive_pid" 2>/dev/null; then
+              break
+            fi
+            printf 'BVS nextest archive build still running\n'
+          done
+          if wait "$archive_pid"; then
+            archive_status=0
+          else
+            archive_status="$?"
+          fi
+          trap - EXIT
+          exit "$archive_status"
 
       - name: Save BVS nextest archive
         id: bvs-nextest-archive-cache-save

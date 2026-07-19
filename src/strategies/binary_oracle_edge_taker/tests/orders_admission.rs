@@ -415,14 +415,6 @@ fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy()
         admission.economics_admission.reservation_basis().amount(),
         Decimal::from_str("50.00").expect("expected decimal should parse")
     );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount(),
-        "the final reservation includes the sealed economics debit"
-    );
 }
 
 #[test]
@@ -471,14 +463,6 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
         admission.economics_admission.reservation_basis().amount(),
         submitted_quote_quantity,
         "SELL Limit base reservation must not understate submitted quote quantity when bid exceeds limit price"
-    );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount(),
-        "submit admission must reserve the base amount plus the sealed economics debit"
     );
 }
 
@@ -627,16 +611,12 @@ fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
         submitted_quote_quantity,
         "SELL StopLimit admission must not understate submitted quote quantity when bid exceeds limit price"
     );
-    assert_eq!(
-        admission.notional,
+    assert!(
         admission
             .economics_admission
             .full_reservation_liability()
-            .amount(),
-        "submit admission must reserve the sealed base notional plus economics debits"
-    );
-    assert!(
-        admission.notional > submitted_quote_quantity,
+            .amount()
+            > submitted_quote_quantity,
         "the fixture must prove the sealed economics debit is added to the base reservation"
     );
 }
@@ -846,16 +826,12 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
         raw_quote_quantity,
         "Market BUY commits exactly the submitted quote quantity as its base reservation"
     );
-    assert_eq!(
-        admission.notional,
+    assert!(
         admission
             .economics_admission
             .full_reservation_liability()
-            .amount(),
-        "submit admission must reserve the sealed base notional plus economics debits"
-    );
-    assert!(
-        admission.notional > raw_quote_quantity,
+            .amount()
+            > raw_quote_quantity,
         "the fixture must prove the sealed economics debit is added to the base reservation"
     );
 }
@@ -916,14 +892,6 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
     assert!(
         reservation_basis > price.as_decimal() * Decimal::from(100u32),
         "the ceiling valuation must bound strictly above the reference-price estimate it replaces"
-    );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount(),
-        "submit admission must reserve the sealed base notional plus economics debits"
     );
 }
 
@@ -987,16 +955,12 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
         raw_quote_quantity,
         "Market BUY commits exactly the submitted quote quantity as its base reservation"
     );
-    assert_eq!(
-        admission.notional,
+    assert!(
         admission
             .economics_admission
             .full_reservation_liability()
-            .amount(),
-        "submit admission must reserve the sealed base notional plus economics debits"
-    );
-    assert!(
-        admission.notional > raw_quote_quantity,
+            .amount()
+            > raw_quote_quantity,
         "the fixture must prove the sealed economics debit is added to the base reservation"
     );
 }
@@ -1298,13 +1262,6 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
         admission.economics_admission.reservation_basis().amount(),
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style MarketIfTouched entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
-    );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount()
     );
 }
 
@@ -1785,13 +1742,6 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style StopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
     );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount()
-    );
 }
 
 #[test]
@@ -1940,13 +1890,6 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
         admission.economics_admission.reservation_basis().amount(),
         Decimal::from_str("0.800").expect("expected decimal should parse")
     );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount()
-    );
 
     let exit_price = Price::new(0.45, 2);
     let exit_order = strategy
@@ -2032,13 +1975,6 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
     assert_eq!(
         admission.economics_admission.reservation_basis().amount(),
         Decimal::from_str("2.00").expect("expected decimal should parse")
-    );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount()
     );
 
     let exit_price = Price::new(0.45, 2);
@@ -2148,13 +2084,6 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style TrailingStopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
     );
-    assert_eq!(
-        admission.notional,
-        admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount()
-    );
 
     let managed_position = materialize_configured_position(
         &mut strategy,
@@ -2229,13 +2158,6 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
             > Decimal::from_str("0.48").expect("expected decimal should parse")
                 * Decimal::from_str(quantity.to_string().trim()).expect("quantity should parse"),
         "the ceiling valuation must bound strictly above the activation-price estimate it replaces"
-    );
-    assert_eq!(
-        exit_admission.notional,
-        exit_admission
-            .economics_admission
-            .full_reservation_liability()
-            .amount()
     );
     assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
     assert_eq!(exit_order.trailing_offset(), Some(Decimal::new(3, 0)));

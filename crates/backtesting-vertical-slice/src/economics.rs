@@ -1,8 +1,8 @@
 use std::{str::FromStr, sync::Arc};
 
 use bolt_v2::bolt_v3_economics_runtime::{
-    AuthoritativeValuationObservation, BoltV3EconomicsRuntime, ConfiguredValuationProvider,
-    ConfiguredEconomicsSourcePolicy, EconomicsAdmission, EconomicsAdmissionIntent,
+    AuthoritativeValuationObservation, BoltV3EconomicsRuntime, ConfiguredEconomicsSourcePolicy,
+    ConfiguredValuationProvider, EconomicsAdmission, EconomicsAdmissionIntent,
     EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
 };
 use bolt_v2::bolt_v3_providers::{

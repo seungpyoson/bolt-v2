@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -197,6 +197,84 @@ fn control_hash_mismatch_rejects_before_fetch_or_output_creation() {
     assert!(
         !output_dir.exists(),
         "invalid admission must create no output"
+    );
+}
+
+#[test]
+fn malformed_control_sha256_fields_reject_before_fetch_or_output_creation() {
+    for field in [
+        "run_spec_sha256",
+        "accepted_tranche_sha256",
+        "execution_plan_sha256",
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (pack_path, _, _, _) = write_control_admission_fixture(
+            temp_dir.path(),
+            &[(0, b"accepted object bytes".to_vec())],
+        );
+        let mut pack: serde_json::Value = serde_json::from_slice(
+            &fs::read(&pack_path).expect("read execution pack for mutation"),
+        )
+        .expect("parse execution pack for mutation");
+        pack["records"][0][field] = serde_json::Value::String("A".repeat(64));
+        fs::write(
+            &pack_path,
+            serde_json::to_vec_pretty(&pack).expect("serialize mutated execution pack"),
+        )
+        .expect("write mutated execution pack");
+
+        assert_control_admission_rejects_before_side_effects(
+            &pack_path,
+            &temp_dir.path().join("batch-output"),
+            &format!("invalid {field}"),
+        );
+    }
+}
+
+#[test]
+fn missing_control_file_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, execution_plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    fs::remove_file(execution_plan_path).expect("remove execution plan");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "inspect pinned execution_plan",
+    );
+}
+
+#[test]
+fn non_regular_control_file_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, accepted_tranche_path, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    fs::remove_file(&accepted_tranche_path).expect("remove accepted tranche file");
+    fs::create_dir(&accepted_tranche_path).expect("replace accepted tranche with directory");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "pinned accepted_tranche",
+    );
+}
+
+#[test]
+fn duplicate_selected_sequence_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        temp_dir.path(),
+        &[
+            (0, b"first accepted object bytes".to_vec()),
+            (0, b"second accepted object bytes".to_vec()),
+        ],
+    );
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "duplicate selected sequence 0",
     );
 }
 
@@ -1590,6 +1668,51 @@ fn write_two_record_pack(
             (1, second_object_bytes.to_vec()),
         ],
     );
+}
+
+fn write_control_admission_fixture(
+    root: &Path,
+    objects: &[(u64, Vec<u8>)],
+) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let pack_path = root.join("source-universe-execution-pack.json");
+    let run_spec_path = root.join("run-spec.toml");
+    let accepted_tranche_path = root.join("accepted-tranche.json");
+    let execution_plan_path = root.join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"admitted\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, objects);
+    (
+        pack_path,
+        run_spec_path,
+        accepted_tranche_path,
+        execution_plan_path,
+    )
+}
+
+fn assert_control_admission_rejects_before_side_effects(
+    pack_path: &Path,
+    output_dir: &Path,
+    expected_error: &str,
+) {
+    let mut runner = RecordingRunner::default();
+    let error = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        pack_path,
+        output_dir,
+        None,
+        &mut NeverFetcher,
+        &mut runner,
+    )
+    .expect_err("invalid controls must reject before fetch");
+    assert!(
+        format!("{error:#}").contains(expected_error),
+        "full error chain must contain {expected_error:?}: {error:#}"
+    );
+    assert!(
+        !output_dir.exists(),
+        "invalid admission must create no output"
+    );
+    assert!(runner.calls.is_empty(), "invalid admission must not run");
 }
 
 /// Synthetic per-sequence symbol so the two-record assertions keep working

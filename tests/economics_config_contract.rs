@@ -139,7 +139,7 @@ fn valuation_age_covers_refresh_cadence_and_quote_validity() {
 from_unit = "USDC"
 to_currency = "pUSD"
 legs = [
-  { authority = "provider_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "usdc-pusd", max_age_ms = 8999 },
+  { authority = "provider_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "account_fees", max_age_ms = 8999 },
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", route);

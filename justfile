@@ -5,6 +5,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 nextest_version := "0.9.132"
 deny_version := "0.19.0"
+actionlint_version := "1.7.7"
 zigbuild_version := "0.22.1"
 zig_version := "0.15.2"
 
@@ -220,7 +221,10 @@ ci-lint-workflow-inner subject=repo_root: require-local-verification-gate check-
     set -euo pipefail
     cd "{{subject}}"
     shopt -s nullglob
-    workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
+    workflow_files=()
+    while IFS= read -r workflow_file; do
+        workflow_files+=("$workflow_file")
+    done < <(PYTHONPATH=scripts python3 -c 'from verify_ci_workflow_hygiene import repo_workflow_paths; print(*repo_workflow_paths(), sep="\n")')
     action_files=(.github/actions/*/action.yml .github/actions/*/action.yaml)
     github_script_files=()
     github_script_files=(.github/scripts/*.sh)
@@ -367,16 +371,10 @@ setup:
         exit 2
     fi
 
-    actionlint_version="$(python3 - <<'PY'
-    import tomllib
-    with open("ci/ai-review.toml", "rb") as handle:
-        print(tomllib.load(handle)["final_review"]["actionlint_version"])
-    PY
-    )"
-    if command -v actionlint >/dev/null 2>&1 && actionlint -version | grep -Eq "^${actionlint_version}([[:space:]]|$)"; then
-        echo "actionlint ${actionlint_version} already installed"
+    if command -v actionlint >/dev/null 2>&1 && actionlint -version | grep -Eq "^{{actionlint_version}}([[:space:]]|$)"; then
+        echo "actionlint {{actionlint_version}} already installed"
     else
-        echo "ERROR: actionlint ${actionlint_version} is required for just preflight"
+        echo "ERROR: actionlint {{actionlint_version}} is required for just preflight"
         exit 2
     fi
 

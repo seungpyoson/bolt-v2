@@ -17,7 +17,6 @@ import types
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "rust_verification.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "rust-probe.yml"
-FINAL_REVIEW_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "final-review.yml"
 POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 
 HEAD = "a" * 40
@@ -267,13 +266,10 @@ def assert_workflow_contract() -> None:
             raise AssertionError(f"{job} must pass probe id to runner")
 
 
-def assert_rust_probe_not_merge_proof() -> None:
+def assert_rust_probe_is_dispatch_only() -> None:
     workflow_text = WORKFLOW.read_text(encoding="utf-8")
-    final_review_text = FINAL_REVIEW_WORKFLOW.read_text(encoding="utf-8")
     if "pull_request:" in workflow_text or "\npush:" in workflow_text:
         raise AssertionError("Rust Probe must remain workflow_dispatch-only")
-    if "rust-probe" in final_review_text.lower():
-        raise AssertionError("Rust Probe must not be added to the fixed final-review graph")
 
 
 def assert_parser_exposes_rust_probe() -> None:
@@ -914,7 +910,7 @@ def main() -> int:
     assert_remote_probe_policy_validation()
     assert_repo_policy_declares_remote_probe()
     assert_workflow_contract()
-    assert_rust_probe_not_merge_proof()
+    assert_rust_probe_is_dispatch_only()
     assert_parser_exposes_rust_probe()
     assert_parser_help_exposes_suggest_and_examples()
     assert_validation_errors_point_to_suggest()

@@ -252,8 +252,11 @@ def assert_rust_linker_has_one_mandatory_route() -> None:
 def assert_setup_checks_configured_actionlint() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     setup = justfile.split("\nsetup:\n", 1)[1]
-    if "ci/ai-review.toml" not in setup or "actionlint -version" not in setup:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    if not re.search(r'(?m)^actionlint_version := "[^"]+"$', justfile) or "actionlint -version" not in setup:
         raise AssertionError("just setup does not verify the configured actionlint version")
+    if 'version="$(just --evaluate actionlint_version)"' not in workflow:
+        raise AssertionError("dormant workflow does not consume the active actionlint pin")
 
 
 def assert_upload_artifact_uses_one_configured_pin() -> None:

@@ -12,12 +12,23 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = REPO_ROOT / "scripts" / "run_ci_lint_suites.py"
+WORKFLOW_HYGIENE = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 
 
 def load_runner_module() -> object:
     spec = importlib.util.spec_from_file_location("run_ci_lint_suites_under_test", RUNNER)
     if spec is None or spec.loader is None:
         raise AssertionError("unable to load run_ci_lint_suites.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_workflow_hygiene_module() -> object:
+    spec = importlib.util.spec_from_file_location("verify_ci_workflow_hygiene_under_test", WORKFLOW_HYGIENE)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load verify_ci_workflow_hygiene.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -317,6 +328,33 @@ def test_every_test_module_is_claimed_by_one_execution_surface() -> None:
     runner.validate_test_suite_coverage(REPO_ROOT)
 
 
+def test_active_ci_lint_does_not_inspect_dormant_review_workflows() -> None:
+    verifier = load_workflow_hygiene_module()
+    active_workflows = verifier.repo_workflow_texts()
+    dormant_paths = verifier.DORMANT_REVIEW_WORKFLOW_PATHS
+    if active_workflows.keys() & dormant_paths:
+        raise AssertionError(f"dormant review workflows remain in active workflow hygiene: {active_workflows.keys() & dormant_paths}")
+    runner_config = verifier.load_github_actions_runners_config()
+    dormant_config = verifier.DORMANT_REVIEW_CONFIG_KEYS
+    active_config_keys = (
+        runner_config["workflows"].keys()
+        | runner_config["cargo_build_jobs"].keys()
+        | set(runner_config["meter_included_workflows"])
+    )
+    if active_config_keys & dormant_config:
+        raise AssertionError(f"dormant review config remains in active workflow hygiene: {active_config_keys & dormant_config}")
+    rust_probe_test = (REPO_ROOT / "scripts" / "test_rust_probe_wrapper.py").read_text(encoding="utf-8")
+    if "final-review.yml" in rust_probe_test:
+        raise AssertionError("active Rust Probe tests still inspect the dormant Final Review workflow")
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    active_setup = justfile.split("\nsetup:\n", 1)[1]
+    if "ci/ai-review.toml" in active_setup:
+        raise AssertionError("active setup still depends on dormant review configuration")
+    workflow_lint = justfile.split("\nci-lint-workflow-inner ", 1)[1].split("\nworktree ", 1)[0]
+    if "repo_workflow_paths" not in workflow_lint or "actionlint \"${workflow_files[@]}\"" not in workflow_lint:
+        raise AssertionError("active workflow lint does not exclude dormant review workflows")
+
+
 def test_duplicate_test_ownership_is_rejected_for_every_surface_pair() -> None:
     runner = load_runner_module()
     surface_names = ("ci-lint", "paired-fence", "standalone-fence")
@@ -366,6 +404,7 @@ def main() -> int:
         test_runner_rejects_unbounded_worker_count_for_default_workflow,
         test_default_suite_table_covers_the_ci_lint_contract,
         test_every_test_module_is_claimed_by_one_execution_surface,
+        test_active_ci_lint_does_not_inspect_dormant_review_workflows,
         test_duplicate_test_ownership_is_rejected_for_every_surface_pair,
         test_duplicate_ci_lint_suite_claims_are_rejected,
     )

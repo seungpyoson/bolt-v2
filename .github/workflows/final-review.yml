@@ -121,11 +121,7 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Install configured actionlint
         run: |
-          version="$(python3 - <<'PY'
-          import tomllib
-          print(tomllib.load(open('ci/ai-review.toml', 'rb'))['final_review']['actionlint_version'])
-          PY
-          )"
+          version="$(just --evaluate actionlint_version)"
           GOBIN="$RUNNER_TEMP/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@v${version}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - uses: ./.github/actions/setup-bvs-minio-s3-smoke

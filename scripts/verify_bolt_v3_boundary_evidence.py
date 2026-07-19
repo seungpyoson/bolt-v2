@@ -527,6 +527,15 @@ def scan_wire_boundary(root: Path, findings: list[str], source_paths: list[Path]
 
 def scan_static_wiring(root: Path, findings: list[str]) -> None:
     lane_config = tomllib.loads(read(root, "ci/rust-verification.toml"))
+    action_config = tomllib.loads(read(root, "ci/github-actions-runners.toml"))
+    upload_artifact_action = action_config["action_pins"]["upload_artifact"]
+    if not isinstance(upload_artifact_action, str) or not re.fullmatch(
+        r"actions/upload-artifact@[0-9a-f]{40}", upload_artifact_action
+    ):
+        findings.append(
+            "ci/github-actions-runners.toml: action_pins.upload_artifact must use an immutable commit SHA"
+        )
+        return
     labels = lane_config["local_lane_policy"]["cheap_lane_labels"]
     for label in (
         "test_verify_bolt_v3_boundary_evidence.py",
@@ -554,7 +563,7 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
         "actions/runs/${{ github.run_id }}",
         'echo "check_suite_id=$check_suite_id"',
         '--check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"',
-        "actions/upload-artifact@ea165f8d65b6e75b5404495a51ac03f51d2c05c8",
+        upload_artifact_action,
     ):
         if needle not in workflow:
             findings.append(f"{workflow_path}: missing {needle}")

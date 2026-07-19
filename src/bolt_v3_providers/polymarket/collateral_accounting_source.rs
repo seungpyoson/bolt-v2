@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use alloy_primitives::keccak256;
+use async_trait::async_trait;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_network::http::{HttpClient, USER_AGENT};
 use nautilus_polymarket::{
@@ -497,30 +498,112 @@ impl<'a> OnChainCollateralRpcClient<'a> {
                 field: "on_chain_collateral.rpc_status",
             });
         }
-        let rpc_response: JsonRpcResponse =
-            serde_json::from_slice(&response.body).map_err(|_| {
-                BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-                    field: "on_chain_collateral.rpc_response",
-                }
-            })?;
-        if rpc_response.error.is_some() {
-            return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-                field: "on_chain_collateral.rpc_error",
-            });
+        decode_json_rpc_result(&response.body)
+    }
+}
+
+fn decode_json_rpc_result(body: &[u8]) -> Result<serde_json::Value, BoltV3OperatorArtifactError> {
+    let rpc_response: JsonRpcResponse = serde_json::from_slice(body).map_err(|_| {
+        BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_response",
         }
-        rpc_response
-            .result
-            .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-                field: "on_chain_collateral.rpc_result",
-            })
+    })?;
+    if rpc_response.error.is_some() {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_error",
+        });
+    }
+    rpc_response
+        .result
+        .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_result",
+        })
+}
+
+#[async_trait(?Send)]
+pub(crate) trait OnChainCollateralRpc: Send + Sync {
+    async fn chain_id(&self) -> Result<u64, BoltV3OperatorArtifactError>;
+    async fn block_number(&self) -> Result<u64, BoltV3OperatorArtifactError>;
+    async fn eth_call_u256_word_at(
+        &self,
+        contract_address: &str,
+        calldata: &str,
+        block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError>;
+    async fn code_sha256_at(
+        &self,
+        contract_address: &str,
+        block_tag: &str,
+    ) -> Result<String, BoltV3OperatorArtifactError>;
+    async fn storage_word_at(
+        &self,
+        contract_address: &str,
+        slot: &str,
+        block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError>;
+    async fn block_header(
+        &self,
+        block_number: u64,
+    ) -> Result<OnChainBlockHeader, BoltV3OperatorArtifactError>;
+}
+
+#[async_trait(?Send)]
+impl OnChainCollateralRpc for OnChainCollateralRpcClient<'_> {
+    async fn chain_id(&self) -> Result<u64, BoltV3OperatorArtifactError> {
+        OnChainCollateralRpcClient::chain_id(self).await
+    }
+
+    async fn block_number(&self) -> Result<u64, BoltV3OperatorArtifactError> {
+        OnChainCollateralRpcClient::block_number(self).await
+    }
+
+    async fn eth_call_u256_word_at(
+        &self,
+        contract_address: &str,
+        calldata: &str,
+        block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
+        OnChainCollateralRpcClient::eth_call_u256_word_at(
+            self,
+            contract_address,
+            calldata,
+            block_tag,
+        )
+        .await
+    }
+
+    async fn code_sha256_at(
+        &self,
+        contract_address: &str,
+        block_tag: &str,
+    ) -> Result<String, BoltV3OperatorArtifactError> {
+        OnChainCollateralRpcClient::code_at(self, contract_address, block_tag)
+            .await
+            .map(|code| crate::bolt_v3_source_integrity::sha256_hex_lower(&code))
+    }
+
+    async fn storage_word_at(
+        &self,
+        contract_address: &str,
+        slot: &str,
+        block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
+        OnChainCollateralRpcClient::storage_word_at(self, contract_address, slot, block_tag).await
+    }
+
+    async fn block_header(
+        &self,
+        block_number: u64,
+    ) -> Result<OnChainBlockHeader, BoltV3OperatorArtifactError> {
+        OnChainCollateralRpcClient::block_header(self, block_number).await
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct OnChainBlockHeader {
-    pub(super) number: u64,
-    pub(super) hash: String,
-    pub(super) timestamp_secs: u64,
+pub(crate) struct OnChainBlockHeader {
+    pub(crate) number: u64,
+    pub(crate) hash: String,
+    pub(crate) timestamp_secs: u64,
 }
 
 #[derive(Deserialize)]
@@ -764,6 +847,21 @@ mod tests {
                 "0x00000000000000000000000000000000000000000000000000000000000000zz"
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn governed_proxy_capture_decodes_through_the_production_json_rpc_parser() {
+        let result = decode_json_rpc_result(include_bytes!(
+            "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-proxy-implementation.json"
+        ))
+        .expect("governed proxy response should decode");
+        let encoded = result
+            .as_str()
+            .expect("governed proxy response should contain a word");
+        assert_eq!(
+            parse_u256_word_hex(encoded).expect("governed proxy word should decode"),
+            word("0x0000000000000000000000006bbcef9f7ef3b6c592c99e0f206a0de94ad0925")
         );
     }
 

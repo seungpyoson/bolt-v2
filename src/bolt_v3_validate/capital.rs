@@ -39,7 +39,7 @@ pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> 
         .is_none()
         {
             errors.push(format!(
-                "{label}.collateral_currency must be a registered currency code or pUSD alias: `{}`",
+                "{label}.collateral_currency must be a registered NT currency code: `{}`",
                 pool.collateral_currency
             ));
         }

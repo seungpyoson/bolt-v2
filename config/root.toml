@@ -334,12 +334,16 @@ product_metadata_source = "polymarket-market-info"
 [clients.polymarket_main.execution.economics.product_surface_policies]
 binary_outcome = "primary"
 
+[clients.polymarket_main.execution.economics.valuation.exact_currency_identities.usdc_e_usdc]
+from_unit = "USDC.e"
+source_currency = "USDC"
+
 [clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
 from_unit = "pUSD"
 to_currency = "USD"
 legs = [
   { authority = "provider_conversion", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
-  { authority = "market_quote", from_unit = "USDC.e", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "market_quote", from_unit = "USDC.e", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 
 [clients.polymarket_main.secrets]
@@ -670,7 +674,7 @@ standard_perps = "primary"
 from_unit = "USDC"
 to_currency = "USD"
 legs = [
-  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 
 [clients.hyperliquid_execution.secrets]

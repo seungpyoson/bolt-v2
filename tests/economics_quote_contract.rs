@@ -282,6 +282,7 @@ fn required_valuation_expiry_limits_quote_validity() {
         normalized_amount: decimal("-1.00"),
         reporting_unit: native_unit("pUSD"),
         route_id: Some(ValuationRouteId::new("configured-route").unwrap()),
+        legs: Vec::new(),
         source_snapshot_ids: vec![SnapshotId::new("valuation-snapshot").unwrap()],
         valued_at_ns: 100,
         valid_until_ns: Some(105),

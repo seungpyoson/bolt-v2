@@ -64,7 +64,7 @@ pub(super) fn fixture_submit_reservation_metadata(
         venue_id: "POLYMARKET".to_string(),
         account_id: "POLYMARKET-001".to_string(),
         product_kind: "prediction_market_binary".to_string(),
-        collateral_currency: "PUSD".to_string(),
+        collateral_currency: "pUSD".to_string(),
         capital_pool_id: "polymarket-prediction-live".to_string(),
         collateral_group_id: "condition-fixture".to_string(),
         instrument_id: instrument_id.to_string(),
@@ -167,9 +167,6 @@ pub(super) fn account_state_event(
 }
 
 pub(super) fn test_currency(currency_code: &str) -> Currency {
-    if currency_code == "PUSD" {
-        return Currency::new("PUSD", 2, 0, "Test PUSD", CurrencyType::Fiat);
-    }
     Currency::from(currency_code)
 }
 

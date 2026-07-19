@@ -222,6 +222,7 @@ pub struct ValuationEvidence {
     pub normalized_amount: Decimal,
     pub reporting_unit: Currency,
     pub route_id: Option<ValuationRouteId>,
+    pub legs: Vec<ValuationLegEvidence>,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valued_at_ns: u64,
     pub valid_until_ns: Option<u64>,
@@ -230,6 +231,7 @@ pub struct ValuationEvidence {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValuationLegEvidence {
     pub from_unit: Currency,
+    pub source_currency: Currency,
     pub to_unit: Currency,
     pub rate: Decimal,
     pub source_snapshot_id: SnapshotId,

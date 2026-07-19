@@ -88,7 +88,16 @@ pub struct EdgeBasisResolverConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ValuationConfig {
+    #[serde(default)]
+    pub exact_currency_identities: BTreeMap<String, ExactCurrencyIdentityConfig>,
     pub routes: BTreeMap<String, ValuationRouteConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExactCurrencyIdentityConfig {
+    pub from_unit: String,
+    pub source_currency: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -111,7 +120,6 @@ pub enum ValuationLegConfig {
     MarketQuote {
         from_unit: String,
         source_currency: String,
-        source_currency_per_from_unit: String,
         to_unit: String,
         valuation_policy: ValuationPolicy,
         client_id: String,
@@ -265,6 +273,11 @@ pub enum EconomicsConfigError {
     },
     InvalidValuationRate {
         route_id: String,
+    },
+    MissingExactCurrencyIdentity {
+        route_id: String,
+        from_unit: String,
+        source_currency: String,
     },
     ValuationRefreshWindowTooShort {
         route_id: String,
@@ -599,6 +612,17 @@ impl ExecutionEconomicsConfig {
 }
 
 impl ValuationConfig {
+    pub(crate) fn declares_exact_currency_identity(
+        &self,
+        from_unit: &str,
+        source_currency: &str,
+    ) -> bool {
+        from_unit == source_currency
+            || self.exact_currency_identities.values().any(|identity| {
+                identity.from_unit == from_unit && identity.source_currency == source_currency
+            })
+    }
+
     fn validate(
         &self,
         reporting_currency: &str,
@@ -606,6 +630,21 @@ impl ValuationConfig {
         configured_sources: &BTreeSet<String>,
     ) -> Vec<EconomicsConfigError> {
         let mut errors = Vec::new();
+        for (identity_id, identity) in &self.exact_currency_identities {
+            require_text(
+                identity_id,
+                EconomicsConfigField::ValuationPolicy,
+                &mut errors,
+            );
+            for currency in [&identity.from_unit, &identity.source_currency] {
+                if crate::economics::currency_from_code(currency).is_err() {
+                    errors.push(EconomicsConfigError::InvalidValuationCurrency {
+                        route_id: identity_id.clone(),
+                        currency: currency.clone(),
+                    });
+                }
+            }
+        }
         let mut authority_pairs = BTreeSet::new();
         for (route_id, route) in &self.routes {
             require_text(
@@ -644,6 +683,7 @@ impl ValuationConfig {
                 route,
                 active_data_clients,
                 configured_sources,
+                self,
             ));
         }
         errors
@@ -655,6 +695,7 @@ fn validate_valuation_legs(
     route: &ValuationRouteConfig,
     active_data_clients: &BTreeSet<String>,
     configured_sources: &BTreeSet<String>,
+    valuation: &ValuationConfig,
 ) -> Vec<EconomicsConfigError> {
     let mut errors = Vec::new();
     if route.legs.is_empty() {
@@ -672,7 +713,6 @@ fn validate_valuation_legs(
             ValuationLegConfig::MarketQuote {
                 from_unit,
                 source_currency,
-                source_currency_per_from_unit,
                 to_unit,
                 client_id,
                 instrument_id,
@@ -702,12 +742,11 @@ fn validate_valuation_legs(
                         });
                     }
                 }
-                if !matches!(
-                    source_currency_per_from_unit.parse::<rust_decimal::Decimal>(),
-                    Ok(rate) if rate > rust_decimal::Decimal::ZERO
-                ) {
-                    errors.push(EconomicsConfigError::InvalidValuationRate {
+                if !valuation.declares_exact_currency_identity(from_unit, source_currency) {
+                    errors.push(EconomicsConfigError::MissingExactCurrencyIdentity {
                         route_id: route_id.to_string(),
+                        from_unit: from_unit.clone(),
+                        source_currency: source_currency.clone(),
                     });
                 }
             }

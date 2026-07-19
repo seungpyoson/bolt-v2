@@ -1183,7 +1183,7 @@ fn capital_admission_configured_admission_with_writer(
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
-            collateral_currency: "PUSD".to_string(),
+            collateral_currency: "pUSD".to_string(),
             capital_pool: CapitalPoolSnapshot {
                 source: "bolt-submit-admission-test".to_string(),
                 observed_at_ns: 1_000,

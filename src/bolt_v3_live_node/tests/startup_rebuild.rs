@@ -20,7 +20,7 @@ fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_witho
 
     assert_eq!(runtime.capital_admission_reconciled(), Some(false));
     write_submit_reservation_metadata(&loaded, &metadata);
-    seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+    seed_cached_account_state(&runtime, "POLYMARKET-001", "pUSD", 100.0, 100.0);
     seed_accepted_open_limit_order(
         &runtime,
         generic_limit_order(
@@ -67,7 +67,7 @@ fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");
-    seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+    seed_cached_account_state(&runtime, "POLYMARKET-001", "pUSD", 100.0, 100.0);
     seed_accepted_open_limit_order(
         &runtime,
         generic_limit_order(
@@ -136,7 +136,7 @@ fn startup_rebuild_reports_missing_nt_account_cache_balance() {
         rebuild.missing_nt_account_cache_balance,
         Some(BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance {
             account_id: "POLYMARKET-001".to_string(),
-            collateral_currency: "PUSD".to_string(),
+            collateral_currency: "pUSD".to_string(),
         })
     );
     assert_eq!(runtime.capital_admission_reconciled(), Some(false));
@@ -145,7 +145,7 @@ fn startup_rebuild_reports_missing_nt_account_cache_balance() {
         .capital_admission_runtime_feed
         .as_ref()
         .expect("fixture should configure capital-admission runtime feed");
-    let account_state = account_state_event("POLYMARKET-001", "PUSD", 100.0, 100.0, 2_100);
+    let account_state = account_state_event("POLYMARKET-001", "pUSD", 100.0, 100.0, 2_100);
     assert!(
         feed.lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -329,7 +329,7 @@ fn startup_rebuild_nt_cached_balance_is_advisory_without_venue_truth() {
         .expect("fixture v3 LiveNode should build");
 
     // Helper writes NT AccountBalance as (total, locked, free): total=100, locked=40, free=60.
-    seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 60.0);
+    seed_cached_account_state(&runtime, "POLYMARKET-001", "pUSD", 100.0, 60.0);
     {
         let account_id = AccountId::from("POLYMARKET-001");
         let cache = runtime.node.kernel().cache();
@@ -340,7 +340,7 @@ fn startup_rebuild_nt_cached_balance_is_advisory_without_venue_truth() {
         let balances = account.balances();
         let balance = balances
             .values()
-            .find(|balance| balance.currency.code.as_str() == "PUSD")
+            .find(|balance| balance.currency.code.as_str() == "pUSD")
             .expect("seeded collateral balance should be present in NT cache");
         assert_eq!(balance.total.as_decimal(), Decimal::new(100, 0));
         assert_eq!(balance.locked.as_decimal(), Decimal::new(40, 0));
@@ -387,7 +387,7 @@ fn startup_rebuild_rejects_known_metadata_when_open_quantity_exceeds_submitted()
         .expect("fixture v3 LiveNode should build");
 
     write_submit_reservation_metadata(&loaded, &metadata);
-    seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+    seed_cached_account_state(&runtime, "POLYMARKET-001", "pUSD", 100.0, 100.0);
     seed_accepted_open_limit_order(
         &runtime,
         generic_limit_order(

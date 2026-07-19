@@ -69,6 +69,8 @@ pub enum HistoricalValuationObservation {
     MarketQuote {
         client_id: String,
         instrument_id: String,
+        base_currency: String,
+        quote_currency: String,
         price: String,
         snapshot_id: String,
         observed_at_ns: u64,
@@ -528,21 +530,27 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
                 HistoricalValuationObservation::MarketQuote {
                     client_id,
                     instrument_id,
+                    base_currency,
+                    quote_currency,
                     snapshot_id,
                     observed_at_ns,
                     fetched_at_ns,
                     valid_until_ns,
                     ..
-                } => (
-                    HistoricalValuationAuthorityKey::MarketQuote {
-                        client_id: client_id.clone(),
-                        instrument_id: instrument_id.clone(),
-                    },
-                    snapshot_id,
-                    *observed_at_ns,
-                    *fetched_at_ns,
-                    *valid_until_ns,
-                ),
+                } => {
+                    currency_from_code(base_currency)?;
+                    currency_from_code(quote_currency)?;
+                    (
+                        HistoricalValuationAuthorityKey::MarketQuote {
+                            client_id: client_id.clone(),
+                            instrument_id: instrument_id.clone(),
+                        },
+                        snapshot_id,
+                        *observed_at_ns,
+                        *fetched_at_ns,
+                        *valid_until_ns,
+                    )
+                }
                 HistoricalValuationObservation::ProviderConversion {
                     source_id,
                     from_unit,
@@ -613,6 +621,8 @@ fn canonical_valuation_observations(
             HistoricalValuationObservation::MarketQuote {
                 client_id,
                 instrument_id,
+                base_currency,
+                quote_currency,
                 price,
                 snapshot_id,
                 observed_at_ns,
@@ -621,6 +631,8 @@ fn canonical_valuation_observations(
             } => Ok(AuthoritativeValuationObservation::MarketQuote {
                 client_id: client_id.clone(),
                 instrument_id: instrument_id.clone(),
+                base_currency: currency_from_code(base_currency)?,
+                quote_currency: currency_from_code(quote_currency)?,
                 price: decimal(price)?,
                 snapshot_id: SnapshotId::new(snapshot_id.clone())?,
                 observed_at_ns: *observed_at_ns,

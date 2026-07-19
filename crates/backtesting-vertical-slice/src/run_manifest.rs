@@ -4857,6 +4857,8 @@ mod tests {
                 crate::economics::HistoricalValuationObservation::MarketQuote {
                     client_id: "coinbase_data".to_string(),
                     instrument_id: "USDC-USD.COINBASE".to_string(),
+                    base_currency: "USDC".to_string(),
+                    quote_currency: "USD".to_string(),
                     price: "1".to_string(),
                     snapshot_id: "test-usdc-usd".to_string(),
                     observed_at_ns,

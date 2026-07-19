@@ -701,12 +701,7 @@ pub(crate) fn settlement_currency_for_execution_account(
 }
 
 pub(crate) fn settlement_currency_from_config_code(configured: &str) -> Option<Currency> {
-    let pusd = Currency::pUSD();
-    if configured.eq_ignore_ascii_case(pusd.code.as_str()) {
-        Some(pusd)
-    } else {
-        configured.parse().ok()
-    }
+    configured.parse().ok()
 }
 
 fn binding_error(

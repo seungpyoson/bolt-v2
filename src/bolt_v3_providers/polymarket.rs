@@ -26,7 +26,7 @@
 
 mod adapter_signing_source;
 mod balance_allowance_cache;
-mod collateral_accounting_source;
+pub(crate) mod collateral_accounting_source;
 pub mod economics;
 mod venue_account_state_source;
 mod venue_truth_runtime_source;
@@ -1026,7 +1026,7 @@ fn polymarket_venue_truth_collateral_currency(
     configured: &str,
 ) -> Result<Currency, anyhow::Error> {
     let collateral_currency = Currency::pUSD();
-    if configured.eq_ignore_ascii_case(collateral_currency.code.as_str()) {
+    if configured == collateral_currency.code.as_str() {
         return Ok(collateral_currency);
     }
     Err(anyhow::anyhow!(

@@ -9,7 +9,7 @@ source_method = "JSON-RPC"
 kind = "finalized_block"
 source_url = "https://polygon.drpc.org"
 fixture = "polymarket-collateral-finalized-block.json"
-fixture_sha256 = "a7debfdfa1ef325bf825193f09bd75fce6f59a0be74bb60266ccb7f7e8162101"
+fixture_sha256 = "20ec7fcf33bc8b95e7614a5cfd82d7a73c698468d67f768dd3d9844bdf33ee64"
 
 [[captures]]
 kind = "proxy_implementation"

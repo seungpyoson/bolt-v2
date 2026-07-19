@@ -21427,10 +21427,10 @@ reason = "Stable checked-arithmetic diagnostic for the evidence validity deadlin
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
-literal = '''"{}\0{}\0{}\0{}\0{}\0{}\0{}"'''
-context = '''"{}\0{}\0{}\0{}\0{}\0{}\0{}",'''
+literal = '''"{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}"'''
+context = '''"{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",'''
 classification = "evidence_fingerprint_schema"
-reason = "Versioned, unambiguous field framing for a valuation evidence fingerprint, including observed, fetched, and valid-until times; all field values come from configured routes and authoritative quote ticks."
+reason = "Versioned, unambiguous field framing for a valuation evidence fingerprint, including NT base/quote currencies and observed, fetched, and valid-until times; all field values come from configured routes and authoritative quote ticks."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
@@ -21604,7 +21604,7 @@ reason = "Fail-closed diagnostic when the configured authoritative instrument is
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"economics valuation instrument has no base currency"'''
-context = '''.context("economics valuation instrument has no base currency")?'''
+context = '''.context("economics valuation instrument has no base currency")?;'''
 classification = "diagnostic_template"
 reason = "Fail-closed diagnostic for an instrument incapable of proving configured route units."
 
@@ -21783,6 +21783,14 @@ literal = '''"eth_getBlockByNumber"'''
 context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_GET_BLOCK_METHOD: &str = "eth_getBlockByNumber";'''
 classification = "json_rpc_protocol_method"
 reason = "Canonical Ethereum JSON-RPC method used to seal finalized block hash and timestamp evidence."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = '''32'''
+context = ''') -> Result<[u8; 32], BoltV3OperatorArtifactError>;'''
+classification = "evm_word_width"
+reason = "Ethereum ABI values are fixed-width 32-byte words; the configured addresses and provider values remain authoritative."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"

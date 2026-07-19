@@ -973,11 +973,10 @@ fn economics_valuation_provider_from_cache(
             let instrument = cache
                 .instrument(&instrument_id)
                 .context("economics valuation instrument is unavailable")?;
-            let base_unit = instrument
+            let base_currency = instrument
                 .base_currency()
-                .context("economics valuation instrument has no base currency")?
-                .code
-                .to_string();
+                .context("economics valuation instrument has no base currency")?;
+            let base_unit = base_currency.code.to_string();
             let quote_unit = instrument.quote_currency().code.to_string();
             let (expected_from, expected_to) = match orientation {
                 crate::bolt_v3_economics_config::ValuationOrientation::BaseToQuote => {
@@ -1020,9 +1019,11 @@ fn economics_valuation_provider_from_cache(
                 "economics valuation quote timeline is invalid"
             );
             let snapshot_payload = format!(
-                "{}\0{}\0{}\0{}\0{}\0{}\0{}",
+                "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
                 client_id,
                 instrument_id,
+                base_unit,
+                quote_unit,
                 quote.bid_price,
                 quote.ask_price,
                 observed_at_ns,
@@ -1033,6 +1034,8 @@ fn economics_valuation_provider_from_cache(
                 crate::bolt_v3_economics_runtime::AuthoritativeValuationObservation::MarketQuote {
                     client_id: client_id.clone(),
                     instrument_id: instrument_id.to_string(),
+                    base_currency,
+                    quote_currency: instrument.quote_currency(),
                     price,
                     snapshot_id: crate::economics::SnapshotId::new(format!(
                         "sha256:{}",

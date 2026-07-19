@@ -139,7 +139,7 @@ standard_perps = "primary"
 from_unit = "USDC"
 to_currency = "USD"
 legs = [
-  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 
 [execution.live_submit.standard_perps]

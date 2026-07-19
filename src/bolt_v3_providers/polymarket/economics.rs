@@ -375,6 +375,16 @@ impl PolymarketEconomicsAuthority {
             self.http_timeout_secs,
         )
         .map_err(|error| anyhow::anyhow!(error))?;
+        self.observe_collateral_redemption_with_rpc(&rpc, receipt_clock, max_age_ns)
+            .await
+    }
+
+    pub(crate) async fn observe_collateral_redemption_with_rpc(
+        &self,
+        rpc: &dyn super::collateral_accounting_source::OnChainCollateralRpc,
+        receipt_clock: &dyn EconomicsReceiptClock,
+        max_age_ns: u64,
+    ) -> anyhow::Result<AuthoritativeValuationObservation> {
         let chain_id = rpc
             .chain_id()
             .await
@@ -461,8 +471,8 @@ impl PolymarketEconomicsAuthority {
             collateral_decimals == redemption_decimals,
             "Polymarket collateral and redemption asset decimals differ"
         );
-        let proxy_code = rpc
-            .code_at(&collateral_token, &block_tag)
+        let proxy_code_sha256 = rpc
+            .code_sha256_at(&collateral_token, &block_tag)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
         let implementation = normalized_address(
@@ -482,17 +492,14 @@ impl PolymarketEconomicsAuthority {
             address_word(&implementation_slot) == implementation,
             "Polymarket collateral proxy implementation does not match configured authority"
         );
-        let implementation_code = rpc
-            .code_at(&implementation, &block_tag)
+        let implementation_code_sha256 = rpc
+            .code_sha256_at(&implementation, &block_tag)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let offramp_code = rpc
-            .code_at(&offramp, &block_tag)
+        let offramp_code_sha256 = rpc
+            .code_sha256_at(&offramp, &block_tag)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let proxy_code_sha256 = sha256_hex(&proxy_code);
-        let implementation_code_sha256 = sha256_hex(&implementation_code);
-        let offramp_code_sha256 = sha256_hex(&offramp_code);
         anyhow::ensure!(
             proxy_code_sha256 == self.on_chain_collateral.collateral_token_proxy_code_sha256,
             "Polymarket collateral proxy bytecode is not the governed authority"
@@ -664,10 +671,6 @@ struct CollateralRedemptionProof {
     observed_at_ns: u64,
     fetched_at_ns: u64,
     valid_until_ns: u64,
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn normalized_address(value: &str) -> anyhow::Result<String> {

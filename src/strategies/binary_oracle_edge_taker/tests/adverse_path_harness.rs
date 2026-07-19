@@ -2312,7 +2312,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             payout_per_share: "1".to_string(),
             terminal_value: "10".to_string(),
             realized_pnl: "5.5".to_string(),
-            settlement_currency: "PUSD".to_string(),
+            settlement_currency: "pUSD".to_string(),
         },
     );
 

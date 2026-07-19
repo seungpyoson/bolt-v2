@@ -7892,7 +7892,7 @@ fn rejects_more_than_one_enforced_capital_pool() {
 pool_id = "secondary-prediction-live"
 venue_id = "POLYMARKET"
 account_id = "POLYMARKET-001"
-collateral_currency = "PUSD"
+collateral_currency = "pUSD"
 product_kind = "prediction_market_binary"
 enforce_submit_admission = true
 max_pool_liability = "10.00"

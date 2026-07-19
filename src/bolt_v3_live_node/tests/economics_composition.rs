@@ -13,7 +13,14 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use rust_decimal::Decimal;
-use std::{any::Any, cell::RefCell, collections::BTreeMap, rc::Rc, str::FromStr, sync::Arc};
+use std::{
+    any::Any,
+    cell::RefCell,
+    collections::{BTreeMap, VecDeque},
+    rc::Rc,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 use ustr::Ustr;
 
 use crate::{
@@ -30,7 +37,11 @@ use crate::{
         EconomicsAdmissionPurpose, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
         EconomicsOrderBinding, EconomicsReceiptClock, ProviderEconomicsAuthority,
     },
+    bolt_v3_operator_artifacts::BoltV3OperatorArtifactError,
     bolt_v3_order_execution::{BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg},
+    bolt_v3_providers::polymarket::collateral_accounting_source::{
+        OnChainBlockHeader, OnChainCollateralRpc,
+    },
     bolt_v3_providers::polymarket::economics::{
         PolymarketEconomicsAuthority, PolymarketEconomicsSource, PolymarketEconomicsSourceOverride,
     },
@@ -44,7 +55,7 @@ use crate::{
         AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
         ExecutionClientId, InstrumentId as EconomicsInstrumentId, LifecyclePath,
         LiquidityRoleAssumption, OrderSide, PlannedFillLeg, ProductSurfaceId, ReportingPolicyId,
-        RoutingContext, SnapshotId, currency_from_code,
+        RoutingContext, currency_from_code,
     },
 };
 
@@ -53,6 +64,207 @@ const INSTRUMENT_ID: &str = "condition-token.POLYMARKET";
 const MARKET_INFO: &str = include_str!(
     "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-market-info-fee-bearing.json"
 );
+const COLLATERAL_FINALIZED_BLOCK: &str = include_str!(
+    "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-finalized-block.json"
+);
+const COLLATERAL_PROXY_IMPLEMENTATION: &str = include_str!(
+    "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-proxy-implementation.json"
+);
+const COLLATERAL_CODE_HASHES: &str = include_str!(
+    "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-contract-code-hashes.json"
+);
+const COLLATERAL_REDEMPTION_SEMANTICS: &str = include_str!(
+    "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-redemption-semantics.json"
+);
+
+struct GovernedCollateralRpcFixture {
+    chain_id: u64,
+    latest_block: u64,
+    block: OnChainBlockHeader,
+    call_results: Mutex<VecDeque<[u8; 32]>>,
+    storage_word: [u8; 32],
+    code_hashes: BTreeMap<String, String>,
+}
+
+impl GovernedCollateralRpcFixture {
+    fn load() -> anyhow::Result<Self> {
+        let block: serde_json::Value = serde_json::from_str(COLLATERAL_FINALIZED_BLOCK)?;
+        let proxy: serde_json::Value = serde_json::from_str(COLLATERAL_PROXY_IMPLEMENTATION)?;
+        let codes: serde_json::Value = serde_json::from_str(COLLATERAL_CODE_HASHES)?;
+        let semantics: serde_json::Value = serde_json::from_str(COLLATERAL_REDEMPTION_SEMANTICS)?;
+        let contracts = codes["contracts"]
+            .as_object()
+            .context("governed collateral code-hash contracts are missing")?;
+        let mut code_hashes = BTreeMap::new();
+        for contract in contracts.values() {
+            let address = contract["address"]
+                .as_str()
+                .context("governed collateral contract address is missing")?
+                .to_ascii_lowercase();
+            let sha256 = contract["sha256"]
+                .as_str()
+                .context("governed collateral contract hash is missing")?
+                .to_string();
+            code_hashes.insert(address, sha256);
+        }
+        let provider_checks = &semantics["provider_checks"];
+        let collateral_token = contracts["collateral_proxy"]["address"]
+            .as_str()
+            .context("governed collateral token address is missing")?;
+        let redemption_asset = semantics["redemption_asset_address"]
+            .as_str()
+            .context("governed redemption asset address is missing")?;
+        let paused = provider_checks["paused"]
+            .as_str()
+            .context("governed paused result is missing")?
+            .parse::<u64>()?;
+        let decimals = provider_checks["decimals"]
+            .as_str()
+            .context("governed decimals result is missing")?
+            .parse::<u64>()?;
+        Ok(Self {
+            chain_id: block["chain_id"]
+                .as_u64()
+                .context("governed chain id is missing")?,
+            latest_block: hex_quantity(
+                block["latest_block"]
+                    .as_str()
+                    .context("governed latest block is missing")?,
+            )?,
+            block: OnChainBlockHeader {
+                number: hex_quantity(
+                    block["finalized_block"]
+                        .as_str()
+                        .context("governed finalized block is missing")?,
+                )?,
+                hash: block["finalized_block_hash"]
+                    .as_str()
+                    .context("governed finalized block hash is missing")?
+                    .to_string(),
+                timestamp_secs: hex_quantity(
+                    block["finalized_block_timestamp"]
+                        .as_str()
+                        .context("governed finalized block timestamp is missing")?,
+                )?,
+            },
+            call_results: Mutex::new(VecDeque::from([
+                address_word_fixture(collateral_token)?,
+                address_word_fixture(redemption_asset)?,
+                quantity_word(paused),
+                quantity_word(decimals),
+                quantity_word(decimals),
+            ])),
+            storage_word: word_fixture(
+                proxy["result"]
+                    .as_str()
+                    .context("governed proxy implementation result is missing")?,
+            )?,
+            code_hashes,
+        })
+    }
+}
+
+fn fixture_rpc_error() -> BoltV3OperatorArtifactError {
+    BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+        field: "on_chain_collateral.governed_fixture",
+    }
+}
+
+fn hex_quantity(value: &str) -> anyhow::Result<u64> {
+    Ok(u64::from_str_radix(
+        value
+            .strip_prefix("0x")
+            .context("governed hex quantity has no prefix")?,
+        16,
+    )?)
+}
+
+fn word_fixture(value: &str) -> anyhow::Result<[u8; 32]> {
+    let bytes = hex::decode(
+        value
+            .strip_prefix("0x")
+            .context("governed EVM word has no prefix")?,
+    )?;
+    anyhow::ensure!(bytes.len() == 32, "governed EVM word must contain 32 bytes");
+    let mut word = [0_u8; 32];
+    word.copy_from_slice(&bytes);
+    Ok(word)
+}
+
+fn address_word_fixture(address: &str) -> anyhow::Result<[u8; 32]> {
+    let bytes = hex::decode(
+        address
+            .strip_prefix("0x")
+            .context("governed EVM address has no prefix")?,
+    )?;
+    anyhow::ensure!(
+        bytes.len() == 20,
+        "governed EVM address must contain 20 bytes"
+    );
+    let mut word = [0_u8; 32];
+    word[12..].copy_from_slice(&bytes);
+    Ok(word)
+}
+
+fn quantity_word(value: u64) -> [u8; 32] {
+    let mut word = [0_u8; 32];
+    word[24..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+#[async_trait(?Send)]
+impl OnChainCollateralRpc for GovernedCollateralRpcFixture {
+    async fn chain_id(&self) -> Result<u64, BoltV3OperatorArtifactError> {
+        Ok(self.chain_id)
+    }
+
+    async fn block_number(&self) -> Result<u64, BoltV3OperatorArtifactError> {
+        Ok(self.latest_block)
+    }
+
+    async fn eth_call_u256_word_at(
+        &self,
+        _contract_address: &str,
+        _calldata: &str,
+        _block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
+        self.call_results
+            .lock()
+            .map_err(|_| fixture_rpc_error())?
+            .pop_front()
+            .ok_or_else(fixture_rpc_error)
+    }
+
+    async fn code_sha256_at(
+        &self,
+        contract_address: &str,
+        _block_tag: &str,
+    ) -> Result<String, BoltV3OperatorArtifactError> {
+        self.code_hashes
+            .get(&contract_address.to_ascii_lowercase())
+            .cloned()
+            .ok_or_else(fixture_rpc_error)
+    }
+
+    async fn storage_word_at(
+        &self,
+        _contract_address: &str,
+        _slot: &str,
+        _block_tag: &str,
+    ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
+        Ok(self.storage_word)
+    }
+
+    async fn block_header(
+        &self,
+        block_number: u64,
+    ) -> Result<OnChainBlockHeader, BoltV3OperatorArtifactError> {
+        if block_number != self.block.number {
+            return Err(fixture_rpc_error());
+        }
+        Ok(self.block.clone())
+    }
+}
 
 struct FixturePolymarketSource {
     wire_body: &'static str,
@@ -70,22 +282,17 @@ impl PolymarketEconomicsSource for FixturePolymarketSource {
 
     async fn observe_collateral_redemption(
         &self,
-        _authority: &PolymarketEconomicsAuthority,
+        authority: &PolymarketEconomicsAuthority,
         receipt_clock: &dyn EconomicsReceiptClock,
         max_age_ns: u64,
     ) -> anyhow::Result<AuthoritativeValuationObservation> {
-        let fetched_at_ns = receipt_clock.now_ns()?;
-        let valid_until_ns = fetched_at_ns.checked_add(max_age_ns).unwrap();
-        Ok(AuthoritativeValuationObservation::ProviderConversion {
-            source_id: "collateral".to_string(),
-            from_unit: currency_from_code("pUSD")?,
-            to_unit: currency_from_code("USDC.e")?,
-            rate: Decimal::ONE,
-            snapshot_id: SnapshotId::new("governed-pusd-usdc-e")?,
-            observed_at_ns: fetched_at_ns,
-            fetched_at_ns,
-            valid_until_ns,
-        })
+        authority
+            .observe_collateral_redemption_with_rpc(
+                &GovernedCollateralRpcFixture::load()?,
+                receipt_clock,
+                max_age_ns,
+            )
+            .await
     }
 }
 
@@ -305,7 +512,7 @@ async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
-            collateral_currency: "PUSD".to_string(),
+            collateral_currency: "pUSD".to_string(),
             capital_pool: pool,
             policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
@@ -321,7 +528,7 @@ async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
             observed_at_ns: NOW_NS,
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
-            collateral_currency: "PUSD".to_string(),
+            collateral_currency: "pUSD".to_string(),
             free_collateral: Decimal::from(100),
             total_equity: Decimal::from(100),
         },
@@ -330,7 +537,7 @@ async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
             observed_at_ns: NOW_NS,
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
-            collateral_currency: "PUSD".to_string(),
+            collateral_currency: "pUSD".to_string(),
             spendable_collateral: Decimal::from(100),
             collateral_allowance: Decimal::from(100),
         },

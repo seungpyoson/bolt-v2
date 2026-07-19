@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use bolt_v2::bolt_v3_economics_config::{
-    ValuationConfig, ValuationLegConfig, ValuationOrientation, ValuationPolicy,
-    ValuationRouteConfig,
+    ExactCurrencyIdentityConfig, ValuationConfig, ValuationLegConfig, ValuationOrientation,
+    ValuationPolicy, ValuationRouteConfig,
 };
 use bolt_v2::bolt_v3_economics_runtime::{
     AuthoritativeValuationObservation, ConfiguredValuationProvider,
@@ -17,6 +17,7 @@ use super::economics_support::{decimal, native_unit};
 fn leg(from: &str, to: &str, rate: &str) -> ValuationLegEvidence {
     ValuationLegEvidence {
         from_unit: native_unit(from),
+        source_currency: native_unit(from),
         to_unit: native_unit(to),
         rate: decimal(rate),
         source_snapshot_id: SnapshotId::new(format!("{from}-{to}")).unwrap(),
@@ -27,8 +28,15 @@ fn leg(from: &str, to: &str, rate: &str) -> ValuationLegEvidence {
 }
 
 #[test]
-fn configured_provider_values_usdc_e_from_the_nt_usdc_market_at_configured_parity() {
+fn configured_provider_values_usdc_e_from_the_nt_usdc_market_by_exact_identity() {
     let config = ValuationConfig {
+        exact_currency_identities: BTreeMap::from([(
+            "usdc-e-usdc".to_string(),
+            ExactCurrencyIdentityConfig {
+                from_unit: "USDC.e".to_string(),
+                source_currency: "USDC".to_string(),
+            },
+        )]),
         routes: BTreeMap::from([(
             "pusd-usd".to_string(),
             ValuationRouteConfig {
@@ -44,7 +52,6 @@ fn configured_provider_values_usdc_e_from_the_nt_usdc_market_at_configured_parit
                     ValuationLegConfig::MarketQuote {
                         from_unit: "USDC.e".to_string(),
                         source_currency: "USDC".to_string(),
-                        source_currency_per_from_unit: "1".to_string(),
                         to_unit: "USD".to_string(),
                         valuation_policy: ValuationPolicy::TopOfBookMidpoint,
                         client_id: "coinbase-data".to_string(),
@@ -72,6 +79,8 @@ fn configured_provider_values_usdc_e_from_the_nt_usdc_market_at_configured_parit
             AuthoritativeValuationObservation::MarketQuote {
                 client_id: "coinbase-data".to_string(),
                 instrument_id: "USDC-USD.COINBASE".to_string(),
+                base_currency: native_unit("USDC"),
+                quote_currency: native_unit("USD"),
                 price: decimal("0.99"),
                 snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
                 observed_at_ns: 100,
@@ -94,6 +103,8 @@ fn configured_provider_values_usdc_e_from_the_nt_usdc_market_at_configured_parit
 
     assert_eq!(evidence.normalized_amount, decimal("-1.98"));
     assert_eq!(evidence.valid_until_ns, Some(1_000_100));
+    assert_eq!(evidence.legs[1].from_unit, native_unit("USDC.e"));
+    assert_eq!(evidence.legs[1].source_currency, native_unit("USDC"));
     assert_eq!(
         evidence.source_snapshot_ids,
         vec![
@@ -115,8 +126,49 @@ fn configured_provider_values_usdc_e_from_the_nt_usdc_market_at_configured_parit
 }
 
 #[test]
+fn configured_provider_rejects_market_quote_with_mismatched_nt_currencies() {
+    let config = ValuationConfig {
+        exact_currency_identities: BTreeMap::new(),
+        routes: BTreeMap::from([(
+            "usdc-usd".to_string(),
+            ValuationRouteConfig {
+                from_unit: "USDC.e".to_string(),
+                to_currency: "USD".to_string(),
+                legs: vec![ValuationLegConfig::MarketQuote {
+                    from_unit: "USDC.e".to_string(),
+                    source_currency: "USDC".to_string(),
+                    to_unit: "USD".to_string(),
+                    valuation_policy: ValuationPolicy::TopOfBookMidpoint,
+                    client_id: "coinbase-data".to_string(),
+                    instrument_id: "USDC-USD.COINBASE".to_string(),
+                    orientation: ValuationOrientation::BaseToQuote,
+                    max_age_ms: 1,
+                }],
+            },
+        )]),
+    };
+    let observation = AuthoritativeValuationObservation::MarketQuote {
+        client_id: "coinbase-data".to_string(),
+        instrument_id: "USDC-USD.COINBASE".to_string(),
+        base_currency: native_unit("USDT"),
+        quote_currency: native_unit("USD"),
+        price: decimal("1"),
+        snapshot_id: SnapshotId::new("coinbase-usdt-usd-100").unwrap(),
+        observed_at_ns: 100,
+        fetched_at_ns: 100,
+        valid_until_ns: 1_000_100,
+    };
+
+    assert!(matches!(
+        ConfiguredValuationProvider::from_config(&config, &[observation]),
+        Err(EconomicsUnavailable::MissingQuoteAuthority)
+    ));
+}
+
+#[test]
 fn configured_provider_rejects_missing_or_duplicate_market_authority() {
     let config = ValuationConfig {
+        exact_currency_identities: BTreeMap::new(),
         routes: BTreeMap::from([(
             "usdc-usd".to_string(),
             ValuationRouteConfig {
@@ -125,7 +177,6 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
                 legs: vec![ValuationLegConfig::MarketQuote {
                     from_unit: "USDC".to_string(),
                     source_currency: "USDC".to_string(),
-                    source_currency_per_from_unit: "1".to_string(),
                     to_unit: "USD".to_string(),
                     valuation_policy: ValuationPolicy::TopOfBookMidpoint,
                     client_id: "coinbase-data".to_string(),
@@ -143,6 +194,8 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
     let observation = AuthoritativeValuationObservation::MarketQuote {
         client_id: "coinbase-data".to_string(),
         instrument_id: "USDC-USD.COINBASE".to_string(),
+        base_currency: native_unit("USDC"),
+        quote_currency: native_unit("USD"),
         price: decimal("1"),
         snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
         observed_at_ns: 100,
@@ -158,6 +211,13 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
 #[test]
 fn configured_provider_rejects_contradictory_observation_timeline() {
     let config = ValuationConfig {
+        exact_currency_identities: BTreeMap::from([(
+            "usdc-e-usdc".to_string(),
+            ExactCurrencyIdentityConfig {
+                from_unit: "USDC.e".to_string(),
+                source_currency: "USDC".to_string(),
+            },
+        )]),
         routes: BTreeMap::from([(
             "usdc-usd".to_string(),
             ValuationRouteConfig {
@@ -166,7 +226,6 @@ fn configured_provider_rejects_contradictory_observation_timeline() {
                 legs: vec![ValuationLegConfig::MarketQuote {
                     from_unit: "USDC".to_string(),
                     source_currency: "USDC".to_string(),
-                    source_currency_per_from_unit: "1".to_string(),
                     to_unit: "USD".to_string(),
                     valuation_policy: ValuationPolicy::TopOfBookMidpoint,
                     client_id: "coinbase-data".to_string(),
@@ -180,6 +239,8 @@ fn configured_provider_rejects_contradictory_observation_timeline() {
     let observation = AuthoritativeValuationObservation::MarketQuote {
         client_id: "coinbase-data".to_string(),
         instrument_id: "USDC-USD.COINBASE".to_string(),
+        base_currency: native_unit("USDC"),
+        quote_currency: native_unit("USD"),
         price: decimal("1"),
         snapshot_id: SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
         observed_at_ns: 101,

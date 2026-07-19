@@ -1364,7 +1364,7 @@ fn sample_submit_reservation_metadata() -> BoltV3SubmitReservationMetadataEviden
         venue_id: "POLYMARKET".to_string(),
         account_id: "POLYMARKET-001".to_string(),
         product_kind: "prediction_market_binary".to_string(),
-        collateral_currency: "PUSD".to_string(),
+        collateral_currency: "pUSD".to_string(),
         capital_pool_id: "polymarket-prediction-live".to_string(),
         collateral_group_id: "condition-one".to_string(),
         instrument_id: "condition-one-yes.POLYMARKET".to_string(),

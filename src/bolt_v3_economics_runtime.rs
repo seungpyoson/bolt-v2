@@ -188,6 +188,8 @@ pub enum AuthoritativeValuationObservation {
     MarketQuote {
         client_id: String,
         instrument_id: String,
+        base_currency: Currency,
+        quote_currency: Currency,
         price: Decimal,
         snapshot_id: SnapshotId,
         observed_at_ns: u64,
@@ -238,6 +240,7 @@ impl ConfiguredValuationProvider {
             for configured_leg in &configured.legs {
                 let (
                     from_unit,
+                    source_currency,
                     to_unit,
                     rate,
                     snapshot_id,
@@ -245,7 +248,7 @@ impl ConfiguredValuationProvider {
                     fetched_at_ns,
                     source_valid_until_ns,
                     max_age_ms,
-                ) = resolve_valuation_leg(configured_leg, observations)?;
+                ) = resolve_valuation_leg(config, configured_leg, observations)?;
                 let max_age_ns = u64::try_from(Duration::from_millis(max_age_ms).as_nanos())
                     .map_err(|_| EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
                 let configured_valid_until_ns = observed_at_ns
@@ -255,6 +258,7 @@ impl ConfiguredValuationProvider {
                 route_valid_until_ns = route_valid_until_ns.min(valid_until_ns);
                 legs.push(crate::economics::ValuationLegEvidence {
                     from_unit,
+                    source_currency,
                     to_unit,
                     rate,
                     source_snapshot_id: snapshot_id,
@@ -275,14 +279,26 @@ impl ConfiguredValuationProvider {
     }
 }
 
-type ResolvedValuationLeg = (Currency, Currency, Decimal, SnapshotId, u64, u64, u64, u64);
+type ResolvedValuationLeg = (
+    Currency,
+    Currency,
+    Currency,
+    Decimal,
+    SnapshotId,
+    u64,
+    u64,
+    u64,
+    u64,
+);
 
 fn resolve_valuation_leg(
+    config: &ValuationConfig,
     configured: &ValuationLegConfig,
     observations: &[AuthoritativeValuationObservation],
 ) -> Result<ResolvedValuationLeg, EconomicsUnavailable> {
     let (
         from_unit,
+        source_currency,
         to_unit,
         rate,
         snapshot_id,
@@ -294,7 +310,6 @@ fn resolve_valuation_leg(
         ValuationLegConfig::MarketQuote {
             from_unit,
             source_currency,
-            source_currency_per_from_unit,
             to_unit,
             client_id,
             instrument_id,
@@ -302,25 +317,40 @@ fn resolve_valuation_leg(
             max_age_ms,
             ..
         } => {
-            let _source_currency = currency_from_code(source_currency)?;
-            let source_currency_per_from_unit = source_currency_per_from_unit
-                .parse::<Decimal>()
-                .map_err(|_| EconomicsUnavailable::InvalidDecimal)?;
-            if source_currency_per_from_unit <= Decimal::ZERO {
-                return Err(EconomicsUnavailable::InvalidDecimal);
+            if !config.declares_exact_currency_identity(from_unit, source_currency) {
+                return Err(EconomicsUnavailable::MissingValuationRoute {
+                    from: currency_from_code(from_unit)?,
+                    to: currency_from_code(source_currency)?,
+                });
             }
+            let expected_source_currency = currency_from_code(source_currency)?;
+            let expected_to_unit = currency_from_code(to_unit)?;
             let mut matching = observations
                 .iter()
                 .filter_map(|observation| match observation {
                     AuthoritativeValuationObservation::MarketQuote {
                         client_id: observed_client,
                         instrument_id: observed_instrument,
+                        base_currency,
+                        quote_currency,
                         price,
                         snapshot_id,
                         observed_at_ns,
                         fetched_at_ns,
                         valid_until_ns,
-                    } if observed_client == client_id && observed_instrument == instrument_id => {
+                    } if observed_client == client_id
+                        && observed_instrument == instrument_id
+                        && match orientation {
+                            ValuationOrientation::BaseToQuote => {
+                                base_currency == &expected_source_currency
+                                    && quote_currency == &expected_to_unit
+                            }
+                            ValuationOrientation::QuoteToBase => {
+                                quote_currency == &expected_source_currency
+                                    && base_currency == &expected_to_unit
+                            }
+                        } =>
+                    {
                         Some((
                             *price,
                             snapshot_id.clone(),
@@ -343,13 +373,11 @@ fn resolve_valuation_leg(
                     .checked_div(price)
                     .ok_or(EconomicsUnavailable::InvalidDecimal)?,
             };
-            let rate = source_currency_per_from_unit
-                .checked_mul(market_rate)
-                .ok_or(EconomicsUnavailable::InvalidDecimal)?;
             (
                 currency_from_code(from_unit)?,
+                expected_source_currency,
                 currency_from_code(to_unit)?,
-                rate,
+                market_rate,
                 snapshot_id,
                 observed_at_ns,
                 fetched_at_ns,
@@ -398,6 +426,7 @@ fn resolve_valuation_leg(
                 return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
             }
             (
+                expected_from,
                 expected_from,
                 expected_to,
                 rate,

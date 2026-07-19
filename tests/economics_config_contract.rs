@@ -251,14 +251,14 @@ fn duplicate_disconnected_or_inactive_valuation_authority_fails_closed() {
 from_unit = "USDC"
 to_currency = "pUSD"
 legs = [
-  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD", orientation = "base_to_quote", max_age_ms = 9000 },
+  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD", orientation = "base_to_quote", max_age_ms = 9000 },
 ]
 
 [valuation.routes.usdc-duplicate]
 from_unit = "USDC"
 to_currency = "pUSD"
 legs = [
-  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD-2", orientation = "base_to_quote", max_age_ms = 9000 },
+  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD-2", orientation = "base_to_quote", max_age_ms = 9000 },
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", routes);
@@ -300,7 +300,7 @@ fn every_valuation_leg_requires_an_active_configured_source() {
 from_unit = "TOKEN"
 to_currency = "pUSD"
 legs = [
-  { authority = "market_quote", from_unit = "TOKEN", source_currency = "TOKEN", source_currency_per_from_unit = "1", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "inactive-leg", instrument_id = "", orientation = "base_to_quote", max_age_ms = 9000 }
+  { authority = "market_quote", from_unit = "TOKEN", source_currency = "TOKEN", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "inactive-leg", instrument_id = "", orientation = "base_to_quote", max_age_ms = 9000 }
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", route);
@@ -316,5 +316,29 @@ legs = [
         EconomicsConfigError::InvalidText {
             field: bolt_v2::bolt_v3_economics_config::EconomicsConfigField::ValuationInstrument
         }
+    )));
+}
+
+#[test]
+fn cross_currency_market_quote_requires_an_explicit_exact_identity() {
+    let route = r#"
+[valuation.routes.usdc_e]
+from_unit = "USDC.e"
+to_currency = "pUSD"
+legs = [
+  { authority = "market_quote", from_unit = "USDC.e", source_currency = "USDC", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD", orientation = "base_to_quote", max_age_ms = 9000 }
+]
+"#;
+    let source = valid_config().replace("[valuation]\nroutes = {}", route);
+    let config = parse(&source).unwrap();
+    let errors = config.validate(&reporting(), &BTreeSet::from(["fx-data".to_string()]));
+
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        EconomicsConfigError::MissingExactCurrencyIdentity {
+            from_unit,
+            source_currency,
+            ..
+        } if from_unit == "USDC.e" && source_currency == "USDC"
     )));
 }

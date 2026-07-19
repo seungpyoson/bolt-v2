@@ -443,6 +443,7 @@ fn resolve_valuation_leg(
     }
     Ok((
         from_unit,
+        source_currency,
         to_unit,
         rate,
         snapshot_id,

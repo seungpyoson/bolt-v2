@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_economics_runtime::EconomicsOrderBinding,
     economics::{
-        AccountId, Currency, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
+        AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
         ExecutionClientId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, OrderSide,
         PlannedFillLeg, PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingAttachment,
         RoutingAttachmentId, RoutingContext, currency_from_code,

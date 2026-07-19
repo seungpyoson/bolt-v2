@@ -51,6 +51,9 @@ VENUE_LITERAL_PATTERN = re.compile(
     r"\b(?:polymarket|hyperliquid|binance|bybit|deribit|kraken|coinbase|bitmex|okx)\b",
     re.IGNORECASE,
 )
+ALLOWED_NT_CURRENCY_IMPORT = re.compile(
+    r"\b(?:pub\s+)?use\s+nautilus_model\s*::\s*types\s*::\s*Currency\s*;"
+)
 
 
 def line_number(source: str, offset: int) -> int:
@@ -67,6 +70,7 @@ def verify(root: pathlib.Path = REPO_ROOT) -> list[str]:
     for path in files:
         source = path.read_text(encoding="utf-8")
         scanned = strip_rust_comments_and_literals(source)
+        scanned = ALLOWED_NT_CURRENCY_IMPORT.sub("", scanned)
         string_literals = retain_rust_string_literals(source)
         relative = path.relative_to(root)
         for pattern, reason in FORBIDDEN_SOURCE_PATTERNS:

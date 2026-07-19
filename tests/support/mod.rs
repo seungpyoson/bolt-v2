@@ -328,7 +328,7 @@ fn sample_economics_admission_with_component(
     use rust_decimal::Decimal;
 
     let requested_at_ns = 1;
-    let reporting_unit = NativeUnitId::new("test-reporting-unit").expect("valid test unit");
+    let reporting_unit = currency_from_code("USD").expect("valid test currency");
     let decision_correlation_id =
         DecisionCorrelationId::new("test-decision").expect("valid test decision id");
     let source = SourceValidity {

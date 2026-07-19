@@ -3,16 +3,16 @@ use std::collections::HashSet;
 use rust_decimal::Decimal;
 
 use super::{
-    EconomicsUnavailable, NativeUnitId, SignedNativeEffect, ValuationEvidence, ValuationRoute,
+    Currency, EconomicsUnavailable, SignedNativeEffect, ValuationEvidence, ValuationRoute,
 };
 
 pub fn value_with_route(
     effect: &SignedNativeEffect,
-    reporting_unit: &NativeUnitId,
+    reporting_unit: &Currency,
     route: Option<&ValuationRoute>,
     valued_at_ns: u64,
 ) -> Result<ValuationEvidence, EconomicsUnavailable> {
-    if effect.unit() == reporting_unit {
+    if effect.currency_id() == *reporting_unit {
         return Ok(ValuationEvidence {
             native_effect: effect.clone(),
             normalized_amount: effect.amount(),
@@ -25,10 +25,10 @@ pub fn value_with_route(
     }
 
     let route = route.ok_or_else(|| EconomicsUnavailable::MissingValuationRoute {
-        from: effect.unit().clone(),
+        from: effect.currency_id(),
         to: reporting_unit.clone(),
     })?;
-    if route.from_unit != *effect.unit() || route.to_currency != *reporting_unit {
+    if route.from_unit != effect.currency_id() || route.to_currency != *reporting_unit {
         return Err(EconomicsUnavailable::DisconnectedValuationRoute {
             route_id: route.route_id.clone(),
         });

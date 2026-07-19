@@ -27,7 +27,7 @@ fn leg(from: &str, to: &str, rate: &str) -> ValuationLegEvidence {
 }
 
 #[test]
-fn configured_provider_resolves_provider_conversion_then_fresh_market_observation() {
+fn configured_provider_values_usdc_e_from_the_nt_usdc_market_at_configured_parity() {
     let config = ValuationConfig {
         routes: BTreeMap::from([(
             "pusd-usd".to_string(),
@@ -37,12 +37,14 @@ fn configured_provider_resolves_provider_conversion_then_fresh_market_observatio
                 legs: vec![
                     ValuationLegConfig::ProviderConversion {
                         from_unit: "pUSD".to_string(),
-                        to_unit: "USDC".to_string(),
-                        source_id: "pusd-usdc-redemption".to_string(),
+                        to_unit: "USDC.e".to_string(),
+                        source_id: "pusd-usdc-e-redemption".to_string(),
                         max_age_ms: 1,
                     },
                     ValuationLegConfig::MarketQuote {
-                        from_unit: "USDC".to_string(),
+                        from_unit: "USDC.e".to_string(),
+                        source_currency: "USDC".to_string(),
+                        source_currency_per_from_unit: "1".to_string(),
                         to_unit: "USD".to_string(),
                         valuation_policy: ValuationPolicy::TopOfBookMidpoint,
                         client_id: "coinbase-data".to_string(),
@@ -58,11 +60,11 @@ fn configured_provider_resolves_provider_conversion_then_fresh_market_observatio
         &config,
         &[
             AuthoritativeValuationObservation::ProviderConversion {
-                source_id: "pusd-usdc-redemption".to_string(),
+                source_id: "pusd-usdc-e-redemption".to_string(),
                 from_unit: native_unit("pUSD"),
-                to_unit: native_unit("USDC"),
+                to_unit: native_unit("USDC.e"),
                 rate: decimal("1"),
-                snapshot_id: SnapshotId::new("pusd-usdc-contract-100").unwrap(),
+                snapshot_id: SnapshotId::new("pusd-usdc-e-contract-100").unwrap(),
                 observed_at_ns: 100,
                 fetched_at_ns: 100,
                 valid_until_ns: 1_000_100,
@@ -95,7 +97,7 @@ fn configured_provider_resolves_provider_conversion_then_fresh_market_observatio
     assert_eq!(
         evidence.source_snapshot_ids,
         vec![
-            SnapshotId::new("pusd-usdc-contract-100").unwrap(),
+            SnapshotId::new("pusd-usdc-e-contract-100").unwrap(),
             SnapshotId::new("coinbase-usdc-usd-100").unwrap(),
         ]
     );
@@ -122,6 +124,8 @@ fn configured_provider_rejects_missing_or_duplicate_market_authority() {
                 to_currency: "USD".to_string(),
                 legs: vec![ValuationLegConfig::MarketQuote {
                     from_unit: "USDC".to_string(),
+                    source_currency: "USDC".to_string(),
+                    source_currency_per_from_unit: "1".to_string(),
                     to_unit: "USD".to_string(),
                     valuation_policy: ValuationPolicy::TopOfBookMidpoint,
                     client_id: "coinbase-data".to_string(),
@@ -161,6 +165,8 @@ fn configured_provider_rejects_contradictory_observation_timeline() {
                 to_currency: "USD".to_string(),
                 legs: vec![ValuationLegConfig::MarketQuote {
                     from_unit: "USDC".to_string(),
+                    source_currency: "USDC".to_string(),
+                    source_currency_per_from_unit: "1".to_string(),
                     to_unit: "USD".to_string(),
                     valuation_policy: ValuationPolicy::TopOfBookMidpoint,
                     client_id: "coinbase-data".to_string(),
@@ -209,11 +215,11 @@ fn exact_identity_needs_no_route_or_invented_peg() {
 
 #[test]
 fn configured_multi_leg_route_values_native_effect_once() {
-    let effect = SignedNativeEffect::currency(decimal("-2.00"), native_unit("TOKEN")).unwrap();
+    let effect = SignedNativeEffect::currency(decimal("-2.00"), native_unit("HYPE")).unwrap();
     let route = route(
-        "TOKEN",
+        "HYPE",
         "pUSD",
-        vec![leg("TOKEN", "USDC", "1.50"), leg("USDC", "pUSD", "0.80")],
+        vec![leg("HYPE", "USDC", "1.50"), leg("USDC", "pUSD", "0.80")],
     );
     let evidence = value_with_route(&effect, &native_unit("pUSD"), Some(&route), 100).unwrap();
 
@@ -223,12 +229,12 @@ fn configured_multi_leg_route_values_native_effect_once() {
 
 #[test]
 fn valuation_rate_and_normalized_amount_overflow_fail_closed() {
-    let effect = SignedNativeEffect::currency(decimal("2"), native_unit("TOKEN")).unwrap();
+    let effect = SignedNativeEffect::currency(decimal("2"), native_unit("HYPE")).unwrap();
     let overflowing_route = route(
-        "TOKEN",
+        "HYPE",
         "pUSD",
         vec![
-            leg("TOKEN", "USDC", &rust_decimal::Decimal::MAX.to_string()),
+            leg("HYPE", "USDC", &rust_decimal::Decimal::MAX.to_string()),
             leg("USDC", "pUSD", "2"),
         ],
     );
@@ -248,7 +254,7 @@ fn disconnected_cyclic_stale_and_implicit_stablecoin_routes_fail_closed() {
         Err(EconomicsUnavailable::MissingValuationRoute { .. })
     ));
 
-    let disconnected = route("USDC", "pUSD", vec![leg("TOKEN", "pUSD", "1")]);
+    let disconnected = route("USDC", "pUSD", vec![leg("HYPE", "pUSD", "1")]);
     assert!(matches!(
         value_with_route(&effect, &native_unit("pUSD"), Some(&disconnected), 100),
         Err(EconomicsUnavailable::DisconnectedValuationRoute { .. })
@@ -258,8 +264,8 @@ fn disconnected_cyclic_stale_and_implicit_stablecoin_routes_fail_closed() {
         "USDC",
         "pUSD",
         vec![
-            leg("USDC", "TOKEN", "1"),
-            leg("TOKEN", "USDC", "1"),
+            leg("USDC", "HYPE", "1"),
+            leg("HYPE", "USDC", "1"),
             leg("USDC", "pUSD", "1"),
         ],
     );

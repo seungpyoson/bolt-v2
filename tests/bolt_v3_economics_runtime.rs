@@ -11,8 +11,8 @@ use bolt_v2::{
     },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, FormulaId,
-        NativeUnitId, PointEstimate, ProductSurfaceId, ReservationBasis, ResolvedEdgeBasis,
-        SignedNativeEffect, SnapshotId, SourceId, VenueEconomicsAdapter, VenueQuoteEstimate,
+        PointEstimate, ProductSurfaceId, ReservationBasis, ResolvedEdgeBasis, SignedNativeEffect,
+        SnapshotId, SourceId, VenueEconomicsAdapter, VenueQuoteEstimate, currency_from_code,
     },
 };
 
@@ -244,11 +244,7 @@ fn missing_forecast_valuation_degrades_without_blocking_core_admission() {
         None,
     );
     component.point_estimate = PointEstimate::NonZero(
-        SignedNativeEffect::currency(
-            decimal("0.25"),
-            NativeUnitId::new("unvalued-incentive-unit").unwrap(),
-        )
-        .unwrap(),
+        SignedNativeEffect::currency(decimal("0.25"), currency_from_code("HYPE").unwrap()).unwrap(),
     );
     let authority = component.source.clone();
     let runtime = runtime(
@@ -278,11 +274,7 @@ fn missing_required_valuation_still_blocks_admission() {
         None,
     );
     component.point_estimate = PointEstimate::NonZero(
-        SignedNativeEffect::currency(
-            decimal("-0.25"),
-            NativeUnitId::new("unvalued-required-unit").unwrap(),
-        )
-        .unwrap(),
+        SignedNativeEffect::currency(decimal("-0.25"), currency_from_code("EUR").unwrap()).unwrap(),
     );
     let authority = component.source.clone();
     let runtime = runtime(

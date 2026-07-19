@@ -28,6 +28,8 @@ FORBIDDEN_IDENTIFIERS = (
     "fee_inclusive_admission_notional",
     "checked_fee_inclusive_admission_notional",
     "max_fee_bps_for_price",
+    "NativeUnitId",
+    "EconomicsAssetIdentityKind",
 )
 FORBIDDEN_PATTERN = re.compile(
     r"\b(?:" + "|".join(re.escape(name) for name in FORBIDDEN_IDENTIFIERS) + r")\b"

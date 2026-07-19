@@ -243,7 +243,7 @@ fn resolve_valuation(
     valuations: &[ValuationEvidence],
     request: &EconomicQuoteRequest,
 ) -> Result<ValuationEvidence, EconomicsUnavailable> {
-    if effect.unit() == &request.reporting_unit {
+    if effect.currency_id() == request.reporting_unit {
         let identity = value_with_route(
             effect,
             &request.reporting_unit,
@@ -267,11 +267,11 @@ fn resolve_valuation(
             .next()
             .cloned()
             .ok_or_else(|| EconomicsUnavailable::MissingValuation {
-                unit: effect.unit().clone(),
+                unit: effect.currency_id(),
             })?;
     if candidates.next().is_some() {
         return Err(EconomicsUnavailable::AmbiguousValuation {
-            unit: effect.unit().clone(),
+            unit: effect.currency_id(),
         });
     }
     if evidence.valued_at_ns > request.requested_at_ns

@@ -334,6 +334,7 @@ pub struct PolymarketOnChainCollateralConfig {
     pub collateral_token_address: String,
     pub collateral_offramp_address: String,
     pub redemption_asset_address: String,
+    pub redemption_asset_selector: String,
     pub redemption_asset_unit: String,
     pub finality_confirmations: u64,
     pub collateral_token_proxy_code_sha256: String,
@@ -732,6 +733,11 @@ fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig
     if on_chain.redemption_asset_unit.trim().is_empty() {
         errors.push(format!(
             "clients.{key}.execution.on_chain_collateral.redemption_asset_unit must be non-empty"
+        ));
+    }
+    if on_chain.redemption_asset_selector.trim().is_empty() {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.redemption_asset_selector must be non-empty"
         ));
     }
     for (field, hash) in [

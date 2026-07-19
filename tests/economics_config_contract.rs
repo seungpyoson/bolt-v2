@@ -40,8 +40,7 @@ formula_id = "configured-protocol-formula"
 rate_factor_id = "configured-protocol-rate"
 
 [assets.settlement]
-native_unit = "pUSD"
-identity_kind = "currency"
+currency = "pUSD"
 evidence_fixture_id = "settlement-pusd-v1"
 
 [edge_basis.default]
@@ -117,7 +116,7 @@ fn slice_one_accepts_exactly_one_product_surface_in_every_mode() {
 
 #[test]
 fn non_reporting_native_unit_requires_one_explicit_valuation_route() {
-    let source = valid_config().replace("native_unit = \"pUSD\"", "native_unit = \"USDC\"");
+    let source = valid_config().replace("currency = \"pUSD\"", "currency = \"USDC\"");
     let config = parse(&source).unwrap();
     assert!(
         config
@@ -139,7 +138,7 @@ fn sources_formula_components_and_assets_are_required_policy_not_defaults() {
         "[sources]\naccount_fees = \"user_fees\"\n",
         "[formula]\nrate_scale = \"1\"\n",
         "[quote_components.protocol]\ncomponent_id = \"protocol-execution\"\nformula_id = \"configured-protocol-formula\"\nrate_factor_id = \"configured-protocol-rate\"\n",
-        "[assets.settlement]\nnative_unit = \"pUSD\"\nidentity_kind = \"currency\"\nevidence_fixture_id = \"settlement-pusd-v1\"\n",
+        "[assets.settlement]\ncurrency = \"pUSD\"\nevidence_fixture_id = \"settlement-pusd-v1\"\n",
     ] {
         assert!(parse(&valid_config().replace(block, "")).is_err());
     }
@@ -223,18 +222,13 @@ legs = [
 }
 
 #[test]
-fn slice_one_rejects_unimplemented_asset_quantity_identity() {
+fn slice_one_rejects_the_removed_asset_quantity_identity_field() {
     let source = valid_config().replace(
-        "identity_kind = \"currency\"",
-        "identity_kind = \"asset_quantity\"",
+        "currency = \"pUSD\"",
+        "currency = \"pUSD\"\nidentity_kind = \"asset_quantity\"",
     );
-    let config = parse(&source).unwrap();
 
-    assert!(config.validate(&reporting(), &BTreeSet::new()).contains(
-        &EconomicsConfigError::UnsupportedAssetIdentityKind {
-            asset_id: "settlement".to_string(),
-        }
-    ));
+    assert!(parse(&source).is_err());
 }
 
 #[test]
@@ -257,14 +251,14 @@ fn duplicate_disconnected_or_inactive_valuation_authority_fails_closed() {
 from_unit = "USDC"
 to_currency = "pUSD"
 legs = [
-  { authority = "market_quote", from_unit = "USDC", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD", orientation = "base_to_quote", max_age_ms = 9000 },
+  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD", orientation = "base_to_quote", max_age_ms = 9000 },
 ]
 
 [valuation.routes.usdc-duplicate]
 from_unit = "USDC"
 to_currency = "pUSD"
 legs = [
-  { authority = "market_quote", from_unit = "USDC", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD-2", orientation = "base_to_quote", max_age_ms = 9000 },
+  { authority = "market_quote", from_unit = "USDC", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "fx-data", instrument_id = "USDC-pUSD-2", orientation = "base_to_quote", max_age_ms = 9000 },
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", routes);
@@ -306,7 +300,7 @@ fn every_valuation_leg_requires_an_active_configured_source() {
 from_unit = "TOKEN"
 to_currency = "pUSD"
 legs = [
-  { authority = "market_quote", from_unit = "TOKEN", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "inactive-leg", instrument_id = "", orientation = "base_to_quote", max_age_ms = 9000 }
+  { authority = "market_quote", from_unit = "TOKEN", source_currency = "TOKEN", source_currency_per_from_unit = "1", to_unit = "pUSD", valuation_policy = "top_of_book_midpoint", client_id = "inactive-leg", instrument_id = "", orientation = "base_to_quote", max_age_ms = 9000 }
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", route);

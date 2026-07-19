@@ -5,11 +5,11 @@ use crate::{
         capture_economics_source_receipt,
     },
     economics::{
-        AdmissionTreatment, CalculationFactor, CarryKind, EconomicClass, EconomicKind,
+        AdmissionTreatment, CalculationFactor, CarryKind, Currency, EconomicClass, EconomicKind,
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent,
-        ExecutionKind, FormulaId, LiquidityRoleAssumption, NativeUnitId, PointEstimate,
-        PositionSide, RiskBoundAuthority, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
-        VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction,
+        ExecutionKind, FormulaId, LiquidityRoleAssumption, PointEstimate, PositionSide,
+        RiskBoundAuthority, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+        VenueEconomicsAdapter, VenueQuoteEstimate, basis_points_to_fraction, currency_from_code,
     },
 };
 use anyhow::Context;
@@ -49,7 +49,7 @@ pub struct HyperliquidFeeEligibilityPolicy {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidEconomicsAdapterConfig {
-    pub settlement_unit: NativeUnitId,
+    pub settlement_unit: Currency,
     pub protocol_component_id: crate::economics::EconomicComponentId,
     pub protocol_formula_id: FormulaId,
     pub protocol_rate_factor_id: FormulaId,
@@ -71,11 +71,6 @@ impl HyperliquidEconomicsAdapterConfig {
             .assets
             .get("settlement")
             .ok_or(HyperliquidEconomicsError::InvalidIdentity)?;
-        if settlement.identity_kind
-            != crate::bolt_v3_economics_config::EconomicsAssetIdentityKind::Currency
-        {
-            return Err(HyperliquidEconomicsError::InvalidIdentity);
-        }
         let count = |key: &str| {
             economics
                 .formula
@@ -161,7 +156,7 @@ impl HyperliquidEconomicsAdapterConfig {
             })
             .transpose()?;
         Ok(Self {
-            settlement_unit: NativeUnitId::new(settlement.native_unit.clone())
+            settlement_unit: currency_from_code(&settlement.currency)
                 .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
             protocol_component_id: crate::economics::EconomicComponentId::new(
                 protocol.component_id.clone(),
@@ -1385,7 +1380,7 @@ impl HyperliquidEconomicsAdapter {
         factor_value: Decimal,
         amount: Decimal,
         kind: ExecutionKind,
-        native_unit: NativeUnitId,
+        native_unit: Currency,
     ) -> Result<EstimatedEconomicComponent, HyperliquidEconomicsError> {
         let class = if amount.is_sign_negative() {
             EconomicClass::Charge

@@ -1,13 +1,13 @@
 use std::str::FromStr;
 
 use bolt_v2::economics::{
-    AccountId, AdmissionTreatment, DecisionCorrelationId, EconomicClass, EconomicComponentId,
-    EconomicKind, EconomicQuote, EconomicQuoteRequest, EconomicScope, EconomicsUnavailable,
-    EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId,
-    InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderId, OrderSide,
-    PlannedFillLeg, PointEstimate, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority,
-    RoutingContext, SignedNativeEffect, SnapshotId, SourceId, SourceValidity, VenueQuoteEstimate,
-    validate_and_aggregate_quote,
+    AccountId, AdmissionTreatment, Currency, DecisionCorrelationId, EconomicClass,
+    EconomicComponentId, EconomicKind, EconomicQuote, EconomicQuoteRequest, EconomicScope,
+    EconomicsUnavailable, EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId,
+    ExecutionKind, FormulaId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, OrderId,
+    OrderSide, PlannedFillLeg, PointEstimate, ProductSurfaceId, ReportingPolicyId,
+    RiskBoundAuthority, RoutingContext, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
+    VenueQuoteEstimate, currency_from_code, validate_and_aggregate_quote,
 };
 use rust_decimal::Decimal;
 
@@ -15,8 +15,8 @@ pub fn decimal(value: &str) -> Decimal {
     Decimal::from_str(value).expect("fixture decimal must parse")
 }
 
-pub fn native_unit(value: &str) -> NativeUnitId {
-    NativeUnitId::new(value).expect("fixture native unit must be valid")
+pub fn native_unit(value: &str) -> Currency {
+    currency_from_code(value).expect("fixture native unit must be valid")
 }
 
 pub fn canonical_fixture_request() -> EconomicQuoteRequest {

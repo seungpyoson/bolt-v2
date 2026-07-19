@@ -43,8 +43,8 @@ use crate::{
     economics::{
         AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
         ExecutionClientId, InstrumentId as EconomicsInstrumentId, LifecyclePath,
-        LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg, ProductSurfaceId,
-        ReportingPolicyId, RoutingContext, SnapshotId,
+        LiquidityRoleAssumption, OrderSide, PlannedFillLeg, ProductSurfaceId, ReportingPolicyId,
+        RoutingContext, SnapshotId, currency_from_code,
     },
 };
 
@@ -78,10 +78,10 @@ impl PolymarketEconomicsSource for FixturePolymarketSource {
         let valid_until_ns = fetched_at_ns.checked_add(max_age_ns).unwrap();
         Ok(AuthoritativeValuationObservation::ProviderConversion {
             source_id: "collateral".to_string(),
-            from_unit: NativeUnitId::new("pUSD")?,
-            to_unit: NativeUnitId::new("USDC")?,
+            from_unit: currency_from_code("pUSD")?,
+            to_unit: currency_from_code("USDC.e")?,
             rate: Decimal::ONE,
-            snapshot_id: SnapshotId::new("governed-pusd-usdc")?,
+            snapshot_id: SnapshotId::new("governed-pusd-usdc-e")?,
             observed_at_ns: fetched_at_ns,
             fetched_at_ns,
             valid_until_ns,
@@ -194,7 +194,7 @@ fn request() -> EconomicQuoteRequest {
         position: None,
         lifecycle_path: LifecyclePath::PlannedExit,
         reporting_policy_id: ReportingPolicyId::new("primary-pnl").unwrap(),
-        reporting_unit: NativeUnitId::new("USD").unwrap(),
+        reporting_unit: currency_from_code("USD").unwrap(),
         edge_basis_policy_id: EdgeBasisPolicyId::new("primary").unwrap(),
         requested_at_ns: NOW_NS,
         decision_correlation_id: DecisionCorrelationId::new("composition-tracer").unwrap(),

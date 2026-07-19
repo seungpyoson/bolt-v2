@@ -116,7 +116,8 @@ fn taker_formula_matches_authoritative_price_shaped_example() {
             .point_estimate
             .effect()
             .unwrap()
-            .unit()
+            .currency_id()
+            .code
             .as_str(),
         "pUSD"
     );

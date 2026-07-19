@@ -2,8 +2,8 @@ use std::str::FromStr;
 
 use bolt_v2::economics::{
     ActualEconomicEntry, AdmissionTreatment, EconomicQuoteRequest, EstimatedEconomicComponent,
-    InventoryApplication, NativeUnitId, PlannedFillNotional, RiskBoundAuthority,
-    SignedNativeEffect, VenueEconomicsAdapter, VenueQuoteEstimate,
+    PlannedFillNotional, RiskBoundAuthority, SignedNativeEffect, VenueEconomicsAdapter,
+    VenueQuoteEstimate, currency_from_code,
 };
 use rust_decimal::Decimal;
 
@@ -15,12 +15,12 @@ fn decimal(value: &str) -> Decimal {
 fn signed_currency_effect_preserves_sign_and_native_unit() {
     let effect = SignedNativeEffect::currency(
         decimal("-1.25"),
-        NativeUnitId::new("pUSD").expect("native unit must be valid"),
+        currency_from_code("pUSD").expect("native unit must be valid"),
     )
     .expect("non-zero signed effect must be valid");
 
     assert_eq!(effect.amount(), decimal("-1.25"));
-    assert_eq!(effect.unit().as_str(), "pUSD");
+    assert_eq!(effect.currency_id().code.as_str(), "pUSD");
 }
 
 #[test]
@@ -36,31 +36,14 @@ fn forecast_treatment_cannot_authorize_admission() {
 }
 
 #[test]
-fn asset_effect_retains_inventory_application() {
-    let effect = SignedNativeEffect::asset_quantity(
-        decimal("0.50"),
-        NativeUnitId::new("asset-A").expect("native unit must be valid"),
-        InventoryApplication::ApplyOnceToCanonicalGrossFact,
-    )
-    .expect("non-zero signed effect must be valid");
-
-    assert_eq!(effect.amount(), decimal("0.50"));
-    assert_eq!(effect.unit().as_str(), "asset-A");
-    assert_eq!(
-        effect.inventory_application(),
-        Some(InventoryApplication::ApplyOnceToCanonicalGrossFact)
-    );
-}
-
-#[test]
 fn invalid_native_units_and_zero_effects_fail_closed() {
-    assert!(NativeUnitId::new("").is_err());
-    assert!(NativeUnitId::new(" pUSD").is_err());
-    assert!(NativeUnitId::new("pUSD\n").is_err());
+    assert!(currency_from_code("").is_err());
+    assert!(currency_from_code(" pUSD").is_err());
+    assert!(currency_from_code("pUSD\n").is_err());
     assert!(
         SignedNativeEffect::currency(
             Decimal::ZERO,
-            NativeUnitId::new("pUSD").expect("native unit must be valid")
+            currency_from_code("pUSD").expect("native unit must be valid")
         )
         .is_err()
     );

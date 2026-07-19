@@ -51,10 +51,10 @@ use crate::{
         build_submit_admission_request_from_order, order_economics_facts,
     },
     economics::{
-        AccountId as EconomicsAccountId, EdgeBasisPolicyId,
+        AccountId as EconomicsAccountId, Currency, EdgeBasisPolicyId,
         ExecutionClientId as EconomicsExecutionClientId, InstrumentId as EconomicsInstrumentId,
-        LifecyclePath, LiquidityRoleAssumption, NativeUnitId, PositionContext, ProductSurfaceId,
-        ReportingPolicyId,
+        LifecyclePath, LiquidityRoleAssumption, PositionContext, ProductSurfaceId,
+        ReportingPolicyId, currency_from_code,
     },
     integrations::nautilus::economics::{
         NtEconomicsIntent, canonical_quote_request_from_nt, economics_order_binding,
@@ -77,7 +77,7 @@ pub struct BoltV3OrderRoutingHandle {
     account_id: EconomicsAccountId,
     product_surface_routes: BTreeMap<ProductSurfaceId, (EdgeBasisPolicyId, BoltV3CarryPlan)>,
     reporting_policy_id: ReportingPolicyId,
-    reporting_unit: NativeUnitId,
+    reporting_unit: Currency,
     routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
     resting_economics: Arc<RwLock<BTreeMap<ClientOrderId, RestingOrderEconomicsRecord>>>,
 }
@@ -449,7 +449,7 @@ impl BoltV3OrderRoutingHandle {
             account_id: EconomicsAccountId::new(config.account_id)?,
             product_surface_routes,
             reporting_policy_id: ReportingPolicyId::new(config.reporting_policy_id)?,
-            reporting_unit: NativeUnitId::new(config.reporting_unit)?,
+            reporting_unit: currency_from_code(&config.reporting_unit)?,
             routing_attachment_policy: config.routing_attachment_policy,
             resting_economics: Arc::new(RwLock::new(BTreeMap::new())),
         })
@@ -524,7 +524,7 @@ impl BoltV3OrderRoutingHandle {
             position,
             lifecycle_path: intent.lifecycle_path,
             reporting_policy_id: self.reporting_policy_id.as_str(),
-            reporting_unit: self.reporting_unit.as_str(),
+            reporting_unit: self.reporting_unit.code.as_str(),
             edge_basis_policy_id: edge_basis_policy_id.as_str(),
             requested_at_ns: intent.requested_at_ns,
             decision_correlation_id: intent.decision_correlation_id,

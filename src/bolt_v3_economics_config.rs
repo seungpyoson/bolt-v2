@@ -70,18 +70,10 @@ pub struct EconomicsQuoteComponentConfig {
     pub rate_factor_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum EconomicsAssetIdentityKind {
-    Currency,
-    AssetQuantity,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EconomicsAssetIdentityConfig {
-    pub native_unit: String,
-    pub identity_kind: EconomicsAssetIdentityKind,
+    pub currency: String,
     pub evidence_fixture_id: String,
 }
 
@@ -118,6 +110,8 @@ pub enum ValuationPolicy {
 pub enum ValuationLegConfig {
     MarketQuote {
         from_unit: String,
+        source_currency: String,
+        source_currency_per_from_unit: String,
         to_unit: String,
         valuation_policy: ValuationPolicy,
         client_id: String,
@@ -265,6 +259,13 @@ pub enum EconomicsConfigError {
     ZeroValuationAge {
         route_id: String,
     },
+    InvalidValuationCurrency {
+        route_id: String,
+        currency: String,
+    },
+    InvalidValuationRate {
+        route_id: String,
+    },
     ValuationRefreshWindowTooShort {
         route_id: String,
         configured_max_age_ms: u64,
@@ -280,9 +281,6 @@ pub enum EconomicsConfigError {
     EmptyFormulaPolicy,
     EmptyQuoteComponentMapping,
     EmptyAssetIdentityMapping,
-    UnsupportedAssetIdentityKind {
-        asset_id: String,
-    },
     MissingValuationRoute {
         native_unit: String,
         reporting_currency: String,
@@ -303,6 +301,12 @@ impl EconomicsRootConfig {
             EconomicsConfigField::ReportingCurrency,
             &mut errors,
         );
+        if crate::economics::currency_from_code(&self.reporting.pnl_currency).is_err() {
+            errors.push(EconomicsConfigError::InvalidValuationCurrency {
+                route_id: self.reporting.policy_id.clone(),
+                currency: self.reporting.pnl_currency.clone(),
+            });
+        }
         errors
     }
 }
@@ -394,7 +398,7 @@ impl ExecutionEconomicsConfig {
         for (asset_id, asset) in &self.assets {
             require_text(asset_id, EconomicsConfigField::AssetIdentity, &mut errors);
             require_text(
-                &asset.native_unit,
+                &asset.currency,
                 EconomicsConfigField::AssetIdentity,
                 &mut errors,
             );
@@ -403,19 +407,19 @@ impl ExecutionEconomicsConfig {
                 EconomicsConfigField::AssetEvidenceFixture,
                 &mut errors,
             );
-            if asset.identity_kind != EconomicsAssetIdentityKind::Currency {
-                errors.push(EconomicsConfigError::UnsupportedAssetIdentityKind {
-                    asset_id: asset_id.clone(),
+            if crate::economics::currency_from_code(&asset.currency).is_err() {
+                errors.push(EconomicsConfigError::InvalidValuationCurrency {
+                    route_id: asset_id.clone(),
+                    currency: asset.currency.clone(),
                 });
             }
-            if asset.native_unit != reporting.pnl_currency
+            if asset.currency != reporting.pnl_currency
                 && !self.valuation.routes.values().any(|route| {
-                    route.from_unit == asset.native_unit
-                        && route.to_currency == reporting.pnl_currency
+                    route.from_unit == asset.currency && route.to_currency == reporting.pnl_currency
                 })
             {
                 errors.push(EconomicsConfigError::MissingValuationRoute {
-                    native_unit: asset.native_unit.clone(),
+                    native_unit: asset.currency.clone(),
                     reporting_currency: reporting.pnl_currency.clone(),
                 });
             }
@@ -617,6 +621,12 @@ impl ValuationConfig {
                 ),
             ] {
                 require_text(value, field, &mut errors);
+                if crate::economics::currency_from_code(value).is_err() {
+                    errors.push(EconomicsConfigError::InvalidValuationCurrency {
+                        route_id: route_id.clone(),
+                        currency: value.to_string(),
+                    });
+                }
             }
             if route.to_currency != reporting_currency {
                 errors.push(EconomicsConfigError::WrongTerminalCurrency {
@@ -660,6 +670,10 @@ fn validate_valuation_legs(
     for leg in &route.legs {
         match leg {
             ValuationLegConfig::MarketQuote {
+                from_unit,
+                source_currency,
+                source_currency_per_from_unit,
+                to_unit,
                 client_id,
                 instrument_id,
                 ..
@@ -680,14 +694,43 @@ fn validate_valuation_legs(
                         client_id: client_id.clone(),
                     });
                 }
+                for currency in [from_unit, source_currency, to_unit] {
+                    if crate::economics::currency_from_code(currency).is_err() {
+                        errors.push(EconomicsConfigError::InvalidValuationCurrency {
+                            route_id: route_id.to_string(),
+                            currency: currency.clone(),
+                        });
+                    }
+                }
+                if !matches!(
+                    source_currency_per_from_unit.parse::<rust_decimal::Decimal>(),
+                    Ok(rate) if rate > rust_decimal::Decimal::ZERO
+                ) {
+                    errors.push(EconomicsConfigError::InvalidValuationRate {
+                        route_id: route_id.to_string(),
+                    });
+                }
             }
-            ValuationLegConfig::ProviderConversion { source_id, .. } => {
+            ValuationLegConfig::ProviderConversion {
+                from_unit,
+                to_unit,
+                source_id,
+                ..
+            } => {
                 require_text(source_id, EconomicsConfigField::SourcePolicy, &mut errors);
                 if !configured_sources.contains(source_id) {
                     errors.push(EconomicsConfigError::UnknownProviderConversionSource {
                         route_id: route_id.to_string(),
                         source_id: source_id.clone(),
                     });
+                }
+                for currency in [from_unit, to_unit] {
+                    if crate::economics::currency_from_code(currency).is_err() {
+                        errors.push(EconomicsConfigError::InvalidValuationCurrency {
+                            route_id: route_id.to_string(),
+                            currency: currency.clone(),
+                        });
+                    }
                 }
             }
         }

@@ -289,8 +289,7 @@ formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
 [execution.economics.assets.settlement]
-native_unit = "USD"
-identity_kind = "currency"
+currency = "USD"
 evidence_fixture_id = "hyperliquid-settlement-fixture"
 
 [execution.economics.edge_basis.primary]
@@ -1554,8 +1553,7 @@ formula_id = "polymarket-price-shaped-fee"
 rate_factor_id = "polymarket-live-fee-rate"
 
 [clients.polymarket_main.execution.economics.assets.collateral]
-native_unit = "USD"
-identity_kind = "currency"
+currency = "USD"
 evidence_fixture_id = "polymarket-collateral-fixture"
 
 [clients.polymarket_main.execution.economics.edge_basis.primary]

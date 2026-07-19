@@ -21627,14 +21627,6 @@ reason = "Versioned Polymarket collateral-offramp ABI selector used to verify th
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
-literal = '''"USDC()"'''
-context = '''&function_calldata("USDC()", None),'''
-classification = "provider_contract_abi"
-reason = "Versioned pUSD contract ABI selector used to verify the configured redemption asset."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/economics.rs"
-kind = "string"
 literal = '''"paused(address)"'''
 context = '''&function_calldata("paused(address)", Some(&redemption_asset)),'''
 classification = "provider_contract_abi"

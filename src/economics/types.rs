@@ -1,5 +1,6 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, str::FromStr};
 
+pub use nautilus_model::types::Currency;
 use rust_decimal::Decimal;
 
 const BASIS_POINT_DECIMAL_SCALE: u32 = 4;
@@ -34,7 +35,6 @@ macro_rules! domain_id {
     };
 }
 
-domain_id!(NativeUnitId);
 domain_id!(EconomicComponentId);
 domain_id!(ExecutionClientId);
 domain_id!(AccountId);
@@ -57,72 +57,29 @@ domain_id!(ComponentDiscriminator);
 domain_id!(AuthorityEventId);
 domain_id!(RoutingAttachmentId);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InventoryApplication {
-    IncludedInCanonicalGrossFact,
-    ApplyOnceToCanonicalGrossFact,
+pub fn currency_from_code(value: &str) -> Result<Currency, EconomicsUnavailable> {
+    Currency::from_str(value)
+        .map_err(|_| EconomicsUnavailable::InvalidIdentifier { kind: "Currency" })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SignedNativeEffect {
-    CurrencyAmount {
-        amount: Decimal,
-        currency_id: NativeUnitId,
-    },
-    AssetQuantity {
-        quantity: Decimal,
-        asset_id: NativeUnitId,
-        inventory_application: InventoryApplication,
-    },
+pub struct SignedNativeEffect {
+    amount: Decimal,
+    currency: Currency,
 }
 
 impl SignedNativeEffect {
-    pub fn currency(
-        amount: Decimal,
-        currency_id: NativeUnitId,
-    ) -> Result<Self, EconomicsUnavailable> {
+    pub fn currency(amount: Decimal, currency: Currency) -> Result<Self, EconomicsUnavailable> {
         Self::reject_zero(amount)?;
-        Ok(Self::CurrencyAmount {
-            amount,
-            currency_id,
-        })
-    }
-
-    pub fn asset_quantity(
-        quantity: Decimal,
-        asset_id: NativeUnitId,
-        inventory_application: InventoryApplication,
-    ) -> Result<Self, EconomicsUnavailable> {
-        Self::reject_zero(quantity)?;
-        Ok(Self::AssetQuantity {
-            quantity,
-            asset_id,
-            inventory_application,
-        })
+        Ok(Self { amount, currency })
     }
 
     pub fn amount(&self) -> Decimal {
-        match self {
-            Self::CurrencyAmount { amount, .. } => *amount,
-            Self::AssetQuantity { quantity, .. } => *quantity,
-        }
+        self.amount
     }
 
-    pub fn unit(&self) -> &NativeUnitId {
-        match self {
-            Self::CurrencyAmount { currency_id, .. } => currency_id,
-            Self::AssetQuantity { asset_id, .. } => asset_id,
-        }
-    }
-
-    pub fn inventory_application(&self) -> Option<InventoryApplication> {
-        match self {
-            Self::CurrencyAmount { .. } => None,
-            Self::AssetQuantity {
-                inventory_application,
-                ..
-            } => Some(*inventory_application),
-        }
+    pub fn currency_id(&self) -> Currency {
+        self.currency
     }
 
     fn reject_zero(value: Decimal) -> Result<(), EconomicsUnavailable> {
@@ -263,7 +220,7 @@ pub struct CalculationFactor {
 pub struct ValuationEvidence {
     pub native_effect: SignedNativeEffect,
     pub normalized_amount: Decimal,
-    pub reporting_unit: NativeUnitId,
+    pub reporting_unit: Currency,
     pub route_id: Option<ValuationRouteId>,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valued_at_ns: u64,
@@ -272,8 +229,8 @@ pub struct ValuationEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValuationLegEvidence {
-    pub from_unit: NativeUnitId,
-    pub to_unit: NativeUnitId,
+    pub from_unit: Currency,
+    pub to_unit: Currency,
     pub rate: Decimal,
     pub source_snapshot_id: SnapshotId,
     pub observed_at_ns: u64,
@@ -284,8 +241,8 @@ pub struct ValuationLegEvidence {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValuationRoute {
     pub route_id: ValuationRouteId,
-    pub from_unit: NativeUnitId,
-    pub to_currency: NativeUnitId,
+    pub from_unit: Currency,
+    pub to_currency: Currency,
     pub legs: Vec<ValuationLegEvidence>,
     pub valid_until_ns: u64,
 }
@@ -474,7 +431,7 @@ pub struct EconomicQuoteRequest {
     pub position: Option<PositionContext>,
     pub lifecycle_path: LifecyclePath,
     pub reporting_policy_id: ReportingPolicyId,
-    pub reporting_unit: NativeUnitId,
+    pub reporting_unit: Currency,
     pub edge_basis_policy_id: EdgeBasisPolicyId,
     pub requested_at_ns: u64,
     pub decision_correlation_id: DecisionCorrelationId,
@@ -510,7 +467,7 @@ pub struct EconomicQuote {
     pub(super) forecast_total: Decimal,
     pub(super) forecast_complete: bool,
     pub(super) missing_forecast_component_ids: Vec<EconomicComponentId>,
-    pub(super) reporting_unit: NativeUnitId,
+    pub(super) reporting_unit: Currency,
     pub(super) valid_until_ns: u64,
 }
 
@@ -543,7 +500,7 @@ impl EconomicQuote {
         &self.missing_forecast_component_ids
     }
 
-    pub fn reporting_unit(&self) -> &NativeUnitId {
+    pub fn reporting_unit(&self) -> &Currency {
         &self.reporting_unit
     }
 
@@ -598,7 +555,7 @@ pub struct ActualEntryKey {
     pub account_id: AccountId,
     pub canonical_event_id: CanonicalEconomicEventId,
     pub kind: EconomicKind,
-    pub native_unit: NativeUnitId,
+    pub native_unit: Currency,
     pub component_discriminator: ComponentDiscriminator,
 }
 
@@ -624,79 +581,42 @@ pub struct ActualEconomicEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValuationRequest {
-    pub reporting_unit: NativeUnitId,
+    pub reporting_unit: Currency,
     pub reporting_policy_id: ReportingPolicyId,
     pub requested_at_ns: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EconomicsUnavailable {
-    InvalidIdentifier {
-        kind: &'static str,
-    },
+    InvalidIdentifier { kind: &'static str },
     ZeroNativeEffect,
     InvalidPlannedFill,
     InvalidQuoteValidityPolicy,
     InvalidDecimal,
     EconomicClassSignMismatch,
-    InvalidProvenZeroPoint {
-        component_id: EconomicComponentId,
-    },
+    InvalidProvenZeroPoint { component_id: EconomicComponentId },
     MissingQuoteAuthority,
     AmbiguousQuoteAuthority,
-    InvalidSourceTimeline {
-        source_id: SourceId,
-    },
-    StaleSource {
-        source_id: SourceId,
-    },
-    DuplicateComponent {
-        component_id: EconomicComponentId,
-    },
-    DuplicateCalculationFactor {
-        factor_id: FormulaId,
-    },
-    MissingDebitRiskBound {
-        component_id: EconomicComponentId,
-    },
-    InvalidDebitRiskBound {
-        component_id: EconomicComponentId,
-    },
-    MissingValuation {
-        unit: NativeUnitId,
-    },
-    AmbiguousValuation {
-        unit: NativeUnitId,
-    },
-    MissingValuationRoute {
-        from: NativeUnitId,
-        to: NativeUnitId,
-    },
-    DisconnectedValuationRoute {
-        route_id: ValuationRouteId,
-    },
-    CyclicValuationRoute {
-        route_id: ValuationRouteId,
-    },
-    StaleValuation {
-        route_id: ValuationRouteId,
-    },
-    InvalidValuationRate {
-        route_id: ValuationRouteId,
-    },
+    InvalidSourceTimeline { source_id: SourceId },
+    StaleSource { source_id: SourceId },
+    DuplicateComponent { component_id: EconomicComponentId },
+    DuplicateCalculationFactor { factor_id: FormulaId },
+    MissingDebitRiskBound { component_id: EconomicComponentId },
+    InvalidDebitRiskBound { component_id: EconomicComponentId },
+    MissingValuation { unit: Currency },
+    AmbiguousValuation { unit: Currency },
+    MissingValuationRoute { from: Currency, to: Currency },
+    DisconnectedValuationRoute { route_id: ValuationRouteId },
+    CyclicValuationRoute { route_id: ValuationRouteId },
+    StaleValuation { route_id: ValuationRouteId },
+    InvalidValuationRate { route_id: ValuationRouteId },
     ValuationEvidenceMismatch,
     InvalidEdgeBasis,
     NonPositiveNetEdge,
-    StaleEdgeBasis {
-        valid_until_ns: u64,
-    },
+    StaleEdgeBasis { valid_until_ns: u64 },
     EdgeBasisPolicyMismatch,
-    RequiredCapabilityStale {
-        valid_until_ns: u64,
-    },
-    ProviderQuoteUnavailable {
-        source_id: SourceId,
-    },
+    RequiredCapabilityStale { valid_until_ns: u64 },
+    ProviderQuoteUnavailable { source_id: SourceId },
 }
 
 impl fmt::Display for EconomicsUnavailable {

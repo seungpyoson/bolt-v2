@@ -27,6 +27,16 @@ class EconomicsDependencyDirectionTest(unittest.TestCase):
         errors = self.verify_source("use nautilus_model::orders::Order;\n")
         self.assertTrue(any("nautilus_model" in error for error in errors), errors)
 
+    def test_accepts_only_the_nt_currency_identity(self) -> None:
+        self.assertEqual(
+            self.verify_source("pub use nautilus_model::types::Currency;\n"),
+            [],
+        )
+        errors = self.verify_source(
+            "use nautilus_model::types::{Currency, Money};\n"
+        )
+        self.assertTrue(any("nautilus_model" in error for error in errors), errors)
+
     def test_rejects_bolt_runtime_import(self) -> None:
         errors = self.verify_source("use crate::bolt_v3_order_execution::OrderExecutor;\n")
         self.assertTrue(any("bolt_v3" in error for error in errors), errors)

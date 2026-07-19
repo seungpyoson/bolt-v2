@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -13,11 +13,11 @@ use rust_decimal::Decimal;
 use sha2::Digest;
 
 use crate::economics::{
-    EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence,
-    FullReservationLiability, GuaranteedDebit, LiquidityRoleAssumption, NativeUnitId, NetEdgeQuote,
+    Currency, EconomicQuote, EconomicQuoteRequest, EconomicsUnavailable, EdgeBasisEvidence,
+    FullReservationLiability, GuaranteedDebit, LiquidityRoleAssumption, NetEdgeQuote,
     PlannedFillNotional, ReservationBasis, SignedNativeEffect, SnapshotId, ValuationProvider,
-    ValuationRequest, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, fold_net_edge,
-    validate_and_aggregate_quote, value_with_route,
+    ValuationRequest, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, currency_from_code,
+    fold_net_edge, validate_and_aggregate_quote, value_with_route,
 };
 
 use crate::bolt_v3_economics_config::{ValuationConfig, ValuationLegConfig, ValuationOrientation};
@@ -180,7 +180,7 @@ pub trait ProviderEconomicsAuthority: Send + Sync {
 }
 
 pub struct ConfiguredValuationProvider {
-    routes: BTreeMap<(NativeUnitId, NativeUnitId), ValuationRoute>,
+    routes: HashMap<(Currency, Currency), ValuationRoute>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -196,8 +196,8 @@ pub enum AuthoritativeValuationObservation {
     },
     ProviderConversion {
         source_id: String,
-        from_unit: NativeUnitId,
-        to_unit: NativeUnitId,
+        from_unit: Currency,
+        to_unit: Currency,
         rate: Decimal,
         snapshot_id: SnapshotId,
         observed_at_ns: u64,
@@ -217,7 +217,7 @@ impl AuthoritativeValuationObservation {
 
 impl ConfiguredValuationProvider {
     pub fn from_routes(routes: Vec<ValuationRoute>) -> Result<Self, EconomicsUnavailable> {
-        let mut indexed = BTreeMap::new();
+        let mut indexed = HashMap::new();
         for route in routes {
             let key = (route.from_unit.clone(), route.to_currency.clone());
             if indexed.insert(key, route).is_some() {
@@ -265,8 +265,8 @@ impl ConfiguredValuationProvider {
             }
             routes.push(ValuationRoute {
                 route_id: ValuationRouteId::new(route_id.clone())?,
-                from_unit: NativeUnitId::new(configured.from_unit.clone())?,
-                to_currency: NativeUnitId::new(configured.to_currency.clone())?,
+                from_unit: currency_from_code(&configured.from_unit)?,
+                to_currency: currency_from_code(&configured.to_currency)?,
                 legs,
                 valid_until_ns: route_valid_until_ns,
             });
@@ -275,16 +275,7 @@ impl ConfiguredValuationProvider {
     }
 }
 
-type ResolvedValuationLeg = (
-    NativeUnitId,
-    NativeUnitId,
-    Decimal,
-    SnapshotId,
-    u64,
-    u64,
-    u64,
-    u64,
-);
+type ResolvedValuationLeg = (Currency, Currency, Decimal, SnapshotId, u64, u64, u64, u64);
 
 fn resolve_valuation_leg(
     configured: &ValuationLegConfig,
@@ -302,6 +293,8 @@ fn resolve_valuation_leg(
     ) = match configured {
         ValuationLegConfig::MarketQuote {
             from_unit,
+            source_currency,
+            source_currency_per_from_unit,
             to_unit,
             client_id,
             instrument_id,
@@ -309,6 +302,13 @@ fn resolve_valuation_leg(
             max_age_ms,
             ..
         } => {
+            let _source_currency = currency_from_code(source_currency)?;
+            let source_currency_per_from_unit = source_currency_per_from_unit
+                .parse::<Decimal>()
+                .map_err(|_| EconomicsUnavailable::InvalidDecimal)?;
+            if source_currency_per_from_unit <= Decimal::ZERO {
+                return Err(EconomicsUnavailable::InvalidDecimal);
+            }
             let mut matching = observations
                 .iter()
                 .filter_map(|observation| match observation {
@@ -337,15 +337,18 @@ fn resolve_valuation_leg(
             if matching.next().is_some() || price <= Decimal::ZERO {
                 return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
             }
-            let rate = match orientation {
+            let market_rate = match orientation {
                 ValuationOrientation::BaseToQuote => price,
                 ValuationOrientation::QuoteToBase => Decimal::ONE
                     .checked_div(price)
                     .ok_or(EconomicsUnavailable::InvalidDecimal)?,
             };
+            let rate = source_currency_per_from_unit
+                .checked_mul(market_rate)
+                .ok_or(EconomicsUnavailable::InvalidDecimal)?;
             (
-                NativeUnitId::new(from_unit.clone())?,
-                NativeUnitId::new(to_unit.clone())?,
+                currency_from_code(from_unit)?,
+                currency_from_code(to_unit)?,
                 rate,
                 snapshot_id,
                 observed_at_ns,
@@ -360,8 +363,8 @@ fn resolve_valuation_leg(
             source_id,
             max_age_ms,
         } => {
-            let expected_from = NativeUnitId::new(from_unit.clone())?;
-            let expected_to = NativeUnitId::new(to_unit.clone())?;
+            let expected_from = currency_from_code(from_unit)?;
+            let expected_to = currency_from_code(to_unit)?;
             let mut matching = observations
                 .iter()
                 .filter_map(|observation| match observation {
@@ -429,7 +432,7 @@ impl ValuationProvider for ConfiguredValuationProvider {
     ) -> Result<crate::economics::ValuationEvidence, EconomicsUnavailable> {
         let route = self
             .routes
-            .get(&(effect.unit().clone(), request.reporting_unit.clone()));
+            .get(&(effect.currency_id(), request.reporting_unit));
         value_with_route(
             effect,
             &request.reporting_unit,
@@ -441,7 +444,7 @@ impl ValuationProvider for ConfiguredValuationProvider {
 
 pub fn identity_valuation_provider() -> Arc<dyn ValuationProvider> {
     Arc::new(ConfiguredValuationProvider {
-        routes: BTreeMap::new(),
+        routes: HashMap::new(),
     })
 }
 
@@ -873,8 +876,7 @@ fn resting_economic_terms_match(
         before: &crate::economics::SignedNativeEffect,
         after: &crate::economics::SignedNativeEffect,
     ) -> bool {
-        before.unit() == after.unit()
-            && before.inventory_application() == after.inventory_application()
+        before.currency_id() == after.currency_id()
     }
 
     fn point_estimate_matches(
@@ -1198,10 +1200,10 @@ fn test_economics_admission_with_binding_and_purpose(
     purpose: EconomicsAdmissionPurpose,
 ) -> EconomicsAdmission {
     use crate::economics::{
-        AccountId, AdmissionTreatment, CalculationFactor, DecisionCorrelationId, EconomicClass,
-        EconomicComponentId, EconomicKind, EconomicQuoteRequest, EconomicScope, EdgeBasisAmount,
-        EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId,
-        InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderSide,
+        AccountId, AdmissionTreatment, CalculationFactor, Currency, DecisionCorrelationId,
+        EconomicClass, EconomicComponentId, EconomicKind, EconomicQuoteRequest, EconomicScope,
+        EdgeBasisAmount, EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId,
+        ExecutionKind, FormulaId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, OrderSide,
         PlannedFillLeg, PointEstimate, ProductSurfaceId, ReportingPolicyId, RoutingContext,
         SignedNativeEffect, SourceId, SourceValidity, VenueQuoteEstimate,
     };
@@ -1233,7 +1235,7 @@ fn test_economics_admission_with_binding_and_purpose(
 
     let requested_at_ns = 1;
     let valid_until_ns = u64::MAX;
-    let reporting_unit = NativeUnitId::new("test-reporting-unit").expect("valid test unit");
+    let reporting_unit = currency_from_code("USD").expect("valid test currency");
     let decision_correlation_id =
         DecisionCorrelationId::new("test-decision").expect("valid test decision id");
     let source = SourceValidity {

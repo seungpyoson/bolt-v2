@@ -10,10 +10,10 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_economics_runtime::EconomicsOrderBinding,
     economics::{
-        AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
-        ExecutionClientId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, NativeUnitId,
-        OrderSide, PlannedFillLeg, PositionContext, ProductSurfaceId, ReportingPolicyId,
-        RoutingAttachment, RoutingAttachmentId, RoutingContext,
+        AccountId, Currency, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
+        ExecutionClientId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, OrderSide,
+        PlannedFillLeg, PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingAttachment,
+        RoutingAttachmentId, RoutingContext, currency_from_code,
     },
 };
 
@@ -99,7 +99,7 @@ pub fn canonical_quote_request_from_nt(
         lifecycle_path: intent.lifecycle_path,
         reporting_policy_id: ReportingPolicyId::new(intent.reporting_policy_id)
             .map_err(|_| NtEconomicsMappingError::InvalidIdentity)?,
-        reporting_unit: NativeUnitId::new(intent.reporting_unit)
+        reporting_unit: currency_from_code(intent.reporting_unit)
             .map_err(|_| NtEconomicsMappingError::InvalidIdentity)?,
         edge_basis_policy_id: EdgeBasisPolicyId::new(intent.edge_basis_policy_id)
             .map_err(|_| NtEconomicsMappingError::InvalidIdentity)?,

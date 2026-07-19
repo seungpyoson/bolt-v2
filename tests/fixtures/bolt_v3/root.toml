@@ -275,12 +275,13 @@ venue_truth_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
 [clients.polymarket_main.execution.on_chain_collateral]
-rpc_url = "https://polygon-bor-rpc.publicnode.com"
+rpc_url = "https://polygon.drpc.org"
 chain_id = 137
 collateral_token_address = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 collateral_offramp_address = "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"
-redemption_asset_address = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-redemption_asset_unit = "USDC"
+redemption_asset_address = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+redemption_asset_selector = "USDCE()"
+redemption_asset_unit = "USDC.e"
 finality_confirmations = 64
 collateral_token_proxy_code_sha256 = "c5731b62fc7c36236463af8d362688e37c08823abcda35d71ad7d1220eebf578"
 collateral_token_implementation_address = "0x6bBCef9f7ef3B6C592c99e0f206a0DE94Ad0925f"
@@ -314,8 +315,7 @@ formula_id = "polymarket-price-shaped-fee"
 rate_factor_id = "polymarket-live-fee-rate"
 
 [clients.polymarket_main.execution.economics.assets.collateral]
-native_unit = "pUSD"
-identity_kind = "currency"
+currency = "pUSD"
 evidence_fixture_id = "polymarket-collateral-pusd-v1"
 
 [clients.polymarket_main.execution.economics.edge_basis.primary]
@@ -330,8 +330,8 @@ binary_outcome = "primary"
 from_unit = "pUSD"
 to_currency = "USD"
 legs = [
-  { authority = "provider_conversion", from_unit = "pUSD", to_unit = "USDC", source_id = "collateral", max_age_ms = 300000 },
-  { authority = "market_quote", from_unit = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "provider_conversion", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
+  { authority = "market_quote", from_unit = "USDC.e", source_currency = "USDC", source_currency_per_from_unit = "1", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 
 [clients.polymarket_main.secrets]

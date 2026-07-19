@@ -215,7 +215,7 @@ fn production_and_replay_sources_produce_identical_sealed_admission() {
     fixture.reporting_unit = "pUSD".to_string();
     let request = {
         let mut request = request(100);
-        request.reporting_unit = bolt_v2::economics::NativeUnitId::new("pUSD").unwrap();
+        request.reporting_unit = bolt_v2::economics::currency_from_code("pUSD").unwrap();
         request
     };
     let replay = ReplayEconomicsAdmissionSource::from_snapshots(vec![fixture.clone()]).unwrap();
@@ -243,7 +243,7 @@ fn production_and_replay_sources_produce_identical_stale_rejection() {
     let replay = ReplayEconomicsAdmissionSource::from_snapshots(vec![fixture.clone()]).unwrap();
     let production = production_source(&fixture);
     let mut stale_request = request(fixture.valid_until_ns + 1);
-    stale_request.reporting_unit = bolt_v2::economics::NativeUnitId::new("pUSD").unwrap();
+    stale_request.reporting_unit = bolt_v2::economics::currency_from_code("pUSD").unwrap();
     let order_binding =
         EconomicsOrderBinding::from_sha256(<sha2::Sha256 as sha2::Digest>::digest(b"stale-order"));
     let make_intent = || EconomicsAdmissionQuoteIntent {

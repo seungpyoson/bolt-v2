@@ -2,24 +2,24 @@ schema_version = 1
 adapter_id = "OnChainCollateralRpcClient"
 class = "JsonRpcResponse"
 feeder = "EconomicsValuationAuthority"
-captured_at = "2026-07-18"
+captured_at = "2026-07-19"
 source_method = "JSON-RPC"
 
 [[captures]]
 kind = "finalized_block"
-source_url = "https://polygon-bor-rpc.publicnode.com"
+source_url = "https://polygon.drpc.org"
 fixture = "polymarket-collateral-finalized-block.json"
-fixture_sha256 = "db0d5cfeb842b9b9cdfbd16363147d27c8752a2febfca6bf646385254dfd3f1d"
+fixture_sha256 = "a7debfdfa1ef325bf825193f09bd75fce6f59a0be74bb60266ccb7f7e8162101"
 
 [[captures]]
 kind = "proxy_implementation"
-source_url = "https://polygon-bor-rpc.publicnode.com"
+source_url = "https://polygon.drpc.org"
 fixture = "polymarket-collateral-proxy-implementation.json"
 fixture_sha256 = "9f0039c968c0df8de8c956e5d135cae8152a98c39d1e5c7939070506e4651ed1"
 
 [[captures]]
 kind = "contract_code_hashes"
-source_url = "https://polygon-bor-rpc.publicnode.com"
+source_url = "https://polygon.drpc.org"
 fixture = "polymarket-collateral-contract-code-hashes.json"
 fixture_sha256 = "2a46f39c12db0b901a8ccdbc5c76d79abfc478fa3dc2e67eb37748c93dff8052"
 
@@ -27,4 +27,4 @@ fixture_sha256 = "2a46f39c12db0b901a8ccdbc5c76d79abfc478fa3dc2e67eb37748c93dff80
 kind = "redemption_semantics"
 source_url = "https://github.com/Polymarket/ctf-exchange-v2/tree/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/collateral"
 fixture = "polymarket-collateral-redemption-semantics.json"
-fixture_sha256 = "d2286454ba343a59996bb4b5e793f9e41bf2e0044dfac0ccc581cecce6184eff"
+fixture_sha256 = "09e0f6d4b26af45a4d5e497311e27b4a22a307a1eab119e7e3f25ef2e6a11550"

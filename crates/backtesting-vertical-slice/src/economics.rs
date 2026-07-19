@@ -13,8 +13,8 @@ use bolt_v2::bolt_v3_providers::{
 use bolt_v2::economics::{
     AccountId, DecisionCorrelationId, EconomicQuoteRequest, EconomicScope, EconomicsUnavailable,
     EdgeBasisEvidence, EdgeBasisPolicyId, ExecutionClientId, FormulaId, InstrumentId,
-    LifecyclePath, LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg,
-    PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingContext, SnapshotId, SourceId,
+    LifecyclePath, LiquidityRoleAssumption, OrderSide, PlannedFillLeg, PositionContext,
+    ProductSurfaceId, ReportingPolicyId, RoutingContext, SnapshotId, SourceId, currency_from_code,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -491,7 +491,7 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
     InstrumentId::new(snapshot.instrument_id.clone())?;
     ProductSurfaceId::new(snapshot.product_surface_id.clone())?;
     ReportingPolicyId::new(snapshot.reporting_policy_id.clone())?;
-    NativeUnitId::new(snapshot.reporting_unit.clone())?;
+    currency_from_code(&snapshot.reporting_unit)?;
     SnapshotId::new(snapshot.snapshot_id.clone())?;
     EdgeBasisPolicyId::new(snapshot.edge_basis.policy_id.clone())?;
     let mut edge_snapshot_ids = std::collections::BTreeSet::new();
@@ -588,7 +588,7 @@ fn snapshot_matches_request(
         && snapshot.instrument_id == request.instrument_id.as_str()
         && snapshot.product_surface_id == request.product_surface_id.as_str()
         && snapshot.reporting_policy_id == request.reporting_policy_id.as_str()
-        && snapshot.reporting_unit == request.reporting_unit.as_str()
+        && snapshot.reporting_unit == request.reporting_unit.code.as_str()
         && snapshot.edge_basis.policy_id == request.edge_basis_policy_id.as_str()
 }
 
@@ -638,8 +638,8 @@ fn canonical_valuation_observations(
                 valid_until_ns,
             } => Ok(AuthoritativeValuationObservation::ProviderConversion {
                 source_id: source_id.clone(),
-                from_unit: NativeUnitId::new(from_unit.clone())?,
-                to_unit: NativeUnitId::new(to_unit.clone())?,
+                from_unit: currency_from_code(from_unit)?,
+                to_unit: currency_from_code(to_unit)?,
                 rate: decimal(rate)?,
                 snapshot_id: SnapshotId::new(snapshot_id.clone())?,
                 observed_at_ns: *observed_at_ns,
@@ -704,7 +704,7 @@ pub fn canonical_quote_request_from_replay(
         position: intent.position,
         lifecycle_path: intent.lifecycle_path,
         reporting_policy_id: ReportingPolicyId::new(intent.reporting_policy_id)?,
-        reporting_unit: NativeUnitId::new(intent.reporting_unit)?,
+        reporting_unit: currency_from_code(intent.reporting_unit)?,
         edge_basis_policy_id: EdgeBasisPolicyId::new(intent.edge_basis_policy_id)?,
         requested_at_ns: intent.requested_at_ns,
         decision_correlation_id: DecisionCorrelationId::new(intent.decision_correlation_id)?,

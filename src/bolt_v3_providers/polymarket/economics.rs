@@ -6,10 +6,11 @@ use crate::{
     },
     bolt_v3_numeric::NANOS_PER_SECOND_U64,
     economics::{
-        AdmissionTreatment, CalculationFactor, EconomicClass, EconomicKind, EconomicQuoteRequest,
-        EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
-        LiquidityRoleAssumption, NativeUnitId, PointEstimate, SignedNativeEffect, SnapshotId,
-        SourceId, SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
+        AdmissionTreatment, CalculationFactor, Currency, EconomicClass, EconomicKind,
+        EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent,
+        ExecutionKind, FormulaId, LiquidityRoleAssumption, PointEstimate, SignedNativeEffect,
+        SnapshotId, SourceId, SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
+        currency_from_code,
     },
 };
 use alloy_primitives::keccak256;
@@ -55,7 +56,7 @@ pub struct PolymarketFormulaPolicy {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PolymarketEconomicsAdapterConfig {
-    pub collateral_unit: NativeUnitId,
+    pub collateral_unit: Currency,
     pub platform_component_id: crate::economics::EconomicComponentId,
     pub platform_formula_id: FormulaId,
     pub platform_rate_factor_id: FormulaId,
@@ -75,11 +76,6 @@ impl PolymarketEconomicsAdapterConfig {
             .assets
             .get("collateral")
             .ok_or(PolymarketEconomicsError::InvalidIdentity)?;
-        if collateral.identity_kind
-            != crate::bolt_v3_economics_config::EconomicsAssetIdentityKind::Currency
-        {
-            return Err(PolymarketEconomicsError::InvalidIdentity);
-        }
         let rounding_mode = match economics
             .formula
             .get("fee_rounding_mode")
@@ -90,7 +86,7 @@ impl PolymarketEconomicsAdapterConfig {
             _ => return Err(PolymarketEconomicsError::InvalidIdentity),
         };
         Ok(Self {
-            collateral_unit: NativeUnitId::new(collateral.native_unit.clone())
+            collateral_unit: currency_from_code(&collateral.currency)
                 .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
             platform_component_id: crate::economics::EconomicComponentId::new(
                 platform.component_id.clone(),
@@ -314,7 +310,7 @@ impl PolymarketEconomicsAuthority {
             .economics
             .assets
             .iter()
-            .find(|(_, asset)| asset.native_unit == adapter_config.collateral_unit.as_str())
+            .find(|(_, asset)| asset.currency == adapter_config.collateral_unit.code.as_str())
             .map(|(asset_id, _)| asset_id.clone())
             .context("Polymarket economics collateral identity is missing")?;
         let (product_surface_id, edge_basis_policy_id) = execution
@@ -424,7 +420,7 @@ impl PolymarketEconomicsAuthority {
         let configured_redemption_asset = rpc
             .eth_call_u256_word_at(
                 &collateral_token,
-                &function_calldata("USDC()", None),
+                &function_calldata(&self.on_chain_collateral.redemption_asset_selector, None),
                 &block_tag,
             )
             .await
@@ -553,7 +549,7 @@ impl PolymarketEconomicsAuthority {
         Ok(AuthoritativeValuationObservation::ProviderConversion {
             source_id: self.collateral_source_id.clone(),
             from_unit: self.adapter_config.collateral_unit.clone(),
-            to_unit: NativeUnitId::new(self.on_chain_collateral.redemption_asset_unit.clone())?,
+            to_unit: currency_from_code(&self.on_chain_collateral.redemption_asset_unit)?,
             rate,
             snapshot_id: SnapshotId::new(format!(
                 "sha256:{}",

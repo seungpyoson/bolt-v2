@@ -953,13 +953,14 @@ fn economics_valuation_provider_from_cache(
     for route in config.routes.values() {
         for leg in &route.legs {
             let crate::bolt_v3_economics_config::ValuationLegConfig::MarketQuote {
-                from_unit,
+                source_currency,
                 to_unit,
                 client_id,
                 instrument_id,
                 valuation_policy,
                 orientation,
                 max_age_ms,
+                ..
             } = leg
             else {
                 continue;
@@ -987,9 +988,9 @@ fn economics_valuation_provider_from_cache(
                 }
             };
             anyhow::ensure!(
-                from_unit == expected_from && to_unit == expected_to,
+                source_currency == expected_from && to_unit == expected_to,
                 "economics valuation route {} -> {} contradicts instrument {} units {} -> {}",
-                from_unit,
+                source_currency,
                 to_unit,
                 instrument_id,
                 expected_from,

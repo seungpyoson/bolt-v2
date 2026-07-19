@@ -132,8 +132,7 @@ formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
 [execution.economics.assets.settlement]
-native_unit = "USD"
-identity_kind = "currency"
+currency = "USD"
 evidence_fixture_id = "hyperliquid-settlement-fixture"
 
 [execution.economics.edge_basis.primary]

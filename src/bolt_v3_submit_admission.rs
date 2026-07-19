@@ -4608,7 +4608,7 @@ mod loss_governor_halt_evidence_tests {
             "strategy-poisoned-rejected-episode".to_string(),
             "client-order-poisoned-rejected-episode".to_string(),
         );
-        request.order_quantity = Decimal::ZERO;
+        request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
         let routing_admission = BoltV3SubmitAdmissionState::new(Arc::new(
             FailingLossGovernorHaltEvidenceWriter::default(),
         ));
@@ -4617,7 +4617,7 @@ mod loss_governor_halt_evidence_tests {
                 routing_admission.admit_at(&request, 1_000),
                 Err(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)
             ),
-            "post-quote quantity mutation must route through economics/order mismatch rejection"
+            "post-quote purpose mutation must route through economics/order mismatch rejection"
         );
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             admission.poison_reject_episodes_for_test();

@@ -1286,7 +1286,16 @@ where
     let mut request =
         build_submit_admission_request_from_order(admission_input, economics_admission)?;
     request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
-    request.risk_reducing_exit_proof = None;
+    request.risk_reducing_exit_proof = Some(
+        crate::bolt_v3_submit_admission::BoltV3RiskReducingExitProof {
+            position_id: command.position_id().to_string(),
+            instrument_id: command.instrument_id().to_string(),
+            position_side: command.position_side(),
+            exit_order_side: command.order_side(),
+            position_quantity: command.quantity().as_decimal(),
+            exit_quantity: command.quantity().as_decimal(),
+        },
+    );
     request.kill_switch_forced_reduction = Some(command.forced_reduction_claim().clone());
 
     policy.route_submit_with_sink(
@@ -1812,7 +1821,7 @@ mod tests {
                         remaining_quantity: Decimal::new(2, 0),
                         maker_guarantee_intact: true,
                     },
-                    u64::MAX - 1,
+                    u64::MAX - 2,
                 )
                 .unwrap(),
             BoltV3RestingOrderEconomicsAction::None
@@ -1823,7 +1832,7 @@ mod tests {
                 .admission
                 .request()
                 .requested_at_ns,
-            u64::MAX - 1
+            u64::MAX - 2
         );
     }
 

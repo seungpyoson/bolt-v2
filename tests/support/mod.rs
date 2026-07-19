@@ -44,6 +44,7 @@ fn sample_economics_runtime(
     bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime,
     bolt_v2::economics::EconomicsUnavailable,
 > {
+    let quote_validity_ns = quote_validity_ns.max(2);
     bolt_v2::bolt_v3_economics_runtime::BoltV3EconomicsRuntime::try_new(
         adapter,
         bolt_v2::bolt_v3_economics_runtime::ConfiguredEconomicsSourcePolicy {

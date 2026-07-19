@@ -1617,7 +1617,7 @@ mod resting_order_refresh_tests {
 
     impl EconomicsAdmissionSource for ChangedTermsSource {
         fn resting_order_refresh_margin_ns(&self) -> u64 {
-            1
+            2
         }
 
         fn resolve_product_surface(

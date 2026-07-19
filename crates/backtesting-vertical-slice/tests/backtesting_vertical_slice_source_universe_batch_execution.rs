@@ -2799,6 +2799,7 @@ fn carried_record_fixture(
         archive_date: "2026-03-01".to_string(),
         selected_object_sha256: selected_object_sha256.to_string(),
         selected_object_bytes: 0,
+        execution_plan_sha256: "a".repeat(64),
         canonical_rows: 7,
         nt_catalog_rows: 7,
         catalog_hash: "carried-catalog-hash".to_string(),

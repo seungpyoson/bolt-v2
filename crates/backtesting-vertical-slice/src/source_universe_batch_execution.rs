@@ -41,7 +41,7 @@ use crate::{
 };
 
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION: &str =
-    "source-universe-batch-execution-report.v1";
+    "source-universe-batch-execution-report.v2";
 pub const SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE: &str =
     "source-universe-batch-execution-report.json";
 
@@ -243,6 +243,9 @@ pub struct SourceUniverseBatchExecutionRecord {
     pub archive_date: String,
     pub selected_object_sha256: String,
     pub selected_object_bytes: u64,
+    /// Pins the admitted control identity used to produce this output. The
+    /// plan transitively binds the admitted run-spec and accepted tranche.
+    pub execution_plan_sha256: String,
     pub canonical_rows: u64,
     pub nt_catalog_rows: u64,
     pub catalog_hash: String,
@@ -800,10 +803,15 @@ impl OwnedBatchPlan {
             .take(self.record_limit)
             .map(|record| match self.resume_records.get(&record.sequence) {
                 // Pack-regeneration guard: carry forward only when the prior
-                // record's pinned sha still matches the current pack record AND
-                // the prior output catalog still exists and re-hashes to the
-                // carried `catalog_hash`. A bare sha match only proves the INPUT
-                // is unchanged; it never re-checks that the prior OUTPUT survived.
+                // record's pinned object AND admitted execution-plan sha still
+                // match the current pack record, and the prior output catalog
+                // still exists and re-hashes to the carried `catalog_hash`.
+                // The plan hash transitively pins the admitted run-spec and
+                // accepted tranche, so a changed declared execution can never
+                // launder stale output through resume merely because its source
+                // object is unchanged. A bare object-sha match only proves the
+                // INPUT is unchanged; it never proves the execution controls or
+                // prior OUTPUT survived unchanged.
                 // Re-verifying through the same `logical_catalog_hash` the
                 // operator's completed-output reuse path uses means a deleted or
                 // corrupted prior catalog re-executes the record (downgraded to
@@ -811,6 +819,7 @@ impl OwnedBatchPlan {
                 // marker — fail safe, never carry a phantom output forward.
                 Some(prior)
                     if prior.selected_object_sha256 == record.selected_object_sha256
+                        && prior.execution_plan_sha256 == record.execution_plan_sha256
                         && carried_output_still_verifies(prior) =>
                 {
                     BatchWorkItem::Carried(Box::new(prior.clone()))
@@ -1393,6 +1402,7 @@ where
         archive_date: record.archive_date.clone(),
         selected_object_sha256: record.selected_object_sha256.clone(),
         selected_object_bytes: record.selected_object_bytes,
+        execution_plan_sha256: record.execution_plan_sha256.clone(),
         canonical_rows: run_output.canonical_rows,
         nt_catalog_rows: run_output.nt_catalog_rows,
         catalog_hash: run_output.catalog_hash,
@@ -1686,6 +1696,7 @@ mod tests {
             archive_date: "2026-03-01".to_string(),
             selected_object_sha256: "a".repeat(64),
             selected_object_bytes: 0,
+            execution_plan_sha256: "a".repeat(64),
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash,
@@ -1718,7 +1729,7 @@ mod tests {
             accepted_tranche_path: PathBuf::from("tranche.json"),
             accepted_tranche_sha256: "tranche-sha".to_string(),
             execution_plan_path: PathBuf::from("execution-plan.json"),
-            execution_plan_sha256: "execution-plan-sha".to_string(),
+            execution_plan_sha256: prior.execution_plan_sha256.clone(),
         };
         let pack = SourceUniverseExecutionPack {
             schema_version: SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION.to_string(),
@@ -1854,6 +1865,29 @@ mod tests {
         assert!(
             matches!(plan.work_items.as_slice(), [BatchWorkItem::Carried(_)]),
             "an intact, hash-matching prior catalog must still carry forward"
+        );
+    }
+
+    #[test]
+    fn plan_reexecutes_carried_record_when_execution_plan_changes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &output_dir.join(CATALOG_DIR),
+        );
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let mut owned_plan = owned_plan_with_carry(&record);
+        owned_plan.pack.records[0].execution_plan_sha256 = "b".repeat(64);
+
+        let plan = owned_plan.plan();
+
+        assert!(
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::NeedsWork { .. }]
+            ),
+            "a changed admitted execution plan must force re-execution even when the object and prior output still verify"
         );
     }
 }

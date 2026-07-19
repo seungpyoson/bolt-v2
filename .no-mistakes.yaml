@@ -5,6 +5,9 @@
 
 commands:
   # All Rust verification routes through the managed wrapper via just recipes.
+  # Outside CI these lanes fail closed by [local_compile_policy] design: the
+  # refusal JSON is the remote-first signal (push and read advisory CI /
+  # rust-probe evidence). BOLT_ALLOW_LOCAL_RUST=1 is the operator break-glass.
   test: "just test"
   lint: "just clippy"
   # Formatting mutation is likewise repository-wide.

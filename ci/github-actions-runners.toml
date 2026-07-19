@@ -26,6 +26,7 @@ probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
 [workflows.advisory]
+evidence = "managed_heavy"
 advisories = "github_hosted"
 
 [cargo_build_jobs.rust_probe]

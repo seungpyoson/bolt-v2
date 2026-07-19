@@ -72,6 +72,8 @@ jobs:
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
 
+      # backtesting-vertical-slice gets fmt coverage only: its managed build
+      # targets aarch64-apple-darwin, which cannot compile on this Linux runner.
       - name: fmt
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- fmt --check

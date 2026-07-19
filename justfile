@@ -171,6 +171,9 @@ cache-prune *args:
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
+    echo "Setting git hooks path..."
+    git config core.hooksPath .githooks
+
     echo "Asserting machine-global Cargo target dir..."
     python3 "{{rust_verification_owner}}" assert-global-cargo-target-dir --repo "{{repo_root}}"
 

@@ -1240,7 +1240,7 @@ def assert_private_fetch_failure_redacts_remote_credentials() -> None:
         assert "<remote-url>" in message, message
 
 
-def assert_mergify_config_snapshot_uses_candidate_integration_blob() -> None:
+def assert_mergify_config_policy_change_requires_active_candidate_alignment() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
         write(
@@ -1250,6 +1250,7 @@ def assert_mergify_config_snapshot_uses_candidate_integration_blob() -> None:
         fixture.base = commit(fixture.repo, "old mergify contract")
         git(fixture.repo, "push", "origin", "main")
         head = fixture.make_pr(1, {".mergify.yml": MERGIFY_YML, "one.txt": "one\n"})
+        active_blob = git(fixture.repo, "rev-parse", f"{fixture.base}:.mergify.yml")
         candidate_blob = git(fixture.repo, "rev-parse", f"{head}:.mergify.yml")
 
         rc, stdout, _ = run_preflight(
@@ -1260,15 +1261,38 @@ def assert_mergify_config_snapshot_uses_candidate_integration_blob() -> None:
         )
         assert_equal(rc, 3, "mergify snapshot no-gh rc")
         payload = parse_json(stdout)
-        snapshot = next(
+        candidate_snapshot = next(
             finding
             for finding in payload["findings"]
             if finding["reason_code"] == "mergify_config_snapshot_read"
         )
-        candidate_sha = snapshot["evidence"]["candidate_sha"]
+        candidate_sha = candidate_snapshot["evidence"]["candidate_sha"]
         assert candidate_sha not in (fixture.base, head), candidate_sha
         assert mergify_config_finding(candidate_sha, candidate_blob) in payload["findings"], payload["findings"]
         assert mergify_config_valid_finding(candidate_sha, candidate_blob) in payload["findings"], payload["findings"]
+        alignment = next(
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "mergify_config_policy_mismatch"
+        )
+        assert_equal(alignment["status"], "inconclusive", "Mergify policy mismatch status")
+        assert_equal(
+            alignment["evidence"],
+            {
+                "active_sha": fixture.base,
+                "active_blob_sha": active_blob,
+                "candidate_sha": candidate_sha,
+                "candidate_blob_sha": candidate_blob,
+                "git_returncode": 0,
+                "git_stderr": "",
+            },
+            "Mergify policy mismatch evidence",
+        )
+        assert_equal(payload["lane_statuses"]["mergify_config"], "inconclusive", "Mergify policy mismatch lane")
+        assert not any(
+            finding["reason_code"] == "mergify_queue_route_selected"
+            for finding in payload["findings"]
+        ), payload["findings"]
 
 
 def assert_fetches_use_private_refs_without_fetch_head() -> None:
@@ -2573,7 +2597,7 @@ def main() -> int:
     assert_preflight_artifact_classification_is_declarative()
     assert_preflight_artifact_finding_uses_classification_table()
     assert_contract_evaluator_reduces_normalized_evidence()
-    assert_mergify_config_snapshot_uses_candidate_integration_blob()
+    assert_mergify_config_policy_change_requires_active_candidate_alignment()
     assert_fetches_use_private_refs_without_fetch_head()
     assert_private_fetches_do_not_write_checkout_refs()
     assert_private_fetch_repo_persists_auto_maintenance_suppression()

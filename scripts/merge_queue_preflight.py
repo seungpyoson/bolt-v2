@@ -430,6 +430,18 @@ MERGIFY_CONFIG_VALIDATION_STATES = {
         ".mergify.yml snapshot does not satisfy Mergify config contract",
     ),
 }
+MERGIFY_CONFIG_POLICY_ALIGNMENT_STATES = {
+    True: (
+        STATUS_READY,
+        "mergify_config_policy_aligned",
+        "active and candidate Mergify policies are identical",
+    ),
+    False: (
+        STATUS_INCONCLUSIVE,
+        "mergify_config_policy_mismatch",
+        "active and candidate Mergify policies differ",
+    ),
+}
 BASE_IDENTITY_FINDING_STATES = {
     True: (
         STATUS_READY,
@@ -859,6 +871,44 @@ def mergify_config_validation_finding(
     }
 
 
+def mergify_config_policy_alignment_finding(
+    *,
+    repo: pathlib.Path,
+    active_sha: str,
+    candidate_sha: str,
+    candidate_blob_sha: str,
+    input_timeout_seconds: int,
+) -> dict[str, object]:
+    result = git(
+        repo,
+        "rev-parse",
+        f"{active_sha}:{MERGIFY_CONFIG_PATH}",
+        check=False,
+        timeout_seconds=input_timeout_seconds,
+    )
+    active_blob_sha = result.stdout.strip()
+    status, reason_code, message = MERGIFY_CONFIG_POLICY_ALIGNMENT_STATES[
+        result.returncode == 0
+        and SHA_RE.fullmatch(active_blob_sha) is not None
+        and active_blob_sha == candidate_blob_sha
+    ]
+    return {
+        "lane": LANE_MERGIFY_CONFIG,
+        "scope": "run",
+        "status": status,
+        "reason_code": reason_code,
+        "message": message,
+        "evidence": {
+            "active_sha": active_sha,
+            "active_blob_sha": active_blob_sha,
+            "candidate_sha": candidate_sha,
+            "candidate_blob_sha": candidate_blob_sha,
+            "git_returncode": result.returncode,
+            "git_stderr": result.stderr.strip(),
+        },
+    }
+
+
 def mergify_config_data(
     *,
     repo: pathlib.Path,
@@ -1134,6 +1184,7 @@ MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS = {
 def mergify_config_findings(
     *,
     repo: pathlib.Path,
+    active_sha: str,
     candidate_sha: str,
     readiness: Mapping[str, object],
     input_timeout_seconds: int,
@@ -1153,6 +1204,15 @@ def mergify_config_findings(
     )
     if validation["status"] != STATUS_READY:
         return (snapshot, validation)
+    alignment = mergify_config_policy_alignment_finding(
+        repo=repo,
+        active_sha=active_sha,
+        candidate_sha=candidate_sha,
+        candidate_blob_sha=str(snapshot["evidence"]["blob_sha"]),
+        input_timeout_seconds=input_timeout_seconds,
+    )
+    if alignment["status"] != STATUS_READY:
+        return (snapshot, validation, alignment)
     config = mergify_config_data(
         repo=repo,
         blob_sha=str(snapshot["evidence"]["blob_sha"]),
@@ -1161,6 +1221,7 @@ def mergify_config_findings(
     return (
         snapshot,
         validation,
+        alignment,
         *MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS[isinstance(config, Mapping)](
             config=config,
             readiness=readiness,
@@ -2141,6 +2202,7 @@ def preflight_with_fetch_refs(
             integration_finding = integration_pr_ready_finding(pr_number)
     mergify_findings = () if candidate_sha is None else mergify_config_findings(
         repo=git_repo,
+        active_sha=actual_base_sha,
         candidate_sha=candidate_sha,
         readiness=readiness,
         input_timeout_seconds=input_timeout_seconds,

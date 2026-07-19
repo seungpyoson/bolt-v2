@@ -9,6 +9,7 @@ import pathlib
 import sys
 import tempfile
 import time
+import tomllib
 from unittest import mock
 
 import final_review_runner as runner
@@ -75,6 +76,40 @@ def assert_fixed_phases_partition_the_inventory() -> None:
     )
     if flattened != EXPECTED_OBLIGATION_IDS:
         raise AssertionError(flattened)
+
+
+def assert_config_owns_final_review_phase_order() -> None:
+    with (pathlib.Path(__file__).resolve().parents[1] / "ci/ai-review.toml").open("rb") as handle:
+        configured = tuple(tomllib.load(handle)["final_review"]["phases"])
+    if configured != tuple(runner.FINAL_REVIEW_PHASES):
+        raise AssertionError((configured, tuple(runner.FINAL_REVIEW_PHASES)))
+
+
+def assert_workflow_configuration_is_derived_from_toml() -> None:
+    config_path = pathlib.Path(__file__).resolve().parents[1] / "ci/ai-review.toml"
+    with config_path.open("rb") as handle:
+        config = tomllib.load(handle)
+    configured = config["final_review"]
+    values = runner.workflow_configuration(config_path)
+    if values[-2] != configured["python_version"]:
+        raise AssertionError(values)
+    if json.loads(values[-1]) != {"phase": configured["phases"]}:
+        raise AssertionError(values)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mutated_path = pathlib.Path(tmp) / "ai-review.toml"
+        mutated = config_path.read_text(encoding="utf-8")
+        mutated = mutated.replace('python_version = "3.12"', 'python_version = "3.13"')
+        mutated = mutated.replace(
+            'phases = ["static", "root-analysis", "root-tests", "bvs-analysis", "bvs-tests"]',
+            'phases = ["bvs-tests", "static"]',
+        )
+        mutated_path.write_text(mutated, encoding="utf-8")
+        mutated_values = runner.workflow_configuration(mutated_path)
+        if mutated_values[-2] != "3.13":
+            raise AssertionError(mutated_values)
+        if json.loads(mutated_values[-1]) != {"phase": ["bvs-tests", "static"]}:
+            raise AssertionError(mutated_values)
 
 
 def assert_preflight_uses_the_public_gate_owner() -> None:
@@ -315,6 +350,8 @@ def assert_final_review_uses_registry_workspace_paths() -> None:
 def main() -> int:
     assert_fixed_obligation_inventory_is_complete()
     assert_fixed_phases_partition_the_inventory()
+    assert_config_owns_final_review_phase_order()
+    assert_workflow_configuration_is_derived_from_toml()
     assert_preflight_uses_the_public_gate_owner()
     assert_archive_phases_release_only_their_managed_cache()
     assert_all_fixed_obligations_run_and_failures_remain_raw()

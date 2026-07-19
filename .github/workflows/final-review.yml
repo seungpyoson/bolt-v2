@@ -33,6 +33,8 @@ jobs:
       glm_timeout: ${{ steps.capture.outputs.glm_timeout }}
       evidence_timeout: ${{ steps.capture.outputs.evidence_timeout }}
       obligation_timeout: ${{ steps.capture.outputs.obligation_timeout }}
+      phase_matrix: ${{ steps.capture.outputs.phase_matrix }}
+      python_version: ${{ steps.capture.outputs.python_version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -51,12 +53,7 @@ jobs:
           base_sha="$(jq -r '.base.sha' <<<"$payload")"
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]
           [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
-          read -r claude_timeout kimi_timeout glm_timeout obligation_timeout evidence_timeout < <(python3 - <<'PY'
-          import tomllib
-          config = tomllib.load(open("ci/ai-review.toml", "rb"))
-          print(config["claude"]["workflow"]["job_timeout_minutes"], config["kimi"]["workflow"]["job_timeout_minutes"], config["glm"]["workflow"]["job_timeout_minutes"], config["final_review"]["obligation_timeout_seconds"], config["final_review"]["evidence_timeout_minutes"])
-          PY
-          )
+          read -r claude_timeout kimi_timeout glm_timeout obligation_timeout evidence_timeout python_version phase_matrix < <(PYTHONPATH=scripts python3 -c 'import pathlib; from final_review_runner import workflow_configuration; print(*workflow_configuration(pathlib.Path("ci/ai-review.toml")))')
           {
             echo "head_sha=$head_sha"
             echo "base_sha=$base_sha"
@@ -66,6 +63,8 @@ jobs:
             echo "glm_timeout=$glm_timeout"
             echo "obligation_timeout=$obligation_timeout"
             echo "evidence_timeout=$evidence_timeout"
+            echo "phase_matrix=$phase_matrix"
+            echo "python_version=$python_version"
           } >> "$GITHUB_OUTPUT"
 
   evidence-phase:
@@ -76,8 +75,7 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
-      matrix:
-        phase: [static, root-analysis, root-tests, bvs-analysis, bvs-tests]
+      matrix: ${{ fromJSON(needs.capture-head.outputs.phase_matrix) }}
     steps:
       - name: Checkout protected governance
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -110,9 +108,17 @@ jobs:
           fallback: none
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.12"
-      - name: Install configured Zig
-        run: python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
+          python-version: ${{ needs.capture-head.outputs.python_version }}
+      - name: Install and bind configured Zig
+        run: |
+          python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
+          configured_python="$(command -v python)"
+          configured_zig_version="$("$configured_python" -m ziglang version)"
+          test "$configured_zig_version" = "${{ steps.setup.outputs.zig_version }}"
+          {
+            echo "CARGO_ZIGBUILD_PYTHON_PATH=$configured_python"
+            echo "CARGO_ZIGBUILD_ZIG_PATH=/dev/null"
+          } >> "$GITHUB_ENV"
       - name: Install configured actionlint
         run: |
           version="$(python3 - <<'PY'

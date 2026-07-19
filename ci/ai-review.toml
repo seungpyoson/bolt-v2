@@ -6,6 +6,8 @@ comment_timeout_seconds = 30
 actionlint_version = "1.7.7"
 evidence_timeout_minutes = 240
 obligation_timeout_seconds = 1800
+python_version = "3.12"
+phases = ["static", "root-analysis", "root-tests", "bvs-analysis", "bvs-tests"]
 
 [review]
 max_comment_chars = 60000

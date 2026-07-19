@@ -78,21 +78,46 @@ def assert_final_review_has_one_fixed_graph() -> None:
         raise AssertionError("evidence must use the single governance-owned runner")
     if "timeout-minutes: ${{ fromJSON(needs.capture-head.outputs.evidence_timeout) }}" not in evidence_phase:
         raise AssertionError("evidence does not enforce its configured timeout")
-    if "--obligation-timeout-seconds" not in evidence_phase or "obligation_timeout_seconds" not in text:
+    if (
+        "--obligation-timeout-seconds" not in evidence_phase
+        or "${{ needs.capture-head.outputs.obligation_timeout }}" not in evidence_phase
+    ):
         raise AssertionError("evidence does not propagate the configured per-obligation timeout")
+    capture_head = text.split("  capture-head:", 1)[1].split("  evidence-phase:", 1)[0]
+    metadata_command = (
+        "PYTHONPATH=scripts python3 -c 'import pathlib; from final_review_runner import "
+        "workflow_configuration; print(*workflow_configuration(pathlib.Path(\"ci/ai-review.toml\")))'"
+    )
+    if metadata_command not in capture_head:
+        raise AssertionError("capture-head must obtain workflow metadata from the tested TOML reader")
     if "Assert every evidence obligation passed" not in evidence:
         raise AssertionError("reviewers are not gated on complete successful evidence")
     if '"failed_tests": []' in evidence:
         raise AssertionError("production evidence must not claim an always-empty failure inventory")
-    phases = ("static", "root-analysis", "root-tests", "bvs-analysis", "bvs-tests")
-    matrix = re.search(r"phase:\s*\[([^]]+)\]", evidence_phase)
-    if matrix is None or tuple(part.strip() for part in matrix.group(1).split(",")) != phases:
-        raise AssertionError("final-review evidence phases are not one fixed isolated matrix")
+    from final_review_runner import FINAL_REVIEW_OBLIGATIONS, FINAL_REVIEW_PHASES
+
+    config = tomllib.loads((REPO_ROOT / "ci/ai-review.toml").read_text(encoding="utf-8"))
+    phases = tuple(config["final_review"]["phases"])
+    if tuple(FINAL_REVIEW_PHASES) != phases:
+        raise AssertionError("configured final-review phases must match the runner inventory")
+    if "matrix: ${{ fromJSON(needs.capture-head.outputs.phase_matrix) }}" not in evidence_phase:
+        raise AssertionError("final-review matrix must derive from the configured phase authority")
+    python_version = config["final_review"]["python_version"]
+    if "python-version: ${{ needs.capture-head.outputs.python_version }}" not in evidence_phase:
+        raise AssertionError(f"final-review Python {python_version} must derive from configuration")
     for required in (
         'include-build-values: "true"',
         'use-default-target: "true"',
         "cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
         'ziglang=="${{ steps.setup.outputs.zig_version }}"',
+        'configured_zig_version="$("$configured_python" -m ziglang version)"',
+        'test "$configured_zig_version" = "${{ steps.setup.outputs.zig_version }}"',
+        'CARGO_ZIGBUILD_PYTHON_PATH=$configured_python',
+        'CARGO_ZIGBUILD_ZIG_PATH=/dev/null',
+        'phase_matrix: ${{ steps.capture.outputs.phase_matrix }}',
+        'python_version: ${{ steps.capture.outputs.python_version }}',
+        'echo "phase_matrix=$phase_matrix"',
+        'echo "python_version=$python_version"',
         "path: final-review-output/${{ matrix.phase }}",
         "actions/download-artifact@",
         "merge-multiple: false",
@@ -103,13 +128,8 @@ def assert_final_review_has_one_fixed_graph() -> None:
         relative = worker.relative_to(REPO_ROOT).as_posix()
         if f"uses: ./{relative}" not in text:
             raise AssertionError(f"final-review does not invoke {relative}")
-    config = tomllib.loads((REPO_ROOT / "ci/ai-review.toml").read_text(encoding="utf-8"))
     per_obligation = config["final_review"]["obligation_timeout_seconds"]
     outer = config["final_review"]["evidence_timeout_minutes"] * 60
-    from final_review_runner import FINAL_REVIEW_OBLIGATIONS
-
-    from final_review_runner import FINAL_REVIEW_PHASES
-
     longest_phase = max(len(obligations) for obligations in FINAL_REVIEW_PHASES.values())
     if per_obligation <= 0 or longest_phase * per_obligation >= outer:
         raise AssertionError("configured obligation timeouts can exhaust an evidence phase before inventory completion")

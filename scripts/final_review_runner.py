@@ -10,6 +10,7 @@ import pathlib
 import signal
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
@@ -75,6 +76,21 @@ FINAL_REVIEW_OBLIGATIONS = tuple(
     for phase_obligations in FINAL_REVIEW_PHASES.values()
     for obligation in phase_obligations
 )
+
+
+def workflow_configuration(config_path: pathlib.Path) -> tuple[object, ...]:
+    with config_path.open("rb") as handle:
+        config = tomllib.load(handle)
+    final_review = config["final_review"]
+    return (
+        config["claude"]["workflow"]["job_timeout_minutes"],
+        config["kimi"]["workflow"]["job_timeout_minutes"],
+        config["glm"]["workflow"]["job_timeout_minutes"],
+        final_review["obligation_timeout_seconds"],
+        final_review["evidence_timeout_minutes"],
+        final_review["python_version"],
+        json.dumps({"phase": final_review["phases"]}, separators=(",", ":")),
+    )
 
 
 def registered_workspace_roots(governance: pathlib.Path, subject: pathlib.Path) -> dict[str, pathlib.Path]:

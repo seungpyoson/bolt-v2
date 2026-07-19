@@ -51,6 +51,27 @@ def assert_no_emits(source: str, *unexpected: str) -> None:
         raise AssertionError(f"unexpected {sorted(present)} in emitted {sorted(emitted)}")
 
 
+def test_deterministic_novelty_projection_is_classified_at_its_toml_boundary() -> None:
+    generated = VERIFIER.Literal(
+        path="src/bolt_v3_evidence_novelty/generated.rs",
+        line=1,
+        kind="number",
+        literal="144",
+        context="State = 144,",
+        call_context="State = 144,",
+    )
+    neighboring_source = VERIFIER.Literal(
+        path="src/bolt_v3_evidence_novelty.rs",
+        line=1,
+        kind="number",
+        literal="144",
+        context="State = 144,",
+        call_context="State = 144,",
+    )
+    assert VERIFIER.is_ignored_by_rule(generated)
+    assert not VERIFIER.is_ignored_by_rule(neighboring_source)
+
+
 def test_scan_universe() -> None:
     scanned = {
         str(path.relative_to(VERIFIER.REPO_ROOT))
@@ -496,6 +517,7 @@ reason = "invalid probe"
 
 def main() -> int:
     tests = [
+        test_deterministic_novelty_projection_is_classified_at_its_toml_boundary,
         test_scan_universe,
         test_main_fails_closed_when_scan_paths_are_empty,
         test_empty_scan_floor_precedes_missing_audit_load,

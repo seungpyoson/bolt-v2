@@ -27,6 +27,15 @@ SCAN_GLOBS = (
     "src/**/*.rs",
 )
 
+# These files are complete deterministic TOML projections with their own
+# source-fence freshness checks. Their literals are classified at the authority
+# boundary instead of duplicating every generated row in this audit.
+GENERATED_TOML_PROJECTIONS = frozenset(
+    {
+        "src/bolt_v3_evidence_novelty/generated.rs",
+    }
+)
+
 DIAGNOSTIC_WORDS = (
     "already",
     "allowed",
@@ -515,6 +524,8 @@ def is_unary_minus_context(text: str, start: int) -> bool:
 
 
 def is_ignored_by_rule(literal: Literal) -> bool:
+    if literal.path in GENERATED_TOML_PROJECTIONS:
+        return True
     context = literal.context
     if any(pattern.search(context) for pattern in IGNORED_CONTEXT_RES):
         return True

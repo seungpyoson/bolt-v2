@@ -20722,70 +20722,6 @@ classification = "strategy_runtime_schema_field"
 reason = "Derived runtime config field populated from the selected root realized-volatility surface policy; the value remains TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "0"
-context = '''BoltV3RvGateResult::Accepted => 0,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the Accepted RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "1"
-context = '''BoltV3RvGateResult::MissingSnapshot => 1,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the MissingSnapshot RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "2"
-context = '''BoltV3RvGateResult::MissingEvaluationEventTime => 2,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the MissingEvaluationEventTime RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "3"
-context = '''BoltV3RvGateResult::RejectedFutureDated => 3,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedFutureDated RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "4"
-context = '''BoltV3RvGateResult::RejectedStale => 4,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedStale RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "5"
-context = '''BoltV3RvGateResult::RejectedNotReady => 5,'''
-classification = "rv_gate_novelty_enum_index"
-reason = "Closed enum index for the RejectedNotReady RV gate category in the bounded twelve-bit evidence novelty mask; it is evidence identity, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "2"
-context = '''let bit_index = gate_index * 2 + watermark_index;'''
-classification = "rv_gate_novelty_dimension_count"
-reason = "Each closed RV gate category has exactly two evidence states, receive-watermark absent or present; this is a bounded schema dimension, not a runtime policy value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/entry_decision.rs"
-kind = "number"
-literal = "1_u16"
-context = '''1_u16 << bit_index'''
-classification = "rv_gate_novelty_bit_identity"
-reason = "One-hot identity used to mark an observed category-and-watermark-presence state in the bounded u16 evidence mask."
-
-[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"trigger_ts_event_ms"'''
@@ -21856,3 +21792,59 @@ literal = '''"0x0000000000000000000000000000000000000000"'''
 context = '''refund_receiver: alloy_primitives::address!("0x0000000000000000000000000000000000000000"),'''
 classification = "generated_polymarket_redemption_toml_projection"
 reason = "Generated projection of the strict Polymarket redemption runtime and source-evidence TOML authorities; the generator drift check prevents this emitted value from becoming an independent runtime authority."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "number"
+literal = "2"
+context = '''pub outcomes: [EvidenceOutcomeIdentity; 2],'''
+classification = "evidence_episode_binary_schema_arity"
+reason = "The typed episode identity has exactly two ordered binary outcomes; this is a schema arity, not a runtime policy value."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "number"
+literal = "2"
+context = '''outcomes: [EvidenceOutcomeIdentity; 2],'''
+classification = "evidence_episode_binary_schema_arity"
+reason = "The private typed identity retains the same two-outcome schema arity as its validated constructor."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "number"
+literal = "0"
+context = '''.or_insert_with(|| vec![0; EVIDENCE_NOVELTY_WORD_COUNT]);'''
+classification = "evidence_novelty_empty_bitmap"
+reason = "A newly observed episode starts with an empty generated-capacity bitmap before its canonical state is claimed."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "string"
+literal = '''"evidence novelty owner mismatch for registered state {}.{}"'''
+context = '''"evidence novelty owner mismatch for registered state {}.{}",'''
+classification = "evidence_novelty_invariant_diagnostic"
+reason = "Diagnostic text for rejecting a canonical state owned by a different registered producer."
+
+[[allowed]]
+path = "src/bolt_v3_evidence_novelty.rs"
+kind = "number"
+literal = "1_u64"
+context = '''let mask = 1_u64 << (registration.id % word_bits);'''
+classification = "evidence_novelty_one_hot_bit"
+reason = "One-hot bit construction for a TOML-registered semantic state; the state id and bitmap capacity remain generated from TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "number"
+literal = "0"
+context = '''index: 0,'''
+classification = "evidence_episode_outcome_ordinal"
+reason = "Closed schema ordinal for the strategy's ordered up outcome identity."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "number"
+literal = "1"
+context = '''index: 1,'''
+classification = "evidence_episode_outcome_ordinal"
+reason = "Closed schema ordinal for the strategy's ordered down outcome identity."

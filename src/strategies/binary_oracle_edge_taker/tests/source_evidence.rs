@@ -3112,8 +3112,10 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
     );
     assert!(
-        strategy.last_recorded_entry_skip.is_some(),
-        "the dedupe key must still be set so the lost write is not retried in a tight loop"
+        strategy
+            .evidence_episode_id()
+            .is_ok_and(|episode| strategy.entry_skip_novelty.seen_state_count(&episode) == 1),
+        "the semantic state must stay claimed so the lost write is not retried in a tight loop"
     );
 }
 
@@ -4526,7 +4528,7 @@ fn rv_clock_domain_amendment_apply_state(
 }
 
 #[test]
-fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
+fn entry_skip_semantic_state_ignores_rv_diagnostic_churn() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = minimal_entry_submission_decision();
@@ -4543,22 +4545,22 @@ fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
                 None,
             )
-            .expect("each unseen RV category/presence bit should record");
+            .expect("entry skip recording should remain non-aborting");
     }
 
     let events = evidence.events();
     let mask = rv_clock_domain_amendment_entry_mask(&events);
     assert_eq!(
         mask.count_ones(),
-        12,
-        "all twelve entry-skip RV bits must emit once"
+        1,
+        "RV diagnostics must not multiply one entry-skip semantic state"
     );
     assert_eq!(
         events
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        12
+        1
     );
 }
 
@@ -4595,10 +4597,12 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
 }
 
 #[test]
-fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
-    const EXPECTED_STATES: [(BoltV3RvGateResult, bool); 6] = [
+fn evidence_episode_a_b_a_preserves_previously_seen_state() {
+    const EXPECTED_ENTRY_STATES: [(BoltV3RvGateResult, bool); 2] = [
         (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
+        (BoltV3RvGateResult::Accepted, true),
+    ];
+    const EXPECTED_BLOCKED_STATES: [(BoltV3RvGateResult, bool); 4] = [
         (BoltV3RvGateResult::Accepted, true),
         (BoltV3RvGateResult::RejectedStale, true),
         (BoltV3RvGateResult::Accepted, true),
@@ -4619,7 +4623,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
     let mut now_ms = 1_200_u64;
-    // A -> B -> A must start a fresh two-bit novelty mask at every key transition.
+    // A -> B emits each semantic state once. Returning to A stays suppressed.
     for category in [
         BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
         BoltV3EntrySkipReasonCategory::NoSideSelected,
@@ -4629,7 +4633,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
             entry_strategy
                 .record_entry_skip_once(now_ms, &entry, category, None)
-                .expect("each previously seen RV bit must emit after an entry-key change");
+                .expect("entry novelty should remain non-aborting");
             now_ms += 1;
         }
     }
@@ -4645,7 +4649,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(entry_states.as_slice(), &EXPECTED_STATES[..]);
+    assert_eq!(entry_states.as_slice(), &EXPECTED_ENTRY_STATES[..]);
 
     let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
@@ -4662,7 +4666,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
             blocked_strategy
                 .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
-                .expect("each previously seen RV bit must emit after a blocked-key change");
+                .expect("blocked novelty should remain finite across episode churn");
             now_ms += 1;
         }
     }
@@ -4679,7 +4683,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(blocked_states.as_slice(), &EXPECTED_STATES[..]);
+    assert_eq!(blocked_states.as_slice(), &EXPECTED_BLOCKED_STATES[..]);
 }
 
 #[test]
@@ -4738,7 +4742,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     let blocked_events = blocked_evidence.events();
     assert_eq!(
         rv_clock_domain_amendment_entry_mask(&entry_events).count_ones(),
-        12
+        1
     );
     assert_eq!(
         rv_clock_domain_amendment_blocked_mask(&blocked_events).count_ones(),
@@ -4749,8 +4753,8 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        12,
-        "100+ repeats and A-B-A oscillations must remain bounded to twelve entry records"
+        1,
+        "diagnostic churn must remain bounded to one entry semantic state"
     );
     assert_eq!(
         blocked_events
@@ -4833,6 +4837,16 @@ impl RvClockDomainBlockedKeyField {
         Self::SourceLastRejectedReason,
         Self::UnknownSourceIds,
     ];
+
+    const fn changes_episode(self) -> bool {
+        matches!(
+            self,
+            Self::ConfiguredTargetAndMarketSelectionRulesetIds
+                | Self::MarketId
+                | Self::UpInstrumentId
+                | Self::DownInstrumentId
+        )
+    }
 
     fn set_changed(
         self,
@@ -5062,10 +5076,11 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         .record_blocked_entry_strategy_input_snapshot_once(1_202, &decision)
         .unwrap();
 
+    let expected_records = if field.changes_episode() { 2 } else { 1 };
     assert_eq!(
         evidence.strategy_input_attempts(),
-        3,
-        "{field:?} must reach the writer for A, B, and restored A"
+        expected_records,
+        "{field:?} must emit only for a new stable episode and canonical state"
     );
     let records = evidence
         .events()
@@ -5077,8 +5092,8 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         .collect::<Vec<_>>();
     assert_eq!(
         records.len(),
-        3,
-        "{field:?} must emit after A-to-B and again after B-to-A"
+        expected_records,
+        "{field:?} must not reset novelty when restored to episode A"
     );
     assert!(records.iter().all(|record| {
         record.realized_volatility_gate_result == Some(BoltV3RvGateResult::RejectedNotReady)
@@ -5091,45 +5106,28 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence);
-    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
-    let mut decision = rv_clock_domain_amendment_blocked_decision();
-    decision.evaluation.realized_volatility_receipt.evidence =
-        strategy.realized_volatility_evidence_fields();
     let baseline = strategy
-        .blocked_entry_strategy_input_evidence_snapshot_at(1_200, &decision)
-        .expect("blocked snapshot should build");
-    let baseline_key = BlockedStrategyInputDedupeKey::from_snapshot(&baseline);
+        .evidence_episode_id()
+        .expect("ready strategy must bind a complete evidence episode");
 
-    // Runtime construction aliases both serialized fields to configured_target_id,
-    // so the writer path cannot vary them independently. These are the only
-    // structural assertions: each changes exactly one serialized field to prove
-    // that dropping either field from the key would still be detected.
-    let mut configured_target_changed = baseline.clone();
-    configured_target_changed
-        .configured_target_id
-        .push_str("-changed");
-    assert_eq!(
-        configured_target_changed.market_selection_ruleset_id,
-        baseline.market_selection_ruleset_id
-    );
+    let original_target = strategy.config.configured_target_id.clone();
+    strategy.config.configured_target_id.push_str("-changed");
     assert_ne!(
-        BlockedStrategyInputDedupeKey::from_snapshot(&configured_target_changed),
-        baseline_key,
-        "configured_target_id must independently remain part of the blocked key"
+        strategy
+            .evidence_episode_id()
+            .expect("changed stable target must remain a valid episode"),
+        baseline,
+        "configured target is stable episode identity"
     );
 
-    let mut ruleset_changed = baseline.clone();
-    ruleset_changed
-        .market_selection_ruleset_id
-        .push_str("-changed");
+    strategy.config.configured_target_id = original_target;
+    strategy.active.market_selection_outcome = MarketSelectionOutcome::Next;
     assert_eq!(
-        ruleset_changed.configured_target_id,
-        baseline.configured_target_id
-    );
-    assert_ne!(
-        BlockedStrategyInputDedupeKey::from_snapshot(&ruleset_changed),
-        baseline_key,
-        "market_selection_ruleset_id must independently remain part of the blocked key"
+        strategy
+            .evidence_episode_id()
+            .expect("transient selection state must not invalidate the episode"),
+        baseline,
+        "selection outcome is transient and must stay outside episode identity"
     );
 }
 
@@ -5229,8 +5227,8 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        17,
-        "each of eight current entry-key fields must emit on change and returning to the prior key must emit again"
+        2,
+        "only the two entry-skip semantic categories may emit; volatile field churn must not reset them"
     );
 
     for field in RvClockDomainBlockedKeyField::ALL {
@@ -5240,7 +5238,7 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
+fn admitted_and_unblocked_transitions_do_not_reset_episode_novelty() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut skip = minimal_entry_submission_decision();
@@ -5280,8 +5278,8 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        2,
-        "the admitted-entry reset site must clear both current key and RV novelty"
+        1,
+        "an admitted entry must not erase a seen episode state"
     );
 
     let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
@@ -5302,8 +5300,8 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::StrategyInput(_)))
             .count(),
-        2,
-        "the left-RV-not-ready reset site must clear both current key and RV novelty"
+        1,
+        "leaving the blocked condition must not erase a seen episode state"
     );
 }
 
@@ -5338,7 +5336,7 @@ fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
+fn blocked_snapshot_writer_failure_stays_claimed() {
     let evidence =
         Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
@@ -5373,8 +5371,8 @@ fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
     strategy.active.market_id = Some("<KEY_B>".to_string());
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_203, &b)
-        .expect("B must retry and emit after its failed atomic write");
-    assert_eq!(evidence.strategy_input_attempts(), 3);
+        .expect("failed B must remain claimed without retrying the writer");
+    assert_eq!(evidence.strategy_input_attempts(), 2);
     let records = evidence
         .events()
         .into_iter()
@@ -5383,27 +5381,16 @@ fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 1);
     assert_eq!(
         records[0].realized_volatility_gate_result,
         Some(BoltV3RvGateResult::Accepted)
     );
     assert_eq!(records[0].realized_volatility_receive_watermark_ms, None);
-    assert_eq!(
-        records[1].realized_volatility_gate_result,
-        Some(BoltV3RvGateResult::RejectedStale)
-    );
-    assert_eq!(
-        records[1]
-            .realized_volatility_receive_watermark_ms
-            .map(LocalReceiveMs::value),
-        Some(1_234),
-        "emitted record must retain the exact raw watermark even though novelty uses presence"
-    );
 }
 
 #[test]
-fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries() {
+fn blocked_snapshot_failed_new_state_does_not_retry() {
     let evidence =
         Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
@@ -5448,8 +5435,8 @@ fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries()
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_203, &decision)
-        .expect("the failed new bit must remain unseen and retry on the same key");
-    assert_eq!(evidence.strategy_input_attempts(), 3);
+        .expect("the failed new state must remain claimed on the same episode");
+    assert_eq!(evidence.strategy_input_attempts(), 2);
 
     let recorded_states = evidence
         .events()
@@ -5466,10 +5453,7 @@ fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries()
         .collect::<Vec<_>>();
     assert_eq!(
         recorded_states,
-        vec![
-            (Some(BoltV3RvGateResult::Accepted), Some(1_200)),
-            (Some(BoltV3RvGateResult::RejectedStale), Some(1_234)),
-        ],
-        "only the committed bit and the successful retry may persist"
+        vec![(Some(BoltV3RvGateResult::Accepted), Some(1_200))],
+        "the failed state must not produce a retry storm"
     );
 }

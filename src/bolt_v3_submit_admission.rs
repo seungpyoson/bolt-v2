@@ -1631,6 +1631,9 @@ impl BoltV3SubmitAdmissionState {
                     counter_rollback,
                 )) = admitted_counter_update
                 else {
+                    if let Some(rollback) = evaluation.rollback.as_ref() {
+                        rollback_capital_admission_reservation(&mut inner, rollback);
+                    }
                     return Err(BoltV3SubmitAdmissionError::InvariantViolation {
                         invariant: BoltV3SubmitAdmissionInvariant::MissingAdmittedCounterUpdate,
                     });
@@ -2050,10 +2053,7 @@ impl BoltV3SubmitAdmissionState {
         } else {
             BoltV3AdmissionOutcome::Admitted
         };
-        let mut rejected_intent = claims
-            .first()
-            .map(|claim| claim.intent_kind)
-            .unwrap_or(BoltV3SubmitIntentKind::Entry);
+        let mut rejected_intent = None;
         let mut rejected_request: Option<BoltV3SubmitAdmissionRequest> = None;
         let mut rejected_evaluation: Option<BoltV3SubmitAdmissionEvaluation> = None;
         let mut rollbacks = Vec::new();
@@ -2070,7 +2070,7 @@ impl BoltV3SubmitAdmissionState {
             };
             outcome = evaluation.outcome.clone();
             if outcome != BoltV3AdmissionOutcome::Admitted {
-                rejected_intent = claim.intent_kind;
+                rejected_intent = Some(claim.intent_kind);
                 rejected_request = Some(request);
                 rejected_evaluation = Some(evaluation);
                 break;
@@ -2083,27 +2083,30 @@ impl BoltV3SubmitAdmissionState {
             }
         }
 
-        let claim_count = match u32::try_from(claims.len()) {
-            Ok(value) => value,
-            Err(_) => {
-                outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                u32::MAX
+        let counter_increments = if outcome == BoltV3AdmissionOutcome::Admitted {
+            match u32::try_from(claims.len()).and_then(|claim_count| {
+                u32::try_from(
+                    claims
+                        .iter()
+                        .filter(|claim| {
+                            claim.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction
+                        })
+                        .count(),
+                )
+                .map(|forced_reduction_count| (claim_count, forced_reduction_count))
+            }) {
+                Ok(increments) => Some(increments),
+                Err(_) => {
+                    outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                    None
+                }
             }
-        };
-        let forced_reduction_count = match claims
-            .iter()
-            .filter(|claim| claim.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction)
-            .count()
-            .try_into()
-        {
-            Ok(value) => value,
-            Err(_) => {
-                outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                u32::MAX
-            }
+        } else {
+            None
         };
 
         if outcome == BoltV3AdmissionOutcome::Admitted
+            && let Some((claim_count, _)) = counter_increments
             && let Some(limits) = inner.live_submit_approval_limits.get(execution_client_id)
         {
             let current_count = inner
@@ -2140,6 +2143,13 @@ impl BoltV3SubmitAdmissionState {
                 rejected_intent,
             ));
         }
+
+        let Some((claim_count, forced_reduction_count)) = counter_increments else {
+            rollback_capital_admission_reservations(&mut inner, &rollbacks);
+            return Err(BoltV3SubmitAdmissionError::InvariantViolation {
+                invariant: BoltV3SubmitAdmissionInvariant::MissingBasketCounterIncrements,
+            });
+        };
 
         let current_client_count = inner
             .admitted_order_count_by_execution_client
@@ -2332,7 +2342,10 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3SubmitIntentKind::ReplaceSubmit => {}
             BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                unreachable!("kill-switch forced reduction is evaluated before normal admission")
+                return Err(BoltV3SubmitAdmissionError::InvariantViolation {
+                    invariant:
+                        BoltV3SubmitAdmissionInvariant::KillSwitchForcedReductionReachedNormalAdmission,
+                });
             }
         }
         if inner.capital_admission.is_some()
@@ -2487,7 +2500,7 @@ fn capital_admission_rejection_error(
 fn submit_admission_error_from_outcome(
     outcome: BoltV3AdmissionOutcome,
     kill_switch_state: KillSwitchStateKind,
-    intent: BoltV3SubmitIntentKind,
+    intent: Option<BoltV3SubmitIntentKind>,
 ) -> BoltV3SubmitAdmissionError {
     match outcome {
         BoltV3AdmissionOutcome::Admitted => BoltV3SubmitAdmissionError::InvariantViolation {
@@ -2498,9 +2511,12 @@ fn submit_admission_error_from_outcome(
                 state: kill_switch_state,
             }
         }
-        BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
-            BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed { intent }
-        }
+        BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => match intent {
+            Some(intent) => BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed { intent },
+            None => BoltV3SubmitAdmissionError::InvariantViolation {
+                invariant: BoltV3SubmitAdmissionInvariant::MissingRejectedIntent,
+            },
+        },
         BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
             BoltV3SubmitAdmissionError::InvariantViolation {
                 invariant: BoltV3SubmitAdmissionInvariant::MissingLossHaltReasons,
@@ -2640,7 +2656,7 @@ impl BoltV3SubmitAdmissionEvaluation {
     }
 
     fn capital_admission_rejected(
-        reason: BoltV3CapitalAdmissionRejectReason,
+        reason: Option<BoltV3CapitalAdmissionRejectReason>,
         admission_now_ns: u64,
     ) -> Self {
         Self {
@@ -2648,7 +2664,7 @@ impl BoltV3SubmitAdmissionEvaluation {
             admission_now_ns,
             loss_halt_reasons: Vec::new(),
             loss_snapshot_diagnostics: None,
-            capital_admission_rejection: Some(reason),
+            capital_admission_rejection: reason,
             rollback: None,
             reservation_metadata: None,
         }
@@ -2993,7 +3009,7 @@ struct BoltV3CapitalAdmissionReservationRollback {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BoltV3CapitalAdmissionSubmitDecision {
     accepted: bool,
-    reason: BoltV3CapitalAdmissionRejectReason,
+    reason: Option<BoltV3CapitalAdmissionRejectReason>,
     rollback: Option<BoltV3CapitalAdmissionReservationRollback>,
     reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
 }
@@ -3479,7 +3495,6 @@ fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3CapitalAdmissionRejectReason {
-    Rejected,
     MissingAdmissionEvidence,
     VenueMismatch,
     AccountMismatch,
@@ -3504,9 +3519,12 @@ pub enum BoltV3CapitalAdmissionRejectReason {
 pub enum BoltV3SubmitAdmissionInvariant {
     ExpectedRejectedOutcome,
     MissingAdmittedCounterUpdate,
+    MissingBasketCounterIncrements,
     MissingCapitalAdmissionRejectionReason,
     MissingLossHaltReasons,
+    MissingRejectedIntent,
     MissingStaleLossReason,
+    KillSwitchForcedReductionReachedNormalAdmission,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -3841,7 +3859,7 @@ fn evaluate_capital_admission_submit(
     );
     BoltV3CapitalAdmissionSubmitDecision {
         accepted: true,
-        reason: BoltV3CapitalAdmissionRejectReason::Rejected,
+        reason: None,
         rollback: Some(BoltV3CapitalAdmissionReservationRollback {
             client_order_id: request.client_order_id.clone(),
             submit_reservation_id,
@@ -4056,7 +4074,7 @@ fn compose_capital_admission_state_from_components(
 fn accepted_without_reservation() -> BoltV3CapitalAdmissionSubmitDecision {
     BoltV3CapitalAdmissionSubmitDecision {
         accepted: true,
-        reason: BoltV3CapitalAdmissionRejectReason::Rejected,
+        reason: None,
         rollback: None,
         reservation_metadata: None,
     }
@@ -4067,7 +4085,7 @@ fn rejected_capital_admission(
 ) -> BoltV3CapitalAdmissionSubmitDecision {
     BoltV3CapitalAdmissionSubmitDecision {
         accepted: false,
-        reason,
+        reason: Some(reason),
         rollback: None,
         reservation_metadata: None,
     }
@@ -4696,6 +4714,15 @@ mod fail_closed_invariant_tests {
     }
 
     #[test]
+    fn capital_admission_decisions_do_not_fabricate_rejection_context() {
+        assert_eq!(accepted_without_reservation().reason, None);
+        assert_eq!(
+            rejected_capital_admission(BoltV3CapitalAdmissionRejectReason::OverBudget).reason,
+            Some(BoltV3CapitalAdmissionRejectReason::OverBudget)
+        );
+    }
+
+    #[test]
     fn outcome_only_error_mapping_never_fabricates_missing_context() {
         for (outcome, invariant) in [
             (
@@ -4715,11 +4742,25 @@ mod fail_closed_invariant_tests {
                 submit_admission_error_from_outcome(
                     outcome,
                     KillSwitchStateKind::Armed,
-                    BoltV3SubmitIntentKind::Entry,
+                    Some(BoltV3SubmitIntentKind::Entry),
                 ),
                 BoltV3SubmitAdmissionError::InvariantViolation { invariant }
             );
         }
+    }
+
+    #[test]
+    fn outcome_only_lifecycle_error_requires_the_rejected_intent() {
+        assert_eq!(
+            submit_admission_error_from_outcome(
+                BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
+                KillSwitchStateKind::Armed,
+                None,
+            ),
+            BoltV3SubmitAdmissionError::InvariantViolation {
+                invariant: BoltV3SubmitAdmissionInvariant::MissingRejectedIntent,
+            }
+        );
     }
 
     #[test]
@@ -4776,7 +4817,11 @@ mod fail_closed_invariant_tests {
     #[test]
     fn rejected_fallback_patterns_stay_retired() {
         let source = include_str!("bolt_v3_submit_admission.rs");
-        assert!(!source.contains(".unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected)"));
+        assert!(!source.contains(".unwrap_or(BoltV3CapitalAdmissionRejectReason::"));
         assert!(!source.contains(".unwrap_or(BoltV3StaleLossReason::MissingSnapshot)"));
+        assert!(!source.contains(".unwrap_or(BoltV3SubmitIntentKind::Entry)"));
+        assert!(!source.contains(
+            "unreachable!(\"kill-switch forced reduction is evaluated before normal admission\")"
+        ));
     }
 }

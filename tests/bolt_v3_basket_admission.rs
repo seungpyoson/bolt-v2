@@ -563,7 +563,7 @@ fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape(
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
     seed_capital_admission_for_claims(&submit_gate, &claims);
-    claims[0]
+    claims[1]
         .admission_evidence
         .as_mut()
         .expect("fixture should carry capital admission")
@@ -575,7 +575,7 @@ fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape(
             &claims,
             &basket_slot_evidence("shape-mismatch", &group),
         )
-        .expect_err("capital admission evidence must bind to submitted order shape");
+        .expect_err("a later basket leg must reject mismatched capital evidence");
 
     assert_eq!(
         rejected,
@@ -591,7 +591,7 @@ fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape(
     for claim in &claims {
         assert!(
             !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
-            "rejected basket leg {} must not retain a reservation",
+            "a later-leg rejection must release basket reservation {}",
             claim.client_order_id
         );
     }

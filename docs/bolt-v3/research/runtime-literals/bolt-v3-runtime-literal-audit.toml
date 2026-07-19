@@ -6989,14 +6989,6 @@ classification = "diagnostic_template"
 reason = "Error-display template for the kill-switch-latched admission rejection; it carries no operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "string"
-literal = '''"kill-switch forced reduction is evaluated before normal admission"'''
-context = '''unreachable!("kill-switch forced reduction is evaluated before normal admission")'''
-classification = "diagnostic_template"
-reason = "Internal invariant diagnostic for a typed submit-admission branch that is evaluated before the normal admission path; it carries no operator runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
 literal = '''"rest_base_url"'''

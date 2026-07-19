@@ -284,6 +284,9 @@ impl std::ops::DerefMut for CommittedRunSpecFixture {
 
 fn committed_run_spec_for(gz_bytes: &[u8]) -> CommittedRunSpecFixture {
     let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+    spec.manifest.resolved_nt_version =
+        crate::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+            .expect("BVS NautilusTrader dependency provenance");
     let source_bindings_dir = Arc::new(tempfile::tempdir().expect("source-bindings fixture dir"));
     let source_bindings_path = source_bindings_dir.path().join("source-bindings.toml");
     fs::write(&source_bindings_path, COMMITTED_SOURCE_BINDINGS)

@@ -3612,6 +3612,9 @@ fn write_n_record_pack(
         let accepted_tranche_id = format!("accepted-tranche-synthetic-{sequence}");
 
         let mut run_spec = committed.run_spec.clone();
+        run_spec.manifest.resolved_nt_version =
+            backtesting_vertical_slice::nt_dependency_proof::verified_nt_revision_from_embedded_manifests()
+                .expect("BVS NautilusTrader dependency provenance");
         run_spec.source_bindings_path = PathBuf::from("source-bindings.toml");
         run_spec.manifest.run_id.clone_from(&operator_run_id);
         run_spec.manifest.output_prefix = format!(
@@ -3703,16 +3706,19 @@ fn write_n_record_pack(
             .strip_prefix(pack_dir)
             .expect("run spec is pack-relative")
             .to_path_buf();
+        record.run_spec_bytes = run_spec_bytes.len() as u64;
         record.run_spec_sha256 = sha256_hex(&run_spec_bytes);
         record.accepted_tranche_path = accepted_tranche_path
             .strip_prefix(pack_dir)
             .expect("accepted tranche is pack-relative")
             .to_path_buf();
+        record.accepted_tranche_bytes = accepted_tranche_bytes.len() as u64;
         record.accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
         record.execution_plan_path = record_execution_plan_path
             .strip_prefix(pack_dir)
             .expect("execution plan is pack-relative")
             .to_path_buf();
+        record.execution_plan_bytes = execution_plan_bytes.len() as u64;
         record.execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
         records.push(record);
     }

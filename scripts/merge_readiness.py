@@ -656,7 +656,7 @@ def comment_body_for_status(
         state=status.state,
     )
     if status.state == "passed":
-        headline = "✅ all required checks passed — safe to merge"
+        headline = "✅ advisory CI evidence recorded"
     elif status.state == "failed":
         headline = "❌ failed: " + ", ".join(status.failed)
     elif status.state == "stalled":

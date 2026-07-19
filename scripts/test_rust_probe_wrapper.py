@@ -583,7 +583,7 @@ def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> No
             raise AssertionError(output)
         if "just rust-probe nextest-test-target-name platform_config config_parsing::" not in output:
             raise AssertionError(output)
-        if "Rust Probe is not merge proof" not in output:
+        if "neither is merge authority" not in output:
             raise AssertionError(output)
         if "base ref: origin/main" not in output or "fetched and current" not in output:
             raise AssertionError(output)
@@ -936,7 +936,7 @@ def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
         raise AssertionError((result, stdout.getvalue(), stderr.getvalue()))
     if calls != [(UPSTREAM_BRANCH, HEAD, "check-lib", "", "", "heavy", 60, "probe-123")]:
         raise AssertionError(calls)
-    if "NOT MERGE PROOF" not in stdout.getvalue():
+    if "neither is merge authority" not in stdout.getvalue():
         raise AssertionError(stdout.getvalue())
 
 

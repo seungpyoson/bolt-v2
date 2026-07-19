@@ -5573,7 +5573,7 @@ def assert_backtester_ci_uses_iteration_for_feedback_paths() -> None:
         "--job test-archive=${{ needs.test-archive.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
     )
     issue_gate_errors = verifier.verify_repo_automation_texts({workflow_name: issue_gate_workflow})
-    if not any("backtester diagnostic issue-789 lane must not gate merge proof" in error for error in issue_gate_errors):
+    if not any("backtester diagnostic issue-789 lane must remain advisory" in error for error in issue_gate_errors):
         raise AssertionError(
             f"backtester-ci workflow must reject issue-789 as a merge-gating lane, got: {issue_gate_errors}"
         )
@@ -6417,14 +6417,12 @@ def assert_relocated_symbols_keep_legacy_exports() -> None:
                     missing.append(f"{path.name}:{name}")
     import merge_queue_preflight as preflight
     for name in (
-        "MERGIFY_REQUIRED_MERGE_CONDITIONS",
         "MERGIFY_REQUIRED_QUEUE_RULES",
         "MERGIFY_REQUIRED_PRIORITY_RULES",
         "MERGIFY_TOP_LEVEL_KEYS",
         "MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS",
         "MERGIFY_MERGE_QUEUE_KEYS",
         "MERGIFY_QUEUE_RULE_KEYS",
-        "MERGIFY_DYNAMIC_BATCH_KEYS",
         "MERGIFY_PRIORITY_RULE_KEYS",
         "MERGIFY_YAML_PARSER_RUBY",
         "parse_mergify_yaml",

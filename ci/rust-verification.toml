@@ -52,15 +52,6 @@ remote = "origin"
 [merge_queue_preflight]
 origin = "origin"
 base = "main"
-default_verifier_profile = "static"
-source_fence_full_profile_pathspecs = [
-  "scripts",
-  "justfile",
-  "ci/rust-verification.toml",
-  "ci/fail-closed-contracts.toml",
-  "ci/fail-closed-exceptions.toml",
-  "crates/backtesting-vertical-slice/ci/rust-verification.toml",
-]
 
 [merge_queue_preflight.operator]
 repository = "github.com/seungpyoson/bolt-v2"
@@ -70,31 +61,6 @@ queue_timeout_seconds = 300
 
 [merge_queue_preflight.timeouts]
 input_seconds = 300
-verifier_seconds = 600
-
-[merge_queue_preflight.required_check_workflows]
-"gate" = "CI"
-"backtester-gate" = "Backtester CI"
-"actionlint" = "actionlint"
-"host-health" = "CI"
-
-[merge_queue_preflight.source_check_aliases]
-
-[merge_queue_preflight.source_fence_fences_only_rewrites]
-"just source-fence-static" = "just source-fence-static-fences-only"
-
-[merge_queue_preflight.output]
-verifier_stream_max_lines = 40
-verifier_stream_max_bytes = 4000
-
-[merge_queue_preflight.verifier_profiles.none]
-commands = []
-
-[merge_queue_preflight.verifier_profiles.static]
-commands = ["just source-fence-static"]
-
-[merge_queue_preflight.verifier_profiles.local]
-commands = ["just fmt-check", "just source-fence-static", "just ci-lint-workflow"]
 
 [remote_verification]
 poll_interval_seconds = 15

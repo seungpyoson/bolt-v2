@@ -1,18 +1,17 @@
 <!--
 Sync Impact Report
-Version change: 2.0.1 -> 2.1.0
-Modified principles: III. Single Path And Config-Controlled Runtime adds the one immutable install/launch path;
-IV. Evidence-Driven Verification Gates separates CI evidence from merge authority and names the in-process permit boundary;
-V. Evidence Before Claims makes exact-head CI review gating conditional on the governed cutover state
-Additional Constraints: live proof boundary clarified for exact installed bytes and fresh in-process readiness
-Added sections: v2.1.0 migration note
+Version change: 2.1.0 -> 2.1.1
+Modified principles: IV. Evidence-Driven Verification Gates removes staged CI and queue authority from the approved combined cutover;
+V. Evidence Before Claims keeps exact-head evidence risk-based without granting CI merge authority
+Additional Constraints: unchanged
+Added sections: v2.1.1 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/spec-template.md - no update needed;
 .specify/templates/tasks-template.md - no update needed;
 .specify/templates/constitution-template.md - no update needed;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md documents the repository-only JULES_API_KEY advisory carve-out
+Runtime guidance updated: AGENTS.md removes staged CI authority and states the final admission contract
 Follow-up items: none
 -->
 
@@ -45,7 +44,7 @@ often useful, but it is not mandatory unless the user, active spec, or risk
 analysis explicitly requires it. Every change MUST have current evidence before
 readiness is claimed. Detailed agent workflow belongs in `AGENTS.md`.
 
-The approved merge-governance end state has zero required CI statuses. CI is visible evidence, not merge authority; native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory. The repository accepts temporarily red or broken `main` as repository risk, never as deploy or trading permission. Until the governed zero-status cutover is complete, current required statuses, Mergify predicates, queue preflight, and exact-head review gates remain authoritative.
+The approved merge-governance state has zero required CI statuses. CI is visible evidence, not merge authority; native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory. The repository accepts temporarily red or broken `main` as repository risk, never as deploy or trading permission. Repository admission is limited to identity, pull-request state and mergeability, required-reviewer approval, Mergify routing, and single-PR queue mechanics.
 
 Live trading stays fail-closed. No live submit may occur unless production entrypoint, live canary gate, submit admission, mandatory decision evidence, no-submit readiness evidence, configured caps, and explicit operator approval all pass on the exact head being run. The exact installed executable must also validate its selected manifest and config bundle and complete its finite in-process pre-arm phase. Only complete success may construct the opaque, non-serializable, non-cloneable, one-use Rust `LiveReadinessPermit` consumed by the sole Start entrypoint. Installation, advisory CI, prior results, caches, tags, same-SHA evidence, and persisted receipts cannot authorize Start. Every start or restart requires a fresh permit.
 
@@ -56,7 +55,7 @@ exact SHAs, exact PR/check state, or live run artifacts. Passing tests, static
 checks, reviews, or local mocks are not readiness evidence unless the checked
 behavior covers the stated requirement.
 
-External review is requested only after the branch is clean, pushed, and all local findings are resolved. Before the governed zero-status cutover, exact-head required CI must also be green. After cutover, applicable exact-head evidence remains required for claims, but advisory CI cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
+External review is requested only after the branch is clean, pushed, and all local findings are resolved. Applicable exact-head evidence remains required for claims, but advisory CI cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
 
 ### VI. Minimal Slice Discipline
 
@@ -91,7 +90,7 @@ External data providers are allowed when they avoid rebuilding commodity data in
 2. Contract: update this constitution or feature contracts before runtime code when the boundary changes.
 3. Plan: decompose into independently reviewable slices with a named verification approach.
 4. Implementation: collect current evidence before claiming completion.
-5. Review: no external review request until the local branch is clean, pushed, and known findings are resolved; before the governed zero-status cutover, required exact-head checks must also be green.
+5. Review: no external review request until the local branch is clean, pushed, known findings are resolved, and applicable exact-head evidence supports the changed claims.
 6. Merge: no merge without explicit user approval.
 
 ## Governance
@@ -102,13 +101,17 @@ this artifact requires redesign, not waiver-by-documentation. Amendments require
 an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
 
-Migration note for v2.1.0: the approved lean-CI architecture selects zero
+Migration note for v2.1.1: the combined #1398, #1399, and #1400 cutover removes
+staged CI, Mergify-predicate, and queue-preflight merge authority. No active
+feature spec or plan requires migration; this amendment aligns project principles
+with the single approved cutover path.
+
+Migration note for v2.1.0: the approved lean-CI architecture selected zero
 required CI statuses, native human merge authority, one informational exact-
 binary lane, and one manifest-bound immutable `ops launch` path whose fresh
 in-process permit alone can cross Start. The historical trusted-App/precursor
-control-plane design is superseded. Existing required statuses and queue gates
-remain authoritative until the governed cutover; this amendment alone changes
-no workflow, ruleset, Mergify, deploy, launch, or trading state.
+control-plane design was superseded. That amendment alone changed no workflow,
+ruleset, Mergify, deploy, launch, or trading state.
 
 Migration note for v2.0.1: Jules advisory workflow planning may use `JULES_API_KEY`
 only as a GitHub Actions code-maintenance automation token. This amendment does
@@ -132,4 +135,4 @@ and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch
 SpecKit checks and exact-head verification.
 
-**Version**: 2.1.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-15
+**Version**: 2.1.1 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-17

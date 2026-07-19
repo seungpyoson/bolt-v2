@@ -24,6 +24,11 @@ serde_json = "1"
         ),
     )
     .expect("temporary manifest must write");
+    fs::copy(
+        std::path::Path::new(manifest_dir).join("Cargo.lock"),
+        temporary.path().join("Cargo.lock"),
+    )
+    .expect("repository lockfile must seed temporary compile-fail crate");
     fs::write(temporary.path().join("src/main.rs"), source).expect("temporary source must write");
 
     Command::new("cargo")

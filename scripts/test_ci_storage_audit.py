@@ -876,18 +876,6 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(policy.default_class, "ambiguous")
         self.assertEqual(policy.default_decision, "KEEP")
         self.assertEqual(policy.default_keep_reason, "ambiguous artifact is not a cleanup candidate")
-        self.assertEqual(rules["deploy_binary"].name_equals, ("bolt-v2-binary",))
-        self.assertIsNone(rules["deploy_binary"].candidate_reason)
-        self.assertEqual(rules["ci_provenance"].name_prefixes, ("ci-provenance-attempt-",))
-        self.assertIsNone(rules["ci_provenance"].candidate_reason)
-        self.assertEqual(rules["backtester_payload"].name_equals, ("bvs-test-payload",))
-        self.assertEqual(rules["backtester_payload"].name_prefixes, ("issue-789-first-pl-",))
-        self.assertEqual(
-            rules["backtester_payload"].candidate_reason,
-            "expired backtester test payload outside protected refs",
-        )
-        self.assertEqual(rules["nextest_fingerprint"].name_prefixes, ("nextest-archive-fingerprint-",))
-        self.assertIsNone(rules["nextest_fingerprint"].candidate_reason)
         self.assertEqual(rules["sarif_code_scanning"].name_prefixes, ("sarif-artifact-",))
         self.assertIsNone(rules["sarif_code_scanning"].candidate_reason)
         self.assertIn("cargo-timings-", rules["debug_evidence"].name_prefixes)

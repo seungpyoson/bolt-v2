@@ -4,10 +4,8 @@
 # `agent:` omitted — inherits each developer's global ~/.no-mistakes/config.yaml.
 
 commands:
-  # Broad Rust compile/test/clippy proof is exact-head PR CI on Ubicloud.
-  test: "just source-fence-static"
-  # Non-compile local lint signal; clippy is remote-only by default.
-  lint: "just fmt-check"
-  # rustfmt --check returns non-zero exit if any file needs formatting.
-  # AI auto-fixes will be normalized via cargo fmt before commit.
-  format: "python3 scripts/rust_verification.py cargo --repo . -- fmt --check"
+  # The repository exposes one complete local evidence path across every workspace.
+  test: "just preflight"
+  lint: "just preflight"
+  # Formatting mutation is likewise repository-wide.
+  format: "just fmt"

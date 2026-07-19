@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import rust_verification
-from test_fixtures import rust_verification_policy_text, write_executable, write_policy
+from rust_verification_test_fixtures import rust_verification_policy_text, write_executable, write_policy
 from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 ROOT = Path(__file__).resolve().parents[1]

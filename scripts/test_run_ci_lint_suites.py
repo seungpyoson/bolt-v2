@@ -266,38 +266,36 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
 
     commands = {" ".join(suite.command) for suite in runner.CI_LINT_SUITES}
     expected = {
-        "python3 scripts/test_verify_ci_workflow_hygiene.py",
+        "python3 scripts/test_unified_verification_deletion_fence.py",
+        "python3 scripts/test_final_review_workflow.py",
+        "python3 scripts/test_final_review_evidence.py",
+        "python3 scripts/test_final_review_runner.py",
+        "python3 scripts/test_direct_ai_review.py",
+        "python3 scripts/test_workspace_registry.py",
+        "python3 scripts/test_workspace_advisories.py",
+        "python3 scripts/test_repo_preflight.py",
+        "python3 scripts/test_repo_format.py",
         "python3 scripts/test_cargo_command_analysis.py",
-        "python3 scripts/test_shell_dataflow_analysis.py",
-        "python3 scripts/test_governance_diff_analysis.py",
-        "python3 scripts/test_workflow_expression_analysis.py",
+        "python3 -m pytest scripts/test_cargo_shim.py -q",
         "python3 scripts/test_ci_test_manifest.py",
-        "python3 scripts/test_cancel_obsolete_dispatch_runs.py",
         "python3 scripts/test_config_validators.py",
         "python3 scripts/test_run_rust_probe.py",
         "python3 scripts/test_rust_probe_wrapper.py",
-        "python3 scripts/test_ci_provenance.py",
-        "python3 scripts/test_ci_input_sets.py",
         "python3 scripts/test_rust_test_targets.py",
-        "python3 scripts/test_merge_readiness.py",
-        "python3 scripts/test_merge_queue_preflight.py",
         "python3 scripts/test_merge_queue_operator.py",
-        "python3 scripts/test_coverage_enforcer.py",
-        "python3 scripts/test_nextest_fingerprint.py",
+        "python3 scripts/test_merge_queue_preflight.py",
         "python3 scripts/test_root_bin_sidecars.py",
         "python3 scripts/test_ci_storage_audit.py",
         "python3 scripts/test_ci_storage_tripwire.py",
-        "python3 scripts/test_find_same_sha_main_evidence.py",
         "python3 scripts/test_ubicloud_runner_minutes.py",
-        "python3 scripts/test_verify_ci_path_filters.py",
         "python3 scripts/test_rust_verification.py",
         "python3 scripts/test_sandbox_safe_push.py",
-        "python3 scripts/test_verify_remote.py",
         "python3 scripts/test_command_understanding.py",
         "python3 scripts/test_rust_verification_decoupling.py",
         "python3 scripts/test_rust_verification_cache_retention.py",
         "python3 scripts/test_sccache_eligibility.py",
-        "python3 scripts/verify_ci_path_filters.py",
+        "python3 scripts/test_clean_merged_artifacts.py",
+        "python3 scripts/test_developer_tool_storage_hygiene.py",
         "python3 scripts/verify_ci_workflow_hygiene.py",
         "python3 scripts/test_run_ci_lint_suites.py",
     }
@@ -305,6 +303,51 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
     extra = sorted(commands - expected)
     if missing or extra:
         raise AssertionError(f"missing={missing!r} extra={extra!r}")
+
+
+def test_every_test_module_is_claimed_by_one_execution_surface() -> None:
+    runner = load_runner_module()
+    discovered = runner.discover_governed_test_files(REPO_ROOT)
+    if "test_host_health_viewer.mjs" not in discovered:
+        raise AssertionError("governed JavaScript tests are outside the ownership census")
+    runner.validate_test_suite_coverage(REPO_ROOT)
+
+
+def test_duplicate_test_ownership_is_rejected_for_every_surface_pair() -> None:
+    runner = load_runner_module()
+    surface_names = ("ci-lint", "paired-fence", "standalone-fence", "final-review")
+    for suffix in (".py", ".mjs"):
+        filename = f"test_duplicate{suffix}"
+        for left_index, left in enumerate(surface_names):
+            for right in surface_names[left_index + 1 :]:
+                ownership = {name: set() for name in surface_names}
+                ownership[left].add(filename)
+                ownership[right].add(filename)
+                try:
+                    runner.validate_exact_test_ownership({filename}, ownership)
+                except ValueError as exc:
+                    if filename not in str(exc) or left not in str(exc) or right not in str(exc):
+                        raise AssertionError((filename, left, right, exc)) from exc
+                else:
+                    raise AssertionError(f"duplicate ownership accepted for {filename}: {left}, {right}")
+
+
+def test_duplicate_ci_lint_suite_claims_are_rejected() -> None:
+    runner = load_runner_module()
+    original = runner.CI_LINT_SUITES
+    duplicate = runner.CiLintSuite("duplicate-direct-ai-review", ("python3", "scripts/test_direct_ai_review.py"))
+    try:
+        runner.CI_LINT_SUITES = (*original, duplicate)
+        try:
+            runner.validate_test_suite_coverage(REPO_ROOT)
+        except ValueError as exc:
+            message = str(exc)
+            if "test_direct_ai_review.py" not in message or "ci-lint:direct-ai-review" not in message or "ci-lint:duplicate-direct-ai-review" not in message:
+                raise AssertionError(message) from exc
+        else:
+            raise AssertionError("two CI-lint suites claimed the same governed test")
+    finally:
+        runner.CI_LINT_SUITES = original
 
 
 def main() -> int:
@@ -318,6 +361,9 @@ def main() -> int:
         test_runner_future_crashes_are_attributed_and_do_not_abort_battery,
         test_runner_rejects_unbounded_worker_count_for_default_workflow,
         test_default_suite_table_covers_the_ci_lint_contract,
+        test_every_test_module_is_claimed_by_one_execution_surface,
+        test_duplicate_test_ownership_is_rejected_for_every_surface_pair,
+        test_duplicate_ci_lint_suite_claims_are_rejected,
     )
     failed = 0
     for test in tests:

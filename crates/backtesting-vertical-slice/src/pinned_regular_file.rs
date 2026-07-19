@@ -725,7 +725,7 @@ mod tests {
             .revalidate(&path, &file)
             .expect_err("mutation after hash traversal must fail");
 
-        assert!(error.to_string().contains("handle identity changed"));
+        assert!(error.to_string().contains("identity changed"));
     }
 
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]

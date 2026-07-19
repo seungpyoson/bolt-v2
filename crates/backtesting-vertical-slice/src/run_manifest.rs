@@ -6920,7 +6920,7 @@ mod tests {
     }
 
     #[test]
-    fn l2_replay_manifest_maps_configured_catalog_inputs_into_multiple_nt_data_configs() {
+    fn l2_replay_manifest_rejects_multiple_catalog_inputs_for_pinned_nt_streaming() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L2_MBP".to_string();
@@ -6932,18 +6932,17 @@ mod tests {
         let mut accepted = accepted_dataset();
         accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
 
-        parsed
-            .validate(&accepted)
-            .expect("L2Replay source proof should allow mixed OrderBookDelta and TradeTick inputs");
-        let run = parsed.to_nt_run_config().expect("run config");
-
-        assert_eq!(run.data().len(), 2);
-        assert_eq!(run.data()[0].data_type(), NautilusDataType::OrderBookDelta);
-        assert_eq!(run.data()[1].data_type(), NautilusDataType::TradeTick);
+        assert_eq!(
+            parsed.validate(&accepted).unwrap_err(),
+            ManifestError::InvalidNtConfig {
+                field: "catalog_inputs",
+                message: "pinned NautilusTrader streaming materializes all data for 2 inputs; exactly one catalog input is required".to_string(),
+            }
+        );
     }
 
     #[test]
-    fn l2_replay_manifest_maps_nt_status_and_close_catalog_inputs_as_auxiliary_streams() {
+    fn l2_replay_manifest_rejects_auxiliary_catalog_inputs_for_pinned_nt_streaming() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L2_MBP".to_string();
@@ -6956,22 +6955,17 @@ mod tests {
         let mut accepted = accepted_dataset();
         accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
 
-        manifest
-            .validate(&accepted)
-            .expect("L2Replay should allow NT status and close auxiliary streams");
-        let run = manifest.to_nt_run_config().expect("run config");
-
-        assert_eq!(run.data().len(), 3);
-        assert_eq!(run.data()[0].data_type(), NautilusDataType::OrderBookDelta);
         assert_eq!(
-            run.data()[1].data_type(),
-            NautilusDataType::InstrumentStatus
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::InvalidNtConfig {
+                field: "catalog_inputs",
+                message: "pinned NautilusTrader streaming materializes all data for 3 inputs; exactly one catalog input is required".to_string(),
+            }
         );
-        assert_eq!(run.data()[2].data_type(), NautilusDataType::InstrumentClose);
     }
 
     #[test]
-    fn trade_replay_manifest_maps_nt_status_and_close_catalog_inputs_as_auxiliary_streams() {
+    fn trade_replay_manifest_rejects_auxiliary_catalog_inputs_for_pinned_nt_streaming() {
         let mut manifest = valid_manifest();
         let mut status_input = manifest.catalog_inputs[0].clone();
         status_input.data_type = "InstrumentStatus".to_string();
@@ -6980,18 +6974,13 @@ mod tests {
         manifest.catalog_inputs.push(status_input);
         manifest.catalog_inputs.push(close_input);
 
-        manifest
-            .validate(&accepted_dataset())
-            .expect("TradeReplay should allow NT status and close auxiliary streams");
-        let run = manifest.to_nt_run_config().expect("run config");
-
-        assert_eq!(run.data().len(), 3);
-        assert_eq!(run.data()[0].data_type(), NautilusDataType::TradeTick);
         assert_eq!(
-            run.data()[1].data_type(),
-            NautilusDataType::InstrumentStatus
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidNtConfig {
+                field: "catalog_inputs",
+                message: "pinned NautilusTrader streaming materializes all data for 3 inputs; exactly one catalog input is required".to_string(),
+            }
         );
-        assert_eq!(run.data()[2].data_type(), NautilusDataType::InstrumentClose);
     }
 
     #[test]
@@ -7004,9 +6993,9 @@ mod tests {
 
         assert_eq!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
-            ManifestError::DataTypeFidelityMismatch {
-                data_type: "InstrumentStatus".to_string(),
-                fidelity_class: SourceProofFidelityClass::TradeReplay,
+            ManifestError::InvalidNtConfig {
+                field: "catalog_inputs",
+                message: "pinned NautilusTrader streaming materializes all data for 2 inputs; exactly one catalog input is required".to_string(),
             }
         );
     }

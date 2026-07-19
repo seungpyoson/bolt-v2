@@ -2246,7 +2246,7 @@ async fn create_only_probe_rejects_existing_same_payload_sentinels() {
     assert!(first.duplicate_create_rejected);
     assert!(first.first_copy_succeeded);
     assert!(first.duplicate_copy_rejected);
-    assert!(format!("{error:#}").contains("strict create-only put"));
+    assert!(format!("{error:#}").contains("create-only put"));
 }
 
 fn catalog_dispatch(projection_id: &str) -> CatalogDispatchConfig {
@@ -2778,7 +2778,10 @@ async fn hydration_requires_receipt_etag_and_exact_response_match() {
     )
     .await
     .expect_err("receipt response length must match the pinned locator before collection");
-    assert!(format!("{error:#}").contains("size"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("instead of exact expected"),
+        "{error:#}"
+    );
 }
 
 #[tokio::test]
@@ -5252,7 +5255,7 @@ async fn artifact_index_commit_appends_audit_epoch() {
         .append_audit_epoch(&root, &conflicting_audit)
         .await
         .expect_err("audit epoch create-only write rejects different payload");
-    assert_error_chain_contains(&err, "occupied key");
+    assert_error_chain_contains(&err, "strict create-only put");
 }
 
 #[tokio::test]

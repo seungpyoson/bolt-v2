@@ -2215,11 +2215,12 @@ impl BacktestingRunManifest {
                 return Err(ManifestError::MissingField("economics_snapshots"));
             }
             for (index, snapshot) in self.economics_snapshots.iter().enumerate() {
-                crate::economics::ReplayEconomicsAdapter::from_snapshot(snapshot.clone())
-                    .map_err(|error| ManifestError::InvalidEconomicsSnapshot {
+                crate::economics::ReplayEconomicsAdapter::from_snapshot(snapshot.clone()).map_err(
+                    |error| ManifestError::InvalidEconomicsSnapshot {
                         index,
                         message: format!("{error:?}"),
-                    })?;
+                    },
+                )?;
             }
         }
         validate_starting_balances(&self.venue.starting_balances)?;

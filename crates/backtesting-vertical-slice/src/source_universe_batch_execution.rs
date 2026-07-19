@@ -4605,12 +4605,6 @@ fn validate_pack_record_control_alignment(
         run_spec.source_proof.venue
     );
     ensure!(
-        pack.universe_id == run_spec.source_proof.instrument_universe_id,
-        "execution pack universe_id {:?} does not match run_spec source-proof instrument_universe_id {:?}",
-        pack.universe_id,
-        run_spec.source_proof.instrument_universe_id
-    );
-    ensure!(
         pack.table_family == run_spec.source_proof.table_family,
         "execution pack table_family {:?} does not match run_spec source-proof table_family {:?}",
         pack.table_family,

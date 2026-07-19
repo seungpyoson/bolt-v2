@@ -2196,8 +2196,13 @@ mod tests {
             .and_then(|source| source.split('}').next())
             .expect("private batch clock factory trait");
         assert!(clock_trait.contains("create_clock"));
+        let clock_parameters = clock_trait
+            .split("fn create_clock(")
+            .nth(1)
+            .and_then(|source| source.split(')').next())
+            .expect("private batch clock factory parameters");
         assert!(
-            !clock_trait.contains("OperatorWorkBudgetGuard") && !clock_trait.contains("budget:"),
+            !clock_trait.contains("OperatorWorkBudgetGuard") && clock_parameters.trim() == "&self",
             "clock injection may supply time only, never a caller-selected budget or guard"
         );
         assert_eq!(
@@ -2369,7 +2374,7 @@ mod tests {
             OperatorWorkBudget::Backfill(budget(100, 1, 1)),
             Arc::new(ExpiringObservationClock {
                 observations: AtomicU64::new(0),
-                expires_at: 5,
+                expires_at: 3,
             }),
         )
         .expect("construct bounded guard");

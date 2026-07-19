@@ -2117,22 +2117,34 @@ fn verify_completed_operator_output_against_seal(
     ensure!(
         contract.run_id == spec.manifest.run_id
             && contract.manifest_hash == spec.manifest.manifest_hash()
-            && contract.source_proof_id == accepted.source_proof_id
+            && contract.strategy_config_hash == spec.manifest.strategy_config_hash
+            && contract.execution_model == spec.manifest.execution_model,
+        "sealed result contract does not match current RunSpec identity"
+    );
+    ensure!(
+        contract.source_proof_id == accepted.source_proof_id
             && contract.source_proof_version == accepted.source_proof_version
             && contract.acceptance_mode == accepted.acceptance_mode
             && contract.accepted_by == accepted.accepted_by
             && contract.accepted_at == accepted.accepted_at
-            && contract.accepted_object_sha256 == accepted.accepted_object_sha256
-            && contract.converter_identity == fingerprint.converter_identity
+            && contract.accepted_object_sha256 == accepted.accepted_object_sha256,
+        "sealed result contract does not match current accepted-source identity"
+    );
+    ensure!(
+        contract.converter_identity == fingerprint.converter_identity
             && contract.converter_version == fingerprint.converter_version
-            && contract.converter_config_hash == fingerprint.converter_config_hash
-            && contract.conversion_manifest_hash == manifest_hash
-            && contract.conversion_checkpoint_hash == checkpoint_hash
-            && contract.catalog_hash == manifest.catalog_hash
-            && contract.catalog_metadata_hash == metadata_hash
-            && contract.strategy_config_hash == spec.manifest.strategy_config_hash
-            && contract.execution_model == spec.manifest.execution_model,
-        "sealed result contract does not match current source, conversion, catalog, or RunSpec identities"
+            && contract.converter_config_hash == fingerprint.converter_config_hash,
+        "sealed result contract does not match current converter identity"
+    );
+    ensure!(
+        contract.conversion_manifest_hash == manifest_hash
+            && contract.conversion_checkpoint_hash == checkpoint_hash,
+        "sealed result contract does not match current conversion identity"
+    );
+    ensure!(
+        contract.catalog_hash == manifest.catalog_hash
+            && contract.catalog_metadata_hash == metadata_hash,
+        "sealed result contract does not match current catalog identity"
     );
     let expected_catalog_data_types = spec
         .manifest

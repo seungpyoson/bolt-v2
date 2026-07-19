@@ -1,0 +1,212 @@
+name: Final Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
+
+concurrency:
+  group: final-review-${{ inputs.pr }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+
+jobs:
+  capture-head:
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    outputs:
+      head_sha: ${{ steps.capture.outputs.head_sha }}
+      base_sha: ${{ steps.capture.outputs.base_sha }}
+      pr_number: ${{ steps.capture.outputs.pr_number }}
+      claude_timeout: ${{ steps.capture.outputs.claude_timeout }}
+      kimi_timeout: ${{ steps.capture.outputs.kimi_timeout }}
+      glm_timeout: ${{ steps.capture.outputs.glm_timeout }}
+      evidence_timeout: ${{ steps.capture.outputs.evidence_timeout }}
+      obligation_timeout: ${{ steps.capture.outputs.obligation_timeout }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Capture immutable pull-request identity
+        id: capture
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          payload="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}")"
+          test "$(jq -r '.state' <<<"$payload")" = "open"
+          head_sha="$(jq -r '.head.sha' <<<"$payload")"
+          base_sha="$(jq -r '.base.sha' <<<"$payload")"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+          read -r claude_timeout kimi_timeout glm_timeout obligation_timeout evidence_timeout < <(python3 - <<'PY'
+          import tomllib
+          config = tomllib.load(open("ci/ai-review.toml", "rb"))
+          print(config["claude"]["workflow"]["job_timeout_minutes"], config["kimi"]["workflow"]["job_timeout_minutes"], config["glm"]["workflow"]["job_timeout_minutes"], config["final_review"]["obligation_timeout_seconds"], config["final_review"]["evidence_timeout_minutes"])
+          PY
+          )
+          {
+            echo "head_sha=$head_sha"
+            echo "base_sha=$base_sha"
+            echo "pr_number=$PR"
+            echo "claude_timeout=$claude_timeout"
+            echo "kimi_timeout=$kimi_timeout"
+            echo "glm_timeout=$glm_timeout"
+            echo "obligation_timeout=$obligation_timeout"
+            echo "evidence_timeout=$evidence_timeout"
+          } >> "$GITHUB_OUTPUT"
+
+  evidence:
+    needs: capture-head
+    timeout-minutes: ${{ fromJSON(needs.capture-head.outputs.evidence_timeout) }}
+    permissions:
+      contents: read
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - name: Checkout protected governance
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Checkout immutable subject
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.capture-head.outputs.head_sha }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup fixed evidence environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          toolchain-components: rustfmt,clippy
+          include-deny-version: "true"
+          include-nextest-version: "true"
+          include-managed-target-dir: "true"
+          install-rust-linker: "true"
+          build-jobs-key: final_review.evidence
+      - uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }},cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+      - name: Install configured actionlint
+        run: |
+          version="$(python3 - <<'PY'
+          import tomllib
+          print(tomllib.load(open('ci/ai-review.toml', 'rb'))['final_review']['actionlint_version'])
+          PY
+          )"
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@v${version}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-bvs-minio-s3-smoke
+      - name: Capture exact review diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ needs.capture-head.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.capture-head.outputs.head_sha }}
+        run: |
+          mkdir -p final-review-output
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" \
+            -H "Accept: application/vnd.github.diff" > final-review-output/review.diff
+          test -s final-review-output/review.diff
+      - name: Execute fixed evidence sequence
+        env:
+          BVS_MINIO_S3_SMOKE_ENV_VAR: ${{ env.BVS_MINIO_S3_SMOKE_ENV_VAR }}
+          BVS_MINIO_S3_SMOKE_ENV_VALUE: ${{ env.BVS_MINIO_S3_SMOKE_ENV_VALUE }}
+        run: |
+          python3 scripts/final_review_runner.py \
+            --governance . \
+            --subject subject \
+            --head-sha "${{ needs.capture-head.outputs.head_sha }}" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --obligation-timeout-seconds "${{ needs.capture-head.outputs.obligation_timeout }}" \
+            --output final-review-output
+          python3 scripts/final_review_evidence.py \
+            --expected final-review-output/expected.json \
+            --records final-review-output/records.json \
+            --json-output final-review-output/final-review-evidence.json \
+            --markdown-output final-review-output/final-review-evidence.md
+          cat final-review-output/final-review-evidence.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b5404495a51ac03f51d2c05c8 # v4.6.2
+        with:
+          name: final-review-evidence
+          path: final-review-output
+          if-no-files-found: error
+      - name: Assert every evidence obligation passed
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          manifest = json.loads(pathlib.Path("final-review-output/final-review-evidence.json").read_text())
+          failures = [job for job in manifest["jobs"] if job["conclusion"] != "success"]
+          if failures:
+              for job in failures:
+                  print(f"{job['obligation_id']}: {job['conclusion']}")
+              raise SystemExit(1)
+          PY
+
+  claude-review:
+    needs: [capture-head, evidence]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: ./.github/workflows/claude-code-review.yml
+    with:
+      pr_number: ${{ needs.capture-head.outputs.pr_number }}
+      head_sha: ${{ needs.capture-head.outputs.head_sha }}
+      base_sha: ${{ needs.capture-head.outputs.base_sha }}
+      governance_sha: ${{ github.sha }}
+      evidence_run_id: ${{ github.run_id }}
+      evidence_artifact: final-review-evidence
+      job_timeout_minutes: ${{ fromJSON(needs.capture-head.outputs.claude_timeout) }}
+    secrets: inherit
+
+  kimi-review:
+    needs: [capture-head, evidence]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/ai-review-kimi-cli.yml
+    with:
+      pr_number: ${{ needs.capture-head.outputs.pr_number }}
+      head_sha: ${{ needs.capture-head.outputs.head_sha }}
+      base_sha: ${{ needs.capture-head.outputs.base_sha }}
+      governance_sha: ${{ github.sha }}
+      evidence_run_id: ${{ github.run_id }}
+      evidence_artifact: final-review-evidence
+      job_timeout_minutes: ${{ fromJSON(needs.capture-head.outputs.kimi_timeout) }}
+    secrets: inherit
+
+  glm-review:
+    needs: [capture-head, evidence]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/ai-review-glm.yml
+    with:
+      pr_number: ${{ needs.capture-head.outputs.pr_number }}
+      head_sha: ${{ needs.capture-head.outputs.head_sha }}
+      base_sha: ${{ needs.capture-head.outputs.base_sha }}
+      governance_sha: ${{ github.sha }}
+      evidence_run_id: ${{ github.run_id }}
+      evidence_artifact: final-review-evidence
+      job_timeout_minutes: ${{ fromJSON(needs.capture-head.outputs.glm_timeout) }}
+    secrets: inherit

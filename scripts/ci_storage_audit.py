@@ -1036,7 +1036,7 @@ def repository_toml_paths() -> list[pathlib.Path]:
     )
     if result.returncode != 0:
         raise AuditError(result.stderr.strip() or "git ls-files failed while discovering cleanup policy")
-    return [root / line for line in result.stdout.splitlines() if line]
+    return [root / line for line in result.stdout.splitlines() if line and (root / line).is_file()]
 
 
 def discover_cleanup_policy_path() -> pathlib.Path:

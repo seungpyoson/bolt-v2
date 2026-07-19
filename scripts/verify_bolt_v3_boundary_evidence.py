@@ -535,7 +535,7 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
         if label not in labels:
             findings.append(f"ci/rust-verification.toml: cheap_lane_labels missing {label}")
 
-    workflow_path = ".github/workflows/ci.yml"
+    workflow_path = ".github/workflows/reference-boundary-capture.yml"
     workflow = read(root, workflow_path)
     if "schedule:" in workflow:
         findings.append(f"{workflow_path}: recurring schedule is out of scope")
@@ -544,22 +544,38 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
             f"{workflow_path}: capture provenance must use workflow run check_suite_id, not github.run_id"
         )
     for needle in (
-        "capture_reference_boundary_fixture",
-        "credential_ssm_gate",
+        "workflow_dispatch:",
+        "credential_confirmation",
         "CREDENTIAL-SSM",
-        "capture-gate",
+        "ci/reference-boundary-capture.toml",
         "ops capture-reference-boundary-fixture",
         "--root-config",
         "GH_TOKEN: ${{ github.token }}",
-        'gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq \'.check_suite_id\'',
+        "actions/runs/${{ github.run_id }}",
         'echo "check_suite_id=$check_suite_id"',
         '--check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"',
-        "GITHUB_TOKEN: ${{ github.token }}",
-        "GITHUB_REPOSITORY: ${{ github.repository }}",
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "actions/upload-artifact@ea165f8d65b6e75b5404495a51ac03f51d2c05c8",
     ):
         if needle not in workflow:
             findings.append(f"{workflow_path}: missing {needle}")
+
+    capture_config_path = "ci/reference-boundary-capture.toml"
+    capture_config = tomllib.loads(read(root, capture_config_path))
+    expected_capture_keys = {
+        "schema_version",
+        "workflow_path",
+        "root_config",
+        "client_key",
+        "wait_timeout_seconds",
+        "aws_region",
+        "output_directory",
+        "artifact_name",
+        "artifact_retention_days",
+    }
+    if set(capture_config) != expected_capture_keys:
+        findings.append(f"{capture_config_path}: capture configuration keys must be exact")
+    if capture_config.get("workflow_path") != workflow_path:
+        findings.append(f"{capture_config_path}: workflow_path must name {workflow_path}")
 
 
 DEPENDENCY_SCOPES = ("dependencies", "dev-dependencies", "build-dependencies")

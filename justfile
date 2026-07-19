@@ -80,27 +80,31 @@ verify-bolt-v3-strategy-policy-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
 
-test-verify-runtime-capture-yaml: check-workspace
-    python3 scripts/test_verify_runtime_capture_yaml.py
-
-verify-runtime-capture-yaml: test-verify-runtime-capture-yaml
-    python3 scripts/verify_runtime_capture_yaml.py
-
-fmt-check: check-workspace require-rust-verification-owner
-    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner
+[private]
+fmt-workspace-check-inner workspace: require-local-verification-gate check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{workspace}}" -- fmt --check
 
 [private]
-fmt-check-inner: require-local-verification-gate check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
+deny-workspace-inner workspace: require-local-verification-gate check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{workspace}}" -- deny check bans
+
+[private]
+fmt-workspace-inner workspace: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{workspace}}" -- fmt
+
+# Sole repository-wide local evidence command. This runs non-compile checks only.
+preflight: check-workspace require-rust-verification-owner
+    python3 scripts/local_verification_gate.py preflight -- just preflight-inner
+
+[private]
+preflight-inner: require-local-verification-gate check-workspace require-rust-verification-owner
+    python3 scripts/repo_preflight.py --governance "{{repo_root}}" --subject "{{repo_root}}"
 
 fmt: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt
-
-deny: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check bans
+    python3 scripts/repo_format.py --governance "{{repo_root}}" --subject "{{repo_root}}"
 
 deny-advisories: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check advisories
+    python3 scripts/workspace_advisories.py --governance "{{repo_root}}" --subject "{{repo_root}}"
 
 [private]
 managed-clippy: check-workspace
@@ -118,28 +122,6 @@ clippy: check-workspace require-rust-verification-owner
 test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
-debug-test filter package="" *extra_args: check-workspace require-rust-verification-owner
-    #!/usr/bin/env bash
-    set -euo pipefail
-    filter="${DEBUG_TEST_FILTER:-}"
-    package="${DEBUG_TEST_PACKAGE:-}"
-    if [[ -z "$filter" ]]; then filter={{quote(filter)}}; fi
-    if [[ -z "$package" ]]; then package={{quote(package)}}; fi
-    if [[ -z "$filter" ]]; then echo "ERROR: debug-test filter must be non-empty" >&2; exit 2; fi
-    args=(-E "$filter")
-    if [[ "$filter" =~ ^[[:alnum:]_:.:-]+$ ]]; then args=("$filter"); fi
-    extra=({{extra_args}})
-    if [[ "$package" == "backtesting-vertical-slice" ]]; then
-        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --locked "${args[@]}" "${extra[@]}"
-    elif [[ -s "${NEXTEST_ARCHIVE_PATH:-}" && -z "$package" ]]; then
-        extract_root="${RUNNER_TEMP:-/tmp}/debug-nextest-archive-extract"
-        mkdir -p "$extract_root"
-        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "$NEXTEST_ARCHIVE_PATH" --extract-to "$extract_root" --extract-overwrite --workspace-remap "{{repo_root}}" "${args[@]}" "${extra[@]}"
-    else
-        if [[ -n "$package" ]]; then args=(-p "$package" "${args[@]}"); fi
-        python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --locked "${args[@]}" "${extra[@]}"
-    fi
-
 test-archive archive *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
 
@@ -150,13 +132,8 @@ build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
 
 # backtesting-vertical-slice crate (separate workspace at crates/backtesting-vertical-slice/).
-# Routed through the SAME managed wrapper as bolt-v2; --repo selects the crate's policy +
-# justfile + its own `backtesting-vertical-slice` cache namespace. Used by .github/workflows/
-# backtester-ci.yml and for local dev. bte-build is native (aarch64-apple-darwin), local-only.
-# bte-fmt-check is the fast fail-early gate (no compile) that CI runs before clippy/test.
-bte-fmt-check: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- fmt --check
-
+# Routed through the same managed wrapper as bolt-v2; --repo selects the crate's policy,
+# Justfile, and cache namespace. Local non-compile evidence is owned only by `just preflight`.
 bte-clippy: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" clippy
 
@@ -180,11 +157,11 @@ bte-build: check-workspace require-rust-verification-owner
 check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 
-verify-remote: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
+sandbox-safe-push: check-workspace
+    python3 scripts/sandbox_safe_push.py
 
-sandbox-safe-push *args: check-workspace
-    python3 scripts/sandbox_safe_push.py --repo "{{repo_root}}" {{args}}
+final-review pr: check-workspace
+    gh workflow run final-review.yml --ref main -f pr={{quote(pr)}}
 
 [positional-arguments]
 merge-queue *args:
@@ -192,10 +169,6 @@ merge-queue *args:
 
 rust-probe *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" rust-probe --repo "{{repo_root}}" {{args}}
-
-# Print failed-job diagnostics for the matching exact-head full-CI run; not a pass/fail gate.
-ci-logs: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" ci-logs --repo "{{repo_root}}"
 
 ci-runner-minutes *args:
     python3 scripts/ubicloud_runner_minutes.py {{args}}
@@ -206,30 +179,13 @@ ci-storage-audit *args: check-workspace
 ci-storage-tripwire *args: check-workspace
     python3 scripts/ci_storage_tripwire.py {{args}}
 
-source-fence-static: check-workspace require-rust-verification-owner
-    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
-
-# Keep this governed fast lane in lock-step with source-fence-static; only the
-# inner run_fences.py invocation may differ by skipping the fixture test phase.
-source-fence-static-fences-only: check-workspace require-rust-verification-owner
-    python3 scripts/local_verification_gate.py source-fence-static-fences-only -- just source-fence-static-fences-only-inner
-
 [private]
-source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 scripts/run_fences.py
+source-fence-static-inner subject='.': require-local-verification-gate check-workspace require-rust-verification-owner
+    python3 scripts/run_fences.py --root "{{subject}}"
 
 [private]
 source-fence-static-fences-only-inner: require-local-verification-gate check-workspace require-rust-verification-owner
     python3 scripts/run_fences.py --fences-only
-
-source-fence: source-fence-static
-    # Fresh CI runners need the pinned NT checkout before source-capture checks.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
-    python3 scripts/verify_runtime_capture_yaml.py
-    # #342 owns these canonical source-fence checks. Until #332 changes full
-    # nextest ownership, `test` intentionally still duplicates them under `gate`.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test wiring_registration -- bolt_v3_controlled_connect:: bolt_v3_production_entrypoint:: --nocapture
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test iv -- bolt_v3_iv_source_fence:: --nocapture
 
 # Cargo shim guard tests (pytest-based, unlike the self-running script tests)
 cargo-shim-tests:
@@ -258,25 +214,15 @@ live-verify: check-workspace require-live-profile require-rust-verification-owne
 live: live-generate
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops launch --profile "{{live_profile}}" --config-root config
 
-ci-lint-workflow: check-workspace require-rust-verification-owner
-    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
-
 [private]
-ci-lint-workflow-inner: require-local-verification-gate check-workspace require-rust-verification-owner
+ci-lint-workflow-inner subject=repo_root: require-local-verification-gate check-workspace require-rust-verification-owner
     #!/usr/bin/env bash
     set -euo pipefail
+    cd "{{subject}}"
     shopt -s nullglob
-    workflow_files=()
-    action_files=()
+    workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
+    action_files=(.github/actions/*/action.yml .github/actions/*/action.yaml)
     github_script_files=()
-
-    [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
-    [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
-    [ -f .github/workflows/flaky-test-detection.yml ] && workflow_files+=(.github/workflows/flaky-test-detection.yml)
-    [ -f .github/workflows/flaky-test-smoke.yml ] && workflow_files+=(.github/workflows/flaky-test-smoke.yml)
-    [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
-    [ -f .github/actions/sccache-setup/action.yml ] && action_files+=(.github/actions/sccache-setup/action.yml)
-    [ -f .github/actions/sccache-stats/action.yml ] && action_files+=(.github/actions/sccache-stats/action.yml)
     github_script_files=(.github/scripts/*.sh)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}" "${github_script_files[@]}")
@@ -287,6 +233,8 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
     if [ "${#github_automation_files[@]}" -eq 0 ]; then
         echo "No workflow or action files found — skipping"
     fi
+
+    actionlint "${workflow_files[@]}"
 
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(audit|bench|build|check|clean|clippy|deny|doc|fetch|fmt|install|nextest|run|rustc|test|version|zigbuild)([^[:alnum:]_]|$)'
@@ -416,6 +364,19 @@ setup:
         echo "cargo-deny {{deny_version}} already installed"
     else
         echo "ERROR: cargo-deny {{deny_version}} is required as a prebuilt tool"
+        exit 2
+    fi
+
+    actionlint_version="$(python3 - <<'PY'
+    import tomllib
+    with open("ci/ai-review.toml", "rb") as handle:
+        print(tomllib.load(handle)["final_review"]["actionlint_version"])
+    PY
+    )"
+    if command -v actionlint >/dev/null 2>&1 && actionlint -version | grep -Eq "^${actionlint_version}([[:space:]]|$)"; then
+        echo "actionlint ${actionlint_version} already installed"
+    else
+        echo "ERROR: actionlint ${actionlint_version} is required for just preflight"
         exit 2
     fi
 

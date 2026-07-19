@@ -67,6 +67,10 @@ name = "bolt_v3_polymarket_venue_truth"
 path = "tests/bolt_v3_polymarket_venue_truth.rs"
 
 [[test]]
+name = "bolt_v3_evidence_novelty"
+path = "tests/bolt_v3_evidence_novelty.rs"
+
+[[test]]
 name = "polymarket_redemption_preparation"
 path = "tests/polymarket_redemption_preparation.rs"
 

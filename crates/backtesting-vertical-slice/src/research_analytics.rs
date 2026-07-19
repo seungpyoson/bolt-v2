@@ -2785,17 +2785,13 @@ mod tests {
         let plan = publication_plan(&temp, input_dir, artifact_root, vec![source]);
         fs::write(&plan.index_path, b"stale index bytes").expect("write stale index");
 
-        let err = run_backtest_sweep_publication_with_executor(
-            &plan,
-            |spec, object_bytes, output_dir| {
-                write_test_contract(output_dir, spec, object_bytes, artifact_root);
-                Ok(())
-            },
-        )
-        .expect_err("dirty index must fail with FailOnDirty");
+        let err = run_backtest_sweep_publication_with_executor(&plan, |_, _, _| {
+            panic!("occupied index must fail before the executor")
+        })
+        .expect_err("occupied index must fail before execution");
 
         assert!(
-            err.to_string().contains("dirty reference artifact"),
+            err.to_string().contains("index path already exists"),
             "{err}"
         );
         assert_eq!(

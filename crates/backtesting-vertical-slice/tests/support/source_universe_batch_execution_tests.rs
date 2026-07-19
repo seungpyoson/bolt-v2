@@ -989,9 +989,7 @@ fn current_terminal_presence_fails_before_fetch_and_execution() {
     .expect_err("an existing terminal cannot satisfy a fresh execution");
 
     assert!(
-        error
-            .to_string()
-            .contains("refuses existing completion object"),
+        format!("{error:#}").contains("refuses existing completion object"),
         "{error:#}"
     );
     assert!(

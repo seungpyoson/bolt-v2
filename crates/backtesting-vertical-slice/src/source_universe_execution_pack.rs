@@ -43,8 +43,9 @@ use crate::{
         validate_durable_run_spec_preflight,
         validate_run_spec_manifest_for_object_hash_with_verified_registry,
     },
+    result_contract::strategy_config_hash,
     retired_backfill_evidence::resolve_active_backfill_runtime_input,
-    run_manifest::MarketStructureFixture,
+    run_manifest::{MarketStructureFixture, StrategySource},
     source_proof::{AcceptanceScope, SourceProofReport, SourceProofStatus},
     source_universe_conversion_work_order::{
         SOURCE_UNIVERSE_CONVERSION_WORK_ORDER_SCHEMA_VERSION, SourceUniverseConversionWorkOrder,
@@ -1104,6 +1105,7 @@ fn materialize_run_spec(input: RunSpecMaterializationInput<'_>) -> Result<String
     patch_venue_policy(manifest, &instrument.instrument_spec, venue_policy)?;
     patch_catalog_inputs(manifest, &instrument.nt_instrument_id)?;
     patch_strategy_bar_type(manifest, &instrument.nt_instrument_id)?;
+    patch_strategy_config_hash(manifest)?;
     patch_catalog_dispatch(
         &mut value,
         catalog_encoding,
@@ -1357,6 +1359,20 @@ fn patch_strategy_bar_type(manifest: &mut toml::Table, nt_instrument_id: &str) -
         },
     };
     parameters.insert("bar_type".to_string(), Value::String(rebound.to_string()));
+    Ok(())
+}
+
+fn patch_strategy_config_hash(manifest: &mut toml::Table) -> Result<()> {
+    let strategy: StrategySource = manifest
+        .get("strategy")
+        .cloned()
+        .context("run-spec template manifest.strategy table is required")?
+        .try_into()
+        .context("deserialize materialized run-spec strategy")?;
+    manifest.insert(
+        "strategy_config_hash".to_string(),
+        Value::String(strategy_config_hash(&strategy)),
+    );
     Ok(())
 }
 

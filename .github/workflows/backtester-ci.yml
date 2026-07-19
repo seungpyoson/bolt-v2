@@ -296,6 +296,16 @@ jobs:
       - name: clippy
         run: just bte-clippy
 
+      - name: Verify committed execution evidence is regenerated
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- run --locked --bin source_universe_execution_pack -- \
+            --spec specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/source-universe-execution-pack.toml
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- run --locked --bin source_universe_execution_pack -- \
+            --spec specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-execution-pack.toml
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- run --locked --bin source_universe_execution_acceptance_ledger -- \
+            --spec specs/023-nt-research-analytics-platform/reference/source-universe-execution-acceptance-ledgers/binance-bybit-pmxt-current/source-universe-execution-acceptance-ledger.toml
+          git diff --exit-code -- specs/023-nt-research-analytics-platform/reference
+
   test-archive:
     name: bvs-test archive
     needs: [ci-policy, detect, fmt]

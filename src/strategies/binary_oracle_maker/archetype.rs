@@ -61,7 +61,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
     strategy_kind: KEY,
     capabilities: StrategyRuntimeCapabilities {
-        realized_volatility: true,
+        realized_volatility: false,
         settlement: false,
     },
     prepare: prepare_runtime_strategy,

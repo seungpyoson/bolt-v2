@@ -12,12 +12,12 @@ use bolt_v2::{
 use nautilus_model::enums::{OrderType, TimeInForce};
 
 #[test]
-fn complete_set_runtime_retains_shared_realized_volatility_capability() {
+fn complete_set_runtime_does_not_claim_unused_realized_volatility_capability() {
     assert!(
-        complete_set_arbitrage::RUNTIME_BINDING
+        !complete_set_arbitrage::RUNTIME_BINDING
             .capabilities
             .realized_volatility,
-        "complete-set runtime binding must retain realized-volatility capability"
+        "complete-set runtime binding must not claim an unused realized-volatility capability"
     );
     assert!(
         !complete_set_arbitrage::RUNTIME_BINDING

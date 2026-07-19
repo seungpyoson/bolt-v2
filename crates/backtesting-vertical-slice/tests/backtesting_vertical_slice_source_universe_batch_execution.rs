@@ -13,8 +13,8 @@ use backtesting_vertical_slice::backfill_accepted_tranche::{
     BackfillAcceptedTrancheObject, BackfillAcceptedTrancheStatus,
 };
 use backtesting_vertical_slice::backfill_execution_plan::{
-    BackfillExecutionPlan, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
-    evaluate_backfill_execution_plan,
+    BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
+    BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
 };
 use backtesting_vertical_slice::operator::{RunSpec, RunSpecInstrumentIdentities};
 use backtesting_vertical_slice::source_universe_batch_execution::{
@@ -222,7 +222,7 @@ fn duplicate_selected_sequence_rejects_before_fetch_or_output_creation() {
 #[test]
 fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
     struct MutatingFetcher {
-        control_paths: Vec<PathBuf>,
+        control_replacements: Vec<(PathBuf, Vec<u8>)>,
         object_bytes: Vec<u8>,
     }
 
@@ -231,8 +231,8 @@ fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
             &mut self,
             _record: &SourceUniverseExecutionPackRecord,
         ) -> anyhow::Result<Vec<u8>> {
-            for path in &self.control_paths {
-                fs::write(path, b"changed-after-admission")?;
+            for (path, replacement) in &self.control_replacements {
+                fs::write(path, replacement)?;
             }
             Ok(self.object_bytes.clone())
         }
@@ -247,9 +247,21 @@ fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
     let admitted_tranche =
         fs::read(&accepted_tranche_path).expect("read admitted accepted tranche");
     let admitted_plan = fs::read(&execution_plan_path).expect("read admitted execution plan");
+    let admitted_run_spec_value: RunSpec =
+        toml::from_slice(&admitted_run_spec).expect("parse admitted run spec");
+    let admitted_run_id = admitted_run_spec_value.manifest.run_id.clone();
+    let mut changed_run_spec = admitted_run_spec_value;
+    changed_run_spec.manifest.run_id = "changed-after-admission".to_string();
+    let changed_run_spec_bytes = toml::to_string_pretty(&changed_run_spec)
+        .expect("serialize changed run spec")
+        .into_bytes();
 
     let mut fetcher = MutatingFetcher {
-        control_paths: vec![run_spec_path, accepted_tranche_path, execution_plan_path],
+        control_replacements: vec![
+            (run_spec_path, changed_run_spec_bytes),
+            (accepted_tranche_path, b"changed-after-admission".to_vec()),
+            (execution_plan_path, b"changed-after-admission".to_vec()),
+        ],
         object_bytes: object_bytes.to_vec(),
     };
     let mut runner = RecordingRunner::default();
@@ -267,6 +279,7 @@ fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
     assert_eq!(runner.calls[0].run_spec_bytes, admitted_run_spec);
     assert_eq!(runner.calls[0].accepted_tranche_bytes, admitted_tranche);
     assert_eq!(runner.calls[0].execution_plan_bytes, admitted_plan);
+    assert_eq!(runner.calls[0].run_spec_run_id, admitted_run_id);
 }
 
 #[test]
@@ -523,6 +536,264 @@ fn malformed_bytes_in_each_control_reject_before_side_effects() {
 }
 
 #[test]
+fn coherent_but_malformed_control_values_reject_before_side_effects() {
+    #[derive(Clone, Copy)]
+    enum Case {
+        EmptySourceProofId,
+        ZeroSourceProofVersion,
+        RunSpecSourceProofIdentityMismatch,
+        RunSpecSourceBindingMismatch,
+        EmptySourceBinding,
+        EmptyTableFamily,
+        EmptyVenue,
+        EmptyCategory,
+        EmptySymbol,
+        EmptyOutputPrefix,
+        EmptySourceUri,
+        EmptySourceUrl,
+        EmptyArchiveDate,
+        ZeroObjectBytes,
+        EmptyScopeReportId,
+        MalformedScopeReportHash,
+        EmptyParentManifestId,
+        ObjectLevelTrancheNotRequired,
+        DuplicateSourceRowGroups,
+        EmptyPredicateRef,
+        ZeroDecodedByteBudget,
+    }
+
+    let cases = [
+        (Case::EmptySourceProofId, "empty-source-proof-id"),
+        (Case::ZeroSourceProofVersion, "zero-source-proof-version"),
+        (
+            Case::RunSpecSourceProofIdentityMismatch,
+            "run-spec-source-proof-identity-mismatch",
+        ),
+        (
+            Case::RunSpecSourceBindingMismatch,
+            "run-spec-source-binding-mismatch",
+        ),
+        (Case::EmptySourceBinding, "empty-source-binding"),
+        (Case::EmptyTableFamily, "empty-table-family"),
+        (Case::EmptyVenue, "empty-venue"),
+        (Case::EmptyCategory, "empty-category"),
+        (Case::EmptySymbol, "empty-symbol"),
+        (Case::EmptyOutputPrefix, "empty-output-prefix"),
+        (Case::EmptySourceUri, "empty-source-uri"),
+        (Case::EmptySourceUrl, "empty-source-url"),
+        (Case::EmptyArchiveDate, "empty-archive-date"),
+        (Case::ZeroObjectBytes, "zero-object-bytes"),
+        (Case::EmptyScopeReportId, "empty-scope-report-id"),
+        (
+            Case::MalformedScopeReportHash,
+            "malformed-scope-report-hash",
+        ),
+        (Case::EmptyParentManifestId, "empty-parent-manifest-id"),
+        (
+            Case::ObjectLevelTrancheNotRequired,
+            "object-level-tranche-not-required",
+        ),
+        (
+            Case::DuplicateSourceRowGroups,
+            "duplicate-source-row-groups",
+        ),
+        (Case::EmptyPredicateRef, "empty-predicate-ref"),
+        (Case::ZeroDecodedByteBudget, "zero-decoded-byte-budget"),
+    ];
+
+    for (case, name) in cases {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (pack_path, run_spec_path, tranche_path, plan_path) = write_control_admission_fixture(
+            temp_dir.path(),
+            &[(0, b"accepted object bytes".to_vec())],
+        );
+        let mut pack: SourceUniverseExecutionPack = serde_json::from_slice(
+            &fs::read(&pack_path).expect("read pack for coherent malformed control"),
+        )
+        .expect("parse pack for coherent malformed control");
+        let mut run_spec: RunSpec = toml::from_slice(
+            &fs::read(&run_spec_path).expect("read run spec for coherent malformed control"),
+        )
+        .expect("parse run spec for coherent malformed control");
+        let mut tranche: BackfillAcceptedTrancheManifest = serde_json::from_slice(
+            &fs::read(&tranche_path).expect("read tranche for coherent malformed control"),
+        )
+        .expect("parse tranche for coherent malformed control");
+        let plan_template: BackfillExecutionPlan = serde_json::from_slice(
+            &fs::read(&plan_path).expect("read plan for coherent malformed control"),
+        )
+        .expect("parse plan for coherent malformed control");
+
+        let expected_error = match case {
+            Case::EmptySourceProofId => {
+                pack.records[0].source_proof_id.clear();
+                run_spec.manifest.source_proof_id.clear();
+                run_spec.source_proof.source_proof_id.clear();
+                tranche.source_proof_id.clear();
+                "source proof identity must be complete"
+            }
+            Case::ZeroSourceProofVersion => {
+                pack.records[0].source_proof_version = 0;
+                run_spec.manifest.source_proof_version = 0;
+                run_spec.source_proof.source_proof_version = 0;
+                tranche.source_proof_version = 0;
+                "source proof identity must be complete"
+            }
+            Case::RunSpecSourceProofIdentityMismatch => {
+                run_spec.source_proof.source_proof_id = "different-source-proof".to_string();
+                "run_spec source proof identity mismatch"
+            }
+            Case::RunSpecSourceBindingMismatch => {
+                run_spec.source_proof.source_binding = "different-source-binding".to_string();
+                "run_spec source_binding mismatch"
+            }
+            Case::EmptySourceBinding => {
+                pack.records[0].source_binding.clear();
+                run_spec.manifest.venue_binding_key.clear();
+                run_spec.source_proof.source_binding.clear();
+                tranche.source_binding.clear();
+                "source_binding must not be empty"
+            }
+            Case::EmptyTableFamily => {
+                pack.table_family.clear();
+                run_spec.source_proof.table_family.clear();
+                tranche.table_family.clear();
+                "table_family must not be empty"
+            }
+            Case::EmptyVenue => {
+                pack.venue.clear();
+                run_spec.source_proof.venue.clear();
+                "venue must not be empty"
+            }
+            Case::EmptyCategory => {
+                pack.records[0].category.clear();
+                run_spec.source_proof.product_category.clear();
+                "category must not be empty"
+            }
+            Case::EmptySymbol => {
+                pack.records[0].symbol.clear();
+                match &mut run_spec.identity {
+                    RunSpecInstrumentIdentities::Single(identity) => {
+                        identity.instrument_id.clear();
+                        identity.venue_symbol.clear();
+                    }
+                    RunSpecInstrumentIdentities::Keyed(_) => {
+                        panic!("synthetic run-spec must be single")
+                    }
+                }
+                "symbol must not be empty"
+            }
+            Case::EmptyOutputPrefix => {
+                pack.records[0].output_prefix.clear();
+                run_spec.manifest.output_prefix.clear();
+                "output_prefix must not be empty"
+            }
+            Case::EmptySourceUri => {
+                pack.records[0].source_uri.clear();
+                run_spec.source_proof.raw_sample_uri.clear();
+                run_spec.accepted_object.s3_uri.clear();
+                tranche.objects[0].s3_uri.clear();
+                "source_uri must not be empty"
+            }
+            Case::EmptySourceUrl => {
+                pack.records[0].source_url.clear();
+                run_spec.accepted_object.source_url.clear();
+                tranche.objects[0].source_url.clear();
+                "source_url must not be empty"
+            }
+            Case::EmptyArchiveDate => {
+                pack.records[0].archive_date.clear();
+                run_spec.accepted_object.archive_date.clear();
+                tranche.objects[0].archive_date.clear();
+                "archive_date must not be empty"
+            }
+            Case::ZeroObjectBytes => {
+                pack.records[0].selected_object_bytes = 0;
+                run_spec.accepted_object.bytes = 0;
+                run_spec.converter.raw_payload.max_object_bytes = 0;
+                tranche.accepted_bytes = 0;
+                tranche.objects[0].bytes = 0;
+                "selected_object_bytes must be positive"
+            }
+            Case::EmptyScopeReportId => {
+                tranche.source_proof_scope_report_id.clear();
+                "source_proof_scope_report_id must not be empty"
+            }
+            Case::MalformedScopeReportHash => {
+                tranche.source_proof_scope_report_hash = "not-a-sha256".to_string();
+                "source_proof_scope_report_hash"
+            }
+            Case::EmptyParentManifestId => {
+                tranche.parent_manifest_id.clear();
+                "parent_manifest_id must not be empty"
+            }
+            Case::ObjectLevelTrancheNotRequired => {
+                tranche.object_level_tranche_required = false;
+                "object_level_tranche_required must be true"
+            }
+            Case::DuplicateSourceRowGroups => {
+                tranche.objects[0].source_row_groups = vec![1, 1];
+                "source_row_groups must be strictly increasing"
+            }
+            Case::EmptyPredicateRef => {
+                tranche.objects[0].predicate_ref = Some(" ".to_string());
+                "predicate_ref must not be empty"
+            }
+            Case::ZeroDecodedByteBudget => {
+                run_spec.converter.raw_payload.max_decoded_bytes = 0;
+                "max_decoded_bytes must be positive"
+            }
+        };
+
+        let run_spec_bytes = toml::to_string_pretty(&run_spec)
+            .expect("serialize coherent malformed run spec")
+            .into_bytes();
+        let accepted_tranche_bytes =
+            serde_json::to_vec_pretty(&tranche).expect("serialize coherent malformed tranche");
+        let run_spec_sha256 = sha256_hex(&run_spec_bytes);
+        let accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
+        let execution_plan = evaluate_backfill_execution_plan(
+            plan_template.plan_id,
+            accepted_tranche_sha256.clone(),
+            &tranche,
+            run_spec_sha256.clone(),
+            &BackfillExecutionRunBinding::from_run_spec(&run_spec),
+            BackfillExecutionWorkBudget {
+                max_source_rows: plan_template.max_source_rows,
+                max_projected_row_groups: plan_template.max_projected_row_groups,
+                max_wall_seconds: plan_template.max_wall_seconds,
+                require_object_selection_metadata: plan_template.require_object_selection_metadata,
+            },
+        );
+        assert_eq!(
+            execution_plan.status,
+            BackfillExecutionPlanStatus::Ready,
+            "{name} must remain evaluator-consistent so the self-validity gate is decisive"
+        );
+        let execution_plan_bytes = serde_json::to_vec_pretty(&execution_plan)
+            .expect("serialize coherent malformed execution plan");
+        fs::write(&run_spec_path, &run_spec_bytes).expect("write coherent malformed run spec");
+        fs::write(&tranche_path, &accepted_tranche_bytes)
+            .expect("write coherent malformed tranche");
+        fs::write(&plan_path, &execution_plan_bytes).expect("write coherent malformed plan");
+        pack.records[0].run_spec_sha256 = run_spec_sha256;
+        pack.records[0].accepted_tranche_sha256 = accepted_tranche_sha256;
+        pack.records[0].execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
+        fs::write(
+            &pack_path,
+            serde_json::to_vec_pretty(&pack).expect("serialize coherent malformed pack"),
+        )
+        .expect("write coherent malformed pack");
+
+        assert_control_admission_rejects_before_side_effects(
+            &pack_path,
+            &temp_dir.path().join(format!("{name}-output")),
+            expected_error,
+        );
+    }
+}
+
+#[test]
 fn internally_drifted_execution_plan_rejects_after_repinning() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let (pack_path, _, _, execution_plan_path) =
@@ -761,6 +1032,42 @@ fn control_and_batch_byte_ceilings_enforce_exact_boundaries() {
         &aggregate_temp.path().join("over-aggregate-output"),
         over_policy,
         "exceed configured max_total_control_bytes",
+    );
+
+    let first_record_total = pack.records[0]
+        .artifact_paths()
+        .into_iter()
+        .try_fold(0_u64, |total, path| {
+            total.checked_add(fs::metadata(path).expect("first control metadata").len())
+        })
+        .expect("first record control total fits u64");
+    let second_run_spec_bytes = fs::metadata(&pack.records[1].run_spec_path)
+        .expect("second run-spec metadata")
+        .len();
+    let during_read_limit = first_record_total
+        .checked_add(second_run_spec_bytes)
+        .and_then(|total| total.checked_sub(1))
+        .expect("during-read aggregate limit fits u64");
+    assert!(
+        role_max
+            .into_iter()
+            .all(|individual| during_read_limit >= individual),
+        "during-read aggregate policy must remain structurally valid"
+    );
+    fs::remove_file(&pack.records[1].accepted_tranche_path)
+        .expect("remove later control to prove it is never opened");
+    let during_read_policy = test_control_admission_policy_with_limits(
+        aggregate_temp.path(),
+        role_max[0],
+        role_max[1],
+        role_max[2],
+        during_read_limit,
+    );
+    assert_control_admission_rejects_with_policy(
+        &aggregate_pack_path,
+        &aggregate_temp.path().join("during-read-aggregate-output"),
+        during_read_policy,
+        "exceed configured max_total_control_bytes while reading run_spec",
     );
 }
 
@@ -2013,6 +2320,7 @@ struct RunCall {
     run_spec_bytes: Vec<u8>,
     accepted_tranche_bytes: Vec<u8>,
     execution_plan_bytes: Vec<u8>,
+    run_spec_run_id: String,
     output_dir: std::path::PathBuf,
 }
 
@@ -2061,6 +2369,7 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
             run_spec_bytes: controls.run_spec_bytes().to_vec(),
             accepted_tranche_bytes: controls.accepted_tranche_bytes().to_vec(),
             execution_plan_bytes: controls.execution_plan_bytes().to_vec(),
+            run_spec_run_id: controls.run_spec().manifest.run_id.clone(),
             output_dir: output_dir.to_path_buf(),
         });
         Ok(SourceUniverseBatchExecutionRunOutput {

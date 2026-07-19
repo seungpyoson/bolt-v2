@@ -26,8 +26,8 @@ use crate::backfill_accepted_tranche::{
     BackfillAcceptedTrancheStatus,
 };
 use crate::backfill_execution_plan::{
-    BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
-    BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
+    BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION, BackfillExecutionPlan, BackfillExecutionPlanStatus,
+    BackfillExecutionRunBinding, BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
 };
 use crate::catalog_projection::logical_catalog_hash;
 use crate::io_safety::{ByteLimit, read_to_vec_with_limit};
@@ -740,32 +740,20 @@ fn prepare_batch(
         })
         .take(record_limit)
     {
-        let controls =
-            admit_record_controls(&pack, &pack_base_dir, record, &config.control_admission)
-                .with_context(|| {
-                    format!(
-                        "admit controls for pack record {} ({})",
-                        record.sequence, record.operator_run_id
-                    )
-                })?;
-        let record_control_bytes = controls.total_bytes().with_context(|| {
+        let (controls, next_total_control_bytes) = admit_record_controls(
+            &pack,
+            &pack_base_dir,
+            record,
+            &config.control_admission,
+            total_control_bytes,
+        )
+        .with_context(|| {
             format!(
-                "sum admitted control bytes for pack record {} ({})",
+                "admit controls for pack record {} ({})",
                 record.sequence, record.operator_run_id
             )
         })?;
-        total_control_bytes = total_control_bytes
-            .checked_add(record_control_bytes)
-            .context("batch admitted control byte total overflow")?;
-        ensure!(
-            total_control_bytes <= config.control_admission.max_total_control_bytes.max_bytes(),
-            "batch admitted control bytes {} exceed configured max_total_control_bytes {} \
-             at pack record {} ({})",
-            total_control_bytes,
-            config.control_admission.max_total_control_bytes.max_bytes(),
-            record.sequence,
-            record.operator_run_id
-        );
+        total_control_bytes = next_total_control_bytes;
         ensure!(
             admitted_controls
                 .insert(record.sequence, controls)
@@ -845,7 +833,9 @@ fn admit_record_controls(
     pack_base_dir: &Path,
     record: &SourceUniverseExecutionPackRecord,
     policy: &SourceUniverseControlAdmissionPolicy,
-) -> Result<SourceUniverseAdmittedControls> {
+    admitted_control_bytes: u64,
+) -> Result<(SourceUniverseAdmittedControls, u64)> {
+    let mut next_total_control_bytes = admitted_control_bytes;
     let run_spec_bytes = read_pinned_control(
         pack_base_dir,
         record,
@@ -853,6 +843,8 @@ fn admit_record_controls(
         &record.run_spec_path,
         &record.run_spec_sha256,
         policy.max_run_spec_bytes,
+        policy.max_total_control_bytes,
+        &mut next_total_control_bytes,
     )?;
     let accepted_tranche_bytes = read_pinned_control(
         pack_base_dir,
@@ -861,6 +853,8 @@ fn admit_record_controls(
         &record.accepted_tranche_path,
         &record.accepted_tranche_sha256,
         policy.max_accepted_tranche_bytes,
+        policy.max_total_control_bytes,
+        &mut next_total_control_bytes,
     )?;
     let execution_plan_bytes = read_pinned_control(
         pack_base_dir,
@@ -869,6 +863,8 @@ fn admit_record_controls(
         &record.execution_plan_path,
         &record.execution_plan_sha256,
         policy.max_execution_plan_bytes,
+        policy.max_total_control_bytes,
+        &mut next_total_control_bytes,
     )?;
 
     let run_spec_text =
@@ -891,12 +887,15 @@ fn admit_record_controls(
         &accepted_tranche_bytes,
     )?;
 
-    Ok(SourceUniverseAdmittedControls {
-        run_spec_bytes,
-        accepted_tranche_bytes,
-        execution_plan_bytes,
-        run_spec: Arc::new(run_spec),
-    })
+    Ok((
+        SourceUniverseAdmittedControls {
+            run_spec_bytes,
+            accepted_tranche_bytes,
+            execution_plan_bytes,
+            run_spec: Arc::new(run_spec),
+        },
+        next_total_control_bytes,
+    ))
 }
 
 fn read_pinned_control(
@@ -905,10 +904,23 @@ fn read_pinned_control(
     role: &str,
     declared_path: &Path,
     expected_sha256: &str,
-    limit: ByteLimit,
+    individual_limit: ByteLimit,
+    total_limit: ByteLimit,
+    admitted_control_bytes: &mut u64,
 ) -> Result<Arc<[u8]>> {
     validate_sha256_hex(expected_sha256)
         .with_context(|| format!("pack record {} has invalid {role}_sha256", record.sequence))?;
+    let remaining_total_bytes = total_limit
+        .max_bytes()
+        .checked_sub(*admitted_control_bytes)
+        .context("admitted control bytes already exceed configured max_total_control_bytes")?;
+    ensure!(
+        remaining_total_bytes > 0,
+        "batch admitted control bytes would exceed configured max_total_control_bytes while reading {role}"
+    );
+    let constrained_by_total = remaining_total_bytes < individual_limit.max_bytes();
+    let effective_limit = ByteLimit::new(individual_limit.max_bytes().min(remaining_total_bytes))
+        .context("construct effective control byte limit")?;
     let resolved_path = resolve_existing_path(pack_base_dir, declared_path);
     let file = File::open(&resolved_path)
         .with_context(|| format!("open pinned {role} {}", resolved_path.display()))?;
@@ -920,11 +932,30 @@ fn read_pinned_control(
         "pinned {role} {} is not a regular file",
         resolved_path.display()
     );
-    let bytes = read_to_vec_with_limit(
+    let read_result = read_to_vec_with_limit(
         file,
-        limit,
+        effective_limit,
         format!("read pinned {role} {}", resolved_path.display()),
-    )?;
+    );
+    let bytes = if constrained_by_total {
+        read_result.with_context(|| {
+            format!(
+                "batch admitted control bytes would exceed configured max_total_control_bytes while reading {role}"
+            )
+        })?
+    } else {
+        read_result?
+    };
+    let byte_count = u64::try_from(bytes.len()).context("control byte length exceeds u64")?;
+    *admitted_control_bytes = (*admitted_control_bytes)
+        .checked_add(byte_count)
+        .context("batch admitted control byte total overflow")?;
+    ensure!(
+        *admitted_control_bytes <= total_limit.max_bytes(),
+        "batch admitted control bytes {} exceed configured max_total_control_bytes {} while reading {role}",
+        *admitted_control_bytes,
+        total_limit.max_bytes()
+    );
     let actual_sha256 = hex::encode(Sha256::digest(&bytes));
     ensure!(
         actual_sha256 == expected_sha256,
@@ -945,20 +976,13 @@ fn validate_admitted_control_binding(
     run_spec_bytes: &[u8],
     accepted_tranche_bytes: &[u8],
 ) -> Result<()> {
-    ensure!(
-        accepted_tranche.schema_version == BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
-        "accepted_tranche schema_version mismatch: expected {}, got {}",
-        BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
-        accepted_tranche.schema_version
-    );
-    ensure!(
-        accepted_tranche.status == BackfillAcceptedTrancheStatus::Accepted,
-        "accepted_tranche status must be accepted"
-    );
-    ensure!(
-        execution_plan.status == BackfillExecutionPlanStatus::Ready,
-        "execution_plan status must be ready"
-    );
+    validate_admitted_control_self_validity(
+        pack,
+        record,
+        run_spec,
+        accepted_tranche,
+        execution_plan,
+    )?;
 
     let run_spec_sha256 = hex::encode(Sha256::digest(run_spec_bytes));
     let accepted_tranche_sha256 = hex::encode(Sha256::digest(accepted_tranche_bytes));
@@ -1067,21 +1091,194 @@ fn validate_admitted_control_binding(
     Ok(())
 }
 
-impl SourceUniverseAdmittedControls {
-    fn total_bytes(&self) -> Result<u64> {
-        [
-            self.run_spec_bytes.len(),
-            self.accepted_tranche_bytes.len(),
-            self.execution_plan_bytes.len(),
-        ]
-        .into_iter()
-        .try_fold(0_u64, |total, length| {
-            let length = u64::try_from(length).context("control byte length exceeds u64")?;
-            total
-                .checked_add(length)
-                .context("record control byte total overflow")
-        })
+fn validate_admitted_control_self_validity(
+    pack: &SourceUniverseExecutionPack,
+    record: &SourceUniverseExecutionPackRecord,
+    run_spec: &RunSpec,
+    accepted_tranche: &BackfillAcceptedTrancheManifest,
+    execution_plan: &BackfillExecutionPlan,
+) -> Result<()> {
+    for (name, value) in [
+        ("venue", pack.venue.as_str()),
+        ("table_family", pack.table_family.as_str()),
+        ("operator_run_id", record.operator_run_id.as_str()),
+        ("accepted_tranche_id", record.accepted_tranche_id.as_str()),
+        ("source_binding", record.source_binding.as_str()),
+        ("category", record.category.as_str()),
+        ("symbol", record.symbol.as_str()),
+        ("archive_date", record.archive_date.as_str()),
+        ("source_uri", record.source_uri.as_str()),
+        ("source_url", record.source_url.as_str()),
+        ("output_prefix", record.output_prefix.as_str()),
+    ] {
+        ensure!(!value.trim().is_empty(), "{name} must not be empty");
     }
+    ensure!(
+        !record.source_proof_id.trim().is_empty() && record.source_proof_version > 0,
+        "source proof identity must be complete"
+    );
+    ensure!(
+        record.selected_object_bytes > 0,
+        "selected_object_bytes must be positive"
+    );
+
+    ensure!(
+        accepted_tranche.schema_version == BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
+        "accepted_tranche schema_version mismatch: expected {}, got {}",
+        BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
+        accepted_tranche.schema_version
+    );
+    ensure!(
+        !accepted_tranche.tranche_id.trim().is_empty(),
+        "accepted_tranche tranche_id must not be empty"
+    );
+    ensure!(
+        accepted_tranche.status == BackfillAcceptedTrancheStatus::Accepted,
+        "accepted_tranche status must be accepted"
+    );
+    ensure!(
+        accepted_tranche.blocking_issues.is_empty(),
+        "accepted_tranche must not contain blocking issues"
+    );
+    ensure!(
+        accepted_tranche.object_count == 1 && accepted_tranche.objects.len() == 1,
+        "accepted_tranche must bind exactly one object"
+    );
+    ensure!(
+        !accepted_tranche
+            .source_proof_scope_report_id
+            .trim()
+            .is_empty(),
+        "accepted_tranche source_proof_scope_report_id must not be empty"
+    );
+    validate_sha256_hex(&accepted_tranche.source_proof_scope_report_hash)
+        .context("accepted_tranche source_proof_scope_report_hash")?;
+    ensure!(
+        !accepted_tranche.source_proof_id.trim().is_empty()
+            && accepted_tranche.source_proof_version > 0,
+        "accepted_tranche source proof identity must be complete"
+    );
+    ensure!(
+        !accepted_tranche.source_binding.trim().is_empty(),
+        "accepted_tranche source_binding must not be empty"
+    );
+    ensure!(
+        !accepted_tranche.table_family.trim().is_empty(),
+        "accepted_tranche table_family must not be empty"
+    );
+    ensure!(
+        !accepted_tranche.parent_manifest_id.trim().is_empty(),
+        "accepted_tranche parent_manifest_id must not be empty"
+    );
+    ensure!(
+        accepted_tranche.object_level_tranche_required,
+        "accepted_tranche object_level_tranche_required must be true"
+    );
+    let tranche_object = &accepted_tranche.objects[0];
+    for (name, value) in [
+        ("s3_uri", tranche_object.s3_uri.as_str()),
+        ("source_url", tranche_object.source_url.as_str()),
+        ("archive_date", tranche_object.archive_date.as_str()),
+    ] {
+        ensure!(
+            !value.trim().is_empty(),
+            "accepted_tranche object {name} must not be empty"
+        );
+    }
+    validate_sha256_hex(&tranche_object.sha256).context("accepted_tranche object sha256")?;
+    ensure!(
+        tranche_object.bytes > 0,
+        "accepted_tranche object bytes must be positive"
+    );
+    ensure!(
+        accepted_tranche.accepted_bytes == tranche_object.bytes,
+        "accepted_tranche accepted_bytes must equal its object bytes"
+    );
+    validate_control_selection_metadata(
+        &tranche_object.source_row_groups,
+        tranche_object.predicate_ref.as_deref(),
+    )?;
+
+    ensure!(
+        execution_plan.schema_version == BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+        "execution_plan schema_version mismatch: expected {}, got {}",
+        BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION,
+        execution_plan.schema_version
+    );
+    ensure!(
+        !execution_plan.plan_id.trim().is_empty(),
+        "execution_plan plan_id must not be empty"
+    );
+    ensure!(
+        execution_plan.status == BackfillExecutionPlanStatus::Ready,
+        "execution_plan status must be ready"
+    );
+    ensure!(
+        execution_plan.blocking_issues.is_empty(),
+        "execution_plan must not contain blocking issues"
+    );
+    ensure!(
+        execution_plan.object_count == 1 && execution_plan.objects.len() == 1,
+        "execution_plan must bind exactly one object"
+    );
+    ensure!(
+        execution_plan.max_source_rows > 0,
+        "execution_plan max_source_rows must be positive"
+    );
+    ensure!(
+        execution_plan.max_projected_row_groups > 0,
+        "execution_plan max_projected_row_groups must be positive"
+    );
+    ensure!(
+        execution_plan.max_wall_seconds > 0,
+        "execution_plan max_wall_seconds must be positive"
+    );
+    ensure!(
+        run_spec.converter.raw_payload.max_object_bytes > 0,
+        "run_spec max_object_bytes must be positive"
+    );
+    ensure!(
+        run_spec.converter.raw_payload.max_decoded_bytes > 0,
+        "run_spec max_decoded_bytes must be positive"
+    );
+    ensure!(
+        run_spec.manifest.source_proof_id == run_spec.source_proof.source_proof_id
+            && run_spec.manifest.source_proof_version == run_spec.source_proof.source_proof_version,
+        "run_spec source proof identity mismatch between manifest and source_proof"
+    );
+    ensure!(
+        run_spec.manifest.venue_binding_key == run_spec.source_proof.source_binding,
+        "run_spec source_binding mismatch between manifest and source_proof"
+    );
+    let plan_object = &execution_plan.objects[0];
+    validate_control_selection_metadata(
+        &plan_object.source_row_groups,
+        plan_object.predicate_ref.as_deref(),
+    )?;
+    ensure!(
+        !execution_plan.require_object_selection_metadata
+            || !plan_object.source_row_groups.is_empty()
+            || plan_object.predicate_ref.is_some(),
+        "execution_plan requires object selection metadata"
+    );
+    Ok(())
+}
+
+fn validate_control_selection_metadata(
+    source_row_groups: &[u64],
+    predicate_ref: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        source_row_groups.windows(2).all(|pair| pair[0] < pair[1]),
+        "source_row_groups must be strictly increasing and unique"
+    );
+    if let Some(predicate_ref) = predicate_ref {
+        ensure!(
+            !predicate_ref.trim().is_empty(),
+            "predicate_ref must not be empty when present"
+        );
+    }
+    Ok(())
 }
 
 /// Re-prove a carried record's prior OUTPUT before it is reused on resume.

@@ -251,14 +251,6 @@ impl PolymarketMarketInfoSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NtFeeProjection {
-    pub fees_enabled: bool,
-    pub rate: Decimal,
-    pub exponent: u32,
-    pub taker_only: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PolymarketEconomicsError {
     InvalidMarketInfo,
     MissingFeeDescriptor,
@@ -266,7 +258,6 @@ pub enum PolymarketEconomicsError {
     InvalidRate,
     InvalidFillLeg,
     StaleSnapshot,
-    NtProjectionDisagreement,
     MissingBuilderDescriptor,
     BuilderProfileMismatch,
     InvalidIdentity,
@@ -593,11 +584,8 @@ impl PolymarketEconomicsAuthority {
             body,
         )
         .map_err(|error| anyhow::anyhow!("invalid Polymarket market-info: {error:?}"))?;
-        let adapter =
-            PolymarketEconomicsAdapter::try_new(self.adapter_config.clone(), snapshot, None)
-                .map_err(|error| {
-                    anyhow::anyhow!("invalid Polymarket economics adapter: {error:?}")
-                })?;
+        let adapter = PolymarketEconomicsAdapter::try_new(self.adapter_config.clone(), snapshot)
+            .map_err(|error| anyhow::anyhow!("invalid Polymarket economics adapter: {error:?}"))?;
         Ok(PolymarketMarketAuthorityPart {
             adapter,
             snapshot_id,
@@ -764,7 +752,6 @@ impl PolymarketEconomicsAdapter {
     pub fn try_new(
         config: PolymarketEconomicsAdapterConfig,
         snapshot: PolymarketMarketInfoSnapshot,
-        nt_projection: Option<NtFeeProjection>,
     ) -> Result<Self, PolymarketEconomicsError> {
         if snapshot.source_at_ns > snapshot.fetched_at_ns
             || snapshot.fetched_at_ns > snapshot.valid_until_ns
@@ -790,24 +777,6 @@ impl PolymarketEconomicsAdapter {
             },
             _ => return Err(PolymarketEconomicsError::InvalidMarketInfo),
         };
-        if let Some(projection) = nt_projection {
-            let agrees = match &platform_plan {
-                PlatformQuotePlan::FeeFree => !projection.fees_enabled,
-                PlatformQuotePlan::PriceShaped {
-                    rate,
-                    exponent,
-                    taker_only,
-                } => {
-                    projection.fees_enabled
-                        && projection.rate == *rate
-                        && projection.exponent == *exponent
-                        && projection.taker_only == *taker_only
-                }
-            };
-            if !agrees {
-                return Err(PolymarketEconomicsError::NtProjectionDisagreement);
-            }
-        }
         let builder_plan = BuilderQuotePlan::Unavailable;
         Ok(Self {
             config,
@@ -954,24 +923,7 @@ impl VenueEconomicsAdapter for PolymarketEconomicsAdapter {
                 source_id: self.config.source_id.clone(),
             }
         })?;
-        let normalized_amount =
-            request
-                .planned_fill_legs
-                .iter()
-                .try_fold(Decimal::ZERO, |total, leg| {
-                    if leg.price <= Decimal::ZERO || leg.quantity <= Decimal::ZERO {
-                        return Err(EconomicsUnavailable::InvalidEdgeBasis);
-                    }
-                    total
-                        .checked_add(
-                            leg.price
-                                .checked_mul(leg.quantity)
-                                .ok_or(EconomicsUnavailable::InvalidEdgeBasis)?,
-                        )
-                        .ok_or(EconomicsUnavailable::InvalidEdgeBasis)
-                })?;
         Ok(crate::economics::ResolvedEdgeBasis {
-            normalized_amount,
             source_snapshot_ids: vec![SnapshotId::new(self.snapshot.snapshot_id.clone())?],
             valid_until_ns: self.snapshot.valid_until_ns,
         })

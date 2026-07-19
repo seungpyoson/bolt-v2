@@ -329,17 +329,12 @@ struct RecordingEconomicsAdapterFixture {
 impl crate::economics::VenueEconomicsAdapter for RecordingEconomicsAdapterFixture {
     fn resolve_edge_basis(
         &self,
-        request: &crate::economics::EconomicQuoteRequest,
+        _request: &crate::economics::EconomicQuoteRequest,
     ) -> std::result::Result<
         crate::economics::ResolvedEdgeBasis,
         crate::economics::EconomicsUnavailable,
     > {
         Ok(crate::economics::ResolvedEdgeBasis {
-            normalized_amount: request
-                .planned_fill_legs
-                .iter()
-                .map(|leg| leg.price * leg.quantity)
-                .sum(),
             source_snapshot_ids: vec![self.estimate.authority.snapshot_id.clone()],
             valid_until_ns: self.estimate.authority.valid_until_ns,
         })

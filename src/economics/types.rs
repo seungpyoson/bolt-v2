@@ -354,13 +354,13 @@ pub struct PlannedFillLeg {
 }
 
 macro_rules! economic_amount {
-    ($name:ident, $minimum:expr) => {
+    ($name:ident, $is_valid:expr) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct $name(Decimal);
 
         impl $name {
             pub fn new(amount: Decimal) -> Result<Self, EconomicsUnavailable> {
-                if amount < $minimum {
+                if !($is_valid)(amount) {
                     return Err(EconomicsUnavailable::InvalidDecimal);
                 }
                 Ok(Self(amount))
@@ -373,11 +373,13 @@ macro_rules! economic_amount {
     };
 }
 
-economic_amount!(PlannedFillNotional, Decimal::ZERO);
-economic_amount!(ReservationBasis, Decimal::ZERO);
-economic_amount!(GuaranteedDebit, Decimal::ZERO);
-economic_amount!(FullReservationLiability, Decimal::ZERO);
-economic_amount!(EdgeBasisAmount, Decimal::ZERO);
+economic_amount!(PlannedFillNotional, |amount: Decimal| amount
+    > Decimal::ZERO);
+economic_amount!(ReservationBasis, |amount: Decimal| amount >= Decimal::ZERO);
+economic_amount!(GuaranteedDebit, |amount: Decimal| amount >= Decimal::ZERO);
+economic_amount!(FullReservationLiability, |amount: Decimal| amount
+    >= Decimal::ZERO);
+economic_amount!(EdgeBasisAmount, |amount: Decimal| amount > Decimal::ZERO);
 
 impl PlannedFillNotional {
     pub fn from_legs(legs: &[PlannedFillLeg]) -> Result<Self, EconomicsUnavailable> {
@@ -475,7 +477,6 @@ pub struct EdgeBasisEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedEdgeBasis {
-    pub normalized_amount: Decimal,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valid_until_ns: u64,
 }

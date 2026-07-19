@@ -407,7 +407,10 @@ impl ReplayEconomicsAdapter {
                 self.snapshot.edge_basis.product_metadata_source.clone(),
             )?,
             policy_version: self.snapshot.edge_basis.policy_version,
-            normalized_amount: resolved.normalized_amount,
+            normalized_amount: bolt_v2::economics::PlannedFillNotional::from_legs(
+                &request.planned_fill_legs,
+            )?
+            .amount(),
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },

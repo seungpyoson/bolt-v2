@@ -9,8 +9,8 @@ use bolt_v2::{
     },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, FormulaId,
-        ProductSurfaceId, ReservationBasis, ResolvedEdgeBasis, SnapshotId, SourceId,
-        VenueEconomicsAdapter, VenueQuoteEstimate,
+        NativeUnitId, PointEstimate, ProductSurfaceId, ReservationBasis, ResolvedEdgeBasis,
+        SignedNativeEffect, SnapshotId, SourceId, VenueEconomicsAdapter, VenueQuoteEstimate,
     },
 };
 
@@ -24,11 +24,6 @@ impl VenueEconomicsAdapter for FixedVenue {
         request: &EconomicQuoteRequest,
     ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
         Ok(ResolvedEdgeBasis {
-            normalized_amount: request
-                .planned_fill_legs
-                .iter()
-                .map(|leg| leg.price * leg.quantity)
-                .sum(),
             source_snapshot_ids: vec![SnapshotId::new("basis-snapshot")?],
             valid_until_ns: request.requested_at_ns + 5,
         })
@@ -50,8 +45,7 @@ impl VenueEconomicsAdapter for MismatchedBasisVenue {
         request: &EconomicQuoteRequest,
     ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
         Ok(ResolvedEdgeBasis {
-            normalized_amount: decimal("4.99"),
-            source_snapshot_ids: vec![SnapshotId::new("basis-snapshot")?],
+            source_snapshot_ids: vec![SnapshotId::new("other-basis-snapshot")?],
             valid_until_ns: request.requested_at_ns + 5,
         })
     }
@@ -225,6 +219,73 @@ fn configured_quote_validity_caps_authoritative_source_window() {
 }
 
 #[test]
+fn missing_forecast_valuation_degrades_without_blocking_core_admission() {
+    let request = canonical_fixture_request();
+    let mut component = estimated_component(
+        "forecast",
+        decimal("0.25"),
+        bolt_v2::economics::AdmissionTreatment::ForecastOnly,
+        None,
+    );
+    component.point_estimate = PointEstimate::NonZero(
+        SignedNativeEffect::currency(
+            decimal("0.25"),
+            NativeUnitId::new("unvalued-incentive-unit").unwrap(),
+        )
+        .unwrap(),
+    );
+    let authority = component.source.clone();
+    let runtime = runtime(
+        VenueQuoteEstimate {
+            authority,
+            dependency_sources: Vec::new(),
+            components: vec![component],
+        },
+        10,
+    );
+
+    let admission = runtime
+        .quote_admission(intent(request))
+        .expect("supplemental evidence must not block the core seal");
+
+    assert!(!admission.quote().forecast_complete());
+    assert_eq!(admission.quote().core_total(), Decimal::ZERO);
+}
+
+#[test]
+fn missing_required_valuation_still_blocks_admission() {
+    let request = canonical_fixture_request();
+    let mut component = estimated_component(
+        "required",
+        decimal("-0.25"),
+        bolt_v2::economics::AdmissionTreatment::GuaranteedConditionalOnAction,
+        None,
+    );
+    component.point_estimate = PointEstimate::NonZero(
+        SignedNativeEffect::currency(
+            decimal("-0.25"),
+            NativeUnitId::new("unvalued-required-unit").unwrap(),
+        )
+        .unwrap(),
+    );
+    let authority = component.source.clone();
+    let runtime = runtime(
+        VenueQuoteEstimate {
+            authority,
+            dependency_sources: Vec::new(),
+            components: vec![component],
+        },
+        10,
+    );
+
+    assert!(matches!(
+        runtime.quote_admission(intent(request)),
+        Err(EconomicsUnavailable::MissingValuation { .. })
+            | Err(EconomicsUnavailable::MissingValuationRoute { .. })
+    ));
+}
+
+#[test]
 fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surface() {
     let request = canonical_fixture_request();
     let component = estimated_component(
@@ -376,7 +437,7 @@ fn configured_source_keeps_planned_edge_basis_distinct_from_reservation_basis() 
 }
 
 #[test]
-fn configured_source_rejects_substrate_and_adapter_edge_basis_disagreement() {
+fn configured_source_rejects_edge_basis_provenance_disagreement() {
     let request = canonical_fixture_request();
     let component = estimated_component(
         "charge",
@@ -430,7 +491,7 @@ fn configured_source_rejects_substrate_and_adapter_edge_basis_disagreement() {
             gross_expected_value: decimal("2"),
             reservation_basis: ReservationBasis::new(decimal("5")).expect("valid basis"),
         })
-        .expect_err("basis disagreement must fail closed");
+        .expect_err("basis provenance disagreement must fail closed");
 
     assert_eq!(error, EconomicsUnavailable::InvalidEdgeBasis);
 }

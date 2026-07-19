@@ -268,18 +268,6 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
         BoltV3BasketAdmissionError::StaleSubmitRecheck,
     );
 
-    let scan = scan_evidence(&group, Decimal::ZERO, dec!(1), dec!(1000), 1_000);
-    assert_basket_rejects(
-        "non-positive candidate cost",
-        basket_request(
-            "basket-zero-cost",
-            &group,
-            &scan,
-            entry_claims(&group, dec!(0.9)),
-        ),
-        BoltV3BasketAdmissionError::NonPositiveCandidateCost,
-    );
-
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
     let mut missing_claim = entry_claims(&group, dec!(0.9));
     missing_claim.pop();
@@ -304,39 +292,17 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
     );
 
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    let mut wrong_quantity_claims = entry_claims(&group, dec!(0.9));
+    wrong_quantity_claims[0].order_quantity = dec!(2);
     assert_basket_rejects(
-        "submit claim notional exceeds scanned leg",
+        "submit claim quantity mismatch",
         basket_request(
-            "basket-claim-notional",
+            "basket-claim-quantity",
             &group,
             &scan,
-            entry_claims(&group, dec!(0.91)),
+            wrong_quantity_claims,
         ),
         BoltV3BasketAdmissionError::SubmitClaimsMismatch,
-    );
-
-    let scan = scan_evidence(&group, dec!(1.8), dec!(-0.1), dec!(1000), 1_000);
-    assert_basket_rejects(
-        "non-positive edge",
-        basket_request(
-            "basket-negative-edge",
-            &group,
-            &scan,
-            entry_claims(&group, dec!(0.9)),
-        ),
-        BoltV3BasketAdmissionError::NonPositiveEdge,
-    );
-
-    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(99.99), 1_000);
-    assert_basket_rejects(
-        "edge threshold",
-        basket_request(
-            "basket-edge-threshold",
-            &group,
-            &scan,
-            entry_claims(&group, dec!(0.9)),
-        ),
-        BoltV3BasketAdmissionError::EdgeThreshold,
     );
 
     let no_grouping = group_without_grouping_proof(&group);
@@ -410,6 +376,29 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
         .with_retry_count(2),
         BoltV3BasketAdmissionError::RetryBudgetExceeded,
     );
+}
+
+#[test]
+fn basket_cap_and_reservation_ignore_scanner_economics_substitutes() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
+    let submit_state = submit_state(writer, 4, dec!(10));
+    let group = fixture_group();
+    let scan = scan_evidence(&group, Decimal::ZERO, dec!(-1), Decimal::ZERO, 1_000);
+
+    let _permit = basket_state
+        .admit(
+            &basket_request(
+                "sealed-liability-authority",
+                &group,
+                &scan,
+                entry_claims(&group, dec!(0.9)),
+            ),
+            &submit_state,
+        )
+        .expect("scanner-derived cost and edge are not reservation authorities");
+
+    assert_eq!(submit_state.admitted_order_count(), 2);
 }
 
 #[test]

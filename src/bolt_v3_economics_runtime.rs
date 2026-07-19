@@ -606,6 +606,8 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         if dependencies.provider_key != self.provider_key {
             return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
+        let planned_fill_notional =
+            PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
         let resolved_edge_basis = dependencies.adapter.resolve_edge_basis(&intent.request)?;
         if resolved_edge_basis.source_snapshot_ids.is_empty()
             || resolved_edge_basis.source_snapshot_ids
@@ -618,7 +620,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
             resolver_id: dependencies.edge_basis.resolver_id,
             product_metadata_source: dependencies.edge_basis.product_metadata_source,
             policy_version: dependencies.edge_basis.policy_version,
-            normalized_amount: resolved_edge_basis.normalized_amount,
+            normalized_amount: planned_fill_notional.amount(),
             scope: crate::economics::EconomicScope::Decision {
                 decision_correlation_id: intent.request.decision_correlation_id.clone(),
             },
@@ -1218,14 +1220,9 @@ fn test_economics_admission_with_binding_and_purpose(
     impl VenueEconomicsAdapter for TestAdapter {
         fn resolve_edge_basis(
             &self,
-            request: &EconomicQuoteRequest,
+            _request: &EconomicQuoteRequest,
         ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
             Ok(crate::economics::ResolvedEdgeBasis {
-                normalized_amount: request
-                    .planned_fill_legs
-                    .iter()
-                    .map(|leg| leg.price * leg.quantity)
-                    .sum(),
                 source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
                 valid_until_ns: self.0.authority.valid_until_ns,
             })
@@ -1379,14 +1376,9 @@ mod test_economics_admission_source_support {
     impl VenueEconomicsAdapter for TestAdapter {
         fn resolve_edge_basis(
             &self,
-            request: &EconomicQuoteRequest,
+            _request: &EconomicQuoteRequest,
         ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
             Ok(crate::economics::ResolvedEdgeBasis {
-                normalized_amount: request
-                    .planned_fill_legs
-                    .iter()
-                    .map(|leg| leg.price * leg.quantity)
-                    .sum(),
                 source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
                 valid_until_ns: self.0.authority.valid_until_ns,
             })

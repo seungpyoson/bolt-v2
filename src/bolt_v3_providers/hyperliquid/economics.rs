@@ -1569,11 +1569,6 @@ impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
                 source_id: self.config.source_id.clone(),
             })?;
         Ok(crate::economics::ResolvedEdgeBasis {
-            normalized_amount: self.notional(request).map_err(|_| {
-                EconomicsUnavailable::ProviderQuoteUnavailable {
-                    source_id: self.config.source_id.clone(),
-                }
-            })?,
             source_snapshot_ids: vec![SnapshotId::new(self.product.snapshot_id.clone())?],
             valid_until_ns: self.product.valid_until_ns,
         })

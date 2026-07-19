@@ -15,11 +15,6 @@ impl VenueEconomicsAdapter for SyntheticVenue {
         request: &EconomicQuoteRequest,
     ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
         Ok(ResolvedEdgeBasis {
-            normalized_amount: request
-                .planned_fill_legs
-                .iter()
-                .map(|leg| leg.price * leg.quantity)
-                .sum(),
             source_snapshot_ids: vec![SnapshotId::new("synthetic-snapshot")?],
             valid_until_ns: request.requested_at_ns + 10,
         })

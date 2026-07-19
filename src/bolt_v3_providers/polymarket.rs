@@ -306,7 +306,6 @@ pub(crate) fn build_offline_economics_adapter(
         economics::PolymarketEconomicsAdapterConfig::from_execution_config(&economics)
             .map_err(|error| format!("invalid offline Polymarket policy: {error:?}"))?,
         market_info,
-        None,
     )
     .map_err(|error| format!("invalid offline Polymarket adapter: {error:?}"))?;
     Ok(super::OfflineEconomicsAdapterBinding {

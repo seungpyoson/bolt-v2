@@ -567,6 +567,7 @@ def assert_mergify_config_field_handling_is_declarative() -> None:
         "queue_rules[].queue_conditions": "effective_pr_to_queue_routing",
         "queue_rules[].merge_conditions": "required_reviewer_evidence",
         "queue_rules[].branch_protection_injection_mode": "explicit_support_or_inconclusive",
+        "queue_rules[].merge_bot_account": "required_merge_identity",
         "queue_rules[].batch_size": "scalar_single_pr_model",
         "queue_rules[].batch_max_wait_time": "explicit_support_or_inconclusive",
         "queue_rules[].batch_max_failure_resolution_attempts": "explicit_support_or_inconclusive",
@@ -890,6 +891,44 @@ def assert_post_cutover_mergify_contract_is_review_only_and_single_pr() -> None:
         2,
         "reviewer-only merge conditions",
     )
+
+
+def assert_none_injection_requires_the_configured_merge_bot() -> None:
+    module = load_preflight_module()
+    merge_bot_account = ci_provenance.MERGIFY_CONFIG_EXPECTATIONS["merge_bot_account"]
+    configured = f"    merge_bot_account: {merge_bot_account}\n"
+    candidate = MERGIFY_YML
+    assert_equal(candidate.count(configured), 2, "merge bot configured for both queues")
+    assert_equal(module.verify_mergify_config(candidate), [], "authorized merge bot contract")
+
+    missing_default = replace_once_after(
+        candidate,
+        "  - name: default\n",
+        f"    merge_bot_account: {merge_bot_account}\n",
+        "",
+    )
+    missing_errors = module.verify_mergify_config(missing_default)
+    if f".mergify.yml default merge_bot_account must be {merge_bot_account}" not in missing_errors:
+        raise AssertionError(missing_errors)
+
+    wrong_hotfix = replace_once(
+        candidate,
+        f"    merge_bot_account: {merge_bot_account}\n",
+        "    merge_bot_account: unauthorized-user\n",
+    )
+    wrong_errors = module.verify_mergify_config(wrong_hotfix)
+    if f".mergify.yml hotfix merge_bot_account must be {merge_bot_account}" not in wrong_errors:
+        raise AssertionError(wrong_errors)
+
+    plural_default = replace_once_after(
+        candidate,
+        "  - name: default\n",
+        f"    merge_bot_account: {merge_bot_account}\n",
+        f"    merge_bot_account:\n      - {merge_bot_account}\n",
+    )
+    plural_errors = module.verify_mergify_config(plural_default)
+    if f".mergify.yml default merge_bot_account must be {merge_bot_account}" not in plural_errors:
+        raise AssertionError(plural_errors)
 
 
 def assert_queue_ci_and_verifier_flags_are_removed() -> None:
@@ -2573,6 +2612,7 @@ def assert_mergify_config_gaps_are_reported() -> None:
 def main() -> int:
     assert_advisory_check_matrix_does_not_affect_admission()
     assert_post_cutover_mergify_contract_is_review_only_and_single_pr()
+    assert_none_injection_requires_the_configured_merge_bot()
     assert_queue_ci_and_verifier_flags_are_removed()
     assert_preflight_config_is_identity_only()
     assert_origin_and_base_cli_overrides_are_rejected()

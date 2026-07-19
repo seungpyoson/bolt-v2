@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -10,9 +10,10 @@ use std::{
 
 use backtesting_vertical_slice::source_universe_batch_execution::{
     CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
-    SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReport,
-    SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
-    SourceUniverseObjectFetcher, SourceUniverseOperatorRunner, execute_source_universe_batch,
+    SourceUniverseAdmittedControls, SourceUniverseBatchExecutionConfig,
+    SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
+    SourceUniverseBatchExecutionRunOutput, SourceUniverseObjectFetcher,
+    SourceUniverseOperatorRunner, execute_source_universe_batch,
     execute_source_universe_batch_with_config, execute_source_universe_batch_with_factories,
     write_source_universe_batch_execution_report,
 };
@@ -23,13 +24,18 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
     let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let accepted_tranche_path = temp_dir.path().join("accepted-tranche.json");
     let execution_plan_path = temp_dir.path().join("execution-plan.json");
     let output_dir = temp_dir.path().join("batch-output");
     let object_bytes = b"accepted object bytes";
     let object_sha256 = sha256_hex(object_bytes);
 
-    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
-    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+    let run_spec_bytes = b"run_id = \"synthetic-run\"\n";
+    let accepted_tranche_bytes = b"{}\n";
+    let execution_plan_bytes = b"{}\n";
+    fs::write(&run_spec_path, run_spec_bytes).expect("write run spec");
+    fs::write(&accepted_tranche_path, accepted_tranche_bytes).expect("write accepted tranche");
+    fs::write(&execution_plan_path, execution_plan_bytes).expect("write execution plan");
     fs::write(
         &pack_path,
         format!(
@@ -73,11 +79,11 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
       "accepted_tranche_id": "accepted-tranche-synthetic",
       "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/synthetic",
       "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "run-spec-sha",
-      "accepted_tranche_path": "accepted-tranche.json",
-      "accepted_tranche_sha256": "accepted-tranche-sha",
+      "run_spec_sha256": "{run_spec_sha256}",
+      "accepted_tranche_path": "{accepted_tranche_path}",
+      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
       "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "execution-plan-sha"
+      "execution_plan_sha256": "{execution_plan_sha256}"
     }}
   ],
   "blocking_reasons": []
@@ -85,7 +91,11 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
             object_bytes_len = object_bytes.len(),
             object_sha256 = object_sha256,
             run_spec_path = run_spec_path.display(),
+            run_spec_sha256 = sha256_hex(run_spec_bytes),
+            accepted_tranche_path = accepted_tranche_path.display(),
+            accepted_tranche_sha256 = sha256_hex(accepted_tranche_bytes),
             execution_plan_path = execution_plan_path.display(),
+            execution_plan_sha256 = sha256_hex(execution_plan_bytes),
         ),
     )
     .expect("write pack");
@@ -124,8 +134,18 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
         "source-universe-operator-run-synthetic-00000"
     );
     assert_eq!(runner.calls[0].object_bytes, object_bytes);
-    assert_eq!(runner.calls[0].run_spec_path, run_spec_path);
-    assert_eq!(runner.calls[0].execution_plan_path, execution_plan_path);
+    assert_eq!(
+        runner.calls[0].run_spec_bytes,
+        fs::read(run_spec_path).unwrap()
+    );
+    assert_eq!(
+        runner.calls[0].accepted_tranche_bytes,
+        fs::read(accepted_tranche_path).unwrap()
+    );
+    assert_eq!(
+        runner.calls[0].execution_plan_bytes,
+        fs::read(execution_plan_path).unwrap()
+    );
     assert_eq!(
         runner.calls[0].output_dir,
         output_dir.join("source-universe-operator-run-synthetic-00000")
@@ -139,6 +159,178 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     assert_eq!(written["batch_id"], "source-universe-batch-synthetic");
     assert_eq!(written["completed_record_count"], 1);
     assert_eq!(artifact.completed_record_count, 1);
+}
+
+#[test]
+fn control_hash_mismatch_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    let output_dir = temp_dir.path().join("batch-output");
+    let object_bytes = b"accepted object bytes";
+
+    fs::write(&run_spec_path, "run_id = \"admitted\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+    write_n_record_pack(
+        &pack_path,
+        &run_spec_path,
+        &execution_plan_path,
+        &[(0, object_bytes.to_vec())],
+    );
+    fs::write(&run_spec_path, "run_id = \"tampered\"\n").expect("tamper run spec");
+
+    let error = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        &mut NeverFetcher,
+        &mut RecordingRunner::default(),
+    )
+    .expect_err("tampered control must reject before fetch");
+
+    assert!(
+        format!("{error:#}").contains("pinned run_spec sha256 mismatch"),
+        "full error chain must identify the rejected control: {error:#}"
+    );
+    assert!(
+        !output_dir.exists(),
+        "invalid admission must create no output"
+    );
+}
+
+#[test]
+fn malformed_control_sha256_fields_reject_before_fetch_or_output_creation() {
+    for field in [
+        "run_spec_sha256",
+        "accepted_tranche_sha256",
+        "execution_plan_sha256",
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (pack_path, _, _, _) = write_control_admission_fixture(
+            temp_dir.path(),
+            &[(0, b"accepted object bytes".to_vec())],
+        );
+        let mut pack: serde_json::Value = serde_json::from_slice(
+            &fs::read(&pack_path).expect("read execution pack for mutation"),
+        )
+        .expect("parse execution pack for mutation");
+        pack["records"][0][field] = serde_json::Value::String("A".repeat(64));
+        fs::write(
+            &pack_path,
+            serde_json::to_vec_pretty(&pack).expect("serialize mutated execution pack"),
+        )
+        .expect("write mutated execution pack");
+
+        assert_control_admission_rejects_before_side_effects(
+            &pack_path,
+            &temp_dir.path().join("batch-output"),
+            &format!("invalid {field}"),
+        );
+    }
+}
+
+#[test]
+fn missing_control_file_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, execution_plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    fs::remove_file(execution_plan_path).expect("remove execution plan");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "inspect pinned execution_plan",
+    );
+}
+
+#[test]
+fn non_regular_control_file_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, accepted_tranche_path, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    fs::remove_file(&accepted_tranche_path).expect("remove accepted tranche file");
+    fs::create_dir(&accepted_tranche_path).expect("replace accepted tranche with directory");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "pinned accepted_tranche",
+    );
+}
+
+#[test]
+fn duplicate_selected_sequence_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        temp_dir.path(),
+        &[
+            (0, b"first accepted object bytes".to_vec()),
+            (0, b"second accepted object bytes".to_vec()),
+        ],
+    );
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "duplicate selected sequence 0",
+    );
+}
+
+#[test]
+fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
+    struct MutatingFetcher {
+        run_spec_path: std::path::PathBuf,
+        object_bytes: Vec<u8>,
+    }
+
+    impl SourceUniverseObjectFetcher for MutatingFetcher {
+        fn fetch(
+            &mut self,
+            _record: &SourceUniverseExecutionPackRecord,
+        ) -> anyhow::Result<Vec<u8>> {
+            fs::write(
+                &self.run_spec_path,
+                "run_id = \"changed-after-admission\"\n",
+            )?;
+            Ok(self.object_bytes.clone())
+        }
+    }
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    let output_dir = temp_dir.path().join("batch-output");
+    let admitted_run_spec = b"run_id = \"admitted\"\n";
+    let object_bytes = b"accepted object bytes";
+
+    fs::write(&run_spec_path, admitted_run_spec).expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+    write_n_record_pack(
+        &pack_path,
+        &run_spec_path,
+        &execution_plan_path,
+        &[(0, object_bytes.to_vec())],
+    );
+
+    let mut fetcher = MutatingFetcher {
+        run_spec_path,
+        object_bytes: object_bytes.to_vec(),
+    };
+    let mut runner = RecordingRunner::default();
+    execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("batch uses admitted control snapshot");
+
+    assert_eq!(runner.calls[0].run_spec_bytes, admitted_run_spec);
 }
 
 #[test]
@@ -1349,8 +1541,9 @@ struct RecordingRunner {
 struct RunCall {
     operator_run_id: String,
     object_bytes: Vec<u8>,
-    run_spec_path: std::path::PathBuf,
-    execution_plan_path: std::path::PathBuf,
+    run_spec_bytes: Vec<u8>,
+    accepted_tranche_bytes: Vec<u8>,
+    execution_plan_bytes: Vec<u8>,
     output_dir: std::path::PathBuf,
 }
 
@@ -1390,15 +1583,15 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         object_bytes: &[u8],
-        run_spec_path: &Path,
-        execution_plan_path: &Path,
+        controls: &SourceUniverseAdmittedControls,
         output_dir: &Path,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         self.calls.push(RunCall {
             operator_run_id: record.operator_run_id.clone(),
             object_bytes: object_bytes.to_vec(),
-            run_spec_path: run_spec_path.to_path_buf(),
-            execution_plan_path: execution_plan_path.to_path_buf(),
+            run_spec_bytes: controls.run_spec_bytes.to_vec(),
+            accepted_tranche_bytes: controls.accepted_tranche_bytes.to_vec(),
+            execution_plan_bytes: controls.execution_plan_bytes.to_vec(),
             output_dir: output_dir.to_path_buf(),
         });
         Ok(SourceUniverseBatchExecutionRunOutput {
@@ -1477,6 +1670,51 @@ fn write_two_record_pack(
     );
 }
 
+fn write_control_admission_fixture(
+    root: &Path,
+    objects: &[(u64, Vec<u8>)],
+) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let pack_path = root.join("source-universe-execution-pack.json");
+    let run_spec_path = root.join("run-spec.toml");
+    let accepted_tranche_path = root.join("accepted-tranche.json");
+    let execution_plan_path = root.join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"admitted\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, objects);
+    (
+        pack_path,
+        run_spec_path,
+        accepted_tranche_path,
+        execution_plan_path,
+    )
+}
+
+fn assert_control_admission_rejects_before_side_effects(
+    pack_path: &Path,
+    output_dir: &Path,
+    expected_error: &str,
+) {
+    let mut runner = RecordingRunner::default();
+    let error = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        pack_path,
+        output_dir,
+        None,
+        &mut NeverFetcher,
+        &mut runner,
+    )
+    .expect_err("invalid controls must reject before fetch");
+    assert!(
+        format!("{error:#}").contains(expected_error),
+        "full error chain must contain {expected_error:?}: {error:#}"
+    );
+    assert!(
+        !output_dir.exists(),
+        "invalid admission must create no output"
+    );
+    assert!(runner.calls.is_empty(), "invalid admission must not run");
+}
+
 /// Synthetic per-sequence symbol so the two-record assertions keep working
 /// (sequence 0 = `SYNTHETIC-AAA`, sequence 1 = `SYNTHETIC-BBB`, ...).
 fn synthetic_symbol(sequence: u64) -> String {
@@ -1490,6 +1728,20 @@ fn write_n_record_pack(
     execution_plan_path: &Path,
     objects: &[(u64, Vec<u8>)],
 ) {
+    let accepted_tranche_path = pack_path
+        .parent()
+        .expect("pack parent")
+        .join("accepted-tranche.json");
+    if !accepted_tranche_path.exists() {
+        fs::write(&accepted_tranche_path, "{}\n").expect("write accepted tranche");
+    }
+    let run_spec_bytes = fs::read(run_spec_path).expect("read run spec for pin");
+    let accepted_tranche_bytes =
+        fs::read(&accepted_tranche_path).expect("read accepted tranche for pin");
+    let execution_plan_bytes = fs::read(execution_plan_path).expect("read execution plan for pin");
+    let run_spec_sha256 = sha256_hex(&run_spec_bytes);
+    let accepted_tranche_sha256 = sha256_hex(&accepted_tranche_bytes);
+    let execution_plan_sha256 = sha256_hex(&execution_plan_bytes);
     let record_count = objects.len() as u64;
     let total_object_bytes_len: usize = objects.iter().map(|(_, bytes)| bytes.len()).sum();
     let records = objects
@@ -1513,17 +1765,21 @@ fn write_n_record_pack(
       "accepted_tranche_id": "accepted-tranche-synthetic-{sequence}",
       "output_prefix": "s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-{sequence}",
       "run_spec_path": "{run_spec_path}",
-      "run_spec_sha256": "run-spec-sha",
-      "accepted_tranche_path": "accepted-tranche.json",
-      "accepted_tranche_sha256": "accepted-tranche-sha",
+      "run_spec_sha256": "{run_spec_sha256}",
+      "accepted_tranche_path": "{accepted_tranche_path}",
+      "accepted_tranche_sha256": "{accepted_tranche_sha256}",
       "execution_plan_path": "{execution_plan_path}",
-      "execution_plan_sha256": "execution-plan-sha"
+      "execution_plan_sha256": "{execution_plan_sha256}"
     }}"#,
                 symbol = synthetic_symbol(*sequence),
                 sha256 = sha256_hex(bytes),
                 bytes_len = bytes.len(),
                 run_spec_path = run_spec_path.display(),
+                run_spec_sha256 = run_spec_sha256,
+                accepted_tranche_path = accepted_tranche_path.display(),
+                accepted_tranche_sha256 = accepted_tranche_sha256,
                 execution_plan_path = execution_plan_path.display(),
+                execution_plan_sha256 = execution_plan_sha256,
             )
         })
         .collect::<Vec<_>>()
@@ -1694,8 +1950,7 @@ impl SourceUniverseOperatorRunner for ConcurrencyRunner {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _object_bytes: &[u8],
-        _run_spec_path: &Path,
-        _execution_plan_path: &Path,
+        _controls: &SourceUniverseAdmittedControls,
         _output_dir: &Path,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         if let Some(probe) = &self.probe {
@@ -1730,8 +1985,7 @@ impl SourceUniverseOperatorRunner for FailingRunner {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         _object_bytes: &[u8],
-        _run_spec_path: &Path,
-        _execution_plan_path: &Path,
+        _controls: &SourceUniverseAdmittedControls,
         _output_dir: &Path,
     ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
         if self.failing_sequences.contains(&record.sequence) {

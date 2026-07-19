@@ -54,6 +54,27 @@ fn nonlinear_fee_is_rounded_and_summed_per_planned_fill_level() {
     );
 }
 
+#[test]
+fn multi_level_fee_sum_overflow_fails_closed() {
+    let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 1)).unwrap();
+    let mut request = canonical_fixture_request();
+    request.planned_fill_legs = vec![
+        PlannedFillLeg {
+            price: decimal("0.5"),
+            quantity: rust_decimal::Decimal::MAX,
+        },
+        PlannedFillLeg {
+            price: decimal("0.5"),
+            quantity: rust_decimal::Decimal::MAX,
+        },
+    ];
+
+    assert_eq!(
+        adapter.quote_components(&request),
+        Err(PolymarketEconomicsError::InvalidRate)
+    );
+}
+
 fn snapshot(fees_enabled: bool, exponent: u32) -> PolymarketMarketInfoSnapshot {
     let economics = if fees_enabled {
         format!(r#","mbf":1000,"tbf":1000,"fd":{{"r":0.07,"e":{exponent},"to":true}}"#)

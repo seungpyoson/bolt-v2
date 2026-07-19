@@ -16,14 +16,24 @@ pub fn fold_net_edge(
         });
     }
 
-    let core_net_edge = gross_expected_value + quote.core_total;
-    let forecast_net_edge = gross_expected_value + quote.forecast_total;
+    let core_net_edge = gross_expected_value
+        .checked_add(quote.core_total)
+        .ok_or(EconomicsUnavailable::InvalidDecimal)?;
+    let forecast_net_edge = gross_expected_value
+        .checked_add(quote.forecast_total)
+        .ok_or(EconomicsUnavailable::InvalidDecimal)?;
+    let core_edge_ratio = core_net_edge
+        .checked_div(basis.normalized_amount.amount())
+        .ok_or(EconomicsUnavailable::InvalidDecimal)?;
+    let forecast_edge_ratio = forecast_net_edge
+        .checked_div(basis.normalized_amount.amount())
+        .ok_or(EconomicsUnavailable::InvalidDecimal)?;
     Ok(NetEdgeQuote {
         gross_expected_value,
         core_net_edge,
         forecast_net_edge,
-        core_edge_ratio: core_net_edge / basis.normalized_amount.amount(),
-        forecast_edge_ratio: forecast_net_edge / basis.normalized_amount.amount(),
+        core_edge_ratio,
+        forecast_edge_ratio,
         basis,
     })
 }

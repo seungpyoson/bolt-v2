@@ -109,6 +109,14 @@ fn market_style_admission_ceiling_notional_fails_closed_without_a_ceiling() {
 }
 
 #[test]
+fn market_style_admission_ceiling_notional_overflow_fails_closed() {
+    assert_eq!(
+        market_style_admission_ceiling_notional(Some(Decimal::MAX), Decimal::from(2)),
+        Err(BoltV3SubmitAdmissionError::NotionalArithmeticOverflow)
+    );
+}
+
+#[test]
 fn build_submit_admission_request_from_order_maps_base_limit_order() {
     let price = Price::new(0.50, 2);
     let quantity = Quantity::new(2.0, 2);

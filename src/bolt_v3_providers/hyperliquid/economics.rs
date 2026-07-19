@@ -151,7 +151,8 @@ impl HyperliquidEconomicsAdapterConfig {
                     venue_rate_cap_fraction: basis_points_to_fraction(
                         Decimal::from_str(&carry.standard_stress.venue_rate_cap_bps_per_hour)
                             .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
-                    ),
+                    )
+                    .map_err(|_| HyperliquidEconomicsError::InvalidCarryBound)?,
                     standard_price_stress_multiplier: Decimal::from_str(
                         &carry.standard_stress.price_multiplier,
                     )
@@ -547,7 +548,10 @@ fn valid_fee_schedule(
 ) -> bool {
     let schedule = &wire.fee_schedule;
     let unit_interval = |value: Decimal| (Decimal::ZERO..=Decimal::ONE).contains(&value);
-    let staking_scale = Decimal::ONE - wire.active_staking_discount.discount;
+    let Some(staking_scale) = Decimal::ONE.checked_sub(wire.active_staking_discount.discount)
+    else {
+        return false;
+    };
     let Some((user_volume, user_maker_volume, exchange_volume)) = eligible_volume.iter().try_fold(
         (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO),
         |(user_total, maker_total, exchange_total), volume| {
@@ -712,11 +716,11 @@ fn effective_rate_matches_schedule(
 ) -> bool {
     schedule_rates.into_iter().any(|scheduled| {
         let expected = if scheduled < Decimal::ZERO {
-            scheduled
+            Some(scheduled)
         } else {
-            scheduled * staking_scale
+            scheduled.checked_mul(staking_scale)
         };
-        effective == expected
+        expected.is_some_and(|expected| effective == expected)
     })
 }
 
@@ -847,7 +851,6 @@ pub enum HyperliquidEconomicsError {
     InvalidProductMetadata,
     InvalidAccountScope,
     InvalidFeeSurface,
-    MissingSpotUnit,
     MissingCarryPolicy,
     MissingCarryContext,
     InvalidCarryBound,
@@ -1155,33 +1158,16 @@ impl HyperliquidEconomicsAdapter {
             LiquidityRoleAssumption::Taker => self.rates.taker,
         };
         let notional = planned_fill_notional.amount();
-        let (protocol_basis, protocol_unit) = match (self.product.product_kind, request.order_side)
-        {
-            (HyperliquidProductKind::Spot, crate::economics::OrderSide::Buy) => (
-                self.quantity(request)?,
-                NativeUnitId::new(
-                    self.product
-                        .base_unit
-                        .as_ref()
-                        .ok_or(HyperliquidEconomicsError::MissingSpotUnit)?
-                        .clone(),
-                )
-                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
-            ),
-            (HyperliquidProductKind::Spot, crate::economics::OrderSide::Sell) => (
-                notional,
-                NativeUnitId::new(
-                    self.product
-                        .quote_unit
-                        .as_ref()
-                        .ok_or(HyperliquidEconomicsError::MissingSpotUnit)?
-                        .clone(),
-                )
-                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
-            ),
-            (HyperliquidProductKind::Perp, _) => (notional, self.config.settlement_unit.clone()),
+        let (protocol_basis, protocol_unit) = match self.product.product_kind {
+            HyperliquidProductKind::Perp => (notional, self.config.settlement_unit.clone()),
+            HyperliquidProductKind::Spot => {
+                return Err(HyperliquidEconomicsError::InvalidFeeSurface);
+            }
         };
-        let signed_protocol_amount = -(protocol_basis * rate);
+        let signed_protocol_amount = protocol_basis
+            .checked_mul(rate)
+            .and_then(|amount| Decimal::ZERO.checked_sub(amount))
+            .ok_or(HyperliquidEconomicsError::InvalidEffect)?;
         let mut components = Vec::new();
         if !signed_protocol_amount.is_zero() {
             components.push(self.component(
@@ -1453,39 +1439,24 @@ fn validate_authority_snapshots(
         && user_fees.spot_taker_rate >= Decimal::ZERO;
     let product_timeline_valid = product.source_at_ns <= product.fetched_at_ns
         && product.fetched_at_ns <= product.valid_until_ns;
-    let product_units_valid = match product.product_kind {
-        HyperliquidProductKind::Spot => {
-            product
-                .base_unit
-                .as_ref()
-                .is_some_and(|unit| !unit.trim().is_empty())
-                && product
-                    .quote_unit
-                    .as_ref()
-                    .is_some_and(|unit| !unit.trim().is_empty())
-        }
-        HyperliquidProductKind::Perp => true,
-    };
     match (
         user_fees_valid,
         product_timeline_valid,
-        product_units_valid,
         product.aligned_quote_or_collateral,
         product.product_kind,
         product.spot_dust_authority_complete,
     ) {
-        (false, _, _, _, _, _) => Err(HyperliquidEconomicsError::InvalidUserFees),
-        (_, false, _, _, _, _) => Err(HyperliquidEconomicsError::InvalidProductMetadata),
-        (_, _, false, _, _, _) => Err(HyperliquidEconomicsError::MissingSpotUnit),
-        (_, _, _, true, _, _) => Err(HyperliquidEconomicsError::BlockedUnsupported(
+        (false, _, _, _, _) => Err(HyperliquidEconomicsError::InvalidUserFees),
+        (_, false, _, _, _) => Err(HyperliquidEconomicsError::InvalidProductMetadata),
+        (_, _, true, _, _) => Err(HyperliquidEconomicsError::BlockedUnsupported(
             BlockedUnsupported::MissingGovernedAlignedStatusCapture,
         )),
-        (_, _, _, _, HyperliquidProductKind::Spot, false) => {
+        (_, _, _, HyperliquidProductKind::Spot, false) => {
             Err(HyperliquidEconomicsError::BlockedUnsupported(
                 BlockedUnsupported::SpotDustAuthorityIncomplete,
             ))
         }
-        (true, true, true, false, _, _) => Ok(()),
+        (true, true, false, _, _) => Ok(()),
     }
 }
 

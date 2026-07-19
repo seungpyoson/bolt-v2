@@ -18,7 +18,6 @@ use rust_decimal::Decimal;
 pub struct BoltV3BasketAdmissionLimits {
     pub max_basket_notional: Decimal,
     pub max_open_baskets: u32,
-    pub min_edge_bps: Decimal,
     pub max_scanner_evidence_age_ms: u64,
     pub max_submit_recheck_age_ms: u64,
     pub max_retry_count: u32,
@@ -44,8 +43,6 @@ pub enum BoltV3BasketAdmissionError {
     StaleScannerEvidence,
     StaleSubmitRecheck,
     NonPositiveCandidateCost,
-    NonPositiveEdge,
-    EdgeThreshold,
     SubmitClaimsMismatch,
     MissingGroupingProof,
     GroupingProofMismatch,
@@ -70,8 +67,6 @@ impl std::fmt::Display for BoltV3BasketAdmissionError {
             Self::NonPositiveCandidateCost => {
                 write!(f, "basket admission candidate cost must be positive")
             }
-            Self::NonPositiveEdge => write!(f, "basket admission edge must be positive"),
-            Self::EdgeThreshold => write!(f, "basket admission edge threshold not met"),
             Self::SubmitClaimsMismatch => {
                 write!(f, "basket admission submit claims must match scanned legs")
             }
@@ -449,12 +444,6 @@ fn basket_outcome_from_error(error: &BoltV3BasketAdmissionError) -> BoltV3Basket
         }
         BoltV3BasketAdmissionError::NonPositiveCandidateCost => {
             BoltV3BasketAdmissionOutcome::RejectedNonPositiveCandidateCost
-        }
-        BoltV3BasketAdmissionError::NonPositiveEdge => {
-            BoltV3BasketAdmissionOutcome::RejectedNonPositiveEdge
-        }
-        BoltV3BasketAdmissionError::EdgeThreshold => {
-            BoltV3BasketAdmissionOutcome::RejectedEdgeThreshold
         }
         BoltV3BasketAdmissionError::SubmitClaimsMismatch => {
             BoltV3BasketAdmissionOutcome::RejectedSubmitSlots

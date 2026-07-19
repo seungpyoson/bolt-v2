@@ -1636,6 +1636,55 @@ fn entry_submission_supports_market_quote_entry_with_planned_fill_economics() {
 }
 
 #[test]
+fn entry_admission_gross_value_excludes_the_strategy_slippage_buffer() {
+    let mut strategy = ready_to_trade_strategy();
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.risk_lambda = 0.0;
+    strategy.config.book_impact_cap_bps = 1_000;
+    strategy.config.vwap_depth_limit_bps = 2_000;
+    strategy.config.slippage_buffer_bps = 50;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 5.0),
+            (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+        ],
+    );
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+    let edge = decision
+        .evaluation
+        .sized_executable_edge
+        .expect("accepted entry should have executable economics");
+    let sized_notional = decision
+        .evaluation
+        .sized_notional
+        .expect("accepted entry should have a size");
+    let gross_expected_value = entry_gross_expected_value(edge, sized_notional)
+        .expect("accepted entry should have a gross value");
+    let slippage_adjusted_value = Decimal::from_f64(
+        decision
+            .evaluation
+            .expected_ev_per_notional
+            .expect("accepted entry should have strategy signal EV")
+            * sized_notional,
+    )
+    .unwrap();
+
+    assert!(gross_expected_value > slippage_adjusted_value);
+}
+
+#[test]
 fn entry_submission_notional_guard_allows_scaled_float_noise() {
     let sized_notional = BPS_DENOMINATOR;
     let tolerance = notional_float_tolerance(sized_notional);

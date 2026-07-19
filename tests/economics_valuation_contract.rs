@@ -222,6 +222,24 @@ fn configured_multi_leg_route_values_native_effect_once() {
 }
 
 #[test]
+fn valuation_rate_and_normalized_amount_overflow_fail_closed() {
+    let effect = SignedNativeEffect::currency(decimal("2"), native_unit("TOKEN")).unwrap();
+    let overflowing_route = route(
+        "TOKEN",
+        "pUSD",
+        vec![
+            leg("TOKEN", "USDC", &rust_decimal::Decimal::MAX.to_string()),
+            leg("USDC", "pUSD", "2"),
+        ],
+    );
+
+    assert_eq!(
+        value_with_route(&effect, &native_unit("pUSD"), Some(&overflowing_route), 100,),
+        Err(EconomicsUnavailable::InvalidDecimal)
+    );
+}
+
+#[test]
 fn disconnected_cyclic_stale_and_implicit_stablecoin_routes_fail_closed() {
     let effect = SignedNativeEffect::currency(decimal("-2.00"), native_unit("USDC")).unwrap();
 

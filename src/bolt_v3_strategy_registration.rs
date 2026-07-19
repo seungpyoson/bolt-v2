@@ -607,7 +607,7 @@ pub(crate) fn build_order_routing_handle(
             format!("execution economics configuration is invalid: {error}"),
         )
     })?;
-    let source_policy = ConfiguredEconomicsSourcePolicy::from_execution_config(economics)
+    let source_policy = ConfiguredEconomicsSourcePolicy::from_execution_config(&economics)
         .map_err(|error| binding_error(strategy, format!("economics source policy: {error:?}")))?;
     let product_surface_routes = economics
         .product_surface_policies

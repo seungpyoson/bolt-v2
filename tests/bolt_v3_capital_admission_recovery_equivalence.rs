@@ -122,6 +122,11 @@ fn assert_migrated_records_preserve_reservation_payloads(original: &[Value], mig
             "admission_decision" => {
                 assert_eq!(after["kind"], "admission_decision");
                 assert_eq!(after["decision"]["outcome"], "rejected_capital_admission");
+                assert_eq!(after["decision"]["economics_forecast_complete"], false);
+                assert_eq!(
+                    after["decision"]["economics_missing_forecast_component_ids"],
+                    json!([])
+                );
                 assert_eq!(
                     after["decision"]["snapshot_source"],
                     "nt_capital_admission_state"

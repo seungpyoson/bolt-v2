@@ -902,7 +902,11 @@ impl PolymarketEconomicsAdapter {
                 }
                 let price_shape = leg
                     .price
-                    .checked_mul(Decimal::ONE - leg.price)
+                    .checked_mul(
+                        Decimal::ONE
+                            .checked_sub(leg.price)
+                            .ok_or(PolymarketEconomicsError::InvalidRate)?,
+                    )
                     .ok_or(PolymarketEconomicsError::InvalidRate)?;
                 if exponent != 1 {
                     return Err(PolymarketEconomicsError::UnsupportedExponent);
@@ -912,11 +916,12 @@ impl PolymarketEconomicsAdapter {
                     .checked_mul(rate)
                     .and_then(|amount| amount.checked_mul(price_shape))
                     .ok_or(PolymarketEconomicsError::InvalidRate)?;
-                Ok(total
-                    + fee.round_dp_with_strategy(
+                total
+                    .checked_add(fee.round_dp_with_strategy(
                         self.config.formula.fee_round_decimal_places,
                         self.config.formula.fee_rounding_mode.strategy(),
                     ))
+                    .ok_or(PolymarketEconomicsError::InvalidRate)
             })
     }
 

@@ -521,6 +521,19 @@ fn executable_edge_cents_per_share(result: Option<BinaryOutcomeEdgeResult>) -> O
         .then_some(result.edge_cents_per_share)
 }
 
+fn entry_gross_expected_value(
+    edge: BinaryOutcomeEdgeResult,
+    sized_notional: f64,
+) -> Option<Decimal> {
+    let gross_cost = edge.cost_breakdown.gross_cost_cents;
+    if !is_positive_finite(gross_cost) || !is_positive_finite(sized_notional) {
+        return None;
+    }
+    let gross_ev_per_notional =
+        (edge.adjusted_probability * CENTS_PER_SHARE - gross_cost) / gross_cost;
+    Decimal::from_f64(gross_ev_per_notional * sized_notional)
+}
+
 fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
     TakerPricingConfig {
         realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
@@ -6620,15 +6633,7 @@ impl BinaryOracleEdgeTaker {
             .evaluation
             .sized_executable_edge
             .zip(decision.evaluation.sized_notional)
-            .and_then(|(edge, sized_notional)| {
-                let gross_cost = edge.cost_breakdown.gross_cost_cents;
-                if !is_positive_finite(gross_cost) {
-                    return None;
-                }
-                let gross_ev_per_notional =
-                    (edge.adjusted_probability * CENTS_PER_SHARE - gross_cost) / gross_cost;
-                Decimal::from_f64(gross_ev_per_notional * sized_notional)
-            })
+            .and_then(|(edge, sized_notional)| entry_gross_expected_value(edge, sized_notional))
             .ok_or_else(|| anyhow::anyhow!("entry economics requires a gross value assumption"))?;
 
         match self

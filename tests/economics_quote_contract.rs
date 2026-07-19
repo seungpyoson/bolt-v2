@@ -24,6 +24,54 @@ fn core_total_uses_guaranteed_point_and_risk_bound_debit() {
 }
 
 #[test]
+fn quote_aggregation_and_edge_arithmetic_overflow_fail_closed() {
+    let overflowing_quote = quote_fixture([
+        estimated_component(
+            "maximum-credit",
+            rust_decimal::Decimal::MAX,
+            AdmissionTreatment::GuaranteedConditionalOnAction,
+            None,
+        ),
+        estimated_component(
+            "additional-credit",
+            decimal("1"),
+            AdmissionTreatment::GuaranteedConditionalOnAction,
+            None,
+        ),
+    ]);
+    assert_eq!(overflowing_quote, Err(EconomicsUnavailable::InvalidDecimal));
+
+    let request = canonical_fixture_request();
+    let quote = quote_fixture([guaranteed(rust_decimal::Decimal::MAX)]).unwrap();
+    let basis = EdgeBasisEvidence {
+        policy_id: request.edge_basis_policy_id,
+        resolver_id: FormulaId::new("fixture-resolver").unwrap(),
+        product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
+        policy_version: 1,
+        normalized_amount: EdgeBasisAmount::new(decimal("0.0000000000000000000000000001")).unwrap(),
+        scope: estimated_component(
+            "scope",
+            decimal("-1"),
+            AdmissionTreatment::RiskBound {
+                authority: RiskBoundAuthority::VenueMaximum,
+            },
+            Some(decimal("-1")),
+        )
+        .scope,
+        source_snapshot_ids: Vec::new(),
+        valid_until_ns: request.requested_at_ns,
+    };
+    assert_eq!(
+        fold_net_edge(decimal("1"), &quote, basis.clone()),
+        Err(EconomicsUnavailable::InvalidDecimal)
+    );
+    assert_eq!(
+        fold_net_edge(rust_decimal::Decimal::ZERO, &quote, basis),
+        Err(EconomicsUnavailable::InvalidDecimal)
+    );
+}
+
+#[test]
 fn bound_only_component_reserves_core_without_inventing_a_forecast_point() {
     let mut component = risk_bound(decimal("-0.25"), decimal("-0.75"));
     component.point_estimate = PointEstimate::ProvenZero {

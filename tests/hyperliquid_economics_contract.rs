@@ -87,6 +87,18 @@ fn assert_governed_user_fees_invalid(wire: serde_json::Value) {
     );
 }
 
+#[test]
+fn extreme_staking_discount_fails_closed_without_arithmetic_panic() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    wire["activeStakingDiscount"]["discount"] =
+        serde_json::Value::String(rust_decimal::Decimal::MAX.to_string());
+
+    assert_governed_user_fees_invalid(wire);
+}
+
 fn user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
     user_fees_with_discounts(maker_rate, "0", "0", "0.00045", "0.0007", "0.0004")
 }
@@ -831,13 +843,16 @@ fn vip_second_tier_wire() -> serde_json::Value {
     for row in wire["dailyUserVlm"].as_array_mut().unwrap() {
         row["userCross"] = serde_json::Value::String("2000000".to_string());
     }
+    wire["userCrossRate"] = serde_json::Value::String("0.00035".to_string());
+    wire["userAddRate"] = serde_json::Value::String("0.00008".to_string());
+    wire["userSpotCrossRate"] = serde_json::Value::String("0.0005".to_string());
+    wire["userSpotAddRate"] = serde_json::Value::String("0.0002".to_string());
     wire
 }
 
 #[test]
 fn user_fees_parser_accepts_the_highest_eligible_vip_tier() {
-    let mut wire = vip_second_tier_wire();
-    wire["userCrossRate"] = serde_json::Value::String("0.00035".to_string());
+    let wire = vip_second_tier_wire();
 
     HyperliquidUserFeesSnapshot::from_wire_json(
         governed_user_fees_metadata(),

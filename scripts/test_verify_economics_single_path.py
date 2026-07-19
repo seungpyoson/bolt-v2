@@ -89,6 +89,23 @@ class EconomicsSinglePathTest(unittest.TestCase):
         )
         self.assertTrue(any("re-derived price/quantity" in error for error in errors), errors)
 
+    def test_rejects_unchecked_authoritative_decimal_arithmetic(self) -> None:
+        cases = (
+            (pathlib.Path("src/economics/quote.rs"), "core_total += normalized_amount;\n"),
+            (
+                pathlib.Path("src/bolt_v3_providers/hyperliquid/economics.rs"),
+                "let amount = protocol_basis * rate;\n",
+            ),
+            (
+                pathlib.Path("src/bolt_v3_submit_admission.rs"),
+                "let notional = order_price * order_quantity;\n",
+            ),
+        )
+        for relative, source in cases:
+            with self.subTest(relative=relative):
+                errors = self.verify_sealed_consumer_source(relative, source)
+                self.assertTrue(any("unchecked Decimal arithmetic" in error for error in errors), errors)
+
 
 if __name__ == "__main__":
     import lane_governor

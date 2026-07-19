@@ -1060,7 +1060,14 @@ impl BoltV3EconomicsRuntime {
         {
             return Err(EconomicsUnavailable::NonPositiveNetEdge);
         }
-        let guaranteed_debit = GuaranteedDebit::new((-quote.core_total()).max(Decimal::ZERO))?;
+        let guaranteed_debit_amount = if quote.core_total().is_sign_negative() {
+            Decimal::ZERO
+                .checked_sub(quote.core_total())
+                .ok_or(EconomicsUnavailable::InvalidDecimal)?
+        } else {
+            Decimal::ZERO
+        };
+        let guaranteed_debit = GuaranteedDebit::new(guaranteed_debit_amount)?;
         let full_reservation_liability =
             FullReservationLiability::from_parts(intent.reservation_basis, guaranteed_debit)?;
         let mut source_snapshot_ids = vec![authority_snapshot_id];

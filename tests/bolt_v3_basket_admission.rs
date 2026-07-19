@@ -955,7 +955,6 @@ fn admission_limits() -> BoltV3BasketAdmissionLimits {
     BoltV3BasketAdmissionLimits {
         max_basket_notional: dec!(10),
         max_open_baskets: 1,
-        min_edge_bps: dec!(100),
         max_scanner_evidence_age_ms: 2_000,
         max_submit_recheck_age_ms: 500,
         max_retry_count: 1,

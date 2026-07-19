@@ -4,8 +4,10 @@ use rust_decimal::Decimal;
 
 const BASIS_POINT_DECIMAL_SCALE: u32 = 4;
 
-pub fn basis_points_to_fraction(basis_points: Decimal) -> Decimal {
-    basis_points * Decimal::new(1, BASIS_POINT_DECIMAL_SCALE)
+pub fn basis_points_to_fraction(basis_points: Decimal) -> Result<Decimal, EconomicsUnavailable> {
+    basis_points
+        .checked_mul(Decimal::new(1, BASIS_POINT_DECIMAL_SCALE))
+        .ok_or(EconomicsUnavailable::InvalidDecimal)
 }
 
 macro_rules! domain_id {

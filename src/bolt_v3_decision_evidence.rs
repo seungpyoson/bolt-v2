@@ -1672,8 +1672,6 @@ pub enum BoltV3BasketAdmissionOutcome {
     RejectedStaleScannerEvidence,
     RejectedStaleSubmitRecheck,
     RejectedNonPositiveCandidateCost,
-    RejectedNonPositiveEdge,
-    RejectedEdgeThreshold,
     RejectedMissingGroupingProof,
     RejectedMissingSettlementRules,
     RejectedRetryBudgetExceeded,

@@ -12,6 +12,15 @@ from rust_source_scanner import strip_rust_comments_and_literals
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ADAPTER_ROOT = pathlib.Path("src/bolt_v3_providers")
+UNCHECKED_DECIMAL_ARITHMETIC = (
+    re.compile(
+        r"\b(?:core_total|forecast_total|gross_expected_value|core_net_edge|"
+        r"forecast_net_edge|normalized_amount|protocol_basis|staking_scale|"
+        r"scheduled|order_price|order_quantity|ceiling|total|fee|rate)\s*"
+        r"(?:\+=|-=|\*=|/=|[+\-*/])"
+    ),
+    "unchecked Decimal arithmetic",
+)
 SEALED_CONSUMER_RULES = {
     pathlib.Path("src/bolt_v3_basket_admission.rs"): (
         (re.compile(r"\bscanner_evidence\s*\.\s*total_adjusted_cost\b"), "scanner economics used by basket admission"),
@@ -25,6 +34,16 @@ SEALED_CONSUMER_RULES = {
             "capital admission re-derived price/quantity economics",
         ),
     ),
+    pathlib.Path("src/economics/edge.rs"): (UNCHECKED_DECIMAL_ARITHMETIC,),
+    pathlib.Path("src/economics/quote.rs"): (UNCHECKED_DECIMAL_ARITHMETIC,),
+    pathlib.Path("src/economics/valuation.rs"): (UNCHECKED_DECIMAL_ARITHMETIC,),
+    pathlib.Path("src/bolt_v3_providers/hyperliquid/economics.rs"): (
+        UNCHECKED_DECIMAL_ARITHMETIC,
+    ),
+    pathlib.Path("src/bolt_v3_providers/polymarket/economics.rs"): (
+        UNCHECKED_DECIMAL_ARITHMETIC,
+    ),
+    pathlib.Path("src/bolt_v3_submit_admission.rs"): (UNCHECKED_DECIMAL_ARITHMETIC,),
 }
 FORBIDDEN_PATTERNS = (
     (

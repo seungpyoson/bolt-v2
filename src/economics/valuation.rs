@@ -69,7 +69,9 @@ pub fn value_with_route(
                 route_id: route.route_id.clone(),
             });
         }
-        rate *= leg.rate;
+        rate = rate
+            .checked_mul(leg.rate)
+            .ok_or(EconomicsUnavailable::InvalidDecimal)?;
         valid_until_ns = valid_until_ns.min(leg.valid_until_ns);
         source_snapshot_ids.push(leg.source_snapshot_id.clone());
         current = leg.to_unit.clone();
@@ -82,7 +84,10 @@ pub fn value_with_route(
 
     Ok(ValuationEvidence {
         native_effect: effect.clone(),
-        normalized_amount: effect.amount() * rate,
+        normalized_amount: effect
+            .amount()
+            .checked_mul(rate)
+            .ok_or(EconomicsUnavailable::InvalidDecimal)?,
         reporting_unit: reporting_unit.clone(),
         route_id: Some(route.route_id.clone()),
         source_snapshot_ids,

@@ -33,6 +33,8 @@ LEGACY_ECONOMICS_AUDIT_FIELDS = (
     b',"economics_core_net_edge":"0"'
     b',"economics_core_edge_ratio":"0"'
     b',"economics_forecast_net_edge":"0"'
+    b',"economics_forecast_complete":false'
+    b',"economics_missing_forecast_component_ids":[]'
     b',"economics_valid_until_ns":0'
     b',"economics_source_snapshot_ids":[]'
 )

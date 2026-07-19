@@ -112,7 +112,9 @@ pub fn validate_and_aggregate_quote(
                 Err(error) => return Err(error),
             };
             let valid_until_ns = point_valuation.valid_until_ns;
-            forecast_total += point_valuation.normalized_amount;
+            forecast_total = forecast_total
+                .checked_add(point_valuation.normalized_amount)
+                .ok_or(EconomicsUnavailable::InvalidDecimal)?;
             component.normalized = Some(point_valuation.clone());
             normalizations.push(point_valuation);
             valid_until_ns
@@ -122,11 +124,15 @@ pub fn validate_and_aggregate_quote(
 
         match component.admission_treatment {
             AdmissionTreatment::GuaranteedConditionalOnAction => {
-                core_total += component
-                    .normalized
-                    .as_ref()
-                    .expect("point normalization was assigned")
-                    .normalized_amount;
+                core_total = core_total
+                    .checked_add(
+                        component
+                            .normalized
+                            .as_ref()
+                            .expect("point normalization was assigned")
+                            .normalized_amount,
+                    )
+                    .ok_or(EconomicsUnavailable::InvalidDecimal)?;
                 update_valid_until(
                     &mut required_valid_until_ns,
                     component.source.valid_until_ns,
@@ -152,7 +158,9 @@ pub fn validate_and_aggregate_quote(
                         component_id: component.component_id,
                     });
                 }
-                core_total += bound_valuation.normalized_amount;
+                core_total = core_total
+                    .checked_add(bound_valuation.normalized_amount)
+                    .ok_or(EconomicsUnavailable::InvalidDecimal)?;
                 if let Some(valid_until_ns) = bound_valuation.valid_until_ns {
                     required_valid_until_ns = required_valid_until_ns.min(valid_until_ns);
                 }

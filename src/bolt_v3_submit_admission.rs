@@ -3196,6 +3196,7 @@ pub fn order_economics_facts(
         })?
     } else {
         base_quantity_admission_notional(price, quantity)
+            .ok_or(BoltV3SubmitAdmissionError::NotionalArithmeticOverflow)?
     };
     let planned_fill_quantity = if input.order.is_quote_quantity() {
         let instrument = input
@@ -3392,8 +3393,11 @@ pub fn conservative_quote_quantity_admission_notional(
 /// already-rounded order's price and quantity. This is the single definition of
 /// the base-quantity notional; every submit path (and the base-only test helper)
 /// derives it from here so there is no divergent `price * quantity` copy.
-pub fn base_quantity_admission_notional(order_price: Decimal, order_quantity: Decimal) -> Decimal {
-    order_price * order_quantity
+pub fn base_quantity_admission_notional(
+    order_price: Decimal,
+    order_quantity: Decimal,
+) -> Option<Decimal> {
+    order_price.checked_mul(order_quantity)
 }
 
 /// Single source of truth for "given a built venue-precision order, its
@@ -3437,10 +3441,7 @@ pub fn admission_base_notional_from_order(
     quote_reference_price: Option<Price>,
 ) -> Option<Decimal> {
     if !order.is_quote_quantity() {
-        return Some(base_quantity_admission_notional(
-            order_price,
-            order_quantity,
-        ));
+        return base_quantity_admission_notional(order_price, order_quantity);
     }
     // Fail CLOSED on an inverse quote-quantity order at the SHARED admission
     // helper (A6). An inverse instrument denominates the quote quantity in the
@@ -3547,7 +3548,8 @@ pub fn market_style_admission_ceiling_notional(
     order_quantity: Decimal,
 ) -> Result<Decimal, BoltV3SubmitAdmissionError> {
     let ceiling = price_ceiling.ok_or(BoltV3SubmitAdmissionError::MissingPriceCeiling)?;
-    Ok(base_quantity_admission_notional(ceiling, order_quantity))
+    base_quantity_admission_notional(ceiling, order_quantity)
+        .ok_or(BoltV3SubmitAdmissionError::NotionalArithmeticOverflow)
 }
 
 fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> {

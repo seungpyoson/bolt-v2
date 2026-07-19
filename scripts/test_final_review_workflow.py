@@ -108,7 +108,7 @@ def assert_reviewers_use_exact_diff_and_compatible_permissions() -> None:
     final = FINAL_REVIEW.read_text(encoding="utf-8")
     required_job_permissions = {
         "claude-review": ("contents: read", "pull-requests: write", "issues: write", "id-token: write"),
-        "kimi-review": ("contents: read", "pull-requests: write", "issues: write"),
+        "kimi-review": ("contents: read", "pull-requests: read", "issues: write"),
         "glm-review": ("contents: read", "pull-requests: write", "issues: write"),
     }
     for job, permissions in required_job_permissions.items():
@@ -116,6 +116,13 @@ def assert_reviewers_use_exact_diff_and_compatible_permissions() -> None:
         for permission in permissions:
             if permission not in block.split("  ", 1)[0] and permission not in block[:1200]:
                 raise AssertionError(f"{job} does not grant {permission}")
+    kimi_job = final.split("  kimi-review:\n", 1)[1].split("  glm-review:\n", 1)[0]
+    if "pull-requests: write" in kimi_job:
+        raise AssertionError("Kimi caller retains permission to submit pull-request reviews")
+    kimi_worker = WORKERS[1].read_text(encoding="utf-8")
+    kimi_permissions = kimi_worker.split("permissions:\n", 1)[1].split("\njobs:\n", 1)[0]
+    if "pull-requests: read" not in kimi_permissions or "pull-requests: write" in kimi_permissions:
+        raise AssertionError("Kimi worker must have read-only pull-request access")
     checkout_counts = {
         "claude-code-review.yml": 2,
         "ai-review-kimi-cli.yml": 1,

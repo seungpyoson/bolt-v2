@@ -181,7 +181,7 @@ jobs:
     needs: [capture-head, evidence]
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
       issues: write
     uses: ./.github/workflows/ai-review-kimi-cli.yml
     with:

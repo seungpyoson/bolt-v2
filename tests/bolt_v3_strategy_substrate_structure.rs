@@ -638,8 +638,26 @@ fn forbidden_aliases_across_sources(
                     discovered.push((window[2].text.clone(), root.clone()));
                 }
             }
+            let mut brace_depth = 0usize;
             for (index, token) in tokens.iter().enumerate() {
+                match token.text.as_str() {
+                    "{" => {
+                        brace_depth += 1;
+                        continue;
+                    }
+                    "}" => {
+                        brace_depth = brace_depth.saturating_sub(1);
+                        continue;
+                    }
+                    _ => {}
+                }
                 if token.text != "type" {
+                    continue;
+                }
+                // Source files are modules, so only depth-zero `type` items can
+                // name a module API. Associated types inside impl/trait bodies
+                // and function-local aliases are separate scopes.
+                if brace_depth != 0 {
                     continue;
                 }
                 let Some(alias) = tokens.get(index + 1) else {
@@ -847,6 +865,16 @@ fn public_api_forbidden_type_aliases_cannot_launder_handle_types() {
         aliases.keys().any(|alias| public.contains(&alias.as_str())),
         "transitive forbidden alias should remain visible to the public-API scan"
     );
+}
+
+#[test]
+fn associated_types_are_not_treated_as_module_aliases() {
+    let sources = vec![
+        tokenize("impl StrategyBuilder for Builder { type Strategy = BinaryOracleEdgeTaker; }"),
+        tokenize("pub fn route<S: Strategy>() {}"),
+    ];
+    let aliases = forbidden_aliases_across_sources(&sources, &["BinaryOracleEdgeTaker"]);
+    assert_eq!(aliases.get("Strategy"), None);
 }
 
 #[test]

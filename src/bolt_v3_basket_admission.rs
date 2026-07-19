@@ -246,6 +246,9 @@ impl BoltV3BasketAdmissionState {
         {
             return Err(BoltV3BasketAdmissionError::GroupingProofMismatch);
         }
+        if !request.scanner_evidence.admissible || request.scanner_evidence.block_reason.is_some() {
+            return Err(BoltV3BasketAdmissionError::NonPositiveCandidateCost);
+        }
         if ValidatedOutcomeGroup::validate(request.group).is_err() {
             return Err(BoltV3BasketAdmissionError::MissingSettlementRules);
         }
@@ -359,18 +362,7 @@ impl BoltV3BasketAdmissionState {
             BoltV3BasketReservation {
                 strategy_id: request.strategy_id.to_string(),
                 group_id: request.group.group_id.clone(),
-                total_notional: request
-                    .submit_claims
-                    .iter()
-                    .try_fold(Decimal::ZERO, |total, claim| {
-                        total.checked_add(
-                            claim
-                                .economics_admission
-                                .full_reservation_liability()
-                                .amount(),
-                        )
-                    })
-                    .ok_or(BoltV3BasketAdmissionError::BasketNotionalCapExceeded)?,
+                total_notional: sealed_basket_liability(request)?,
                 release_on_drop: true,
             },
         );
@@ -418,10 +410,27 @@ fn basket_decision_evidence(
             .iter()
             .map(|claim| claim.instrument_id.clone())
             .collect(),
-        total_notional: request.scanner_evidence.total_adjusted_cost.to_string(),
+        total_notional: sealed_basket_liability(request)?.to_string(),
         leg_order_count,
         outcome,
     })
+}
+
+fn sealed_basket_liability(
+    request: &BoltV3BasketAdmissionRequest<'_>,
+) -> Result<Decimal, BoltV3BasketAdmissionError> {
+    request
+        .submit_claims
+        .iter()
+        .try_fold(Decimal::ZERO, |total, claim| {
+            total.checked_add(
+                claim
+                    .economics_admission
+                    .full_reservation_liability()
+                    .amount(),
+            )
+        })
+        .ok_or(BoltV3BasketAdmissionError::BasketNotionalCapExceeded)
 }
 
 fn basket_outcome_from_error(error: &BoltV3BasketAdmissionError) -> BoltV3BasketAdmissionOutcome {

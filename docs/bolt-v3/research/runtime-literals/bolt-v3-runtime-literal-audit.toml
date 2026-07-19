@@ -22228,6 +22228,14 @@ reason = "Stable provider-owned TOML field name; the UTC receipt-day offset rema
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
 kind = "string"
+literal = '''"standard_perp_collateral_token"'''
+context = '''pub(super) const STANDARD_PERP_COLLATERAL_TOKEN_KEY: &str = "standard_perp_collateral_token";'''
+classification = "hyperliquid_economics_formula_schema_key"
+reason = "Stable provider-owned TOML field name; the provider collateral-token identity remains mandatory configuration with no Rust default."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid/economics.rs"
+kind = "string"
 literal = '''"%Y-%m-%d"'''
 context = '''const USER_FEES_DATE_FORMAT: &str = "%Y-%m-%d";'''
 classification = "hyperliquid_user_fees_wire_format"

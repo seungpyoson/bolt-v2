@@ -38,7 +38,9 @@ use bolt_v2::{
     bolt_v3_outcome_group_proofs::{
         NegRiskGroupingProof, PolymarketDiscoveryScopeEvidence, StructuredOutcomeGroupingProof,
     },
-    bolt_v3_outcome_group_scanner::{OutcomeGroupLegScanEvidence, OutcomeGroupScanEvidence},
+    bolt_v3_outcome_group_scanner::{
+        OutcomeGroupLegScanEvidence, OutcomeGroupScanBlockReason, OutcomeGroupScanEvidence,
+    },
     bolt_v3_outcome_groups::{
         AttestedLegRef, AttestedPayoutVector, CanonicalField, GroupingProof,
         NormalizedPriceScaleEvidence, OrderConstraintSource, OutcomeGroup, OutcomeGroupSourceKind,
@@ -165,6 +167,38 @@ fn dropped_basket_admission_permit_releases_open_reservation() {
         .expect("dropped permit should release the open basket reservation");
     second_permit.commit_submitted();
     assert_eq!(submit_state.admitted_order_count(), 2);
+    let decisions = writer.basket_admission_decisions();
+    assert_eq!(
+        decisions.last().unwrap().total_notional,
+        dec!(1.8).to_string()
+    );
+}
+
+#[test]
+fn basket_rejects_a_scanner_blocked_candidate_before_reservation() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
+    let submit_state = submit_state(writer, 4, dec!(10));
+    let group = fixture_group();
+    let mut scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    scan.admissible = false;
+    scan.block_reason = Some(OutcomeGroupScanBlockReason::InsufficientDepth);
+
+    assert_eq!(
+        basket_state
+            .admit(
+                &basket_request(
+                    "blocked-scan",
+                    &group,
+                    &scan,
+                    entry_claims(&group, dec!(0.9))
+                ),
+                &submit_state,
+            )
+            .unwrap_err(),
+        BoltV3BasketAdmissionError::NonPositiveCandidateCost
+    );
+    assert_eq!(submit_state.admitted_order_count(), 0);
 }
 
 #[test]

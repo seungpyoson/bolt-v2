@@ -127,6 +127,8 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
             },
         };
         let authority_refreshed_at_ns = intent.request.requested_at_ns;
+        let planned_fill_notional =
+            bolt_v2::economics::PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
         sample_economics_runtime(
             Arc::new(adapter),
             valid_until_ns
@@ -141,10 +143,9 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     resolver_id: FormulaId::new("test-edge-resolver")?,
                     product_metadata_source: SourceId::new("test-product-metadata")?,
                     policy_version: 1,
-                    normalized_amount: bolt_v2::economics::PlannedFillNotional::from_legs(
-                        &intent.request.planned_fill_legs,
-                    )?
-                    .amount(),
+                    normalized_amount: bolt_v2::economics::EdgeBasisAmount::new(
+                        planned_fill_notional.amount(),
+                    )?,
                     scope: EconomicScope::Decision {
                         decision_correlation_id: intent.request.decision_correlation_id.clone(),
                     },
@@ -152,6 +153,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
                     valid_until_ns,
                 },
                 request: intent.request,
+                planned_fill_notional,
                 order_binding: intent.order_binding,
                 purpose: intent.purpose,
                 gross_expected_value: intent.gross_expected_value,
@@ -190,9 +192,13 @@ impl bolt_v2::economics::VenueEconomicsAdapter for SampleEconomicsAdapter {
     fn resolve_edge_basis(
         &self,
         _request: &bolt_v2::economics::EconomicQuoteRequest,
+        planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<bolt_v2::economics::ResolvedEdgeBasis, bolt_v2::economics::EconomicsUnavailable>
     {
         Ok(bolt_v2::economics::ResolvedEdgeBasis {
+            normalized_amount: bolt_v2::economics::EdgeBasisAmount::new(
+                planned_fill_notional.amount(),
+            )?,
             source_snapshot_ids: vec![self.estimate.authority.snapshot_id.clone()],
             valid_until_ns: self.estimate.authority.valid_until_ns,
         })
@@ -201,6 +207,7 @@ impl bolt_v2::economics::VenueEconomicsAdapter for SampleEconomicsAdapter {
     fn quote(
         &self,
         _request: &bolt_v2::economics::EconomicQuoteRequest,
+        _planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<bolt_v2::economics::VenueQuoteEstimate, bolt_v2::economics::EconomicsUnavailable>
     {
         Ok(self.estimate.clone())
@@ -384,6 +391,8 @@ fn sample_economics_admission_with_component(
             }],
         },
     };
+    let typed_planned_fill_notional = PlannedFillNotional::from_legs(&request.planned_fill_legs)
+        .expect("valid planned fill notional");
     sample_economics_runtime(
         Arc::new(adapter),
         valid_until_ns
@@ -408,7 +417,8 @@ fn sample_economics_admission_with_component(
                 product_metadata_source: SourceId::new("test-product-metadata")
                     .expect("valid test product metadata source"),
                 policy_version: 1,
-                normalized_amount: planned_fill_notional,
+                normalized_amount: EdgeBasisAmount::new(planned_fill_notional)
+                    .expect("valid edge basis"),
                 scope: EconomicScope::Decision {
                     decision_correlation_id,
                 },
@@ -416,6 +426,7 @@ fn sample_economics_admission_with_component(
                 valid_until_ns,
             },
             valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(),
+            planned_fill_notional: typed_planned_fill_notional,
             reservation_basis: ReservationBasis::new(reservation_basis)
                 .expect("valid test reservation basis"),
             authority_refreshed_at_ns: requested_at_ns,

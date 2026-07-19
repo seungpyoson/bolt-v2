@@ -127,27 +127,32 @@ impl ReplayEconomicsAdmissionSource {
         }) {
             return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
         }
-        let mut resting_order_refresh_margin_ns = None;
+        let mut configured_policy = None;
         for snapshot in &snapshots {
             validate_snapshot(snapshot)?;
             let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
-            let margin_ns = u64::try_from(
-                std::time::Duration::from_millis(adapter.economics.resting_order_refresh_margin_ms)
-                    .as_nanos(),
-            )
-            .map_err(|_| EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
-            match resting_order_refresh_margin_ns {
-                Some(existing) if existing != margin_ns => {
+            let policy = (
+                adapter.economics.quote_refresh_secs,
+                adapter.economics.quote_max_age_secs,
+                adapter.economics.quote_validity_ms,
+                adapter.economics.resting_order_refresh_margin_ms,
+            );
+            match configured_policy {
+                Some(existing) if existing != policy => {
                     return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
                 }
                 Some(_) => {}
-                None => resting_order_refresh_margin_ns = Some(margin_ns),
+                None => configured_policy = Some(policy),
             }
         }
+        let (_, _, _, resting_order_refresh_margin_ms) = configured_policy
+            .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
+        let resting_order_refresh_margin_ns = resting_order_refresh_margin_ms
+            .checked_mul(1_000_000)
+            .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
         Ok(Self {
             snapshots,
-            resting_order_refresh_margin_ns: resting_order_refresh_margin_ns
-                .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?,
+            resting_order_refresh_margin_ns,
         })
     }
 
@@ -155,9 +160,16 @@ impl ReplayEconomicsAdmissionSource {
         &self,
         request: &EconomicQuoteRequest,
     ) -> Result<&HistoricalEconomicsSnapshot, EconomicsUnavailable> {
-        let eligible = self.snapshots.iter().filter(|snapshot| {
-            snapshot_matches_request(snapshot, request)
-                && snapshot.source_at_ns <= request.requested_at_ns
+        let matching = self
+            .snapshots
+            .iter()
+            .filter(|snapshot| snapshot_matches_request(snapshot, request))
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return Err(EconomicsUnavailable::MissingQuoteAuthority);
+        }
+        let eligible = matching.iter().copied().filter(|snapshot| {
+            snapshot.source_at_ns <= request.requested_at_ns
                 && snapshot.fetched_at_ns <= request.requested_at_ns
                 && request.requested_at_ns <= snapshot.valid_until_ns
         });
@@ -166,7 +178,14 @@ impl ReplayEconomicsAdmissionSource {
             .map(|snapshot| (snapshot.fetched_at_ns, snapshot.source_at_ns))
             .max()
         else {
-            return Err(EconomicsUnavailable::MissingQuoteAuthority);
+            let source_id = SourceId::new(matching[0].source_id.clone())?;
+            if matching.iter().any(|snapshot| {
+                snapshot.source_at_ns > request.requested_at_ns
+                    || snapshot.fetched_at_ns > request.requested_at_ns
+            }) {
+                return Err(EconomicsUnavailable::InvalidSourceTimeline { source_id });
+            }
+            return Err(EconomicsUnavailable::StaleSource { source_id });
         };
         let selected = eligible
             .filter(|snapshot| (snapshot.fetched_at_ns, snapshot.source_at_ns) == latest_activation)
@@ -276,7 +295,11 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
         let snapshot = self.snapshot_for_request(&intent.request)?;
         let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
-        let edge_basis = adapter.edge_basis(&intent.request)?;
+        let planned_fill_notional =
+            bolt_v2::economics::PlannedFillNotional::from_legs(
+                &intent.request.planned_fill_legs,
+            )?;
+        let edge_basis = adapter.edge_basis(&intent.request, planned_fill_notional)?;
         let observations = canonical_valuation_observations(snapshot)?;
         let valuation_provider = Arc::new(ConfiguredValuationProvider::from_config(
             &adapter.economics.valuation,
@@ -309,6 +332,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
                 purpose: intent.purpose,
                 gross_expected_value: intent.gross_expected_value,
                 edge_basis,
+                planned_fill_notional,
                 valuation_provider,
                 reservation_basis: intent.reservation_basis,
                 authority_refreshed_at_ns,
@@ -347,6 +371,9 @@ impl ReplayEconomicsAdapter {
             },
         )
         .map_err(|_| EconomicsUnavailable::MissingQuoteAuthority)?;
+        if binding.economics.product_surface_policies.len() != 1 {
+            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
+        }
         let configured_edge_basis = binding
             .economics
             .edge_basis
@@ -380,6 +407,7 @@ impl ReplayEconomicsAdapter {
     pub fn edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<EdgeBasisEvidence, EconomicsUnavailable> {
         if self.snapshot.edge_basis.policy_id != request.edge_basis_policy_id.as_str() {
             return Err(EconomicsUnavailable::EdgeBasisPolicyMismatch);
@@ -389,7 +417,9 @@ impl ReplayEconomicsAdapter {
                 valid_until_ns: self.snapshot.edge_basis.valid_until_ns,
             });
         }
-        let resolved = self.adapter.resolve_edge_basis(request)?;
+        let resolved = self
+            .adapter
+            .resolve_edge_basis(request, planned_fill_notional)?;
         if resolved.source_snapshot_ids
             != self
                 .snapshot
@@ -408,10 +438,7 @@ impl ReplayEconomicsAdapter {
                 self.snapshot.edge_basis.product_metadata_source.clone(),
             )?,
             policy_version: self.snapshot.edge_basis.policy_version,
-            normalized_amount: bolt_v2::economics::PlannedFillNotional::from_legs(
-                &request.planned_fill_legs,
-            )?
-            .amount(),
+            normalized_amount: resolved.normalized_amount,
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
@@ -433,14 +460,17 @@ impl bolt_v2::economics::VenueEconomicsAdapter for ReplayEconomicsAdapter {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<bolt_v2::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
         validate_request_binding(&self.snapshot, request)?;
-        self.adapter.resolve_edge_basis(request)
+        self.adapter
+            .resolve_edge_basis(request, planned_fill_notional)
     }
 
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<bolt_v2::economics::VenueQuoteEstimate, EconomicsUnavailable> {
         validate_request_binding(&self.snapshot, request)?;
         if request.requested_at_ns < self.snapshot.source_at_ns
@@ -450,7 +480,7 @@ impl bolt_v2::economics::VenueEconomicsAdapter for ReplayEconomicsAdapter {
                 source_id: SourceId::new(self.snapshot.source_id.clone())?,
             });
         }
-        self.adapter.quote(request)
+        self.adapter.quote(request, planned_fill_notional)
     }
 }
 

@@ -29,6 +29,7 @@ pub fn validate_and_aggregate_quote(
     let mut core_total = Decimal::ZERO;
     let mut forecast_total = Decimal::ZERO;
     let mut forecast_complete = true;
+    let mut missing_forecast_component_ids = Vec::new();
     let mut required_valid_until_ns = estimate
         .dependency_sources
         .iter()
@@ -82,6 +83,7 @@ pub fn validate_and_aggregate_quote(
         if component.source.valid_until_ns < request.requested_at_ns {
             if component.admission_treatment == AdmissionTreatment::ForecastOnly {
                 forecast_complete = false;
+                missing_forecast_component_ids.push(component.component_id);
                 continue;
             }
             return Err(EconomicsUnavailable::StaleSource {
@@ -103,6 +105,7 @@ pub fn validate_and_aggregate_quote(
                     | EconomicsUnavailable::StaleValuation { .. },
                 ) if component.admission_treatment == AdmissionTreatment::ForecastOnly => {
                     forecast_complete = false;
+                    missing_forecast_component_ids.push(component.component_id.clone());
                     accepted.push(component);
                     continue;
                 }
@@ -173,6 +176,7 @@ pub fn validate_and_aggregate_quote(
         core_total,
         forecast_total,
         forecast_complete,
+        missing_forecast_component_ids,
         reporting_unit: request.reporting_unit.clone(),
         valid_until_ns: required_valid_until_ns,
     })

@@ -2,8 +2,8 @@ use std::str::FromStr;
 
 use bolt_v2::economics::{
     ActualEconomicEntry, AdmissionTreatment, EconomicQuoteRequest, EstimatedEconomicComponent,
-    InventoryApplication, NativeUnitId, RiskBoundAuthority, SignedNativeEffect,
-    VenueEconomicsAdapter, VenueQuoteEstimate,
+    InventoryApplication, NativeUnitId, PlannedFillNotional, RiskBoundAuthority,
+    SignedNativeEffect, VenueEconomicsAdapter, VenueQuoteEstimate,
 };
 use rust_decimal::Decimal;
 
@@ -79,5 +79,7 @@ fn adapter_contract_uses_only_shared_types<T: VenueEconomicsAdapter>(
     adapter: &T,
     request: &EconomicQuoteRequest,
 ) {
-    let _: Result<VenueQuoteEstimate, _> = adapter.quote(request);
+    let planned_fill_notional = PlannedFillNotional::from_legs(&request.planned_fill_legs)
+        .expect("contract request must have valid planned legs");
+    let _: Result<VenueQuoteEstimate, _> = adapter.quote(request, planned_fill_notional);
 }

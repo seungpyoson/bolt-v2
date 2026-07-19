@@ -557,6 +557,7 @@ pub(crate) struct EconomicsAuthorityBuildContext<'a> {
     pub venue: Venue,
     pub execution: &'a toml::Value,
     pub resolved_secrets: Option<&'a ResolvedClientSecrets>,
+    pub transport_override: Option<&'a (dyn std::any::Any + Send + Sync)>,
 }
 pub(crate) type EconomicsAuthorityBuilder = for<'a> fn(
     EconomicsAuthorityBuildContext<'a>,

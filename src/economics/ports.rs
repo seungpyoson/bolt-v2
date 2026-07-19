@@ -1,17 +1,19 @@
 use super::{
-    EconomicQuoteRequest, EconomicsUnavailable, ResolvedEdgeBasis, SignedNativeEffect,
-    ValuationEvidence, ValuationRequest, VenueQuoteEstimate,
+    EconomicQuoteRequest, EconomicsUnavailable, PlannedFillNotional, ResolvedEdgeBasis,
+    SignedNativeEffect, ValuationEvidence, ValuationRequest, VenueQuoteEstimate,
 };
 
 pub trait VenueEconomicsAdapter: Send + Sync {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: PlannedFillNotional,
     ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable>;
 
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: PlannedFillNotional,
     ) -> Result<VenueQuoteEstimate, EconomicsUnavailable>;
 }
 

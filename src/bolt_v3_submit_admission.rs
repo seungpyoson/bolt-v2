@@ -1712,6 +1712,14 @@ impl BoltV3SubmitAdmissionState {
                 .net_edge()
                 .forecast_net_edge()
                 .to_string(),
+            economics_forecast_complete: request.economics_admission.quote().forecast_complete(),
+            economics_missing_forecast_component_ids: request
+                .economics_admission
+                .quote()
+                .missing_forecast_component_ids()
+                .iter()
+                .map(|component_id| component_id.as_str().to_string())
+                .collect(),
             economics_valid_until_ns: request.economics_admission.quote().valid_until_ns(),
             economics_source_snapshot_ids: request
                 .economics_admission
@@ -2336,7 +2344,14 @@ impl BoltV3SubmitAdmissionState {
             .live_submit_approval_limits
             .get(&request.execution_client_id)
         {
-            if full_reservation_liability > limits.max_order_notional {
+            // The order-notional approval cap limits new or replacement exposure. A proven
+            // risk-reducing exit may legitimately unwind a position accumulated across several
+            // individually capped entries, so applying the entry cap here would trap exposure.
+            if matches!(
+                request.intent_kind,
+                BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+            ) && full_reservation_liability > limits.max_order_notional
+            {
                 return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                     BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
                     now_ns,

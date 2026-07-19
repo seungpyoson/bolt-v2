@@ -30,12 +30,14 @@ use zeroize::Zeroizing;
 pub(super) const FEE_VOLUME_HISTORY_DAYS_KEY: &str = "fee_volume_history_days";
 pub(super) const FEE_ELIGIBILITY_WINDOW_DAYS_KEY: &str = "fee_eligibility_window_days";
 pub(super) const FEE_HISTORY_LATEST_DAY_OFFSET_KEY: &str = "fee_history_latest_day_offset_days";
+pub(super) const STANDARD_PERP_COLLATERAL_TOKEN_KEY: &str = "standard_perp_collateral_token";
 const USER_FEES_DATE_FORMAT: &str = "%Y-%m-%d";
 const ADJACENT_DATE_PAIR_SIZE: usize = 2;
 const NEXT_CALENDAR_DAY_DELTA: i64 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidFormulaPolicy {
+    pub standard_perp_collateral_token: u32,
     pub stable_pair_scale: Decimal,
     pub growth_mode_scale: Decimal,
     pub hip3_scale_threshold: Decimal,
@@ -99,6 +101,13 @@ impl HyperliquidEconomicsAdapterConfig {
                 .formula
                 .get(key)
                 .and_then(|value| NonZeroUsize::from_str(value).ok())
+                .ok_or(HyperliquidEconomicsError::InvalidIdentity)
+        };
+        let unsigned = |key: &str| {
+            economics
+                .formula
+                .get(key)
+                .and_then(|value| u32::from_str(value).ok())
                 .ok_or(HyperliquidEconomicsError::InvalidIdentity)
         };
         let fee_eligibility = HyperliquidFeeEligibilityPolicy {
@@ -192,6 +201,7 @@ impl HyperliquidEconomicsAdapterConfig {
             .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
             fee_eligibility,
             formula: HyperliquidFormulaPolicy {
+                standard_perp_collateral_token: unsigned(STANDARD_PERP_COLLATERAL_TOKEN_KEY)?,
                 stable_pair_scale: decimal("stable_pair_scale")?,
                 growth_mode_scale: decimal("growth_mode_scale")?,
                 hip3_scale_threshold: decimal("hip3_scale_threshold")?,
@@ -777,6 +787,7 @@ impl HyperliquidProductEconomicsSnapshot {
         json: &[u8],
         raw_symbol: &str,
         carry: &HyperliquidCarryPolicy,
+        standard_perp_collateral_token: u32,
     ) -> Result<Self, HyperliquidEconomicsError> {
         let (meta, contexts): (HyperliquidPerpMetaWire, Vec<HyperliquidAssetContextWire>) =
             serde_json::from_slice(json)
@@ -790,6 +801,7 @@ impl HyperliquidProductEconomicsSnapshot {
             || carry.funding_interval_ns == 0
             || carry.funding_schedule_phase_ns >= carry.funding_interval_ns
             || carry.venue_rate_cap_fraction <= Decimal::ZERO
+            || meta.collateral_token != standard_perp_collateral_token
         {
             return Err(HyperliquidEconomicsError::InvalidProductMetadata);
         }
@@ -1086,6 +1098,7 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
                             &product_body,
                             instrument.raw_symbol().as_str(),
                             carry,
+                            self.adapter_config.formula.standard_perp_collateral_token,
                         )
                         .map_err(|error| {
                             anyhow::anyhow!(
@@ -1250,12 +1263,23 @@ impl HyperliquidEconomicsAdapter {
         &self,
         request: &EconomicQuoteRequest,
     ) -> Result<Vec<EstimatedEconomicComponent>, HyperliquidEconomicsError> {
+        let planned_fill_notional =
+            crate::economics::PlannedFillNotional::from_legs(&request.planned_fill_legs)
+                .map_err(|_| HyperliquidEconomicsError::InvalidFillLeg)?;
+        self.quote_components_with_notional(request, planned_fill_notional)
+    }
+
+    fn quote_components_with_notional(
+        &self,
+        request: &EconomicQuoteRequest,
+        planned_fill_notional: crate::economics::PlannedFillNotional,
+    ) -> Result<Vec<EstimatedEconomicComponent>, HyperliquidEconomicsError> {
         self.validate(request)?;
         let rate = match request.liquidity_role {
             LiquidityRoleAssumption::GuaranteedMaker => self.rates.maker,
             LiquidityRoleAssumption::Taker => self.rates.taker,
         };
-        let notional = self.notional(request)?;
+        let notional = planned_fill_notional.amount();
         let (protocol_basis, protocol_unit) = match (self.product.product_kind, request.order_side)
         {
             (HyperliquidProductKind::Spot, crate::economics::OrderSide::Buy) => (
@@ -1360,21 +1384,6 @@ impl HyperliquidEconomicsAdapter {
             return Err(HyperliquidEconomicsError::StaleSnapshot);
         }
         Ok(())
-    }
-
-    fn notional(
-        &self,
-        request: &EconomicQuoteRequest,
-    ) -> Result<Decimal, HyperliquidEconomicsError> {
-        request
-            .planned_fill_legs
-            .iter()
-            .try_fold(Decimal::ZERO, |total, leg| {
-                if leg.price <= Decimal::ZERO || leg.quantity <= Decimal::ZERO {
-                    return Err(HyperliquidEconomicsError::InvalidFillLeg);
-                }
-                Ok(total + leg.price * leg.quantity)
-            })
     }
 
     fn quantity(
@@ -1645,12 +1654,16 @@ impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: crate::economics::PlannedFillNotional,
     ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
         self.validate(request)
             .map_err(|_| EconomicsUnavailable::ProviderQuoteUnavailable {
                 source_id: self.config.source_id.clone(),
             })?;
         Ok(crate::economics::ResolvedEdgeBasis {
+            normalized_amount: crate::economics::EdgeBasisAmount::new(
+                planned_fill_notional.amount(),
+            )?,
             source_snapshot_ids: vec![SnapshotId::new(self.product.snapshot_id.clone())?],
             valid_until_ns: self.product.valid_until_ns,
         })
@@ -1659,12 +1672,13 @@ impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: crate::economics::PlannedFillNotional,
     ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
-        let components = self.quote_components(request).map_err(|_| {
-            EconomicsUnavailable::ProviderQuoteUnavailable {
+        let components = self
+            .quote_components_with_notional(request, planned_fill_notional)
+            .map_err(|_| EconomicsUnavailable::ProviderQuoteUnavailable {
                 source_id: self.config.source_id.clone(),
-            }
-        })?;
+            })?;
         let snapshot_id = SnapshotId::new(self.user_fees.snapshot_id.clone()).map_err(|_| {
             EconomicsUnavailable::ProviderQuoteUnavailable {
                 source_id: self.config.source_id.clone(),

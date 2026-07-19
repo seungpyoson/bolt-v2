@@ -3322,6 +3322,7 @@ fn build_live_node_with_clients(
 fn build_economics_authorities(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
+    transport_overrides: &BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
 ) -> Result<
     Vec<Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>>,
     BoltV3LiveNodeError,
@@ -3347,6 +3348,9 @@ fn build_economics_authorities(
             venue: client.venue,
             execution,
             resolved_secrets: resolved.clients.get(execution_client_id),
+            transport_override: transport_overrides
+                .get(execution_client_id)
+                .map(Arc::as_ref),
         })
         .map_err(|error| {
             BoltV3LiveNodeError::Build(anyhow::anyhow!(
@@ -3398,7 +3402,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let economics_inputs =
         crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default();
-    let economics_authorities = build_economics_authorities(loaded, resolved)?;
+    let economics_authorities = build_economics_authorities(loaded, resolved, &BTreeMap::new())?;
     let economics_valuation_subscriptions =
         build_economics_valuation_subscriptions(&economics_authorities)?;
     // Enabled kill-switch boot must fail closed on an unresolved/corrupt/missing

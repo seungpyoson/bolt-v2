@@ -1,7 +1,7 @@
 use bolt_v2::economics::{
     AdmissionTreatment, EconomicClass, EconomicsCapabilityHealth, EconomicsUnavailable,
-    EdgeBasisEvidence, FormulaId, PointEstimate, RiskBoundAuthority, SignedNativeEffect,
-    SnapshotId, SourceId, ValuationEvidence, ValuationRouteId, fold_net_edge,
+    EdgeBasisAmount, EdgeBasisEvidence, FormulaId, PointEstimate, RiskBoundAuthority,
+    SignedNativeEffect, SnapshotId, SourceId, ValuationEvidence, ValuationRouteId, fold_net_edge,
 };
 
 use super::economics_support::{
@@ -146,7 +146,7 @@ fn core_edge_uses_positive_fresh_evidence_basis() {
         resolver_id: FormulaId::new("fixture-resolver").unwrap(),
         product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
         policy_version: 1,
-        normalized_amount: decimal("10.00"),
+        normalized_amount: EdgeBasisAmount::new(decimal("10.00")).unwrap(),
         scope: estimated_component(
             "scope",
             decimal("-1"),

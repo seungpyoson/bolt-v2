@@ -7,9 +7,9 @@ use bolt_v2::{
         HyperliquidUserFeesSnapshot,
     },
     economics::{
-        EconomicClass, EconomicComponentId, FormulaId, LiquidityRoleAssumption, PositionContext,
-        PositionSide, RoutingAttachment, RoutingAttachmentId, SnapshotId, SourceId,
-        VenueEconomicsAdapter,
+        EconomicClass, EconomicComponentId, FormulaId, LiquidityRoleAssumption,
+        PlannedFillNotional, PositionContext, PositionSide, RoutingAttachment, RoutingAttachmentId,
+        SnapshotId, SourceId, VenueEconomicsAdapter,
     },
 };
 use std::num::NonZeroUsize;
@@ -28,6 +28,7 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
         source_id: SourceId::new("user-fees-and-product").unwrap(),
         fee_eligibility: fee_eligibility_policy(1, 1),
         formula: HyperliquidFormulaPolicy {
+            standard_perp_collateral_token: 0,
             stable_pair_scale: decimal("1"),
             growth_mode_scale: decimal("1"),
             hip3_scale_threshold: decimal("1"),
@@ -390,7 +391,9 @@ fn sealed_quote_evidence_names_account_and_product_snapshots() {
     )
     .unwrap();
 
-    let estimate = adapter.quote(&perp_request()).unwrap();
+    let request = perp_request();
+    let planned_fill_notional = PlannedFillNotional::from_legs(&request.planned_fill_legs).unwrap();
+    let estimate = adapter.quote(&request, planned_fill_notional).unwrap();
 
     assert_eq!(
         estimate.authority.snapshot_id,
@@ -685,6 +688,7 @@ fn governed_live_hyperliquid_quote_authority_captures_parse() {
         include_bytes!("fixtures/bolt_v3/boundary_evidence/hyperliquid-meta-and-asset-ctxs.json"),
         "BTC",
         config().carry.as_ref().unwrap(),
+        config().formula.standard_perp_collateral_token,
     )
     .unwrap();
     assert_eq!(product.carry_next_funding_at_ns(), Some(4_500_000_000_000));
@@ -974,6 +978,23 @@ fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
         ),
         Err(HyperliquidEconomicsError::InvalidUserFees)
     );
+}
+
+#[test]
+fn user_fees_parser_rejects_active_discount_that_contradicts_the_resolved_staking_tier() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    wire["activeStakingDiscount"]["bpsOfMaxSupply"] =
+        serde_json::Value::String("4.7577998927".to_string());
+    wire["activeStakingDiscount"]["discount"] = serde_json::Value::String("0.2".to_string());
+    wire["userCrossRate"] = serde_json::Value::String("0.00036".to_string());
+    wire["userAddRate"] = serde_json::Value::String("0.00012".to_string());
+    wire["userSpotCrossRate"] = serde_json::Value::String("0.00056".to_string());
+    wire["userSpotAddRate"] = serde_json::Value::String("0.00032".to_string());
+
+    assert_governed_user_fees_invalid(wire);
 }
 
 #[test]

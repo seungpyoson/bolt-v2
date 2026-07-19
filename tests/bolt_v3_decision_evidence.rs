@@ -1304,6 +1304,8 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         economics_core_net_edge: "0.04".to_string(),
         economics_core_edge_ratio: "0.08".to_string(),
         economics_forecast_net_edge: "0.04".to_string(),
+        economics_forecast_complete: true,
+        economics_missing_forecast_component_ids: Vec::new(),
         economics_valid_until_ns: 1_300,
         economics_source_snapshot_ids: vec!["test-economics-snapshot".to_string()],
         intent_kind: BoltV3SubmitIntentKind::Entry,

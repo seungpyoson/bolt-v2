@@ -289,6 +289,8 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 }],
             },
         };
+        let planned_fill_notional =
+            crate::economics::PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
         crate::bolt_v3_economics_runtime::test_economics_runtime(
             Arc::new(adapter),
             valid_until_ns
@@ -303,10 +305,9 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 resolver_id: FormulaId::new("test-edge-resolver")?,
                 product_metadata_source: SourceId::new("test-product-metadata")?,
                 policy_version: 1,
-                normalized_amount: crate::economics::PlannedFillNotional::from_legs(
-                    &intent.request.planned_fill_legs,
-                )?
-                .amount(),
+                normalized_amount: crate::economics::EdgeBasisAmount::new(
+                    planned_fill_notional.amount(),
+                )?,
                 scope: EconomicScope::Decision {
                     decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
@@ -314,6 +315,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 valid_until_ns: RECORDING_ECONOMICS_VALID_UNTIL_NS,
             },
             request: intent.request,
+            planned_fill_notional,
             order_binding: intent.order_binding,
             purpose: intent.purpose,
             gross_expected_value: intent.gross_expected_value,
@@ -331,11 +333,15 @@ impl crate::economics::VenueEconomicsAdapter for RecordingEconomicsAdapterFixtur
     fn resolve_edge_basis(
         &self,
         _request: &crate::economics::EconomicQuoteRequest,
+        planned_fill_notional: crate::economics::PlannedFillNotional,
     ) -> std::result::Result<
         crate::economics::ResolvedEdgeBasis,
         crate::economics::EconomicsUnavailable,
     > {
         Ok(crate::economics::ResolvedEdgeBasis {
+            normalized_amount: crate::economics::EdgeBasisAmount::new(
+                planned_fill_notional.amount(),
+            )?,
             source_snapshot_ids: vec![self.estimate.authority.snapshot_id.clone()],
             valid_until_ns: self.estimate.authority.valid_until_ns,
         })
@@ -344,6 +350,7 @@ impl crate::economics::VenueEconomicsAdapter for RecordingEconomicsAdapterFixtur
     fn quote(
         &self,
         _request: &crate::economics::EconomicQuoteRequest,
+        _planned_fill_notional: crate::economics::PlannedFillNotional,
     ) -> std::result::Result<
         crate::economics::VenueQuoteEstimate,
         crate::economics::EconomicsUnavailable,

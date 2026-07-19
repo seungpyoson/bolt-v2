@@ -11,7 +11,8 @@ use bolt_v2::bolt_v3_economics_runtime::{
 };
 use bolt_v2::economics::{
     ExecutionClientId, FormulaId, InstrumentId, LiquidityRoleAssumption, OrderSide, PlannedFillLeg,
-    ProductSurfaceId, ReservationBasis, SnapshotId, SourceId, VenueEconomicsAdapter,
+    PlannedFillNotional, ProductSurfaceId, ReservationBasis, SnapshotId, SourceId,
+    VenueEconomicsAdapter,
 };
 use rust_decimal::Decimal;
 use std::{str::FromStr, sync::Arc};
@@ -100,12 +101,23 @@ fn request(requested_at_ns: u64) -> bolt_v2::economics::EconomicQuoteRequest {
     .expect("canonical replay request")
 }
 
+fn planned_fill_notional(
+    request: &bolt_v2::economics::EconomicQuoteRequest,
+) -> PlannedFillNotional {
+    PlannedFillNotional::from_legs(&request.planned_fill_legs).expect("valid planned legs")
+}
+
 #[test]
 fn immutable_snapshot_maps_to_canonical_quote_and_edge_basis() {
     let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot()).expect("valid snapshot");
     let request = request(100);
-    let estimate = adapter.quote(&request).expect("historical quote");
-    let edge_basis = adapter.edge_basis(&request).expect("historical edge basis");
+    let planned_fill_notional = planned_fill_notional(&request);
+    let estimate = adapter
+        .quote(&request, planned_fill_notional)
+        .expect("historical quote");
+    let edge_basis = adapter
+        .edge_basis(&request, planned_fill_notional)
+        .expect("historical edge basis");
 
     assert_eq!(estimate.authority.snapshot_id.as_str(), "quote-snapshot");
     assert_eq!(estimate.components.len(), 1);
@@ -115,7 +127,12 @@ fn immutable_snapshot_maps_to_canonical_quote_and_edge_basis() {
 #[test]
 fn historical_snapshot_fails_closed_outside_its_validity_window() {
     let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot()).expect("valid snapshot");
-    assert!(adapter.quote(&request(111)).is_err());
+    let request = request(111);
+    assert!(
+        adapter
+            .quote(&request, planned_fill_notional(&request))
+            .is_err()
+    );
 }
 
 #[test]
@@ -123,7 +140,12 @@ fn historical_snapshot_rejects_class_sign_disagreement() {
     let mut fixture = snapshot();
     fixture.instrument_id = "other-instrument".to_string();
     let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("timeline is valid");
-    assert!(adapter.quote(&request(100)).is_err());
+    let request = request(100);
+    assert!(
+        adapter
+            .quote(&request, planned_fill_notional(&request))
+            .is_err()
+    );
 }
 
 #[test]
@@ -135,7 +157,14 @@ fn historical_fee_free_snapshot_is_valid() {
     .to_string();
     let adapter = ReplayEconomicsAdapter::from_snapshot(fixture).expect("fee-free snapshot");
 
-    assert!(adapter.quote(&request(100)).unwrap().components.is_empty());
+    let request = request(100);
+    assert!(
+        adapter
+            .quote(&request, planned_fill_notional(&request))
+            .unwrap()
+            .components
+            .is_empty()
+    );
 }
 
 #[test]

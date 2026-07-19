@@ -7,9 +7,6 @@ pub fn fold_net_edge(
     quote: &EconomicQuote,
     basis: EdgeBasisEvidence,
 ) -> Result<NetEdgeQuote, EconomicsUnavailable> {
-    if basis.normalized_amount <= Decimal::ZERO {
-        return Err(EconomicsUnavailable::InvalidEdgeBasis);
-    }
     if basis.policy_id != quote.edge_basis_policy_id {
         return Err(EconomicsUnavailable::EdgeBasisPolicyMismatch);
     }
@@ -25,8 +22,8 @@ pub fn fold_net_edge(
         gross_expected_value,
         core_net_edge,
         forecast_net_edge,
-        core_edge_ratio: core_net_edge / basis.normalized_amount,
-        forecast_edge_ratio: forecast_net_edge / basis.normalized_amount,
+        core_edge_ratio: core_net_edge / basis.normalized_amount.amount(),
+        forecast_edge_ratio: forecast_net_edge / basis.normalized_amount.amount(),
         basis,
     })
 }

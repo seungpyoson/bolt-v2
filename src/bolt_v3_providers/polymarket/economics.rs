@@ -293,6 +293,10 @@ pub(crate) trait PolymarketEconomicsSource: Send + Sync {
     ) -> anyhow::Result<AuthoritativeValuationObservation>;
 }
 
+pub(crate) struct PolymarketEconomicsSourceOverride {
+    pub source: Arc<dyn PolymarketEconomicsSource>,
+}
+
 struct LivePolymarketEconomicsSource;
 
 pub struct PolymarketEconomicsAuthority {
@@ -369,7 +373,6 @@ impl PolymarketEconomicsAuthority {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn try_new_with_source(
         execution_client_id: &str,
         venue: Venue,
@@ -841,6 +844,9 @@ impl PolymarketEconomicsAdapter {
             (Some(descriptor), Some(_), Some(_)) if descriptor.r < Decimal::ZERO => {
                 return Err(PolymarketEconomicsError::InvalidRate);
             }
+            (Some(descriptor), Some(_), Some(_)) if !descriptor.to => {
+                return Err(PolymarketEconomicsError::InvalidMarketInfo);
+            }
             (Some(descriptor), Some(_), Some(_)) => PlatformQuotePlan::PriceShaped {
                 rate: descriptor.r,
                 exponent: descriptor.e,
@@ -988,6 +994,7 @@ impl VenueEconomicsAdapter for PolymarketEconomicsAdapter {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: crate::economics::PlannedFillNotional,
     ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
         self.validate_snapshot(request).map_err(|_| {
             EconomicsUnavailable::ProviderQuoteUnavailable {
@@ -995,6 +1002,9 @@ impl VenueEconomicsAdapter for PolymarketEconomicsAdapter {
             }
         })?;
         Ok(crate::economics::ResolvedEdgeBasis {
+            normalized_amount: crate::economics::EdgeBasisAmount::new(
+                planned_fill_notional.amount(),
+            )?,
             source_snapshot_ids: vec![SnapshotId::new(self.snapshot.snapshot_id.clone())?],
             valid_until_ns: self.snapshot.valid_until_ns,
         })
@@ -1003,6 +1013,7 @@ impl VenueEconomicsAdapter for PolymarketEconomicsAdapter {
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
+        _planned_fill_notional: crate::economics::PlannedFillNotional,
     ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
         let components = self.quote_components(request).map_err(|_| {
             EconomicsUnavailable::ProviderQuoteUnavailable {

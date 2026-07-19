@@ -55,7 +55,7 @@ use crate::{
     bolt_v3_loss_protection::{PositionRealizedPnlObservation, RealizedPnlObservation},
     bolt_v3_market_families::{self, FairProbabilityInputs, OutcomeSide},
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, Probability,
+        BPS_DENOMINATOR, CENTS_PER_SHARE, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, Probability,
         SECONDS_PER_YEAR_F64, is_positive_finite, notional_float_tolerance,
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
@@ -6109,18 +6109,15 @@ impl BinaryOracleEdgeTaker {
             .ok_or_else(|| anyhow::anyhow!("exit economics requires a valid entry cost basis"))?;
         let exit_quantity = Decimal::from_str(&quantity.to_string())
             .context("exit economics quantity is not representable as Decimal")?;
-        let planned_fill_notional = planned_fill_legs
-            .iter()
-            .try_fold(Decimal::ZERO, |total, leg| {
-                total.checked_add(leg.price.checked_mul(leg.quantity)?)
-            })
-            .ok_or_else(|| anyhow::anyhow!("exit planned-fill notional overflow"))?;
+        let planned_fill_notional =
+            crate::economics::PlannedFillNotional::from_legs(&planned_fill_legs)
+                .context("exit planned-fill legs are invalid")?;
         let entry_notional = entry_cost
             .checked_mul(exit_quantity)
             .ok_or_else(|| anyhow::anyhow!("exit entry notional overflow"))?;
         let gross_expected_value = match order_side {
-            OrderSide::Sell => planned_fill_notional.checked_sub(entry_notional),
-            OrderSide::Buy => entry_notional.checked_sub(planned_fill_notional),
+            OrderSide::Sell => planned_fill_notional.amount().checked_sub(entry_notional),
+            OrderSide::Buy => entry_notional.checked_sub(planned_fill_notional.amount()),
             _ => None,
         }
         .ok_or_else(|| anyhow::anyhow!("exit gross value arithmetic overflow"))?;
@@ -6617,10 +6614,16 @@ impl BinaryOracleEdgeTaker {
         );
         let gross_expected_value = decision
             .evaluation
-            .expected_ev_per_notional
+            .sized_executable_edge
             .zip(decision.evaluation.sized_notional)
-            .and_then(|(expected_ev_per_notional, sized_notional)| {
-                Decimal::from_f64(expected_ev_per_notional * sized_notional)
+            .and_then(|(edge, sized_notional)| {
+                let gross_cost = edge.cost_breakdown.gross_cost_cents;
+                if !is_positive_finite(gross_cost) {
+                    return None;
+                }
+                let gross_ev_per_notional =
+                    (edge.adjusted_probability * CENTS_PER_SHARE - gross_cost) / gross_cost;
+                Decimal::from_f64(gross_ev_per_notional * sized_notional)
             })
             .ok_or_else(|| anyhow::anyhow!("entry economics requires a gross value assumption"))?;
 

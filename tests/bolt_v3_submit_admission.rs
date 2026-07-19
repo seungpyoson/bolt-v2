@@ -622,6 +622,26 @@ fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
 }
 
 #[test]
+fn proven_risk_reducing_exit_is_not_blocked_by_the_entry_notional_cap() {
+    let admission = limited_admission(2, Decimal::ONE);
+    let exit = submit_request_with_kind_and_exit_proof(
+        Decimal::from(10),
+        BoltV3SubmitIntentKind::RiskReducingExit,
+        Some(valid_risk_reducing_exit_proof()),
+    );
+    let permit = admission
+        .admit(&exit)
+        .expect("a proven de-risking exit may unwind exposure above the entry cap");
+    drop(permit);
+
+    let entry = submit_request_with_kind(Decimal::from(10), BoltV3SubmitIntentKind::Entry);
+    assert_eq!(
+        admission.admit(&entry).unwrap_err(),
+        BoltV3SubmitAdmissionError::NotionalCapExceeded
+    );
+}
+
+#[test]
 fn dropped_uncommitted_permit_rolls_back_live_submit_count_slot() {
     let admission = limited_admission(1, Decimal::new(1, 0));
     let request = submit_request(Decimal::new(1, 0));

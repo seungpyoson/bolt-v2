@@ -632,6 +632,7 @@ builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [clients.hyperliquid_execution.execution.economics.formula]
+standard_perp_collateral_token = "0"
 stable_pair_scale = "0.2"
 growth_mode_scale = "0.1"
 hip3_scale_threshold = "1"

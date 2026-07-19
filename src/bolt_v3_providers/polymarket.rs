@@ -259,13 +259,27 @@ pub(crate) fn build_economics_authority(
         .clone()
         .try_into::<PolymarketExecutionConfig>()
         .map_err(|error| format!("invalid Polymarket execution economics config: {error}"))?;
-    economics::PolymarketEconomicsAuthority::try_new(
-        context.execution_client_id,
-        context.venue,
-        execution,
-    )
-    .map(|authority| Arc::new(authority) as Arc<_>)
-    .map_err(|error| error.to_string())
+    let authority = match context.transport_override {
+        Some(override_value) => {
+            let source = override_value
+                .downcast_ref::<economics::PolymarketEconomicsSourceOverride>()
+                .ok_or_else(|| "invalid Polymarket economics transport override".to_string())?;
+            economics::PolymarketEconomicsAuthority::try_new_with_source(
+                context.execution_client_id,
+                context.venue,
+                execution,
+                source.source.clone(),
+            )
+        }
+        None => economics::PolymarketEconomicsAuthority::try_new(
+            context.execution_client_id,
+            context.venue,
+            execution,
+        ),
+    };
+    authority
+        .map(|authority| Arc::new(authority) as Arc<_>)
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn build_offline_economics_adapter(

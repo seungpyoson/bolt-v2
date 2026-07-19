@@ -263,6 +263,7 @@ pub(crate) fn build_offline_economics_adapter(
             .carry
             .as_ref()
             .ok_or_else(|| "offline Hyperliquid carry policy is missing".to_string())?,
+        carry.formula.standard_perp_collateral_token,
     )
     .map_err(|error| format!("invalid offline Hyperliquid product metadata: {error:?}"))?;
     let adapter =
@@ -798,6 +799,7 @@ fn validate_quote_economics_policy(
         ));
     }
     let expected_formula_keys = BTreeSet::from([
+        economics::STANDARD_PERP_COLLATERAL_TOKEN_KEY,
         "stable_pair_scale",
         "growth_mode_scale",
         "hip3_scale_threshold",

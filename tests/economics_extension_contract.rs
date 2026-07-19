@@ -13,8 +13,12 @@ impl VenueEconomicsAdapter for SyntheticVenue {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
         Ok(ResolvedEdgeBasis {
+            normalized_amount: bolt_v2::economics::EdgeBasisAmount::new(
+                planned_fill_notional.amount() * decimal("2"),
+            )?,
             source_snapshot_ids: vec![SnapshotId::new("synthetic-snapshot")?],
             valid_until_ns: request.requested_at_ns + 10,
         })
@@ -23,6 +27,7 @@ impl VenueEconomicsAdapter for SyntheticVenue {
     fn quote(
         &self,
         request: &EconomicQuoteRequest,
+        _planned_fill_notional: PlannedFillNotional,
     ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
         let authority = SourceValidity {
             source_id: SourceId::new("synthetic-authority").unwrap(),
@@ -66,7 +71,10 @@ impl SyntheticSubstrate {
 #[test]
 fn new_venue_and_non_nt_substrate_use_only_shared_contracts() {
     let request = SyntheticSubstrate.canonical_request();
-    let estimate = SyntheticVenue.quote(&request).unwrap();
+    let planned_fill_notional = PlannedFillNotional::from_legs(&request.planned_fill_legs).unwrap();
+    let estimate = SyntheticVenue
+        .quote(&request, planned_fill_notional)
+        .unwrap();
     let quote = validate_and_aggregate_quote(&request, estimate, &[]).unwrap();
     assert_eq!(quote.core_total(), decimal("-0.25"));
 }

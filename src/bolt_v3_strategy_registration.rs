@@ -579,7 +579,7 @@ pub fn assemble_strategy_build_context(
     Ok(build_context)
 }
 
-fn build_order_routing_handle(
+pub(crate) fn build_order_routing_handle(
     loaded: &LoadedBoltV3Config,
     strategy: &LoadedStrategy,
     client: &ClientBlock,

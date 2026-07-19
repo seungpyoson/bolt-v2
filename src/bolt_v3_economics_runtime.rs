@@ -29,6 +29,7 @@ pub struct EconomicsAdmissionIntent {
     pub purpose: EconomicsAdmissionPurpose,
     pub gross_expected_value: Decimal,
     pub edge_basis: EdgeBasisEvidence,
+    pub planned_fill_notional: PlannedFillNotional,
     pub valuation_provider: Arc<dyn ValuationProvider>,
     pub reservation_basis: ReservationBasis,
     pub authority_refreshed_at_ns: u64,
@@ -609,7 +610,9 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         }
         let planned_fill_notional =
             PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
-        let resolved_edge_basis = dependencies.adapter.resolve_edge_basis(&intent.request)?;
+        let resolved_edge_basis = dependencies
+            .adapter
+            .resolve_edge_basis(&intent.request, planned_fill_notional)?;
         if resolved_edge_basis.source_snapshot_ids.is_empty()
             || resolved_edge_basis.source_snapshot_ids
                 != dependencies.edge_basis.source_snapshot_ids
@@ -621,7 +624,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
             resolver_id: dependencies.edge_basis.resolver_id,
             product_metadata_source: dependencies.edge_basis.product_metadata_source,
             policy_version: dependencies.edge_basis.policy_version,
-            normalized_amount: planned_fill_notional.amount(),
+            normalized_amount: resolved_edge_basis.normalized_amount,
             scope: crate::economics::EconomicScope::Decision {
                 decision_correlation_id: intent.request.decision_correlation_id.clone(),
             },
@@ -638,6 +641,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
                 purpose: intent.purpose,
                 gross_expected_value: intent.gross_expected_value,
                 edge_basis,
+                planned_fill_notional,
                 valuation_provider: dependencies.valuation_provider,
                 reservation_basis: intent.reservation_basis,
                 authority_refreshed_at_ns: dependencies.refreshed_at_ns,
@@ -841,26 +845,21 @@ fn resting_economic_terms_match(
 ) -> bool {
     fn normalized_effect_matches(
         before: &crate::economics::SignedNativeEffect,
-        before_base: Decimal,
         after: &crate::economics::SignedNativeEffect,
-        after_base: Decimal,
     ) -> bool {
         before.unit() == after.unit()
             && before.inventory_application() == after.inventory_application()
-            && before.amount().checked_div(before_base) == after.amount().checked_div(after_base)
     }
 
     fn point_estimate_matches(
         before: &crate::economics::PointEstimate,
-        before_base: Decimal,
         after: &crate::economics::PointEstimate,
-        after_base: Decimal,
     ) -> bool {
         match (before, after) {
             (
                 crate::economics::PointEstimate::NonZero(before),
                 crate::economics::PointEstimate::NonZero(after),
-            ) => normalized_effect_matches(before, before_base, after, after_base),
+            ) => normalized_effect_matches(before, after),
             (
                 crate::economics::PointEstimate::ProvenZero { factor_id: before },
                 crate::economics::PointEstimate::ProvenZero { factor_id: after },
@@ -871,14 +870,10 @@ fn resting_economic_terms_match(
 
     fn optional_effect_matches(
         before: Option<&crate::economics::SignedNativeEffect>,
-        before_base: Decimal,
         after: Option<&crate::economics::SignedNativeEffect>,
-        after_base: Decimal,
     ) -> bool {
         match (before, after) {
-            (Some(before), Some(after)) => {
-                normalized_effect_matches(before, before_base, after, after_base)
-            }
+            (Some(before), Some(after)) => normalized_effect_matches(before, after),
             (None, None) => true,
             _ => false,
         }
@@ -886,19 +881,11 @@ fn resting_economic_terms_match(
 
     fn valuation_matches(
         before: Option<&crate::economics::ValuationEvidence>,
-        before_base: Decimal,
         after: Option<&crate::economics::ValuationEvidence>,
-        after_base: Decimal,
     ) -> bool {
         match (before, after) {
             (Some(before), Some(after)) => {
-                normalized_effect_matches(
-                    &before.native_effect,
-                    before_base,
-                    &after.native_effect,
-                    after_base,
-                ) && before.normalized_amount.checked_div(before_base)
-                    == after.normalized_amount.checked_div(after_base)
+                normalized_effect_matches(&before.native_effect, &after.native_effect)
                     && before.reporting_unit == after.reporting_unit
                     && before.route_id == after.route_id
             }
@@ -922,24 +909,12 @@ fn resting_economic_terms_match(
                     && before.formula_id == after.formula_id
                     && before.source.source_id == after.source.source_id
                     && before.calculation_factors == after.calculation_factors
-                    && point_estimate_matches(
-                        &before.point_estimate,
-                        prior.planned_fill_notional.amount(),
-                        &after.point_estimate,
-                        refreshed.planned_fill_notional.amount(),
-                    )
+                    && point_estimate_matches(&before.point_estimate, &after.point_estimate)
                     && optional_effect_matches(
                         before.debit_risk_bound.as_ref(),
-                        prior.planned_fill_notional.amount(),
                         after.debit_risk_bound.as_ref(),
-                        refreshed.planned_fill_notional.amount(),
                     )
-                    && valuation_matches(
-                        before.normalized.as_ref(),
-                        prior.planned_fill_notional.amount(),
-                        after.normalized.as_ref(),
-                        refreshed.planned_fill_notional.amount(),
-                    )
+                    && valuation_matches(before.normalized.as_ref(), after.normalized.as_ref())
             });
     let prior_basis = prior.net_edge.basis();
     let refreshed_basis = refreshed.net_edge.basis();
@@ -947,29 +922,8 @@ fn resting_economic_terms_match(
         && prior_basis.resolver_id == refreshed_basis.resolver_id
         && prior_basis.product_metadata_source == refreshed_basis.product_metadata_source
         && prior_basis.policy_version == refreshed_basis.policy_version
-        && prior_basis.scope == refreshed_basis.scope
-        && prior_basis
-            .normalized_amount
-            .checked_div(prior.planned_fill_notional.amount())
-            == refreshed_basis
-                .normalized_amount
-                .checked_div(refreshed.planned_fill_notional.amount());
-    let normalized_core = |admission: &EconomicsAdmission| {
-        admission
-            .quote
-            .core_total()
-            .checked_div(admission.planned_fill_notional.amount())
-    };
-    let normalized_debit = |admission: &EconomicsAdmission| {
-        admission
-            .guaranteed_debit
-            .amount()
-            .checked_div(admission.planned_fill_notional.amount())
-    };
-    same_components
-        && same_basis_authority
-        && normalized_core(prior) == normalized_core(refreshed)
-        && normalized_debit(prior) == normalized_debit(refreshed)
+        && prior_basis.scope == refreshed_basis.scope;
+    same_components && same_basis_authority
 }
 
 pub struct BoltV3EconomicsRuntime {
@@ -997,9 +951,10 @@ impl BoltV3EconomicsRuntime {
         &self,
         intent: EconomicsAdmissionIntent,
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
-        let planned_fill_notional =
-            PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
-        let estimate = self.adapter.quote(&intent.request)?;
+        let planned_fill_notional = intent.planned_fill_notional;
+        let estimate = self
+            .adapter
+            .quote(&intent.request, intent.planned_fill_notional)?;
         let authority_source_id = estimate.authority.source_id.clone();
         let refresh_deadline_ns = intent
             .authority_refreshed_at_ns
@@ -1020,10 +975,6 @@ impl BoltV3EconomicsRuntime {
             return Err(EconomicsUnavailable::StaleSource {
                 source_id: authority_source_id.clone(),
             });
-        }
-        let edge_basis_amount = EdgeBasisAmount::new(intent.edge_basis.normalized_amount)?;
-        if edge_basis_amount.amount() != planned_fill_notional.amount() {
-            return Err(EconomicsUnavailable::InvalidEdgeBasis);
         }
         let authority_snapshot_id = estimate.authority.snapshot_id.clone();
         let dependency_snapshot_ids = estimate
@@ -1229,8 +1180,10 @@ fn test_economics_admission_with_binding_and_purpose(
         fn resolve_edge_basis(
             &self,
             _request: &EconomicQuoteRequest,
+            planned_fill_notional: PlannedFillNotional,
         ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
             Ok(crate::economics::ResolvedEdgeBasis {
+                normalized_amount: EdgeBasisAmount::new(planned_fill_notional.amount())?,
                 source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
                 valid_until_ns: self.0.authority.valid_until_ns,
             })
@@ -1239,6 +1192,7 @@ fn test_economics_admission_with_binding_and_purpose(
         fn quote(
             &self,
             _request: &EconomicQuoteRequest,
+            _planned_fill_notional: PlannedFillNotional,
         ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
             Ok(self.0.clone())
         }
@@ -1309,6 +1263,8 @@ fn test_economics_admission_with_binding_and_purpose(
             normalized: None,
         }],
     });
+    let planned_fill_notional =
+        PlannedFillNotional::from_legs(&request.planned_fill_legs).expect("valid planned fill");
     test_economics_runtime(Arc::new(adapter), valid_until_ns - requested_at_ns)
         .expect("test economics runtime policy should be valid")
         .quote_admission(EconomicsAdmissionIntent {
@@ -1326,7 +1282,8 @@ fn test_economics_admission_with_binding_and_purpose(
                 product_metadata_source: SourceId::new("test-product-metadata")
                     .expect("valid test product metadata source"),
                 policy_version: 1,
-                normalized_amount: base_reservation_notional,
+                normalized_amount: EdgeBasisAmount::new(base_reservation_notional)
+                    .expect("valid edge basis"),
                 scope: EconomicScope::Decision {
                     decision_correlation_id,
                 },
@@ -1334,6 +1291,7 @@ fn test_economics_admission_with_binding_and_purpose(
                 valid_until_ns,
             },
             valuation_provider: identity_valuation_provider(),
+            planned_fill_notional,
             reservation_basis: ReservationBasis::new(base_reservation_notional)
                 .expect("test reservation basis should be valid"),
         })
@@ -1386,8 +1344,10 @@ mod test_economics_admission_source_support {
         fn resolve_edge_basis(
             &self,
             _request: &EconomicQuoteRequest,
+            planned_fill_notional: PlannedFillNotional,
         ) -> Result<crate::economics::ResolvedEdgeBasis, EconomicsUnavailable> {
             Ok(crate::economics::ResolvedEdgeBasis {
+                normalized_amount: EdgeBasisAmount::new(planned_fill_notional.amount())?,
                 source_snapshot_ids: vec![self.0.authority.snapshot_id.clone()],
                 valid_until_ns: self.0.authority.valid_until_ns,
             })
@@ -1396,6 +1356,7 @@ mod test_economics_admission_source_support {
         fn quote(
             &self,
             _request: &EconomicQuoteRequest,
+            _planned_fill_notional: PlannedFillNotional,
         ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
             Ok(self.0.clone())
         }
@@ -1439,6 +1400,8 @@ mod test_economics_admission_source_support {
                 normalized: None,
             }],
         });
+        let planned_fill_notional =
+            PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
         test_economics_runtime(
             Arc::new(adapter),
             valid_until_ns
@@ -1453,10 +1416,7 @@ mod test_economics_admission_source_support {
                 resolver_id: FormulaId::new("test-edge-resolver")?,
                 product_metadata_source: SourceId::new("test-product-metadata")?,
                 policy_version: 1,
-                normalized_amount: PlannedFillNotional::from_legs(
-                    &intent.request.planned_fill_legs,
-                )?
-                .amount(),
+                normalized_amount: EdgeBasisAmount::new(planned_fill_notional.amount())?,
                 scope: EconomicScope::Decision {
                     decision_correlation_id: intent.request.decision_correlation_id.clone(),
                 },
@@ -1464,6 +1424,7 @@ mod test_economics_admission_source_support {
                 valid_until_ns,
             },
             request: intent.request,
+            planned_fill_notional,
             order_binding: intent.order_binding,
             purpose: intent.purpose,
             gross_expected_value: intent.gross_expected_value,

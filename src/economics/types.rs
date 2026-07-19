@@ -469,7 +469,7 @@ pub struct EdgeBasisEvidence {
     pub resolver_id: FormulaId,
     pub product_metadata_source: SourceId,
     pub policy_version: u64,
-    pub normalized_amount: Decimal,
+    pub normalized_amount: EdgeBasisAmount,
     pub scope: EconomicScope,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valid_until_ns: u64,
@@ -477,6 +477,7 @@ pub struct EdgeBasisEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedEdgeBasis {
+    pub normalized_amount: EdgeBasisAmount,
     pub source_snapshot_ids: Vec<SnapshotId>,
     pub valid_until_ns: u64,
 }
@@ -491,6 +492,7 @@ pub struct EconomicQuote {
     pub(super) core_total: Decimal,
     pub(super) forecast_total: Decimal,
     pub(super) forecast_complete: bool,
+    pub(super) missing_forecast_component_ids: Vec<EconomicComponentId>,
     pub(super) reporting_unit: NativeUnitId,
     pub(super) valid_until_ns: u64,
 }
@@ -518,6 +520,10 @@ impl EconomicQuote {
 
     pub fn forecast_complete(&self) -> bool {
         self.forecast_complete
+    }
+
+    pub fn missing_forecast_component_ids(&self) -> &[EconomicComponentId] {
+        &self.missing_forecast_component_ids
     }
 
     pub fn reporting_unit(&self) -> &NativeUnitId {

@@ -5,8 +5,9 @@ use bolt_v2::{
         PolymarketSnapshotMetadata,
     },
     economics::{
-        EconomicComponentId, FormulaId, LiquidityRoleAssumption, PlannedFillLeg, RoutingAttachment,
-        RoutingAttachmentId, SourceId, VenueEconomicsAdapter, validate_and_aggregate_quote,
+        EconomicComponentId, FormulaId, LiquidityRoleAssumption, PlannedFillLeg,
+        PlannedFillNotional, RoutingAttachment, RoutingAttachmentId, SourceId,
+        VenueEconomicsAdapter, validate_and_aggregate_quote,
     },
 };
 
@@ -123,7 +124,8 @@ fn attached_builder_charge_without_profile_authority_fails_closed() {
 fn authoritative_fee_free_snapshot_emits_no_zero_component() {
     let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(false, 1)).unwrap();
     let request = canonical_fixture_request();
-    let estimate = adapter.quote(&request).unwrap();
+    let planned_fill_notional = PlannedFillNotional::from_legs(&request.planned_fill_legs).unwrap();
+    let estimate = adapter.quote(&request, planned_fill_notional).unwrap();
     assert!(estimate.components.is_empty());
     let quote = validate_and_aggregate_quote(&request, estimate, &[]).unwrap();
     assert!(quote.components().is_empty());

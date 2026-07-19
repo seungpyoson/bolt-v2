@@ -13,19 +13,32 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use rust_decimal::Decimal;
-use std::{cell::RefCell, rc::Rc, str::FromStr, sync::Arc};
+use std::{any::Any, cell::RefCell, collections::BTreeMap, rc::Rc, str::FromStr, sync::Arc};
 use ustr::Ustr;
 
 use crate::{
-    bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationLedger, ReservationRequest},
+    bolt_v3_capital_admission::{
+        CapitalAdmissionPolicy, OrderLifecycleCapitalAdmissionSnapshot,
+        PortfolioCapitalAdmissionSnapshot, PredictionMarketAdmissionSnapshot,
+        ProductAdmissionSnapshot, ProductKind, VenueSpendabilitySnapshot,
+    },
+    bolt_v3_capital_reservation::CapitalPoolSnapshot,
+    bolt_v3_decision_evidence::{BoltV3OrderIntentEvidence, BoltV3OrderIntentKind},
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
         ConfiguredEconomicsAdmissionSource, ConfiguredEconomicsSourcePolicy,
         EconomicsAdmissionPurpose, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
         EconomicsOrderBinding, EconomicsReceiptClock, ProviderEconomicsAuthority,
     },
+    bolt_v3_order_execution::{BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg},
     bolt_v3_providers::polymarket::economics::{
-        PolymarketEconomicsAuthority, PolymarketEconomicsSource,
+        PolymarketEconomicsAuthority, PolymarketEconomicsSource, PolymarketEconomicsSourceOverride,
+    },
+    bolt_v3_submit_admission::{
+        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
+        BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
+        BoltV3SubmitLifecyclePolicy, OrderValuationContext,
+        build_submit_admission_request_from_order,
     },
     economics::{
         AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
@@ -190,68 +203,91 @@ fn request() -> EconomicQuoteRequest {
 
 #[tokio::test]
 async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
-    let loaded = fixture_loaded_config();
-    let execution: crate::bolt_v3_providers::polymarket::PolymarketExecutionConfig =
-        loaded.root.clients["polymarket_main"]
-            .execution
-            .as_ref()
-            .expect("shipped-shaped fixture must configure Polymarket execution")
-            .clone()
-            .try_into()
-            .expect("shipped-shaped Polymarket execution must parse");
-    let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(
-        PolymarketEconomicsAuthority::try_new_with_source(
-            "polymarket_main",
-            Venue::from("POLYMARKET"),
-            execution,
-            Arc::new(FixturePolymarketSource {
-                wire_body: MARKET_INFO,
-            }),
-        )
-        .expect("shipped-shaped production authority must compile"),
-    );
+    let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+        "tests/fixtures/bolt_v3/root.toml",
+    ))
+    .expect("shipped-shaped fixture config must load");
+    loaded
+        .root
+        .clients
+        .retain(|key, client| key == "polymarket_main" || client.execution.is_none());
+    let resolved = crate::bolt_v3_secrets::ResolvedBoltV3Secrets {
+        clients: BTreeMap::new(),
+    };
+    let override_value: Arc<dyn Any + Send + Sync> = Arc::new(PolymarketEconomicsSourceOverride {
+        source: Arc::new(FixturePolymarketSource {
+            wire_body: MARKET_INFO,
+        }),
+    });
+    let overrides = BTreeMap::from([("polymarket_main".to_string(), override_value)]);
+    let authorities = build_economics_authorities(&loaded, &resolved, &overrides)
+        .expect("the production provider registry must build the fixture-backed authority");
+    let [authority] = authorities.as_slice() else {
+        panic!("the fixture must build exactly one economics authority");
+    };
     let inputs = AuthoritativeEconomicsInputStore::default();
     let cache = cache_with_valuation();
+    let instrument = binary_instrument();
 
     let published = refresh_compile_publish_economics_once(
-        &authority,
+        authority,
         &inputs,
         &cache,
-        vec![binary_instrument()],
+        vec![instrument.clone()],
         &|| Ok(NOW_NS),
     )
     .await
     .expect("the production one-shot refresh must succeed");
     assert_eq!(published, 1);
 
-    let source = ConfiguredEconomicsAdmissionSource::new(
-        "POLYMARKET",
-        inputs,
-        ConfiguredEconomicsSourcePolicy {
-            quote_refresh_ns: 30_000_000_000,
-            quote_max_age_ns: 60_000_000_000,
-            quote_validity_ns: 30_000_000_000,
-            resting_order_refresh_margin_ns: 5_000_000_000,
-        },
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("fixture must load its configured strategy");
+    let client = &loaded.root.clients["polymarket_main"];
+    let routing = crate::bolt_v3_strategy_registration::build_order_routing_handle(
+        &loaded, strategy, client, &inputs,
     )
-    .unwrap();
-    let admission = source
-        .quote_admission(EconomicsAdmissionQuoteIntent {
-            request: request(),
-            order_binding: EconomicsOrderBinding::from_sha256(
-                <sha2::Sha256 as sha2::Digest>::digest(b"composition-order"),
-            ),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+    .expect("config-derived production order routing must build");
+    let order = generic_market_order(
+        "composition-order",
+        INSTRUMENT_ID,
+        nautilus_model::enums::OrderSide::Buy,
+        Quantity::from("10"),
+    );
+    let order_intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        strategy.config.strategy_instance_id.clone(),
+        BoltV3OrderIntentKind::Entry,
+        "0.5".to_string(),
+        &order,
+    );
+    let submit_input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: "polymarket_main",
+        intent: &order_intent,
+        order: &order,
+        valuation: OrderValuationContext {
+            last_quote: None,
+            instrument: Some(&instrument),
+        },
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        risk_reducing_exit_position: None,
+    };
+    let admission = routing
+        .quote_admission(BoltV3OrderEconomicsIntent {
+            request: &submit_input,
+            planned_fill_legs: vec![BoltV3PlannedFillLeg {
+                price: Decimal::from_str("0.5").unwrap(),
+                quantity: Decimal::from(10),
+            }],
+            liquidity_role: LiquidityRoleAssumption::Taker,
+            position: None,
+            lifecycle_path: LifecyclePath::PlannedExit,
+            requested_at_ns: NOW_NS,
+            decision_correlation_id: "composition-tracer",
             gross_expected_value: Decimal::from(10),
-            reservation_basis: crate::economics::ReservationBasis::new(
-                Decimal::from_str("9.99").unwrap(),
-            )
-            .unwrap(),
         })
-        .expect("published governed facts must quote and admit");
+        .expect("config-derived production routing must quote and admit");
     assert!(admission.guaranteed_debit().amount() > Decimal::ZERO);
-
-    let mut ledger = ReservationLedger::reconciled();
     let pool = CapitalPoolSnapshot {
         source: "shadow-capital-fixture".to_string(),
         observed_at_ns: NOW_NS,
@@ -260,51 +296,102 @@ async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
         committed_liability: Decimal::ZERO,
         max_snapshot_age_ns: 1,
     };
-    let reservation = ReservationRequest {
-        request_id: "composition-order".to_string(),
-        pool_id: pool.pool_id.clone(),
-        collateral_group_id: "polymarket-collateral".to_string(),
-        liability: admission.full_reservation_liability().amount(),
+    let sealed_liability = admission.full_reservation_liability().amount();
+    let submit_request = build_submit_admission_request_from_order(submit_input, admission)
+        .expect("the routed admission must bind to the final order");
+    let submit_state = BoltV3SubmitAdmissionState::new_with_capital_admission(
+        Arc::new(NoStrategyDecisionEvidenceWriter),
+        BoltV3SubmitCapitalAdmissionConfig {
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            product_kind: ProductKind::PredictionMarketBinary,
+            collateral_currency: "PUSD".to_string(),
+            capital_pool: pool,
+            policy: CapitalAdmissionPolicy {
+                min_remaining_pool_balance: None,
+            },
+            dedupe_retention_ns: 1,
+        },
+    );
+    submit_state.update_capital_admission_nt_components(BoltV3SubmitCapitalAdmissionNtComponents {
+        source: "composition-tracer".to_string(),
         observed_at_ns: NOW_NS,
-        evidence_label: "sealed-economics-admission".to_string(),
-    };
-    assert!(ledger.reserve(&pool, &reservation, NOW_NS, None).accepted);
+        portfolio: PortfolioCapitalAdmissionSnapshot {
+            source: "composition-portfolio".to_string(),
+            observed_at_ns: NOW_NS,
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            collateral_currency: "PUSD".to_string(),
+            free_collateral: Decimal::from(100),
+            total_equity: Decimal::from(100),
+        },
+        venue_spendability: VenueSpendabilitySnapshot {
+            source: "composition-spendability".to_string(),
+            observed_at_ns: NOW_NS,
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            collateral_currency: "PUSD".to_string(),
+            spendable_collateral: Decimal::from(100),
+            collateral_allowance: Decimal::from(100),
+        },
+        order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
+            source: "composition-orders".to_string(),
+            observed_at_ns: NOW_NS,
+            open_order_count: 0,
+            all_open_orders_attributed: true,
+        },
+        product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+            PredictionMarketAdmissionSnapshot {
+                source: "composition-product".to_string(),
+                observed_at_ns: NOW_NS,
+                yes_instrument_id: INSTRUMENT_ID.to_string(),
+                no_instrument_id: "other-condition-token.POLYMARKET".to_string(),
+                yes_position: Decimal::ZERO,
+                no_position: Decimal::ZERO,
+                collateral_allowance: Decimal::from(100),
+                conditional_token_allowance: Decimal::from(100),
+                collateral_coupled_group_id: "polymarket-collateral".to_string(),
+            },
+        ),
+        loss_snapshot: None,
+    });
+    let permit = submit_state
+        .admit_at(&submit_request, NOW_NS)
+        .expect("the production submit and capital gates must reserve the sealed liability");
     assert_eq!(
-        ledger.live_reserved_liability(&pool.pool_id),
-        admission.full_reservation_liability().amount()
+        submit_state.capital_admission_live_reserved_liability(),
+        Some(sealed_liability)
     );
+    drop(permit);
     assert_eq!(
-        ledger.rollback_uncommitted(&pool.pool_id, &reservation.request_id),
-        Some(admission.full_reservation_liability().amount())
+        submit_state.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
     );
-    assert_eq!(ledger.live_reserved_liability(&pool.pool_id), Decimal::ZERO);
 }
 
 #[tokio::test]
 async fn malformed_capture_never_publishes_quote_authority() {
-    let loaded = fixture_loaded_config();
-    let execution: crate::bolt_v3_providers::polymarket::PolymarketExecutionConfig =
-        loaded.root.clients["polymarket_main"]
-            .execution
-            .as_ref()
-            .unwrap()
-            .clone()
-            .try_into()
-            .expect("shipped-shaped Polymarket execution must parse");
-    let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(
-        PolymarketEconomicsAuthority::try_new_with_source(
-            "polymarket_main",
-            Venue::from("POLYMARKET"),
-            execution,
-            Arc::new(FixturePolymarketSource {
-                wire_body: r#"{"unsupported":true}"#,
-            }),
-        )
-        .unwrap(),
-    );
+    let mut loaded = fixture_loaded_config();
+    loaded
+        .root
+        .clients
+        .retain(|key, client| key == "polymarket_main" || client.execution.is_none());
+    let resolved = crate::bolt_v3_secrets::ResolvedBoltV3Secrets {
+        clients: BTreeMap::new(),
+    };
+    let override_value: Arc<dyn Any + Send + Sync> = Arc::new(PolymarketEconomicsSourceOverride {
+        source: Arc::new(FixturePolymarketSource {
+            wire_body: r#"{"unsupported":true}"#,
+        }),
+    });
+    let overrides = BTreeMap::from([("polymarket_main".to_string(), override_value)]);
+    let authorities = build_economics_authorities(&loaded, &resolved, &overrides).unwrap();
+    let [authority] = authorities.as_slice() else {
+        panic!("the fixture must build exactly one economics authority");
+    };
     let inputs = AuthoritativeEconomicsInputStore::default();
     let published = refresh_compile_publish_economics_once(
-        &authority,
+        authority,
         &inputs,
         &cache_with_valuation(),
         vec![binary_instrument()],

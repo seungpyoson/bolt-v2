@@ -24,8 +24,12 @@ impl VenueEconomicsAdapter for FixedVenue {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
         Ok(ResolvedEdgeBasis {
+            normalized_amount: bolt_v2::economics::EdgeBasisAmount::new(
+                planned_fill_notional.amount(),
+            )?,
             source_snapshot_ids: vec![SnapshotId::new("basis-snapshot")?],
             valid_until_ns: request.requested_at_ns + 5,
         })
@@ -34,6 +38,7 @@ impl VenueEconomicsAdapter for FixedVenue {
     fn quote(
         &self,
         _request: &EconomicQuoteRequest,
+        _planned_fill_notional: PlannedFillNotional,
     ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
         Ok(self.0.clone())
     }
@@ -45,8 +50,12 @@ impl VenueEconomicsAdapter for MismatchedBasisVenue {
     fn resolve_edge_basis(
         &self,
         request: &EconomicQuoteRequest,
+        planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<ResolvedEdgeBasis, EconomicsUnavailable> {
         Ok(ResolvedEdgeBasis {
+            normalized_amount: bolt_v2::economics::EdgeBasisAmount::new(
+                planned_fill_notional.amount(),
+            )?,
             source_snapshot_ids: vec![SnapshotId::new("other-basis-snapshot")?],
             valid_until_ns: request.requested_at_ns + 5,
         })
@@ -55,6 +64,7 @@ impl VenueEconomicsAdapter for MismatchedBasisVenue {
     fn quote(
         &self,
         _request: &EconomicQuoteRequest,
+        _planned_fill_notional: PlannedFillNotional,
     ) -> Result<VenueQuoteEstimate, EconomicsUnavailable> {
         Ok(self.0.clone())
     }
@@ -123,6 +133,8 @@ fn configured_source_resolves_the_one_published_surface_for_an_instrument() {
 
 fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
     let authority_refreshed_at_ns = request.requested_at_ns;
+    let planned_fill_notional =
+        bolt_v2::economics::PlannedFillNotional::from_legs(&request.planned_fill_legs).unwrap();
     EconomicsAdmissionIntent {
         provider_key: "configured-provider".to_string(),
         order_binding: test_order_binding(),
@@ -132,7 +144,7 @@ fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
             resolver_id: FormulaId::new("fixture-resolver").unwrap(),
             product_metadata_source: SourceId::new("fixture-product-metadata").unwrap(),
             policy_version: 1,
-            normalized_amount: decimal("5"),
+            normalized_amount: bolt_v2::economics::EdgeBasisAmount::new(decimal("5")).unwrap(),
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
@@ -140,6 +152,7 @@ fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
             valid_until_ns: 110,
         },
         request,
+        planned_fill_notional,
         gross_expected_value: decimal("2"),
         valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(),
         reservation_basis: ReservationBasis::new(decimal("5")).expect("valid basis"),

@@ -141,7 +141,7 @@ jobs:
             --json-output final-review-output/final-review-evidence.json \
             --markdown-output final-review-output/final-review-evidence.md
           cat final-review-output/final-review-evidence.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b5404495a51ac03f51d2c05c8 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: final-review-evidence
           path: final-review-output

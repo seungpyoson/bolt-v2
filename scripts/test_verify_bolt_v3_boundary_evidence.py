@@ -345,6 +345,14 @@ cheap_lane_labels = ["test_verify_bolt_v3_boundary_evidence.py", "verify_bolt_v3
     )
     write(
         root,
+        "ci/github-actions-runners.toml",
+        """
+[action_pins]
+upload_artifact = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+""",
+    )
+    write(
+        root,
         ".github/workflows/reference-boundary-capture.yml",
         """
 on:
@@ -362,7 +370,7 @@ jobs:
           echo "check_suite_id=$check_suite_id" >> "$GITHUB_OUTPUT"
       - run: ops capture-reference-boundary-fixture --root-config config/root.toml
           --check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b5404495a51ac03f51d2c05c8
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
 """,
     )
     write(

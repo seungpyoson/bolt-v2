@@ -140,6 +140,7 @@ def ready_payload(pr: int = 1) -> dict[str, object]:
     return {
         "verdict": "queue_as_one_wave",
         "requested_prs": [pr],
+        "base_sha": BASE_SHA,
         "expected_base_sha": BASE_SHA,
         "actual_base_sha": BASE_SHA,
         "expected_pr_heads": {str(pr): head},
@@ -459,6 +460,23 @@ def assert_ready_payload_must_match_requested_pr_and_resolved_identity() -> None
         "mismatched": {"verdict": "queue_as_one_wave", "requested_prs": [2]},
     }
     for label, payload in malformed_payloads.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            runner = FakeRunner(payload, 0)
+            rc, stdout, stderr = run_operator(["1"], runner, config=config)
+        assert rc == 4, (label, rc, stdout, stderr)
+        assert "identity" in stderr, (label, stderr)
+        assert not any(command[:3] == ("gh", "pr", "comment") for command in runner.commands), (label, runner.commands)
+
+    missing_base_sha = ready_payload()
+    del missing_base_sha["base_sha"]
+    malformed_base_shas = {
+        "base-sha-missing": missing_base_sha,
+        "base-sha-wrong-type": ready_payload() | {"base_sha": 1},
+        "base-sha-contradictory": ready_payload() | {"base_sha": HEAD_ONE},
+        "base-sha-plural": ready_payload() | {"base_sha": [BASE_SHA]},
+    }
+    for label, payload in malformed_base_shas.items():
         with tempfile.TemporaryDirectory() as tmp:
             config = write_config(pathlib.Path(tmp))
             runner = FakeRunner(payload, 0)

@@ -337,6 +337,7 @@ def operate(
         if preflight.returncode == 0 and verdict == VERDICT_QUEUE_AS_ONE_WAVE:
             expected_identity = {
                 "requested_prs": [args.pr],
+                "base_sha": preflight.expected_base_sha,
                 "expected_base_sha": preflight.expected_base_sha,
                 "actual_base_sha": preflight.expected_base_sha,
                 "expected_pr_heads": {str(args.pr): preflight.expected_head_sha},

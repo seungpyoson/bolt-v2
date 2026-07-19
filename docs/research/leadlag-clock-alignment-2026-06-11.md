@@ -116,7 +116,7 @@ venue when present). Every report artifact now opens with a `<!-- pm-clock: ... 
 provenance line; with that one declared line set aside, old caches without
 `ts_venue_ms` reproduce the published tables byte-identically under `auto`/`receive`
 (manual regression re-run verified against the April cache tables). Guard self-tests
-live in `scripts/test_leadlag_clock_alignment.py`. Requesting `venue` on an old cache fails loud, as does any run
+live in `scripts/manual_leadlag_clock_alignment_checks.py`. Requesting `venue` on an old cache fails loud, as does any run
 whose loads resolve to different clocks (e.g. per-date sized extracts spanning two
 cache generations under `auto` — a mix the per-date selection would otherwise pass
 silently). The next harness window

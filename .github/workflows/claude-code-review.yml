@@ -1,428 +1,130 @@
-name: Claude Code Review
+name: Claude Review Worker
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, labeled]
-    paths-ignore:
-      - "docs/*.md"
-      - "docs/**/*.md"
-      - "README*"
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
-  pull_request_review:
-    types: [submitted]
-
-concurrency:
-  group: claude-code-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+      governance_sha:
+        required: true
+        type: string
+      evidence_run_id:
+        required: true
+        type: string
+      evidence_artifact:
+        required: true
+        type: string
+      job_timeout_minutes:
+        required: true
+        type: number
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
 
 jobs:
-  claude-review:
-    name: Claude review
-    if: >-
-      ${{
-        (
-          github.event_name == 'pull_request'
-          && github.event.pull_request.draft == false
-          && github.event.pull_request.head.repo.full_name == github.repository
-        )
-        || (
-          github.event_name == 'issue_comment'
-          && github.event.issue.pull_request
-          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-          && contains(github.event.comment.body, '@claude')
-        )
-        || (
-          github.event_name == 'pull_request_review_comment'
-          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-          && contains(github.event.comment.body, '@claude')
-        )
-        || (
-          github.event_name == 'pull_request_review'
-          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)
-          && contains(github.event.review.body || '', '@claude')
-        )
-      }}
+  analysis:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    # Job-level timeouts cannot read the TOML loaded later in this job; keep
-    # this in sync with ci/ai-review.toml [claude.workflow].job_timeout_minutes.
-    timeout-minutes: 35
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
     steps:
-      - name: Check AI review pause switches
-        id: pause
-        env:
-          AI_REVIEW_PAUSED: ${{ vars.AI_REVIEW_PAUSED }}
-          AI_REVIEW_CLAUDE_PAUSED: ${{ vars.AI_REVIEW_CLAUDE_PAUSED }}
-        run: |
-          paused=false
-          reason=""
-          if [ "$AI_REVIEW_PAUSED" = "true" ]; then
-            paused=true
-            reason="AI_REVIEW_PAUSED=true"
-          elif [ "$AI_REVIEW_CLAUDE_PAUSED" = "true" ]; then
-            paused=true
-            reason="AI_REVIEW_CLAUDE_PAUSED=true"
-          fi
-          echo "paused=${paused}" >> "$GITHUB_OUTPUT"
-          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
-          if [ "$paused" = "true" ]; then
-            {
-              echo "### Claude review paused"
-              echo
-              echo "Claude review was skipped because \`${reason}\`."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Checkout repository
-        if: steps.pause.outputs.paused != 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 1
-
-      - name: Load AI review runtime config
-        if: steps.pause.outputs.paused != 'true'
-        id: runtime-config
-        # Claude intentionally uses head ci/ai-review.toml for the prompt and deliverable verifier
-        # so exact-head CI proves the TOML-sourced contract under review.
+          ref: ${{ inputs.governance_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.evidence_artifact }}
+          path: .ai-review/evidence
+      - name: Load configured Claude runtime
+        id: config
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import tomllib
           from pathlib import Path
-
           config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
-          github = config["github"]
           claude = config["claude"]
           workflow = claude["workflow"]
-          contract = config["review"]["output_contract"]
-
-          def emit(name, value):
-              if isinstance(value, bool):
-                  value = "true" if value else "false"
-              elif isinstance(value, list):
-                  value = ",".join(value)
-              print(f"{name}={value}")
-
-          emit("github_api_url", github["api_url"])
-          emit("claude_model", claude["model"])
-          emit("claude_track_progress", claude["track_progress"])
-          emit("claude_deliverable_marker", claude["deliverable_marker"])
-          emit("claude_source_label", claude["source_label_template"].replace("{model}", claude["model"]))
-          emit("review_finding_required_labels", contract["finding_required_labels"])
-          emit("review_no_findings_indicator", contract["no_findings_indicator"])
-          emit("review_no_findings_required_labels", contract["no_findings_required_labels"])
-          emit("claude_allowed_tools", claude["allowed_tools"])
-          emit("claude_max_turns", workflow["max_turns"])
-          emit("claude_primary_timeout_minutes", workflow["primary_timeout_minutes"])
+          print(f"model={claude['model']}")
+          print(f"marker={claude['deliverable_marker']}")
+          print(f"source={claude['source_label_template'].replace('{model}', claude['model'])}")
+          print(f"track_progress={str(claude['track_progress']).lower()}")
+          print(f"max_turns={workflow['max_turns']}")
+          print(f"allowed_tools={','.join(claude['allowed_tools'])}")
           PY
-
-      - name: Decide whether Claude should review
-        if: steps.pause.outputs.paused != 'true'
-        id: review-decision
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_ACTION: ${{ github.event.action }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_BEFORE_SHA: ${{ github.event.before }}
-          PR_AFTER_SHA: ${{ github.event.after || github.event.pull_request.head.sha }}
-          PR_LABEL_NAME: ${{ github.event.label.name }}
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import fnmatch
-          import json
-          import os
-          import subprocess
-          import sys
-          import time
-          import tomllib
-          from pathlib import Path
-
-          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
-          smart = config["claude"]["smart_trigger"]
-          event_name = os.environ["EVENT_NAME"]
-          action = os.environ["PR_ACTION"]
-          repo = os.environ["GITHUB_REPOSITORY"]
-          pr_number = os.environ["PR_NUMBER"]
-          event_head_sha = os.environ["PR_HEAD_SHA"]
-          event_before_sha = os.environ["PR_BEFORE_SHA"]
-          event_after_sha = os.environ["PR_AFTER_SHA"] or event_head_sha
-          event_label_name = os.environ["PR_LABEL_NAME"]
-          review_labels = set(smart["review_labels"])
-
-          def emit(should_review, reason):
-              print(f"should_review={'true' if should_review else 'false'}")
-              print(f"reason={reason}")
-              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-                  summary.write("### Claude review decision\n\n")
-                  summary.write(f"- Decision: {'review' if should_review else 'skip'}\n")
-                  summary.write(f"- Reason: `{reason}`\n")
-
-          def gh_json(*args):
-              payload = subprocess.check_output(("gh", *args), text=True)
-              return json.loads(payload)
-
-          def compare_files(before_sha, after_sha):
-              if (
-                  not before_sha
-                  or not after_sha
-                  or set(before_sha) == {"0"}
-                  or set(after_sha) == {"0"}
-                  or before_sha == after_sha
-              ):
-                  return None
-              payload = gh_json("api", f"repos/{repo}/compare/{before_sha}...{after_sha}")
-              files = payload.get("files", [])
-              if not isinstance(files, list):
-                  return None
-              return [file["filename"] for file in files if isinstance(file, dict) and isinstance(file.get("filename"), str)]
-
-          def notice_failed_changed_files_strategy(strategy, error):
-              print(f"::notice::Claude changed-files strategy {strategy} failed; trying next strategy.", file=sys.stderr)
-
-          def pushed_files():
-              try:
-                  files = compare_files(event_before_sha, event_after_sha)
-                  if files is not None:
-                      return files, "pushed-range"
-              except subprocess.CalledProcessError as error:
-                  notice_failed_changed_files_strategy("pushed-range", error)
-
-              try:
-                  commit = gh_json("api", f"repos/{repo}/commits/{event_head_sha}")
-                  parents = commit.get("parents", [])
-                  if isinstance(parents, list) and parents and isinstance(parents[0], dict):
-                      parent_sha = parents[0].get("sha")
-                      if isinstance(parent_sha, str):
-                          files = compare_files(parent_sha, event_head_sha)
-                          if files is not None:
-                              return files, "head-commit"
-              except subprocess.CalledProcessError as error:
-                  notice_failed_changed_files_strategy("head-commit", error)
-
-              try:
-                  return subprocess.check_output(
-                      ("gh", "pr", "diff", pr_number, "--repo", repo, "--name-only"),
-                      text=True,
-                  ).splitlines(), "pr-diff-fallback"
-              except subprocess.CalledProcessError as error:
-                  notice_failed_changed_files_strategy("pr-diff-fallback", error)
-                  raise RuntimeError("all Claude changed-files strategies failed") from error
-
-          if event_name != "pull_request":
-              pr_payload = gh_json("api", f"repos/{repo}/pulls/{pr_number}")
-              head_repo = pr_payload.get("head", {}).get("repo", {}).get("full_name")
-              if head_repo != repo:
-                  emit(False, "fork-pr-manual-mention")
-                  raise SystemExit(0)
-              emit(True, "manual-mention")
-              raise SystemExit(0)
-
-          if action == "labeled":
-              emit(event_label_name in review_labels, "review-label" if event_label_name in review_labels else "non-review-label")
-              raise SystemExit(0)
-
-          if action != "synchronize":
-              emit(True, action)
-              raise SystemExit(0)
-
-          debounce_seconds = int(smart["debounce_seconds"])
-          if debounce_seconds > 0:
-              time.sleep(debounce_seconds)
-
-          pr = gh_json("pr", "view", pr_number, "--repo", repo, "--json", "headRefOid,labels")
-          current_head_sha = pr["headRefOid"]
-          if current_head_sha != event_head_sha:
-              emit(False, "stale-synchronize-event")
-              raise SystemExit(0)
-
-          labels = {label["name"] for label in pr.get("labels", [])}
-          if labels & review_labels:
-              emit(True, "review-label")
-              raise SystemExit(0)
-
-          retry = subprocess.run(
-              (
-                  "python3",
-                  "scripts/ai_review_deliverables.py",
-                  "retry-needed",
-                  "--provider",
-                  "claude",
-                  "--config-file",
-                  "ci/ai-review.toml",
-              ),
-              check=False,
-              capture_output=True,
-              text=True,
-          )
-          if retry.returncode != 0:
-              print("::warning::Claude retry state check failed; reviewing to avoid preserving a stale failure notice.", file=sys.stderr)
-              emit(True, "retry-check-unavailable")
-              raise SystemExit(0)
-          retry_lines = set(retry.stdout.splitlines())
-          if "retry_needed=true" in retry_lines:
-              emit(True, "previous-failure-notice")
-              raise SystemExit(0)
-
-          changed_files, file_source = pushed_files()
-          review_paths = tuple(smart["review_paths"])
-          for changed_file in changed_files:
-              if any(fnmatch.fnmatch(changed_file, pattern) for pattern in review_paths):
-                  emit(True, f"review-path-{file_source}")
-                  raise SystemExit(0)
-
-          emit(False, f"no-review-path-or-label-{file_source}")
-          PY
-
-      - name: Capture Claude review window
-        id: review-window
-        if: >-
-          ${{
-            steps.pause.outputs.paused != 'true'
-            && steps.review-decision.outputs.should_review == 'true'
-          }}
-        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: Run Claude Code review
-        id: claude
-        if: >-
-          ${{
-            steps.pause.outputs.paused != 'true'
-            && steps.review-decision.outputs.should_review == 'true'
-            && steps.review-window.outcome == 'success'
-          }}
-        continue-on-error: true
-        timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.claude_primary_timeout_minutes) }}
+      - name: Run Claude review
+        id: analysis
         uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           additional_permissions: |
             contents: read
-          track_progress: ${{ steps.runtime-config.outputs.claude_track_progress }}
+          track_progress: ${{ steps.config.outputs.track_progress }}
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER (pull_request and review events): ${{ github.event.pull_request.number }}
-            PR NUMBER (issue_comment events): ${{ github.event.issue.number }}
-            DELIVERABLE MARKER: ${{ steps.runtime-config.outputs.claude_deliverable_marker }}
-            SOURCE LABEL: ${{ steps.runtime-config.outputs.claude_source_label }}
-            FINDING REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_finding_required_labels }}
-            NO-FINDINGS INDICATOR: ${{ steps.runtime-config.outputs.review_no_findings_indicator }}
-            NO-FINDINGS REQUIRED LABELS: ${{ steps.runtime-config.outputs.review_no_findings_required_labels }}
+            PR NUMBER: ${{ inputs.pr_number }}
+            EXACT HEAD: ${{ inputs.head_sha }}
+            DELIVERABLE MARKER: ${{ steps.config.outputs.marker }}
+            SOURCE LABEL: ${{ steps.config.outputs.source }}
 
-            You are a read-only PR reviewer for this repository. Review the pull request diff and post only GitHub PR feedback:
-            - Use only the tools granted through the configured Claude arguments.
-            - Prefer line-specific findings when the configured GitHub inline-comment tool supports them, and pass `confirmed: true` whenever that tool requires confirmation.
-            - Use configured GitHub PR comment, diff, and view commands only as needed.
-            - Do not edit files, write files, commit, push, or run git commands.
-            - Do not display, quote, or infer secrets or credentials.
+            Review the complete base-to-head diff at EXACT HEAD. Apply AGENTS.md from
+            AGENTS.md as the policy authority. Read
+            .ai-review/evidence/final-review-evidence.md before reviewing.
+            The immutable diff is .ai-review/evidence/review.diff. Use only that file
+            for diff contents; do not query the moving live pull-request diff.
+            Follow [review.output_contract] from
+            ci/ai-review.toml exactly.
+            Return every hard-evidence substantive finding in one final response. The
+            repository publisher emits the final deliverable; analysis has no comment-writing capability.
+            Do not edit files, commit, push, merge, display credentials, or choose an
+            alternate model or reviewer. Return only the review body; the repository
+            publisher adds DELIVERABLE MARKER, SOURCE LABEL, and EXACT HEAD.
+          claude_args: >-
+            --max-turns ${{ steps.config.outputs.max_turns }}
+            --model ${{ steps.config.outputs.model }}
+            --allowedTools "${{ steps.config.outputs.allowed_tools }}"
+      - name: Stage completed Claude execution
+        run: cp "${{ steps.analysis.outputs.execution_file }}" claude-execution.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b5404495a51ac03f51d2c05c8 # v4.6.2
+        with:
+          name: claude-review-execution
+          path: claude-execution.json
+          if-no-files-found: error
 
-            Apply AGENTS.md as the authoritative governance source. Treat every unique substantive issue as a finding. At minimum, check:
-            - **NO HARDCODES**: runtime values must come from TOML config; flag string literals for IDs, quantities, timeouts, or other runtime values in code.
-            - **NO DUAL PATHS**: flag parallel ways to do the same thing, including duplicate config formats, secret sources, or build paths.
-            - **NO DEBTS**: flag TODOs, "fix later" notes, unpinned dependencies, or uncommitted/generated leftovers.
-            - **NO CREDENTIAL DISPLAY**: flag code that cats, prints, logs, echoes, or otherwise exposes API keys, private keys, secrets, or `.env` contents.
-            - **PURE RUST BINARY**: flag Python layers, PyO3, maturin, pip, or non-NT integration paths for the runtime binary.
-            - **SSM IS THE SINGLE SECRET SOURCE**: product/runtime credentials must resolve from AWS SSM via `aws-sdk-ssm`; flag AWS CLI subprocesses, 1Password CLI use, environment-variable fallbacks, or alternate secret backends. GitHub Actions repository automation may use only GitHub's ephemeral `GITHUB_TOKEN` for GitHub API operations.
-            - **GROUP BY CHANGE**: values that share a lifecycle should live in one config section.
-            - **DO NOT REFERENCE BOLT V1**: flag reads, imports, or dependencies on `~/Projects/Claude/bolt/`; NT source should come from `~/.cargo/git/checkouts/nautilus_trader-*/` or GitHub.
-            - **STRATEGIES PRODUCE INTENT ONLY**: strategies emit order intent and strategy-local signal state only; admission, venue rules, fillability, rounding, minimum size, fee-adjusted sizing, and submit gating belong in shared NT-based execution/admission modules.
-            - **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION**: do not object merely because `price_to_beat` uses testnet; still check config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
-            - **PROVIDER/RUNTIME BOUNDARY EVIDENCE IS REGISTERED**: feeder code depending on provider runtime bytes or metadata must be represented in the authoritative boundary registry and guarded by source-fence evidence or an issue-bound, expiring non-WebSocket deferral. WebSocket-frame evidence must not be deferred.
-            - **Evidence-Driven Verification**: every implementation claim should map to tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit risk acceptance. Trading, admission, secrets, and config changes need fail-closed evidence for invalid or missing inputs plus exact-head proof before live operation.
-            - **Scope Discipline**: flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope. Do not treat a PR as closing broader work unless the diff satisfies it.
-            - **Review Bar & Merge Mechanics**: do not downgrade real issues into notes. Flag unresolved review-thread, stale-review, required-reviewer, or merge-rule bypass risks if the diff touches those controls.
-
-            Post one top-level PR comment as the visible deliverable for this run. The comment must begin with the exact DELIVERABLE MARKER line, include `**Source:** ${{ steps.runtime-config.outputs.claude_source_label }}`, and then follow one of these contracts:
-            - If there are findings, each finding must include one line starting with each configured label in FINDING REQUIRED LABELS.
-            - If there are no findings, include the exact NO-FINDINGS INDICATOR text and one line starting with each configured label in NO-FINDINGS REQUIRED LABELS.
-          claude_args: |
-            --max-turns ${{ steps.runtime-config.outputs.claude_max_turns }}
-            --model ${{ steps.runtime-config.outputs.claude_model }}
-            --allowedTools "${{ steps.runtime-config.outputs.claude_allowed_tools }}"
-
-      - name: Ensure Claude deliverable or post failure notice
-        id: claude-deliverable
-        if: >-
-          ${{
-            steps.pause.outputs.paused != 'true'
-            && always()
-            && steps.review-decision.outputs.should_review == 'true'
-            && steps.runtime-config.outcome == 'success'
-            && steps.review-window.outcome == 'success'
-          }}
+  publish:
+    needs: analysis
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.governance_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: claude-review-execution
+          path: .ai-review/claude-execution
+      - name: Publish Claude review
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_HEAD_SHA: ${{ inputs.head_sha }}
         run: >-
-          python3 scripts/ai_review_deliverables.py claude-deliverable
-          --started-at "${{ steps.review-window.outputs.started_at }}"
-          --execution-file "${{ steps.claude.outputs.execution_file }}"
-          --step-outcome "${{ steps.claude.outcome }}"
+          python3 scripts/publish_claude_review.py
+          --execution-file .ai-review/claude-execution/claude-execution.json
           --config-file ci/ai-review.toml
-
-      - name: Post Claude review infrastructure failure notice
-        if: >-
-          ${{
-            steps.pause.outputs.paused != 'true'
-            && (
-              steps.review-decision.outputs.should_review == 'true'
-              || steps.runtime-config.outcome == 'failure'
-              || steps.review-decision.outcome == 'failure'
-            )
-            && always()
-            && (
-              steps.runtime-config.outcome == 'failure'
-              || steps.review-decision.outcome == 'failure'
-              || steps.review-window.outcome == 'failure'
-              || steps.claude-deliverable.outcome == 'failure'
-            )
-            && steps.claude-deliverable.outputs.failure_notice_posted != 'true'
-          }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-        run: |
-          notice_file="${RUNNER_TEMP}/claude-ai-review-notice.md"
-          marker=""
-          expected_bot_login=""
-          if ! config_exports="$(python3 scripts/ai_review_deliverables.py notice-env --provider claude --config-file ci/ai-review.toml)"; then
-            echo "::error::AI review notice marker or expected bot login is unavailable."
-            exit 1
-          fi
-          eval "$config_exports"
-          if [ -z "$marker" ] || [ -z "$expected_bot_login" ]; then
-            echo "::error::AI review notice marker or expected bot login is unavailable."
-            exit 1
-          fi
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          cat > "$notice_file" <<EOF
-          ${marker}
-
-          ## Claude review notice
-
-          The Claude review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
-
-          - PR: #${PR_NUMBER}
-          - Action run: ${run_url}
-
-          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
-          EOF
-          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
-            | jq -r --arg login "$expected_bot_login" --arg marker "$marker" '.[] | select(.user.login == $login) | select((.body // "") | startswith($marker)) | .id' \
-            | tail -n 1)"
-          if [ -n "$existing_id" ]; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
-          else
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
-          fi

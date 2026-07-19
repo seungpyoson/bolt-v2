@@ -9,15 +9,12 @@ import pathlib
 import shlex
 import subprocess
 import sys
+import tomllib
 import urllib.parse
+from collections.abc import Callable
 from typing import Any
 
-import minimal_toml as _minimal_toml
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
-    tomllib = None  # type: ignore[assignment]
+from git_remote_utils import isolated_git_transport_environment
 
 
 CONFIG_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
@@ -25,10 +22,6 @@ CONFIG_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 
 class PushError(RuntimeError):
     pass
-
-
-def repo_path(raw: str) -> pathlib.Path:
-    return pathlib.Path(raw).expanduser().absolute()
 
 
 def redact(text: str, values: tuple[str, ...]) -> str:
@@ -64,7 +57,7 @@ def run_git(
     redact_values: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     argv = ["git", "--no-optional-locks", *args]
-    env = os.environ.copy()
+    env = isolated_git_transport_environment(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         result = subprocess.run(argv, cwd=repo, capture_output=True, text=True, env=env)
@@ -80,8 +73,6 @@ def git_output(repo: pathlib.Path, *args: str) -> str:
 
 
 def load_config_with_tomllib(path: pathlib.Path) -> dict[str, Any]:
-    if tomllib is None:
-        raise PushError("tomllib is unavailable")
     try:
         with path.open("rb") as handle:
             loaded = tomllib.load(handle)
@@ -96,12 +87,7 @@ def load_config(repo: pathlib.Path) -> dict[str, Any]:
     path = repo / CONFIG_RELATIVE_PATH
     if not path.is_file():
         raise PushError(f"{CONFIG_RELATIVE_PATH} is required")
-    if tomllib is not None:
-        return load_config_with_tomllib(path)
-    try:
-        return _minimal_toml.load(path, display_path=CONFIG_RELATIVE_PATH, error_cls=PushError)
-    except OSError as exc:
-        raise PushError(f"cannot read {CONFIG_RELATIVE_PATH}: {exc}") from exc
+    return load_config_with_tomllib(path)
 
 
 def validate_remote_name(remote: str) -> None:
@@ -149,7 +135,7 @@ def validate_branch(branch: str) -> None:
 def current_branch(repo: pathlib.Path) -> str:
     branch = git_output(repo, "branch", "--show-current")
     if not branch:
-        raise PushError("sandbox-safe push requires a named branch; pass --branch explicitly for detached HEAD")
+        raise PushError("sandbox-safe push requires the current checkout to be a named branch")
     return branch
 
 
@@ -157,6 +143,20 @@ def require_clean_worktree(repo: pathlib.Path) -> None:
     status = git_output(repo, "status", "--porcelain", "--untracked-files=normal")
     if status:
         raise PushError("sandbox-safe push requires a clean worktree, including untracked files")
+    index_listing = git_output(repo, "ls-files", "-v")
+    hidden = [line[2:] for line in index_listing.splitlines() if line and line[0] in {"h", "s", "S"}]
+    if hidden:
+        preview = ", ".join(hidden[:3])
+        raise PushError(f"sandbox-safe push rejects hidden index flags (assume-unchanged/skip-worktree): {preview}")
+
+
+def run_preflight(repo: pathlib.Path) -> None:
+    try:
+        result = subprocess.run(["just", "preflight"], cwd=repo, check=False, close_fds=True)
+    except FileNotFoundError as exc:
+        raise PushError("just is required for sandbox-safe push preflight") from exc
+    if result.returncode != 0:
+        raise PushError(f"repository preflight failed with exit code {result.returncode}")
 
 
 def remote_url(repo: pathlib.Path, remote: str) -> str:
@@ -172,7 +172,7 @@ def remote_url(repo: pathlib.Path, remote: str) -> str:
 def validate_push_url(url: str) -> None:
     parsed = urllib.parse.urlsplit(url)
     has_http_userinfo = parsed.scheme in ("http", "https") and parsed.username is not None
-    if parsed.password is not None or has_http_userinfo:
+    if parsed.password is not None or has_http_userinfo or parsed.query or parsed.fragment:
         raise PushError(
             "Git push URLs must not contain embedded credentials; use a credential helper or SSH agent auth"
         )
@@ -193,11 +193,30 @@ def live_remote_branch_head(repo: pathlib.Path, *, url: str, branch: str) -> str
     return None
 
 
-def push_head(repo: pathlib.Path, *, remote: str, branch: str) -> str:
+def push_head(
+    repo: pathlib.Path,
+    *,
+    remote: str,
+    branch: str,
+    preflight_runner: Callable[[pathlib.Path], None] = run_preflight,
+) -> str:
     require_clean_worktree(repo)
-    head = git_output(repo, "rev-parse", "HEAD")
     url = remote_url(repo, remote)
-    refspec = f"HEAD:refs/heads/{branch}"
+    captured_branch = current_branch(repo)
+    validate_branch(captured_branch)
+    if branch != captured_branch:
+        raise PushError("sandbox-safe push publishes only the current named branch")
+    head = git_output(repo, "rev-parse", "HEAD")
+    tree = git_output(repo, "rev-parse", "HEAD^{tree}")
+    preflight_runner(repo)
+    require_clean_worktree(repo)
+    if current_branch(repo) != captured_branch:
+        raise PushError("current branch changed while repository preflight was running")
+    current_head = git_output(repo, "rev-parse", "HEAD")
+    current_tree = git_output(repo, "rev-parse", "HEAD^{tree}")
+    if (current_head, current_tree) != (head, tree):
+        raise PushError("HEAD or its tree changed while repository preflight was running")
+    refspec = f"{head}:refs/heads/{branch}"
     run_git(
         repo,
         ["push", "--", url, refspec],
@@ -214,17 +233,19 @@ def push_head(repo: pathlib.Path, *, remote: str, branch: str) -> str:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default=".", help="repository root to push from")
-    parser.add_argument("--branch", help="target branch; defaults to the current local branch")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    repo = repo_path(args.repo)
+    del args
+    repo = pathlib.Path.cwd().resolve()
     try:
+        top_level = pathlib.Path(git_output(repo, "rev-parse", "--show-toplevel")).resolve()
+        if top_level != repo:
+            raise PushError("sandbox-safe push must run from the current repository root")
         remote = configured_remote(repo)
-        branch = args.branch or current_branch(repo)
+        branch = current_branch(repo)
         validate_branch(branch)
         head = push_head(repo, remote=remote, branch=branch)
     except PushError as exc:

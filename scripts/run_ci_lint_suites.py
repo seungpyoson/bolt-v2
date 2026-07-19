@@ -8,7 +8,7 @@ import dataclasses
 import pathlib
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TextIO
 
@@ -34,41 +34,104 @@ class SuiteResult:
 
 
 CI_LINT_SUITES = (
-    CiLintSuite("ci-workflow-hygiene-tests", ("python3", "scripts/test_verify_ci_workflow_hygiene.py")),
+    CiLintSuite(
+        "unified-verification-deletion-fence",
+        ("python3", "scripts/test_unified_verification_deletion_fence.py"),
+    ),
+    CiLintSuite("final-review-workflow", ("python3", "scripts/test_final_review_workflow.py")),
+    CiLintSuite("final-review-evidence", ("python3", "scripts/test_final_review_evidence.py")),
+    CiLintSuite("final-review-runner", ("python3", "scripts/test_final_review_runner.py")),
+    CiLintSuite("direct-ai-review", ("python3", "scripts/test_direct_ai_review.py")),
+    CiLintSuite("workspace-registry", ("python3", "scripts/test_workspace_registry.py")),
+    CiLintSuite("workspace-advisories", ("python3", "scripts/test_workspace_advisories.py")),
+    CiLintSuite("repository-preflight", ("python3", "scripts/test_repo_preflight.py")),
+    CiLintSuite("repository-format", ("python3", "scripts/test_repo_format.py")),
     CiLintSuite("cargo-command-analysis", ("python3", "scripts/test_cargo_command_analysis.py")),
-    CiLintSuite("shell-dataflow-analysis", ("python3", "scripts/test_shell_dataflow_analysis.py")),
-    CiLintSuite("governance-diff-analysis", ("python3", "scripts/test_governance_diff_analysis.py")),
-    CiLintSuite("workflow-expression-analysis", ("python3", "scripts/test_workflow_expression_analysis.py")),
+    CiLintSuite("cargo-shim", ("python3", "-m", "pytest", "scripts/test_cargo_shim.py", "-q")),
     CiLintSuite("ci-test-manifest", ("python3", "scripts/test_ci_test_manifest.py")),
-    CiLintSuite("cancel-obsolete-dispatch-runs", ("python3", "scripts/test_cancel_obsolete_dispatch_runs.py")),
     CiLintSuite("config-validators", ("python3", "scripts/test_config_validators.py")),
     CiLintSuite("run-rust-probe", ("python3", "scripts/test_run_rust_probe.py")),
     CiLintSuite("rust-probe-wrapper", ("python3", "scripts/test_rust_probe_wrapper.py")),
-    CiLintSuite("ci-provenance", ("python3", "scripts/test_ci_provenance.py")),
-    CiLintSuite("ci-input-sets", ("python3", "scripts/test_ci_input_sets.py")),
     CiLintSuite("rust-test-targets", ("python3", "scripts/test_rust_test_targets.py")),
-    CiLintSuite("merge-readiness", ("python3", "scripts/test_merge_readiness.py")),
-    CiLintSuite("merge-queue-preflight", ("python3", "scripts/test_merge_queue_preflight.py")),
     CiLintSuite("merge-queue-operator", ("python3", "scripts/test_merge_queue_operator.py")),
-    CiLintSuite("coverage-enforcer", ("python3", "scripts/test_coverage_enforcer.py")),
-    CiLintSuite("nextest-fingerprint", ("python3", "scripts/test_nextest_fingerprint.py")),
+    CiLintSuite("merge-queue-preflight", ("python3", "scripts/test_merge_queue_preflight.py")),
     CiLintSuite("root-bin-sidecars", ("python3", "scripts/test_root_bin_sidecars.py")),
     CiLintSuite("ci-storage-audit", ("python3", "scripts/test_ci_storage_audit.py")),
     CiLintSuite("ci-storage-tripwire", ("python3", "scripts/test_ci_storage_tripwire.py")),
-    CiLintSuite("same-sha-main-evidence", ("python3", "scripts/test_find_same_sha_main_evidence.py")),
     CiLintSuite("ubicloud-runner-minutes", ("python3", "scripts/test_ubicloud_runner_minutes.py")),
-    CiLintSuite("verify-ci-path-filters-tests", ("python3", "scripts/test_verify_ci_path_filters.py")),
     CiLintSuite("rust-verification", ("python3", "scripts/test_rust_verification.py")),
     CiLintSuite("sandbox-safe-push", ("python3", "scripts/test_sandbox_safe_push.py")),
-    CiLintSuite("verify-remote", ("python3", "scripts/test_verify_remote.py")),
     CiLintSuite("command-understanding", ("python3", "scripts/test_command_understanding.py")),
     CiLintSuite("rust-verification-decoupling", ("python3", "scripts/test_rust_verification_decoupling.py")),
     CiLintSuite("rust-verification-cache-retention", ("python3", "scripts/test_rust_verification_cache_retention.py")),
     CiLintSuite("sccache-eligibility", ("python3", "scripts/test_sccache_eligibility.py")),
-    CiLintSuite("verify-ci-path-filters", ("python3", "scripts/verify_ci_path_filters.py")),
+    CiLintSuite("clean-merged-artifacts", ("python3", "scripts/test_clean_merged_artifacts.py")),
+    CiLintSuite("developer-tool-storage-hygiene", ("python3", "scripts/test_developer_tool_storage_hygiene.py")),
     CiLintSuite("ci-workflow-hygiene-verifier", ("python3", "scripts/verify_ci_workflow_hygiene.py")),
     CiLintSuite("run-ci-lint-suites", ("python3", "scripts/test_run_ci_lint_suites.py")),
 )
+
+GOVERNED_TEST_SUFFIXES = frozenset({".py", ".mjs"})
+
+
+def discover_governed_test_files(repo_root: pathlib.Path) -> set[str]:
+    scripts = repo_root / "scripts"
+    return {
+        path.name
+        for path in scripts.iterdir()
+        if path.is_file() and path.name.startswith("test_") and path.suffix in GOVERNED_TEST_SUFFIXES
+    }
+
+
+def validate_exact_test_ownership(discovered: set[str], ownership: Mapping[str, Set[str]]) -> None:
+    owners_by_file: dict[str, list[str]] = {}
+    for owner, filenames in ownership.items():
+        for filename in filenames:
+            owners_by_file.setdefault(filename, []).append(owner)
+    missing = sorted(discovered - owners_by_file.keys())
+    stale = sorted(owners_by_file.keys() - discovered)
+    duplicates = {
+        filename: sorted(owners)
+        for filename, owners in owners_by_file.items()
+        if len(owners) != 1
+    }
+    if missing or stale or duplicates:
+        raise ValueError(
+            f"unclaimed test suites={missing!r} stale test registrations={stale!r} "
+            f"duplicate test ownership={duplicates!r}"
+        )
+
+
+def validate_test_suite_coverage(repo_root: pathlib.Path) -> None:
+    scripts = repo_root / "scripts"
+    discovered = discover_governed_test_files(repo_root)
+    from run_fences import STANDALONE_TEST_FILENAMES
+    from final_review_runner import FINAL_REVIEW_OBLIGATIONS
+
+    ownership: dict[str, set[str]] = {}
+    for suite in CI_LINT_SUITES:
+        ownership[f"ci-lint:{suite.name}"] = {
+            pathlib.Path(part).name
+            for part in suite.command
+            if part.startswith("scripts/test_") and pathlib.Path(part).suffix in GOVERNED_TEST_SUFFIXES
+        }
+    for path in scripts.glob("test_verify_*.py"):
+        if path.with_name(path.name.removeprefix("test_")).is_file() and not path.name.startswith(
+            ("test_verify_ai_", "test_verify_ci_")
+        ):
+            ownership[f"paired-fence:{path.name}"] = {path.name}
+    for filename in STANDALONE_TEST_FILENAMES:
+        ownership[f"standalone-fence:{filename}"] = {filename}
+    for obligation in FINAL_REVIEW_OBLIGATIONS:
+        ownership[f"final-review:{obligation.obligation_id}"] = {
+            pathlib.Path(part).name
+            for part in obligation.command
+            if part.startswith("scripts/test_") and pathlib.Path(part).suffix in GOVERNED_TEST_SUFFIXES
+        }
+    validate_exact_test_ownership(
+        discovered,
+        ownership,
+    )
 
 
 def validate_workers(workers: int) -> int:
@@ -211,6 +274,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    validate_test_suite_coverage(args.repo_root)
     if args.list:
         for suite in CI_LINT_SUITES:
             print(" ".join(suite.command))

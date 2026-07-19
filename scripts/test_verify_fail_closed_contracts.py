@@ -35,7 +35,7 @@ def write_file(root: Path, rel_path: str, text: str) -> None:
 def write_justfile(root: Path, *, include_harness: bool = True, extra_commands: tuple[str, ...] = ()) -> None:
     commands = []
     if include_harness:
-        commands.append("python3 scripts/run_fences.py")
+        commands.append('python3 scripts/run_fences.py --root "{{subject}}"')
     commands.extend(extra_commands)
     command_block = "\n".join(f"    {command}" for command in commands)
     write_file(
@@ -647,7 +647,7 @@ def test_source_fence_static_wiring_is_required() -> None:
 
         findings = collect(root)
 
-    expected = "source-fence-static-inner must contain only python3 scripts/run_fences.py"
+    expected = 'source-fence-static-inner must contain only python3 scripts/run_fences.py --root "{{subject}}"'
     assert findings == [expected], findings
 
 
@@ -670,7 +670,7 @@ def test_source_fence_static_wiring_rejects_appended_command() -> None:
 
         findings = collect(root)
 
-    expected = "source-fence-static-inner must contain only python3 scripts/run_fences.py"
+    expected = 'source-fence-static-inner must contain only python3 scripts/run_fences.py --root "{{subject}}"'
     assert findings == [expected], findings
 
 

@@ -521,7 +521,7 @@ fn decode_json_rpc_result(body: &[u8]) -> Result<serde_json::Value, BoltV3Operat
 }
 
 #[async_trait(?Send)]
-pub(crate) trait OnChainCollateralRpc: Send + Sync {
+pub(crate) trait OnChainCollateralRpc {
     async fn chain_id(&self) -> Result<u64, BoltV3OperatorArtifactError>;
     async fn block_number(&self) -> Result<u64, BoltV3OperatorArtifactError>;
     async fn eth_call_u256_word_at(

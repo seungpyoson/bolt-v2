@@ -82,8 +82,8 @@ struct GovernedCollateralRpcFixture {
     latest_block: u64,
     block: OnChainBlockHeader,
     call_results: Mutex<VecDeque<[u8; 32]>>,
-    storage_word: [u8; 32],
-    code_hashes: BTreeMap<String, String>,
+    storage_word: Mutex<Option<[u8; 32]>>,
+    code_hashes: Mutex<BTreeMap<String, String>>,
 }
 
 impl GovernedCollateralRpcFixture {
@@ -154,13 +154,38 @@ impl GovernedCollateralRpcFixture {
                 quantity_word(decimals),
                 quantity_word(decimals),
             ])),
-            storage_word: word_fixture(
+            storage_word: Mutex::new(Some(word_fixture(
                 proxy["result"]
                     .as_str()
                     .context("governed proxy implementation result is missing")?,
-            )?,
-            code_hashes,
+            )?)),
+            code_hashes: Mutex::new(code_hashes),
         })
+    }
+
+    fn assert_all_contract_calls_consumed(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.call_results
+                .lock()
+                .map_err(|_| anyhow::anyhow!("governed collateral fixture lock is poisoned"))?
+                .is_empty(),
+            "production collateral observation skipped governed contract calls"
+        );
+        anyhow::ensure!(
+            self.storage_word
+                .lock()
+                .map_err(|_| anyhow::anyhow!("governed collateral fixture lock is poisoned"))?
+                .is_none(),
+            "production collateral observation skipped governed proxy evidence"
+        );
+        anyhow::ensure!(
+            self.code_hashes
+                .lock()
+                .map_err(|_| anyhow::anyhow!("governed collateral fixture lock is poisoned"))?
+                .is_empty(),
+            "production collateral observation skipped governed code hashes"
+        );
+        Ok(())
     }
 }
 
@@ -241,8 +266,9 @@ impl OnChainCollateralRpc for GovernedCollateralRpcFixture {
         _block_tag: &str,
     ) -> Result<String, BoltV3OperatorArtifactError> {
         self.code_hashes
-            .get(&contract_address.to_ascii_lowercase())
-            .cloned()
+            .lock()
+            .map_err(|_| fixture_rpc_error())?
+            .remove(&contract_address.to_ascii_lowercase())
             .ok_or_else(fixture_rpc_error)
     }
 
@@ -252,7 +278,11 @@ impl OnChainCollateralRpc for GovernedCollateralRpcFixture {
         _slot: &str,
         _block_tag: &str,
     ) -> Result<[u8; 32], BoltV3OperatorArtifactError> {
-        Ok(self.storage_word)
+        self.storage_word
+            .lock()
+            .map_err(|_| fixture_rpc_error())?
+            .take()
+            .ok_or_else(fixture_rpc_error)
     }
 
     async fn block_header(
@@ -286,13 +316,12 @@ impl PolymarketEconomicsSource for FixturePolymarketSource {
         receipt_clock: &dyn EconomicsReceiptClock,
         max_age_ns: u64,
     ) -> anyhow::Result<AuthoritativeValuationObservation> {
-        authority
-            .observe_collateral_redemption_with_rpc(
-                &GovernedCollateralRpcFixture::load()?,
-                receipt_clock,
-                max_age_ns,
-            )
-            .await
+        let rpc = GovernedCollateralRpcFixture::load()?;
+        let observation = authority
+            .observe_collateral_redemption_with_rpc(&rpc, receipt_clock, max_age_ns)
+            .await?;
+        rpc.assert_all_contract_calls_consumed()?;
+        Ok(observation)
     }
 }
 

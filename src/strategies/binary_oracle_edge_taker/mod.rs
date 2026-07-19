@@ -1104,7 +1104,7 @@ impl BinaryOracleEdgeTaker {
             }
         };
         if attempts_exhausted {
-            self.record_settlement_booking_error(
+            self.handle_settlement_booking_error(
                 position,
                 settlement_key,
                 BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
@@ -1124,7 +1124,7 @@ impl BinaryOracleEdgeTaker {
                     }
                 }
                 ResolutionReportSubscriptionOutcome::MissingRoute => {
-                    self.record_settlement_booking_error(
+                    self.handle_settlement_booking_error(
                         position,
                         settlement_key,
                         BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
@@ -1133,7 +1133,7 @@ impl BinaryOracleEdgeTaker {
                     )?;
                 }
                 ResolutionReportSubscriptionOutcome::AssetBindingRejected => {
-                    self.record_settlement_booking_error(
+                    self.handle_settlement_booking_error(
                         position,
                         settlement_key,
                         BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
@@ -1188,7 +1188,7 @@ impl BinaryOracleEdgeTaker {
         let booking = match decision {
             ResolutionSettlementDecision::Skip(_) => return Ok(()),
             ResolutionSettlementDecision::BookingError { reason, detail } => {
-                self.record_settlement_booking_error(
+                self.handle_settlement_booking_error(
                     &position,
                     position_key.settlement_key,
                     reason,
@@ -1271,7 +1271,7 @@ impl BinaryOracleEdgeTaker {
         Ok(())
     }
 
-    fn record_settlement_booking_error(
+    fn handle_settlement_booking_error(
         &mut self,
         position: &OpenPositionState,
         settlement_key: String,
@@ -1418,7 +1418,7 @@ impl BinaryOracleEdgeTaker {
         {
             return Ok(());
         }
-        self.record_settlement_booking_error(
+        self.handle_settlement_booking_error(
             position,
             settlement_key,
             BoltV3SettlementBookingErrorReason::SettlementInputInvalid,

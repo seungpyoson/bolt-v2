@@ -61,7 +61,7 @@ struct SampleEconomicsAdapter {
     estimate: bolt_v2::economics::VenueQuoteEstimate,
 }
 
-struct SampleEconomicsAdmissionSource;
+struct SampleEconomicsAdmissionSource(String);
 
 impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
     for SampleEconomicsAdmissionSource
@@ -135,7 +135,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
         )?
         .quote_admission(
             bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
-                provider_key: "POLYMARKET".to_string(),
+                provider_key: self.0.clone(),
                 edge_basis: EdgeBasisEvidence {
                     policy_id: intent.request.edge_basis_policy_id.clone(),
                     resolver_id: FormulaId::new("test-edge-resolver")?,
@@ -168,7 +168,9 @@ pub fn sample_order_routing_handle(
     execution_client_id: &str,
 ) -> bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
     bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
-        Arc::new(SampleEconomicsAdmissionSource),
+        Arc::new(SampleEconomicsAdmissionSource(
+            execution_client_id.to_string(),
+        )),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
             execution_client_id,
             account_id: "test-account",
@@ -210,6 +212,8 @@ pub fn sample_economics_admission(
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     sample_economics_admission_with_component(
         base_reservation_notional,
+        bolt_v2::economics::OrderSide::Buy,
+        base_reservation_notional,
         bolt_v2::economics::EconomicClass::Credit,
         rust_decimal::Decimal::ONE,
         "test-core-credit",
@@ -224,6 +228,8 @@ pub fn sample_risk_reduction_economics_admission(
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     sample_economics_admission_with_component(
         base_reservation_notional,
+        bolt_v2::economics::OrderSide::Buy,
+        base_reservation_notional,
         bolt_v2::economics::EconomicClass::Credit,
         rust_decimal::Decimal::ONE,
         "test-core-credit",
@@ -237,6 +243,8 @@ pub fn sample_expired_economics_admission(
     base_reservation_notional: rust_decimal::Decimal,
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     sample_economics_admission_with_component(
+        base_reservation_notional,
+        bolt_v2::economics::OrderSide::Buy,
         base_reservation_notional,
         bolt_v2::economics::EconomicClass::Credit,
         rust_decimal::Decimal::ONE,
@@ -253,6 +261,25 @@ pub fn sample_economics_admission_with_debit(
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     sample_economics_admission_with_component(
         base_reservation_notional,
+        bolt_v2::economics::OrderSide::Buy,
+        base_reservation_notional,
+        bolt_v2::economics::EconomicClass::Charge,
+        -debit,
+        "test-core-debit",
+        "test-debit-formula",
+        u64::MAX,
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionPurpose::TradingEdge,
+    )
+}
+
+pub fn sample_sell_economics_admission_with_debit(
+    planned_fill_notional: rust_decimal::Decimal,
+    debit: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    sample_economics_admission_with_component(
+        planned_fill_notional,
+        bolt_v2::economics::OrderSide::Sell,
+        rust_decimal::Decimal::ZERO,
         bolt_v2::economics::EconomicClass::Charge,
         -debit,
         "test-core-debit",
@@ -268,6 +295,8 @@ pub fn sample_risk_reduction_economics_admission_with_debit(
 ) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
     sample_economics_admission_with_component(
         base_reservation_notional,
+        bolt_v2::economics::OrderSide::Buy,
+        base_reservation_notional,
         bolt_v2::economics::EconomicClass::Charge,
         -debit,
         "test-core-debit",
@@ -278,7 +307,9 @@ pub fn sample_risk_reduction_economics_admission_with_debit(
 }
 
 fn sample_economics_admission_with_component(
-    base_reservation_notional: rust_decimal::Decimal,
+    planned_fill_notional: rust_decimal::Decimal,
+    order_side: bolt_v2::economics::OrderSide,
+    reservation_basis: rust_decimal::Decimal,
     class: bolt_v2::economics::EconomicClass,
     point_effect: rust_decimal::Decimal,
     component_id: &str,
@@ -309,11 +340,11 @@ fn sample_economics_admission_with_component(
             .expect("valid test instrument id"),
         product_surface_id: ProductSurfaceId::new("test-product-surface")
             .expect("valid test product surface id"),
-        order_side: OrderSide::Buy,
+        order_side,
         liquidity_role: LiquidityRoleAssumption::Taker,
         planned_fill_legs: vec![PlannedFillLeg {
             price: Decimal::ONE,
-            quantity: base_reservation_notional,
+            quantity: planned_fill_notional,
         }],
         routing: RoutingContext {
             attached_charge: None,
@@ -377,7 +408,7 @@ fn sample_economics_admission_with_component(
                 product_metadata_source: SourceId::new("test-product-metadata")
                     .expect("valid test product metadata source"),
                 policy_version: 1,
-                normalized_amount: base_reservation_notional,
+                normalized_amount: planned_fill_notional,
                 scope: EconomicScope::Decision {
                     decision_correlation_id,
                 },
@@ -385,7 +416,7 @@ fn sample_economics_admission_with_component(
                 valid_until_ns,
             },
             valuation_provider: bolt_v2::bolt_v3_economics_runtime::identity_valuation_provider(),
-            reservation_basis: ReservationBasis::new(base_reservation_notional)
+            reservation_basis: ReservationBasis::new(reservation_basis)
                 .expect("valid test reservation basis"),
             authority_refreshed_at_ns: requested_at_ns,
         },

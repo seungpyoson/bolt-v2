@@ -3100,6 +3100,8 @@ fn forced_reduction_submit_request(
 
 fn capital_admission_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     let mut request = capital_admission_submit_request(client_order_id);
+    request.economics_admission =
+        support::sample_sell_economics_admission_with_debit(Decimal::new(4, 0), Decimal::new(3, 1));
     request.order_side = OrderSide::Sell;
     request
         .admission_evidence

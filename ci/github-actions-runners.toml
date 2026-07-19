@@ -1,5 +1,8 @@
 schema_version = 1
 
+[action_pins]
+upload_artifact = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+
 # Repository Actions variables (Settings → Secrets and variables → Actions)
 # must match [runners.*.label]. Workflows reference runners only via vars.<variable>.
 

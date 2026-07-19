@@ -10,6 +10,8 @@ import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FINAL_REVIEW = REPO_ROOT / ".github/workflows/final-review.yml"
+WORKFLOW_ROOT = REPO_ROOT / ".github/workflows"
+RUNNERS_CONFIG = REPO_ROOT / "ci/github-actions-runners.toml"
 ALTERNATE_REVIEW_WORKFLOWS = (
     REPO_ROOT / ".github/workflows/ai-review-coding-plan-smoke.yml",
     REPO_ROOT / ".github/workflows/debug-test.yml",
@@ -199,6 +201,38 @@ def assert_setup_checks_configured_actionlint() -> None:
         raise AssertionError("just setup does not verify the configured actionlint version")
 
 
+def assert_upload_artifact_uses_one_configured_pin() -> None:
+    config = tomllib.loads(RUNNERS_CONFIG.read_text(encoding="utf-8"))
+    expected = config["action_pins"]["upload_artifact"]
+    if not isinstance(expected, str) or not re.fullmatch(
+        r"actions/upload-artifact@[0-9a-f]{40}", expected
+    ):
+        raise AssertionError("configured upload-artifact action must use an immutable commit SHA")
+    storage_mirror = config["storage_audit"]["cleanup_feasibility_alert"]["workflow"][
+        "json_artifact_action"
+    ]
+    if storage_mirror != expected:
+        raise AssertionError("storage workflow upload-artifact pin must match action_pins")
+    mismatches: list[str] = []
+    references = 0
+    workflow_paths = sorted((*WORKFLOW_ROOT.glob("*.yml"), *WORKFLOW_ROOT.glob("*.yaml")))
+    for path in workflow_paths:
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(
+            r"uses:\s*[\"']?(actions/upload-artifact@[^\"'\s#]+)", text
+        ):
+            references += 1
+            actual = match.group(1)
+            if actual != expected:
+                mismatches.append(f"{path.name}: {actual}")
+    if references == 0:
+        raise AssertionError("repository workflows contain no upload-artifact action")
+    if mismatches:
+        raise AssertionError(
+            "upload-artifact actions must match the configured pin: " + ", ".join(mismatches)
+        )
+
+
 def main() -> int:
     assert_final_review_has_one_fixed_graph()
     assert_provider_workers_are_triggerless()
@@ -207,6 +241,7 @@ def main() -> int:
     assert_public_command_surface_is_single_path()
     assert_rust_linker_has_one_mandatory_route()
     assert_setup_checks_configured_actionlint()
+    assert_upload_artifact_uses_one_configured_pin()
     print("OK: fixed final-review workflow tests passed.")
     return 0
 

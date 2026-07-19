@@ -2,7 +2,7 @@ schema_version = 2
 canonical_state_family = "market"
 allowed_classifications = ["event-keyed", "state-observation", "already-deduped", "no-named-reader"]
 allowed_suppression = ["unsuppressed", "finite-monotone-mask"]
-allowed_runtime_status = ["implemented", "monotone-migration-required", "owner-decision-required"]
+allowed_runtime_status = ["implemented", "monotone-migration-required", "deferred-to-1385", "owner-decision-required"]
 producer_census_roots = ["src"]
 producer_census_exclusions = [
   "src/bolt_v3_capital_admission_runtime_feed.rs::record_venue_truth_settlement::record_settlement::1",
@@ -520,7 +520,7 @@ named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migration
 repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
 dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
 recovery_bearing = false
-runtime_status = "monotone-migration-required"
+runtime_status = "deferred-to-1385"
 required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
@@ -650,7 +650,7 @@ named_readers = ["read_exit_evaluation_evidence", "v15_migrator_migrate_file_byt
 repeat_semantics = "current last-outcome guard suppresses only adjacent repeats per position and re-emits A-B-A; migrate to the closed exit outcome and RV-gate domain"
 dedupe_key_evidence = "current key is semantic but non-monotone; the required state excludes prices, timestamps, ages, and counters"
 recovery_bearing = false
-runtime_status = "monotone-migration-required"
+runtime_status = "deferred-to-1385"
 required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
@@ -668,7 +668,7 @@ named_readers = ["read_loss_governor_halt_evidence", "v15_migrator_migrate_file_
 repeat_semantics = "current per-key power-of-two sampling continues indefinitely; migrate to one emission per closed stale-loss reason state"
 dedupe_key_evidence = "current episode key also includes source and mutable counters; the required state is stale-loss reason only"
 recovery_bearing = false
-runtime_status = "monotone-migration-required"
+runtime_status = "deferred-to-1385"
 required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
@@ -689,7 +689,7 @@ named_readers = ["read_order_reject_evidence", "v15_migrator_migrate_file_bytes"
 repeat_semantics = "current per-episode power-of-two sampling and bounded map continue emitting and can forget episodes; migrate to the closed reject-source and reject-reason domain"
 dedupe_key_evidence = "current episode keys and counters are not the required monotone state; the required state excludes identifiers, retry, elapsed, and raw reason"
 recovery_bearing = false
-runtime_status = "monotone-migration-required"
+runtime_status = "deferred-to-1385"
 required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 

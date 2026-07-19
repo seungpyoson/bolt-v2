@@ -206,10 +206,10 @@ def test_runtime_status_distinguishes_implemented_and_remaining_work() -> None:
     statuses = {producer.name: producer.runtime_status for producer in registry.producers}
     assert statuses["strategy_input_snapshot_blocked_rv"] == "implemented"
     assert statuses["entry_skip"] == "implemented"
-    assert statuses["exit_decision"] == "monotone-migration-required"
-    assert statuses["exit_evaluation"] == "monotone-migration-required"
-    assert statuses["loss_governor_halt"] == "monotone-migration-required"
-    assert statuses["order_reject"] == "monotone-migration-required"
+    assert statuses["exit_decision"] == "deferred-to-1385"
+    assert statuses["exit_evaluation"] == "deferred-to-1385"
+    assert statuses["loss_governor_halt"] == "deferred-to-1385"
+    assert statuses["order_reject"] == "deferred-to-1385"
     assert statuses["requote_throttle"] == "monotone-migration-required"
     assert statuses["venue_truth_capture_failure"] == "owner-decision-required"
     assert statuses["venue_truth_divergence"] == "owner-decision-required"
@@ -227,6 +227,20 @@ def test_pending_monotone_migration_must_name_finite_required_suppression() -> N
         assert "monotone migration" in str(error)
     else:
         raise AssertionError("pending monotone migration allowed an unsuppressed target")
+
+
+def test_1385_deferral_must_name_finite_required_suppression() -> None:
+    text = _registry_text().replace(
+        'runtime_status = "deferred-to-1385"\nrequired_suppression = "finite-monotone-mask"',
+        'runtime_status = "deferred-to-1385"\nrequired_suppression = "unsuppressed"',
+        1,
+    )
+    try:
+        _load(text)
+    except ValueError as error:
+        assert "#1385 deferral" in str(error)
+    else:
+        raise AssertionError("#1385 deferral allowed an unsuppressed target")
 
 
 def test_non_evidence_appender_sweep_detects_production_and_ignores_tests() -> None:

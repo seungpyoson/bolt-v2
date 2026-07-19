@@ -301,6 +301,7 @@ def load_registry(path: pathlib.Path) -> Registry:
     if allowed_runtime_status != [
         "implemented",
         "monotone-migration-required",
+        "deferred-to-1385",
         "owner-decision-required",
     ]:
         raise ValueError("allowed_runtime_status must remain the frozen closed set")
@@ -384,6 +385,8 @@ def load_registry(path: pathlib.Path) -> Registry:
             raise ValueError(f"producer[{index}] without a domain reader requires an owner decision")
         if runtime_status == "monotone-migration-required" and required_suppression != "finite-monotone-mask":
             raise ValueError(f"producer[{index}] monotone migration requires finite suppression")
+        if runtime_status == "deferred-to-1385" and required_suppression != "finite-monotone-mask":
+            raise ValueError(f"producer[{index}] #1385 deferral requires finite suppression")
         if runtime_status == "owner-decision-required" and not owner_decision_required:
             raise ValueError(f"producer[{index}] owner-decision runtime status requires its decision flag")
         if owner_decision_required and runtime_status != "owner-decision-required":

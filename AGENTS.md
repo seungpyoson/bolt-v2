@@ -1,80 +1,28 @@
 # bolt-v2 Agent Rules
 
-Repo governance for agents; higher-level standing instructions apply.
-
-## Precedence & Source Of Truth
+## Authority
 
 - Direct user instructions win unless they violate safety.
-- `AGENTS.md` is the governance source and operational entrypoint. `CLAUDE.md`, `GEMINI.md`, SpecKit prompts, Superpowers skills, and plugin docs are adapters — if they conflict, follow `AGENTS.md` and report the drift.
-- `.specify/memory/constitution.md` records SpecKit principles; update it only when governance changes those principles or gates. The active SpecKit plan is feature context, not governance.
-- After a merge, `main` is authoritative; old branches, worktrees, and plan pointers become reference-only immediately after supersession or merge. Do not continue from stale work or cite it as proof that accepted scope is missing from `main`; port only proven-missing scope onto a fresh branch from `main`.
+- `AGENTS.md` is the repository authority. Tool-specific adapters must defer to it.
+- After a merge, `main` is authoritative. Do not continue work from superseded branches or worktrees.
 
-## Agent & Plugin Discipline
+## Non-Negotiable Invariants
 
-- Do not create per-agent policy docs unless the tool loads them and the policy cannot live in `AGENTS.md`. For tools that do not load it, pass `AGENTS.md` as read-only context; add `.specify/memory/constitution.md` only when SpecKit principles or gates matter.
-- `.pr_agent.toml` inlines the critical `AGENTS.md` review rules because PR-Agent cannot load arbitrary repo files in GitHub Actions; `AGENTS.md` stays authoritative, and that block is updated when the rules it mirrors change.
-- AI review deliverables must identify the reviewer source and exact configured model. Runtime source/model labels and comment markers come from `ci/ai-review.toml`; workflow and prompt text must not embed those runtime values.
-- Do not patch plugin caches as durable fixes; use repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters. Generated prompts may recommend strict TDD — use Evidence-Driven Verification unless the user, active spec, or risk requires TDD.
+- **No hardcodes:** runtime IDs, quantities, timeouts, and selectable values come from TOML.
+- **No dual paths:** one config format, secret source, build path, and runtime path for each capability. No fallback or compatibility routes.
+- **No debt:** no TODOs, unpinned dependencies, or unfinished work presented as complete.
+- **No credential display:** never print or expose secrets.
+- **Pure Rust runtime:** no Python runtime layer, PyO3, maturin, or pip.
+- **SSM only:** product and runtime credentials come from AWS SSM through `aws-sdk-ssm`. GitHub automation may use only GitHub's ephemeral token for GitHub operations.
+- **Do not reference Bolt v1:** use NautilusTrader source from Cargo checkouts or GitHub.
+- **Strategies produce intent only:** shared execution modules own admissibility, venue rules, sizing, rounding, and submission.
+- **Chainlink Data Streams testnet is production** for the `price_to_beat` oracle.
+- **Register provider boundaries:** every deploy or readiness input derived from provider runtime data must be covered by the authoritative boundary registry and source-fence evidence.
 
-## Scope Discipline
+## Verification and Merge
 
-- One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice of one broader item; slice PRs and their review requests must name remaining accepted scope and where it is tracked.
-- Reviewers must flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope as findings. Do not claim a PR closes a broader issue unless the diff actually satisfies it.
-
-## Repo Rules
-
-1. **NO HARDCODES** — every runtime value comes from TOML config. No string literals for IDs, quantities, timeouts, or any runtime value in code.
-2. **NO DUAL PATHS** — one way to do each thing: one config format, one secret source, one build path.
-3. **NO DEBTS** — no TODO, no "fix later", no unpinned dependencies, no uncommitted work.
-4. **NO CREDENTIAL DISPLAY** — never cat/print/log API keys, private keys, secrets.
-5. **PURE RUST BINARY** — standalone Rust `LiveNode` using NT's Rust API directly. No Python layer, PyO3, maturin, or pip.
-6. **SSM IS THE SINGLE SECRET SOURCE** — product/runtime credentials resolve from AWS SSM via `aws-sdk-ssm`. No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends. GitHub Actions repository automation may use GitHub's ephemeral `GITHUB_TOKEN` only for GitHub API operations; do not add alternate GitHub token names. `JULES_API_KEY` may live in GitHub Actions secrets only for repository code-maintenance advisory workflows; it is not a product/runtime/deploy/live/trading secret, not an alternate GitHub token, and must not be exposed to AWS, market data, order execution, runtime, deploy, or live jobs.
-7. **GROUP BY CHANGE** — values that share a lifecycle live in one config section; a wallet, credential-set, or venue swap must require one edit.
-8. **DO NOT REFERENCE BOLT V1** — do not read, import, or depend on `~/Projects/Claude/bolt/`. NT source is in `~/.cargo/git/checkouts/nautilus_trader-*/` or GitHub.
-9. **STRATEGIES PRODUCE INTENT ONLY** — strategies emit order intent and strategy-local signal state only. Admissibility, venue rules, fillability, rounding, minimum size, fee-adjusted sizing, and submit gating live in shared NT-based execution/admission modules. Submit mechanics under `src/strategies/*` are rejected unless explicitly approved as strategy-local signal logic.
-10. **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the `price_to_beat` oracle, testnet is the only final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle; do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet. Still verify config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
-11. **PROVIDER/RUNTIME BOUNDARY EVIDENCE IS REGISTERED** — every deploy/readiness feeder that depends on provider runtime bytes or metadata must be represented in the authoritative boundary registry and guarded by source-fence evidence or an issue-bound, expiring non-WebSocket deferral. WebSocket-frame evidence must not be deferred.
-
-## Evidence-Driven Verification
-
-- TDD is allowed but not mandatory unless the user, active spec, or risk requires it; `.specify/memory/constitution.md` mirrors this principle.
-- Agents do not wait on CI: push, report the head SHA, detach — verifying results at head belongs to the reviewer.
-- Every claim must map to evidence: tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance that does not violate a MUST rule. Every plan or task list must name the evidence for each changed requirement or risk: production behavior needs behavior/integration/remote-CI/live artifacts (or user-approved risk acceptance that does not violate a MUST rule); trading, admission, secrets, and config also need fail-closed evidence for invalid or missing inputs plus exact-head proof before any live operation; refactors need existing tests/static checks/source-fence or documented structural-equivalence review proving behavior is unchanged; documentation, prompt, template, and policy changes require targeted text/static checks plus internal adversarial review before completion claims.
-- External review follows resolved local findings and the complete repository preflight. Remote results are evidence to adjudicate, never merge authority.
-
-## Approved Lean-CI End State And Cutover Boundary
-
-- The selected end state has zero required CI status contexts. CI is visible evidence, not merge authority. Native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory.
-- `root-artifact` is an explicit, target-specific `workflow_dispatch` producer for exact-current-`main`: it performs one locked ARM64 release build through mandatory checksum-verified, action-installed sccache, then runs positive and fail-closed checks using only staged executable bytes. It runs no Cargo tests and grants no merge, install, launch, readiness, or trading authority; root and Backtester seed/test operations remain separately selected.
-- The repository accepts that an approved merge may temporarily leave `main` red or broken. That accepted repository risk is never deploy or trading permission.
-- Live arming belongs to one manifest-bound content-addressed immutable executable running its own finite `ops launch` pre-arm phase. Only complete success constructs the opaque, non-serializable, non-cloneable, one-use Rust `LiveReadinessPermit` that the sole Start entrypoint consumes by value. Installation and audit receipts are inert; every systemd start or restart obtains a fresh in-process permit.
-- The trusted-App/protected-base verifier, precursor/activation/freeze ceremony, replay/tombstone control plane, and App-qualified merge authority previously proposed for #1016 are superseded and must not merge. #1016 owns architecture only; deletion and implementation slices require their own owning GitHub issue.
-- No fallback, compatibility adapter, inherited result, alternate installer, mutable-copy route, tag/same-SHA/prior-artifact substitution, cache-as-proof, persisted authority, external readiness publisher, or dual path is allowed. Rollback is a pause or forward fix, never restoration of retired authority.
-- Repository admission is limited to identity, pull-request state and mergeability, required-reviewer approval, Mergify routing, and single-PR queue mechanics. CI workflows remain visible advisory evidence. The live ruleset mutation is a separate operator action and must be verified directly after any governance change.
-
-## Remote-First Rust Verification
-
-- Do not run local compile-heavy Rust verification by default: no managed `just` Rust test/build/clippy recipes and no raw Cargo refused by `[local_compile_policy]`. `just fmt` is the sole repository-wide formatting mutation command. `just preflight` is the sole local evidence command and runs every registered non-compile check for every workspace.
-- Publish only with `just sandbox-safe-push`, which reruns the complete preflight, binds it to the captured commit, pushes that exact SHA, and verifies the remote head. Do not embed credentials in Git push URLs or use raw remote-name pushes from a managed sandbox.
-- Automated final-review dispatch is disabled. Agents must not invoke the Final Review workflow or its external-model workers. Published exact-head evidence remains advisory; native code-owner approval and the other protected-branch controls remain mandatory.
-- Queue one PR per `just merge-queue <pr>` invocation from a clean worktree at current `origin/main`, not from a candidate branch and not by commenting the Mergify command directly. This is a team rule; Mergify's queue checkbox is disabled to remove the accidental UI path. The recipe resolves the exact remote SHAs, checks identity and existing native-review mechanics, and posts the configured Mergify command only for that PR's `queue_as_one_wave` verdict.
-- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, `.no-mistakes.yaml`, and the PATH Cargo shim. Lanes self-serialize via `[local_lane_policy]`; CI bypasses the lock, and registry drift fails `just preflight`. Known bypasses remain mistake-prevention limitations: absolute-path Cargo, `rustup run ... cargo`, cross-repo Cargo, old daemons, non-shim PATHs, startup-skipping shells, and direct `rustc`.
-
-## Rust Probe Policy
-
-- Rust Probe is diagnostic only: use it when the local preflight cannot answer a focused question. It never authorizes or vetoes merge.
-- Run `just rust-probe suggest` first; dispatch `just rust-probe ...` only from a clean named branch whose pushed `HEAD` SHA is used (dispatch refuses unsafe local state). Before dispatch, state changed files, suspected failure class, mode, target, and smallest-sufficient rationale. Limits: max 2 probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; do not run full CI just to discover ordinary compiler errors.
-- Suggested integration-test probes use the Cargo `[[test]]` harness as `test_target`; when a changed file is a harness member module, the suggested `test_name` is `<member_stem>::` so nextest stays scoped to that module.
-
-## Review Bar & Merge Mechanics
-
-- Every unique substantive issue is a finding regardless of severity; do not downgrade real issues into notes or treat tracked as resolved unless fixed or explicitly waived.
-- Keep PR bodies stable: use them for lasting scope/behavior disclosures and timeless merge requirements, not the current head SHA, transient CI/check status, or head-specific review/verification receipts. Put exact-head evidence in review requests, comments/records, or check runs; do not rewrite the body as heads move. This PR-body status rule does not restrict immutable release artifacts or spec anchors.
-- Before completing or merging coding work, open a PR and request review from the GitHub account with node ID `U_kgDOEZMFhA` (login-based — resolve the node ID to its current login and keep `.github/CODEOWNERS` aligned). This required-reviewer node ID is an intentional hardcoded policy constant for native merge governance: PR-editable config must not select the required reviewer.
-- The `main` ruleset must require native code-owner review, stale-review dismissal, last-push approval, and review-thread resolution; if those are missing, stop and report the blocker instead of treating CI checks as merge controls. Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval from node ID `U_kgDOEZMFhA`; if review cannot be requested, stop and report.
-- Do not request native code-owner review with uncommitted changes, unpushed commits, unresolved findings, or unanswered comments. Reply to and resolve every applicable review thread; commit and push any fix before further review discussion. Advisory failures are evidence to adjudicate rather than automatic review vetoes.
-- Verify each active `main` rule before merge with `gh api repos/{owner}/{repo}/rules/branches/main`. Confirm the live required-status list is empty and adjudicate advisory evidence without requiring a green rollup. Confirm code-owner approval by the required reviewer, stale-review dismissal, last-push approval, and review-thread resolution. On a stale native-control block, force recompute by push, review, close/reopen, or waiting; never bypass it with `gh pr merge --admin`.
-
-## Response Format
-
-- Keep responses concise by default; prefer short direct answers over long explanations unless depth is requested.
+- Verify before claiming completion. Use direct inspection, tests, static checks, source fences, remote evidence, or live artifacts appropriate to the risk.
+- Do not run compile-heavy Rust verification locally by default. Use `just fmt` and `just preflight`; publish with `just sandbox-safe-push`.
+- Rust Probe is diagnostic only and never authorizes merge or deployment.
+- Queue only through `just merge-queue <pr>`. Never post the Mergify command manually or bypass controls with `gh pr merge --admin`.
+- Merging requires approval from GitHub node ID `U_kgDOEZMFhA` and native code-owner review, stale-review dismissal, last-push approval, and resolved review threads.

@@ -1,7 +1,7 @@
 <!--
 Sync Impact Report
 Version change: 2.1.1 -> 2.2.0
-Modified principles: V. Evidence Before Claims records the single fixed final-review evidence transaction
+Modified principles: V. Evidence Before Claims records exact-head evidence requirements
 Additional Constraints: unchanged
 Added sections: v2.2.0 migration note
 Removed sections: none
@@ -10,7 +10,7 @@ Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/tasks-template.md - no update needed;
 .specify/templates/constitution-template.md - no update needed;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md establishes the fixed preflight, publication, and final-review path while preserving single-PR queue mechanics
+Runtime guidance updated: AGENTS.md establishes the fixed preflight and publication path while preserving single-PR queue mechanics
 Follow-up items: none
 -->
 
@@ -54,7 +54,7 @@ exact SHAs, exact PR/check state, or live run artifacts. Passing tests, static
 checks, reviews, or local mocks are not readiness evidence unless the checked
 behavior covers the stated requirement.
 
-External review is requested only after the branch is clean, pushed, and all local findings are resolved. The single fixed final-review workflow always executes the same root, Backtester, repository-static, and host workload. It invokes every configured reviewer against one captured head only after the complete workload passes. Its results are evidence for claims, but advisory automation cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
+no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
 
 ### VI. Minimal Slice Discipline
 
@@ -89,7 +89,7 @@ External data providers are allowed when they avoid rebuilding commodity data in
 2. Contract: update this constitution or feature contracts before runtime code when the boundary changes.
 3. Plan: decompose into independently reviewable slices with a named verification approach.
 4. Implementation: collect current evidence before claiming completion.
-5. Review: no external review request until the local branch is clean, pushed, known findings are resolved, and the fixed final-review workflow can evaluate the exact head.
+5. Review: resolve known findings and obtain the required native review before merge.
 6. Merge: no merge without explicit user approval.
 
 ## Governance
@@ -101,8 +101,7 @@ an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
 
 Migration note for v2.2.0: repository verification uses one workspace registry,
-one non-compile preflight, exact-SHA publication, and one fixed final-review
-transaction. Single-PR queue preflight remains the team-controlled Mergify
+one non-compile preflight, and exact-SHA publication. Single-PR queue preflight remains the team-controlled Mergify
 entrypoint and does not interpret advisory evidence as merge authority.
 
 Migration note for v2.1.1: the combined #1398, #1399, and #1400 cutover removes

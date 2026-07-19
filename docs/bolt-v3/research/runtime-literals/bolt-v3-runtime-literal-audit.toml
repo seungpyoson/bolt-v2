@@ -2032,25 +2032,9 @@ reason = "The submit admission counter starts empty for each fresh submit-admiss
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(1) else {'''
+context = '''const SUBMIT_ADMISSION_SINGLE_ORDER_INCREMENT: u32 = 1;'''
 classification = "submit_admission_counter_increment"
-reason = "Each admitted live submit consumes exactly one order-count slot from the operator-provided gate cap."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''let Some(next_execution_client_count) = current_execution_client_count.checked_add(1)'''
-classification = "submit_admission_counter_increment"
-reason = "Each admitted order for an approved execution client consumes exactly one slot from that client's consumed live-submit approval artifact."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''.checked_add(1)'''
-classification = "submit_admission_counter_increment"
-reason = "Each admitted forced-reduction order consumes exactly one live forced-reduction counter slot from the kill-switch policy cap."
+reason = "One admitted order consumes exactly one global and per-client slot; a forced-reduction order also consumes one forced-reduction slot. This structural increment is shared by the checked counter update and rollback, while the caps remain operator-configured."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -2075,6 +2059,14 @@ literal = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} sub
 context = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
 classification = "diagnostic_template"
 reason = "This is an error-display template for a submit lifecycle policy rejection; the rejected intent is computed from typed admission state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission invariant violated: {invariant:?}"'''
+context = '''"bolt-v3 submit admission invariant violated: {invariant:?}"'''
+classification = "diagnostic_template"
+reason = "This error-display template reports a typed impossible admission state; the invariant is selected by code and is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

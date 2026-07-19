@@ -271,6 +271,24 @@ pub struct PolymarketEconomicsAdapter {
     builder_plan: BuilderQuotePlan,
 }
 
+#[async_trait(?Send)]
+pub(crate) trait PolymarketEconomicsSource: Send + Sync {
+    async fn fetch_market_info_body(
+        &self,
+        authority: &PolymarketEconomicsAuthority,
+        instrument_id: InstrumentId,
+    ) -> anyhow::Result<Vec<u8>>;
+
+    async fn observe_collateral_redemption(
+        &self,
+        authority: &PolymarketEconomicsAuthority,
+        receipt_clock: &dyn EconomicsReceiptClock,
+        max_age_ns: u64,
+    ) -> anyhow::Result<AuthoritativeValuationObservation>;
+}
+
+struct LivePolymarketEconomicsSource;
+
 pub struct PolymarketEconomicsAuthority {
     execution_client_id: String,
     venue: Venue,
@@ -283,6 +301,7 @@ pub struct PolymarketEconomicsAuthority {
     http_client: HttpClient,
     on_chain_collateral: super::PolymarketOnChainCollateralConfig,
     collateral_source_id: String,
+    source: Arc<dyn PolymarketEconomicsSource>,
 }
 
 impl PolymarketEconomicsAuthority {
@@ -340,7 +359,20 @@ impl PolymarketEconomicsAuthority {
             http_client,
             on_chain_collateral,
             collateral_source_id,
+            source: Arc::new(LivePolymarketEconomicsSource),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_new_with_source(
+        execution_client_id: &str,
+        venue: Venue,
+        execution: super::PolymarketExecutionConfig,
+        source: Arc<dyn PolymarketEconomicsSource>,
+    ) -> anyhow::Result<Self> {
+        let mut authority = Self::try_new(execution_client_id, venue, execution)?;
+        authority.source = source;
+        Ok(authority)
     }
 
     fn market_info_url(&self, instrument_id: &InstrumentId) -> anyhow::Result<Url> {
@@ -351,7 +383,7 @@ impl PolymarketEconomicsAuthority {
             .context("configured Polymarket market-info URL is invalid")
     }
 
-    async fn observe_collateral_redemption(
+    async fn observe_collateral_redemption_live(
         &self,
         receipt_clock: &dyn EconomicsReceiptClock,
         max_age_ns: u64,
@@ -554,26 +586,14 @@ impl PolymarketEconomicsAuthority {
         max_age_ns: u64,
     ) -> anyhow::Result<PolymarketMarketAuthorityPart> {
         let instrument_id = instrument.id();
-        let response = self
-            .http_client
-            .get(
-                self.market_info_url(&instrument_id)?.to_string(),
-                None,
-                None,
-                Some(self.http_timeout_secs),
-                None,
-            )
-            .await
-            .context("Polymarket economics market-info fetch failed")?;
+        let body = self
+            .source
+            .fetch_market_info_body(self, instrument_id)
+            .await?;
         let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
-        anyhow::ensure!(
-            response.status.is_success(),
-            "Polymarket economics market-info returned HTTP status {}",
-            response.status.as_u16()
-        );
-        let body = std::str::from_utf8(&response.body)
+        let body_json = std::str::from_utf8(&body)
             .context("Polymarket economics market-info was not UTF-8 JSON")?;
-        let snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&response.body)));
+        let snapshot_id = format!("sha256:{}", hex::encode(Sha256::digest(&body)));
         let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(
             PolymarketSnapshotMetadata {
                 snapshot_id: snapshot_id.clone(),
@@ -581,7 +601,7 @@ impl PolymarketEconomicsAuthority {
                 fetched_at_ns: receipt.fetched_at_ns,
                 valid_until_ns: receipt.valid_until_ns,
             },
-            body,
+            body_json,
         )
         .map_err(|error| anyhow::anyhow!("invalid Polymarket market-info: {error:?}"))?;
         let adapter = PolymarketEconomicsAdapter::try_new(self.adapter_config.clone(), snapshot)
@@ -592,6 +612,44 @@ impl PolymarketEconomicsAuthority {
             fetched_at_ns: receipt.fetched_at_ns,
             valid_until_ns: receipt.valid_until_ns,
         })
+    }
+}
+
+#[async_trait(?Send)]
+impl PolymarketEconomicsSource for LivePolymarketEconomicsSource {
+    async fn fetch_market_info_body(
+        &self,
+        authority: &PolymarketEconomicsAuthority,
+        instrument_id: InstrumentId,
+    ) -> anyhow::Result<Vec<u8>> {
+        let response = authority
+            .http_client
+            .get(
+                authority.market_info_url(&instrument_id)?.to_string(),
+                None,
+                None,
+                Some(authority.http_timeout_secs),
+                None,
+            )
+            .await
+            .context("Polymarket economics market-info fetch failed")?;
+        anyhow::ensure!(
+            response.status.is_success(),
+            "Polymarket economics market-info returned HTTP status {}",
+            response.status.as_u16()
+        );
+        Ok(response.body.to_vec())
+    }
+
+    async fn observe_collateral_redemption(
+        &self,
+        authority: &PolymarketEconomicsAuthority,
+        receipt_clock: &dyn EconomicsReceiptClock,
+        max_age_ns: u64,
+    ) -> anyhow::Result<AuthoritativeValuationObservation> {
+        authority
+            .observe_collateral_redemption_live(receipt_clock, max_age_ns)
+            .await
     }
 }
 
@@ -698,7 +756,8 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             .await
         };
         let collateral = async {
-            self.observe_collateral_redemption(receipt_clock, max_age_ns)
+            self.source
+                .observe_collateral_redemption(self, receipt_clock, max_age_ns)
                 .await
                 .context("Polymarket collateral redemption authority is unavailable")
         };

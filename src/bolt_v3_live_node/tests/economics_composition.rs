@@ -19,22 +19,19 @@ use ustr::Ustr;
 use crate::{
     bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationLedger, ReservationRequest},
     bolt_v3_economics_runtime::{
-        AuthoritativeEconomicsInputStore, AuthoritativeEdgeBasis,
-        AuthoritativeValuationObservation, ConfiguredEconomicsAdmissionSource,
-        ConfiguredEconomicsSourcePolicy, EconomicsAdmissionPurpose, EconomicsAdmissionQuoteIntent,
-        EconomicsAdmissionSource, EconomicsOrderBinding, EconomicsReceiptClock,
-        ProviderEconomicsAuthority, ProviderEconomicsAuthorityRefresh,
-        ProviderEconomicsAuthoritySnapshot,
+        AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
+        ConfiguredEconomicsAdmissionSource, ConfiguredEconomicsSourcePolicy,
+        EconomicsAdmissionPurpose, EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
+        EconomicsOrderBinding, EconomicsReceiptClock, ProviderEconomicsAuthority,
     },
     bolt_v3_providers::polymarket::economics::{
-        PolymarketEconomicsAdapter, PolymarketEconomicsAdapterConfig, PolymarketMarketInfoSnapshot,
-        PolymarketSnapshotMetadata,
+        PolymarketEconomicsAuthority, PolymarketEconomicsSource,
     },
     economics::{
         AccountId, DecisionCorrelationId, EconomicQuoteRequest, EdgeBasisPolicyId,
-        ExecutionClientId, FormulaId, InstrumentId as EconomicsInstrumentId, LifecyclePath,
+        ExecutionClientId, InstrumentId as EconomicsInstrumentId, LifecyclePath,
         LiquidityRoleAssumption, NativeUnitId, OrderSide, PlannedFillLeg, ProductSurfaceId,
-        ReportingPolicyId, RoutingContext, SnapshotId, SourceId,
+        ReportingPolicyId, RoutingContext, SnapshotId,
     },
 };
 
@@ -44,88 +41,38 @@ const MARKET_INFO: &str = include_str!(
     "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-market-info-fee-bearing.json"
 );
 
-struct FixtureTransportAuthority {
-    economics: crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
-    adapter_config: PolymarketEconomicsAdapterConfig,
+struct FixturePolymarketSource {
     wire_body: &'static str,
 }
 
 #[async_trait(?Send)]
-impl ProviderEconomicsAuthority for FixtureTransportAuthority {
-    fn execution_client_id(&self) -> &str {
-        "polymarket_main"
-    }
-
-    fn provider_key(&self) -> &str {
-        "POLYMARKET"
-    }
-
-    fn venue(&self) -> Venue {
-        Venue::from("POLYMARKET")
-    }
-
-    fn economics_config(&self) -> &crate::bolt_v3_economics_config::ExecutionEconomicsConfig {
-        &self.economics
-    }
-
-    async fn refresh_batch(
+impl PolymarketEconomicsSource for FixturePolymarketSource {
+    async fn fetch_market_info_body(
         &self,
-        instruments: Vec<InstrumentAny>,
+        _authority: &PolymarketEconomicsAuthority,
+        _instrument_id: InstrumentId,
+    ) -> anyhow::Result<Vec<u8>> {
+        Ok(self.wire_body.as_bytes().to_vec())
+    }
+
+    async fn observe_collateral_redemption(
+        &self,
+        _authority: &PolymarketEconomicsAuthority,
         receipt_clock: &dyn EconomicsReceiptClock,
-    ) -> anyhow::Result<Vec<ProviderEconomicsAuthorityRefresh>> {
+        max_age_ns: u64,
+    ) -> anyhow::Result<AuthoritativeValuationObservation> {
         let fetched_at_ns = receipt_clock.now_ns()?;
-        let valid_until_ns = fetched_at_ns + 60_000_000_000;
-        Ok(instruments
-            .into_iter()
-            .map(|instrument| {
-                let snapshot = (|| {
-                    let snapshot_id = "governed-polymarket-market-info";
-                    let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(
-                        PolymarketSnapshotMetadata {
-                            snapshot_id: snapshot_id.to_string(),
-                            source_at_ns: fetched_at_ns,
-                            fetched_at_ns,
-                            valid_until_ns,
-                        },
-                        self.wire_body,
-                    )
-                    .map_err(|error| anyhow::anyhow!("invalid fixture market-info: {error:?}"))?;
-                    let adapter =
-                        PolymarketEconomicsAdapter::try_new(self.adapter_config.clone(), snapshot)
-                            .map_err(|error| {
-                                anyhow::anyhow!("invalid fixture adapter: {error:?}")
-                            })?;
-                    Ok(ProviderEconomicsAuthoritySnapshot {
-                        refreshed_at_ns: fetched_at_ns,
-                        product_surface_id: "binary_outcome".to_string(),
-                        adapter: Arc::new(adapter),
-                        edge_basis: AuthoritativeEdgeBasis {
-                            resolver_id: FormulaId::new("product-metadata")?,
-                            product_metadata_source: SourceId::new("polymarket-market-info")?,
-                            policy_version: 1,
-                            source_snapshot_ids: vec![SnapshotId::new(snapshot_id)?],
-                            valid_until_ns,
-                        },
-                        valuation_observations: vec![
-                            AuthoritativeValuationObservation::ProviderConversion {
-                                source_id: "collateral".to_string(),
-                                from_unit: NativeUnitId::new("pUSD")?,
-                                to_unit: NativeUnitId::new("USDC")?,
-                                rate: Decimal::ONE,
-                                snapshot_id: SnapshotId::new("governed-pusd-usdc")?,
-                                observed_at_ns: fetched_at_ns,
-                                fetched_at_ns,
-                                valid_until_ns,
-                            },
-                        ],
-                    })
-                })();
-                ProviderEconomicsAuthorityRefresh {
-                    instrument_id: instrument.id(),
-                    snapshot,
-                }
-            })
-            .collect())
+        let valid_until_ns = fetched_at_ns.checked_add(max_age_ns).unwrap();
+        Ok(AuthoritativeValuationObservation::ProviderConversion {
+            source_id: "collateral".to_string(),
+            from_unit: NativeUnitId::new("pUSD")?,
+            to_unit: NativeUnitId::new("USDC")?,
+            rate: Decimal::ONE,
+            snapshot_id: SnapshotId::new("governed-pusd-usdc")?,
+            observed_at_ns: fetched_at_ns,
+            fetched_at_ns,
+            valid_until_ns,
+        })
     }
 }
 
@@ -252,14 +199,17 @@ async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
             .clone()
             .try_into()
             .expect("shipped-shaped Polymarket execution must parse");
-    let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(FixtureTransportAuthority {
-        economics: execution.economics.clone(),
-        adapter_config: PolymarketEconomicsAdapterConfig::from_execution_config(
-            &execution.economics,
+    let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(
+        PolymarketEconomicsAuthority::try_new_with_source(
+            "polymarket_main",
+            Venue::from("POLYMARKET"),
+            execution,
+            Arc::new(FixturePolymarketSource {
+                wire_body: MARKET_INFO,
+            }),
         )
-        .expect("shipped-shaped adapter policy must compile"),
-        wire_body: MARKET_INFO,
-    });
+        .expect("shipped-shaped production authority must compile"),
+    );
     let inputs = AuthoritativeEconomicsInputStore::default();
     let cache = cache_with_valuation();
 
@@ -342,14 +292,17 @@ async fn malformed_capture_never_publishes_quote_authority() {
             .clone()
             .try_into()
             .expect("shipped-shaped Polymarket execution must parse");
-    let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(FixtureTransportAuthority {
-        economics: execution.economics.clone(),
-        adapter_config: PolymarketEconomicsAdapterConfig::from_execution_config(
-            &execution.economics,
+    let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(
+        PolymarketEconomicsAuthority::try_new_with_source(
+            "polymarket_main",
+            Venue::from("POLYMARKET"),
+            execution,
+            Arc::new(FixturePolymarketSource {
+                wire_body: r#"{"unsupported":true}"#,
+            }),
         )
         .unwrap(),
-        wire_body: r#"{"unsupported":true}"#,
-    });
+    );
     let inputs = AuthoritativeEconomicsInputStore::default();
     let published = refresh_compile_publish_economics_once(
         &authority,

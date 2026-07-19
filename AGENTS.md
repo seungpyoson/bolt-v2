@@ -8,6 +8,7 @@
 
 ## Non-Negotiable Invariants
 
+- **NT FIRST:** inspect NautilusTrader APIs and source before designing or implementing anything. Reuse NT whenever it provides the capability; rebuilding or shadowing an NT capability in Bolt is rejected. Bolt may own only missing domain policy and the thinnest necessary bindings.
 - **No hardcodes:** runtime IDs, quantities, timeouts, and selectable values come from TOML.
 - **No dual paths:** one config format, secret source, build path, and runtime path for each capability. No fallback or compatibility routes.
 - **No debt:** no TODOs, unpinned dependencies, or unfinished work presented as complete.
@@ -15,6 +16,7 @@
 - **Pure Rust runtime:** no Python runtime layer, PyO3, maturin, or pip.
 - **SSM only:** product and runtime credentials come from AWS SSM through `aws-sdk-ssm`. GitHub automation may use only GitHub's ephemeral token for GitHub operations.
 - **Do not reference Bolt v1:** use NautilusTrader source from Cargo checkouts or GitHub.
+- **NT first:** inspect and reuse NautilusTrader before adding any Bolt-owned abstraction. If NT already provides the capability, duplicating it is rejected; Bolt may add only missing domain policy or thin bindings.
 - **Strategies produce intent only:** shared execution modules own admissibility, venue rules, sizing, rounding, and submission.
 - **Chainlink Data Streams testnet is production** for the `price_to_beat` oracle.
 - **Register provider boundaries:** every deploy or readiness input derived from provider runtime data must be covered by the authoritative boundary registry and source-fence evidence.

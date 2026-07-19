@@ -303,6 +303,142 @@ semantic_state = "entry_skip.entry_unfillable_rejected_unchanged_book"
 allocation = "strategy_input_pricing_blocker"
 id = 175
 
+[[state]]
+rust_variant = "RequoteThrottleFreshSubmitSubmitCommandWindow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.fresh_submit.submit_command_window"
+allocation = "dependency_health"
+id = 208
+
+[[state]]
+rust_variant = "RequoteThrottleFreshSubmitRestCallWindow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.fresh_submit.rest_call_window"
+allocation = "dependency_health"
+id = 209
+
+[[state]]
+rust_variant = "RequoteThrottleFreshSubmitMinInterval"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.fresh_submit.min_interval"
+allocation = "dependency_health"
+id = 210
+
+[[state]]
+rust_variant = "RequoteThrottleFreshSubmitWindowCap"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.fresh_submit.window_cap"
+allocation = "dependency_health"
+id = 211
+
+[[state]]
+rust_variant = "RequoteThrottleFreshSubmitOutOfOrderTs"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.fresh_submit.out_of_order_ts"
+allocation = "dependency_health"
+id = 212
+
+[[state]]
+rust_variant = "RequoteThrottleFreshSubmitOverflow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.fresh_submit.overflow"
+allocation = "dependency_health"
+id = 213
+
+[[state]]
+rust_variant = "RequoteThrottleCancelResubmitSubmitCommandWindow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel_resubmit.submit_command_window"
+allocation = "dependency_health"
+id = 214
+
+[[state]]
+rust_variant = "RequoteThrottleCancelResubmitRestCallWindow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel_resubmit.rest_call_window"
+allocation = "dependency_health"
+id = 215
+
+[[state]]
+rust_variant = "RequoteThrottleCancelResubmitMinInterval"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel_resubmit.min_interval"
+allocation = "dependency_health"
+id = 216
+
+[[state]]
+rust_variant = "RequoteThrottleCancelResubmitWindowCap"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel_resubmit.window_cap"
+allocation = "dependency_health"
+id = 217
+
+[[state]]
+rust_variant = "RequoteThrottleCancelResubmitOutOfOrderTs"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel_resubmit.out_of_order_ts"
+allocation = "dependency_health"
+id = 218
+
+[[state]]
+rust_variant = "RequoteThrottleCancelResubmitOverflow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel_resubmit.overflow"
+allocation = "dependency_health"
+id = 219
+
+[[state]]
+rust_variant = "RequoteThrottleCancelRestCallWindow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel.rest_call_window"
+allocation = "dependency_health"
+id = 220
+
+[[state]]
+rust_variant = "RequoteThrottleCancelMinInterval"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel.min_interval"
+allocation = "dependency_health"
+id = 221
+
+[[state]]
+rust_variant = "RequoteThrottleCancelWindowCap"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel.window_cap"
+allocation = "dependency_health"
+id = 222
+
+[[state]]
+rust_variant = "RequoteThrottleCancelOutOfOrderTs"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel.out_of_order_ts"
+allocation = "dependency_health"
+id = 223
+
+[[state]]
+rust_variant = "RequoteThrottleCancelOverflow"
+owner = "RequoteThrottle"
+producer_kind = "requote_throttle"
+semantic_state = "requote_throttle.cancel.overflow"
+allocation = "dependency_health"
+id = 224
+
 [[reader]]
 name = "read_latest_entry_decision_evidence_chain"
 path = "src/bolt_v3_decision_evidence.rs"
@@ -722,10 +858,10 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer"]
 call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge::record_requote_throttle::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "current per-family/leg last-key set suppresses adjacent repeats and re-emits A-B-A; migrate to the closed leg and throttle-bound domain"
-dedupe_key_evidence = "current key includes family and action class; the required monotone state is the approved semantic leg and bound domain"
+repeat_semantics = "finite per-market/leg monotone suppression over the closed action-cost and throttle-bound domain"
+dedupe_key_evidence = "typed market/leg episode identity plus the exact seventeen-state TOML domain; family, timestamps, and budget counters remain payload only"
 recovery_bearing = false
-runtime_status = "monotone-migration-required"
+runtime_status = "implemented"
 required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 

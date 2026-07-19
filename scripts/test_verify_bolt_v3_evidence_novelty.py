@@ -210,14 +210,24 @@ def test_runtime_status_distinguishes_implemented_and_remaining_work() -> None:
     assert statuses["exit_evaluation"] == "deferred-to-1385"
     assert statuses["loss_governor_halt"] == "deferred-to-1385"
     assert statuses["order_reject"] == "deferred-to-1385"
-    assert statuses["requote_throttle"] == "monotone-migration-required"
+    assert statuses["requote_throttle"] == "implemented"
     assert statuses["venue_truth_capture_failure"] == "owner-decision-required"
     assert statuses["venue_truth_divergence"] == "owner-decision-required"
 
 
+def test_requote_throttle_has_closed_market_state_domain() -> None:
+    registry = verifier.load_registry(verifier.REPO_ROOT / verifier.REGISTRY_PATH)
+    states = [state for state in registry.states if state.producer_kind == "requote_throttle"]
+    assert len(states) == 17
+    assert {state.id for state in states} == set(range(208, 225))
+    producer = next(producer for producer in registry.producers if producer.name == "requote_throttle")
+    assert producer.runtime_status == "implemented"
+    assert producer.required_suppression == "finite-monotone-mask"
+
+
 def test_pending_monotone_migration_must_name_finite_required_suppression() -> None:
     text = _registry_text().replace(
-        'runtime_status = "monotone-migration-required"\nrequired_suppression = "finite-monotone-mask"',
+        'runtime_status = "implemented"\nrequired_suppression = "finite-monotone-mask"',
         'runtime_status = "monotone-migration-required"\nrequired_suppression = "unsuppressed"',
         1,
     )

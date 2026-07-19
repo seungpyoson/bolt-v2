@@ -95,12 +95,15 @@ impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
     }
 }
 
-pub struct EvidenceNoveltyGuard {
+pub struct EvidenceNoveltyGuard<EpisodeId = EvidenceEpisodeId> {
     owner: EvidenceStateOwner,
-    seen_by_episode: BTreeMap<EvidenceEpisodeId, Vec<u64>>,
+    seen_by_episode: BTreeMap<EpisodeId, Vec<u64>>,
 }
 
-impl EvidenceNoveltyGuard {
+impl<EpisodeId> EvidenceNoveltyGuard<EpisodeId>
+where
+    EpisodeId: Clone + Ord,
+{
     #[must_use]
     pub fn for_owner(owner: EvidenceStateOwner) -> Self {
         Self {
@@ -112,7 +115,7 @@ impl EvidenceNoveltyGuard {
     /// Claims before invoking the writer. Writer failure therefore stays seen.
     pub fn emit_once(
         &mut self,
-        episode: &EvidenceEpisodeId,
+        episode: &EpisodeId,
         state: EvidenceCanonicalState,
         emit: impl FnOnce() -> Result<()>,
     ) -> Result<bool> {
@@ -125,7 +128,7 @@ impl EvidenceNoveltyGuard {
 
     pub fn claim_once(
         &mut self,
-        episode: &EvidenceEpisodeId,
+        episode: &EpisodeId,
         state: EvidenceCanonicalState,
     ) -> Result<bool> {
         let (word, mask) = self.state_bit(state)?;
@@ -140,11 +143,7 @@ impl EvidenceNoveltyGuard {
         Ok(true)
     }
 
-    pub fn has_claimed(
-        &self,
-        episode: &EvidenceEpisodeId,
-        state: EvidenceCanonicalState,
-    ) -> Result<bool> {
+    pub fn has_claimed(&self, episode: &EpisodeId, state: EvidenceCanonicalState) -> Result<bool> {
         let (word, mask) = self.state_bit(state)?;
         Ok(self
             .seen_by_episode
@@ -158,7 +157,7 @@ impl EvidenceNoveltyGuard {
     }
 
     #[must_use]
-    pub fn seen_state_count(&self, episode: &EvidenceEpisodeId) -> usize {
+    pub fn seen_state_count(&self, episode: &EpisodeId) -> usize {
         self.seen_by_episode
             .get(episode)
             .map(|words| words.iter().map(|word| word.count_ones() as usize).sum())

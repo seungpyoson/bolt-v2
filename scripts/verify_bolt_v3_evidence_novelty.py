@@ -406,6 +406,18 @@ def load_registry(path: pathlib.Path) -> Registry:
         ))
     if len({producer.name for producer in producers}) != len(producers):
         raise ValueError("producer names must be unique")
+    for producer in producers:
+        if (
+            producer.runtime_status == "implemented"
+            and producer.required_suppression == "finite-monotone-mask"
+            and (
+                producer.family != canonical_state_family
+                or not any(state.producer_kind == producer.record_kind for state in states)
+            )
+        ):
+            raise ValueError(
+                f"producer {producer.name} claims implemented finite suppression without states"
+            )
     producer_ids = [(producer.family, producer.state_id) for producer in producers]
     if len(set(producer_ids)) != len(producer_ids):
         raise ValueError("producer family/state_id pairs must be unique")
@@ -742,14 +754,36 @@ def repository_errors(root: pathlib.Path) -> list[str]:
         )
     except OSError as error:
         errors.append(str(error))
-    else:
-        referenced = set(re.findall(r"EvidenceCanonicalState::([A-Z][A-Za-z0-9]*)", producer))
-        registered = {row.rust_variant for row in registry.states}
-        if referenced != registered:
-            errors.append(
-                "producer canonical-state references must exactly match registry: "
-                f"missing={sorted(registered - referenced)} unknown={sorted(referenced - registered)}"
+
+    canonical_source_paths = sorted(
+        {
+            pathlib.Path(call_site.split("::", 1)[0])
+            for census_producer in registry.producers
+            if census_producer.runtime_status == "implemented"
+            and census_producer.required_suppression == "finite-monotone-mask"
+            for call_site in census_producer.call_sites
+        }
+    )
+    canonical_sources: list[str] = []
+    for source_path in canonical_source_paths:
+        try:
+            canonical_sources.append(
+                strip_rust_comments_and_literals((root / source_path).read_text(encoding="utf-8"))
             )
+        except OSError as error:
+            errors.append(str(error))
+    referenced = set(
+        re.findall(
+            r"EvidenceCanonicalState::([A-Z][A-Za-z0-9]*)",
+            "\n".join(canonical_sources),
+        )
+    )
+    registered = {row.rust_variant for row in registry.states}
+    if referenced != registered:
+        errors.append(
+            "producer canonical-state references must exactly match registry: "
+            f"missing={sorted(registered - referenced)} unknown={sorted(referenced - registered)}"
+        )
 
     try:
         entry_decision = strip_rust_comments_and_literals(

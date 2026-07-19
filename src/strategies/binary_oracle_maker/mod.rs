@@ -32,6 +32,7 @@ use crate::{
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence,
     },
+    bolt_v3_evidence_novelty::{EvidenceCanonicalState, EvidenceNoveltyGuard, EvidenceStateOwner},
     bolt_v3_loss_governor::LossAdmissionDecision,
     bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
@@ -109,11 +110,12 @@ pub struct BinaryOracleMaker {
     context: StrategyBuildContext,
     mu: MakerMuState,
     runtime: MakerRuntime,
-    last_requote_throttle_blocks: Vec<RequoteThrottleDedupeKey>,
+    requote_throttle_novelty: EvidenceNoveltyGuard<RequoteThrottleEpisodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
+    pub market_key: &'a str,
     pub quote: MakerRuntimeQuoteInput<'a>,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
@@ -129,13 +131,25 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RequoteThrottleDedupeKey {
-    family_key: String,
-    leg: Leg,
-    action_cost_class: BoltV3RequoteActionCostClass,
-    block_reason: BoltV3RequoteThrottleBlockReason,
-    bound_by: BoltV3RequoteThrottleBound,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RequoteThrottleEpisodeId {
+    market_key: String,
+    leg: RequoteThrottleLeg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RequoteThrottleLeg {
+    Yes,
+    No,
+}
+
+impl From<Leg> for RequoteThrottleLeg {
+    fn from(value: Leg) -> Self {
+        match value {
+            Leg::Yes => Self::Yes,
+            Leg::No => Self::No,
+        }
+    }
 }
 
 impl BoltV3RequoteThrottleEvidence {
@@ -143,6 +157,7 @@ impl BoltV3RequoteThrottleEvidence {
     fn from_requote_throttle(
         strategy_id: String,
         family_key: &str,
+        market_key: &str,
         leg: Leg,
         now_ms: u64,
         action_cost_class: BoltV3RequoteActionCostClass,
@@ -153,7 +168,7 @@ impl BoltV3RequoteThrottleEvidence {
         Self {
             strategy_id,
             family_key: family_key.to_string(),
-            market_id: Some(family_key.to_string()),
+            market_id: Some(market_key.to_string()),
             leg: requote_throttle_leg_label(leg).to_string(),
             now_ms,
             observed_at_ns: now_ms.saturating_mul(NANOS_PER_MILLI_U64),
@@ -173,6 +188,7 @@ impl BoltV3RequoteThrottleEvidence {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
+    pub market_key: &'a str,
     pub reference_fair_value: MakerRuntimeReferenceFairValueInput<'a>,
     pub quote_plan: MakerQuotePlanInputs<'a>,
     pub quote_set: MakerRuntimeQuoteSetInput<'a>,
@@ -270,7 +286,9 @@ impl BinaryOracleMaker {
             context,
             mu,
             runtime: MakerRuntime::empty(),
-            last_requote_throttle_blocks: Vec::new(),
+            requote_throttle_novelty: EvidenceNoveltyGuard::for_owner(
+                EvidenceStateOwner::RequoteThrottle,
+            ),
         }
     }
 
@@ -317,6 +335,7 @@ impl BinaryOracleMaker {
 
     fn update_requote_throttle_edge(
         &mut self,
+        market_key: &str,
         family_key: &str,
         market: &MarketQuote,
         budget: &RequoteBudgetPair,
@@ -326,24 +345,16 @@ impl BinaryOracleMaker {
     ) -> Result<()> {
         let Some((action_cost_class, block_reason)) = requote_throttle_block(market, leg, decision)
         else {
-            self.last_requote_throttle_blocks
-                .retain(|key| !(key.family_key == family_key && key.leg == leg));
             return Ok(());
         };
         let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
-        let key = RequoteThrottleDedupeKey {
-            family_key: family_key.to_string(),
-            leg,
-            action_cost_class,
-            block_reason,
-            bound_by,
-        };
-        if self.last_requote_throttle_blocks.contains(&key) {
+        if !self.claim_requote_throttle_once(market_key, leg, action_cost_class, bound_by)? {
             return Ok(());
         }
         let evidence = BoltV3RequoteThrottleEvidence::from_requote_throttle(
             self.config.strategy_id.clone(),
             family_key,
+            market_key,
             leg,
             now_ms,
             action_cost_class,
@@ -365,10 +376,27 @@ impl BinaryOracleMaker {
                 self.config.strategy_id
             );
         }
-        self.last_requote_throttle_blocks
-            .retain(|existing| !(existing.family_key == family_key && existing.leg == leg));
-        self.last_requote_throttle_blocks.push(key);
         Ok(())
+    }
+
+    fn claim_requote_throttle_once(
+        &mut self,
+        market_key: &str,
+        leg: Leg,
+        action_cost_class: BoltV3RequoteActionCostClass,
+        bound_by: BoltV3RequoteThrottleBound,
+    ) -> Result<bool> {
+        if market_key.is_empty() || market_key.trim() != market_key {
+            anyhow::bail!("requote throttle episode requires a canonical market key");
+        }
+        let episode = RequoteThrottleEpisodeId {
+            market_key: market_key.to_string(),
+            leg: leg.into(),
+        };
+        self.requote_throttle_novelty.claim_once(
+            &episode,
+            requote_throttle_canonical_state(action_cost_class, bound_by)?,
+        )
     }
 
     pub fn route_maker_runtime_quote(
@@ -378,6 +406,7 @@ impl BinaryOracleMaker {
         input: BinaryOracleMakerRuntimeQuoteRouteInput<'_>,
     ) -> Result<BinaryOracleMakerRuntimeQuoteRouteOutcome> {
         let BinaryOracleMakerRuntimeQuoteRouteInput {
+            market_key,
             quote,
             submit_template,
             price_precision,
@@ -392,6 +421,7 @@ impl BinaryOracleMaker {
         let quote_decision = plan_maker_runtime_quote(market, budget, quote);
         if let Some(quote_set) = quote_decision.quote_set.as_ref() {
             self.update_requote_throttle_edge(
+                market_key,
                 family_key.as_str(),
                 market,
                 budget,
@@ -400,6 +430,7 @@ impl BinaryOracleMaker {
                 now_ms,
             )?;
             self.update_requote_throttle_edge(
+                market_key,
                 family_key.as_str(),
                 market,
                 budget,
@@ -446,6 +477,7 @@ impl BinaryOracleMaker {
         input: BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'_>,
     ) -> Result<BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome> {
         let BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+            market_key,
             reference_fair_value,
             quote_plan,
             quote_set,
@@ -478,6 +510,7 @@ impl BinaryOracleMaker {
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
+                market_key,
                 quote: MakerRuntimeQuoteInput {
                     quote_plan: MakerQuotePlanInputs {
                         family_key: reference_fair_value.family_key,
@@ -640,6 +673,58 @@ fn build_mu_state(config: &BinaryOracleMakerConfig) -> MakerMuState {
             max_samples: config.trade_flow_max_samples,
         },
     )
+}
+
+fn requote_throttle_canonical_state(
+    action_cost_class: BoltV3RequoteActionCostClass,
+    bound_by: BoltV3RequoteThrottleBound,
+) -> Result<EvidenceCanonicalState> {
+    use BoltV3RequoteActionCostClass::{Cancel, CancelResubmit, FreshSubmit};
+    use BoltV3RequoteThrottleBound::{
+        MinInterval, OutOfOrderTs, Overflow, RestCallWindow, SubmitCommandWindow, WindowCap,
+    };
+    match (action_cost_class, bound_by) {
+        (FreshSubmit, SubmitCommandWindow) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleFreshSubmitSubmitCommandWindow)
+        }
+        (FreshSubmit, RestCallWindow) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleFreshSubmitRestCallWindow)
+        }
+        (FreshSubmit, MinInterval) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleFreshSubmitMinInterval)
+        }
+        (FreshSubmit, WindowCap) => Ok(EvidenceCanonicalState::RequoteThrottleFreshSubmitWindowCap),
+        (FreshSubmit, OutOfOrderTs) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleFreshSubmitOutOfOrderTs)
+        }
+        (FreshSubmit, Overflow) => Ok(EvidenceCanonicalState::RequoteThrottleFreshSubmitOverflow),
+        (CancelResubmit, SubmitCommandWindow) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleCancelResubmitSubmitCommandWindow)
+        }
+        (CancelResubmit, RestCallWindow) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleCancelResubmitRestCallWindow)
+        }
+        (CancelResubmit, MinInterval) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleCancelResubmitMinInterval)
+        }
+        (CancelResubmit, WindowCap) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleCancelResubmitWindowCap)
+        }
+        (CancelResubmit, OutOfOrderTs) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleCancelResubmitOutOfOrderTs)
+        }
+        (CancelResubmit, Overflow) => {
+            Ok(EvidenceCanonicalState::RequoteThrottleCancelResubmitOverflow)
+        }
+        (Cancel, RestCallWindow) => Ok(EvidenceCanonicalState::RequoteThrottleCancelRestCallWindow),
+        (Cancel, MinInterval) => Ok(EvidenceCanonicalState::RequoteThrottleCancelMinInterval),
+        (Cancel, WindowCap) => Ok(EvidenceCanonicalState::RequoteThrottleCancelWindowCap),
+        (Cancel, OutOfOrderTs) => Ok(EvidenceCanonicalState::RequoteThrottleCancelOutOfOrderTs),
+        (Cancel, Overflow) => Ok(EvidenceCanonicalState::RequoteThrottleCancelOverflow),
+        (Cancel, SubmitCommandWindow) => {
+            anyhow::bail!("cancel-only requote cannot be bounded by the submit-command window")
+        }
+    }
 }
 
 fn requote_throttle_block(
@@ -919,6 +1004,7 @@ impl BinaryOracleMaker {
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
+                market_key,
                 quote: MakerRuntimeQuoteInput {
                     quote_plan,
                     quote_set,
@@ -1412,6 +1498,85 @@ mod tests {
             Ok(1.0),
             "on_trade must route each tick into the per-instrument μ buffer"
         );
+    }
+
+    #[test]
+    fn requote_throttle_a_b_a_state_is_emitted_once_per_leg_episode() {
+        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4), test_context());
+        assert!(
+            maker
+                .claim_requote_throttle_once(
+                    "market-1",
+                    Leg::Yes,
+                    BoltV3RequoteActionCostClass::FreshSubmit,
+                    BoltV3RequoteThrottleBound::SubmitCommandWindow,
+                )
+                .expect("first A state should be registered")
+        );
+        assert!(
+            maker
+                .claim_requote_throttle_once(
+                    "market-1",
+                    Leg::Yes,
+                    BoltV3RequoteActionCostClass::FreshSubmit,
+                    BoltV3RequoteThrottleBound::RestCallWindow,
+                )
+                .expect("B state should be registered")
+        );
+        assert!(
+            !maker
+                .claim_requote_throttle_once(
+                    "market-1",
+                    Leg::Yes,
+                    BoltV3RequoteActionCostClass::FreshSubmit,
+                    BoltV3RequoteThrottleBound::SubmitCommandWindow,
+                )
+                .expect("repeated A state should be recognized")
+        );
+        assert!(
+            maker
+                .claim_requote_throttle_once(
+                    "market-2",
+                    Leg::Yes,
+                    BoltV3RequoteActionCostClass::FreshSubmit,
+                    BoltV3RequoteThrottleBound::SubmitCommandWindow,
+                )
+                .expect("the same state in another market is a distinct episode")
+        );
+        assert!(
+            maker
+                .claim_requote_throttle_once(
+                    "market-1",
+                    Leg::No,
+                    BoltV3RequoteActionCostClass::FreshSubmit,
+                    BoltV3RequoteThrottleBound::SubmitCommandWindow,
+                )
+                .expect("the same state on another outcome leg is a distinct episode")
+        );
+    }
+
+    #[test]
+    fn cancel_only_submit_window_state_fails_closed() {
+        let error = requote_throttle_canonical_state(
+            BoltV3RequoteActionCostClass::Cancel,
+            BoltV3RequoteThrottleBound::SubmitCommandWindow,
+        )
+        .expect_err("cancel-only submit-window state is impossible");
+        assert!(error.to_string().contains("cannot be bounded"));
+    }
+
+    #[test]
+    fn requote_throttle_noncanonical_market_key_fails_closed() {
+        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4), test_context());
+        let error = maker
+            .claim_requote_throttle_once(
+                " market-1",
+                Leg::Yes,
+                BoltV3RequoteActionCostClass::FreshSubmit,
+                BoltV3RequoteThrottleBound::SubmitCommandWindow,
+            )
+            .expect_err("padded market identity must fail closed");
+        assert!(error.to_string().contains("canonical market key"));
     }
 
     #[test]

@@ -168,6 +168,7 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
             &mut market,
             &mut budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
+                market_key: "market-runtime",
                 quote: MakerRuntimeQuoteInput {
                     quote_plan: quote_plan_inputs(static_binary_event::KEY),
                     quote_set: quote_set_inputs(),
@@ -241,6 +242,7 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     let submit_template = maker_limit_post_only_template();
 
     let route_input = || BinaryOracleMakerRuntimeQuoteRouteInput {
+        market_key: "market-runtime",
         quote: MakerRuntimeQuoteInput {
             quote_plan: quote_plan_inputs(static_binary_event::KEY),
             quote_set: quote_set_inputs(),
@@ -316,6 +318,7 @@ fn maker_runtime_quote_surfaces_requote_throttle_write_failure_at_error_and_proc
         &mut market,
         &mut budget,
         BinaryOracleMakerRuntimeQuoteRouteInput {
+            market_key: "market-runtime",
             quote: MakerRuntimeQuoteInput {
                 quote_plan: quote_plan_inputs(static_binary_event::KEY),
                 quote_set: quote_set_inputs(),
@@ -423,6 +426,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
             &mut budget,
             &mut selector,
             BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                market_key: "market-reference",
                 reference_fair_value: fair_input,
                 quote_plan: quote_plan_inputs(updown::KEY),
                 quote_set: quote_set_at_reference_evaluation(),
@@ -509,6 +513,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
             &mut blocked_budget,
             &mut blocked_selector,
             BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                market_key: "market-reference",
                 reference_fair_value: MakerRuntimeReferenceFairValueInput {
                     reference_quotes: &[],
                     ..fair_input
@@ -589,6 +594,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 &mut missing_input_budget,
                 &mut missing_input_selector,
                 BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                    market_key: "market-reference",
                     reference_fair_value,
                     quote_plan: quote_plan_inputs(reference_fair_value.family_key),
                     quote_set: quote_set_at_reference_evaluation(),
@@ -643,6 +649,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
             &mut unsupported_budget,
             &mut unsupported_selector,
             BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                market_key: "market-reference",
                 reference_fair_value: MakerRuntimeReferenceFairValueInput {
                     family_key: "missing_family",
                     ..fair_input

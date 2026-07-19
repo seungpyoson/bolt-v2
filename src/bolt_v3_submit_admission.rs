@@ -4817,11 +4817,19 @@ mod fail_closed_invariant_tests {
     #[test]
     fn rejected_fallback_patterns_stay_retired() {
         let source = include_str!("bolt_v3_submit_admission.rs");
-        assert!(!source.contains(".unwrap_or(BoltV3CapitalAdmissionRejectReason::"));
-        assert!(!source.contains(".unwrap_or(BoltV3StaleLossReason::MissingSnapshot)"));
-        assert!(!source.contains(".unwrap_or(BoltV3SubmitIntentKind::Entry)"));
-        assert!(!source.contains(
-            "unreachable!(\"kill-switch forced reduction is evaluated before normal admission\")"
-        ));
+        for rejected_pattern in [
+            concat!(".unwrap_", "or(BoltV3CapitalAdmissionRejectReason::"),
+            concat!(".unwrap_", "or(BoltV3StaleLossReason::MissingSnapshot)"),
+            concat!(".unwrap_", "or(BoltV3SubmitIntentKind::Entry)"),
+            concat!(
+                "unreachable!",
+                "(\"kill-switch forced reduction is evaluated before normal admission\")"
+            ),
+        ] {
+            assert!(
+                !source.contains(rejected_pattern),
+                "rejected fallback pattern remains: {rejected_pattern}"
+            );
+        }
     }
 }

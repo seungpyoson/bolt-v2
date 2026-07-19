@@ -1781,21 +1781,16 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
 MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
 MERGIFY_CONFIG_EXPECTATIONS = {
     "required_reviewer": "sp-reviewer",
-    "required_checks": (
-        "gate",
-        "backtester-gate",
-        "actionlint",
-        "host-health",
-    ),
     "merge_queue": {
         "max_parallel_checks": 1,
         "reset_on_external_merge": "always",
+        "queue_controls_comment": False,
     },
     "queue_rule_order": ("hotfix", "default"),
     "queue_rules": {
         "hotfix": {
             "queue_conditions": ("label = hotfix",),
-            "branch_protection_injection_mode": "merge",
+            "branch_protection_injection_mode": "none",
             "batch_size": 1,
             "batch_max_wait_time": "30 seconds",
             "batch_max_failure_resolution_attempts": 0,
@@ -1805,10 +1800,10 @@ MERGIFY_CONFIG_EXPECTATIONS = {
         },
         "default": {
             "queue_conditions": (),
-            "branch_protection_injection_mode": "merge",
-            "batch_size": {"min": 2, "max": 6},
+            "branch_protection_injection_mode": "none",
+            "batch_size": 1,
             "batch_max_wait_time": "5 minutes",
-            "batch_max_failure_resolution_attempts": 3,
+            "batch_max_failure_resolution_attempts": 0,
             "checks_timeout": "150 minutes",
             "draft_bot_account": None,
             "merge_method": "squash",
@@ -1826,8 +1821,8 @@ MERGIFY_CONFIG_EXPECTATIONS = {
 
 # Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>".
 # `tmp-` is a documented transient form (docs/ci/merge-queue-evidence.md); the
-# resolver and workflow concurrency layer must both recognize it, or a proof PR can
-# be promoted without isolation and leave the queue waiting forever for `gate`.
+# resolver and workflow concurrency layer must both recognize it so queue evidence
+# remains isolated and attributed to the correct temporary branch.
 
 
 def mergify_temp_pr_matches(

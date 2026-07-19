@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -29,7 +29,10 @@ from git_remote_utils import (  # noqa: E402
     isolated_git_transport_environment,
     require_remote_name as _require_remote_name,
 )
-from merge_queue_preflight import VERDICT_QUEUE_AS_ONE_WAVE, VERDICT_SPLIT_ADVISED  # noqa: E402
+from merge_queue_preflight import (  # noqa: E402
+    VERDICT_QUEUE_AS_ONE_WAVE,
+    positive_pr_number,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -100,16 +103,6 @@ def run_command(
     return result
 
 
-def positive_pr_number(value: str) -> int:
-    try:
-        pr = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"invalid PR number {value!r}") from exc
-    if pr <= 0:
-        raise argparse.ArgumentTypeError(f"invalid PR number {value!r}")
-    return pr
-
-
 @dataclasses.dataclass(frozen=True)
 class OperatorConfig:
     origin: str
@@ -118,6 +111,17 @@ class OperatorConfig:
     queue_command: str
     ref_timeout_seconds: int
     queue_timeout_seconds: int
+
+
+@dataclasses.dataclass(frozen=True)
+class PreflightRun:
+    payload: dict[str, object]
+    returncode: int
+    queue_repository: str
+    remote_url: str
+    environment: Mapping[str, str]
+    expected_base_sha: str
+    expected_head_sha: str
 
 
 def load_operator_config(path: pathlib.Path) -> OperatorConfig:
@@ -221,38 +225,33 @@ def expected_head_arg(pr: int, sha: str) -> str:
 
 def build_preflight_command(
     *,
-    prs: Sequence[int],
+    pr: int,
     config: pathlib.Path,
     expected_base_sha: str,
-    expected_head_shas: dict[int, str],
-    verifier_profile: str | None,
+    expected_head_sha: str,
 ) -> list[str]:
-    command = [
+    return [
         "python3",
         str(PREFLIGHT_SCRIPT),
-        *(str(pr) for pr in prs),
+        str(pr),
         "--config",
         str(config),
         "--expected-base-sha",
         expected_base_sha,
+        "--expected-head-sha",
+        expected_head_arg(pr, expected_head_sha),
         "--json",
     ]
-    for pr in prs:
-        command.extend(["--expected-head-sha", expected_head_arg(pr, expected_head_shas[pr])])
-    if verifier_profile is not None:
-        command.extend(["--verifier-profile", verifier_profile])
-    return command
 
 
 def run_preflight(
     *,
     repo: pathlib.Path,
-    prs: Sequence[int],
+    pr: int,
     config: pathlib.Path,
     operator_config: OperatorConfig,
-    verifier_profile: str | None,
     runner: Runner,
-) -> tuple[dict[str, object], int, str]:
+) -> PreflightRun:
     remote_url = resolve_remote_url(
         repo,
         operator_config.origin,
@@ -269,36 +268,36 @@ def run_preflight(
         operator_config.ref_timeout_seconds,
         environment,
     )
-    expected_head_shas = {
-        pr: remote_ref_sha(
-            config.parent,
-            remote_url,
-            f"refs/pull/{pr}/head",
-            runner,
-            operator_config.ref_timeout_seconds,
-            environment,
-        )
-        for pr in prs
-    }
+    expected_head_sha = remote_ref_sha(
+        config.parent,
+        remote_url,
+        f"refs/pull/{pr}/head",
+        runner,
+        operator_config.ref_timeout_seconds,
+        environment,
+    )
     command = build_preflight_command(
-        prs=prs,
+        pr=pr,
         config=config,
         expected_base_sha=expected_base_sha,
-        expected_head_shas=expected_head_shas,
-        verifier_profile=verifier_profile,
+        expected_head_sha=expected_head_sha,
     )
-    result = runner(
-        command,
-        cwd=repo,
-        environment=environment,
-    )
+    result = runner(command, cwd=repo, environment=environment)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise OperatorError(f"merge queue preflight did not emit valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise OperatorError("merge queue preflight JSON payload must be an object")
-    return payload, result.returncode, operator_config.repository
+    return PreflightRun(
+        payload=payload,
+        returncode=result.returncode,
+        queue_repository=operator_config.repository,
+        remote_url=remote_url,
+        environment=environment,
+        expected_base_sha=expected_base_sha,
+        expected_head_sha=expected_head_sha,
+    )
 
 
 def queue_pr(
@@ -318,79 +317,90 @@ def queue_pr(
     )
 
 
-def queue_prs(
-    prs: Sequence[int],
-    queue_command: str,
-    queue_repository: str,
-    repo: pathlib.Path,
+def operate(
+    args: argparse.Namespace,
+    *,
     runner: Runner,
-    timeout_seconds: int,
-) -> None:
-    for pr in prs:
-        queue_pr(pr, queue_command, queue_repository, repo, runner, timeout_seconds)
-        print(f"queued PR #{pr}")
-
-
-def print_split_advice(batches: object) -> None:
-    print("merge queue preflight advised splitting the wave:")
-    if not isinstance(batches, list):
-        print("  no size-valid partition was available in the preflight output")
-        return
-    for batch in batches:
-        if not isinstance(batch, dict) or not isinstance(batch.get("prs"), list):
-            continue
-        prs = [str(pr) for pr in batch["prs"]]
-        if prs:
-            print(f"  just merge-queue {' '.join(prs)}")
-
-
-def operate(args: argparse.Namespace, *, runner: Runner, repo: pathlib.Path) -> int:
-    if len(set(args.prs)) != len(args.prs):
-        raise OperatorError("duplicate PR numbers are not allowed")
-    with immutable_config_snapshot(args.config) as config_path:
+    repo: pathlib.Path,
+    config: pathlib.Path,
+) -> int:
+    with immutable_config_snapshot(config) as config_path:
         operator_config = load_operator_config(config_path)
-        payload, preflight_returncode, queue_repository = run_preflight(
+        preflight = run_preflight(
             repo=repo,
-            prs=args.prs,
+            pr=args.pr,
             config=config_path,
             operator_config=operator_config,
-            verifier_profile=args.verifier_profile,
             runner=runner,
         )
-        verdict = payload.get("verdict")
-        if preflight_returncode == 0 and verdict == VERDICT_QUEUE_AS_ONE_WAVE:
-            if args.dry_run:
-                for pr in args.prs:
-                    print(f"would queue PR #{pr}")
-            else:
-                queue_prs(
-                    args.prs,
-                    operator_config.queue_command,
-                    queue_repository,
-                    repo,
+        verdict = preflight.payload.get("verdict")
+        if preflight.returncode == 0 and verdict == VERDICT_QUEUE_AS_ONE_WAVE:
+            expected_identity = {
+                "requested_prs": [args.pr],
+                "base_sha": preflight.expected_base_sha,
+                "expected_base_sha": preflight.expected_base_sha,
+                "actual_base_sha": preflight.expected_base_sha,
+                "expected_pr_heads": {str(args.pr): preflight.expected_head_sha},
+                "pr_heads": {str(args.pr): preflight.expected_head_sha},
+            }
+            observed_identity = {
+                field: preflight.payload.get(field)
+                for field in expected_identity
+            }
+            if observed_identity != expected_identity:
+                raise OperatorError("preflight result identity does not match resolved base and PR head")
+            current_identity = {
+                "base": remote_ref_sha(
+                    config_path.parent,
+                    preflight.remote_url,
+                    f"refs/heads/{operator_config.base}",
                     runner,
-                    operator_config.queue_timeout_seconds,
-                )
+                    operator_config.ref_timeout_seconds,
+                    preflight.environment,
+                ),
+                "head": remote_ref_sha(
+                    config_path.parent,
+                    preflight.remote_url,
+                    f"refs/pull/{args.pr}/head",
+                    runner,
+                    operator_config.ref_timeout_seconds,
+                    preflight.environment,
+                ),
+            }
+            if current_identity != {
+                "base": preflight.expected_base_sha,
+                "head": preflight.expected_head_sha,
+            }:
+                raise OperatorError("base or PR head changed after preflight")
+            queue_pr(
+                args.pr,
+                operator_config.queue_command,
+                preflight.queue_repository,
+                repo,
+                runner,
+                operator_config.queue_timeout_seconds,
+            )
+            print(f"queued PR #{args.pr}")
             return 0
-        if verdict == VERDICT_SPLIT_ADVISED:
-            print_split_advice(payload.get("batches"))
-        else:
-            print(f"merge queue preflight did not queue: verdict={verdict!r}")
-        return preflight_returncode if preflight_returncode != 0 else 4
+        print(f"merge queue preflight did not queue: verdict={verdict!r}")
+        return preflight.returncode if preflight.returncode != 0 else 4
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="merge_queue_operator.py", allow_abbrev=False)
-    root.add_argument("prs", nargs="+", type=positive_pr_number)
-    root.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
-    root.add_argument("--verifier-profile")
-    root.add_argument("--dry-run", action="store_true")
+    root.add_argument("pr", type=positive_pr_number)
     return root
 
 
-def main(argv: list[str] | None = None, *, runner: Runner = run_command, repo: pathlib.Path = REPO_ROOT) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    runner: Runner = run_command,
+    repo: pathlib.Path = REPO_ROOT,
+    config: pathlib.Path = DEFAULT_CONFIG,
+) -> int:
     try:
-        return operate(parser().parse_args(argv), runner=runner, repo=repo)
+        return operate(parser().parse_args(argv), runner=runner, repo=repo, config=config)
     except OperatorError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 4

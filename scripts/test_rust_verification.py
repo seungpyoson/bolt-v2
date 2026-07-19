@@ -94,7 +94,7 @@ def assert_minimal_toml_accepts_quoted_keys() -> None:
         path.write_text(
             textwrap.dedent(
                 """\
-                [merge_queue_preflight.required_check_workflows]
+                [quoted_keys]
                 "backtester-gate" = "Backtester CI"
                 "host-health" = "CI"
                 """
@@ -102,7 +102,7 @@ def assert_minimal_toml_accepts_quoted_keys() -> None:
             encoding="utf-8",
         )
         parsed = owner.parse_minimal_toml(path)
-    workflows = parsed["merge_queue_preflight"]["required_check_workflows"]
+    workflows = parsed["quoted_keys"]
     if workflows != {"backtester-gate": "Backtester CI", "host-health": "CI"}:
         raise AssertionError(workflows)
 
@@ -114,8 +114,8 @@ def assert_minimal_toml_accepts_multiline_string_arrays() -> None:
         path.write_text(
             textwrap.dedent(
                 """\
-                [merge_queue_preflight]
-                source_fence_full_profile_pathspecs = [
+                [multiline_values]
+                paths = [
                   "scripts",
                   "justfile",
                   "ci/rust-verification.toml",
@@ -125,7 +125,7 @@ def assert_minimal_toml_accepts_multiline_string_arrays() -> None:
             encoding="utf-8",
         )
         parsed = owner.parse_minimal_toml(path)
-    pathspecs = parsed["merge_queue_preflight"]["source_fence_full_profile_pathspecs"]
+    pathspecs = parsed["multiline_values"]["paths"]
     if pathspecs != ["scripts", "justfile", "ci/rust-verification.toml"]:
         raise AssertionError(pathspecs)
 
@@ -241,12 +241,10 @@ printf 'args=%s\\n' "$*" >> {just_log}
             refusal.get("refusal_code") != "local_compile_disabled"
             or "just rust-probe suggest" not in next_steps
             or "for full remote feedback on a draft PR: run: just verify-remote" not in next_steps
-            or (
-                "for merge proof: mark the PR ready, then run: just verify-remote "
-                "to wait for the required PR gate, or use the merge-queue gate"
-            )
-            not in next_steps
-            or "for merge proof: run: just verify-remote" in next_steps
+            or "treat the result as advisory evidence, never merge authority" not in next_steps
+            or "merge proof" in next_steps
+            or "required PR gate" in next_steps
+            or "merge-queue gate" in next_steps
         ):
             raise AssertionError(refusal)
 
@@ -285,16 +283,14 @@ printf 'args=%s\\n' "$*" >> {just_log}
             raise AssertionError(payload)
 
 
-def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
+def assert_rust_probe_result_is_advisory() -> None:
     owner = load_owner_module()
     stale_fragments = (
-        "run just verify-remote for proof",
+        "merge proof",
+        "required PR gate",
+        "merge-queue gate",
         "verify-remote is final proof",
-        "draft verify-remote is proof",
-        "verify-remote only for final exact-head full-CI proof",
-        "For final proof, use exact-head PR CI evidence through `just verify-remote`",
-        "Full CI is proof. Rust Probe is debugging.",
-        "dispatch Backtester CI with " + "full_ci" + "=true for this branch or mark ready",
+        "full CI is proof",
     )
     operator_surfaces = (
         SCRIPT,
@@ -303,12 +299,11 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
         REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml",
     )
     for path in operator_surfaces:
-        source = path.read_text(encoding="utf-8")
-        if any(fragment in source for fragment in stale_fragments):
-            raise AssertionError(f"{path.relative_to(REPO_ROOT)} contains stale verify-remote proof guidance")
-    if any(fragment in owner.RUST_PROBE_HELP_EPILOG for fragment in stale_fragments):
-        raise AssertionError(owner.RUST_PROBE_HELP_EPILOG)
-
+        source = path.read_text(encoding="utf-8").lower()
+        if any(fragment.lower() in source for fragment in stale_fragments):
+            raise AssertionError(
+                f"{path.relative_to(REPO_ROOT)} contains stale merge-authority guidance"
+            )
     stdout = io.StringIO()
     run = {
         "databaseId": 1001,
@@ -325,9 +320,7 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
     output = stdout.getvalue()
     if result != 0:
         raise AssertionError((result, output))
-    if "draft verify-remote is feedback only" not in output:
-        raise AssertionError(output)
-    if any(fragment in output for fragment in stale_fragments):
+    if "neither is merge authority" not in output:
         raise AssertionError(output)
 
 
@@ -1965,7 +1958,7 @@ def main() -> int:
     assert_managed_env_scrubs_then_injects_fast_linker_wrapper()
     assert_fast_linker_programs_command_reads_policy()
     assert_ci_provenance_gate_name_helpers_stay_in_parity()
-    assert_rust_probe_guidance_distinguishes_feedback_from_proof()
+    assert_rust_probe_result_is_advisory()
     assert_fmt_avoids_managed_cache_lock()
     assert_minimal_toml_accepts_quoted_keys()
     assert_minimal_toml_accepts_multiline_string_arrays()

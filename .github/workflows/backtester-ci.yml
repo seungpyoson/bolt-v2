@@ -810,7 +810,7 @@ jobs:
 
   gate:
     name: ${{ needs.ci-policy.outputs.backtester_gate_name }}
-    # backtester-gate-iteration is intentionally non-required; only backtester-gate is merge proof.
+    # backtester-gate-iteration is diagnostic; backtester-gate is exact-head advisory evidence.
     needs: [ci-policy, detect, fmt, clippy, test-archive]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}

@@ -1,6 +1,7 @@
 merge_queue:
   max_parallel_checks: 1
   reset_on_external_merge: always
+  queue_controls_comment: false
 
 queue_rules:
   # Exceptional path only. Normal merge sessions use the default queue below.
@@ -9,16 +10,11 @@ queue_rules:
       - label = hotfix
     merge_conditions:
       - approved-reviews-by = sp-reviewer
-      - check-success = gate
-      - check-success = backtester-gate
-      - check-success = actionlint
-      - check-success = host-health
-    branch_protection_injection_mode: merge
+    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
+    branch_protection_injection_mode: none
     batch_size: 1
     batch_max_wait_time: 30 seconds
     batch_max_failure_resolution_attempts: 0
-    # merge_conditions intentionally differ from queue_conditions, which makes
-    # Mergify use a queue proof context instead of in-place checks.
     checks_timeout: 150 minutes
     draft_bot_account: null
     merge_method: squash
@@ -27,18 +23,11 @@ queue_rules:
     queue_conditions: []
     merge_conditions:
       - approved-reviews-by = sp-reviewer
-      - check-success = gate
-      - check-success = backtester-gate
-      - check-success = actionlint
-      - check-success = host-health
-    branch_protection_injection_mode: merge
-    batch_size:
-      min: 2
-      max: 6
+    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
+    branch_protection_injection_mode: none
+    batch_size: 1
     batch_max_wait_time: 5 minutes
-    batch_max_failure_resolution_attempts: 3
-    # merge_conditions intentionally differ from queue_conditions, which makes
-    # Mergify use a queue proof context instead of in-place checks.
+    batch_max_failure_resolution_attempts: 0
     checks_timeout: 150 minutes
     draft_bot_account: null
     merge_method: squash

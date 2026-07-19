@@ -186,8 +186,9 @@ verify-remote: check-workspace require-rust-verification-owner
 sandbox-safe-push *args: check-workspace
     python3 scripts/sandbox_safe_push.py --repo "{{repo_root}}" {{args}}
 
-merge-queue *args: check-workspace
-    python3 scripts/merge_queue_operator.py {{args}}
+[positional-arguments]
+merge-queue *args:
+    python3 scripts/merge_queue_operator.py -- "$@"
 
 rust-probe *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" rust-probe --repo "{{repo_root}}" {{args}}

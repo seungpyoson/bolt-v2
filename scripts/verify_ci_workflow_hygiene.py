@@ -285,12 +285,10 @@ from governance_diff_analysis import (
     yaml_permissions_scoped_grants,
 )
 from merge_queue_preflight import (
-    MERGIFY_DYNAMIC_BATCH_KEYS,
     MERGIFY_FORBIDDEN_TOP_LEVEL_KEYS,
     MERGIFY_MERGE_QUEUE_KEYS,
     MERGIFY_PRIORITY_RULE_KEYS,
     MERGIFY_QUEUE_RULE_KEYS,
-    MERGIFY_REQUIRED_MERGE_CONDITIONS,
     MERGIFY_REQUIRED_PRIORITY_RULES,
     MERGIFY_REQUIRED_QUEUE_RULES,
     MERGIFY_TOP_LEVEL_KEYS,
@@ -8407,7 +8405,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     if gate_job is not None and (
         "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
     ):
-        errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
+        errors.append("backtester diagnostic issue-789 lane must remain advisory")
     artifact_cache_blocks = [
         block
         for block in action_blocks(archive_job, "actions/cache/restore@")
@@ -9032,7 +9030,7 @@ def backtester_iteration_policy_errors(file_name: str, text: str) -> list[str]:
                     f"backtester iteration policy must not retain PR metadata carry-forward plumbing ({forbidden})"
                 )
         if gate_text and ("issue_789" in extract_needs(gate) or "needs.issue_789.result" in gate_text):
-            errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
+            errors.append("backtester diagnostic issue-789 lane must remain advisory")
 
     group_text = backtester_concurrency_group_text(text)
     if "format('bvs-pr-{0}-iteration', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:

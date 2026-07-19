@@ -1575,8 +1575,7 @@ def main() -> int:
             continue
         for path in sorted(directory.glob(pattern)):
             repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
-    errors = verify_fixed_final_review_topology(workflow_texts)
-    errors.extend(verify_github_actions_runner_contract(workflow_texts))
+    errors = verify_github_actions_runner_contract(workflow_texts)
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

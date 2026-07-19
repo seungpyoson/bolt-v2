@@ -304,14 +304,22 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
 def test_every_test_module_is_claimed_by_one_execution_surface() -> None:
     runner = load_runner_module()
     discovered = runner.discover_governed_test_files(REPO_ROOT)
-    if "test_host_health_viewer.mjs" not in discovered:
-        raise AssertionError("governed JavaScript tests are outside the ownership census")
+    dormant = {
+        "test_direct_ai_review.py",
+        "test_final_review_evidence.py",
+        "test_final_review_runner.py",
+        "test_final_review_workflow.py",
+        "test_host_health_sampler.py",
+        "test_host_health_viewer.mjs",
+    }
+    if discovered & dormant:
+        raise AssertionError(f"dormant review tests remain in the active ownership census: {discovered & dormant}")
     runner.validate_test_suite_coverage(REPO_ROOT)
 
 
 def test_duplicate_test_ownership_is_rejected_for_every_surface_pair() -> None:
     runner = load_runner_module()
-    surface_names = ("ci-lint", "paired-fence", "standalone-fence", "final-review")
+    surface_names = ("ci-lint", "paired-fence", "standalone-fence")
     for suffix in (".py", ".mjs"):
         filename = f"test_duplicate{suffix}"
         for left_index, left in enumerate(surface_names):

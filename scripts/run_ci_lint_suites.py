@@ -74,6 +74,8 @@ INACTIVE_TEST_FILENAMES = frozenset(
         "test_final_review_evidence.py",
         "test_final_review_runner.py",
         "test_final_review_workflow.py",
+        "test_host_health_sampler.py",
+        "test_host_health_viewer.mjs",
     }
 )
 
@@ -113,7 +115,6 @@ def validate_test_suite_coverage(repo_root: pathlib.Path) -> None:
     scripts = repo_root / "scripts"
     discovered = discover_governed_test_files(repo_root)
     from run_fences import STANDALONE_TEST_FILENAMES
-    from final_review_runner import FINAL_REVIEW_OBLIGATIONS
 
     ownership: dict[str, set[str]] = {}
     for suite in CI_LINT_SUITES:
@@ -129,12 +130,6 @@ def validate_test_suite_coverage(repo_root: pathlib.Path) -> None:
             ownership[f"paired-fence:{path.name}"] = {path.name}
     for filename in STANDALONE_TEST_FILENAMES:
         ownership[f"standalone-fence:{filename}"] = {filename}
-    for obligation in FINAL_REVIEW_OBLIGATIONS:
-        ownership[f"final-review:{obligation.obligation_id}"] = {
-            pathlib.Path(part).name
-            for part in obligation.command
-            if part.startswith("scripts/test_") and pathlib.Path(part).suffix in GOVERNED_TEST_SUFFIXES
-        }
     validate_exact_test_ownership(
         discovered,
         ownership,

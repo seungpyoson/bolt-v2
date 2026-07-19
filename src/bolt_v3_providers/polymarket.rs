@@ -28,14 +28,12 @@ mod adapter_signing_source;
 mod balance_allowance_cache;
 mod collateral_accounting_source;
 pub mod economics;
-mod fee_behavior_source;
 mod venue_account_state_source;
 mod venue_truth_runtime_source;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
 pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
 pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
-pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;
 pub use venue_truth_runtime_source::{
     PolymarketVenueTruthBuildError, PolymarketVenueTruthInput,
@@ -437,19 +435,6 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
                 errors.extend(validate_funder(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
                 errors.extend(validate_on_chain_collateral(key, &parsed));
-                errors.extend(
-                    parsed
-                        .economics
-                        .validate_product_surfaces(
-                            parsed
-                                .economics
-                                .product_surface_policies
-                                .keys()
-                                .map(String::as_str),
-                        )
-                        .into_iter()
-                        .map(|error| format!("clients.{key}.execution.economics: {error:?}")),
-                );
             }
             Err(message) => {
                 errors.push(format!("clients.{key}.execution: {message}"));

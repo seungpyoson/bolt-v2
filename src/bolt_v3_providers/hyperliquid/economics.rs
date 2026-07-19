@@ -254,12 +254,18 @@ pub struct HyperliquidSnapshotMetadata {
 struct HyperliquidUserFeesWire {
     daily_user_vlm: Vec<HyperliquidDailyUserVolumeWire>,
     fee_schedule: HyperliquidFeeScheduleWire,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     user_cross_rate: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     user_add_rate: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     user_spot_cross_rate: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     user_spot_add_rate: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     active_referral_discount: Decimal,
     trial: Option<serde_json::Value>,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     fee_trial_escrow: Decimal,
     #[serde(rename = "nextTrialAvailableTimestamp")]
     _next_trial_available_timestamp: Option<u64>,
@@ -271,19 +277,27 @@ struct HyperliquidUserFeesWire {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct HyperliquidDailyUserVolumeWire {
     date: String,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     user_cross: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     user_add: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     exchange: Decimal,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct HyperliquidFeeScheduleWire {
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     cross: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     add: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     spot_cross: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     spot_add: Decimal,
     tiers: HyperliquidFeeTiersWire,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     referral_discount: Decimal,
     staking_discount_tiers: Vec<HyperliquidStakingDiscountWire>,
 }
@@ -298,24 +312,33 @@ struct HyperliquidFeeTiersWire {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct HyperliquidVipFeeTierWire {
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     ntl_cutoff: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     cross: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     add: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     spot_cross: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     spot_add: Decimal,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct HyperliquidMakerFeeTierWire {
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     maker_fraction_cutoff: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     add: Decimal,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct HyperliquidStakingDiscountWire {
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     bps_of_max_supply: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     discount: Decimal,
 }
 
@@ -365,6 +388,7 @@ struct HyperliquidMarginTableWire {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[allow(dead_code)]
 struct HyperliquidMarginTierWire {
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     lower_bound: Decimal,
     max_leverage: u32,
 }
@@ -373,16 +397,63 @@ struct HyperliquidMarginTierWire {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[allow(dead_code)]
 struct HyperliquidAssetContextWire {
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     funding: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     open_interest: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     prev_day_px: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     day_ntl_vlm: Decimal,
+    #[serde(deserialize_with = "deserialize_nullable_decimal_string")]
     premium: RequiredNullable<Decimal>,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     oracle_px: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     mark_px: Decimal,
+    #[serde(deserialize_with = "deserialize_nullable_decimal_string")]
     mid_px: RequiredNullable<Decimal>,
+    #[serde(deserialize_with = "deserialize_nullable_decimal_string_vec")]
     impact_pxs: RequiredNullable<Vec<Decimal>>,
+    #[serde(deserialize_with = "deserialize_decimal_string")]
     day_base_vlm: Decimal,
+}
+
+fn deserialize_decimal_string<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Decimal::from_str(&value).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_nullable_decimal_string<'de, D>(
+    deserializer: D,
+) -> Result<RequiredNullable<Decimal>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| Decimal::from_str(&value).map_err(serde::de::Error::custom))
+        .transpose()
+        .map(RequiredNullable)
+}
+
+fn deserialize_nullable_decimal_string_vec<'de, D>(
+    deserializer: D,
+) -> Result<RequiredNullable<Vec<Decimal>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Vec<String>>::deserialize(deserializer)?
+        .map(|values| {
+            values
+                .into_iter()
+                .map(|value| Decimal::from_str(&value).map_err(serde::de::Error::custom))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
+        .map(RequiredNullable)
 }
 
 impl HyperliquidUserFeesSnapshot {

@@ -27,9 +27,4 @@ impl EconomicsCapabilityHealth {
         self.forecast_valid_until_ns
             .is_some_and(|valid_until_ns| valid_until_ns >= now_ns)
     }
-
-    pub fn allows_live_execution(&self, now_ns: u64) -> Result<(), EconomicsUnavailable> {
-        self.allows_admission(now_ns)?;
-        Err(EconomicsUnavailable::ActualAccountingUnavailable)
-    }
 }

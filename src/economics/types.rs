@@ -671,7 +671,6 @@ pub enum EconomicsUnavailable {
     RequiredCapabilityStale {
         valid_until_ns: u64,
     },
-    ActualAccountingUnavailable,
     ProviderQuoteUnavailable {
         source_id: SourceId,
     },

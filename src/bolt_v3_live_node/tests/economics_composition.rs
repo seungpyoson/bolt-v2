@@ -244,10 +244,14 @@ fn request() -> EconomicQuoteRequest {
 #[tokio::test]
 async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
     let loaded = fixture_loaded_config();
-    let execution = loaded.root.clients["polymarket_main"]
-        .execution
-        .as_ref()
-        .expect("shipped-shaped fixture must configure Polymarket execution");
+    let execution: crate::bolt_v3_providers::polymarket::PolymarketExecutionConfig =
+        loaded.root.clients["polymarket_main"]
+            .execution
+            .as_ref()
+            .expect("shipped-shaped fixture must configure Polymarket execution")
+            .clone()
+            .try_into()
+            .expect("shipped-shaped Polymarket execution must parse");
     let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(FixtureTransportAuthority {
         economics: execution.economics.clone(),
         adapter_config: PolymarketEconomicsAdapterConfig::from_execution_config(
@@ -330,10 +334,14 @@ async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
 #[tokio::test]
 async fn malformed_capture_never_publishes_quote_authority() {
     let loaded = fixture_loaded_config();
-    let execution = loaded.root.clients["polymarket_main"]
-        .execution
-        .as_ref()
-        .unwrap();
+    let execution: crate::bolt_v3_providers::polymarket::PolymarketExecutionConfig =
+        loaded.root.clients["polymarket_main"]
+            .execution
+            .as_ref()
+            .unwrap()
+            .clone()
+            .try_into()
+            .expect("shipped-shaped Polymarket execution must parse");
     let authority: Arc<dyn ProviderEconomicsAuthority> = Arc::new(FixtureTransportAuthority {
         economics: execution.economics.clone(),
         adapter_config: PolymarketEconomicsAdapterConfig::from_execution_config(

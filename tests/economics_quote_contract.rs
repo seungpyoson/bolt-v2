@@ -167,14 +167,10 @@ fn core_edge_uses_positive_fresh_evidence_basis() {
 }
 
 #[test]
-fn health_is_proportional_and_live_accounting_is_disabled() {
+fn health_is_proportional() {
     let health = EconomicsCapabilityHealth::quote_only(110, Some(105));
     assert!(health.allows_admission(100).is_ok());
     assert!(health.forecast_available(100));
-    assert!(matches!(
-        health.allows_live_execution(100),
-        Err(EconomicsUnavailable::ActualAccountingUnavailable)
-    ));
     assert!(matches!(
         health.allows_admission(111),
         Err(EconomicsUnavailable::RequiredCapabilityStale { .. })

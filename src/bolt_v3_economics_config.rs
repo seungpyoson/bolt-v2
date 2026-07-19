@@ -248,6 +248,10 @@ pub enum EconomicsConfigError {
         route_id: String,
         client_id: String,
     },
+    UnknownProviderConversionSource {
+        route_id: String,
+        source_id: String,
+    },
     ZeroValuationAge {
         route_id: String,
     },
@@ -454,10 +458,12 @@ impl ExecutionEconomicsConfig {
                 errors.push(EconomicsConfigError::InvalidQuoteWindow);
             }
         }
-        errors.extend(
-            self.valuation
-                .validate(&reporting.pnl_currency, active_data_clients),
-        );
+        let configured_sources = self.sources.keys().cloned().collect();
+        errors.extend(self.valuation.validate(
+            &reporting.pnl_currency,
+            active_data_clients,
+            &configured_sources,
+        ));
         if let Some(carry) = &self.carry {
             if is_zero(carry.funding_interval_secs) {
                 errors.push(EconomicsConfigError::ZeroCarryHorizon);
@@ -551,6 +557,7 @@ impl ValuationConfig {
         &self,
         reporting_currency: &str,
         active_data_clients: &BTreeSet<String>,
+        configured_sources: &BTreeSet<String>,
     ) -> Vec<EconomicsConfigError> {
         let mut errors = Vec::new();
         let mut authority_pairs = BTreeSet::new();
@@ -584,6 +591,7 @@ impl ValuationConfig {
                 route_id,
                 route,
                 active_data_clients,
+                configured_sources,
             ));
         }
         errors
@@ -594,6 +602,7 @@ fn validate_valuation_legs(
     route_id: &str,
     route: &ValuationRouteConfig,
     active_data_clients: &BTreeSet<String>,
+    configured_sources: &BTreeSet<String>,
 ) -> Vec<EconomicsConfigError> {
     let mut errors = Vec::new();
     if route.legs.is_empty() {
@@ -631,7 +640,13 @@ fn validate_valuation_legs(
                 }
             }
             ValuationLegConfig::ProviderConversion { source_id, .. } => {
-                require_text(source_id, EconomicsConfigField::SourcePolicy, &mut errors)
+                require_text(source_id, EconomicsConfigField::SourcePolicy, &mut errors);
+                if !configured_sources.contains(source_id) {
+                    errors.push(EconomicsConfigError::UnknownProviderConversionSource {
+                        route_id: route_id.to_string(),
+                        source_id: source_id.clone(),
+                    });
+                }
             }
         }
         if leg.from_unit() != current {

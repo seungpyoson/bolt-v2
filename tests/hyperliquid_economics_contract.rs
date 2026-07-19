@@ -691,6 +691,17 @@ fn governed_live_hyperliquid_quote_authority_captures_parse() {
 }
 
 #[test]
+fn user_fees_parser_rejects_number_encoded_decimal_fields() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    wire["userCrossRate"] = serde_json::json!(0.000315);
+
+    assert_governed_user_fees_invalid(wire);
+}
+
+#[test]
 fn user_fees_parser_rejects_unconfigured_volume_history_rows() {
     let mut wire: serde_json::Value = serde_json::from_str(include_str!(
         "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"

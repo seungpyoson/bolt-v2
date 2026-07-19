@@ -50,7 +50,7 @@ The absence of Slice 2–5 issue numbers is an intentional execution block, not 
 | Substrate isolation | `src/integrations/nautilus/economics.rs`, `crates/backtesting-vertical-slice/src/economics.rs` | NT mapping and replay mapping parity | synthetic non-NT substrate test; projection cannot become authority |
 | Atomic admission cutover | `src/bolt_v3_economics_runtime.rs`, `src/bolt_v3_order_execution.rs`, `src/bolt_v3_submit_admission.rs` | quote-before-admission-before-submit ordering | stale/invalid quote prevents evidence permit and NT submit |
 | Strategy intent only | strategy/archetype consumers | strategy tests pass with gross intent only | source fence rejects economics imports/math under `src/strategies/` and `src/bolt_v3_archetypes/` |
-| One production path | deletions across provider, strategy, family, backtest, report | new runtime exercised by all consumers | zero matches for `FeeProvider`, `build_fee_provider`, family fee curve, flat `fee_bps`, scalar fee callback, and duplicate report math |
+| One production path | deletions across provider, strategy, family, backtest, report | new runtime exercised by all consumers | zero matches for `FeeProvider`, `build_fee_provider`, retired scalar fee callbacks, and duplicate report math; venue-contract validation bounds are not quote authorities |
 | No live arming | provider validation and readiness | offline replay contract passes | config validation rejects Polymarket/Hyperliquid live submit with `economics_slice = "quote_only"` |
 
 ## Planned File Ownership

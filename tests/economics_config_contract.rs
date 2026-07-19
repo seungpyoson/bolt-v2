@@ -167,6 +167,31 @@ legs = [
 }
 
 #[test]
+fn provider_conversion_route_rejects_an_undeclared_source_id() {
+    let route = r#"
+[valuation.routes.usdc]
+from_unit = "USDC"
+to_currency = "pUSD"
+legs = [
+  { authority = "provider_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "misspelled-source", max_age_ms = 9000 },
+]
+"#;
+    let source = valid_config().replace("[valuation]\nroutes = {}", route);
+    let config = parse(&source).unwrap();
+
+    assert!(
+        config
+            .validate(&reporting(), &BTreeSet::new())
+            .iter()
+            .any(|error| matches!(
+                error,
+                EconomicsConfigError::UnknownProviderConversionSource { source_id, .. }
+                    if source_id == "misspelled-source"
+            ))
+    );
+}
+
+#[test]
 fn missing_edge_resolver_and_reporting_policy_mismatch_fail_closed() {
     let missing = parse(&valid_config().replace(
         "product_surface_policies = { perp = \"default\" }",

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rust_decimal::Decimal;
+
 use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,

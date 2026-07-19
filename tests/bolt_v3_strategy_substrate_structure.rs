@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -391,10 +391,105 @@ fn workspace_crate_files() -> Vec<PathBuf> {
     rust_files_below(&repo_path("crates"))
 }
 
+fn bolt_v2_root_aliases(actual: &[&str]) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::from(["bolt_v2".to_string()]);
+    loop {
+        let previous_len = aliases.len();
+        for window in actual.windows(3) {
+            if aliases.contains(window[0]) && window[1] == "as" {
+                aliases.insert(window[2].to_string());
+            }
+        }
+        for window in actual.windows(5) {
+            if window[0..2] == ["extern", "crate"]
+                && aliases.contains(window[2])
+                && window[3] == "as"
+            {
+                aliases.insert(window[4].to_string());
+            }
+        }
+        if aliases.len() == previous_len {
+            return aliases;
+        }
+    }
+}
+
+fn belongs_to_bolt_v2_path(actual: &[&str], index: usize, root_aliases: &BTreeSet<String>) -> bool {
+    if index >= 2 && actual[index - 1] == "::" && root_aliases.contains(actual[index - 2]) {
+        return true;
+    }
+    for open in 0..index.saturating_sub(2) {
+        if !root_aliases.contains(actual[open])
+            || actual.get(open + 1..open + 3) != Some(&["::", "{"])
+        {
+            continue;
+        }
+        let mut depth = 1usize;
+        for token in &actual[open + 3..index] {
+            match *token {
+                "{" => depth += 1,
+                "}" => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if depth == 1 && is_use_tree_segment_start(actual, index) {
+            return true;
+        }
+    }
+    false
+}
+
+fn publicly_reexports_bolt_v2_root(actual: &[&str], aliases: &BTreeSet<String>) -> bool {
+    actual.windows(4).any(|window| {
+        window[0..2] == ["pub", "use"]
+            && aliases.contains(window[2])
+            && matches!(window[3], ";" | "as")
+    }) || actual.windows(5).any(|window| {
+        window[0..3] == ["pub", "use", "::"] && aliases.contains(window[3]) && window[4] == ";"
+    }) || actual.windows(5).any(|window| {
+        window[0..3] == ["pub", "extern", "crate"]
+            && aliases.contains(window[3])
+            && matches!(window[4], ";" | "as")
+    }) || actual.windows(6).any(|window| {
+        window[0..3] == ["pub", "use", "{"]
+            && aliases.contains(window[3])
+            && window[4..6] == ["}", ";"]
+    })
+}
+
+fn imports_bolt_v2_strategies_namespace(actual: &[&str], root_aliases: &BTreeSet<String>) -> bool {
+    actual.iter().enumerate().any(|(index, token)| {
+        if *token != "strategies" || !belongs_to_bolt_v2_path(actual, index, root_aliases) {
+            return false;
+        }
+        match actual.get(index + 1) {
+            None | Some(&";") | Some(&"as") | Some(&",") | Some(&"}") => true,
+            Some(&"::") => match actual.get(index + 2) {
+                Some(&"*") => true,
+                Some(&"{") => {
+                    use_tree_contains_at_depth(actual, index + 2, "self")
+                        || use_tree_contains_at_depth(actual, index + 2, "*")
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    })
+}
+
 fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
     let actual = texts(tokens);
-    for start in 0..actual.len().saturating_sub(2) {
-        if actual[start..start + 3] == ["strategies", "::", "registry"] {
+    let root_aliases = bolt_v2_root_aliases(&actual);
+    if root_aliases.len() > 1
+        || publicly_reexports_bolt_v2_root(&actual, &root_aliases)
+        || imports_bolt_v2_strategies_namespace(&actual, &root_aliases)
+    {
+        return true;
+    }
+    for start in 0..actual.len() {
+        if actual.get(start..start + 3) == Some(&["strategies", "::", "registry"])
+            && belongs_to_bolt_v2_path(&actual, start, &root_aliases)
+        {
             if matches!(
                 actual.get(start + 3),
                 None | Some(&";") | Some(&",") | Some(&"}") | Some(&"as")
@@ -411,7 +506,9 @@ fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
                 return true;
             }
         }
-        if actual[start..start + 3] == ["strategies", "::", "{"] {
+        if actual.get(start..start + 3) == Some(&["strategies", "::", "{"])
+            && belongs_to_bolt_v2_path(&actual, start, &root_aliases)
+        {
             let mut depth = 1usize;
             let mut cursor = start + 3;
             while cursor < actual.len() && depth > 0 {
@@ -632,21 +729,28 @@ fn retired_registry_matcher_covers_wildcard_and_reexport_paths() {
         "pub use bolt_v2::strategies::registry::*;",
         "pub use bolt_v2::strategies::registry as retired_registry;",
         "pub use bolt_v2::strategies::{registry as retired_registry};",
+        "use bolt_v2 as b; use b::strategies::registry::FeeProvider;",
+        "extern crate bolt_v2 as b; use b::strategies::registry::*;",
+        "pub use bolt_v2;",
+        "pub use ::bolt_v2;",
+        "pub use {bolt_v2};",
+        "pub use bolt_v2::strategies as shared_strategies;",
+        "use bolt_v2::{strategies::*};",
     ] {
-        assert!(references_retired_registry_type(
-            &tokenize(source),
-            "FeeProvider"
-        ));
+        assert!(
+            references_retired_registry_type(&tokenize(source), "FeeProvider"),
+            "missed retired registry import: {source}"
+        );
     }
     for source in [
         "use other::strategies::registry::*;",
         "pub use bolt_v2::strategies::registry::nested::*;",
         "pub use bolt_v2::strategies::{nested::registry};",
     ] {
-        assert!(!references_retired_registry_type(
-            &tokenize(source),
-            "FeeProvider"
-        ));
+        assert!(
+            !references_retired_registry_type(&tokenize(source), "FeeProvider"),
+            "unrelated import was rejected: {source}"
+        );
     }
 }
 
